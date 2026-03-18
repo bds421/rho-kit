@@ -1,0 +1,4 @@
+.DS_Store
+coverage.out
+vendor/
+cmd/kit-migrate/kit-migrate

@@ -1,0 +1,1 @@
+Read and follow AGENTS.md in this repository root — it is the canonical AI agent guide for this project, including build commands, package decision tree, golden path, conventions, and links to detailed recipe files in docs/ai/.
