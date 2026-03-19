@@ -1,3 +1,6 @@
+github.com/bds421/rho-kit/data/idempotency v1.0.0 h1:OZ/+g/leUeh7rZtw6ovwaSbahYhRzs1sL1WSeWPhVUA=
+github.com/bds421/rho-kit/data/idempotency/pgstore v1.0.0 h1:4jlcJSvo4aEncHVpRlz475bK+BSJygyF9cSPTXg+z14=
+github.com/bds421/rho-kit/observability/auditlog/gormstore v1.0.0 h1:jAHCwMTAm2ibYwxFFUIGiOOtc31jipC2rqykgaqq8TQ=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
 github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
