@@ -1,3 +1,6 @@
+github.com/bds421/rho-kit/httpx v1.0.0 h1:wu9TNA4edjhkeAfCrZYki0NANVdYaZhJFqQG7m+tbOU=
+github.com/bds421/rho-kit/infra/messaging v1.0.0 h1:nS5Eo6qlquc03yWhR0cYaKlYQApEKJmpFgWtjl+iWoU=
+github.com/bds421/rho-kit/io/atomicfile v1.0.0 h1:TwG7zTXoKz7/3Lp/988aOgTukBDpvHRJ4FXz1P3+55U=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
