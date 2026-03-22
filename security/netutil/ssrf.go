@@ -4,10 +4,39 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
 )
+
+// Option configures SSRF validation behavior.
+type Option func(*options)
+
+type options struct {
+	allowPrivateIPs bool
+}
+
+func collectOptions(opts []Option) options {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// WithAllowPrivateIPs disables private/reserved IP filtering.
+// This is intended ONLY for local development where services communicate
+// over localhost or Docker-internal networks.
+//
+// WARNING: Never use this option in production — it completely disables
+// SSRF protection. A [slog.Warn] message is emitted every time this
+// option is active so that accidental production usage is visible in logs.
+func WithAllowPrivateIPs() Option {
+	return func(o *options) {
+		o.allowPrivateIPs = true
+	}
+}
 
 // DNSResolver abstracts DNS lookups for testability.
 // Use nil with ResolveAndValidate to use net.DefaultResolver.
@@ -18,10 +47,15 @@ type DNSResolver interface {
 // ResolveAndValidate resolves the hostname and returns the first non-private IP as a string.
 // Pass nil for resolver to use net.DefaultResolver.
 //
+// By default all private/reserved IPs are rejected. Pass [WithAllowPrivateIPs]
+// to permit them (local development only).
+//
 // WARNING: Callers MUST use the returned IP string (not the original hostname)
 // when dialing, to prevent DNS rebinding attacks. Prefer SSRFSafeTransport
 // which enforces this by construction.
-func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver) (string, error) {
+func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (string, error) {
+	cfg := collectOptions(opts)
+
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
@@ -31,6 +65,11 @@ func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver) 
 	}
 	if len(ips) == 0 {
 		return "", fmt.Errorf("dns resolution returned no addresses for %s", host)
+	}
+
+	if cfg.allowPrivateIPs {
+		slog.Warn("ssrf: private IP filtering disabled — do not use in production", "host", host)
+		return ips[0].IP.String(), nil
 	}
 
 	for _, ip := range ips {
@@ -117,11 +156,14 @@ func IsPrivateIP(ip net.IP) bool {
 // it long-term — if the server's IP changes, the transport will dial a stale
 // address. Create a new transport per request for maximum correctness.
 //
+// Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
+// development only).
+//
 // WARNING: Do not use this transport with an http.Client that follows redirects.
 // Redirects could target internal IPs, bypassing SSRF protection. Use
 // [SSRFSafeClient] instead, which disables redirects automatically.
-func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver) (*http.Transport, string, error) {
-	ip, err := ResolveAndValidate(ctx, host, resolver)
+func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (*http.Transport, string, error) {
+	ip, err := ResolveAndValidate(ctx, host, resolver, opts...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -146,8 +188,10 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver) (
 // SSRFSafeClient returns an *http.Client that resolves and validates the
 // target host, pins the resolved IP, and refuses to follow redirects.
 // This is the recommended way to make outbound requests to user-supplied URLs.
-func SSRFSafeClient(ctx context.Context, host string, resolver DNSResolver) (*http.Client, string, error) {
-	transport, ip, err := SSRFSafeTransport(ctx, host, resolver)
+// Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
+// development only).
+func SSRFSafeClient(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (*http.Client, string, error) {
+	transport, ip, err := SSRFSafeTransport(ctx, host, resolver, opts...)
 	if err != nil {
 		return nil, "", err
 	}

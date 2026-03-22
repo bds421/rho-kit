@@ -158,3 +158,64 @@ func TestResolveAndValidate_DNSError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "dns resolution failed")
 }
+
+func TestResolveAndValidate_AllowPrivateIPs(t *testing.T) {
+	tests := []struct {
+		name string
+		ips  []net.IPAddr
+		want string
+	}{
+		{
+			name: "loopback allowed in dev mode",
+			ips:  []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}},
+			want: "127.0.0.1",
+		},
+		{
+			name: "private 10.x allowed in dev mode",
+			ips:  []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}},
+			want: "10.0.0.1",
+		},
+		{
+			name: "IPv6 loopback allowed in dev mode",
+			ips:  []net.IPAddr{{IP: net.ParseIP("::1")}},
+			want: "::1",
+		},
+		{
+			name: "public IP still works in dev mode",
+			ips:  []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}},
+			want: "8.8.8.8",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &mockDNSResolver{ips: tt.ips}
+			ip, err := ResolveAndValidate(context.Background(), "example.com", resolver, WithAllowPrivateIPs())
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, ip)
+		})
+	}
+}
+
+func TestResolveAndValidate_DefaultRejectsPrivate(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	_, err := ResolveAndValidate(context.Background(), "example.com", resolver)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "private/reserved")
+}
+
+func TestSSRFSafeClient_AllowPrivateIPs(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	client, ip, err := SSRFSafeClient(context.Background(), "localhost", resolver, WithAllowPrivateIPs())
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", ip)
+	assert.NotNil(t, client)
+}
+
+func TestSSRFSafeTransport_AllowPrivateIPs(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	transport, ip, err := SSRFSafeTransport(context.Background(), "localhost", resolver, WithAllowPrivateIPs())
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", ip)
+	assert.NotNil(t, transport)
+}
