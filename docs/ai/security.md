@@ -149,6 +149,19 @@ resp, err := client.Get("https://" + userHost + "/webhook")
 
 **Important:** Create a new `SSRFSafeTransport` per request — the resolved IP may go stale.
 
+### Dev Mode (localhost / private IPs)
+
+During local development, services often talk to each other over localhost or
+Docker-internal networks. Pass `WithAllowPrivateIPs()` to skip private-IP filtering:
+
+```go
+client, ip, err := netutil.SSRFSafeClient(ctx, "localhost", nil, netutil.WithAllowPrivateIPs())
+```
+
+A `slog.Warn` is emitted every time this option is active.
+
+**Never use `WithAllowPrivateIPs` in production** — it completely disables SSRF protection.
+
 ## CSRF Protection (Double-Submit Cookie)
 
 The `httpx/middleware/csrf` package implements the double-submit cookie pattern with
