@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -68,8 +69,6 @@ type ComputeCache[T any] struct {
 	group   singleflight.Group
 	cfg     computeConfig
 
-	// bgMu protects bgWg from concurrent Done calls during shutdown.
-	bgMu sync.Mutex
 	bgWg sync.WaitGroup
 }
 
@@ -131,7 +130,12 @@ func (cc *ComputeCache[T]) GetOrCompute(ctx context.Context, key string, fn Comp
 	// Try the backend first.
 	data, getErr := cc.backend.Get(ctx, full)
 	if getErr == nil {
-		return cc.handleHit(ctx, full, key, data, fn)
+		return cc.handleHit(ctx, full, data, fn)
+	}
+	if !errors.Is(getErr, ErrCacheMiss) {
+		// Backend error (e.g., Redis timeout) — fall through to compute
+		// but record the error for observability.
+		cc.recordError()
 	}
 
 	// Cache miss — compute via singleflight.
@@ -144,7 +148,6 @@ func (cc *ComputeCache[T]) GetOrCompute(ctx context.Context, key string, fn Comp
 func (cc *ComputeCache[T]) handleHit(
 	ctx context.Context,
 	full string,
-	_ string,
 	data []byte,
 	fn ComputeFunc[T],
 ) (T, error) {
@@ -163,6 +166,11 @@ func (cc *ComputeCache[T]) handleHit(
 	}
 
 	// Expired but still within backend TTL (stale window).
+	if cc.cfg.staleTTL == 0 {
+		// No stale serving configured; treat expired entry as a miss.
+		cc.recordMiss()
+		return cc.computeAndStore(ctx, full, fn)
+	}
 	cc.recordStaleServe()
 	cc.triggerBackgroundRefresh(full, fn)
 	return env.Value, nil
@@ -172,17 +180,24 @@ func (cc *ComputeCache[T]) handleHit(
 func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
+	// Use WithoutCancel so that if the first caller's context is cancelled,
+	// other waiters sharing this singleflight call are not affected.
+	computeCtx := context.WithoutCancel(ctx)
 	result, err, _ := cc.group.Do(full, func() (interface{}, error) {
-		return cc.executeCompute(ctx, full, fn)
+		return cc.executeCompute(computeCtx, full, fn)
 	})
 	if err != nil {
 		cc.recordError()
 		return zero, err
 	}
 
+	// Guard against nil result (e.g., when T is an interface type).
+	if result == nil {
+		return zero, nil
+	}
 	val, ok := result.(T)
 	if !ok {
-		return zero, fmt.Errorf("cache compute: unexpected result type")
+		return zero, fmt.Errorf("cache compute: unexpected result type %T", result)
 	}
 	return val, nil
 }
@@ -222,9 +237,7 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 
 // triggerBackgroundRefresh starts an async refresh using singleflight.DoChan.
 func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[T]) {
-	cc.bgMu.Lock()
 	cc.bgWg.Add(1)
-	cc.bgMu.Unlock()
 
 	ch := cc.group.DoChan(full, func() (interface{}, error) {
 		// Use a detached context for background work so it isn't
