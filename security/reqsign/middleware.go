@@ -18,7 +18,7 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 			var body []byte
 
 			if r.Body != nil && r.Body != http.NoBody {
-				// Close the original body; line 33 replaces r.Body with a bytes.NewReader.
+				// Close the original body; it is replaced with a bytes.NewReader below.
 				defer func() { _ = r.Body.Close() }()
 				var err error
 				body, err = io.ReadAll(io.LimitReader(r.Body, MaxBodySize+1))
