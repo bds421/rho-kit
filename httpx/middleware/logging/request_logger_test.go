@@ -270,6 +270,7 @@ func TestWithRequestLogger_OmitsEmptyKeyAttr(t *testing.T) {
 	got.Info("probe")
 
 	logOutput := buf.String()
+	// TextHandler renders a zero-value slog.Attr as ="" — check it was filtered out.
 	if bytes.Contains(buf.Bytes(), []byte("=\"\"")) {
 		t.Errorf("log should not contain empty-key attr, got: %s", logOutput)
 	}

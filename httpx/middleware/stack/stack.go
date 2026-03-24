@@ -14,16 +14,17 @@ import (
 )
 
 // Config controls the default middleware stack.
+// Boolean fields are ordered to match middleware execution order (outermost first).
 type Config struct {
 	Logger              *slog.Logger
 	QuietPaths          []string
+	EnableSecHeaders    bool
 	EnableMetrics       bool
 	EnableRequestID     bool
-	EnableTracing       bool
-	EnableLogging       bool
-	EnableReqLogger     bool
 	EnableCorrelationID bool
-	EnableSecHeaders    bool
+	EnableTracing       bool
+	EnableReqLogger     bool
+	EnableLogging       bool
 	FrameOption         secheaders.FrameOption
 	Outer               []func(http.Handler) http.Handler
 	Inner               []func(http.Handler) http.Handler
@@ -41,13 +42,13 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	cfg := Config{
 		Logger:              logger,
 		QuietPaths:          []string{"/ready"},
+		EnableSecHeaders:    true,
 		EnableMetrics:       true,
 		EnableRequestID:     true,
 		EnableCorrelationID: true,
 		EnableTracing:       true,
-		EnableLogging:       true,
 		EnableReqLogger:     true,
-		EnableSecHeaders:    true,
+		EnableLogging:       true,
 		FrameOption:         secheaders.Deny,
 	}
 	for _, opt := range opts {
