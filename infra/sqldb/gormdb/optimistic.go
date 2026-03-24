@@ -29,6 +29,8 @@ var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"vers
 // by another transaction or does not exist). Any other database error is
 // wrapped and returned.
 //
+// The caller is responsible for ensuring expectedVersion does not overflow int64.
+//
 // Note: if the row identified by model's primary key does not exist,
 // RowsAffected will be 0, and ErrVersionConflict is returned. Callers
 // that need to distinguish "deleted" from "stale version" should check
@@ -59,6 +61,8 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // it in updates.
 //
 // The input updates map is never mutated; a shallow copy is used internally.
+//
+// The caller is responsible for ensuring expectedVersion does not overflow int64.
 //
 // Note: if the row identified by model's primary key does not exist,
 // RowsAffected will be 0, and ErrVersionConflict is returned. Callers
