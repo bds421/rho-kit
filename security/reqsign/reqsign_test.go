@@ -387,8 +387,12 @@ func TestTransportToMiddlewareIntegration(t *testing.T) {
 
 func TestSignRequest_PanicsNilKeyStore(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil KeyStore in SignRequest")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil KeyStore")
+		}
+		if msg, ok := r.(string); !ok || msg != "reqsign: KeyStore must not be nil" {
+			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -397,8 +401,12 @@ func TestSignRequest_PanicsNilKeyStore(t *testing.T) {
 
 func TestVerifyRequest_PanicsNilKeyStore(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil KeyStore in VerifyRequest")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil KeyStore")
+		}
+		if msg, ok := r.(string); !ok || msg != "reqsign: KeyStore must not be nil" {
+			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -407,8 +415,12 @@ func TestVerifyRequest_PanicsNilKeyStore(t *testing.T) {
 
 func TestNewSigningTransport_PanicsNilKeyStore(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil KeyStore in NewSigningTransport")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil KeyStore")
+		}
+		if msg, ok := r.(string); !ok || msg != "reqsign: KeyStore must not be nil" {
+			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	NewSigningTransport(http.DefaultTransport, nil)
@@ -416,8 +428,12 @@ func TestNewSigningTransport_PanicsNilKeyStore(t *testing.T) {
 
 func TestRequireSignedRequest_PanicsNilKeyStore(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil KeyStore in RequireSignedRequest")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil KeyStore")
+		}
+		if msg, ok := r.(string); !ok || msg != "reqsign: KeyStore must not be nil" {
+			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	RequireSignedRequest(nil)
