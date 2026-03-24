@@ -36,6 +36,10 @@ var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"vers
 // that need to distinguish "deleted" from "stale version" should check
 // existence separately.
 func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64) error {
+	if model == nil {
+		return fmt.Errorf("gormdb: model must not be nil")
+	}
+
 	result := db.WithContext(ctx).Model(model).
 		Where("version = ?", expectedVersion).
 		Update("version", expectedVersion+1)
@@ -57,7 +61,7 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // another transaction or does not exist).
 //
 // The updates parameter is a map[string]any of column names to new values.
-// The version field is automatically set to expectedVersion+1 — do not include
+// The version field is automatically set to expectedVersion+1 -- do not include
 // it in updates.
 //
 // The input updates map is never mutated; a shallow copy is used internally.
@@ -69,6 +73,10 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // that need to distinguish "deleted" from "stale version" should check
 // existence separately.
 func UpdateWithVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64, updates map[string]any) error {
+	if model == nil {
+		return fmt.Errorf("gormdb: model must not be nil")
+	}
+
 	if len(updates) == 0 {
 		return ErrEmptyUpdates
 	}

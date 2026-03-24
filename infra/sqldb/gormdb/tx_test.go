@@ -59,7 +59,7 @@ func TestWithTx_RollbackOnPanic(t *testing.T) {
 func TestWithTxResult_ReturnsValue(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
-	db.Create(&testModel{ID: "1", Name: "alice"})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)
 
 	result, err := WithTxResult(ctx, db, func(tx *gorm.DB) (*testModel, error) {
 		return FindByID[testModel](tx, "test", "1")
@@ -103,7 +103,7 @@ func TestWithTxResult_RollbackOnPanic(t *testing.T) {
 func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
-	db.Create(&testModel{ID: "1", Name: "alice"})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)
 
 	// SQLite does not support SET TRANSACTION READ ONLY, so we expect an error
 	// from the SET command. This test verifies the function returns an error
@@ -112,7 +112,7 @@ func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
 		var m testModel
 		return tx.First(&m, "id = ?", "1").Error
 	})
-	// SQLite will reject SET TRANSACTION READ ONLY — that's expected.
+	// SQLite will reject SET TRANSACTION READ ONLY -- that's expected.
 	// On a real PostgreSQL/MySQL instance this would succeed.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")

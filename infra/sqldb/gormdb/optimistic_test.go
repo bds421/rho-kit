@@ -18,7 +18,7 @@ type versionedModel struct {
 
 func TestCheckVersion_Success(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
 
 	model := &versionedModel{ID: "1"}
 	err := CheckVersion(context.Background(), db, model, 1)
@@ -31,7 +31,7 @@ func TestCheckVersion_Success(t *testing.T) {
 
 func TestCheckVersion_Conflict(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3}).Error)
 
 	model := &versionedModel{ID: "1"}
 	err := CheckVersion(context.Background(), db, model, 1)
@@ -58,7 +58,7 @@ func TestCheckVersion_ErrVersionConflictIsConflict(t *testing.T) {
 
 func TestUpdateWithVersion_Success(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
 
 	model := &versionedModel{ID: "1"}
 	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
@@ -72,7 +72,7 @@ func TestUpdateWithVersion_Success(t *testing.T) {
 
 func TestUpdateWithVersion_Conflict(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3}).Error)
 
 	model := &versionedModel{ID: "1"}
 	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
@@ -96,7 +96,7 @@ func TestUpdateWithVersion_NonExistentRow(t *testing.T) {
 
 func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
 
 	updates := map[string]any{"name": "bob"}
 	model := &versionedModel{ID: "1"}
@@ -111,7 +111,7 @@ func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
 
 func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
 
 	model := &versionedModel{ID: "1"}
 
@@ -140,7 +140,7 @@ func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 
 func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
-	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
 
 	model := &versionedModel{ID: "1"}
 
