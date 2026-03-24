@@ -7,6 +7,10 @@ import (
 	"github.com/bds421/rho-kit/core/contextutil"
 )
 
+// correlationIDHeaderName is the HTTP header used to propagate correlation IDs.
+// Must match correlationid.Header.
+const correlationIDHeaderName = "X-Correlation-Id"
+
 // SetCorrelationID stores a correlation ID in the context.
 //
 // Deprecated: Use contextutil.SetCorrelationID instead.
@@ -26,8 +30,7 @@ func CorrelationID(ctx context.Context) string {
 // If no correlation ID is present in the context, this is a no-op.
 func PropagateHTTP(ctx context.Context, req *http.Request) {
 	if id := contextutil.CorrelationID(ctx); id != "" {
-		// "X-Correlation-Id" must match correlationid.Header.
-		req.Header.Set("X-Correlation-Id", id)
+		req.Header.Set(correlationIDHeaderName, id)
 	}
 }
 
@@ -35,8 +38,7 @@ func PropagateHTTP(ctx context.Context, req *http.Request) {
 // Returns ("", "") if no correlation ID is present in the context.
 func PropagateMessageHeader(ctx context.Context) (key, value string) {
 	if id := contextutil.CorrelationID(ctx); id != "" {
-		// "X-Correlation-Id" must match correlationid.Header.
-		return "X-Correlation-Id", id
+		return correlationIDHeaderName, id
 	}
 	return "", ""
 }

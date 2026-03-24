@@ -9,7 +9,8 @@ func IsValid(id string, maxLen int) bool {
 	if id == "" || len(id) > maxLen {
 		return false
 	}
-	for _, c := range id {
+	for i := 0; i < len(id); i++ {
+		c := id[i]
 		if c <= 0x20 || c > 0x7E {
 			return false
 		}
