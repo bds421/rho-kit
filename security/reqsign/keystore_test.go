@@ -7,7 +7,7 @@ import (
 func validKey(n int) []byte {
 	k := make([]byte, n)
 	for i := range k {
-		k[i] = byte(i % 256)
+		k[i] = byte((i*7 + n) % 256)
 	}
 	return k
 }

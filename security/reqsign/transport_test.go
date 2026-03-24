@@ -101,6 +101,26 @@ func TestSigningTransport_NilBody(t *testing.T) {
 	}
 }
 
+func TestSigningTransport_OversizedBody(t *testing.T) {
+	store := testStore()
+
+	base := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		t.Fatal("base transport should not be called for oversized body")
+		return nil, nil
+	})
+
+	transport := NewSigningTransport(base, store)
+
+	// Create a body larger than maxSignBodySize (1 MiB).
+	oversized := make([]byte, 1<<20+1)
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/api/upload", bytes.NewReader(oversized))
+
+	_, err := transport.RoundTrip(req)
+	if err == nil {
+		t.Fatal("expected error for oversized body, got nil")
+	}
+}
+
 func TestSigningTransport_NilBase(t *testing.T) {
 	// NewSigningTransport with nil base should not panic.
 	store := testStore()
