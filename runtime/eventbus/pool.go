@@ -155,6 +155,8 @@ func (p *workerPool) worker(id int) {
 			}
 			p.executeTask(task)
 		}()
+		// Note: panicked events are counted as processed. The onError callback
+		// and log provide distinction.
 		if p.metrics != nil {
 			p.metrics.processed.WithLabelValues(task.eventName).Inc()
 		}

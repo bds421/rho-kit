@@ -253,7 +253,8 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 	go b.runAsync(ctx, eventName, h, event)
 }
 
-// Start starts the worker pool. No-op if no pool is configured.
+// Start starts the worker pool. If no pool is configured, Start blocks until
+// ctx is cancelled (for lifecycle.Component compatibility).
 // Implements lifecycle.Component.
 func (b *Bus) Start(ctx context.Context) error {
 	if b.pool == nil {

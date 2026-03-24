@@ -286,7 +286,16 @@ func BenchmarkPublish_Async_WithPool(b *testing.B) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+
+	// Warmup: publish one event and wait for it to be processed, ensuring
+	// workers are fully running before timing begins.
+	warmupDone := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ otherEvent) error {
+		close(warmupDone)
+		return nil
+	}, WithAsync(), WithName("warmup"))
+	_ = Publish(bus, context.Background(), otherEvent{Value: 0})
+	<-warmupDone
 
 	evt := testEvent{ID: "bench"}
 
