@@ -6,8 +6,8 @@ import (
 	"github.com/bds421/rho-kit/observability/promutil"
 )
 
-// computeMetrics holds Prometheus collectors for ComputeCache monitoring.
-type computeMetrics struct {
+// ComputeMetrics holds Prometheus collectors for ComputeCache monitoring.
+type ComputeMetrics struct {
 	hits        *prometheus.CounterVec
 	misses      *prometheus.CounterVec
 	staleServes *prometheus.CounterVec
@@ -16,12 +16,12 @@ type computeMetrics struct {
 
 // NewComputeMetrics creates and registers ComputeCache metrics with the given
 // registerer. If reg is nil, prometheus.DefaultRegisterer is used.
-func NewComputeMetrics(reg prometheus.Registerer) *computeMetrics {
+func NewComputeMetrics(reg prometheus.Registerer) *ComputeMetrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	m := &computeMetrics{
+	m := &ComputeMetrics{
 		hits: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "cache",

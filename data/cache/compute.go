@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,20 +14,24 @@ import (
 // ComputeFunc computes a cache value. Returns the value, its TTL, and any error.
 type ComputeFunc[T any] func(ctx context.Context) (T, time.Duration, error)
 
-// envelope is the JSON structure stored in the cache backend.
+// envelope is the structure stored in the cache backend.
 // It wraps the actual value with an expiration timestamp for
 // stale-while-revalidate support.
-type envelope[T any] struct {
-	Value     T     `json:"v"`
-	ExpiresAt int64 `json:"e"` // unix nanoseconds
+type envelope struct {
+	Value     []byte `json:"v"`
+	ExpiresAt int64  `json:"e"` // unix nanoseconds
 }
 
 // computeConfig holds configuration for a ComputeCache.
 type computeConfig struct {
-	staleTTL time.Duration
-	metrics  *computeMetrics
-	name     string
+	staleTTL       time.Duration
+	refreshTimeout time.Duration
+	metrics        *ComputeMetrics
+	name           string
 }
+
+// defaultRefreshTimeout is used when no WithRefreshTimeout option is provided.
+const defaultRefreshTimeout = 30 * time.Second
 
 // ComputeOption configures a ComputeCache.
 type ComputeOption func(*computeConfig)
@@ -47,7 +50,7 @@ func WithStaleTTL(d time.Duration) ComputeOption {
 // WithComputeMetricsRegisterer attaches pre-built metrics to the ComputeCache.
 // Use NewComputeMetrics to create the metrics, or WithComputePrometheusMetrics
 // for a one-step option.
-func WithComputeMetricsRegisterer(m *computeMetrics) ComputeOption {
+func WithComputeMetricsRegisterer(m *ComputeMetrics) ComputeOption {
 	return func(cfg *computeConfig) {
 		cfg.metrics = m
 	}
@@ -60,16 +63,29 @@ func WithComputeName(name string) ComputeOption {
 	}
 }
 
+// WithRefreshTimeout sets the timeout for background refresh operations.
+// Values <= 0 are ignored and the default (30 seconds) is used.
+func WithRefreshTimeout(d time.Duration) ComputeOption {
+	return func(cfg *computeConfig) {
+		if d > 0 {
+			cfg.refreshTimeout = d
+		}
+	}
+}
+
 // ComputeCache wraps a Cache backend with singleflight deduplication and
 // stale-while-revalidate support. Only one goroutine computes a given key
 // at a time; concurrent callers wait for the in-flight computation.
 type ComputeCache[T any] struct {
 	backend Cache
 	prefix  string
+	codec   Codec[T]
 	group   singleflight.Group
 	cfg     computeConfig
 
-	bgWg sync.WaitGroup
+	bgWg     sync.WaitGroup
+	cancelBg context.CancelFunc
+	bgCtx    context.Context
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
@@ -84,16 +100,37 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 		return nil, fmt.Errorf("cache prefix length %d exceeds maximum of %d bytes", len(prefix), MaxKeyLen/2)
 	}
 
-	cfg := computeConfig{name: "default"}
+	cfg := computeConfig{
+		name:           "default",
+		refreshTimeout: defaultRefreshTimeout,
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
+	bgCtx, cancelBg := context.WithCancel(context.Background())
+
 	return &ComputeCache[T]{
-		backend: backend,
-		prefix:  prefix,
-		cfg:     cfg,
+		backend:  backend,
+		prefix:   prefix,
+		codec:    JSONCodec[T]{},
+		cfg:      cfg,
+		bgCtx:    bgCtx,
+		cancelBg: cancelBg,
 	}, nil
+}
+
+// NewComputeCacheWithCodec creates a ComputeCache with a custom Codec.
+// If codec is nil, JSONCodec[T] is used.
+func NewComputeCacheWithCodec[T any](backend Cache, prefix string, codec Codec[T], opts ...ComputeOption) (*ComputeCache[T], error) {
+	cc, err := NewComputeCache[T](backend, prefix, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if codec != nil {
+		cc.codec = codec
+	}
+	return cc, nil
 }
 
 // fullKey validates the user-provided key and returns the combined prefix+key.
@@ -151,18 +188,18 @@ func (cc *ComputeCache[T]) handleHit(
 	data []byte,
 	fn ComputeFunc[T],
 ) (T, error) {
-	var env envelope[T]
-	if err := json.Unmarshal(data, &env); err != nil {
+	val, expiresAt, err := cc.decodeEnvelope(data)
+	if err != nil {
 		cc.recordError()
 		cc.recordMiss()
 		return cc.computeAndStore(ctx, full, fn)
 	}
 
 	now := time.Now().UnixNano()
-	if now < env.ExpiresAt {
+	if now < expiresAt {
 		// Fresh hit.
 		cc.recordHit()
-		return env.Value, nil
+		return val, nil
 	}
 
 	// Expired but still within backend TTL (stale window).
@@ -173,8 +210,25 @@ func (cc *ComputeCache[T]) handleHit(
 	}
 	cc.recordStaleServe()
 	cc.triggerBackgroundRefresh(full, fn)
-	return env.Value, nil
+	return val, nil
 }
+
+// decodeEnvelope unmarshals the envelope and returns the decoded value and expiration.
+func (cc *ComputeCache[T]) decodeEnvelope(data []byte) (T, int64, error) {
+	var zero T
+	var env envelope
+	if err := envelopeCodec.Unmarshal(data, &env); err != nil {
+		return zero, 0, err
+	}
+	var val T
+	if err := cc.codec.Unmarshal(env.Value, &val); err != nil {
+		return zero, 0, err
+	}
+	return val, env.ExpiresAt, nil
+}
+
+// envelopeCodec is used for the outer envelope (always JSON).
+var envelopeCodec = JSONCodec[envelope]{}
 
 // computeAndStore runs fn through singleflight, stores the result, and returns.
 func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
@@ -217,14 +271,19 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 		ttl = 0
 	}
 
-	env := envelope[T]{
-		Value:     val,
+	valBytes, marshalErr := cc.codec.Marshal(val)
+	if marshalErr != nil {
+		return zero, fmt.Errorf("cache compute marshal: %w", marshalErr)
+	}
+
+	env := envelope{
+		Value:     valBytes,
 		ExpiresAt: time.Now().Add(ttl).UnixNano(),
 	}
 
-	envData, marshalErr := json.Marshal(env)
+	envData, marshalErr := envelopeCodec.Marshal(env)
 	if marshalErr != nil {
-		return zero, fmt.Errorf("cache compute marshal: %w", marshalErr)
+		return zero, fmt.Errorf("cache compute envelope marshal: %w", marshalErr)
 	}
 
 	// Backend TTL = primary TTL + stale window.
@@ -242,9 +301,11 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 	cc.bgWg.Add(1)
 
 	ch := cc.group.DoChan(full, func() (interface{}, error) {
-		// Use a detached context for background work so it isn't
-		// cancelled when the original request completes.
-		bgCtx := context.Background()
+		// Use a timeout-scoped context derived from the background context
+		// created at construction time. This prevents unbounded refresh
+		// operations and allows Close() to cancel in-flight refreshes.
+		bgCtx, cancel := context.WithTimeout(cc.bgCtx, cc.cfg.refreshTimeout)
+		defer cancel()
 		val, err := cc.executeCompute(bgCtx, full, fn)
 		if err != nil {
 			cc.recordError()
@@ -262,6 +323,15 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 // Primarily useful in tests to ensure deterministic behavior.
 func (cc *ComputeCache[T]) Wait() {
 	cc.bgWg.Wait()
+}
+
+// Close cancels all background refresh operations and waits for them to
+// finish. After Close returns, no new background refreshes will be started.
+// Implements io.Closer.
+func (cc *ComputeCache[T]) Close() error {
+	cc.cancelBg()
+	cc.bgWg.Wait()
+	return nil
 }
 
 // recordHit increments the hit counter if metrics are configured.
