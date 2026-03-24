@@ -40,3 +40,12 @@ func TestFallbackGenerate_Unique(t *testing.T) {
 
 	assert.NotEqual(t, id1, id2)
 }
+
+func TestFallbackGenerate_VersionAndVariant(t *testing.T) {
+	id := fallbackGenerate()
+
+	parsed, err := uuid.Parse(id)
+	require.NoError(t, err, "fallback ID is not valid UUID")
+	assert.Equal(t, uuid.Version(7), parsed.Version(), "version = %d, want 7", parsed.Version())
+	assert.Equal(t, uuid.RFC4122, parsed.Variant(), "variant = %v, want RFC4122", parsed.Variant())
+}
