@@ -343,6 +343,8 @@ func TestHasBearerToken_CaseInsensitive(t *testing.T) {
 		{"no space", "Bearertoken123", false},
 		{"basic auth", "Basic dXNlcjpwYXNz", false},
 		{"too short", "Bearer", false},
+		{"space only", "Bearer ", false},
+		{"lowercase space only", "bearer ", false},
 	}
 
 	for _, tt := range tests {
