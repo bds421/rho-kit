@@ -8,7 +8,6 @@ import (
 	"github.com/bds421/rho-kit/httpx"
 )
 
-
 // RequireSignedRequest returns middleware that verifies request signatures.
 // Requests with missing or invalid signatures receive a 401 Unauthorized response.
 // The request body is read, verified, and then replaced so downstream handlers
@@ -19,7 +18,7 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 			var body []byte
 
 			if r.Body != nil && r.Body != http.NoBody {
-				defer r.Body.Close()
+				defer func() { _ = r.Body.Close() }()
 				var err error
 				body, err = io.ReadAll(io.LimitReader(r.Body, MaxBodySize+1))
 				if err != nil {
@@ -27,7 +26,7 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
 					return
 				}
-				if int64(len(body)) > MaxBodySize {
+				if len(body) > MaxBodySize {
 					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 					return
 				}

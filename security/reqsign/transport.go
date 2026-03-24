@@ -7,7 +7,6 @@ import (
 	"net/http"
 )
 
-
 // SigningTransport wraps an http.RoundTripper to sign all outbound requests.
 type SigningTransport struct {
 	base  http.RoundTripper
@@ -35,13 +34,13 @@ func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	var body []byte
 
 	if req.Body != nil && req.Body != http.NoBody {
-		defer req.Body.Close()
+		defer func() { _ = req.Body.Close() }()
 		var err error
 		body, err = io.ReadAll(io.LimitReader(req.Body, MaxBodySize+1))
 		if err != nil {
 			return nil, fmt.Errorf("reqsign: reading request body: %w", err)
 		}
-		if int64(len(body)) > MaxBodySize {
+		if len(body) > MaxBodySize {
 			return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", MaxBodySize)
 		}
 		req.Body = io.NopCloser(bytes.NewReader(body))

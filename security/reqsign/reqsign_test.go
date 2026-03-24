@@ -131,6 +131,25 @@ func TestVerifyTamperedBody(t *testing.T) {
 	}
 }
 
+func TestVerifyInvalidTimestamp(t *testing.T) {
+	store := testStore()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set(HeaderSignature, "sha256=abc")
+	req.Header.Set(HeaderTimestamp, "not-a-number")
+	req.Header.Set(HeaderKeyID, "primary")
+
+	err := VerifyRequest(req, nil, store)
+	if err == nil {
+		t.Fatal("expected error for invalid timestamp, got nil")
+	}
+
+	want := "reqsign: invalid timestamp"
+	if got := err.Error(); len(got) < len(want) || got[:len(want)] != want {
+		t.Errorf("error = %q, want prefix %q", got, want)
+	}
+}
+
 func TestVerifyMissingHeaders(t *testing.T) {
 	store := testStore()
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
