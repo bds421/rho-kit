@@ -16,6 +16,18 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}
+
+	// Pre-apply options to determine maxBodySize for the middleware.
+	cfg := verifyConfig{
+		signer:      defaultSigner,
+		maxAge:      0, // resolved later per-request
+		maxBodySize: MaxBodySize,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	maxBody := cfg.maxBodySize
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var body []byte
@@ -24,13 +36,13 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 				// Close the original body; it is replaced with a bytes.NewReader below.
 				defer func() { _ = r.Body.Close() }()
 				var err error
-				body, err = io.ReadAll(io.LimitReader(r.Body, MaxBodySize+1))
+				body, err = io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 				if err != nil {
 					httpx.Logger(r.Context(), nil).Debug("failed to read request body", "error", err)
 					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
 					return
 				}
-				if len(body) > MaxBodySize {
+				if int64(len(body)) > maxBody {
 					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 					return
 				}

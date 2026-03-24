@@ -71,6 +71,21 @@ func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
 	return dst, true
 }
 
+// keyUnsafe returns the internal key slice without copying. This avoids
+// allocation on the hot path for internal sign/verify operations where the
+// caller does not expose the slice. The returned slice MUST NOT be mutated
+// or retained beyond the calling function's scope.
+func (s *StaticKeyStore) keyUnsafe(keyID string) ([]byte, bool) {
+	k, ok := s.keys[keyID]
+	return k, ok
+}
+
+// currentKeyUnsafe returns the active signing key ID and internal secret
+// slice without copying. Same safety constraints as keyUnsafe apply.
+func (s *StaticKeyStore) currentKeyUnsafe() (string, []byte) {
+	return s.currentID, s.keys[s.currentID]
+}
+
 // CurrentKeyID returns the active signing key ID and secret.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {

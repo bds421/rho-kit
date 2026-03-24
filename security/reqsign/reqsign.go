@@ -20,8 +20,8 @@ const (
 	// HeaderKeyID is the HTTP header identifying which key was used.
 	HeaderKeyID = "X-Signature-KeyID"
 
-	// MaxBodySize is the maximum request body size (1 MiB) that the package
-	// will buffer for signing or verification.
+	// MaxBodySize is the default maximum request body size (1 MiB) that the
+	// package will buffer for signing or verification.
 	MaxBodySize = 1 << 20
 
 	// nilKeyStoreMsg is the panic message used when a nil KeyStore is passed.
@@ -34,19 +34,25 @@ var ErrMissingHeaders = errors.New("reqsign: missing signature headers")
 // ErrKeyNotFound is returned when the key ID from the request is not in the store.
 var ErrKeyNotFound = errors.New("reqsign: key ID not found")
 
+// ErrSignatureMismatch is returned when the computed HMAC does not match the
+// signature provided in the request.
+var ErrSignatureMismatch = errors.New("reqsign: signature mismatch")
+
 // defaultSigner is a package-level Signer reused across calls.
 // signing.Signer is safe for concurrent use (it only carries a clock function).
 var defaultSigner = signing.NewSigner()
 
 // signConfig holds options for signing.
 type signConfig struct {
-	signer *signing.Signer
+	signer      *signing.Signer
+	maxBodySize int64
 }
 
 // verifyConfig holds options for verification.
 type verifyConfig struct {
-	signer *signing.Signer
-	maxAge time.Duration
+	signer      *signing.Signer
+	maxAge      time.Duration
+	maxBodySize int64
 }
 
 // SignOption configures request signing behavior.
@@ -87,6 +93,26 @@ func WithMaxAge(d time.Duration) VerifyOption {
 	}
 }
 
+// WithSignMaxBodySize sets the maximum request body size for signing.
+// Values <= 0 are ignored and the default (MaxBodySize, 1 MiB) is used.
+func WithSignMaxBodySize(n int64) SignOption {
+	return func(c *signConfig) {
+		if n > 0 {
+			c.maxBodySize = n
+		}
+	}
+}
+
+// WithVerifyMaxBodySize sets the maximum request body size for verification.
+// Values <= 0 are ignored and the default (MaxBodySize, 1 MiB) is used.
+func WithVerifyMaxBodySize(n int64) VerifyOption {
+	return func(c *verifyConfig) {
+		if n > 0 {
+			c.maxBodySize = n
+		}
+	}
+}
+
 // canonicalBytes builds the canonical representation of an HTTP request:
 // METHOD + "\n" + REQUEST_URI + "\n" + hex(sha256(body))
 //
@@ -113,12 +139,23 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 		panic(nilKeyStoreMsg)
 	}
 
-	cfg := signConfig{signer: defaultSigner}
+	cfg := signConfig{
+		signer:      defaultSigner,
+		maxBodySize: MaxBodySize,
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
-	keyID, secret := store.CurrentKeyID()
+	// Use unsafe access for StaticKeyStore to avoid allocation.
+	var keyID string
+	var secret []byte
+	if sks, ok := store.(*StaticKeyStore); ok {
+		keyID, secret = sks.currentKeyUnsafe()
+	} else {
+		keyID, secret = store.CurrentKeyID()
+	}
+
 	canonical := canonicalBytes(req.Method, req.URL.RequestURI(), body)
 
 	sig, ts, err := cfg.signer.Sign(canonical, secret)
@@ -141,8 +178,9 @@ func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...Verif
 	}
 
 	cfg := verifyConfig{
-		signer: defaultSigner,
-		maxAge: signing.DefaultSignatureMaxAge,
+		signer:      defaultSigner,
+		maxAge:      signing.DefaultSignatureMaxAge,
+		maxBodySize: MaxBodySize,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -161,7 +199,14 @@ func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...Verif
 		return fmt.Errorf("reqsign: invalid timestamp: %w", err)
 	}
 
-	secret, ok := store.Key(keyID)
+	// Use unsafe access for StaticKeyStore to avoid allocation.
+	var secret []byte
+	var ok bool
+	if sks, castOK := store.(*StaticKeyStore); castOK {
+		secret, ok = sks.keyUnsafe(keyID)
+	} else {
+		secret, ok = store.Key(keyID)
+	}
 	if !ok {
 		return ErrKeyNotFound
 	}
@@ -173,7 +218,7 @@ func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...Verif
 		return fmt.Errorf("reqsign: verify failed: %w", err)
 	}
 	if !valid {
-		return errors.New("reqsign: signature mismatch")
+		return ErrSignatureMismatch
 	}
 	return nil
 }

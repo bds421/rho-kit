@@ -2,6 +2,7 @@ package reqsign
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,6 +78,9 @@ func TestVerifyWrongKey(t *testing.T) {
 	err := VerifyRequest(req, body, otherStore, WithVerifySigner(signer))
 	if err == nil {
 		t.Fatal("expected error for wrong key, got nil")
+	}
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("expected ErrSignatureMismatch, got %v", err)
 	}
 }
 
