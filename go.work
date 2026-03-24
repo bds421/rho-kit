@@ -46,9 +46,9 @@ use (
 	./resilience/circuitbreaker
 	./resilience/retry
 	./runtime/batchworker
+	./runtime/concurrency
 	./runtime/cron
 	./runtime/eventbus
-	./runtime/concurrency
 	./runtime/lifecycle
 	./security/jwtutil
 	./security/netutil

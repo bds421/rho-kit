@@ -12,6 +12,28 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// PanicError
+// ---------------------------------------------------------------------------
+
+func TestPanicError_ErrorMessage(t *testing.T) {
+	err := &PanicError{Index: 3, Value: "oops", Stack: "fake stack"}
+	assert.Equal(t, "concurrency: goroutine 3 panicked: oops", err.Error())
+}
+
+func TestPanicError_Unwrap(t *testing.T) {
+	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { panic("check-type") },
+	})
+	require.Error(t, err)
+
+	var pe *PanicError
+	require.ErrorAs(t, err, &pe)
+	assert.Equal(t, 0, pe.Index)
+	assert.Equal(t, "check-type", pe.Value)
+	assert.NotEmpty(t, pe.Stack)
+}
+
+// ---------------------------------------------------------------------------
 // FanOut
 // ---------------------------------------------------------------------------
 
@@ -57,6 +79,10 @@ func TestFanOut_PanicRecovery(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kaboom")
 	assert.Contains(t, err.Error(), "panicked")
+
+	var pe *PanicError
+	require.ErrorAs(t, err, &pe)
+	assert.NotEmpty(t, pe.Stack)
 }
 
 func TestFanOut_ContextCancellation(t *testing.T) {
@@ -175,6 +201,11 @@ func TestFanOutSettled_PanicRecovery(t *testing.T) {
 	require.Error(t, got[1].Err)
 	assert.Contains(t, got[1].Err.Error(), "settled-boom")
 	assert.Contains(t, got[1].Err.Error(), "panicked")
+
+	var pe *PanicError
+	require.ErrorAs(t, got[1].Err, &pe)
+	assert.Equal(t, 1, pe.Index)
+	assert.NotEmpty(t, pe.Stack)
 }
 
 func TestFanOutSettled_ContextCancellation(t *testing.T) {
@@ -233,4 +264,129 @@ func TestFanOutSettled_SingleFunction(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "solo", got[0].Value)
 	assert.NoError(t, got[0].Err)
+}
+
+func TestFanOutSettled_ValueZeroedOnError(t *testing.T) {
+	fns := []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { return 42, errors.New("fail") },
+	}
+
+	got := FanOutSettled(context.Background(), fns)
+	require.Len(t, got, 1)
+	require.Error(t, got[0].Err)
+	assert.Zero(t, got[0].Value, "Value must be zero when Err is non-nil")
+}
+
+func TestFanOutSettled_ContextAwareSemaphore(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	blocker := make(chan struct{})
+	fns := []func(ctx context.Context) (int, error){
+		// This goroutine holds the only semaphore slot.
+		func(_ context.Context) (int, error) {
+			<-blocker
+			return 1, nil
+		},
+		// This goroutine should not block forever on the semaphore;
+		// it should observe context cancellation.
+		func(_ context.Context) (int, error) {
+			return 2, nil
+		},
+	}
+
+	done := make(chan []Result[int], 1)
+	go func() {
+		done <- FanOutSettled(ctx, fns, WithMaxGoroutines(1))
+	}()
+
+	// Give goroutines time to start, then cancel context.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Unblock the first goroutine so it can finish.
+	close(blocker)
+
+	select {
+	case got := <-done:
+		require.Len(t, got, 2)
+		// The second function should have a context cancellation error
+		// because it could not acquire the semaphore.
+		assert.ErrorIs(t, got[1].Err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("FanOutSettled did not return; semaphore is not context-aware")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WithMaxGoroutines edge cases
+// ---------------------------------------------------------------------------
+
+func TestFanOut_WithMaxGoroutinesZero(t *testing.T) {
+	fns := make([]func(ctx context.Context) (int, error), 5)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
+	}
+
+	got, err := FanOut(context.Background(), fns, WithMaxGoroutines(0))
+	require.NoError(t, err)
+	assert.Len(t, got, 5, "WithMaxGoroutines(0) should behave as unbounded")
+}
+
+func TestFanOut_WithMaxGoroutinesNegative(t *testing.T) {
+	fns := make([]func(ctx context.Context) (int, error), 5)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
+	}
+
+	got, err := FanOut(context.Background(), fns, WithMaxGoroutines(-1))
+	require.NoError(t, err)
+	assert.Len(t, got, 5, "WithMaxGoroutines(-1) should behave as unbounded")
+}
+
+func TestFanOutSettled_WithMaxGoroutinesZero(t *testing.T) {
+	fns := make([]func(ctx context.Context) (int, error), 5)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
+	}
+
+	got := FanOutSettled(context.Background(), fns, WithMaxGoroutines(0))
+	assert.Len(t, got, 5, "WithMaxGoroutines(0) should behave as unbounded")
+}
+
+func TestFanOutSettled_WithMaxGoroutinesNegative(t *testing.T) {
+	fns := make([]func(ctx context.Context) (int, error), 5)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
+	}
+
+	got := FanOutSettled(context.Background(), fns, WithMaxGoroutines(-1))
+	assert.Len(t, got, 5, "WithMaxGoroutines(-1) should behave as unbounded")
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks
+// ---------------------------------------------------------------------------
+
+func BenchmarkFanOut(b *testing.B) {
+	fns := make([]func(ctx context.Context) (int, error), 10)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return i, nil }
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_, _ = FanOut(context.Background(), fns)
+	}
+}
+
+func BenchmarkFanOutSettled(b *testing.B) {
+	fns := make([]func(ctx context.Context) (int, error), 10)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return i, nil }
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_ = FanOutSettled(context.Background(), fns)
+	}
 }

@@ -9,6 +9,20 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// PanicError indicates a goroutine panicked during execution.
+type PanicError struct {
+	// Index is the position of the goroutine in the input slice.
+	Index int
+	// Value is the value passed to panic().
+	Value any
+	// Stack is the stack trace captured at the point of the panic.
+	Stack string
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("concurrency: goroutine %d panicked: %v", e.Index, e.Value)
+}
+
 // Result holds the outcome of a single function executed by [FanOutSettled].
 type Result[T any] struct {
 	// Value is the return value on success. Zero value when Err is non-nil.
@@ -67,8 +81,11 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 		g.Go(func() (retErr error) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					retErr = fmt.Errorf("concurrency.FanOut: goroutine %d panicked: %v\n%s",
-						i, rec, string(debug.Stack()))
+					retErr = &PanicError{
+						Index: i,
+						Value: rec,
+						Stack: string(debug.Stack()),
+					}
 				}
 			}()
 
@@ -116,7 +133,13 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 		wg.Add(1)
 
 		if sem != nil {
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results[i] = Result[T]{Err: ctx.Err()}
+				wg.Done()
+				continue
+			}
 		}
 
 		go func() {
@@ -128,14 +151,21 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 			defer func() {
 				if rec := recover(); rec != nil {
 					results[i] = Result[T]{
-						Err: fmt.Errorf("concurrency.FanOutSettled: goroutine %d panicked: %v\n%s",
-							i, rec, string(debug.Stack())),
+						Err: &PanicError{
+							Index: i,
+							Value: rec,
+							Stack: string(debug.Stack()),
+						},
 					}
 				}
 			}()
 
 			val, err := fn(ctx)
-			results[i] = Result[T]{Value: val, Err: err}
+			if err != nil {
+				results[i] = Result[T]{Err: err}
+			} else {
+				results[i] = Result[T]{Value: val}
+			}
 		}()
 	}
 
