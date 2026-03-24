@@ -195,6 +195,11 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 // Sync handlers are called sequentially; their errors are joined via [errors.Join].
 // Async handlers run in separate goroutines; their errors go to the [WithOnError] callback.
 // Returns nil if no handlers are registered for the event.
+//
+// Async events may be silently dropped if the worker pool queue is full.
+// Dropped events are logged and counted via the eventbus_events_dropped_total
+// metric. Security-critical events should use synchronous handlers (without
+// [WithAsync]) to guarantee delivery.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	eventName := event.EventName()
 

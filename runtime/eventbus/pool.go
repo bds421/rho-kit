@@ -55,6 +55,9 @@ func newWorkerPool(
 
 // submit enqueues a task for async execution. Returns false if the queue is
 // full or the pool has been stopped, meaning the event was dropped.
+//
+// Calling submit after stop is handled gracefully (recovered from channel-close
+// panic). The event is dropped and counted.
 func (p *workerPool) submit(task asyncTask) (ok bool) {
 	if !p.started.Load() {
 		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
