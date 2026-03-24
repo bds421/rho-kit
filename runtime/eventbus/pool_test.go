@@ -459,8 +459,10 @@ func TestBus_StopRespectsContextDeadline(t *testing.T) {
 	)
 
 	blocker := make(chan struct{})
+	running := make(chan struct{})
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {
-		<-blocker // block forever
+		close(running) // signal we're in the handler
+		<-blocker      // block forever
 		return nil
 	}, WithAsync(), WithName("blocker"))
 
@@ -475,7 +477,7 @@ func TestBus_StopRespectsContextDeadline(t *testing.T) {
 
 	// Submit an event that will block the worker.
 	_ = Publish(bus, context.Background(), testEvent{ID: "block"})
-	time.Sleep(10 * time.Millisecond)
+	<-running
 
 	// Cancel the start context so no new tasks are accepted.
 	cancel()
