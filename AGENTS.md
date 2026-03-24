@@ -71,7 +71,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Encrypt files at rest | `storage/encryption` | [storage](docs/ai/storage.md) |
 | Publish/consume AMQP messages | `messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Redis Streams | `messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
-| Guaranteed message delivery | `messaging.OutboxPublisher` | [messaging](docs/ai/messaging.md) |
+| Guaranteed message delivery | `messaging.BufferedPublisher` | [messaging](docs/ai/messaging.md) |
 | Cache data (single instance) | `cache.MemoryCache` | [utilities](docs/ai/utilities.md) |
 | Cache data (shared/distributed) | `data/cache/rediscache` | [redis](docs/ai/redis.md) |
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |

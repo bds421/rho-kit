@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	defaultOutboxMaxSize         = 10_000
-	outboxDrainInterval          = 5 * time.Second
-	outboxDrainBatchLimit        = 100
-	defaultOutboxFinalDrainTimeout = 15 * time.Second
+	defaultBufferedMaxSize            = 10_000
+	bufferedDrainInterval             = 5 * time.Second
+	bufferedDrainBatchLimit           = 100
+	defaultBufferedFinalDrainTimeout  = 15 * time.Second
 )
 
 // pendingMessage is a message waiting to be published.
@@ -24,11 +24,11 @@ type pendingMessage struct {
 	Msg        Message `json:"msg"`
 }
 
-// OutboxPublisher is a buffered publisher that provides at-least-once delivery
+// BufferedPublisher is a buffered publisher that provides at-least-once delivery
 // with FIFO ordering when the broker is temporarily unreachable. When the
 // broker is reachable AND no buffered messages are pending, messages are
 // published directly. Otherwise they are appended to an in-memory buffer
-// and drained in order by the background loop. With [WithOutboxStateFile],
+// and drained in order by the background loop. With [WithBufferedStateFile],
 // the buffer is persisted to disk to survive process restarts.
 //
 // IMPORTANT: This is NOT a transactional outbox. It does not solve the
@@ -37,7 +37,7 @@ type pendingMessage struct {
 // inconsistency. For true transactional guarantees, write messages to a
 // database outbox table within the same transaction and poll/CDC them to
 // the broker.
-type OutboxPublisher struct {
+type BufferedPublisher struct {
 	logger  *slog.Logger
 	mu      sync.Mutex
 	pending []pendingMessage
@@ -49,8 +49,8 @@ type OutboxPublisher struct {
 	// and the drain loop skips to avoid racing with the in-flight publish.
 	directInFlight bool
 
-	// stateFile is the path to the persistent outbox file. If empty,
-	// the outbox operates in memory-only mode (not crash-safe).
+	// stateFile is the path to the persistent state file. If empty,
+	// the publisher operates in memory-only mode (not crash-safe).
 	stateFile string
 
 	// publishFn and healthyFn are the actual implementations.
@@ -60,12 +60,12 @@ type OutboxPublisher struct {
 	healthyFn func() bool
 
 	// metrics collects operational metrics when set.
-	metrics *OutboxMetrics
+	metrics *BufferedPublisherMetrics
 }
 
-// OutboxMetrics collects operational metrics for the OutboxPublisher.
+// BufferedPublisherMetrics collects operational metrics for the BufferedPublisher.
 // All fields are optional — nil callbacks are skipped.
-type OutboxMetrics struct {
+type BufferedPublisherMetrics struct {
 	// OnDirectPublish is called after a successful direct publish.
 	OnDirectPublish func()
 	// OnBuffer is called when a message is added to the buffer.
@@ -78,46 +78,46 @@ type OutboxMetrics struct {
 	OnPendingGauge func(count int)
 }
 
-// OutboxOption configures an OutboxPublisher.
-type OutboxOption func(*OutboxPublisher)
+// BufferedPublisherOption configures a BufferedPublisher.
+type BufferedPublisherOption func(*BufferedPublisher)
 
-// WithOutboxMaxSize sets the maximum number of buffered messages.
+// WithBufferedMaxSize sets the maximum number of buffered messages.
 // When the buffer is full, Publish returns an error (back-pressure).
-func WithOutboxMaxSize(n int) OutboxOption {
-	return func(o *OutboxPublisher) { o.maxSize = n }
+func WithBufferedMaxSize(n int) BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.maxSize = n }
 }
 
-// WithOutboxStateFile enables persistent storage. Messages are written to
+// WithBufferedStateFile enables persistent storage. Messages are written to
 // this file atomically (write-temp + rename) so they survive process crashes.
-func WithOutboxStateFile(path string) OutboxOption {
-	return func(o *OutboxPublisher) { o.stateFile = path }
+func WithBufferedStateFile(path string) BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.stateFile = path }
 }
 
-// WithOutboxMetrics sets the metrics callbacks for the outbox publisher.
-func WithOutboxMetrics(m *OutboxMetrics) OutboxOption {
-	return func(o *OutboxPublisher) { o.metrics = m }
+// WithBufferedMetrics sets the metrics callbacks for the buffered publisher.
+func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.metrics = m }
 }
 
-// WithOutboxFinalDrainTimeout sets how long the outbox waits to drain
-// remaining messages during shutdown. Default: 15 seconds.
-func WithOutboxFinalDrainTimeout(d time.Duration) OutboxOption {
-	return func(o *OutboxPublisher) {
+// WithBufferedFinalDrainTimeout sets how long the buffered publisher waits to
+// drain remaining messages during shutdown. Default: 15 seconds.
+func WithBufferedFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
+	return func(o *BufferedPublisher) {
 		if d > 0 {
 			o.finalDrainTimeout = d
 		}
 	}
 }
 
-// NewOutboxPublisher creates an OutboxPublisher that buffers messages when the
+// NewBufferedPublisher creates a BufferedPublisher that buffers messages when the
 // broker is unreachable. Call Run() in a goroutine to drain the buffer.
 //
-// If a state file is configured via WithOutboxStateFile, pending messages from
+// If a state file is configured via WithBufferedStateFile, pending messages from
 // a previous run are loaded on creation.
-func NewOutboxPublisher(inner MessagePublisher, conn Connector, logger *slog.Logger, opts ...OutboxOption) *OutboxPublisher {
-	o := &OutboxPublisher{
+func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
+	o := &BufferedPublisher{
 		logger:            logger,
-		maxSize:           defaultOutboxMaxSize,
-		finalDrainTimeout: defaultOutboxFinalDrainTimeout,
+		maxSize:           defaultBufferedMaxSize,
+		finalDrainTimeout: defaultBufferedFinalDrainTimeout,
 		publishFn:         inner.Publish,
 		healthyFn:         conn.Healthy,
 	}
@@ -127,9 +127,9 @@ func NewOutboxPublisher(inner MessagePublisher, conn Connector, logger *slog.Log
 
 	if o.stateFile != "" {
 		if err := o.load(); err != nil {
-			logger.Error("failed to load outbox state, starting empty — potential data loss", "error", err, "file", o.stateFile)
+			logger.Error("failed to load buffered publisher state, starting empty — potential data loss", "error", err, "file", o.stateFile)
 		} else if len(o.pending) > 0 {
-			logger.Info("restored pending outbox messages", "count", len(o.pending))
+			logger.Info("restored pending buffered publisher messages", "count", len(o.pending))
 		}
 	}
 
@@ -141,7 +141,7 @@ func NewOutboxPublisher(inner MessagePublisher, conn Connector, logger *slog.Log
 // direct publish is in flight, AND the broker is healthy. Otherwise the
 // message is appended to the buffer for the drain loop to publish in order.
 // Returns an error only when the buffer is full (back-pressure).
-func (o *OutboxPublisher) Publish(ctx context.Context, exchange, routingKey string, msg Message) error {
+func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey string, msg Message) error {
 	o.mu.Lock()
 
 	// Check health inside the lock to prevent FIFO violations. If health
@@ -194,7 +194,7 @@ func (o *OutboxPublisher) Publish(ctx context.Context, exchange, routingKey stri
 			if o.metrics != nil && o.metrics.OnDrop != nil {
 				o.metrics.OnDrop()
 			}
-			return fmt.Errorf("outbox: buffer full (%d messages), message dropped", o.maxSize)
+			return fmt.Errorf("buffered publisher: buffer full (%d messages), message dropped", o.maxSize)
 		}
 		o.pending = append(o.pending, pendingMessage{
 			Exchange:   exchange,
@@ -209,7 +209,7 @@ func (o *OutboxPublisher) Publish(ctx context.Context, exchange, routingKey stri
 		if o.metrics != nil && o.metrics.OnBuffer != nil {
 			o.metrics.OnBuffer()
 		}
-		o.logger.Info("message buffered in outbox",
+		o.logger.Info("message buffered",
 			"exchange", exchange, "routing_key", routingKey,
 			"msg_id", msg.ID, "pending", pending)
 		return nil
@@ -226,13 +226,13 @@ func (o *OutboxPublisher) Publish(ctx context.Context, exchange, routingKey stri
 		}
 		if len(o.pending) >= effectiveMax {
 			o.mu.Unlock()
-			o.logger.Error("outbox buffer full, dropping message",
+			o.logger.Error("buffer full, dropping message",
 				"exchange", exchange, "routing_key", routingKey,
 				"msg_id", msg.ID, "buffer_size", o.maxSize)
 			if o.metrics != nil && o.metrics.OnDrop != nil {
 				o.metrics.OnDrop()
 			}
-			return fmt.Errorf("outbox buffer full (%d messages)", o.maxSize)
+			return fmt.Errorf("buffered publisher: buffer full (%d messages)", o.maxSize)
 		}
 	}
 
@@ -250,14 +250,14 @@ func (o *OutboxPublisher) Publish(ctx context.Context, exchange, routingKey stri
 		o.metrics.OnBuffer()
 	}
 
-	o.logger.Info("message buffered in outbox",
+	o.logger.Info("message buffered",
 		"exchange", exchange, "routing_key", routingKey,
 		"msg_id", msg.ID, "pending", pending)
 	return nil
 }
 
 // Pending returns the number of messages currently buffered.
-func (o *OutboxPublisher) Pending() int {
+func (o *BufferedPublisher) Pending() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return len(o.pending)
@@ -269,10 +269,10 @@ func (o *OutboxPublisher) Pending() int {
 //
 // On shutdown (ctx cancelled), a final best-effort drain is attempted using a
 // short-lived context so in-flight messages are not lost.
-func (o *OutboxPublisher) Run(ctx context.Context) {
+func (o *BufferedPublisher) Run(ctx context.Context) {
 	o.drain(ctx) // Drain immediately on startup to clear any restored messages.
 
-	ticker := time.NewTicker(outboxDrainInterval)
+	ticker := time.NewTicker(bufferedDrainInterval)
 	defer ticker.Stop()
 
 	for {
@@ -288,7 +288,7 @@ func (o *OutboxPublisher) Run(ctx context.Context) {
 
 // finalDrain attempts one last drain with a short timeout so pending messages
 // are not silently discarded on shutdown.
-func (o *OutboxPublisher) finalDrain() {
+func (o *BufferedPublisher) finalDrain() {
 	o.mu.Lock()
 	remaining := len(o.pending)
 	o.mu.Unlock()
@@ -297,7 +297,7 @@ func (o *OutboxPublisher) finalDrain() {
 		return
 	}
 
-	o.logger.Info("outbox final drain starting", "pending", remaining)
+	o.logger.Info("buffered publisher final drain starting", "pending", remaining)
 
 	ctx, cancel := context.WithTimeout(context.Background(), o.finalDrainTimeout)
 	defer cancel()
@@ -309,13 +309,13 @@ func (o *OutboxPublisher) finalDrain() {
 	o.mu.Unlock()
 
 	if after > 0 {
-		o.logger.Warn("outbox shutdown with unsent messages — persisted for next restart", "remaining", after)
+		o.logger.Warn("buffered publisher shutdown with unsent messages — persisted for next restart", "remaining", after)
 	} else {
-		o.logger.Info("outbox fully drained before shutdown")
+		o.logger.Info("buffered publisher fully drained before shutdown")
 	}
 }
 
-func (o *OutboxPublisher) drain(ctx context.Context) {
+func (o *BufferedPublisher) drain(ctx context.Context) {
 	if !o.healthyFn() {
 		return
 	}
@@ -331,7 +331,7 @@ func (o *OutboxPublisher) drain(ctx context.Context) {
 	o.directInFlight = true
 
 	// Take a batch to drain while holding the lock briefly.
-	batchSize := min(len(o.pending), outboxDrainBatchLimit)
+	batchSize := min(len(o.pending), bufferedDrainBatchLimit)
 	batch := make([]pendingMessage, batchSize)
 	copy(batch, o.pending[:batchSize])
 	o.mu.Unlock()
@@ -344,11 +344,11 @@ func (o *OutboxPublisher) drain(ctx context.Context) {
 		// Re-check broker health before each publish to avoid sequential
 		// timeout waits when the broker goes down mid-batch.
 		if !o.healthyFn() {
-			o.logger.Warn("outbox drain: broker unhealthy, pausing batch")
+			o.logger.Warn("buffered publisher drain: broker unhealthy, pausing batch")
 			break
 		}
 		if err := o.publishFn(ctx, pm.Exchange, pm.RoutingKey, pm.Msg); err != nil {
-			o.logger.Warn("outbox drain publish failed, will retry",
+			o.logger.Warn("buffered publisher drain publish failed, will retry",
 				"error", err, "msg_id", pm.Msg.ID)
 			break
 		}
@@ -375,7 +375,7 @@ func (o *OutboxPublisher) drain(ctx context.Context) {
 		if o.metrics != nil && o.metrics.OnDrain != nil {
 			o.metrics.OnDrain(published)
 		}
-		o.logger.Info("outbox drained",
+		o.logger.Info("buffered publisher drained",
 			"published", published)
 	}
 }
@@ -383,17 +383,17 @@ func (o *OutboxPublisher) drain(ctx context.Context) {
 // saveLocked persists the current pending slice to disk. Must be called
 // with o.mu held. Errors are logged but not returned — persistence is
 // best-effort to avoid blocking the publish path.
-func (o *OutboxPublisher) saveLocked() {
+func (o *BufferedPublisher) saveLocked() {
 	if o.stateFile == "" {
 		return
 	}
 
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
-		o.logger.Error("failed to save outbox state", "error", err)
+		o.logger.Error("failed to save buffered publisher state", "error", err)
 	}
 }
 
-func (o *OutboxPublisher) reportPending() {
+func (o *BufferedPublisher) reportPending() {
 	if o.metrics != nil && o.metrics.OnPendingGauge != nil {
 		o.metrics.OnPendingGauge(len(o.pending))
 	}
@@ -403,7 +403,7 @@ func (o *OutboxPublisher) reportPending() {
 // Invalid entries (missing exchange or routing key) are skipped and logged
 // rather than rejecting the entire file — this preserves valid messages
 // when a single entry is corrupted.
-func (o *OutboxPublisher) load() error {
+func (o *BufferedPublisher) load() error {
 	if o.stateFile == "" {
 		return nil
 	}
@@ -416,7 +416,7 @@ func (o *OutboxPublisher) load() error {
 	valid := make([]pendingMessage, 0, len(pending))
 	for i, pm := range pending {
 		if pm.Exchange == "" || pm.RoutingKey == "" {
-			o.logger.Warn("outbox state: skipping invalid entry",
+			o.logger.Warn("buffered publisher state: skipping invalid entry",
 				"index", i, "msg_id", pm.Msg.ID)
 			continue
 		}
