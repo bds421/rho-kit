@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/bds421/rho-kit/httpx"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestWithCorrelationID_GeneratesID(t *testing.T) {
@@ -201,5 +200,7 @@ func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
 
 	// When context has no correlation ID, PropagateHTTP is a no-op.
 	// Pre-existing header should be preserved.
-	assert.Equal(t, "existing-id", req.Header.Get(Header))
+	if got := req.Header.Get(Header); got != "existing-id" {
+		t.Errorf("header = %q, want %q; pre-existing header should be preserved when context has no ID", got, "existing-id")
+	}
 }
