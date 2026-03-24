@@ -15,18 +15,18 @@ import (
 
 // Config controls the default middleware stack.
 type Config struct {
-	Logger           *slog.Logger
-	QuietPaths       []string
-	EnableMetrics    bool
-	EnableRequestID  bool
-	EnableTracing    bool
-	EnableLogging    bool
-	EnableReqLogger  bool
+	Logger              *slog.Logger
+	QuietPaths          []string
+	EnableMetrics       bool
+	EnableRequestID     bool
+	EnableTracing       bool
+	EnableLogging       bool
+	EnableReqLogger     bool
 	EnableCorrelationID bool
 	EnableSecHeaders    bool
 	FrameOption         secheaders.FrameOption
-	Outer            []func(http.Handler) http.Handler
-	Inner            []func(http.Handler) http.Handler
+	Outer               []func(http.Handler) http.Handler
+	Inner               []func(http.Handler) http.Handler
 }
 
 // Option mutates the Config.
