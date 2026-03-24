@@ -13,10 +13,10 @@
 // (e.g. "/api/deploy?env=prod"). This ensures that the method, path, query
 // parameters, and body are all covered by the signature.
 //
-// The canonical string does not include the Host header. If signing keys
-// are shared across multiple services, a signature for one service's endpoint
-// could be replayed against another service at the same path. Use unique
-// per-service-pair keys to prevent cross-service replay.
+// WARNING: The canonical string does not include the Host header. If signing
+// keys are shared across multiple services, a signature for one service's
+// endpoint can be replayed against another service at the same path. Use
+// unique per-service-pair keys to prevent cross-service replay.
 //
 // # Headers
 //

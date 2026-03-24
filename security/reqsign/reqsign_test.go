@@ -247,6 +247,50 @@ func TestWithMaxAgeNegativeFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestVerifyQueryParameterTampering(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy?env=prod", bytes.NewReader(body))
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	// Tamper with query parameter: change env=prod to env=staging.
+	tampered := httptest.NewRequest(http.MethodPost, "/api/deploy?env=staging", bytes.NewReader(body))
+	tampered.Header = req.Header
+
+	err := VerifyRequest(tampered, body, store, WithVerifySigner(signer))
+	if err == nil {
+		t.Fatal("expected error for query parameter tampering, got nil")
+	}
+}
+
+func TestVerifyHTTPMethodTampering(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	// Tamper with HTTP method: change POST to PUT.
+	tampered := httptest.NewRequest(http.MethodPut, "/api/deploy", bytes.NewReader(body))
+	tampered.Header = req.Header
+
+	err := VerifyRequest(tampered, body, store, WithVerifySigner(signer))
+	if err == nil {
+		t.Fatal("expected error for HTTP method tampering, got nil")
+	}
+}
+
 func TestWithSignerNilUsesDefault(t *testing.T) {
 	store := testStore()
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)

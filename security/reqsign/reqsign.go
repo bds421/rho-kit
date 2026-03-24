@@ -106,6 +106,10 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 // query string), and body, then delegates to signing.Signer.Sign for HMAC
 // computation. The signature, timestamp, and key ID are set as request headers.
 func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOption) error {
+	if store == nil {
+		panic("reqsign: KeyStore must not be nil")
+	}
+
 	cfg := signConfig{signer: defaultSigner}
 	for _, o := range opts {
 		o(&cfg)
@@ -129,6 +133,10 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 // It reads the signature headers, looks up the key by ID from the store,
 // builds canonical bytes, and delegates to signing.Signer.Verify.
 func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...VerifyOption) error {
+	if store == nil {
+		panic("reqsign: KeyStore must not be nil")
+	}
+
 	cfg := verifyConfig{
 		signer: defaultSigner,
 		maxAge: signing.DefaultSignatureMaxAge,

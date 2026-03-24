@@ -4,6 +4,11 @@ package reqsign
 const minKeyLen = 32
 
 // KeyStore manages signing keys. Implementations must be safe for concurrent use.
+//
+// WARNING: The canonical string does not include the Host header. If keys are
+// shared across services, signatures are portable between them — a valid
+// signature for service A can be replayed against service B at the same path.
+// Use unique per-service-pair keys to prevent cross-service replay.
 type KeyStore interface {
 	// Key returns the secret for the given key ID. Returns nil, false if not found.
 	Key(keyID string) ([]byte, bool)
@@ -14,7 +19,11 @@ type KeyStore interface {
 // StaticKeyStore holds a fixed set of keys. Multiple keys support rotation:
 // sign with current, verify against any.
 type StaticKeyStore struct {
-	keys      map[string][]byte
+	// keys is a defensively copied map set once in NewStaticKeyStore and never
+	// modified afterward. Read-only access from Key and CurrentKeyID is safe
+	// for concurrent use without a mutex.
+	keys map[string][]byte
+	// currentID is set once in NewStaticKeyStore and never modified afterward.
 	currentID string
 }
 

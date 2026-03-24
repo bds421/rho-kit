@@ -17,6 +17,9 @@ type SigningTransport struct {
 // NewSigningTransport creates a transport that signs every outbound request.
 // If base is nil, http.DefaultTransport is used.
 func NewSigningTransport(base http.RoundTripper, store KeyStore, opts ...SignOption) *SigningTransport {
+	if store == nil {
+		panic("reqsign: KeyStore must not be nil")
+	}
 	if base == nil {
 		base = http.DefaultTransport
 	}
