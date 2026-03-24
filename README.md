@@ -88,7 +88,7 @@ go get github.com/bds421/rho-kit
 - `httpx/pagination` – cursor-based pagination.
 - `infra/sqldb` / `infra/sqldb/gormdb` – DB config, DSN helpers, GORM setup.
 - `infra/redis` + subpackages – resilient Redis connection, cache, stream, queue, locks.
-- `infra/messaging` – message types, outbox publisher, consumer framework.
+- `infra/messaging` – message types, buffered publisher, consumer framework.
 - `messaging/amqpbackend` – RabbitMQ connections, topology, consumers, publishers.
 - `messaging/redisbackend` – Redis Streams messaging backend.
 - `infra/storage` + backends – file storage with S3, Azure, GCS, SFTP, local backends.
