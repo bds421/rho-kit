@@ -161,11 +161,12 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 				continue
 			}
 			// Reset or start debounce timer.
-			if debounceTimer != nil {
-				debounceTimer.Stop()
+			if debounceTimer == nil {
+				debounceTimer = time.NewTimer(fw.cfg.debounce)
+				debounceCh = debounceTimer.C
+			} else {
+				debounceTimer.Reset(fw.cfg.debounce)
 			}
-			debounceTimer = time.NewTimer(fw.cfg.debounce)
-			debounceCh = debounceTimer.C
 
 		case watchErr, ok := <-watcher.Errors:
 			if !ok {

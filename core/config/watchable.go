@@ -70,6 +70,9 @@ func (w *Watchable[T]) Set(val T) {
 // new value is equal to the old value. To filter unchanged values,
 // compare old and new in the callback.
 //
+// Subscribers are notified in non-deterministic order (map iteration).
+// Do not depend on notification ordering between subscribers.
+//
 // Returns a cancel function that unregisters the subscriber.
 func (w *Watchable[T]) OnChange(fn func(old, new T)) func() {
 	w.mu.Lock()
