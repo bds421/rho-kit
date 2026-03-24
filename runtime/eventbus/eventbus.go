@@ -203,6 +203,9 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	eventName := event.EventName()
 
+	// Performance note: the handler slice is copied on every Publish call.
+	// For very high publish rates (100K+/sec), consider replacing with
+	// atomic.Pointer to eliminate the copy.
 	b.mu.RLock()
 	src := b.handlers[eventName]
 	if len(src) == 0 {
@@ -239,12 +242,12 @@ func (b *Bus) HasHandlers(eventName string) bool {
 func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
 	if b.pool != nil {
 		// submit() logs with full detail on drop; no additional logging needed here.
-		b.pool.submit(asyncTask{
-			ctx:       ctx,
-			eventName: eventName,
-			handler:   h,
-			event:     event,
-		})
+		task := taskPool.Get().(*asyncTask)
+		task.ctx = ctx
+		task.eventName = eventName
+		task.handler = h
+		task.event = event
+		b.pool.submit(task)
 		return
 	}
 	go b.runAsync(ctx, eventName, h, event)

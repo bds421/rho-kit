@@ -38,8 +38,8 @@ func newPoolMetrics(reg prometheus.Registerer) *poolMetrics {
 			Name:      "events_dropped_total",
 			Help:      "Total number of events dropped because the worker pool queue was full.",
 		}),
-		// event_name labels are developer-defined event names. Avoid dynamic or
-		// user-controlled values to prevent cardinality explosion.
+		// WARNING: event_name must be a static developer-defined string. Using
+		// dynamic values (request IDs, user IDs) causes unbounded Prometheus cardinality.
 		processed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "eventbus",
 			Name:      "events_processed_total",

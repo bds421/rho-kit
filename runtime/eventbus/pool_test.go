@@ -388,7 +388,7 @@ func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
 
 	// Submit after stop must not panic; it should return false (drop).
 	assert.NotPanics(t, func() {
-		ok := bus.pool.submit(asyncTask{
+		ok := bus.pool.submit(&asyncTask{
 			ctx:       context.Background(),
 			eventName: "test.event",
 			handler:   registeredHandler{name: "late"},
@@ -473,7 +473,7 @@ func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
 
 	// Submit before start must not panic; event may be buffered.
 	assert.NotPanics(t, func() {
-		ok := bus.pool.submit(asyncTask{
+		ok := bus.pool.submit(&asyncTask{
 			ctx:       context.Background(),
 			eventName: "test.event",
 			handler:   registeredHandler{name: "early"},

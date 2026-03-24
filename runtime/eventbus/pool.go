@@ -14,6 +14,9 @@ import (
 // asyncTask represents a single async handler invocation queued for execution.
 // The context from Publish is stored in the task. If the publisher's context is
 // cancelled before the task is processed, the handler receives a cancelled context.
+//
+// asyncTask instances are pooled via taskPool to reduce GC pressure under high
+// throughput. Fields must be cleared before returning to the pool.
 type asyncTask struct {
 	ctx       context.Context
 	eventName string
@@ -21,12 +24,17 @@ type asyncTask struct {
 	event     any
 }
 
+// taskPool reduces allocation pressure for asyncTask under high throughput.
+var taskPool = sync.Pool{
+	New: func() any { return &asyncTask{} },
+}
+
 // workerPool provides bounded async event dispatch.
 // Tasks are submitted to a buffered channel and consumed by a fixed number of
 // worker goroutines. When the queue is full, tasks are dropped.
 type workerPool struct {
 	workers   int
-	queue     chan asyncTask
+	queue     chan *asyncTask
 	logger    *slog.Logger
 	onError   func(ctx context.Context, eventName string, handlerName string, err error)
 	metrics   *poolMetrics
@@ -46,7 +54,7 @@ func newWorkerPool(
 ) *workerPool {
 	return &workerPool{
 		workers: workers,
-		queue:   make(chan asyncTask, bufSize),
+		queue:   make(chan *asyncTask, bufSize),
 		logger:  logger,
 		onError: onError,
 		metrics: m,
@@ -58,7 +66,7 @@ func newWorkerPool(
 //
 // Calling submit after stop is handled gracefully (recovered from channel-close
 // panic). The event is dropped and counted.
-func (p *workerPool) submit(task asyncTask) (ok bool) {
+func (p *workerPool) submit(task *asyncTask) (ok bool) {
 	if !p.started.Load() {
 		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
 			slog.String("event", task.eventName),
@@ -150,13 +158,19 @@ func (p *workerPool) worker(id int) {
 		if p.metrics != nil {
 			p.metrics.processed.WithLabelValues(task.eventName).Inc()
 		}
+		// Clear fields to avoid retaining references, then return to pool.
+		task.ctx = nil
+		task.eventName = ""
+		task.handler = registeredHandler{}
+		task.event = nil
+		taskPool.Put(task)
 	}
 
 	p.logger.Debug("worker stopped", slog.Int("worker_id", id))
 }
 
 // executeTask runs a single handler with panic recovery.
-func (p *workerPool) executeTask(task asyncTask) {
+func (p *workerPool) executeTask(task *asyncTask) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			err := fmt.Errorf("panic: %v", rec)
