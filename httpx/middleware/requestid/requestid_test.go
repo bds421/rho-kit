@@ -26,7 +26,7 @@ func TestWithRequestID_GeneratesID(t *testing.T) {
 	if len(capturedID) != 32 {
 		t.Errorf("generated ID length = %d, want 32 (hex-encoded 16 bytes)", len(capturedID))
 	}
-	if rec.Header().Get("X-Request-Id") != capturedID {
+	if rec.Header().Get(Header) != capturedID {
 		t.Error("X-Request-Id response header doesn't match context value")
 	}
 }
@@ -39,7 +39,7 @@ func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", "incoming-id-123")
+	req.Header.Set(Header, "incoming-id-123")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -57,7 +57,7 @@ func TestWithRequestID_RejectsLongID(t *testing.T) {
 
 	longID := strings.Repeat("a", 129)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", longID)
+	req.Header.Set(Header, longID)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -77,7 +77,7 @@ func TestWithRequestID_RejectsControlChars(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", "id-with\nnewline")
+	req.Header.Set(Header, "id-with\nnewline")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -95,7 +95,7 @@ func TestWithRequestID_AcceptsMaxLength(t *testing.T) {
 
 	maxLenID := strings.Repeat("x", 128)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", maxLenID)
+	req.Header.Set(Header, maxLenID)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -119,6 +119,8 @@ func TestIsValidRequestID(t *testing.T) {
 		{"null byte", "abc\x00123", false},
 		{"printable ascii", "ABCdef-123_456.789", true},
 		{"non-ascii", "abc\x80def", false},
+		{"contains space", "abc 123", false},
+		{"only spaces", "   ", false},
 	}
 
 	for _, tt := range tests {

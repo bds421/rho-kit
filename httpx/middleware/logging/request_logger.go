@@ -22,10 +22,10 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attrs := make([]slog.Attr, 0, 4+len(extraAttrs))
 
-			// request_id and correlation_id are hardcoded here (rather than passed
-			// via extraAttrs) because they are core kit concerns, not service-specific.
-			// The access-log Logger middleware receives them separately via extraAttrs
-			// in stack.Default().
+			// request_id and correlation_id are hardcoded here because this middleware
+			// creates the per-handler logger (used by httpx.Logger in handler code).
+			// The separate access-log Logger middleware in stack.Default() receives
+			// these same IDs via its own extraAttrs parameter for access log lines.
 			if id := httpx.RequestID(r.Context()); id != "" {
 				attrs = append(attrs, slog.String("request_id", id))
 			}

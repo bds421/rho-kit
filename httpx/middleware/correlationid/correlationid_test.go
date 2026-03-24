@@ -61,6 +61,7 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 		{"control chars", "id-with\nnewline"},
 		{"null byte", "id\x00null"},
 		{"tab", "id\twith-tab"},
+		{"space in value", "trace abc"},
 	}
 
 	for _, tt := range tests {
