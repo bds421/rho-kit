@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/bds421/rho-kit/crypto/signing"
 	"github.com/bds421/rho-kit/httpx"
 )
 
@@ -17,16 +18,16 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 		panic(nilKeyStoreMsg)
 	}
 
-	// Pre-apply options to determine maxBodySize for the middleware.
+	// Pre-apply all options once at construction time to avoid re-applying
+	// them on every request.
 	cfg := verifyConfig{
 		signer:      defaultSigner,
-		maxAge:      0, // resolved later per-request
+		maxAge:      signing.DefaultSignatureMaxAge,
 		maxBodySize: MaxBodySize,
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	maxBody := cfg.maxBodySize
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,20 +37,20 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 				// Close the original body; it is replaced with a bytes.NewReader below.
 				defer func() { _ = r.Body.Close() }()
 				var err error
-				body, err = io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+				body, err = io.ReadAll(io.LimitReader(r.Body, cfg.maxBodySize+1))
 				if err != nil {
 					httpx.Logger(r.Context(), nil).Debug("failed to read request body", "error", err)
 					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
 					return
 				}
-				if int64(len(body)) > maxBody {
+				if int64(len(body)) > cfg.maxBodySize {
 					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 					return
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
 
-			if err := VerifyRequest(r, body, store, opts...); err != nil {
+			if err := verifyRequestWithConfig(r, body, store, cfg); err != nil {
 				httpx.Logger(r.Context(), nil).Debug("request signature verification failed", "error", err)
 				httpx.WriteError(w, http.StatusUnauthorized, "invalid or missing signature")
 				return

@@ -3,6 +3,13 @@ package reqsign
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
 const minKeyLen = 32
 
+// unsafeKeyStore provides zero-copy key access for performance-critical paths.
+// Implementations must guarantee the returned slice is never mutated.
+type unsafeKeyStore interface {
+	keyUnsafe(keyID string) ([]byte, bool)
+	currentKeyUnsafe() (string, []byte)
+}
+
 // KeyStore manages signing keys. Implementations must be safe for concurrent use.
 //
 // WARNING: The canonical string does not include the Host header. If keys are

@@ -18,6 +18,10 @@
 // endpoint can be replayed against another service at the same path. Use
 // unique per-service-pair keys to prevent cross-service replay.
 //
+// The Content-Type header is also not included in the canonical string. An
+// intercepted request could have its Content-Type changed without invalidating
+// the signature.
+//
 // # Headers
 //
 // Three headers carry the signature:
