@@ -39,8 +39,8 @@ type Option func(*Config)
 // a request-scoped logger in handler code.
 func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Handler {
 	cfg := Config{
-		Logger:           logger,
-		QuietPaths:       []string{"/ready"},
+		Logger:              logger,
+		QuietPaths:          []string{"/ready"},
 		EnableMetrics:       true,
 		EnableRequestID:     true,
 		EnableCorrelationID: true,
@@ -48,7 +48,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		EnableLogging:       true,
 		EnableReqLogger:     true,
 		EnableSecHeaders:    true,
-		FrameOption:      secheaders.Deny,
+		FrameOption:         secheaders.Deny,
 	}
 	for _, opt := range opts {
 		opt(&cfg)

@@ -168,6 +168,41 @@ func TestWithRequestLogger_MultipleExtraAttrs(t *testing.T) {
 	}
 }
 
+func TestWithRequestLogger_InjectsLogger_WithCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/trace", nil)
+	ctx := httpx.SetCorrelationID(req.Context(), "corr-xyz-789")
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	output := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("correlation_id=corr-xyz-789")) {
+		t.Errorf("expected correlation_id=corr-xyz-789 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("method=GET")) {
+		t.Errorf("expected method=GET in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("path=/api/trace")) {
+		t.Errorf("expected path=/api/trace in logger attrs, got: %s", output)
+	}
+}
+
 func TestWithRequestLogger_FallbackUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

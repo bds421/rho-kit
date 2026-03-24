@@ -28,6 +28,7 @@ func TestDefault_OrderWithOuterInner(t *testing.T) {
 	stacked := Default(handler, slog.Default(),
 		WithoutMetrics(),
 		WithoutRequestID(),
+		WithoutCorrelationID(),
 		WithoutTracing(),
 		WithoutLogging(),
 		WithOuter(record("outer1"), record("outer2")),
