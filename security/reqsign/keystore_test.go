@@ -1,10 +1,13 @@
 package reqsign
 
 import (
+	"sync"
 	"testing"
 )
 
-func validKey(n int) []byte {
+// testKey generates a deterministic byte sequence of the given size for testing.
+// NOT suitable for production use — use crypto/rand for real keys.
+func testKey(n int) []byte {
 	k := make([]byte, n)
 	for i := range k {
 		k[i] = byte((i*7 + n) % 256)
@@ -13,8 +16,8 @@ func validKey(n int) []byte {
 }
 
 func TestNewStaticKeyStore(t *testing.T) {
-	key1 := validKey(32)
-	key2 := validKey(48)
+	key1 := testKey(32)
+	key2 := testKey(48)
 
 	store := NewStaticKeyStore(map[string][]byte{
 		"k1": key1,
@@ -31,8 +34,8 @@ func TestNewStaticKeyStore(t *testing.T) {
 }
 
 func TestStaticKeyStore_Key(t *testing.T) {
-	key1 := validKey(32)
-	key2 := validKey(48)
+	key1 := testKey(32)
+	key2 := testKey(48)
 	store := NewStaticKeyStore(map[string][]byte{
 		"k1": key1,
 		"k2": key2,
@@ -55,7 +58,7 @@ func TestStaticKeyStore_Key(t *testing.T) {
 }
 
 func TestStaticKeyStore_DefensiveCopy(t *testing.T) {
-	original := validKey(32)
+	original := testKey(32)
 	keys := map[string][]byte{"k1": original}
 	store := NewStaticKeyStore(keys, "k1")
 
@@ -83,7 +86,7 @@ func TestNewStaticKeyStore_PanicsMissingCurrentID(t *testing.T) {
 		}
 	}()
 	NewStaticKeyStore(map[string][]byte{
-		"k1": validKey(32),
+		"k1": testKey(32),
 	}, "k2")
 }
 
@@ -94,6 +97,20 @@ func TestNewStaticKeyStore_PanicsShortKey(t *testing.T) {
 		}
 	}()
 	NewStaticKeyStore(map[string][]byte{
-		"k1": validKey(16),
+		"k1": testKey(16),
 	}, "k1")
+}
+
+func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
+	store := NewStaticKeyStore(map[string][]byte{"k1": testKey(32)}, "k1")
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store.Key("k1")
+			store.CurrentKeyID()
+		}()
+	}
+	wg.Wait()
 }

@@ -13,8 +13,8 @@ import (
 
 func testStore() *StaticKeyStore {
 	return NewStaticKeyStore(map[string][]byte{
-		"primary":   validKey(32),
-		"secondary": validKey(48),
+		"primary":   testKey(32),
+		"secondary": testKey(48),
 	}, "primary")
 }
 
@@ -82,7 +82,7 @@ func TestVerifyWrongKey(t *testing.T) {
 
 	// Verify against a different store with different key for "primary".
 	otherStore := NewStaticKeyStore(map[string][]byte{
-		"primary": validKey(64),
+		"primary": testKey(64),
 	}, "primary")
 
 	err := VerifyRequest(req, body, otherStore, WithVerifySigner(signer))
@@ -248,8 +248,8 @@ func TestTransportToMiddlewareIntegration(t *testing.T) {
 }
 
 func TestVerifyWithRotatedKey(t *testing.T) {
-	key1 := validKey(32)
-	key2 := validKey(48)
+	key1 := testKey(32)
+	key2 := testKey(48)
 
 	// Sign with old key.
 	oldStore := NewStaticKeyStore(map[string][]byte{
