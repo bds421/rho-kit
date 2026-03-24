@@ -36,6 +36,8 @@ func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	var body []byte
 
 	if clone.Body != nil && clone.Body != http.NoBody {
+		// Close the original cloned body after reading; clone.Body is
+		// replaced with a fresh NopCloser reader below before RoundTrip.
 		defer func() { _ = clone.Body.Close() }()
 		var err error
 		body, err = io.ReadAll(io.LimitReader(clone.Body, MaxBodySize+1))

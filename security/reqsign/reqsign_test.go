@@ -11,17 +11,6 @@ import (
 	"github.com/bds421/rho-kit/crypto/signing"
 )
 
-func testStore() *StaticKeyStore {
-	return NewStaticKeyStore(map[string][]byte{
-		"primary":   testKey(32),
-		"secondary": testKey(48),
-	}, "primary")
-}
-
-func fixedClock(t time.Time) func() time.Time {
-	return func() time.Time { return t }
-}
-
 func TestSignAndVerifyRoundTrip(t *testing.T) {
 	store := testStore()
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
@@ -82,7 +71,7 @@ func TestVerifyWrongKey(t *testing.T) {
 
 	// Verify against a different store with different key for "primary".
 	otherStore := NewStaticKeyStore(map[string][]byte{
-		"primary": testKey(64),
+		"primary": testKey(64, 99),
 	}, "primary")
 
 	err := VerifyRequest(req, body, otherStore, WithVerifySigner(signer))
@@ -248,8 +237,8 @@ func TestTransportToMiddlewareIntegration(t *testing.T) {
 }
 
 func TestVerifyWithRotatedKey(t *testing.T) {
-	key1 := testKey(32)
-	key2 := testKey(48)
+	key1 := testKey(32, 10)
+	key2 := testKey(48, 11)
 
 	// Sign with old key.
 	oldStore := NewStaticKeyStore(map[string][]byte{

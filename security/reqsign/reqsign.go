@@ -67,7 +67,11 @@ func WithVerifySigner(s *signing.Signer) VerifyOption {
 // WithMaxAge sets the maximum allowed age for a signature.
 // Default: signing.DefaultSignatureMaxAge (5 minutes).
 func WithMaxAge(d time.Duration) VerifyOption {
-	return func(c *verifyConfig) { c.maxAge = d }
+	return func(c *verifyConfig) {
+		if d > 0 {
+			c.maxAge = d
+		}
+	}
 }
 
 // canonicalBytes builds the canonical representation of an HTTP request:
@@ -88,9 +92,9 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 }
 
 // SignRequest signs an HTTP request using the given key store.
-// It builds canonical bytes from the request method, path, and body,
-// then delegates to signing.Signer.Sign for HMAC computation.
-// The signature, timestamp, and key ID are set as request headers.
+// It builds canonical bytes from the request method, request URI (path and
+// query string), and body, then delegates to signing.Signer.Sign for HMAC
+// computation. The signature, timestamp, and key ID are set as request headers.
 func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOption) error {
 	cfg := signConfig{signer: defaultSigner}
 	for _, o := range opts {

@@ -1,0 +1,27 @@
+package reqsign
+
+import "time"
+
+// testKey generates a deterministic byte sequence of the given size for testing.
+// The seed parameter ensures distinct keys for different call sites.
+// NOT suitable for production use — use crypto/rand for real keys.
+func testKey(n int, seed int) []byte {
+	k := make([]byte, n)
+	for i := range k {
+		k[i] = byte((i*7 + seed) % 256)
+	}
+	return k
+}
+
+// testStore returns a StaticKeyStore with two deterministic keys for testing.
+func testStore() *StaticKeyStore {
+	return NewStaticKeyStore(map[string][]byte{
+		"primary":   testKey(32, 1),
+		"secondary": testKey(48, 2),
+	}, "primary")
+}
+
+// fixedClock returns a clock function that always returns t.
+func fixedClock(t time.Time) func() time.Time {
+	return func() time.Time { return t }
+}
