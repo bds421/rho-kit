@@ -124,8 +124,8 @@ func TestMiddleware_BodyTooLarge(t *testing.T) {
 		}),
 	)
 
-	// Create a body larger than maxBodySize (1 MiB).
-	largeBody := make([]byte, maxBodySize+1)
+	// Create a body larger than MaxBodySize (1 MiB).
+	largeBody := make([]byte, MaxBodySize+1)
 	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(largeBody))
 	// Set signature headers so we don't fail on missing headers first.
 	req.Header.Set(HeaderSignature, "sha256=placeholder")

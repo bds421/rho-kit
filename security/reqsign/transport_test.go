@@ -111,7 +111,7 @@ func TestSigningTransport_OversizedBody(t *testing.T) {
 
 	transport := NewSigningTransport(base, store)
 
-	// Create a body larger than maxSignBodySize (1 MiB).
+	// Create a body larger than MaxBodySize (1 MiB).
 	oversized := make([]byte, 1<<20+1)
 	req, _ := http.NewRequest(http.MethodPost, "http://example.com/api/upload", bytes.NewReader(oversized))
 

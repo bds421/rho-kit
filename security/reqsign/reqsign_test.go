@@ -224,7 +224,7 @@ func TestTransportToMiddlewareIntegration(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 	if !handlerReached {
-		t.Error("handler was not reached through transport → middleware flow")
+		t.Error("handler was not reached through transport -> middleware flow")
 	}
 }
 

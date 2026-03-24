@@ -8,9 +8,6 @@ import (
 	"github.com/bds421/rho-kit/httpx"
 )
 
-// maxBodySize is the maximum request body size the middleware will buffer
-// for signature verification (1 MiB).
-const maxBodySize = 1 << 20
 
 // RequireSignedRequest returns middleware that verifies request signatures.
 // Requests with missing or invalid signatures receive a 401 Unauthorized response.
@@ -22,19 +19,16 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 			var body []byte
 
 			if r.Body != nil && r.Body != http.NoBody {
-				limited := io.LimitReader(r.Body, maxBodySize+1)
+				defer r.Body.Close()
 				var err error
-				body, err = io.ReadAll(limited)
+				body, err = io.ReadAll(io.LimitReader(r.Body, MaxBodySize+1))
 				if err != nil {
+					httpx.Logger(r.Context(), nil).Debug("failed to read request body", "error", err)
 					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
 					return
 				}
-				if int64(len(body)) > maxBodySize {
+				if int64(len(body)) > MaxBodySize {
 					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
-					return
-				}
-				if err := r.Body.Close(); err != nil {
-					httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))

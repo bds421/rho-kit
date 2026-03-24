@@ -19,6 +19,10 @@ const (
 	HeaderTimestamp = "X-Signature-Timestamp"
 	// HeaderKeyID is the HTTP header identifying which key was used.
 	HeaderKeyID = "X-Signature-KeyID"
+
+	// MaxBodySize is the maximum request body size (1 MiB) that the package
+	// will buffer for signing or verification.
+	MaxBodySize = 1 << 20
 )
 
 // ErrMissingHeaders is returned when required signature headers are absent.
@@ -26,6 +30,10 @@ var ErrMissingHeaders = errors.New("reqsign: missing signature headers")
 
 // ErrKeyNotFound is returned when the key ID from the request is not in the store.
 var ErrKeyNotFound = errors.New("reqsign: key ID not found")
+
+// defaultSigner is a package-level Signer reused across calls.
+// signing.Signer is safe for concurrent use (it only carries a clock function).
+var defaultSigner = signing.NewSigner()
 
 // signConfig holds options for signing.
 type signConfig struct {
@@ -84,7 +92,7 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 // then delegates to signing.Signer.Sign for HMAC computation.
 // The signature, timestamp, and key ID are set as request headers.
 func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOption) error {
-	cfg := signConfig{signer: signing.NewSigner()}
+	cfg := signConfig{signer: defaultSigner}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -108,7 +116,7 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 // builds canonical bytes, and delegates to signing.Signer.Verify.
 func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...VerifyOption) error {
 	cfg := verifyConfig{
-		signer: signing.NewSigner(),
+		signer: defaultSigner,
 		maxAge: signing.DefaultSignatureMaxAge,
 	}
 	for _, o := range opts {
