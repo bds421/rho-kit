@@ -264,6 +264,11 @@ func (b *Bus) Start(ctx context.Context) error {
 // Stop drains pending events and stops workers. No-op if no pool is configured.
 // If the context has a deadline, Stop returns ctx.Err() if the deadline is
 // reached before all workers finish draining.
+//
+// If Stop returns ctx.Err(), the pool goroutine and its workers may still be
+// running. This is an inherent limitation of Go's lack of goroutine preemption.
+// Ensure handler functions respect context cancellation to minimize drain time.
+//
 // Implements lifecycle.Component.
 func (b *Bus) Stop(ctx context.Context) error {
 	if b.pool == nil {

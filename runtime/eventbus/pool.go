@@ -84,11 +84,12 @@ func (p *workerPool) submit(task asyncTask) (ok bool) {
 
 	select {
 	case p.queue <- task:
+		// queueDepth is approximate: len(p.queue) is non-atomic relative to the
+		// channel operation. Acceptable for Prometheus gauges.
 		if p.metrics != nil {
 			p.metrics.queueDepth.Set(float64(len(p.queue)))
 		}
-		ok = true
-		return
+		return true
 	default:
 		if p.metrics != nil {
 			p.metrics.dropped.Inc()
@@ -108,7 +109,7 @@ func (p *workerPool) start(ctx context.Context) {
 	p.started.Store(true)
 	for i := range p.workers {
 		p.wg.Add(1)
-		go p.worker(ctx, i)
+		go p.worker(i)
 	}
 	<-ctx.Done()
 }
@@ -126,12 +127,14 @@ func (p *workerPool) stop() {
 
 // worker is the main loop for a single pool worker. It reads tasks from the
 // queue and executes them with panic recovery.
-func (p *workerPool) worker(_ context.Context, id int) {
+func (p *workerPool) worker(id int) {
 	defer p.wg.Done()
 	p.logger.Debug("worker started", slog.Int("worker_id", id))
 
 	for task := range p.queue {
 		if p.metrics != nil {
+			// queueDepth is approximate: len(p.queue) is non-atomic relative to the
+			// channel operation. Acceptable for Prometheus gauges.
 			p.metrics.queueDepth.Set(float64(len(p.queue)))
 			p.metrics.activeWorkers.Inc()
 		}
