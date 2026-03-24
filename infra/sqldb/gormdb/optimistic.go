@@ -69,6 +69,9 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // Returns [ErrVersionConflict] if the version does not match (row was modified by
 // another transaction or does not exist).
 //
+// On success, the database row is updated but the in-memory model struct is not
+// refreshed. Re-read the row if you need the updated values.
+//
 // The updates parameter is a map[string]any of column names to new values.
 // The version field is automatically set to expectedVersion+1 -- do not include
 // it in updates.
