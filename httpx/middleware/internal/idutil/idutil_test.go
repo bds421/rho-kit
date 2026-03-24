@@ -3,17 +3,45 @@ package idutil
 import (
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestGenerate(t *testing.T) {
 	id := Generate()
-	if len(id) != 32 {
-		t.Errorf("Generate() length = %d, want 32", len(id))
+
+	// Must be a valid UUID v7 (36 chars: 8-4-4-4-12 hex with hyphens).
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		t.Fatalf("Generate() returned invalid UUID %q: %v", id, err)
+	}
+	if parsed.Version() != 7 {
+		t.Errorf("Generate() UUID version = %d, want 7", parsed.Version())
 	}
 
 	id2 := Generate()
 	if id == id2 {
 		t.Error("Generate() should produce unique IDs")
+	}
+}
+
+func TestGenerate_Format(t *testing.T) {
+	id := Generate()
+	if len(id) != 36 {
+		t.Errorf("Generate() length = %d, want 36 (UUID format)", len(id))
+	}
+}
+
+func TestFallbackGenerate(t *testing.T) {
+	id := fallbackGenerate()
+	// Fallback should produce UUID-formatted strings (36 chars with hyphens).
+	if len(id) != 36 {
+		t.Errorf("fallbackGenerate() length = %d, want 36", len(id))
+	}
+
+	id2 := fallbackGenerate()
+	if id == id2 {
+		t.Error("fallbackGenerate() should produce unique IDs")
 	}
 }
 
@@ -37,6 +65,7 @@ func TestIsValid(t *testing.T) {
 		{"only spaces", "   ", 128, false},
 		{"custom max length", strings.Repeat("a", 65), 64, false},
 		{"custom max length ok", strings.Repeat("a", 64), 64, true},
+		{"uuid format", "01961234-5678-7abc-8def-0123456789ab", 128, true},
 	}
 
 	for _, tt := range tests {

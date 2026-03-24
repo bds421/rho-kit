@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bds421/rho-kit/httpx"
+	"github.com/google/uuid"
 )
 
 func TestWithCorrelationID_GeneratesID(t *testing.T) {
@@ -24,8 +25,13 @@ func TestWithCorrelationID_GeneratesID(t *testing.T) {
 	if capturedID == "" {
 		t.Error("expected correlation ID to be generated")
 	}
-	if len(capturedID) != 32 {
-		t.Errorf("generated ID length = %d, want 32 (hex-encoded 16 bytes)", len(capturedID))
+	// Generated IDs should now be valid UUID v7 format (36 chars).
+	parsed, err := uuid.Parse(capturedID)
+	if err != nil {
+		t.Errorf("generated ID %q is not a valid UUID: %v", capturedID, err)
+	}
+	if parsed.Version() != 7 {
+		t.Errorf("generated UUID version = %d, want 7", parsed.Version())
 	}
 	if rec.Header().Get(Header) != capturedID {
 		t.Error("X-Correlation-Id response header doesn't match context value")
@@ -83,8 +89,9 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 			if capturedID == "" {
 				t.Error("a new ID should be generated for invalid input")
 			}
-			if len(capturedID) != 32 {
-				t.Errorf("generated ID length = %d, want 32", len(capturedID))
+			// Generated IDs should be UUID v7 format (36 chars).
+			if len(capturedID) != 36 {
+				t.Errorf("generated ID length = %d, want 36 (UUID format)", len(capturedID))
 			}
 		})
 	}
@@ -121,66 +128,32 @@ func TestContextRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPropagateHTTP(t *testing.T) {
-	ctx := httpx.SetCorrelationID(context.Background(), "propagated-id")
+func TestDeprecatedPropagateHTTP(t *testing.T) {
+	// Verify deprecated wrappers still delegate correctly.
+	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-id")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 	PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(Header); got != "propagated-id" {
-		t.Errorf("header = %q, want %q", got, "propagated-id")
+	if got := req.Header.Get(Header); got != "deprecated-id" {
+		t.Errorf("header = %q, want %q", got, "deprecated-id")
 	}
 }
 
-func TestPropagateHTTP_OverwritesExistingHeader(t *testing.T) {
-	ctx := httpx.SetCorrelationID(context.Background(), "from-context")
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set(Header, "pre-existing-value")
-
-	PropagateHTTP(ctx, req)
-
-	if got := req.Header.Get(Header); got != "from-context" {
-		t.Errorf("header = %q, want %q; PropagateHTTP should overwrite pre-existing header", got, "from-context")
-	}
-}
-
-func TestPropagateHTTP_NoCorrelationID(t *testing.T) {
-	ctx := context.Background()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-
-	PropagateHTTP(ctx, req)
-
-	if got := req.Header.Get(Header); got != "" {
-		t.Errorf("header should be empty when no correlation ID in context, got %q", got)
-	}
-}
-
-func TestPropagateMessageHeader(t *testing.T) {
-	ctx := httpx.SetCorrelationID(context.Background(), "msg-correlation-id")
+func TestDeprecatedPropagateMessageHeader(t *testing.T) {
+	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-msg-id")
 
 	key, value := PropagateMessageHeader(ctx)
 
 	if key != Header {
 		t.Errorf("key = %q, want %q", key, Header)
 	}
-	if value != "msg-correlation-id" {
-		t.Errorf("value = %q, want %q", value, "msg-correlation-id")
-	}
-}
-
-func TestPropagateMessageHeader_NoCorrelationID(t *testing.T) {
-	ctx := context.Background()
-
-	key, value := PropagateMessageHeader(ctx)
-
-	if key != "" || value != "" {
-		t.Errorf("expected empty key/value, got (%q, %q)", key, value)
+	if value != "deprecated-msg-id" {
+		t.Errorf("value = %q, want %q", value, "deprecated-msg-id")
 	}
 }
 
 func TestIsValidCorrelationID_MaxLenWiring(t *testing.T) {
-	// Full IsValid table tests live in idutil_test.go.
-	// This smoke test verifies the maxCorrelationIDLen (128) wiring.
 	ok := isValidCorrelationID(strings.Repeat("a", 128))
 	if !ok {
 		t.Error("128-char ID should be accepted")
@@ -188,19 +161,5 @@ func TestIsValidCorrelationID_MaxLenWiring(t *testing.T) {
 	notOK := isValidCorrelationID(strings.Repeat("a", 129))
 	if notOK {
 		t.Error("129-char ID should be rejected")
-	}
-}
-
-func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
-	ctx := context.Background() // no correlation ID set
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(Header, "existing-id")
-
-	PropagateHTTP(ctx, req)
-
-	// When context has no correlation ID, PropagateHTTP is a no-op.
-	// Pre-existing header should be preserved.
-	if got := req.Header.Get(Header); got != "existing-id" {
-		t.Errorf("header = %q, want %q; pre-existing header should be preserved when context has no ID", got, "existing-id")
 	}
 }

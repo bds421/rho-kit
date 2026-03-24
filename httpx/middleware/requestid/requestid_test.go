@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bds421/rho-kit/httpx"
+	"github.com/google/uuid"
 )
 
 func TestWithRequestID_GeneratesID(t *testing.T) {
@@ -23,8 +24,12 @@ func TestWithRequestID_GeneratesID(t *testing.T) {
 	if capturedID == "" {
 		t.Error("expected request ID to be generated")
 	}
-	if len(capturedID) != 32 {
-		t.Errorf("generated ID length = %d, want 32 (hex-encoded 16 bytes)", len(capturedID))
+	parsed, err := uuid.Parse(capturedID)
+	if err != nil {
+		t.Fatalf("generated ID %q is not a valid UUID: %v", capturedID, err)
+	}
+	if parsed.Version() != 7 {
+		t.Errorf("generated UUID version = %d, want 7", parsed.Version())
 	}
 	if rec.Header().Get(Header) != capturedID {
 		t.Error("X-Request-Id response header doesn't match context value")
