@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 )
@@ -12,8 +13,9 @@ import (
 // replace the value and notify all registered subscribers synchronously.
 type Watchable[T any] struct {
 	value       atomic.Value // holds wrapper[T]
-	subscribers []func(old, new T)
-	mu          sync.Mutex // protects subscribers slice and write ordering
+	subscribers map[uint64]func(old, new T)
+	nextID      uint64
+	mu          sync.Mutex // protects subscribers map and write ordering
 }
 
 // wrapper avoids the atomic.Value constraint that stored types must be
@@ -24,7 +26,9 @@ type wrapper[T any] struct {
 
 // NewWatchable creates a Watchable initialised with the given value.
 func NewWatchable[T any](initial T) *Watchable[T] {
-	w := &Watchable[T]{}
+	w := &Watchable[T]{
+		subscribers: make(map[uint64]func(old, new T)),
+	}
 	w.value.Store(wrapper[T]{val: initial})
 	return w
 }
@@ -36,26 +40,46 @@ func (w *Watchable[T]) Get() T {
 
 // Set atomically replaces the value and notifies all subscribers.
 // Subscribers are called synchronously in the caller's goroutine.
+// A panicking subscriber is recovered and logged so that remaining
+// subscribers are still notified.
 // The write lock ensures concurrent Set calls read a consistent old value.
-func (w *Watchable[T]) Set(new T) {
+func (w *Watchable[T]) Set(val T) {
 	w.mu.Lock()
 	old := w.value.Load().(wrapper[T]).val
-	w.value.Store(wrapper[T]{val: new})
-	// Grab the subscriber snapshot under lock (already copy-on-write from OnChange).
-	subs := w.subscribers
+	w.value.Store(wrapper[T]{val: val})
+	// Snapshot subscriber map under lock.
+	subs := make(map[uint64]func(old, new T), len(w.subscribers))
+	for id, fn := range w.subscribers {
+		subs[id] = fn
+	}
 	w.mu.Unlock()
 
 	for _, fn := range subs {
-		fn(old, new)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("config: subscriber panicked", "panic", r)
+				}
+			}()
+			fn(old, val)
+		}()
 	}
 }
 
 // OnChange registers a callback invoked on every Set call, even if the
 // new value is equal to the old value. To filter unchanged values,
 // compare old and new in the callback.
-func (w *Watchable[T]) OnChange(fn func(old, new T)) {
+//
+// Returns a cancel function that unregisters the subscriber.
+func (w *Watchable[T]) OnChange(fn func(old, new T)) func() {
 	w.mu.Lock()
-	// Append to a new slice to avoid mutating any snapshot held by Set.
-	w.subscribers = append(append([]func(old, new T){}, w.subscribers...), fn)
+	id := w.nextID
+	w.nextID++
+	w.subscribers[id] = fn
 	w.mu.Unlock()
+	return func() {
+		w.mu.Lock()
+		delete(w.subscribers, id)
+		w.mu.Unlock()
+	}
 }

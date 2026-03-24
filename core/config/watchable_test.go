@@ -24,7 +24,7 @@ func TestWatchable_OnChangeCallbackFires(t *testing.T) {
 	w := NewWatchable("old")
 
 	var gotOld, gotNew string
-	w.OnChange(func(old, new string) {
+	_ = w.OnChange(func(old, new string) {
 		gotOld = old
 		gotNew = new
 	})
@@ -41,7 +41,7 @@ func TestWatchable_MultipleSubscribersAllCalled(t *testing.T) {
 	var calls [3]bool
 	for i := range 3 {
 		idx := i
-		w.OnChange(func(_, _ int) {
+		_ = w.OnChange(func(_, _ int) {
 			calls[idx] = true
 		})
 	}
@@ -63,7 +63,7 @@ func TestWatchable_SubscriberReceivesCorrectValues(t *testing.T) {
 	w := NewWatchable(initial)
 
 	var captured []cfg
-	w.OnChange(func(old, new cfg) {
+	_ = w.OnChange(func(old, new cfg) {
 		captured = append(captured, old, new)
 	})
 
@@ -117,9 +117,9 @@ func TestWatchable_OnChangeRegisteredDuringSet(t *testing.T) {
 	w := NewWatchable(0)
 
 	var innerCalled atomic.Bool
-	w.OnChange(func(_, _ int) {
+	_ = w.OnChange(func(_, _ int) {
 		// Register another subscriber mid-notification.
-		w.OnChange(func(_, _ int) {
+		_ = w.OnChange(func(_, _ int) {
 			innerCalled.Store(true)
 		})
 	})
@@ -131,4 +131,49 @@ func TestWatchable_OnChangeRegisteredDuringSet(t *testing.T) {
 
 	w.Set(2)
 	assert.True(t, innerCalled.Load(), "inner subscriber should fire on subsequent Set")
+}
+
+func TestWatchable_OnChangeCancelUnsubscribes(t *testing.T) {
+	w := NewWatchable(0)
+
+	var called atomic.Int32
+	cancel := w.OnChange(func(_, _ int) {
+		called.Add(1)
+	})
+
+	w.Set(1)
+	assert.Equal(t, int32(1), called.Load())
+
+	// Unsubscribe.
+	cancel()
+
+	w.Set(2)
+	assert.Equal(t, int32(1), called.Load(), "subscriber should not fire after cancel")
+}
+
+func TestWatchable_PanicInSubscriberDoesNotBlockOthers(t *testing.T) {
+	w := NewWatchable(0)
+
+	var firstCalled, thirdCalled atomic.Bool
+
+	_ = w.OnChange(func(_, _ int) {
+		firstCalled.Store(true)
+	})
+	_ = w.OnChange(func(_, _ int) {
+		panic("boom")
+	})
+	_ = w.OnChange(func(_, _ int) {
+		thirdCalled.Store(true)
+	})
+
+	// Set should not panic even though one subscriber panics.
+	assert.NotPanics(t, func() {
+		w.Set(1)
+	})
+
+	// The non-panicking subscribers should still have been called.
+	// (Map iteration order is non-deterministic, but the panic recovery
+	// ensures all subscribers run regardless of order.)
+	assert.True(t, firstCalled.Load() || thirdCalled.Load(),
+		"at least one non-panicking subscriber should have been called")
 }

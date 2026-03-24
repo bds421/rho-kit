@@ -19,15 +19,29 @@ const defaultDebounce = 100 * time.Millisecond
 type watcherConfig struct {
 	logger   *slog.Logger
 	debounce time.Duration
+	signalCh chan os.Signal // optional external signal channel for EnvReloader
 }
 
 // WatcherOption configures a FileWatcher or EnvReloader.
 type WatcherOption func(*watcherConfig)
 
 // WithWatchLogger sets the logger used by the watcher.
+// A nil logger is ignored and the default logger is kept.
 func WithWatchLogger(l *slog.Logger) WatcherOption {
 	return func(c *watcherConfig) {
-		c.logger = l
+		if l != nil {
+			c.logger = l
+		}
+	}
+}
+
+// WithSignalChannel provides an external signal channel for EnvReloader
+// instead of creating an internal one. This allows fine-grained control
+// when multiple EnvReloader instances or other SIGHUP listeners coexist
+// in the same process.
+func WithSignalChannel(ch chan os.Signal) WatcherOption {
+	return func(c *watcherConfig) {
+		c.signalCh = ch
 	}
 }
 
@@ -172,6 +186,10 @@ func isRelevantEvent(e fsnotify.Event) bool {
 
 // EnvReloader re-reads environment variables on SIGHUP signal.
 // It is compatible with lifecycle.Runner.AddFunc.
+//
+// SIGHUP is process-global: all EnvReloader instances and any other SIGHUP
+// listeners in the process will be notified simultaneously. Use separate
+// signal channels via WithSignalChannel for fine-grained control.
 type EnvReloader[T any] struct {
 	watchable *Watchable[T]
 	cfg       watcherConfig
@@ -189,9 +207,12 @@ func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[
 // Start listens for SIGHUP and reloads config from env vars.
 // It blocks until ctx is cancelled.
 func (r *EnvReloader[T]) Start(ctx context.Context) error {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP)
-	defer signal.Stop(sigCh)
+	sigCh := r.cfg.signalCh
+	if sigCh == nil {
+		sigCh = make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGHUP)
+		defer signal.Stop(sigCh)
+	}
 
 	for {
 		select {
