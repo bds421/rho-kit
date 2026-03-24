@@ -298,6 +298,12 @@ func TestWithWorkerPool_PanicsOnZeroSize(t *testing.T) {
 	})
 }
 
+func TestWithWorkerPool_PanicsOnNegativeSize(t *testing.T) {
+	assert.Panics(t, func() {
+		New(WithWorkerPool(-1))
+	})
+}
+
 func TestWithWorkerPoolBuffer_PanicsOnZeroSize(t *testing.T) {
 	assert.Panics(t, func() {
 		New(WithWorkerPoolBuffer(0))
@@ -415,6 +421,46 @@ func TestWorkerPool_DoubleStopDoesNotPanic(t *testing.T) {
 		_ = bus.Stop(context.Background())
 		_ = bus.Stop(context.Background())
 	})
+}
+
+func TestBus_StopRespectsContextDeadline(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+	)
+
+	blocker := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		<-blocker // block forever
+		return nil
+	}, WithAsync(), WithName("blocker"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = bus.Start(ctx)
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond)
+
+	// Submit an event that will block the worker.
+	_ = Publish(bus, context.Background(), testEvent{ID: "block"})
+	time.Sleep(10 * time.Millisecond)
+
+	// Cancel the start context so no new tasks are accepted.
+	cancel()
+
+	// Stop with a very short deadline — the worker is blocked, so it should time out.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stopCancel()
+	err := bus.Stop(stopCtx)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// Unblock the worker to prevent goroutine leak.
+	close(blocker)
 }
 
 func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {

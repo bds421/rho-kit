@@ -12,6 +12,8 @@ import (
 )
 
 // asyncTask represents a single async handler invocation queued for execution.
+// The context from Publish is stored in the task. If the publisher's context is
+// cancelled before the task is processed, the handler receives a cancelled context.
 type asyncTask struct {
 	ctx       context.Context
 	eventName string
@@ -53,7 +55,7 @@ func newWorkerPool(
 
 // submit enqueues a task for async execution. Returns false if the queue is
 // full or the pool has been stopped, meaning the event was dropped.
-func (p *workerPool) submit(task asyncTask) bool {
+func (p *workerPool) submit(task asyncTask) (ok bool) {
 	if !p.started.Load() {
 		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
 			slog.String("event", task.eventName),
@@ -73,6 +75,7 @@ func (p *workerPool) submit(task asyncTask) bool {
 	// Use recover to handle the tiny race window between stopped check and channel close.
 	defer func() {
 		if r := recover(); r != nil {
+			ok = false
 			if p.metrics != nil {
 				p.metrics.dropped.Inc()
 			}
@@ -84,7 +87,8 @@ func (p *workerPool) submit(task asyncTask) bool {
 		if p.metrics != nil {
 			p.metrics.queueDepth.Set(float64(len(p.queue)))
 		}
-		return true
+		ok = true
+		return
 	default:
 		if p.metrics != nil {
 			p.metrics.dropped.Inc()
@@ -115,6 +119,9 @@ func (p *workerPool) stop() {
 	p.stopped.Store(true)
 	p.closeOnce.Do(func() { close(p.queue) })
 	p.wg.Wait()
+	if p.metrics != nil {
+		p.metrics.queueDepth.Set(0)
+	}
 }
 
 // worker is the main loop for a single pool worker. It reads tasks from the

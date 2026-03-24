@@ -233,17 +233,13 @@ func (b *Bus) HasHandlers(eventName string) bool {
 // worker pool (if configured) or an unbounded goroutine (legacy behavior).
 func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
 	if b.pool != nil {
-		if !b.pool.submit(asyncTask{
+		// submit() logs with full detail on drop; no additional logging needed here.
+		b.pool.submit(asyncTask{
 			ctx:       ctx,
 			eventName: eventName,
 			handler:   h,
 			event:     event,
-		}) {
-			b.logger.Warn("async event dropped",
-				slog.String("event", eventName),
-				slog.String("handler", h.name),
-			)
-		}
+		})
 		return
 	}
 	go b.runAsync(ctx, eventName, h, event)
@@ -266,14 +262,25 @@ func (b *Bus) Start(ctx context.Context) error {
 }
 
 // Stop drains pending events and stops workers. No-op if no pool is configured.
+// If the context has a deadline, Stop returns ctx.Err() if the deadline is
+// reached before all workers finish draining.
 // Implements lifecycle.Component.
-func (b *Bus) Stop(_ context.Context) error {
+func (b *Bus) Stop(ctx context.Context) error {
 	if b.pool == nil {
 		return nil
 	}
-	b.pool.stop()
-	b.logger.Info("eventbus worker pool stopped")
-	return nil
+	done := make(chan struct{})
+	go func() {
+		b.pool.stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		b.logger.Info("eventbus worker pool stopped")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // runAsync executes a handler in a goroutine with panic recovery.
