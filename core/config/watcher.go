@@ -41,7 +41,9 @@ func WithWatchLogger(l *slog.Logger) WatcherOption {
 // in the same process.
 func WithSignalChannel(ch chan os.Signal) WatcherOption {
 	return func(c *watcherConfig) {
-		c.signalCh = ch
+		if ch != nil {
+			c.signalCh = ch
+		}
 	}
 }
 

@@ -248,8 +248,9 @@ func TestEnvReloader_StartBlocksUntilCancelled(t *testing.T) {
 func TestEnvReloader_SIGHUPTriggersReload(t *testing.T) {
 	t.Setenv("TEST_ENV_RELOAD_VALUE", "updated")
 
+	sigCh := make(chan os.Signal, 1)
 	w := NewWatchable(envReloaderCfg{Value: "initial"})
-	r := NewEnvReloader[envReloaderCfg](w)
+	r := NewEnvReloader[envReloaderCfg](w, WithSignalChannel(sigCh))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -261,11 +262,8 @@ func TestEnvReloader_SIGHUPTriggersReload(t *testing.T) {
 	}()
 	<-started
 
-	// Allow signal handler to be registered.
-	time.Sleep(50 * time.Millisecond)
-
-	// Send SIGHUP to trigger reload.
-	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGHUP))
+	// Send SIGHUP via injected channel to trigger reload.
+	sigCh <- syscall.SIGHUP
 
 	assert.Eventually(t, func() bool {
 		return w.Get().Value == "updated"
@@ -283,8 +281,9 @@ func TestEnvReloader_LoadErrorPreservesOldValue(t *testing.T) {
 	// Ensure the var is not set (use a unique name to avoid collisions).
 	require.NoError(t, os.Unsetenv("TEST_ENVRELOADER_REQUIRED_PORT"))
 
+	sigCh := make(chan os.Signal, 1)
 	w := NewWatchable(strictCfg{Port: 8080})
-	r := NewEnvReloader[strictCfg](w, WithWatchLogger(slog.Default()))
+	r := NewEnvReloader[strictCfg](w, WithSignalChannel(sigCh), WithWatchLogger(slog.Default()))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -295,16 +294,42 @@ func TestEnvReloader_LoadErrorPreservesOldValue(t *testing.T) {
 		_ = r.Start(ctx)
 	}()
 	<-started
-	time.Sleep(50 * time.Millisecond)
 
-	// Send SIGHUP — Load should fail because the required var is not set.
-	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGHUP))
+	// Send SIGHUP via injected channel — Load should fail because the required var is not set.
+	sigCh <- syscall.SIGHUP
 
 	// Wait a bit for the signal to be processed.
 	time.Sleep(200 * time.Millisecond)
 
 	// Value should remain unchanged.
 	assert.Equal(t, 8080, w.Get().Port)
+
+	cancel()
+}
+
+func TestEnvReloader_WithSignalChannel(t *testing.T) {
+	t.Setenv("TEST_ENV_RELOAD_VALUE", "via-channel")
+
+	sigCh := make(chan os.Signal, 1)
+	w := NewWatchable(envReloaderCfg{Value: "initial"})
+	r := NewEnvReloader[envReloaderCfg](w, WithSignalChannel(sigCh))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = r.Start(ctx)
+	}()
+	<-started
+
+	// Trigger reload via injected signal channel.
+	sigCh <- syscall.SIGHUP
+
+	assert.Eventually(t, func() bool {
+		return w.Get().Value == "via-channel"
+	}, 2*time.Second, 20*time.Millisecond)
 
 	cancel()
 }

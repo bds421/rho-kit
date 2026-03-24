@@ -171,9 +171,8 @@ func TestWatchable_PanicInSubscriberDoesNotBlockOthers(t *testing.T) {
 		w.Set(1)
 	})
 
-	// The non-panicking subscribers should still have been called.
-	// (Map iteration order is non-deterministic, but the panic recovery
-	// ensures all subscribers run regardless of order.)
-	assert.True(t, firstCalled.Load() || thirdCalled.Load(),
-		"at least one non-panicking subscriber should have been called")
+	// Both non-panicking subscribers should have been called regardless
+	// of iteration order — panic recovery ensures all subscribers run.
+	assert.True(t, firstCalled.Load(), "first subscriber should have been called")
+	assert.True(t, thirdCalled.Load(), "third subscriber should have been called")
 }
