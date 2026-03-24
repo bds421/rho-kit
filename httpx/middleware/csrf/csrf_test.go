@@ -216,6 +216,168 @@ func TestIsValidSignedToken_InvalidFormats(t *testing.T) {
 	assert.False(t, isValidSignedToken("onlyprefix.", secret))
 }
 
+// --- WithSkipCheck tests ---
+
+func TestNew_SkipCheck_POSTWithBearerTokenSkipsCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_SkipCheck_POSTWithoutBearerTokenRequiresCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_SkipCheck_POSTWithAPIKeySkipsCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasAPIKey("X-API-Key")))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "my-api-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_SkipCheck_POSTWithCustomAPIKeyHeader(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasAPIKey("X-Custom-Auth")))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Custom-Auth", "secret-value")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHasAPIKey_PanicsOnEmptyHeader(t *testing.T) {
+	assert.Panics(t, func() {
+		HasAPIKey("")
+	})
+}
+
+func TestNew_POSTWithBearerTokenNoSkipCheck_RequiresCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_SkipCheck_GETWithBearerTokenPasses(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_SkipCheck_CookieStillSetWhenSkipped(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	cookies := rec.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.Equal(t, "__csrf", cookies[0].Name)
+	assert.NotEmpty(t, cookies[0].Value)
+}
+
+func TestNew_SkipCheck_AllStateChangingMethodsWithBearerToken(t *testing.T) {
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+			handler := mw(okHandler())
+
+			req := httptest.NewRequest(method, "/", nil)
+			req.Header.Set("Authorization", "Bearer some-jwt-token")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+		})
+	}
+}
+
+func TestHasBearerToken_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"canonical", "Bearer token123", true},
+		{"lowercase", "bearer token123", true},
+		{"uppercase", "BEARER token123", true},
+		{"mixed", "bEaReR token123", true},
+		{"empty", "", false},
+		{"no space", "Bearertoken123", false},
+		{"basic auth", "Basic dXNlcjpwYXNz", false},
+		{"too short", "Bearer", false},
+		{"space only", "Bearer ", false},
+		{"lowercase space only", "bearer ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			assert.Equal(t, tt.want, HasBearerToken(req))
+		})
+	}
+}
+
+func TestNew_SkipCheck_BasicAuthDoesNotSkip(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHasAPIKey_EmptyHeaderValue(t *testing.T) {
+	predicate := HasAPIKey("X-API-Key")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "")
+
+	assert.False(t, predicate(req))
+}
+
 // --- Legacy RequireCSRF tests ---
 
 func TestRequireCSRF_GET_NoHeader(t *testing.T) {
