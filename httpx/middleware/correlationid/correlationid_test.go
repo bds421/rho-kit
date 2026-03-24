@@ -165,29 +165,15 @@ func TestPropagateMessageHeader_NoCorrelationID(t *testing.T) {
 	}
 }
 
-func TestIsValidCorrelationID(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"empty", "", false},
-		{"valid", "abc-123", true},
-		{"max length", strings.Repeat("a", 128), true},
-		{"too long", strings.Repeat("a", 129), false},
-		{"newline", "abc\n123", false},
-		{"tab", "abc\t123", false},
-		{"null byte", "abc\x00123", false},
-		{"printable ascii", "ABCdef-123_456.789", true},
-		{"non-ascii", "abc\x80def", false},
+func TestIsValidCorrelationID_MaxLenWiring(t *testing.T) {
+	// Full IsValid table tests live in idutil_test.go.
+	// This smoke test verifies the maxCorrelationIDLen (128) wiring.
+	ok := isValidCorrelationID(strings.Repeat("a", 128))
+	if !ok {
+		t.Error("128-char ID should be accepted")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isValidCorrelationID(tt.input)
-			if got != tt.want {
-				t.Errorf("isValidCorrelationID(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
+	notOK := isValidCorrelationID(strings.Repeat("a", 129))
+	if notOK {
+		t.Error("129-char ID should be rejected")
 	}
 }

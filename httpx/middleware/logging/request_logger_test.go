@@ -203,6 +203,45 @@ func TestWithRequestLogger_InjectsLogger_WithCorrelationID(t *testing.T) {
 	}
 }
 
+func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/users/42", nil)
+	ctx := httpx.SetRequestID(req.Context(), "req-111")
+	ctx = httpx.SetCorrelationID(ctx, "corr-222")
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	output := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("request_id=req-111")) {
+		t.Errorf("expected request_id=req-111 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("correlation_id=corr-222")) {
+		t.Errorf("expected correlation_id=corr-222 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("method=PUT")) {
+		t.Errorf("expected method=PUT in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("path=/api/users/42")) {
+		t.Errorf("expected path=/api/users/42 in logger attrs, got: %s", output)
+	}
+}
+
 func TestWithRequestLogger_FallbackUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

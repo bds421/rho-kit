@@ -33,6 +33,8 @@ func TestIsValid(t *testing.T) {
 		{"null byte", "abc\x00123", 128, false},
 		{"printable ascii", "ABCdef-123_456.789", 128, true},
 		{"non-ascii", "abc\x80def", 128, false},
+		{"contains space", "abc 123", 128, false},
+		{"only spaces", "   ", 128, false},
 		{"custom max length", strings.Repeat("a", 65), 64, false},
 		{"custom max length ok", strings.Repeat("a", 64), 64, true},
 	}

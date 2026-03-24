@@ -20,7 +20,7 @@ import (
 func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) slog.Attr) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attrs := make([]slog.Attr, 0, 4)
+			attrs := make([]slog.Attr, 0, 4+len(extraAttrs))
 
 			// request_id and correlation_id are hardcoded here (rather than passed
 			// via extraAttrs) because they are core kit concerns, not service-specific.

@@ -32,13 +32,14 @@ func Generate() string {
 }
 
 // IsValid returns true if id is non-empty, within the given maxLen,
-// and contains only printable ASCII characters (0x20–0x7E).
+// and contains only visible ASCII characters (0x21–0x7E). Space (0x20)
+// is excluded because spaces in trace IDs cause log-parsing issues.
 func IsValid(id string, maxLen int) bool {
 	if id == "" || len(id) > maxLen {
 		return false
 	}
 	for _, c := range id {
-		if c < 0x20 || c > 0x7E {
+		if c <= 0x20 || c > 0x7E {
 			return false
 		}
 	}

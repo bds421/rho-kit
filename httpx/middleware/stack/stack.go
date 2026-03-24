@@ -66,12 +66,18 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	var extraAttrs []func(*http.Request) slog.Attr
 	if cfg.EnableRequestID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
-			return slog.String("request_id", httpx.RequestID(r.Context()))
+			if rid := httpx.RequestID(r.Context()); rid != "" {
+				return slog.String("request_id", rid)
+			}
+			return slog.Attr{}
 		})
 	}
 	if cfg.EnableCorrelationID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
-			return slog.String("correlation_id", httpx.CorrelationID(r.Context()))
+			if cid := httpx.CorrelationID(r.Context()); cid != "" {
+				return slog.String("correlation_id", cid)
+			}
+			return slog.Attr{}
 		})
 	}
 
