@@ -14,6 +14,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// waitForWorkers publishes a canary event on the bus and blocks until a worker
+// processes it, proving the pool is fully running. This replaces fragile
+// time.Sleep-based worker startup waits.
+func waitForWorkers(t *testing.T, bus *Bus) {
+	t.Helper()
+	done := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ otherEvent) error {
+		close(done)
+		return nil
+	}, WithAsync(), WithName("warmup-canary"))
+	err := Publish(bus, context.Background(), otherEvent{Value: 0})
+	require.NoError(t, err)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForWorkers: canary event was not processed within 2s")
+	}
+}
+
 func TestWorkerPool_ProcessesAllEvents(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	bus := New(
@@ -37,8 +56,7 @@ func TestWorkerPool_ProcessesAllEvents(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	// Give workers time to start.
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	for i := range eventCount {
 		err := Publish(bus, context.Background(), testEvent{ID: string(rune('a' + i%26))})
@@ -80,7 +98,7 @@ func TestWorkerPool_DropsWhenQueueFull(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	// First event fills the worker, second fills the buffer, third+ should drop.
 	for range 10 {
@@ -120,7 +138,7 @@ func TestWorkerPool_StopDrainsPendingEvents(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	const eventCount = 20
 	for range eventCount {
@@ -171,7 +189,7 @@ func TestWorkerPool_PanicDoesNotCrashPool(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	// Send a panic event, then a normal event.
 	_ = Publish(bus, context.Background(), testEvent{ID: "panic"})
@@ -243,7 +261,7 @@ func TestWorkerPool_BoundedGoroutines(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	baseGoroutines := runtime.NumGoroutine()
 
@@ -281,7 +299,7 @@ func TestBus_StartStopLifecycle(t *testing.T) {
 		startErr = bus.Start(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 	assert.NotNil(t, bus.pool, "pool should be initialized")
 
 	cancel()
@@ -308,6 +326,11 @@ func TestWithWorkerPoolBuffer_PanicsOnZeroSize(t *testing.T) {
 	assert.Panics(t, func() {
 		New(WithWorkerPoolBuffer(0))
 	})
+}
+
+func TestWithWorkerPoolBuffer_WithoutWorkerPool_NoPool(t *testing.T) {
+	bus := New(WithWorkerPoolBuffer(50))
+	assert.Nil(t, bus.pool, "pool should be nil when WithWorkerPool is not used")
 }
 
 func TestWorkerPool_AsyncErrorCallsOnError(t *testing.T) {
@@ -342,7 +365,7 @@ func TestWorkerPool_AsyncErrorCallsOnError(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	err := Publish(bus, context.Background(), testEvent{})
 	require.NoError(t, err)
@@ -380,7 +403,7 @@ func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	cancel()
 	err := bus.Stop(context.Background())
@@ -413,7 +436,7 @@ func TestWorkerPool_DoubleStopDoesNotPanic(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	cancel()
 
@@ -444,7 +467,7 @@ func TestBus_StopRespectsContextDeadline(t *testing.T) {
 		_ = bus.Start(ctx)
 	}()
 	<-started
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 
 	// Submit an event that will block the worker.
 	_ = Publish(bus, context.Background(), testEvent{ID: "block"})
@@ -486,7 +509,7 @@ func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
 	// Start and drain.
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = bus.Start(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	waitForWorkers(t, bus)
 	cancel()
 	_ = bus.Stop(context.Background())
 }
