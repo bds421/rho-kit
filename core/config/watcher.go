@@ -32,10 +32,12 @@ func WithWatchLogger(l *slog.Logger) WatcherOption {
 }
 
 // WithDebounce sets the debounce interval for rapid file changes.
-// The default is 100ms.
+// Values <= 0 are ignored; the default is 100ms.
 func WithDebounce(d time.Duration) WatcherOption {
 	return func(c *watcherConfig) {
-		c.debounce = d
+		if d > 0 {
+			c.debounce = d
+		}
 	}
 }
 
@@ -63,14 +65,19 @@ type FileWatcher[T any] struct {
 
 // NewFileWatcher creates a FileWatcher that calls loadFn whenever path
 // changes, updating the Watchable on success.
+// The path is resolved to an absolute path at construction time.
 func NewFileWatcher[T any](
 	path string,
 	loadFn func(string) (T, error),
 	w *Watchable[T],
 	opts ...WatcherOption,
 ) *FileWatcher[T] {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
 	return &FileWatcher[T]{
-		path:      path,
+		path:      absPath,
 		watchable: w,
 		loadFn:    loadFn,
 		cfg:       applyWatcherOpts(opts),
@@ -89,7 +96,11 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer watcher.Close()
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			fw.cfg.logger.Warn("failed to close fsnotify watcher", "error", err)
+		}
+	}()
 
 	// Watch the directory so we also catch atomic-rename saves where
 	// the original file is removed and a new one is created.

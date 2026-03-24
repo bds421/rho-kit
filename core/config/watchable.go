@@ -13,7 +13,7 @@ import (
 type Watchable[T any] struct {
 	value       atomic.Value // holds wrapper[T]
 	subscribers []func(old, new T)
-	mu          sync.RWMutex // protects subscribers slice only
+	mu          sync.Mutex // protects subscribers slice and write ordering
 }
 
 // wrapper avoids the atomic.Value constraint that stored types must be
@@ -36,22 +36,23 @@ func (w *Watchable[T]) Get() T {
 
 // Set atomically replaces the value and notifies all subscribers.
 // Subscribers are called synchronously in the caller's goroutine.
+// The write lock ensures concurrent Set calls read a consistent old value.
 func (w *Watchable[T]) Set(new T) {
+	w.mu.Lock()
 	old := w.value.Load().(wrapper[T]).val
 	w.value.Store(wrapper[T]{val: new})
-
-	w.mu.RLock()
-	// Copy the slice reference under lock so we iterate a stable snapshot.
+	// Grab the subscriber snapshot under lock (already copy-on-write from OnChange).
 	subs := w.subscribers
-	w.mu.RUnlock()
+	w.mu.Unlock()
 
 	for _, fn := range subs {
 		fn(old, new)
 	}
 }
 
-// OnChange registers a callback invoked when the value changes.
-// The callback receives the old and new values.
+// OnChange registers a callback invoked on every Set call, even if the
+// new value is equal to the old value. To filter unchanged values,
+// compare old and new in the callback.
 func (w *Watchable[T]) OnChange(fn func(old, new T)) {
 	w.mu.Lock()
 	// Append to a new slice to avoid mutating any snapshot held by Set.
