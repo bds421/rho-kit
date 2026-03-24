@@ -76,6 +76,13 @@ func WithPath(path string) Option {
 // The CSRF cookie is still set (so browser clients get a token for later use),
 // but the token-matching check is not enforced.
 //
+// Only one skip predicate is active at a time. If called multiple times,
+// the last predicate wins. To combine predicates, compose them:
+//
+//	csrf.WithSkipCheck(func(r *http.Request) bool {
+//	    return csrf.HasBearerToken(r) || csrf.HasAPIKey("X-API-Key")(r)
+//	})
+//
 // Common use: skip CSRF for requests authenticated via Bearer tokens or API keys,
 // since these auth mechanisms are not vulnerable to CSRF attacks (browsers don't
 // auto-attach them in cross-origin requests).
@@ -210,11 +217,13 @@ func computeHMAC(data string, key []byte) string {
 }
 
 // HasBearerToken returns true if the request has an Authorization header
-// with a Bearer token. Bearer-authenticated requests are immune to CSRF
-// because browsers never auto-attach the Authorization header in cross-origin
-// requests.
+// with a Bearer token. The "Bearer " prefix check is case-insensitive per
+// RFC 6750 (auth-scheme comparison is case-insensitive).
+// Bearer-authenticated requests are immune to CSRF because browsers never
+// auto-attach the Authorization header in cross-origin requests.
 func HasBearerToken(r *http.Request) bool {
-	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	v := r.Header.Get("Authorization")
+	return len(v) > 7 && strings.EqualFold(v[:7], "bearer ")
 }
 
 // HasAPIKey returns a predicate that checks for the presence of a non-empty

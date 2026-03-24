@@ -311,6 +311,73 @@ func TestNew_SkipCheck_CookieStillSetWhenSkipped(t *testing.T) {
 	assert.NotEmpty(t, cookies[0].Value)
 }
 
+func TestNew_SkipCheck_AllStateChangingMethodsWithBearerToken(t *testing.T) {
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+			handler := mw(okHandler())
+
+			req := httptest.NewRequest(method, "/", nil)
+			req.Header.Set("Authorization", "Bearer some-jwt-token")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+		})
+	}
+}
+
+func TestHasBearerToken_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"canonical", "Bearer token123", true},
+		{"lowercase", "bearer token123", true},
+		{"uppercase", "BEARER token123", true},
+		{"mixed", "bEaReR token123", true},
+		{"empty", "", false},
+		{"no space", "Bearertoken123", false},
+		{"basic auth", "Basic dXNlcjpwYXNz", false},
+		{"too short", "Bearer", false},
+		{"space only", "Bearer ", false},
+		{"lowercase space only", "bearer ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			assert.Equal(t, tt.want, HasBearerToken(req))
+		})
+	}
+}
+
+func TestNew_SkipCheck_BasicAuthDoesNotSkip(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestHasAPIKey_EmptyHeaderValue(t *testing.T) {
+	predicate := HasAPIKey("X-API-Key")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "")
+
+	assert.False(t, predicate(req))
+}
+
 // --- Legacy RequireCSRF tests ---
 
 func TestRequireCSRF_GET_NoHeader(t *testing.T) {
