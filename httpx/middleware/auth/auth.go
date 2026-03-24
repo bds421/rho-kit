@@ -163,6 +163,8 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler
 
 	// Audit log: record which service (cert CN) is acting on behalf of which user.
 	// This enables forensic analysis if an upstream service is compromised.
+	// Note: request_id is intentionally omitted — it is already injected by the
+	// structured logger from WithRequestLogger middleware via context attributes.
 	cn := ""
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		cn = r.TLS.PeerCertificates[0].Subject.CommonName
