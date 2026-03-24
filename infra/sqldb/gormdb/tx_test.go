@@ -100,7 +100,7 @@ func TestWithTxResult_RollbackOnPanic(t *testing.T) {
 // SQLite does not support SET TRANSACTION READ ONLY, so only the
 // error path is tested here. Run integration tests with -tags integration
 // for full coverage.
-func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
+func TestWithReadOnlyTx_SQLiteRejectsReadOnly(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)

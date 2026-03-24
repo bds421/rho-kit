@@ -28,6 +28,11 @@ var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"vers
 // Use this to detect concurrent modifications without changing other fields.
 // For updating fields with optimistic locking, use [UpdateWithVersion] instead.
 //
+// The model's struct must include a field mapped to the database column "version"
+// (e.g., Version int64 or Version int64 `gorm:"column:version"`). Both
+// CheckVersion and [UpdateWithVersion] use the literal column name "version"
+// in their WHERE clause and UPDATE expression.
+//
 // Returns [ErrVersionConflict] if no rows were affected (the row was modified
 // by another transaction or does not exist). Any other database error is
 // wrapped and returned.
