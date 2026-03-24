@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/bds421/rho-kit/observability/logattr"
 )
 
@@ -35,6 +37,47 @@ func WithLogger(l *slog.Logger) Option {
 func WithOnError(fn func(ctx context.Context, eventName string, handlerName string, err error)) Option {
 	return func(b *Bus) {
 		b.onError = fn
+	}
+}
+
+// WithWorkerPool enables bounded async dispatch with the given number of
+// workers. Without this option, async handlers launch unbounded goroutines
+// (legacy behavior). The pool must be started via [Bus.Start] before
+// publishing events.
+func WithWorkerPool(size int) Option {
+	return func(b *Bus) {
+		if size <= 0 {
+			panic("eventbus: worker pool size must be positive")
+		}
+		if b.poolCfg == nil {
+			b.poolCfg = &poolConfig{}
+		}
+		b.poolCfg.workers = size
+	}
+}
+
+// WithWorkerPoolBuffer sets the channel buffer size for the worker pool.
+// Default: workers * 10. Has no effect without [WithWorkerPool].
+func WithWorkerPoolBuffer(size int) Option {
+	return func(b *Bus) {
+		if size <= 0 {
+			panic("eventbus: worker pool buffer size must be positive")
+		}
+		if b.poolCfg == nil {
+			b.poolCfg = &poolConfig{}
+		}
+		b.poolCfg.bufSize = size
+	}
+}
+
+// WithRegisterer sets the Prometheus registerer for eventbus metrics.
+// Default: [prometheus.DefaultRegisterer]. Has no effect without [WithWorkerPool].
+func WithRegisterer(reg prometheus.Registerer) Option {
+	return func(b *Bus) {
+		if b.poolCfg == nil {
+			b.poolCfg = &poolConfig{}
+		}
+		b.poolCfg.registerer = reg
 	}
 }
 
@@ -71,6 +114,13 @@ type registeredHandler struct {
 	fn        func(ctx context.Context, event any) error
 }
 
+// poolConfig holds configuration for the optional bounded worker pool.
+type poolConfig struct {
+	workers    int
+	bufSize    int
+	registerer prometheus.Registerer
+}
+
 // Bus dispatches domain events to registered handlers within a single process.
 // It is safe for concurrent use. Create one with [New].
 type Bus struct {
@@ -78,9 +128,14 @@ type Bus struct {
 	handlers map[string][]registeredHandler
 	logger   *slog.Logger
 	onError  func(ctx context.Context, eventName string, handlerName string, err error)
+	pool     *workerPool
+	poolCfg  *poolConfig // nil = no pool (backward compat)
 }
 
 // New creates a [Bus]. The zero value is not usable; always use New.
+//
+// When [WithWorkerPool] is used, the pool is constructed eagerly but workers
+// are not started until [Bus.Start] is called.
 func New(opts ...Option) *Bus {
 	b := &Bus{
 		handlers: make(map[string][]registeredHandler),
@@ -88,6 +143,14 @@ func New(opts ...Option) *Bus {
 	}
 	for _, opt := range opts {
 		opt(b)
+	}
+	if b.poolCfg != nil && b.poolCfg.workers > 0 {
+		bufSize := b.poolCfg.bufSize
+		if bufSize <= 0 {
+			bufSize = b.poolCfg.workers * 10
+		}
+		m := newPoolMetrics(b.poolCfg.registerer)
+		b.pool = newWorkerPool(b.poolCfg.workers, bufSize, b.logger, b.onError, m)
 	}
 	return b
 }
@@ -148,7 +211,7 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	var syncErrs []error
 	for _, h := range snapshot {
 		if h.async {
-			go b.runAsync(ctx, eventName, h, event)
+			b.dispatchAsync(ctx, eventName, h, event)
 		} else {
 			if err := h.fn(ctx, event); err != nil {
 				syncErrs = append(syncErrs, fmt.Errorf("handler %q: %w", h.name, err))
@@ -164,6 +227,48 @@ func (b *Bus) HasHandlers(eventName string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.handlers[eventName]) > 0
+}
+
+// dispatchAsync routes an async handler invocation to either the bounded
+// worker pool (if configured) or an unbounded goroutine (legacy behavior).
+func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
+	if b.pool != nil {
+		b.pool.submit(asyncTask{
+			ctx:       ctx,
+			eventName: eventName,
+			handler:   h,
+			event:     event,
+		})
+		return
+	}
+	go b.runAsync(ctx, eventName, h, event)
+}
+
+// Start starts the worker pool. No-op if no pool is configured.
+// Implements lifecycle.Component.
+func (b *Bus) Start(ctx context.Context) error {
+	if b.pool == nil {
+		<-ctx.Done()
+		return nil
+	}
+
+	b.logger.Info("eventbus worker pool started",
+		slog.Int("workers", b.pool.workers),
+		slog.Int("buffer_size", cap(b.pool.queue)),
+	)
+	b.pool.start(ctx)
+	return nil
+}
+
+// Stop drains pending events and stops workers. No-op if no pool is configured.
+// Implements lifecycle.Component.
+func (b *Bus) Stop(_ context.Context) error {
+	if b.pool == nil {
+		return nil
+	}
+	b.pool.stop()
+	b.logger.Info("eventbus worker pool stopped")
+	return nil
 }
 
 // runAsync executes a handler in a goroutine with panic recovery.
