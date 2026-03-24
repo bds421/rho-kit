@@ -37,6 +37,8 @@ func WithTx(ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) error) error 
 
 // WithTxResult runs fn inside a transaction and returns the result. It commits
 // on nil error and rolls back on error or panic, same as [WithTx].
+// On error, the returned value is undefined; callers must check err before
+// using the result.
 func WithTxResult[T any](ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) (T, error)) (T, error) {
 	var result T
 	err := WithTx(ctx, db, func(tx *gorm.DB) error {

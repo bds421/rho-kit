@@ -4,10 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 
 	"github.com/bds421/rho-kit/core/apperror"
 )
@@ -18,16 +16,8 @@ type versionedModel struct {
 	Version int64
 }
 
-func setupVersionedDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&versionedModel{}))
-	return db
-}
-
 func TestCheckVersion_Success(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
@@ -40,7 +30,7 @@ func TestCheckVersion_Success(t *testing.T) {
 }
 
 func TestCheckVersion_Conflict(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
 
 	model := &versionedModel{ID: "1"}
@@ -54,7 +44,7 @@ func TestCheckVersion_Conflict(t *testing.T) {
 }
 
 func TestCheckVersion_NonExistentRow(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 
 	model := &versionedModel{ID: "nonexistent"}
 	err := CheckVersion(context.Background(), db, model, 1)
@@ -67,7 +57,7 @@ func TestCheckVersion_ErrVersionConflictIsConflict(t *testing.T) {
 }
 
 func TestUpdateWithVersion_Success(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
@@ -81,7 +71,7 @@ func TestUpdateWithVersion_Success(t *testing.T) {
 }
 
 func TestUpdateWithVersion_Conflict(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
 
 	model := &versionedModel{ID: "1"}
@@ -96,7 +86,7 @@ func TestUpdateWithVersion_Conflict(t *testing.T) {
 }
 
 func TestUpdateWithVersion_NonExistentRow(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 
 	model := &versionedModel{ID: "nonexistent"}
 	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
@@ -105,7 +95,7 @@ func TestUpdateWithVersion_NonExistentRow(t *testing.T) {
 }
 
 func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	updates := map[string]any{"name": "bob"}
@@ -120,7 +110,7 @@ func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
 }
 
 func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
@@ -149,7 +139,7 @@ func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 }
 
 func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
-	db := setupVersionedDB(t)
+	db := setupTestDB(t, &versionedModel{})
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}

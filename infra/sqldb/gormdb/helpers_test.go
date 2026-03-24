@@ -17,11 +17,14 @@ type testModel struct {
 	IsDefault bool
 }
 
-func setupTestDB(t *testing.T) *gorm.DB {
+func setupTestDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&testModel{}))
+	if len(models) == 0 {
+		models = []any{&testModel{}}
+	}
+	require.NoError(t, db.AutoMigrate(models...))
 	return db
 }
 

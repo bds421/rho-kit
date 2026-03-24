@@ -114,7 +114,6 @@ func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
 	})
 	// SQLite will reject SET TRANSACTION READ ONLY — that's expected.
 	// On a real PostgreSQL/MySQL instance this would succeed.
-	if err != nil {
-		assert.Contains(t, err.Error(), "read-only")
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read-only")
 }
