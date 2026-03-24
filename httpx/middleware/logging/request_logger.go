@@ -38,7 +38,9 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 			attrs = append(attrs, slog.String("path", r.URL.Path))
 
 			for _, fn := range extraAttrs {
-				attrs = append(attrs, fn(r))
+				if a := fn(r); a.Key != "" {
+					attrs = append(attrs, a)
+				}
 			}
 
 			// Convert attrs to slog.With args.

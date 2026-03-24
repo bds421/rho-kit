@@ -29,7 +29,7 @@ func WithRequestID(next http.Handler) http.Handler {
 }
 
 // isValidRequestID returns true if id is non-empty, within length limits,
-// and contains only printable ASCII characters.
+// and contains only printable ASCII characters (excluding space).
 func isValidRequestID(id string) bool {
 	return idutil.IsValid(id, maxRequestIDLen)
 }

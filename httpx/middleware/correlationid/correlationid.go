@@ -50,7 +50,7 @@ func PropagateMessageHeader(ctx context.Context) (key, value string) {
 }
 
 // isValidCorrelationID returns true if id is non-empty, within length limits,
-// and contains only printable ASCII characters.
+// and contains only printable ASCII characters (excluding space).
 func isValidCorrelationID(id string) bool {
 	return idutil.IsValid(id, maxCorrelationIDLen)
 }

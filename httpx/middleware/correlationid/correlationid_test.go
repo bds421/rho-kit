@@ -132,6 +132,18 @@ func TestPropagateHTTP(t *testing.T) {
 	}
 }
 
+func TestPropagateHTTP_OverwritesExistingHeader(t *testing.T) {
+	ctx := httpx.SetCorrelationID(context.Background(), "from-context")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(Header, "pre-existing-value")
+
+	PropagateHTTP(ctx, req)
+
+	if got := req.Header.Get(Header); got != "from-context" {
+		t.Errorf("header = %q, want %q; PropagateHTTP should overwrite pre-existing header", got, "from-context")
+	}
+}
+
 func TestPropagateHTTP_NoCorrelationID(t *testing.T) {
 	ctx := context.Background()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
