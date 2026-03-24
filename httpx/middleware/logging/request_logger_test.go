@@ -242,6 +242,42 @@ func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
 	}
 }
 
+func TestWithRequestLogger_OmitsEmptyKeyAttr(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base,
+		func(r *http.Request) slog.Attr {
+			return slog.Attr{} // zero-value attr with empty key
+		},
+		func(r *http.Request) slog.Attr {
+			return slog.String("keep", "this")
+		},
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	logOutput := buf.String()
+	if bytes.Contains(buf.Bytes(), []byte("=\"\"")) {
+		t.Errorf("log should not contain empty-key attr, got: %s", logOutput)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("keep=this")) {
+		t.Errorf("expected keep=this in log, got: %s", logOutput)
+	}
+}
+
 func TestWithRequestLogger_FallbackUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
