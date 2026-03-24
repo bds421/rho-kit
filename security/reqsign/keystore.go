@@ -51,12 +51,22 @@ func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore
 }
 
 // Key returns the secret for the given key ID. Returns nil, false if not found.
+// The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
 	k, ok := s.keys[keyID]
-	return k, ok
+	if !ok {
+		return nil, false
+	}
+	dst := make([]byte, len(k))
+	copy(dst, k)
+	return dst, true
 }
 
 // CurrentKeyID returns the active signing key ID and secret.
+// The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
-	return s.currentID, s.keys[s.currentID]
+	k := s.keys[s.currentID]
+	dst := make([]byte, len(k))
+	copy(dst, k)
+	return s.currentID, dst
 }

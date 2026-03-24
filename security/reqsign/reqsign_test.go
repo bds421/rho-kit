@@ -187,6 +187,47 @@ func TestVerifyWithCustomMaxAge(t *testing.T) {
 	}
 }
 
+func TestTransportToMiddlewareIntegration(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	// Set up a server with RequireSignedRequest middleware.
+	var handlerReached bool
+	handler := RequireSignedRequest(store, WithVerifySigner(signer))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerReached = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Create an HTTP client with SigningTransport.
+	client := &http.Client{
+		Transport: NewSigningTransport(nil, store, WithSigner(signer)),
+	}
+
+	body := []byte(`{"action":"integrate"}`)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/test?env=prod", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest failed: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if !handlerReached {
+		t.Error("handler was not reached through transport → middleware flow")
+	}
+}
+
 func TestVerifyWithRotatedKey(t *testing.T) {
 	key1 := validKey(32)
 	key2 := validKey(48)

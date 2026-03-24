@@ -63,14 +63,17 @@ func WithMaxAge(d time.Duration) VerifyOption {
 }
 
 // canonicalBytes builds the canonical representation of an HTTP request:
-// METHOD + "\n" + PATH + "\n" + hex(sha256(body))
-func canonicalBytes(method, path string, body []byte) []byte {
+// METHOD + "\n" + REQUEST_URI + "\n" + hex(sha256(body))
+//
+// REQUEST_URI includes the path and query string (e.g. "/api/deploy?env=prod"),
+// preventing signature replay with different query parameters.
+func canonicalBytes(method, requestURI string, body []byte) []byte {
 	h := sha256.Sum256(body)
-	// Pre-allocate: method + \n + path + \n + 64 hex chars
-	canonical := make([]byte, 0, len(method)+1+len(path)+1+sha256.Size*2)
+	// Pre-allocate: method + \n + requestURI + \n + 64 hex chars
+	canonical := make([]byte, 0, len(method)+1+len(requestURI)+1+sha256.Size*2)
 	canonical = append(canonical, method...)
 	canonical = append(canonical, '\n')
-	canonical = append(canonical, path...)
+	canonical = append(canonical, requestURI...)
 	canonical = append(canonical, '\n')
 	canonical = hex.AppendEncode(canonical, h[:])
 	return canonical
@@ -87,7 +90,7 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 	}
 
 	keyID, secret := store.CurrentKeyID()
-	canonical := canonicalBytes(req.Method, req.URL.Path, body)
+	canonical := canonicalBytes(req.Method, req.URL.RequestURI(), body)
 
 	sig, ts, err := cfg.signer.Sign(canonical, secret)
 	if err != nil {
@@ -130,7 +133,7 @@ func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...Verif
 		return ErrKeyNotFound
 	}
 
-	canonical := canonicalBytes(req.Method, req.URL.Path, body)
+	canonical := canonicalBytes(req.Method, req.URL.RequestURI(), body)
 
 	valid, err := cfg.signer.Verify(secret, canonical, ts, sig, cfg.maxAge)
 	if err != nil {

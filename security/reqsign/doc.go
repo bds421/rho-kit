@@ -7,10 +7,16 @@
 //
 // Each request is reduced to a canonical byte sequence before signing:
 //
-//	METHOD + "\n" + PATH + "\n" + hex(sha256(body))
+//	METHOD + "\n" + REQUEST_URI + "\n" + hex(sha256(body))
 //
-// For requests without a body the SHA-256 of empty bytes is used. This
-// ensures that the method, path, and body are all covered by the signature.
+// REQUEST_URI is the full request URI including the path and query string
+// (e.g. "/api/deploy?env=prod"). This ensures that the method, path, query
+// parameters, and body are all covered by the signature.
+//
+// The canonical string does not include the Host header. If signing keys
+// are shared across multiple services, a signature for one service's endpoint
+// could be replayed against another service at the same path. Use unique
+// per-service-pair keys to prevent cross-service replay.
 //
 // # Headers
 //

@@ -41,6 +41,7 @@ func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handle
 			}
 
 			if err := VerifyRequest(r, body, store, opts...); err != nil {
+				httpx.Logger(r.Context(), nil).Debug("request signature verification failed", "error", err)
 				httpx.WriteError(w, http.StatusUnauthorized, "invalid or missing signature")
 				return
 			}

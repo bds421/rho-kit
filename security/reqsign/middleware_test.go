@@ -116,6 +116,30 @@ func TestMiddleware_ExpiredSignature(t *testing.T) {
 	}
 }
 
+func TestMiddleware_BodyTooLarge(t *testing.T) {
+	store := testStore()
+	handler := RequireSignedRequest(store)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	// Create a body larger than maxBodySize (1 MiB).
+	largeBody := make([]byte, maxBodySize+1)
+	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(largeBody))
+	// Set signature headers so we don't fail on missing headers first.
+	req.Header.Set(HeaderSignature, "sha256=placeholder")
+	req.Header.Set(HeaderTimestamp, "1718452800")
+	req.Header.Set(HeaderKeyID, "primary")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", rr.Code)
+	}
+}
+
 func TestMiddleware_GETRequest(t *testing.T) {
 	store := testStore()
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)

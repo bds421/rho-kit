@@ -7,6 +7,10 @@ import (
 	"net/http"
 )
 
+// maxSignBodySize is the maximum request body size the transport will buffer
+// for signing (1 MiB), matching the middleware limit.
+const maxSignBodySize = 1 << 20
+
 // SigningTransport wraps an http.RoundTripper to sign all outbound requests.
 type SigningTransport struct {
 	base  http.RoundTripper
@@ -35,9 +39,12 @@ func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	if req.Body != nil && req.Body != http.NoBody {
 		var err error
-		body, err = io.ReadAll(req.Body)
+		body, err = io.ReadAll(io.LimitReader(req.Body, maxSignBodySize+1))
 		if err != nil {
 			return nil, fmt.Errorf("reqsign: reading request body: %w", err)
+		}
+		if int64(len(body)) > maxSignBodySize {
+			return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", maxSignBodySize)
 		}
 		if err := req.Body.Close(); err != nil {
 			return nil, fmt.Errorf("reqsign: closing request body: %w", err)
