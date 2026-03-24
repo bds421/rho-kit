@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/contextutil"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
@@ -67,7 +67,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	var extraAttrs []func(*http.Request) slog.Attr
 	if cfg.EnableRequestID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
-			if rid := httpx.RequestID(r.Context()); rid != "" {
+			if rid := contextutil.RequestID(r.Context()); rid != "" {
 				return slog.String("request_id", rid)
 			}
 			return slog.Attr{}
@@ -75,7 +75,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 	if cfg.EnableCorrelationID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
-			if cid := httpx.CorrelationID(r.Context()); cid != "" {
+			if cid := contextutil.CorrelationID(r.Context()); cid != "" {
 				return slog.String("correlation_id", cid)
 			}
 			return slog.Attr{}

@@ -3,7 +3,7 @@ package requestid
 import (
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx/middleware/internal/idutil"
 )
 
@@ -23,7 +23,7 @@ func WithRequestID(next http.Handler) http.Handler {
 			id = idutil.Generate()
 		}
 		w.Header().Set(Header, id)
-		ctx := httpx.SetRequestID(r.Context(), id)
+		ctx := contextutil.SetRequestID(r.Context(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

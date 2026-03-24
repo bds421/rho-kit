@@ -32,19 +32,6 @@ func TestGenerate_Format(t *testing.T) {
 	}
 }
 
-func TestFallbackGenerate(t *testing.T) {
-	id := fallbackGenerate()
-	// Fallback should produce UUID-formatted strings (36 chars with hyphens).
-	if len(id) != 36 {
-		t.Errorf("fallbackGenerate() length = %d, want 36", len(id))
-	}
-
-	id2 := fallbackGenerate()
-	if id == id2 {
-		t.Error("fallbackGenerate() should produce unique IDs")
-	}
-}
-
 func TestIsValid(t *testing.T) {
 	tests := []struct {
 		name   string

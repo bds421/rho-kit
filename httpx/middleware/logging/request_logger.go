@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx"
 )
 
@@ -26,11 +27,11 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 			// creates the per-handler logger (used by httpx.Logger in handler code).
 			// The separate access-log Logger middleware in stack.Default() receives
 			// these same IDs via its own extraAttrs parameter for access log lines.
-			if id := httpx.RequestID(r.Context()); id != "" {
+			if id := contextutil.RequestID(r.Context()); id != "" {
 				attrs = append(attrs, slog.String("request_id", id))
 			}
 
-			if cid := httpx.CorrelationID(r.Context()); cid != "" {
+			if cid := contextutil.CorrelationID(r.Context()); cid != "" {
 				attrs = append(attrs, slog.String("correlation_id", cid))
 			}
 

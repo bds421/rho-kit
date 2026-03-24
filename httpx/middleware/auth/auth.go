@@ -172,7 +172,7 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler
 		"client_cn", cn,
 		"method", r.Method,
 		"path", r.URL.Path,
-		"request_id", httpx.RequestID(r.Context()),
+		"request_id", contextutil.RequestID(r.Context()),
 	)
 
 	ctx := userIDKey.Set(r.Context(), authUserID(userID))

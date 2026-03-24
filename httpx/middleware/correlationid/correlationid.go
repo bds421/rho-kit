@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/middleware/internal/idutil"
 )
@@ -27,7 +28,7 @@ func WithCorrelationID(next http.Handler) http.Handler {
 			id = idutil.Generate()
 		}
 		w.Header().Set(Header, id)
-		ctx := httpx.SetCorrelationID(r.Context(), id)
+		ctx := contextutil.SetCorrelationID(r.Context(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

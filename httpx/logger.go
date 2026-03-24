@@ -7,6 +7,9 @@ import (
 	"github.com/bds421/rho-kit/observability/logging"
 )
 
+// contextKey is a private string type for non-generic context keys in the httpx package.
+type contextKey string
+
 const loggerKey contextKey = "logger"
 
 // SetLogger stores a *slog.Logger in the context.

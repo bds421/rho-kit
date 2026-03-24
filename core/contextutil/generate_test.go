@@ -1,0 +1,41 @@
+package contextutil
+
+import (
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestNewID_ValidUUIDv7(t *testing.T) {
+	id := NewID()
+
+	parsed, err := uuid.Parse(id)
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Version(7), parsed.Version())
+}
+
+func TestNewID_Unique(t *testing.T) {
+	id1 := NewID()
+	id2 := NewID()
+
+	assert.NotEqual(t, id1, id2)
+}
+
+func TestNewID_Format(t *testing.T) {
+	id := NewID()
+	assert.Len(t, id, 36)
+}
+
+func TestFallbackGenerate_Format(t *testing.T) {
+	id := fallbackGenerate()
+	assert.Len(t, id, 36)
+}
+
+func TestFallbackGenerate_Unique(t *testing.T) {
+	id1 := fallbackGenerate()
+	id2 := fallbackGenerate()
+
+	assert.NotEqual(t, id1, id2)
+}
