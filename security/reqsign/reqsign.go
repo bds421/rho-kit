@@ -226,39 +226,5 @@ func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...Verif
 		o(&cfg)
 	}
 
-	sig := req.Header.Get(HeaderSignature)
-	tsStr := req.Header.Get(HeaderTimestamp)
-	keyID := req.Header.Get(HeaderKeyID)
-
-	if sig == "" || tsStr == "" || keyID == "" {
-		return ErrMissingHeaders
-	}
-
-	ts, err := strconv.ParseInt(tsStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("reqsign: invalid timestamp: %w", err)
-	}
-
-	// Use unsafe access when available to avoid allocation on the hot path.
-	var secret []byte
-	var ok bool
-	if uks, castOK := store.(unsafeKeyStore); castOK {
-		secret, ok = uks.keyUnsafe(keyID)
-	} else {
-		secret, ok = store.Key(keyID)
-	}
-	if !ok {
-		return ErrKeyNotFound
-	}
-
-	canonical := canonicalBytes(req.Method, req.URL.RequestURI(), body)
-
-	valid, err := cfg.signer.Verify(secret, canonical, ts, sig, cfg.maxAge)
-	if err != nil {
-		return fmt.Errorf("reqsign: verify failed: %w", err)
-	}
-	if !valid {
-		return ErrSignatureMismatch
-	}
-	return nil
+	return verifyRequestWithConfig(req, body, store, cfg)
 }
