@@ -10,6 +10,11 @@ import (
 // WithTx runs fn inside a database transaction. It commits on nil error and
 // rolls back on error or panic. If fn panics, the transaction is rolled back
 // and the panic is re-raised after cleanup.
+//
+// WithTx always begins a new transaction. If called within an existing WithTx,
+// it creates a nested transaction (savepoint) on databases that support it.
+// To participate in an existing transaction, use ContextWithTx/DBFromContext
+// instead.
 func WithTx(ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) error) error {
 	tx := db.WithContext(ctx).Begin()
 	if tx.Error != nil {
