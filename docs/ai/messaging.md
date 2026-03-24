@@ -8,7 +8,7 @@ Use `infra/messaging` for **cross-service durable messaging**. The root package 
 
 | Backend | Use when |
 |---|---|
-| `amqpbackend` | Complex routing (topic/fanout/headers), DLX retry, publisher confirms, outbox pattern |
+| `amqpbackend` | Complex routing (topic/fanout/headers), DLX retry, publisher confirms, buffered publishing |
 | `redisbackend` | Redis Streams pub/sub (lighter weight, no extra broker) |
 | `membroker` | Unit tests (in-memory, synchronous drain) |
 
@@ -155,16 +155,16 @@ messaging.StartConsumers(ctx, consumer, bindings,
 // Returns error if any binding lacks a handler — catches config drift at startup.
 ```
 
-## OutboxPublisher (At-Least-Once)
+## BufferedPublisher (At-Least-Once)
 
 ```go
-outbox := messaging.NewOutboxPublisher(publisher, conn, logger,
-    messaging.WithOutboxMaxSize(10_000),
-    messaging.WithOutboxStateFile("/var/data/outbox.json"), // crash-safe persistence
+pub := messaging.NewBufferedPublisher(publisher, conn, logger,
+    messaging.WithBufferedMaxSize(10_000),
+    messaging.WithBufferedStateFile("/var/data/buffered.json"), // crash-safe persistence
 )
-go outbox.Run(ctx) // background drain loop
+go pub.Run(ctx) // background drain loop
 
-outbox.Publish(ctx, "orders", "order.created", msg)
+pub.Publish(ctx, "orders", "order.created", msg)
 ```
 
 - Direct path: publishes immediately if buffer empty + broker healthy.

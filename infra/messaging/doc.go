@@ -6,7 +6,7 @@
 //   - membroker — in-memory broker for unit tests
 //
 // The root package defines [MessagePublisher], [MessageConsumer], [Handler],
-// [Message], [Delivery], [Binding], and [Connector] — the types that
-// application code depends on. Backend selection happens at wiring time
-// (app.Builder or manual setup) and is invisible to handlers.
+// [Message], [Delivery], [Binding], [Connector], and [BufferedPublisher] — the
+// types that application code depends on. Backend selection happens at wiring
+// time (app.Builder or manual setup) and is invisible to handlers.
 package messaging
