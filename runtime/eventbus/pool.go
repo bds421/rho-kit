@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bds421/rho-kit/observability/logattr"
 )
@@ -22,12 +23,15 @@ type asyncTask struct {
 // Tasks are submitted to a buffered channel and consumed by a fixed number of
 // worker goroutines. When the queue is full, tasks are dropped.
 type workerPool struct {
-	workers int
-	queue   chan asyncTask
-	logger  *slog.Logger
-	onError func(ctx context.Context, eventName string, handlerName string, err error)
-	metrics *poolMetrics
-	wg      sync.WaitGroup
+	workers   int
+	queue     chan asyncTask
+	logger    *slog.Logger
+	onError   func(ctx context.Context, eventName string, handlerName string, err error)
+	metrics   *poolMetrics
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	stopped   atomic.Bool
+	started   atomic.Bool
 }
 
 // newWorkerPool creates a worker pool with the given number of workers and
@@ -48,19 +52,47 @@ func newWorkerPool(
 }
 
 // submit enqueues a task for async execution. Returns false if the queue is
-// full, meaning the event was dropped.
+// full or the pool has been stopped, meaning the event was dropped.
 func (p *workerPool) submit(task asyncTask) bool {
-	select {
-	case p.queue <- task:
-		return true
-	default:
-		p.logger.Warn("event dropped: worker pool queue full",
+	if !p.started.Load() {
+		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
 			slog.String("event", task.eventName),
-			slog.String("handler", task.handler.name),
 		)
+	}
+
+	if p.stopped.Load() {
 		if p.metrics != nil {
 			p.metrics.dropped.Inc()
 		}
+		p.logger.Warn("eventbus: submit after stop, event dropped",
+			slog.String("event", task.eventName),
+		)
+		return false
+	}
+
+	// Use recover to handle the tiny race window between stopped check and channel close.
+	defer func() {
+		if r := recover(); r != nil {
+			if p.metrics != nil {
+				p.metrics.dropped.Inc()
+			}
+		}
+	}()
+
+	select {
+	case p.queue <- task:
+		if p.metrics != nil {
+			p.metrics.queueDepth.Set(float64(len(p.queue)))
+		}
+		return true
+	default:
+		if p.metrics != nil {
+			p.metrics.dropped.Inc()
+		}
+		p.logger.Warn("eventbus: worker pool queue full, event dropped",
+			slog.String("event", task.eventName),
+			slog.String("handler", task.handler.name),
+		)
 		return false
 	}
 }
@@ -69,6 +101,7 @@ func (p *workerPool) submit(task asyncTask) bool {
 // After ctx cancellation, the channel is closed so workers can drain remaining
 // tasks before exiting.
 func (p *workerPool) start(ctx context.Context) {
+	p.started.Store(true)
 	for i := range p.workers {
 		p.wg.Add(1)
 		go p.worker(ctx, i)
@@ -77,9 +110,10 @@ func (p *workerPool) start(ctx context.Context) {
 }
 
 // stop closes the queue channel and waits for all workers to finish
-// processing remaining tasks.
+// processing remaining tasks. It is safe to call multiple times.
 func (p *workerPool) stop() {
-	close(p.queue)
+	p.stopped.Store(true)
+	p.closeOnce.Do(func() { close(p.queue) })
 	p.wg.Wait()
 }
 
@@ -91,11 +125,16 @@ func (p *workerPool) worker(_ context.Context, id int) {
 
 	for task := range p.queue {
 		if p.metrics != nil {
+			p.metrics.queueDepth.Set(float64(len(p.queue)))
 			p.metrics.activeWorkers.Inc()
 		}
-		p.executeTask(task)
+		func() {
+			if p.metrics != nil {
+				defer p.metrics.activeWorkers.Dec()
+			}
+			p.executeTask(task)
+		}()
 		if p.metrics != nil {
-			p.metrics.activeWorkers.Dec()
 			p.metrics.processed.WithLabelValues(task.eventName).Inc()
 		}
 	}

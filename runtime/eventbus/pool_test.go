@@ -354,3 +354,93 @@ func TestWorkerPool_AsyncErrorCallsOnError(t *testing.T) {
 	cancel()
 	_ = bus.Stop(context.Background())
 }
+
+func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+	)
+
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithAsync(), WithName("noop"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = bus.Start(ctx)
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond)
+
+	cancel()
+	err := bus.Stop(context.Background())
+	require.NoError(t, err)
+
+	// Submit after stop must not panic; it should return false (drop).
+	assert.NotPanics(t, func() {
+		ok := bus.pool.submit(asyncTask{
+			ctx:       context.Background(),
+			eventName: "test.event",
+			handler:   registeredHandler{name: "late"},
+			event:     testEvent{ID: "late"},
+		})
+		assert.False(t, ok)
+	})
+}
+
+func TestWorkerPool_DoubleStopDoesNotPanic(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = bus.Start(ctx)
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond)
+
+	cancel()
+
+	assert.NotPanics(t, func() {
+		_ = bus.Stop(context.Background())
+		_ = bus.Stop(context.Background())
+	})
+}
+
+func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+	)
+
+	// Submit before start must not panic; event may be buffered.
+	assert.NotPanics(t, func() {
+		ok := bus.pool.submit(asyncTask{
+			ctx:       context.Background(),
+			eventName: "test.event",
+			handler:   registeredHandler{name: "early"},
+			event:     testEvent{ID: "early"},
+		})
+		// The event should be buffered in the channel since pool is not stopped.
+		assert.True(t, ok)
+	})
+
+	// Start and drain.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = bus.Start(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	_ = bus.Stop(context.Background())
+}

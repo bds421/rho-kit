@@ -233,12 +233,17 @@ func (b *Bus) HasHandlers(eventName string) bool {
 // worker pool (if configured) or an unbounded goroutine (legacy behavior).
 func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
 	if b.pool != nil {
-		b.pool.submit(asyncTask{
+		if !b.pool.submit(asyncTask{
 			ctx:       ctx,
 			eventName: eventName,
 			handler:   h,
 			event:     event,
-		})
+		}) {
+			b.logger.Warn("async event dropped",
+				slog.String("event", eventName),
+				slog.String("handler", h.name),
+			)
+		}
 		return
 	}
 	go b.runAsync(ctx, eventName, h, event)
