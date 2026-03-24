@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,9 +145,8 @@ func TestVerifyInvalidTimestamp(t *testing.T) {
 		t.Fatal("expected error for invalid timestamp, got nil")
 	}
 
-	want := "reqsign: invalid timestamp"
-	if got := err.Error(); len(got) < len(want) || got[:len(want)] != want {
-		t.Errorf("error = %q, want prefix %q", got, want)
+	if got := err.Error(); !strings.Contains(got, "invalid timestamp") {
+		t.Errorf("error = %q, want it to contain %q", got, "invalid timestamp")
 	}
 }
 

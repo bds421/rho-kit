@@ -13,12 +13,9 @@ import (
 
 func TestMiddleware(t *testing.T) {
 	store := testStore()
-	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
-
 	signTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 	verifyTime := signTime.Add(10 * time.Minute)
-	signSigner := signing.NewSigner(signing.WithClock(fixedClock(signTime)))
+	signer := signing.NewSigner(signing.WithClock(fixedClock(signTime)))
 	verifySigner := signing.NewSigner(signing.WithClock(fixedClock(verifyTime)))
 
 	tests := []struct {
@@ -75,7 +72,7 @@ func TestMiddleware(t *testing.T) {
 			opts:   []VerifyOption{WithVerifySigner(verifySigner)},
 			setupReq: func(t *testing.T, req *http.Request, body []byte) {
 				t.Helper()
-				if err := SignRequest(req, body, store, WithSigner(signSigner)); err != nil {
+				if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
 					t.Fatalf("SignRequest failed: %v", err)
 				}
 				req.Body = io.NopCloser(bytes.NewReader(body))
@@ -87,11 +84,8 @@ func TestMiddleware(t *testing.T) {
 			method: http.MethodPost,
 			path:   "/api/test",
 			body:   make([]byte, MaxBodySize+1),
-			setupReq: func(_ *testing.T, req *http.Request, _ []byte) {
-				req.Header.Set(HeaderSignature, "sha256=placeholder")
-				req.Header.Set(HeaderTimestamp, "1718452800")
-				req.Header.Set(HeaderKeyID, "primary")
-			},
+			// No signature headers needed — size check runs before verification
+			setupReq:   func(_ *testing.T, _ *http.Request, _ []byte) {},
 			wantStatus: http.StatusRequestEntityTooLarge,
 		},
 		{

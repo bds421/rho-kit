@@ -27,28 +27,30 @@ func NewSigningTransport(base http.RoundTripper, store KeyStore, opts ...SignOpt
 	}
 }
 
-// RoundTrip reads the request body (if present), signs the request, and
-// delegates to the wrapped transport. The body is replaced with a new reader
-// so downstream can still read it.
+// RoundTrip clones the request, reads the body (if present), signs the clone,
+// and delegates to the wrapped transport. The original request is never mutated,
+// in accordance with the http.RoundTripper contract.
 func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+
 	var body []byte
 
-	if req.Body != nil && req.Body != http.NoBody {
-		defer func() { _ = req.Body.Close() }()
+	if clone.Body != nil && clone.Body != http.NoBody {
+		defer func() { _ = clone.Body.Close() }()
 		var err error
-		body, err = io.ReadAll(io.LimitReader(req.Body, MaxBodySize+1))
+		body, err = io.ReadAll(io.LimitReader(clone.Body, MaxBodySize+1))
 		if err != nil {
 			return nil, fmt.Errorf("reqsign: reading request body: %w", err)
 		}
 		if len(body) > MaxBodySize {
 			return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", MaxBodySize)
 		}
-		req.Body = io.NopCloser(bytes.NewReader(body))
+		clone.Body = io.NopCloser(bytes.NewReader(body))
 	}
 
-	if err := SignRequest(req, body, t.store, t.opts...); err != nil {
+	if err := SignRequest(clone, body, t.store, t.opts...); err != nil {
 		return nil, err
 	}
 
-	return t.base.RoundTrip(req)
+	return t.base.RoundTrip(clone)
 }

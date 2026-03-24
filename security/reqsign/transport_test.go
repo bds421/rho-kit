@@ -81,7 +81,9 @@ func TestSigningTransport_NilBody(t *testing.T) {
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
 
+	var captured *http.Request
 	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		captured = req
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	})
 
@@ -96,8 +98,13 @@ func TestSigningTransport_NilBody(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
-	if req.Header.Get(HeaderSignature) == "" {
+	// Verify the clone (not the original) received signature headers.
+	if captured.Header.Get(HeaderSignature) == "" {
 		t.Error("expected signature header on GET request")
+	}
+	// Original request must remain unmodified.
+	if req.Header.Get(HeaderSignature) != "" {
+		t.Error("original request should not be mutated by RoundTrip")
 	}
 }
 
