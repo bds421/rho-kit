@@ -50,30 +50,10 @@ func WithTxResult[T any](ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) 
 // PostgreSQL and MySQL 5.6.5+. The transaction is committed or rolled back
 // using the same semantics as [WithTx].
 func WithReadOnlyTx(ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) error) error {
-	tx := db.WithContext(ctx).Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-
-	panicked := true
-	defer func() {
-		if panicked {
-			_ = tx.Rollback().Error
+	return WithTx(ctx, db, func(tx *gorm.DB) error {
+		if err := tx.Exec("SET TRANSACTION READ ONLY").Error; err != nil {
+			return fmt.Errorf("gormdb: set read-only: %w", err)
 		}
-	}()
-
-	if err := tx.Exec("SET TRANSACTION READ ONLY").Error; err != nil {
-		_ = tx.Rollback().Error
-		panicked = false
-		return fmt.Errorf("gormdb: set read-only: %w", err)
-	}
-
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback().Error
-		panicked = false
-		return err
-	}
-
-	panicked = false
-	return tx.Commit().Error
+		return fn(tx)
+	})
 }

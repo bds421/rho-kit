@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/bds421/rho-kit/core/apperror"
 )
 
 type versionedModel struct {
@@ -48,4 +50,17 @@ func TestCheckVersion_Conflict(t *testing.T) {
 	var unchanged versionedModel
 	db.First(&unchanged, "id = ?", "1")
 	assert.Equal(t, int64(3), unchanged.Version)
+}
+
+func TestCheckVersion_NonExistentRow(t *testing.T) {
+	db := setupVersionedDB(t)
+
+	model := &versionedModel{ID: "nonexistent"}
+	err := CheckVersion(db, model, 1)
+	require.ErrorIs(t, err, ErrVersionConflict)
+	assert.True(t, apperror.IsConflict(err))
+}
+
+func TestCheckVersion_ErrVersionConflictIsConflict(t *testing.T) {
+	assert.True(t, apperror.IsConflict(ErrVersionConflict))
 }

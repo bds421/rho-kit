@@ -80,6 +80,22 @@ func TestWithTxResult_RollbackOnError(t *testing.T) {
 	assert.Nil(t, result)
 }
 
+func TestWithTxResult_RollbackOnPanic(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	assert.Panics(t, func() {
+		_, _ = WithTxResult(ctx, db, func(tx *gorm.DB) (*testModel, error) {
+			_ = tx.Create(&testModel{ID: "1", Name: "alice"}).Error
+			panic("boom")
+		})
+	})
+
+	var count int64
+	db.Model(&testModel{}).Count(&count)
+	assert.Equal(t, int64(0), count)
+}
+
 func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()

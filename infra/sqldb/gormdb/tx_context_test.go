@@ -51,3 +51,30 @@ func TestDBFromContext_ReturnsFallbackWhenMissing(t *testing.T) {
 	got := DBFromContext(ctx, db)
 	assert.Equal(t, db, got)
 }
+
+func TestContextRoundTrip_WrapperType(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+	defer func() { _ = tx.Rollback().Error }()
+
+	// Store tx via ContextWithTx and retrieve via TxFromContext.
+	ctx = ContextWithTx(ctx, tx)
+	got, ok := TxFromContext(ctx)
+	require.True(t, ok)
+	assert.Same(t, tx.Statement.DB, got.Statement.DB, "round-tripped *gorm.DB should wrap the same sql.DB")
+}
+
+func TestTxFromContext_DoesNotCollideWithRawGormDB(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// A plain *gorm.DB stored directly in context should not be returned
+	// by TxFromContext, proving the wrapper prevents collisions.
+	ctx = context.WithValue(ctx, struct{}{}, db)
+
+	_, ok := TxFromContext(ctx)
+	assert.False(t, ok, "TxFromContext must not return values stored under a different key")
+}
