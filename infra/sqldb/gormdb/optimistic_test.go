@@ -117,3 +117,32 @@ func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
 	assert.False(t, hasVersion, "input updates map was mutated")
 	assert.Len(t, updates, 1)
 }
+
+func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
+	db := setupVersionedDB(t)
+	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+
+	model := &versionedModel{ID: "1"}
+
+	t.Run("nil map", func(t *testing.T) {
+		err := UpdateWithVersion(db, model, 1, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "updates must not be empty")
+	})
+
+	t.Run("empty map", func(t *testing.T) {
+		err := UpdateWithVersion(db, model, 1, map[string]any{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "updates must not be empty")
+	})
+}
+
+func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
+	db := setupVersionedDB(t)
+	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+
+	model := &versionedModel{ID: "1"}
+	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob", "version": int64(99)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain \"version\"")
+}

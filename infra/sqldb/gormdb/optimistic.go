@@ -55,6 +55,13 @@ func CheckVersion(db *gorm.DB, model any, expectedVersion int64) error {
 // that need to distinguish "deleted" from "stale version" should check
 // existence separately.
 func UpdateWithVersion(db *gorm.DB, model any, expectedVersion int64, updates map[string]any) error {
+	if len(updates) == 0 {
+		return fmt.Errorf("gormdb: updates must not be empty")
+	}
+	if _, ok := updates["version"]; ok {
+		return fmt.Errorf("gormdb: updates must not contain \"version\"; it is managed automatically by UpdateWithVersion")
+	}
+
 	merged := make(map[string]any, len(updates)+1)
 	for k, v := range updates {
 		merged[k] = v

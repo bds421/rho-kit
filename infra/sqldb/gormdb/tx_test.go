@@ -96,6 +96,8 @@ func TestWithTxResult_RollbackOnPanic(t *testing.T) {
 	assert.Equal(t, int64(0), count)
 }
 
+// TODO: add integration test against PostgreSQL to verify the success path
+// of WithReadOnlyTx (SQLite does not support SET TRANSACTION READ ONLY).
 func TestWithReadOnlyTx_AllowsReads(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()

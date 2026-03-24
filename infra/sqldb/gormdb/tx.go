@@ -18,6 +18,8 @@ func WithTx(ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) error) error 
 
 	panicked := true
 	defer func() {
+		// We intentionally do not call recover(), so the panic propagates
+		// naturally after this defer returns.
 		if panicked {
 			_ = tx.Rollback().Error
 		}
