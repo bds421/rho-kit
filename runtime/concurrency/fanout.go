@@ -42,8 +42,8 @@ type Result[T any] struct {
 	Err error
 }
 
-// Option configures [FanOut] and [FanOutSettled].
-type Option func(*config)
+// FanOutOption configures [FanOut] and [FanOutSettled].
+type FanOutOption func(*config)
 
 type config struct {
 	maxGoroutines int
@@ -51,7 +51,7 @@ type config struct {
 
 // WithMaxGoroutines limits the number of goroutines that execute concurrently.
 // Values less than 1 are ignored (no limit).
-func WithMaxGoroutines(n int) Option {
+func WithMaxGoroutines(n int) FanOutOption {
 	return func(c *config) {
 		if n >= 1 {
 			c.maxGoroutines = n
@@ -59,7 +59,7 @@ func WithMaxGoroutines(n int) Option {
 	}
 }
 
-func buildConfig(opts []Option) config {
+func buildConfig(opts []FanOutOption) config {
 	var cfg config
 	for _, opt := range opts {
 		opt(&cfg)
@@ -74,13 +74,16 @@ func buildConfig(opts []Option) config {
 // concurrently-running goroutines are discarded. On success the returned
 // slice has the same length and order as fns.
 //
+// When the number of functions is derived from external input, always use
+// [WithMaxGoroutines] to prevent goroutine exhaustion.
+//
 // Note: when [WithMaxGoroutines] is set, FanOut delegates limiting to errgroup
 // which may briefly block after context cancellation until a running goroutine
 // frees a slot. [FanOutSettled] uses a context-aware semaphore that responds
 // immediately to cancellation.
 //
 // A nil or empty fns slice returns an empty (non-nil) slice and no error.
-func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...Option) ([]T, error) {
+func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...FanOutOption) ([]T, error) {
 	if len(fns) == 0 {
 		return []T{}, nil
 	}
@@ -128,12 +131,15 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 // regardless of individual errors. The returned slice has the same length
 // and order as fns. Each [Result] contains either a value or an error.
 //
+// When the number of functions is derived from external input, always use
+// [WithMaxGoroutines] to prevent goroutine exhaustion.
+//
 // Unlike [FanOut], a failing function does not cancel others — the parent
 // ctx is passed through unmodified. Panics are recovered and converted to
 // errors in the corresponding Result.
 //
 // A nil or empty fns slice returns an empty (non-nil) slice.
-func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...Option) []Result[T] {
+func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...FanOutOption) []Result[T] {
 	if len(fns) == 0 {
 		return []Result[T]{}
 	}
