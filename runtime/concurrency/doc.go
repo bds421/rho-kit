@@ -11,6 +11,8 @@
 //
 //   - [FanOutSettled] runs N functions concurrently and collects every
 //     result regardless of individual errors (like Promise.allSettled).
+//     Each function receives the original parent context; no derived
+//     cancellation context is created.
 //
 // Both functions recover panics in each goroutine and convert them to errors.
 // If the panic value implements the error interface, it is available via

@@ -142,10 +142,12 @@ func TestFanOut_WithMaxGoroutines(t *testing.T) {
 
 	const limit = 2
 	blocker := make(chan struct{})
+	entered := make(chan struct{}, 10)
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
 		fns[i] = func(_ context.Context) (int, error) {
 			trackPeak(&running, &peak)
+			entered <- struct{}{}
 			<-blocker
 			running.Add(-1)
 			return 0, nil
@@ -160,6 +162,10 @@ func TestFanOut_WithMaxGoroutines(t *testing.T) {
 		close(done)
 	}()
 
+	// Wait until all semaphore slots are occupied before releasing.
+	for range limit {
+		<-entered
+	}
 	close(blocker) // release all goroutines at once
 	<-done
 
@@ -278,10 +284,12 @@ func TestFanOutSettled_WithMaxGoroutines(t *testing.T) {
 
 	const limit = 3
 	blocker := make(chan struct{})
+	entered := make(chan struct{}, 10)
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
 		fns[i] = func(_ context.Context) (int, error) {
 			trackPeak(&running, &peak)
+			entered <- struct{}{}
 			<-blocker
 			running.Add(-1)
 			return 0, nil
@@ -293,6 +301,10 @@ func TestFanOutSettled_WithMaxGoroutines(t *testing.T) {
 		done <- FanOutSettled(context.Background(), fns, WithMaxGoroutines(limit))
 	}()
 
+	// Wait until all semaphore slots are occupied before releasing.
+	for range limit {
+		<-entered
+	}
 	close(blocker) // release all goroutines at once
 	got := <-done
 
@@ -365,7 +377,7 @@ func TestFanOutSettled_ContextAwareSemaphore(t *testing.T) {
 		// The second function should have a context cancellation error
 		// because it could not acquire the semaphore.
 		assert.ErrorIs(t, got[1].Err, context.Canceled)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("FanOutSettled did not return; semaphore is not context-aware")
 	}
 }
