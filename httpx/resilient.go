@@ -65,6 +65,11 @@ func WithCBOnStateChange(fn func(from, to circuitbreaker.State)) ResilientOption
 // remaining budget minus a safety margin, instead of using the static client
 // timeout. The deadline transport is outermost in the transport chain so it
 // adjusts the context before the circuit breaker evaluates.
+//
+// Note: the static http.Client.Timeout (default 10s) still applies as an
+// upper bound. If the deadline budget exceeds the client timeout, the client
+// timeout wins. To rely solely on deadline budget propagation, use
+// WithResilientTimeout(0).
 func WithDeadlineBudget(opts ...DeadlineBudgetOption) ResilientOption {
 	return func(c *resilientConfig) {
 		c.deadlineBudget = true

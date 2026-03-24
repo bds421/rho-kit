@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -83,28 +84,16 @@ func TestDeadlineBudgetTransport_TightDeadlineUsesMinTimeout(t *testing.T) {
 		resp: &http.Response{StatusCode: http.StatusOK},
 	}
 	minTimeout := 2 * time.Second
+	// remaining (~3s) minus safetyMargin (2.5s) = 0.5s < minTimeout (2s),
+	// so the transport should clamp to minTimeout.
 	transport := &deadlineBudgetTransport{
 		base:         mock,
-		safetyMargin: 500 * time.Millisecond,
+		safetyMargin: 2500 * time.Millisecond,
 		minTimeout:   minTimeout,
 	}
 
-	// Use a parent context with a generous deadline so the minTimeout floor
-	// is observable. The remaining budget (200ms) minus safety margin (500ms)
-	// is negative, so the transport should use minTimeout (2s). Because the
-	// parent deadline is 10s, the child context.WithTimeout(2s) wins.
-	parentCtx, parentCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer parentCancel()
-
-	// Create a derived context that simulates a tight remaining budget:
-	// remaining = 200ms, but parent deadline is still 10s away.
-	// We achieve this by directly setting the deadline on the transport's
-	// perspective: the transport reads time.Until(deadline) - safetyMargin.
-	// With a 10s parent, remaining is ~10s, minus 500ms = ~9.5s, which is
-	// above minTimeout. Instead, we test with a short remaining.
-	//
-	// To properly test the floor: set remaining (3s) minus safetyMargin (2.5s) = 0.5s < minTimeout (2s).
-	transport.safetyMargin = 2500 * time.Millisecond
 
 	req, _ := http.NewRequestWithContext(parentCtx, http.MethodGet, "http://example.com", nil)
 	now := time.Now()
@@ -118,9 +107,8 @@ func TestDeadlineBudgetTransport_TightDeadlineUsesMinTimeout(t *testing.T) {
 		t.Fatal("expected outbound context to have a deadline")
 	}
 
-	// The transport should have applied minTimeout (2s) as the floor.
-	// The outbound deadline should be approximately now + 2s.
-	expectedMin := now.Add(minTimeout - 200*time.Millisecond)
+	// The outbound deadline should be approximately now + minTimeout.
+	expectedMin := now.Add(minTimeout - 500*time.Millisecond)
 	if outDeadline.Before(expectedMin) {
 		t.Fatalf("outbound deadline %v should be at least %v (minTimeout floor)", outDeadline, expectedMin)
 	}
@@ -131,22 +119,15 @@ func TestDeadlineBudgetTransport_SafetyMarginLargerThanRemaining(t *testing.T) {
 		resp: &http.Response{StatusCode: http.StatusOK},
 	}
 	minTimeout := 1 * time.Second
+	// safetyMargin (11s) > remaining (~10s), so result is negative → clamp to minTimeout.
 	transport := &deadlineBudgetTransport{
 		base:         mock,
-		safetyMargin: 3 * time.Second,
+		safetyMargin: 11 * time.Second,
 		minTimeout:   minTimeout,
 	}
 
-	// Parent has 10s deadline, but remaining (10s) - safetyMargin (3s) = 7s > minTimeout.
-	// To test the floor: use a 4s parent. remaining (4s) - safetyMargin (3s) = 1s = minTimeout.
-	// Use a 2s parent: remaining (2s) - safetyMargin (3s) = -1s < minTimeout → clamp to 1s.
-	// Parent deadline is 10s, so context.WithTimeout(1s) will produce a 1s deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Override safetyMargin to be larger than remaining budget would suggest.
-	// With 10s parent and 11s safety margin, remaining - margin is negative.
-	transport.safetyMargin = 11 * time.Second
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
 	now := time.Now()
@@ -161,8 +142,8 @@ func TestDeadlineBudgetTransport_SafetyMarginLargerThanRemaining(t *testing.T) {
 	}
 
 	// The transport should clamp to minTimeout (1s).
-	expectedMin := now.Add(minTimeout - 200*time.Millisecond)
-	expectedMax := now.Add(minTimeout + 200*time.Millisecond)
+	expectedMin := now.Add(minTimeout - 500*time.Millisecond)
+	expectedMax := now.Add(minTimeout + 500*time.Millisecond)
 	if outDeadline.Before(expectedMin) || outDeadline.After(expectedMax) {
 		t.Fatalf("outbound deadline %v should be approximately %v (minTimeout floor)", outDeadline, now.Add(minTimeout))
 	}
@@ -255,5 +236,76 @@ func TestWithDeadlineBudget_DefaultOptions(t *testing.T) {
 	}
 	if dbt.minTimeout != defaultMinTimeout {
 		t.Fatalf("expected default minTimeout %v, got %v", defaultMinTimeout, dbt.minTimeout)
+	}
+}
+
+func TestDeadlineBudgetTransport_BaseTransportErrorPropagation(t *testing.T) {
+	baseErr := errors.New("connection refused")
+
+	t.Run("with deadline", func(t *testing.T) {
+		mock := &mockRoundTripper{err: baseErr}
+		transport := &deadlineBudgetTransport{
+			base:         mock,
+			safetyMargin: 500 * time.Millisecond,
+			minTimeout:   1 * time.Second,
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
+		resp, err := transport.RoundTrip(req)
+		if resp != nil {
+			t.Fatal("expected nil response when base transport errors")
+		}
+		if !errors.Is(err, baseErr) {
+			t.Fatalf("expected base error %v, got %v", baseErr, err)
+		}
+	})
+
+	t.Run("without deadline", func(t *testing.T) {
+		mock := &mockRoundTripper{err: baseErr}
+		transport := &deadlineBudgetTransport{
+			base:         mock,
+			safetyMargin: 500 * time.Millisecond,
+			minTimeout:   1 * time.Second,
+		}
+
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
+		resp, err := transport.RoundTrip(req)
+		if resp != nil {
+			t.Fatal("expected nil response when base transport errors")
+		}
+		if !errors.Is(err, baseErr) {
+			t.Fatalf("expected base error %v, got %v", baseErr, err)
+		}
+	})
+}
+
+func TestWithSafetyMargin_IgnoresNegative(t *testing.T) {
+	client := NewResilientHTTPClient(WithDeadlineBudget(
+		WithSafetyMargin(-1 * time.Second),
+	))
+	dbt := client.Transport.(*deadlineBudgetTransport)
+	if dbt.safetyMargin != defaultSafetyMargin {
+		t.Fatalf("expected default safetyMargin %v after negative input, got %v", defaultSafetyMargin, dbt.safetyMargin)
+	}
+}
+
+func TestWithMinTimeout_IgnoresZeroAndNegative(t *testing.T) {
+	client := NewResilientHTTPClient(WithDeadlineBudget(
+		WithMinTimeout(0),
+	))
+	dbt := client.Transport.(*deadlineBudgetTransport)
+	if dbt.minTimeout != defaultMinTimeout {
+		t.Fatalf("expected default minTimeout %v after zero input, got %v", defaultMinTimeout, dbt.minTimeout)
+	}
+
+	client = NewResilientHTTPClient(WithDeadlineBudget(
+		WithMinTimeout(-1 * time.Second),
+	))
+	dbt = client.Transport.(*deadlineBudgetTransport)
+	if dbt.minTimeout != defaultMinTimeout {
+		t.Fatalf("expected default minTimeout %v after negative input, got %v", defaultMinTimeout, dbt.minTimeout)
 	}
 }

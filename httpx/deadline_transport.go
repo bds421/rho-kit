@@ -20,16 +20,25 @@ type deadlineBudgetConfig struct {
 }
 
 // WithSafetyMargin sets the duration subtracted from the caller's remaining
-// deadline to account for network overhead. Default: 500ms.
+// deadline to account for network overhead. Negative values are ignored.
+// Default: 500ms.
 func WithSafetyMargin(d time.Duration) DeadlineBudgetOption {
-	return func(c *deadlineBudgetConfig) { c.safetyMargin = d }
+	return func(c *deadlineBudgetConfig) {
+		if d >= 0 {
+			c.safetyMargin = d
+		}
+	}
 }
 
 // WithMinTimeout sets the minimum timeout for outbound requests. Even if the
 // caller's remaining budget minus safety margin is lower, this floor is used.
-// Default: 1s.
+// Zero and negative values are ignored. Default: 1s.
 func WithMinTimeout(d time.Duration) DeadlineBudgetOption {
-	return func(c *deadlineBudgetConfig) { c.minTimeout = d }
+	return func(c *deadlineBudgetConfig) {
+		if d > 0 {
+			c.minTimeout = d
+		}
+	}
 }
 
 // deadlineBudgetTransport wraps an http.RoundTripper to propagate the caller's
@@ -55,6 +64,9 @@ func (t *deadlineBudgetTransport) RoundTrip(req *http.Request) (*http.Response, 
 		remaining = t.minTimeout
 	}
 
+	// cancel is deferred here and runs after RoundTrip returns (after response
+	// headers are received). This is safe: http.Transport detaches the context
+	// from the connection once headers arrive, so the body remains readable.
 	ctx, cancel := context.WithTimeout(req.Context(), remaining)
 	defer cancel()
 
