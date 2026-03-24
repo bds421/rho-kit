@@ -76,6 +76,9 @@ func TestFanOut_AllSucceed(t *testing.T) {
 func TestFanOut_OneFailsCancelsOthers(t *testing.T) {
 	errBoom := errors.New("boom")
 
+	// fn[1] waits for fn[0] to signal via the started channel before proceeding.
+	// Both goroutines launch concurrently via errgroup; the channel handshake
+	// ensures deterministic ordering regardless of scheduling.
 	started := make(chan struct{})
 	fns := []func(ctx context.Context) (int, error){
 		func(ctx context.Context) (int, error) {
@@ -142,6 +145,7 @@ func TestFanOut_WithMaxGoroutines(t *testing.T) {
 
 	const limit = 2
 	blocker := make(chan struct{})
+	// Buffered to len(fns) so no goroutine blocks on send.
 	entered := make(chan struct{}, 10)
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
@@ -167,7 +171,12 @@ func TestFanOut_WithMaxGoroutines(t *testing.T) {
 		<-entered
 	}
 	close(blocker) // release all goroutines at once
-	<-done
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timed out — possible deadlock")
+	}
 
 	require.NoError(t, err)
 	assert.Len(t, got, 10)
@@ -284,6 +293,7 @@ func TestFanOutSettled_WithMaxGoroutines(t *testing.T) {
 
 	const limit = 3
 	blocker := make(chan struct{})
+	// Buffered to len(fns) so no goroutine blocks on send.
 	entered := make(chan struct{}, 10)
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
@@ -306,7 +316,13 @@ func TestFanOutSettled_WithMaxGoroutines(t *testing.T) {
 		<-entered
 	}
 	close(blocker) // release all goroutines at once
-	got := <-done
+
+	var got []Result[int]
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timed out — possible deadlock")
+	}
 
 	assert.Len(t, got, 10)
 	assert.LessOrEqual(t, peak.Load(), int32(limit))
@@ -463,6 +479,26 @@ func TestFanOutSettled_WithMaxGoroutinesNegative(t *testing.T) {
 
 	got := FanOutSettled(context.Background(), fns, WithMaxGoroutines(-1))
 	assert.Len(t, got, 5, "WithMaxGoroutines(-1) should behave as unbounded")
+}
+
+// ---------------------------------------------------------------------------
+// Context + MaxGoroutines
+// ---------------------------------------------------------------------------
+
+func TestFanOut_ContextCancelledWithMaxGoroutines(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	fns := []func(ctx context.Context) (int, error){
+		func(ctx context.Context) (int, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		},
+	}
+
+	_, err := FanOut(ctx, fns, WithMaxGoroutines(2))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // ---------------------------------------------------------------------------

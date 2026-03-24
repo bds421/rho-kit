@@ -155,9 +155,8 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 		}
 
 		go func() {
-			// Defers execute LIFO: panic recovery runs first, then semaphore
-			// release, then wg.Done. This ordering ensures the panic is captured
-			// before the slot is freed for the next goroutine.
+			// Defers execute LIFO: the last-registered panic recovery runs first,
+			// then semaphore release, then wg.Done (registered first, runs last).
 			defer wg.Done()
 			// If a running goroutine panics, the deferred <-sem releases the slot,
 			// allowing the loop to proceed with the next function.
