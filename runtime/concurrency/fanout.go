@@ -23,6 +23,15 @@ func (e *PanicError) Error() string {
 	return fmt.Sprintf("concurrency: goroutine %d panicked: %v", e.Index, e.Value)
 }
 
+// Unwrap returns the panic value as an error if it implements the error
+// interface, enabling errors.Is and errors.As through the error chain.
+func (e *PanicError) Unwrap() error {
+	if err, ok := e.Value.(error); ok {
+		return err
+	}
+	return nil
+}
+
 // Result holds the outcome of a single function executed by [FanOutSettled].
 type Result[T any] struct {
 	// Value is the return value on success. Zero value when Err is non-nil.

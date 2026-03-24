@@ -370,7 +370,7 @@ func TestFanOutSettled_WithMaxGoroutinesNegative(t *testing.T) {
 func BenchmarkFanOut(b *testing.B) {
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return i, nil }
+		fns[i] = func(ctx context.Context) (int, error) { return 0, nil }
 	}
 
 	b.ResetTimer()
@@ -382,7 +382,7 @@ func BenchmarkFanOut(b *testing.B) {
 func BenchmarkFanOutSettled(b *testing.B) {
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return i, nil }
+		fns[i] = func(ctx context.Context) (int, error) { return 0, nil }
 	}
 
 	b.ResetTimer()
