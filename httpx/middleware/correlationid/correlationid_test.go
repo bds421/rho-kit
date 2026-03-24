@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bds421/rho-kit/httpx"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestWithCorrelationID_GeneratesID(t *testing.T) {
@@ -189,4 +190,16 @@ func TestIsValidCorrelationID_MaxLenWiring(t *testing.T) {
 	if notOK {
 		t.Error("129-char ID should be rejected")
 	}
+}
+
+func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
+	ctx := context.Background() // no correlation ID set
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(Header, "existing-id")
+
+	PropagateHTTP(ctx, req)
+
+	// When context has no correlation ID, PropagateHTTP is a no-op.
+	// Pre-existing header should be preserved.
+	assert.Equal(t, "existing-id", req.Header.Get(Header))
 }
