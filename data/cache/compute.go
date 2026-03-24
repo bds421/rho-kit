@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
+
+// ErrCacheClosed is returned by GetOrCompute when the ComputeCache has been closed.
+var ErrCacheClosed = errors.New("cache: ComputeCache is closed")
 
 // ComputeFunc computes a cache value. Returns the value, its TTL, and any error.
 type ComputeFunc[T any] func(ctx context.Context) (T, time.Duration, error)
@@ -39,6 +43,7 @@ type ComputeOption func(*computeConfig)
 // WithStaleTTL sets the stale-while-revalidate window. After the primary TTL
 // expires, stale data is served for up to this duration while a background
 // refresh runs. Zero means no stale serving (default).
+// Negative values are silently ignored (the default zero value is used).
 func WithStaleTTL(d time.Duration) ComputeOption {
 	return func(cfg *computeConfig) {
 		if d >= 0 {
@@ -83,9 +88,11 @@ type ComputeCache[T any] struct {
 	group   singleflight.Group
 	cfg     computeConfig
 
-	bgWg     sync.WaitGroup
-	cancelBg context.CancelFunc
-	bgCtx    context.Context
+	bgWg      sync.WaitGroup
+	cancelBg  context.CancelFunc
+	bgCtx     context.Context
+	closeOnce sync.Once
+	closed    atomic.Bool
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
@@ -158,6 +165,10 @@ func (cc *ComputeCache[T]) fullKey(key string) (string, error) {
 // Errors from fn are propagated to all waiters and are NOT cached.
 func (cc *ComputeCache[T]) GetOrCompute(ctx context.Context, key string, fn ComputeFunc[T]) (T, error) {
 	var zero T
+
+	if cc.closed.Load() {
+		return zero, ErrCacheClosed
+	}
 
 	full, err := cc.fullKey(key)
 	if err != nil {
@@ -327,9 +338,13 @@ func (cc *ComputeCache[T]) Wait() {
 
 // Close cancels all background refresh operations and waits for them to
 // finish. After Close returns, no new background refreshes will be started.
+// Close is idempotent; calling it multiple times is safe.
 // Implements io.Closer.
 func (cc *ComputeCache[T]) Close() error {
-	cc.cancelBg()
+	cc.closeOnce.Do(func() {
+		cc.closed.Store(true)
+		cc.cancelBg()
+	})
 	cc.bgWg.Wait()
 	return nil
 }

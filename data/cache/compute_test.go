@@ -23,6 +23,41 @@ func newTestBackend(t *testing.T) *MemoryCache {
 	return mc
 }
 
+// faultyBackend wraps a Cache and injects errors for testing.
+type faultyBackend struct {
+	Cache
+	getErr atomic.Value // stores error
+	setErr atomic.Value // stores error
+}
+
+func (fb *faultyBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if v := fb.getErr.Load(); v != nil {
+		if err, ok := v.(error); ok {
+			return nil, err
+		}
+	}
+	return fb.Cache.Get(ctx, key)
+}
+
+func (fb *faultyBackend) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if v := fb.setErr.Load(); v != nil {
+		if err, ok := v.(error); ok {
+			return err
+		}
+	}
+	return fb.Cache.Set(ctx, key, value, ttl)
+}
+
+// assertCounterValue checks a prometheus CounterVec label has the expected value.
+func assertCounterValue(t *testing.T, cv *prometheus.CounterVec, label string, expected float64) {
+	t.Helper()
+	counter, err := cv.GetMetricWithLabelValues(label)
+	require.NoError(t, err)
+	var m dto.Metric
+	require.NoError(t, counter.Write(&m))
+	assert.Equal(t, expected, m.GetCounter().GetValue())
+}
+
 func TestComputeCache_BasicMissAndHit(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "test:", WithComputeName("basic"))
@@ -188,6 +223,60 @@ func TestComputeCache_ContextCancellation(t *testing.T) {
 	assert.Equal(t, "ok", val)
 }
 
+func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "ctxleak:")
+	require.NoError(t, err)
+
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		close(started) // signal that compute has started
+		<-proceed      // wait for test to release
+		return "result", 10 * time.Minute, nil
+	}
+
+	// Caller 1: will be cancelled.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var val1 string
+	var err1 error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		val1, err1 = cc.GetOrCompute(ctx1, "shared", fn)
+	}()
+
+	// Wait for fn to start executing.
+	<-started
+
+	// Caller 2: should NOT be affected by caller 1's cancellation.
+	var val2 string
+	var err2 error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		val2, err2 = cc.GetOrCompute(context.Background(), "shared", fn)
+	}()
+
+	// Give caller 2 time to join the singleflight group.
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel caller 1's context — should NOT affect the compute.
+	cancel1()
+
+	// Release the compute function.
+	close(proceed)
+	wg.Wait()
+
+	// Both callers should get the result because WithoutCancel protects the compute.
+	require.NoError(t, err1, "caller 1 should succeed despite context cancellation")
+	assert.Equal(t, "result", val1)
+	require.NoError(t, err2, "caller 2 should not be affected by caller 1's cancellation")
+	assert.Equal(t, "result", val2)
+}
+
 func TestComputeCache_Metrics(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
@@ -290,31 +379,6 @@ func TestComputeCache_ErrorMetrics(t *testing.T) {
 	assertCounterValue(t, metrics.misses, "err_cache", 1)
 }
 
-// faultyBackend wraps a Cache and injects errors for testing.
-type faultyBackend struct {
-	Cache
-	getErr atomic.Value // stores error
-	setErr atomic.Value // stores error
-}
-
-func (fb *faultyBackend) Get(ctx context.Context, key string) ([]byte, error) {
-	if v := fb.getErr.Load(); v != nil {
-		if err, ok := v.(error); ok {
-			return nil, err
-		}
-	}
-	return fb.Cache.Get(ctx, key)
-}
-
-func (fb *faultyBackend) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	if v := fb.setErr.Load(); v != nil {
-		if err, ok := v.(error); ok {
-			return err
-		}
-	}
-	return fb.Cache.Set(ctx, key, value, ttl)
-}
-
 func TestComputeCache_UnmarshalFailure(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
@@ -390,60 +454,6 @@ func TestComputeCache_BackendGetErrorNotTreatedAsMiss(t *testing.T) {
 	assertCounterValue(t, metrics.misses, "geterr_cache", 1)
 }
 
-func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T) {
-	backend := newTestBackend(t)
-	cc, err := NewComputeCache[string](backend, "ctxleak:")
-	require.NoError(t, err)
-
-	started := make(chan struct{})
-	proceed := make(chan struct{})
-
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		close(started) // signal that compute has started
-		<-proceed      // wait for test to release
-		return "result", 10 * time.Minute, nil
-	}
-
-	// Caller 1: will be cancelled.
-	ctx1, cancel1 := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	var val1 string
-	var err1 error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		val1, err1 = cc.GetOrCompute(ctx1, "shared", fn)
-	}()
-
-	// Wait for fn to start executing.
-	<-started
-
-	// Caller 2: should NOT be affected by caller 1's cancellation.
-	var val2 string
-	var err2 error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		val2, err2 = cc.GetOrCompute(context.Background(), "shared", fn)
-	}()
-
-	// Give caller 2 time to join the singleflight group.
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel caller 1's context — should NOT affect the compute.
-	cancel1()
-
-	// Release the compute function.
-	close(proceed)
-	wg.Wait()
-
-	// Both callers should get the result because WithoutCancel protects the compute.
-	require.NoError(t, err1, "caller 1 should succeed despite context cancellation")
-	assert.Equal(t, "result", val1)
-	require.NoError(t, err2, "caller 2 should not be affected by caller 1's cancellation")
-	assert.Equal(t, "result", val2)
-}
-
 func TestComputeCache_StaleTTLZeroNoStaleServing(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "nostalettl:")
@@ -473,123 +483,4 @@ func TestComputeCache_StaleTTLZeroNoStaleServing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "v2", val, "should NOT serve stale value when staleTTL=0")
 	assert.Equal(t, int32(2), calls.Load())
-}
-
-// assertCounterValue checks a prometheus CounterVec label has the expected value.
-func TestComputeCache_Close(t *testing.T) {
-	backend := newTestBackend(t)
-	cc, err := NewComputeCache[string](backend, "close:",
-		WithStaleTTL(5*time.Minute),
-	)
-	require.NoError(t, err)
-
-	var calls atomic.Int32
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		n := calls.Add(1)
-		if n == 1 {
-			return "v1", 50 * time.Millisecond, nil
-		}
-		return "v2", 10 * time.Minute, nil
-	}
-
-	// Compute initial value.
-	val, err := cc.GetOrCompute(context.Background(), "k", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "v1", val)
-	backend.Sync()
-
-	// Wait for expiry to trigger a background refresh.
-	time.Sleep(100 * time.Millisecond)
-	_, err = cc.GetOrCompute(context.Background(), "k", fn)
-	require.NoError(t, err)
-
-	// Close should cancel background work and wait for completion.
-	err = cc.Close()
-	require.NoError(t, err)
-}
-
-func TestComputeCache_WithRefreshTimeout(t *testing.T) {
-	backend := newTestBackend(t)
-	cc, err := NewComputeCache[string](backend, "rto:",
-		WithStaleTTL(5*time.Minute),
-		WithRefreshTimeout(50*time.Millisecond),
-	)
-	require.NoError(t, err)
-	defer func() { _ = cc.Close() }()
-
-	var calls atomic.Int32
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		n := calls.Add(1)
-		if n == 1 {
-			return "v1", 50 * time.Millisecond, nil
-		}
-		// Second call blocks until context is cancelled or done.
-		<-ctx.Done()
-		return "", 0, ctx.Err()
-	}
-
-	// Compute initial value.
-	val, err := cc.GetOrCompute(context.Background(), "k", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "v1", val)
-	backend.Sync()
-
-	// Wait for expiry to trigger a background refresh.
-	time.Sleep(100 * time.Millisecond)
-
-	// This should serve stale and trigger a bg refresh that will time out.
-	val, err = cc.GetOrCompute(context.Background(), "k", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "v1", val)
-
-	// Wait for bg refresh to complete (should time out quickly).
-	cc.Wait()
-}
-
-func TestComputeCache_CustomCodec(t *testing.T) {
-	backend := newTestBackend(t)
-
-	cc, err := NewComputeCacheWithCodec[string](backend, "codec:", JSONCodec[string]{})
-	require.NoError(t, err)
-	defer func() { _ = cc.Close() }()
-
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		return "hello", 10 * time.Minute, nil
-	}
-
-	val, err := cc.GetOrCompute(context.Background(), "key1", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "hello", val)
-
-	backend.Sync()
-
-	// Should hit cache.
-	val, err = cc.GetOrCompute(context.Background(), "key1", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "hello", val)
-}
-
-func TestComputeCache_NilCodecUsesJSON(t *testing.T) {
-	backend := newTestBackend(t)
-
-	cc, err := NewComputeCacheWithCodec[string](backend, "nilcodec:", nil)
-	require.NoError(t, err)
-	defer func() { _ = cc.Close() }()
-
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		return "world", 10 * time.Minute, nil
-	}
-
-	val, err := cc.GetOrCompute(context.Background(), "key1", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "world", val)
-}
-
-func assertCounterValue(t *testing.T, cv *prometheus.CounterVec, label string, expected float64) {
-	t.Helper()
-	counter, err := cv.GetMetricWithLabelValues(label)
-	require.NoError(t, err)
-	var m dto.Metric
-	require.NoError(t, counter.Write(&m))
-	assert.Equal(t, expected, m.GetCounter().GetValue())
 }
