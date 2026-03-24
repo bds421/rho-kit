@@ -33,6 +33,18 @@ func TestPanicError_Unwrap(t *testing.T) {
 	assert.NotEmpty(t, pe.Stack)
 }
 
+func TestPanicError_Unwrap_WithErrorValue(t *testing.T) {
+	inner := errors.New("root cause")
+	pe := &PanicError{Index: 0, Value: inner, Stack: "fake"}
+	assert.Equal(t, inner, pe.Unwrap())
+	assert.ErrorIs(t, pe, inner)
+}
+
+func TestPanicError_Unwrap_WithNonErrorValue(t *testing.T) {
+	pe := &PanicError{Index: 0, Value: "just a string", Stack: "fake"}
+	assert.Nil(t, pe.Unwrap())
+}
+
 // ---------------------------------------------------------------------------
 // FanOut
 // ---------------------------------------------------------------------------
@@ -68,6 +80,17 @@ func TestFanOut_OneFailsCancelsOthers(t *testing.T) {
 	_, err := FanOut(context.Background(), fns)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errBoom)
+}
+
+func TestFanOut_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) {
+			panic(sentinel)
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
 }
 
 func TestFanOut_PanicRecovery(t *testing.T) {
@@ -370,7 +393,7 @@ func TestFanOutSettled_WithMaxGoroutinesNegative(t *testing.T) {
 func BenchmarkFanOut(b *testing.B) {
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
-		fns[i] = func(ctx context.Context) (int, error) { return 0, nil }
+		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
 	}
 
 	b.ResetTimer()
@@ -382,7 +405,7 @@ func BenchmarkFanOut(b *testing.B) {
 func BenchmarkFanOutSettled(b *testing.B) {
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
-		fns[i] = func(ctx context.Context) (int, error) { return 0, nil }
+		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
 	}
 
 	b.ResetTimer()

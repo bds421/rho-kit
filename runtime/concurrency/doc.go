@@ -13,5 +13,7 @@
 //     result regardless of individual errors (like Promise.allSettled).
 //
 // Both functions recover panics in each goroutine and convert them to errors.
+// If the panic value implements the error interface, it is available via
+// errors.Is / errors.As through PanicError.Unwrap.
 // Use [WithMaxGoroutines] to bound parallelism.
 package concurrency

@@ -108,6 +108,9 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 	}
 
 	if err := g.Wait(); err != nil {
+		// On error, partially-written results are discarded. Goroutines that
+		// succeeded before the first error did useful work that is lost — this
+		// is inherent to fail-fast semantics.
 		return nil, err
 	}
 	return results, nil
@@ -153,6 +156,8 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 
 		go func() {
 			defer wg.Done()
+			// If a running goroutine panics, the deferred <-sem releases the slot,
+			// allowing the loop to proceed with the next function.
 			if sem != nil {
 				defer func() { <-sem }()
 			}
