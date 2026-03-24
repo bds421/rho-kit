@@ -20,7 +20,7 @@ func TestPanicError_ErrorMessage(t *testing.T) {
 	assert.Equal(t, "concurrency: goroutine 3 panicked: oops", err.Error())
 }
 
-func TestPanicError_Unwrap(t *testing.T) {
+func TestFanOut_PanicProducesPanicError(t *testing.T) {
 	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
 		func(_ context.Context) (int, error) { panic("check-type") },
 	})
@@ -194,7 +194,6 @@ func TestFanOutSettled_OneFailsOthersComplete(t *testing.T) {
 	fns := []func(ctx context.Context) (int, error){
 		func(_ context.Context) (int, error) { return 0, errBad },
 		func(_ context.Context) (int, error) {
-			time.Sleep(20 * time.Millisecond) // ensure we outlive the failing one
 			secondDone.Store(true)
 			return 42, nil
 		},
@@ -303,10 +302,12 @@ func TestFanOutSettled_ValueZeroedOnError(t *testing.T) {
 func TestFanOutSettled_ContextAwareSemaphore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	acquired := make(chan struct{})
 	blocker := make(chan struct{})
 	fns := []func(ctx context.Context) (int, error){
 		// This goroutine holds the only semaphore slot.
 		func(_ context.Context) (int, error) {
+			close(acquired) // signal that the slot is held
 			<-blocker
 			return 1, nil
 		},
@@ -322,8 +323,8 @@ func TestFanOutSettled_ContextAwareSemaphore(t *testing.T) {
 		done <- FanOutSettled(ctx, fns, WithMaxGoroutines(1))
 	}()
 
-	// Give goroutines time to start, then cancel context.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the first goroutine has acquired the semaphore slot.
+	<-acquired
 	cancel()
 
 	// Unblock the first goroutine so it can finish.
@@ -337,6 +338,43 @@ func TestFanOutSettled_ContextAwareSemaphore(t *testing.T) {
 		assert.ErrorIs(t, got[1].Err, context.Canceled)
 	case <-time.After(2 * time.Second):
 		t.Fatal("FanOutSettled did not return; semaphore is not context-aware")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple concurrent panics
+// ---------------------------------------------------------------------------
+
+func TestFanOut_MultipleConcurrentPanics(t *testing.T) {
+	fns := []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { panic("panic-1") },
+		func(_ context.Context) (int, error) { panic("panic-2") },
+		func(_ context.Context) (int, error) { panic("panic-3") },
+	}
+
+	_, err := FanOut(context.Background(), fns)
+	require.Error(t, err)
+
+	var pe *PanicError
+	require.ErrorAs(t, err, &pe)
+	assert.NotEmpty(t, pe.Stack)
+}
+
+func TestFanOutSettled_MultipleConcurrentPanics(t *testing.T) {
+	fns := []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { panic("panic-a") },
+		func(_ context.Context) (int, error) { panic("panic-b") },
+		func(_ context.Context) (int, error) { panic("panic-c") },
+	}
+
+	got := FanOutSettled(context.Background(), fns)
+	require.Len(t, got, 3)
+
+	for i, r := range got {
+		require.Error(t, r.Err, "result %d should have an error", i)
+		var pe *PanicError
+		require.ErrorAs(t, r.Err, &pe, "result %d should be *PanicError", i)
+		assert.NotEmpty(t, pe.Stack, "result %d should have a stack trace", i)
 	}
 }
 

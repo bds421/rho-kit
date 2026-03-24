@@ -62,6 +62,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Typed HTTP handlers (reduce boilerplate) | `httpx` (JSON, JSONNoBody, JSONStatus, NoContent) | [http](docs/ai/http.md) |
 | Idempotent HTTP requests | `httpx/middleware/idempotency` | [http](docs/ai/http.md) |
 | Distributed locking | `data/lock/redislock` | [redis](docs/ai/redis.md) |
+| Fan-out N tasks concurrently | `runtime/concurrency` (FanOut, FanOutSettled) | [utilities](docs/ai/utilities.md) |
 | Composable lifecycle | `runtime/lifecycle` (Runner, Component) | [utilities](docs/ai/utilities.md) |
 | Typed context keys | `core/contextutil` | [utilities](docs/ai/utilities.md) |
 | Struct-tag config loading | `core/config` | [bootstrap](docs/ai/bootstrap.md) |
