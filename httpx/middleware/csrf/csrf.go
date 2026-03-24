@@ -34,6 +34,7 @@ type config struct {
 	secret     []byte // HMAC key for token signing
 	sameSite   http.SameSite
 	path       string
+	skipCheck  func(*http.Request) bool
 }
 
 // WithCookieName sets the CSRF cookie name. Default: "__csrf".
@@ -68,6 +69,18 @@ func WithSameSite(mode http.SameSite) Option {
 // WithPath sets the Path attribute on the CSRF cookie. Default: "/".
 func WithPath(path string) Option {
 	return func(c *config) { c.path = path }
+}
+
+// WithSkipCheck registers a predicate that bypasses CSRF validation.
+// If skip returns true for a request, CSRF token validation is skipped.
+// The CSRF cookie is still set (so browser clients get a token for later use),
+// but the token-matching check is not enforced.
+//
+// Common use: skip CSRF for requests authenticated via Bearer tokens or API keys,
+// since these auth mechanisms are not vulnerable to CSRF attacks (browsers don't
+// auto-attach them in cross-origin requests).
+func WithSkipCheck(skip func(r *http.Request) bool) Option {
+	return func(c *config) { c.skipCheck = skip }
 }
 
 // New creates a double-submit cookie CSRF middleware.
@@ -123,6 +136,14 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			// Safe methods are exempt from CSRF validation.
 			switch r.Method {
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// If the skip predicate matches, bypass CSRF token validation.
+			// The cookie was already set above, so browser clients still
+			// receive a token for later use.
+			if cfg.skipCheck != nil && cfg.skipCheck(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -186,6 +207,29 @@ func computeHMAC(data string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(data))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// HasBearerToken returns true if the request has an Authorization header
+// with a Bearer token. Bearer-authenticated requests are immune to CSRF
+// because browsers never auto-attach the Authorization header in cross-origin
+// requests.
+func HasBearerToken(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// HasAPIKey returns a predicate that checks for the presence of a non-empty
+// API key header. The header name is configurable (e.g., "X-API-Key",
+// "X-Api-Token"). Like Bearer tokens, custom API key headers are not
+// auto-attached by browsers.
+//
+// Panics if header is empty.
+func HasAPIKey(header string) func(r *http.Request) bool {
+	if header == "" {
+		panic("csrf: HasAPIKey header name must not be empty")
+	}
+	return func(r *http.Request) bool {
+		return r.Header.Get(header) != ""
+	}
 }
 
 // RequireCSRF rejects state-changing requests (POST, PUT, PATCH, DELETE) that
