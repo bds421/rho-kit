@@ -12,12 +12,14 @@ import (
 type ResilientOption func(*resilientConfig)
 
 type resilientConfig struct {
-	timeout     time.Duration
-	tlsConfig   *tls.Config
-	cbThreshold int
-	cbReset     time.Duration
-	shouldTrip  func(resp *http.Response, err error) bool
-	onStateChange func(from, to circuitbreaker.State)
+	timeout           time.Duration
+	tlsConfig         *tls.Config
+	cbThreshold       int
+	cbReset           time.Duration
+	shouldTrip        func(resp *http.Response, err error) bool
+	onStateChange     func(from, to circuitbreaker.State)
+	deadlineBudget    bool
+	deadlineBudgetCfg deadlineBudgetConfig
 }
 
 // WithResilientTimeout sets the HTTP client timeout. Default: 10s.
@@ -56,6 +58,24 @@ func WithCBShouldTrip(fn func(resp *http.Response, err error) bool) ResilientOpt
 // WithCBOnStateChange registers a callback for circuit breaker state transitions.
 func WithCBOnStateChange(fn func(from, to circuitbreaker.State)) ResilientOption {
 	return func(c *resilientConfig) { c.onStateChange = fn }
+}
+
+// WithDeadlineBudget enables deadline budget propagation. When the caller's
+// context has a deadline, the outbound request timeout is derived from the
+// remaining budget minus a safety margin, instead of using the static client
+// timeout. The deadline transport is outermost in the transport chain so it
+// adjusts the context before the circuit breaker evaluates.
+func WithDeadlineBudget(opts ...DeadlineBudgetOption) ResilientOption {
+	return func(c *resilientConfig) {
+		c.deadlineBudget = true
+		c.deadlineBudgetCfg = deadlineBudgetConfig{
+			safetyMargin: defaultSafetyMargin,
+			minTimeout:   defaultMinTimeout,
+		}
+		for _, o := range opts {
+			o(&c.deadlineBudgetCfg)
+		}
+	}
 }
 
 // NewResilientHTTPClient returns an *http.Client with a circuit-breaker-protected
@@ -105,13 +125,23 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 
 	cb := circuitbreaker.NewCircuitBreaker(cfg.cbThreshold, cfg.cbReset, cbOpts...)
 
+	var rt http.RoundTripper = &circuitBreakerTransport{
+		base:       transport,
+		cb:         cb,
+		shouldTrip: cfg.shouldTrip,
+	}
+
+	if cfg.deadlineBudget {
+		rt = &deadlineBudgetTransport{
+			base:         rt,
+			safetyMargin: cfg.deadlineBudgetCfg.safetyMargin,
+			minTimeout:   cfg.deadlineBudgetCfg.minTimeout,
+		}
+	}
+
 	return &http.Client{
-		Timeout: cfg.timeout,
-		Transport: &circuitBreakerTransport{
-			base:       transport,
-			cb:         cb,
-			shouldTrip: cfg.shouldTrip,
-		},
+		Timeout:   cfg.timeout,
+		Transport: rt,
 	}
 }
 
