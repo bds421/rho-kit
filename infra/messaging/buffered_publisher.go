@@ -232,7 +232,7 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			if o.metrics != nil && o.metrics.OnDrop != nil {
 				o.metrics.OnDrop()
 			}
-			return fmt.Errorf("buffered publisher: buffer full (%d messages)", o.maxSize)
+			return fmt.Errorf("buffered publisher: buffer full (%d messages), message dropped", o.maxSize)
 		}
 	}
 

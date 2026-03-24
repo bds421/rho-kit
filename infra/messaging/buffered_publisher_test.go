@@ -528,3 +528,24 @@ func TestBufferedPublisherRun_DrainOnTick(t *testing.T) {
 		t.Fatalf("expected 0 pending after Run drain, got %d", pub.Pending())
 	}
 }
+
+func TestCompat_NewOutboxPublisher(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := newTestBufferedPublisher(fp.publish, func() bool { return true })
+
+	// Alias the publisher through the deprecated type to verify compatibility.
+	var compat *OutboxPublisher = pub
+
+	msg, _ := NewMessage("test.event", map[string]string{"key": "value"})
+
+	if err := compat.Publish(context.Background(), "exchange", "routing.key", msg); err != nil {
+		t.Fatalf("expected no error from OutboxPublisher compat shim, got %v", err)
+	}
+
+	if fp.callCount() != 1 {
+		t.Fatalf("expected 1 publish call via compat shim, got %d", fp.callCount())
+	}
+	if compat.Pending() != 0 {
+		t.Fatalf("expected 0 pending via compat shim, got %d", compat.Pending())
+	}
+}
