@@ -317,7 +317,13 @@ func (fb *faultyBackend) Set(ctx context.Context, key string, value []byte, ttl 
 
 func TestComputeCache_UnmarshalFailure(t *testing.T) {
 	backend := newTestBackend(t)
-	cc, err := NewComputeCache[string](backend, "corrupt:")
+	reg := prometheus.NewPedanticRegistry()
+	metrics := NewComputeMetrics(reg)
+
+	cc, err := NewComputeCache[string](backend, "corrupt:",
+		WithComputeMetricsRegisterer(metrics),
+		WithComputeName("corrupt_cache"),
+	)
 	require.NoError(t, err)
 
 	// Write corrupt data directly into the backend.
@@ -329,9 +335,14 @@ func TestComputeCache_UnmarshalFailure(t *testing.T) {
 		return "fresh", 10 * time.Minute, nil
 	}
 
-	_, err = cc.GetOrCompute(context.Background(), "k", fn)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unmarshal")
+	// Unmarshal failure should fall through to recompute, not return an error.
+	val, err := cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", val)
+
+	// Should record an error (unmarshal) and a miss (recompute).
+	assertCounterValue(t, metrics.errors, "corrupt_cache", 1)
+	assertCounterValue(t, metrics.misses, "corrupt_cache", 1)
 }
 
 func TestComputeCache_BackendSetFailure(t *testing.T) {

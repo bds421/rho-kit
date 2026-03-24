@@ -151,11 +151,11 @@ func (cc *ComputeCache[T]) handleHit(
 	data []byte,
 	fn ComputeFunc[T],
 ) (T, error) {
-	var zero T
-
 	var env envelope[T]
 	if err := json.Unmarshal(data, &env); err != nil {
-		return zero, fmt.Errorf("cache compute unmarshal: %w", err)
+		cc.recordError()
+		cc.recordMiss()
+		return cc.computeAndStore(ctx, full, fn)
 	}
 
 	now := time.Now().UnixNano()
@@ -183,11 +183,13 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// Use WithoutCancel so that if the first caller's context is cancelled,
 	// other waiters sharing this singleflight call are not affected.
 	computeCtx := context.WithoutCancel(ctx)
-	result, err, _ := cc.group.Do(full, func() (interface{}, error) {
+	result, err, shared := cc.group.Do(full, func() (interface{}, error) {
 		return cc.executeCompute(computeCtx, full, fn)
 	})
 	if err != nil {
-		cc.recordError()
+		if !shared {
+			cc.recordError()
+		}
 		return zero, err
 	}
 
