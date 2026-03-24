@@ -2,6 +2,7 @@ package gormdb
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -176,4 +177,20 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})
+}
+
+func TestCheckVersion_NilModelReturnsError(t *testing.T) {
+	db := setupTestDB(t, &versionedModel{})
+
+	err := CheckVersion(context.Background(), db, nil, 1)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrNilModel))
+}
+
+func TestUpdateWithVersion_NilModelReturnsError(t *testing.T) {
+	db := setupTestDB(t, &versionedModel{})
+
+	err := UpdateWithVersion(context.Background(), db, nil, 1, map[string]any{"name": "bob"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrNilModel))
 }

@@ -14,6 +14,9 @@ import (
 // ErrVersionConflict is returned when an optimistic locking check fails.
 var ErrVersionConflict = apperror.NewConflict("version conflict: row was modified by another transaction")
 
+// ErrNilModel is returned when a nil model is passed to CheckVersion or UpdateWithVersion.
+var ErrNilModel = errors.New("gormdb: model must not be nil")
+
 // ErrEmptyUpdates is returned when UpdateWithVersion is called with a nil or empty updates map.
 var ErrEmptyUpdates = errors.New("gormdb: updates must not be empty")
 
@@ -37,7 +40,7 @@ var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"vers
 // existence separately.
 func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64) error {
 	if model == nil {
-		return fmt.Errorf("gormdb: model must not be nil")
+		return ErrNilModel
 	}
 
 	result := db.WithContext(ctx).Model(model).
@@ -74,7 +77,7 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // existence separately.
 func UpdateWithVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64, updates map[string]any) error {
 	if model == nil {
-		return fmt.Errorf("gormdb: model must not be nil")
+		return ErrNilModel
 	}
 
 	if len(updates) == 0 {

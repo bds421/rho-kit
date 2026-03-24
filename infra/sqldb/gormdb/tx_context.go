@@ -17,7 +17,11 @@ type gormTxWrapper struct{ db *gorm.DB }
 var txKey contextutil.Key[gormTxWrapper]
 
 // ContextWithTx returns a new context carrying the given transaction.
+// It panics if tx is nil, since passing a nil transaction is a programming error.
 func ContextWithTx(ctx context.Context, tx *gorm.DB) context.Context {
+	if tx == nil {
+		panic("gormdb: ContextWithTx called with nil transaction")
+	}
 	return txKey.Set(ctx, gormTxWrapper{db: tx})
 }
 
