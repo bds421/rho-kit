@@ -52,4 +52,5 @@ use (
 	./runtime/lifecycle
 	./security/jwtutil
 	./security/netutil
+	./security/reqsign
 )
