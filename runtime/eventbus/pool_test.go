@@ -269,7 +269,11 @@ func TestWorkerPool_BoundedGoroutines(t *testing.T) {
 	for range 50 {
 		_ = Publish(bus, context.Background(), testEvent{ID: "bounded"})
 	}
-	time.Sleep(50 * time.Millisecond)
+
+	// Wait until all 4 workers are blocked in handlers before checking goroutine count.
+	require.Eventually(t, func() bool {
+		return waiting.Load() == 4
+	}, 2*time.Second, 5*time.Millisecond, "workers should all be blocked")
 
 	currentGoroutines := runtime.NumGoroutine()
 	// With a pool of 4, goroutine growth should be minimal.
