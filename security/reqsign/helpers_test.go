@@ -1,6 +1,16 @@
 package reqsign
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // testKey generates a deterministic byte sequence of the given size for testing.
 // The seed parameter ensures distinct keys for different call sites.

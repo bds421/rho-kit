@@ -54,18 +54,28 @@ type VerifyOption func(*verifyConfig)
 
 // WithSigner sets a custom signing.Signer for signing operations.
 // Useful for deterministic testing with signing.WithClock.
+// A nil Signer is ignored and the package-level default is kept.
 func WithSigner(s *signing.Signer) SignOption {
-	return func(c *signConfig) { c.signer = s }
+	return func(c *signConfig) {
+		if s != nil {
+			c.signer = s
+		}
+	}
 }
 
 // WithVerifySigner sets a custom signing.Signer for verification operations.
 // Useful for deterministic testing with signing.WithClock.
+// A nil Signer is ignored and the package-level default is kept.
 func WithVerifySigner(s *signing.Signer) VerifyOption {
-	return func(c *verifyConfig) { c.signer = s }
+	return func(c *verifyConfig) {
+		if s != nil {
+			c.signer = s
+		}
+	}
 }
 
 // WithMaxAge sets the maximum allowed age for a signature.
-// Default: signing.DefaultSignatureMaxAge (5 minutes).
+// Values <= 0 are ignored and the default (signing.DefaultSignatureMaxAge, 5 minutes) is used.
 func WithMaxAge(d time.Duration) VerifyOption {
 	return func(c *verifyConfig) {
 		if d > 0 {

@@ -10,13 +10,6 @@ import (
 	"github.com/bds421/rho-kit/crypto/signing"
 )
 
-// roundTripFunc adapts a function to http.RoundTripper.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
 func TestSigningTransport_SetsHeaders(t *testing.T) {
 	store := testStore()
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)

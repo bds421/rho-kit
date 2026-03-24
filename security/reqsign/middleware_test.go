@@ -48,6 +48,7 @@ func TestMiddleware(t *testing.T) {
 			name:       "missing signature",
 			method:     http.MethodGet,
 			path:       "/api/test",
+			opts:       []VerifyOption{WithVerifySigner(verifySigner)},
 			setupReq:   func(_ *testing.T, _ *http.Request, _ []byte) {},
 			wantStatus: http.StatusUnauthorized,
 		},

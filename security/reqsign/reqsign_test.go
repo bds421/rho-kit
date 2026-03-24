@@ -195,6 +195,32 @@ func TestVerifyWithCustomMaxAge(t *testing.T) {
 	}
 }
 
+func TestWithMaxAgeZeroFallsBackToDefault(t *testing.T) {
+	store := testStore()
+	signTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	// 2 minutes later — within the 5min default but would fail with 0 if taken literally.
+	verifyTime := signTime.Add(2 * time.Minute)
+
+	signSigner := signing.NewSigner(signing.WithClock(fixedClock(signTime)))
+	verifySigner := signing.NewSigner(signing.WithClock(fixedClock(verifyTime)))
+
+	body := []byte(`{"action":"test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(body))
+
+	if err := SignRequest(req, body, store, WithSigner(signSigner)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	// WithMaxAge(0) should be ignored, falling back to the 5min default.
+	err := VerifyRequest(req, body, store,
+		WithVerifySigner(verifySigner),
+		WithMaxAge(0),
+	)
+	if err != nil {
+		t.Fatalf("expected WithMaxAge(0) to fall back to default 5min, got error: %v", err)
+	}
+}
+
 func TestTransportToMiddlewareIntegration(t *testing.T) {
 	store := testStore()
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
