@@ -378,6 +378,69 @@ func TestHasAPIKey_EmptyHeaderValue(t *testing.T) {
 	assert.False(t, predicate(req))
 }
 
+func TestHasAPIKey_WhitespaceOnlyHeaderValue(t *testing.T) {
+	predicate := HasAPIKey("X-API-Key")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "   \t  ")
+
+	assert.False(t, predicate(req), "whitespace-only API key should be rejected")
+}
+
+func TestNew_SkipCheck_LastPredicateWins(t *testing.T) {
+	// First predicate: always skip. Second predicate: never skip.
+	// The last one should win.
+	alwaysSkip := func(_ *http.Request) bool { return true }
+	neverSkip := func(_ *http.Request) bool { return false }
+
+	mw := New(
+		WithSecret(testSecret()),
+		WithSkipCheck(alwaysSkip),
+		WithSkipCheck(neverSkip),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// neverSkip is the last predicate, so CSRF should be enforced and POST without token rejected.
+	assert.Equal(t, http.StatusForbidden, rec.Code, "last predicate (neverSkip) should win")
+}
+
+func TestNew_SkipCheck_ComposedPredicates(t *testing.T) {
+	// Compose HasBearerToken and HasAPIKey into a single predicate.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSkipCheck(func(r *http.Request) bool {
+			return HasBearerToken(r) || HasAPIKey("X-API-Key")(r)
+		}),
+	)
+	handler := mw(okHandler())
+
+	t.Run("bearer token skips CSRF", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("Authorization", "Bearer jwt-token")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("API key skips CSRF", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("X-API-Key", "my-key")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("neither bearer nor API key enforces CSRF", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
+}
+
 // --- Legacy RequireCSRF tests ---
 
 func TestRequireCSRF_GET_NoHeader(t *testing.T) {
