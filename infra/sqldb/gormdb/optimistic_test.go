@@ -1,6 +1,7 @@
 package gormdb
 
 import (
+	"context"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -30,7 +31,7 @@ func TestCheckVersion_Success(t *testing.T) {
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
-	err := CheckVersion(db, model, 1)
+	err := CheckVersion(context.Background(), db, model, 1)
 	require.NoError(t, err)
 
 	var updated versionedModel
@@ -43,7 +44,7 @@ func TestCheckVersion_Conflict(t *testing.T) {
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
 
 	model := &versionedModel{ID: "1"}
-	err := CheckVersion(db, model, 1)
+	err := CheckVersion(context.Background(), db, model, 1)
 	require.ErrorIs(t, err, ErrVersionConflict)
 
 	// Verify version was not changed.
@@ -56,7 +57,7 @@ func TestCheckVersion_NonExistentRow(t *testing.T) {
 	db := setupVersionedDB(t)
 
 	model := &versionedModel{ID: "nonexistent"}
-	err := CheckVersion(db, model, 1)
+	err := CheckVersion(context.Background(), db, model, 1)
 	require.ErrorIs(t, err, ErrVersionConflict)
 	assert.True(t, apperror.IsConflict(err))
 }
@@ -70,7 +71,7 @@ func TestUpdateWithVersion_Success(t *testing.T) {
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
-	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
 	require.NoError(t, err)
 
 	var updated versionedModel
@@ -84,7 +85,7 @@ func TestUpdateWithVersion_Conflict(t *testing.T) {
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
 
 	model := &versionedModel{ID: "1"}
-	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
 	require.ErrorIs(t, err, ErrVersionConflict)
 
 	// Verify neither name nor version changed.
@@ -98,7 +99,7 @@ func TestUpdateWithVersion_NonExistentRow(t *testing.T) {
 	db := setupVersionedDB(t)
 
 	model := &versionedModel{ID: "nonexistent"}
-	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob"})
 	require.ErrorIs(t, err, ErrVersionConflict)
 	assert.True(t, apperror.IsConflict(err))
 }
@@ -109,7 +110,7 @@ func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
 
 	updates := map[string]any{"name": "bob"}
 	model := &versionedModel{ID: "1"}
-	err := UpdateWithVersion(db, model, 1, updates)
+	err := UpdateWithVersion(context.Background(), db, model, 1, updates)
 	require.NoError(t, err)
 
 	// The original map must not contain the injected "version" key.
@@ -125,15 +126,25 @@ func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 	model := &versionedModel{ID: "1"}
 
 	t.Run("nil map", func(t *testing.T) {
-		err := UpdateWithVersion(db, model, 1, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "updates must not be empty")
+		err := UpdateWithVersion(context.Background(), db, model, 1, nil)
+		require.ErrorIs(t, err, ErrEmptyUpdates)
+
+		// Verify DB unchanged.
+		var row versionedModel
+		db.First(&row, "id = ?", "1")
+		assert.Equal(t, "alice", row.Name)
+		assert.Equal(t, int64(1), row.Version)
 	})
 
 	t.Run("empty map", func(t *testing.T) {
-		err := UpdateWithVersion(db, model, 1, map[string]any{})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "updates must not be empty")
+		err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{})
+		require.ErrorIs(t, err, ErrEmptyUpdates)
+
+		// Verify DB unchanged.
+		var row versionedModel
+		db.First(&row, "id = ?", "1")
+		assert.Equal(t, "alice", row.Name)
+		assert.Equal(t, int64(1), row.Version)
 	})
 }
 
@@ -142,7 +153,37 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
 
 	model := &versionedModel{ID: "1"}
-	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob", "version": int64(99)})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must not contain \"version\"")
+
+	t.Run("lowercase", func(t *testing.T) {
+		err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob", "version": int64(99)})
+		require.ErrorIs(t, err, ErrVersionKeyInUpdates)
+
+		// Verify DB unchanged.
+		var row versionedModel
+		db.First(&row, "id = ?", "1")
+		assert.Equal(t, "alice", row.Name)
+		assert.Equal(t, int64(1), row.Version)
+	})
+
+	t.Run("mixed case", func(t *testing.T) {
+		err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob", "Version": int64(99)})
+		require.ErrorIs(t, err, ErrVersionKeyInUpdates)
+
+		// Verify DB unchanged.
+		var row versionedModel
+		db.First(&row, "id = ?", "1")
+		assert.Equal(t, "alice", row.Name)
+		assert.Equal(t, int64(1), row.Version)
+	})
+
+	t.Run("upper case", func(t *testing.T) {
+		err := UpdateWithVersion(context.Background(), db, model, 1, map[string]any{"name": "bob", "VERSION": int64(99)})
+		require.ErrorIs(t, err, ErrVersionKeyInUpdates)
+
+		// Verify DB unchanged.
+		var row versionedModel
+		db.First(&row, "id = ?", "1")
+		assert.Equal(t, "alice", row.Name)
+		assert.Equal(t, int64(1), row.Version)
+	})
 }

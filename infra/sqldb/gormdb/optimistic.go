@@ -1,7 +1,10 @@
 package gormdb
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -10,6 +13,13 @@ import (
 
 // ErrVersionConflict is returned when an optimistic locking check fails.
 var ErrVersionConflict = apperror.NewConflict("version conflict: row was modified by another transaction")
+
+// ErrEmptyUpdates is returned when UpdateWithVersion is called with a nil or empty updates map.
+var ErrEmptyUpdates = errors.New("gormdb: updates must not be empty")
+
+// ErrVersionKeyInUpdates is returned when the updates map passed to UpdateWithVersion
+// contains a "version" key, which is managed automatically.
+var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"version\"; it is managed automatically by UpdateWithVersion")
 
 // CheckVersion increments the version column only if it matches expectedVersion.
 // Use this to detect concurrent modifications without changing other fields.
@@ -23,8 +33,8 @@ var ErrVersionConflict = apperror.NewConflict("version conflict: row was modifie
 // RowsAffected will be 0, and ErrVersionConflict is returned. Callers
 // that need to distinguish "deleted" from "stale version" should check
 // existence separately.
-func CheckVersion(db *gorm.DB, model any, expectedVersion int64) error {
-	result := db.Model(model).
+func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64) error {
+	result := db.WithContext(ctx).Model(model).
 		Where("version = ?", expectedVersion).
 		Update("version", expectedVersion+1)
 
@@ -54,12 +64,14 @@ func CheckVersion(db *gorm.DB, model any, expectedVersion int64) error {
 // RowsAffected will be 0, and ErrVersionConflict is returned. Callers
 // that need to distinguish "deleted" from "stale version" should check
 // existence separately.
-func UpdateWithVersion(db *gorm.DB, model any, expectedVersion int64, updates map[string]any) error {
+func UpdateWithVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64, updates map[string]any) error {
 	if len(updates) == 0 {
-		return fmt.Errorf("gormdb: updates must not be empty")
+		return ErrEmptyUpdates
 	}
-	if _, ok := updates["version"]; ok {
-		return fmt.Errorf("gormdb: updates must not contain \"version\"; it is managed automatically by UpdateWithVersion")
+	for k := range updates {
+		if strings.EqualFold(k, "version") {
+			return ErrVersionKeyInUpdates
+		}
 	}
 
 	merged := make(map[string]any, len(updates)+1)
@@ -68,7 +80,7 @@ func UpdateWithVersion(db *gorm.DB, model any, expectedVersion int64, updates ma
 	}
 	merged["version"] = expectedVersion + 1
 
-	result := db.Model(model).
+	result := db.WithContext(ctx).Model(model).
 		Where("version = ?", expectedVersion).
 		Updates(merged)
 
