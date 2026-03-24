@@ -385,6 +385,44 @@ func TestTransportToMiddlewareIntegration(t *testing.T) {
 	}
 }
 
+func TestSignRequest_PanicsNilKeyStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil KeyStore in SignRequest")
+		}
+	}()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	_ = SignRequest(req, nil, nil)
+}
+
+func TestVerifyRequest_PanicsNilKeyStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil KeyStore in VerifyRequest")
+		}
+	}()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	_ = VerifyRequest(req, nil, nil)
+}
+
+func TestNewSigningTransport_PanicsNilKeyStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil KeyStore in NewSigningTransport")
+		}
+	}()
+	NewSigningTransport(http.DefaultTransport, nil)
+}
+
+func TestRequireSignedRequest_PanicsNilKeyStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil KeyStore in RequireSignedRequest")
+		}
+	}()
+	RequireSignedRequest(nil)
+}
+
 func TestVerifyWithRotatedKey(t *testing.T) {
 	key1 := testKey(32, 10)
 	key2 := testKey(48, 11)
