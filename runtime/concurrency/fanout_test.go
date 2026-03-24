@@ -11,6 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// trackPeak atomically updates peak to the maximum of peak and the
+// incremented value of running. Used by concurrency-limit tests.
+func trackPeak(running, peak *atomic.Int32) {
+	cur := running.Add(1)
+	for {
+		old := peak.Load()
+		if cur <= old || peak.CompareAndSwap(old, cur) {
+			break
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PanicError
 // ---------------------------------------------------------------------------
@@ -129,24 +141,28 @@ func TestFanOut_WithMaxGoroutines(t *testing.T) {
 	var peak atomic.Int32
 
 	const limit = 2
+	blocker := make(chan struct{})
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
 		fns[i] = func(_ context.Context) (int, error) {
-			cur := running.Add(1)
-			// Track peak concurrency.
-			for {
-				old := peak.Load()
-				if cur <= old || peak.CompareAndSwap(old, cur) {
-					break
-				}
-			}
-			time.Sleep(10 * time.Millisecond)
+			trackPeak(&running, &peak)
+			<-blocker
 			running.Add(-1)
 			return 0, nil
 		}
 	}
 
-	got, err := FanOut(context.Background(), fns, WithMaxGoroutines(limit))
+	done := make(chan struct{})
+	var got []int
+	var err error
+	go func() {
+		got, err = FanOut(context.Background(), fns, WithMaxGoroutines(limit))
+		close(done)
+	}()
+
+	close(blocker) // release all goroutines at once
+	<-done
+
 	require.NoError(t, err)
 	assert.Len(t, got, 10)
 	assert.LessOrEqual(t, peak.Load(), int32(limit))
@@ -230,6 +246,17 @@ func TestFanOutSettled_PanicRecovery(t *testing.T) {
 	assert.NotEmpty(t, pe.Stack)
 }
 
+func TestFanOutSettled_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	got := FanOutSettled(context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) {
+			panic(sentinel)
+		},
+	})
+	require.Len(t, got, 1)
+	assert.ErrorIs(t, got[0].Err, sentinel)
+}
+
 func TestFanOutSettled_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -250,23 +277,25 @@ func TestFanOutSettled_WithMaxGoroutines(t *testing.T) {
 	var peak atomic.Int32
 
 	const limit = 3
+	blocker := make(chan struct{})
 	fns := make([]func(ctx context.Context) (int, error), 10)
 	for i := range fns {
 		fns[i] = func(_ context.Context) (int, error) {
-			cur := running.Add(1)
-			for {
-				old := peak.Load()
-				if cur <= old || peak.CompareAndSwap(old, cur) {
-					break
-				}
-			}
-			time.Sleep(10 * time.Millisecond)
+			trackPeak(&running, &peak)
+			<-blocker
 			running.Add(-1)
 			return 0, nil
 		}
 	}
 
-	got := FanOutSettled(context.Background(), fns, WithMaxGoroutines(limit))
+	done := make(chan []Result[int], 1)
+	go func() {
+		done <- FanOutSettled(context.Background(), fns, WithMaxGoroutines(limit))
+	}()
+
+	close(blocker) // release all goroutines at once
+	got := <-done
+
 	assert.Len(t, got, 10)
 	assert.LessOrEqual(t, peak.Load(), int32(limit))
 }
