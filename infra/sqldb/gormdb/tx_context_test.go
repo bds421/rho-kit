@@ -67,13 +67,15 @@ func TestContextRoundTrip_WrapperType(t *testing.T) {
 	assert.Same(t, tx.Statement.DB, got.Statement.DB, "round-tripped *gorm.DB should wrap the same sql.DB")
 }
 
+type otherContextKey struct{}
+
 func TestTxFromContext_DoesNotCollideWithRawGormDB(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 
 	// A plain *gorm.DB stored directly in context should not be returned
 	// by TxFromContext, proving the wrapper prevents collisions.
-	ctx = context.WithValue(ctx, struct{}{}, db)
+	ctx = context.WithValue(ctx, otherContextKey{}, db)
 
 	_, ok := TxFromContext(ctx)
 	assert.False(t, ok, "TxFromContext must not return values stored under a different key")
