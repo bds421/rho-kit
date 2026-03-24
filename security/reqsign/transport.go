@@ -18,7 +18,7 @@ type SigningTransport struct {
 // If base is nil, http.DefaultTransport is used.
 func NewSigningTransport(base http.RoundTripper, store KeyStore, opts ...SignOption) *SigningTransport {
 	if store == nil {
-		panic("reqsign: KeyStore must not be nil")
+		panic(nilKeyStoreMsg)
 	}
 	if base == nil {
 		base = http.DefaultTransport

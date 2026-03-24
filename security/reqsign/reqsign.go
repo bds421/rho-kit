@@ -23,6 +23,9 @@ const (
 	// MaxBodySize is the maximum request body size (1 MiB) that the package
 	// will buffer for signing or verification.
 	MaxBodySize = 1 << 20
+
+	// nilKeyStoreMsg is the panic message used when a nil KeyStore is passed.
+	nilKeyStoreMsg = "reqsign: KeyStore must not be nil"
 )
 
 // ErrMissingHeaders is returned when required signature headers are absent.
@@ -107,7 +110,7 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 // computation. The signature, timestamp, and key ID are set as request headers.
 func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOption) error {
 	if store == nil {
-		panic("reqsign: KeyStore must not be nil")
+		panic(nilKeyStoreMsg)
 	}
 
 	cfg := signConfig{signer: defaultSigner}
@@ -134,7 +137,7 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 // builds canonical bytes, and delegates to signing.Signer.Verify.
 func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...VerifyOption) error {
 	if store == nil {
-		panic("reqsign: KeyStore must not be nil")
+		panic(nilKeyStoreMsg)
 	}
 
 	cfg := verifyConfig{

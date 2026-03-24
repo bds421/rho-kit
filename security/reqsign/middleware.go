@@ -14,7 +14,7 @@ import (
 // can still read it.
 func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handler) http.Handler {
 	if store == nil {
-		panic("reqsign: KeyStore must not be nil")
+		panic(nilKeyStoreMsg)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
