@@ -26,7 +26,7 @@ func TestCheckVersion_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	var updated versionedModel
-	db.First(&updated, "id = ?", "1")
+	require.NoError(t, db.First(&updated, "id = ?", "1").Error)
 	assert.Equal(t, int64(2), updated.Version)
 }
 
@@ -40,7 +40,7 @@ func TestCheckVersion_Conflict(t *testing.T) {
 
 	// Verify version was not changed.
 	var unchanged versionedModel
-	db.First(&unchanged, "id = ?", "1")
+	require.NoError(t, db.First(&unchanged, "id = ?", "1").Error)
 	assert.Equal(t, int64(3), unchanged.Version)
 }
 
@@ -66,7 +66,7 @@ func TestUpdateWithVersion_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	var updated versionedModel
-	db.First(&updated, "id = ?", "1")
+	require.NoError(t, db.First(&updated, "id = ?", "1").Error)
 	assert.Equal(t, "bob", updated.Name)
 	assert.Equal(t, int64(2), updated.Version)
 }
@@ -81,7 +81,7 @@ func TestUpdateWithVersion_Conflict(t *testing.T) {
 
 	// Verify neither name nor version changed.
 	var unchanged versionedModel
-	db.First(&unchanged, "id = ?", "1")
+	require.NoError(t, db.First(&unchanged, "id = ?", "1").Error)
 	assert.Equal(t, "alice", unchanged.Name)
 	assert.Equal(t, int64(3), unchanged.Version)
 }
@@ -122,7 +122,7 @@ func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 
 		// Verify DB unchanged.
 		var row versionedModel
-		db.First(&row, "id = ?", "1")
+		require.NoError(t, db.First(&row, "id = ?", "1").Error)
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})
@@ -133,7 +133,7 @@ func TestUpdateWithVersion_EmptyUpdatesReturnsError(t *testing.T) {
 
 		// Verify DB unchanged.
 		var row versionedModel
-		db.First(&row, "id = ?", "1")
+		require.NoError(t, db.First(&row, "id = ?", "1").Error)
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})
@@ -151,7 +151,7 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 
 		// Verify DB unchanged.
 		var row versionedModel
-		db.First(&row, "id = ?", "1")
+		require.NoError(t, db.First(&row, "id = ?", "1").Error)
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})
@@ -162,7 +162,7 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 
 		// Verify DB unchanged.
 		var row versionedModel
-		db.First(&row, "id = ?", "1")
+		require.NoError(t, db.First(&row, "id = ?", "1").Error)
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})
@@ -173,7 +173,7 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 
 		// Verify DB unchanged.
 		var row versionedModel
-		db.First(&row, "id = ?", "1")
+		require.NoError(t, db.First(&row, "id = ?", "1").Error)
 		assert.Equal(t, "alice", row.Name)
 		assert.Equal(t, int64(1), row.Version)
 	})

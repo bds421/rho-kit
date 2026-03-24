@@ -23,6 +23,12 @@ func TestContextWithTx_RoundTrip(t *testing.T) {
 	assert.Equal(t, tx, got)
 }
 
+func TestContextWithTx_NilPanics(t *testing.T) {
+	assert.Panics(t, func() {
+		ContextWithTx(context.Background(), nil)
+	})
+}
+
 func TestTxFromContext_Missing(t *testing.T) {
 	ctx := context.Background()
 

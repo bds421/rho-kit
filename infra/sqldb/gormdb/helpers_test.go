@@ -61,9 +61,7 @@ type testReservedWordModel struct {
 }
 
 func TestFindOneByField_ReservedWordColumn(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&testReservedWordModel{}))
+	db := setupTestDB(t, &testReservedWordModel{})
 
 	require.NoError(t, db.Create(&testReservedWordModel{ID: "1", Key: "my-flag"}).Error)
 
@@ -89,11 +87,11 @@ func TestCreateWithDefaultReset_SetsDefault(t *testing.T) {
 	require.NoError(t, CreateWithDefaultReset(db, record, true))
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 
 	var second testModel
-	db.First(&second, "id = ?", "2")
+	require.NoError(t, db.First(&second, "id = ?", "2").Error)
 	assert.True(t, second.IsDefault)
 }
 
@@ -105,7 +103,7 @@ func TestCreateWithDefaultReset_NoDefault(t *testing.T) {
 	require.NoError(t, CreateWithDefaultReset(db, record, false))
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.True(t, first.IsDefault)
 }
 
@@ -118,11 +116,11 @@ func TestUpdateWithDefaultReset_PromotesDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 
 	var second testModel
-	db.First(&second, "id = ?", "2")
+	require.NoError(t, db.First(&second, "id = ?", "2").Error)
 	assert.True(t, second.IsDefault)
 }
 
@@ -134,7 +132,7 @@ func TestUpdateWithDefaultReset_SetDefaultFalse(t *testing.T) {
 	require.NoError(t, err)
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 }
 
@@ -145,8 +143,9 @@ func TestUpdateWithDefaultReset_NonBoolDefault(t *testing.T) {
 	err := UpdateWithDefaultReset[testModel](db, "test", "1", map[string]any{"is_default": "yes", "name": "updated"})
 	require.NoError(t, err)
 
+	// Only select "name" to avoid scanning the non-bool "yes" back into a bool field.
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.Select("name").First(&first, "id = ?", "1").Error)
 	assert.Equal(t, "updated", first.Name)
 }
 
