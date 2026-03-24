@@ -62,6 +62,7 @@ func TestComputeCache_BasicMissAndHit(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "test:", WithComputeName("basic"))
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	var calls atomic.Int32
 	fn := func(ctx context.Context) (string, time.Duration, error) {
@@ -89,6 +90,7 @@ func TestComputeCache_ConcurrentSingleflight(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[int](backend, "sf:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	var calls atomic.Int32
 	started := make(chan struct{})
@@ -131,6 +133,7 @@ func TestComputeCache_StaleWhileRevalidate(t *testing.T) {
 		WithComputeName("stale"),
 	)
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	var calls atomic.Int32
 	fn := func(ctx context.Context) (string, time.Duration, error) {
@@ -171,6 +174,7 @@ func TestComputeCache_ErrorNotCached(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "err:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	computeErr := errors.New("compute failed")
 	var calls atomic.Int32
@@ -202,6 +206,7 @@ func TestComputeCache_ContextCancellation(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "ctx:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		// The compute context is detached, so ctx.Done() should not fire.
@@ -227,6 +232,7 @@ func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T)
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "ctxleak:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	started := make(chan struct{})
 	proceed := make(chan struct{})
@@ -287,6 +293,7 @@ func TestComputeCache_Metrics(t *testing.T) {
 		WithComputeName("test_cache"),
 	)
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "val", 10 * time.Minute, nil
@@ -309,6 +316,7 @@ func TestComputeCache_ZeroTTL(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "z:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "no-expire", 0, nil
@@ -341,6 +349,7 @@ func TestComputeCache_KeyValidation(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "kv:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "val", time.Minute, nil
@@ -367,6 +376,7 @@ func TestComputeCache_ErrorMetrics(t *testing.T) {
 		WithComputeName("err_cache"),
 	)
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "", 0, errors.New("boom")
@@ -389,6 +399,7 @@ func TestComputeCache_UnmarshalFailure(t *testing.T) {
 		WithComputeName("corrupt_cache"),
 	)
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	// Write corrupt data directly into the backend.
 	err = backend.Set(context.Background(), "corrupt:k", []byte("not-valid-json{{{"), 10*time.Minute)
@@ -416,6 +427,7 @@ func TestComputeCache_BackendSetFailure(t *testing.T) {
 
 	cc, err := NewComputeCache[string](fb, "setfail:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "computed", 10 * time.Minute, nil
@@ -440,6 +452,7 @@ func TestComputeCache_BackendGetErrorNotTreatedAsMiss(t *testing.T) {
 		WithComputeName("geterr_cache"),
 	)
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	fn := func(ctx context.Context) (string, time.Duration, error) {
 		return "fallback", 10 * time.Minute, nil
@@ -458,6 +471,7 @@ func TestComputeCache_StaleTTLZeroNoStaleServing(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "nostalettl:")
 	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
 
 	var calls atomic.Int32
 	fn := func(ctx context.Context) (string, time.Duration, error) {

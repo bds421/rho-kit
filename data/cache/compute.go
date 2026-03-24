@@ -309,6 +309,12 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 
 // triggerBackgroundRefresh starts an async refresh using singleflight.DoChan.
 func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[T]) {
+	if cc.closed.Load() {
+		return // Cache closed; skip background refresh.
+	}
+	// Note: there is a narrow TOCTOU window where Close() could be called
+	// between the closed check and bgWg.Add(1). The worst case is one extra
+	// background goroutine that immediately hits a cancelled context.
 	cc.bgWg.Add(1)
 
 	ch := cc.group.DoChan(full, func() (interface{}, error) {
