@@ -64,3 +64,56 @@ func TestCheckVersion_NonExistentRow(t *testing.T) {
 func TestCheckVersion_ErrVersionConflictIsConflict(t *testing.T) {
 	assert.True(t, apperror.IsConflict(ErrVersionConflict))
 }
+
+func TestUpdateWithVersion_Success(t *testing.T) {
+	db := setupVersionedDB(t)
+	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+
+	model := &versionedModel{ID: "1"}
+	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	require.NoError(t, err)
+
+	var updated versionedModel
+	db.First(&updated, "id = ?", "1")
+	assert.Equal(t, "bob", updated.Name)
+	assert.Equal(t, int64(2), updated.Version)
+}
+
+func TestUpdateWithVersion_Conflict(t *testing.T) {
+	db := setupVersionedDB(t)
+	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3})
+
+	model := &versionedModel{ID: "1"}
+	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	require.ErrorIs(t, err, ErrVersionConflict)
+
+	// Verify neither name nor version changed.
+	var unchanged versionedModel
+	db.First(&unchanged, "id = ?", "1")
+	assert.Equal(t, "alice", unchanged.Name)
+	assert.Equal(t, int64(3), unchanged.Version)
+}
+
+func TestUpdateWithVersion_NonExistentRow(t *testing.T) {
+	db := setupVersionedDB(t)
+
+	model := &versionedModel{ID: "nonexistent"}
+	err := UpdateWithVersion(db, model, 1, map[string]any{"name": "bob"})
+	require.ErrorIs(t, err, ErrVersionConflict)
+	assert.True(t, apperror.IsConflict(err))
+}
+
+func TestUpdateWithVersion_DoesNotMutateInput(t *testing.T) {
+	db := setupVersionedDB(t)
+	db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1})
+
+	updates := map[string]any{"name": "bob"}
+	model := &versionedModel{ID: "1"}
+	err := UpdateWithVersion(db, model, 1, updates)
+	require.NoError(t, err)
+
+	// The original map must not contain the injected "version" key.
+	_, hasVersion := updates["version"]
+	assert.False(t, hasVersion, "input updates map was mutated")
+	assert.Len(t, updates, 1)
+}
