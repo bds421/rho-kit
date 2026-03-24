@@ -281,7 +281,7 @@ func TestEnvReloader_LoadErrorPreservesOldValue(t *testing.T) {
 	}
 
 	// Ensure the var is not set (use a unique name to avoid collisions).
-	os.Unsetenv("TEST_ENVRELOADER_REQUIRED_PORT")
+	require.NoError(t, os.Unsetenv("TEST_ENVRELOADER_REQUIRED_PORT"))
 
 	w := NewWatchable(strictCfg{Port: 8080})
 	r := NewEnvReloader[strictCfg](w, WithWatchLogger(slog.Default()))
