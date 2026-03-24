@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/google/uuid"
 )
@@ -14,7 +15,7 @@ import (
 func TestWithCorrelationID_GeneratesID(t *testing.T) {
 	var capturedID string
 	handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.CorrelationID(r.Context())
+		capturedID = contextutil.CorrelationID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -41,7 +42,7 @@ func TestWithCorrelationID_GeneratesID(t *testing.T) {
 func TestWithCorrelationID_UsesIncomingHeader(t *testing.T) {
 	var capturedID string
 	handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.CorrelationID(r.Context())
+		capturedID = contextutil.CorrelationID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -74,7 +75,7 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var capturedID string
 			handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				capturedID = httpx.CorrelationID(r.Context())
+				capturedID = contextutil.CorrelationID(r.Context())
 				w.WriteHeader(http.StatusOK)
 			}))
 
@@ -100,7 +101,7 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 func TestWithCorrelationID_AcceptsMaxLength(t *testing.T) {
 	var capturedID string
 	handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.CorrelationID(r.Context())
+		capturedID = contextutil.CorrelationID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -118,11 +119,14 @@ func TestWithCorrelationID_AcceptsMaxLength(t *testing.T) {
 func TestContextRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
+	//nolint:staticcheck // intentionally testing deprecated shim
 	if id := httpx.CorrelationID(ctx); id != "" {
 		t.Errorf("empty context should return empty string, got %q", id)
 	}
 
+	//nolint:staticcheck // intentionally testing deprecated shim
 	ctx = httpx.SetCorrelationID(ctx, "test-correlation-id")
+	//nolint:staticcheck // intentionally testing deprecated shim
 	if id := httpx.CorrelationID(ctx); id != "test-correlation-id" {
 		t.Errorf("CorrelationID = %q, want %q", id, "test-correlation-id")
 	}
@@ -130,6 +134,7 @@ func TestContextRoundTrip(t *testing.T) {
 
 func TestDeprecatedPropagateHTTP(t *testing.T) {
 	// Verify deprecated wrappers still delegate correctly.
+	//nolint:staticcheck // intentionally testing deprecated shim
 	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-id")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
@@ -141,6 +146,7 @@ func TestDeprecatedPropagateHTTP(t *testing.T) {
 }
 
 func TestDeprecatedPropagateMessageHeader(t *testing.T) {
+	//nolint:staticcheck // intentionally testing deprecated shim
 	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-msg-id")
 
 	key, value := PropagateMessageHeader(ctx)

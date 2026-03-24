@@ -26,6 +26,7 @@ func CorrelationID(ctx context.Context) string {
 // If no correlation ID is present in the context, this is a no-op.
 func PropagateHTTP(ctx context.Context, req *http.Request) {
 	if id := contextutil.CorrelationID(ctx); id != "" {
+		// "X-Correlation-Id" must match correlationid.Header.
 		req.Header.Set("X-Correlation-Id", id)
 	}
 }
@@ -34,6 +35,7 @@ func PropagateHTTP(ctx context.Context, req *http.Request) {
 // Returns ("", "") if no correlation ID is present in the context.
 func PropagateMessageHeader(ctx context.Context) (key, value string) {
 	if id := contextutil.CorrelationID(ctx); id != "" {
+		// "X-Correlation-Id" must match correlationid.Header.
 		return "X-Correlation-Id", id
 	}
 	return "", ""

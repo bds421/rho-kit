@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/google/uuid"
 )
 
 func TestWithRequestID_GeneratesID(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -39,7 +39,7 @@ func TestWithRequestID_GeneratesID(t *testing.T) {
 func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -56,7 +56,7 @@ func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 func TestWithRequestID_RejectsLongID(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -77,7 +77,7 @@ func TestWithRequestID_RejectsLongID(t *testing.T) {
 func TestWithRequestID_RejectsControlChars(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -94,7 +94,7 @@ func TestWithRequestID_RejectsControlChars(t *testing.T) {
 func TestWithRequestID_AcceptsMaxLength(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 

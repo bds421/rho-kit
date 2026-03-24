@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx"
 )
 
@@ -51,7 +52,7 @@ func TestWithRequestLogger_InjectsLogger_WithRequestID(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/orders", nil)
-	ctx := httpx.SetRequestID(req.Context(), "req-abc-123")
+	ctx := contextutil.SetRequestID(req.Context(), "req-abc-123")
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
@@ -179,7 +180,7 @@ func TestWithRequestLogger_InjectsLogger_WithCorrelationID(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/trace", nil)
-	ctx := httpx.SetCorrelationID(req.Context(), "corr-xyz-789")
+	ctx := contextutil.SetCorrelationID(req.Context(), "corr-xyz-789")
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
@@ -214,8 +215,8 @@ func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPut, "/api/users/42", nil)
-	ctx := httpx.SetRequestID(req.Context(), "req-111")
-	ctx = httpx.SetCorrelationID(ctx, "corr-222")
+	ctx := contextutil.SetRequestID(req.Context(), "req-111")
+	ctx = contextutil.SetCorrelationID(ctx, "corr-222")
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()

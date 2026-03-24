@@ -33,11 +33,15 @@ func WithCorrelationID(next http.Handler) http.Handler {
 	})
 }
 
+// PropagateHTTP injects the correlation ID from context into an outbound HTTP request header.
+//
 // Deprecated: Use httpx.PropagateHTTP instead.
 func PropagateHTTP(ctx context.Context, req *http.Request) {
 	httpx.PropagateHTTP(ctx, req)
 }
 
+// PropagateMessageHeader returns the correlation ID header key-value for messaging systems.
+//
 // Deprecated: Use httpx.PropagateMessageHeader instead.
 func PropagateMessageHeader(ctx context.Context) (key, value string) {
 	return httpx.PropagateMessageHeader(ctx)
