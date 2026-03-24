@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/bds421/rho-kit/core/apperror v1.0.0
 	github.com/bds421/rho-kit/core/config v1.0.0
+	github.com/bds421/rho-kit/core/contextutil v1.0.0
 	github.com/bds421/rho-kit/observability/health v1.0.0
 	github.com/glebarez/go-sqlite v1.22.0
 	github.com/glebarez/sqlite v1.11.0
