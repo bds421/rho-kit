@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/bds421/rho-kit/httpx"
+	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
 	mwrequestid "github.com/bds421/rho-kit/httpx/middleware/requestid"
@@ -21,8 +22,9 @@ type Config struct {
 	EnableTracing    bool
 	EnableLogging    bool
 	EnableReqLogger  bool
-	EnableSecHeaders bool
-	FrameOption      secheaders.FrameOption
+	EnableCorrelationID bool
+	EnableSecHeaders    bool
+	FrameOption         secheaders.FrameOption
 	Outer            []func(http.Handler) http.Handler
 	Inner            []func(http.Handler) http.Handler
 }
@@ -39,12 +41,13 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	cfg := Config{
 		Logger:           logger,
 		QuietPaths:       []string{"/ready"},
-		EnableMetrics:    true,
-		EnableRequestID:  true,
-		EnableTracing:    true,
-		EnableLogging:    true,
-		EnableReqLogger:  true,
-		EnableSecHeaders: true,
+		EnableMetrics:       true,
+		EnableRequestID:     true,
+		EnableCorrelationID: true,
+		EnableTracing:       true,
+		EnableLogging:       true,
+		EnableReqLogger:     true,
+		EnableSecHeaders:    true,
 		FrameOption:      secheaders.Deny,
 	}
 	for _, opt := range opts {
@@ -66,6 +69,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 			return slog.String("request_id", httpx.RequestID(r.Context()))
 		})
 	}
+	if cfg.EnableCorrelationID {
+		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
+			return slog.String("correlation_id", httpx.CorrelationID(r.Context()))
+		})
+	}
 
 	if cfg.EnableReqLogger {
 		h = mwlogging.WithRequestLogger(cfg.Logger)(h)
@@ -75,6 +83,9 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 	if cfg.EnableTracing {
 		h = mwtracing.HTTPMiddleware(h)
+	}
+	if cfg.EnableCorrelationID {
+		h = mwcorrelationid.WithCorrelationID(h)
 	}
 	if cfg.EnableRequestID {
 		h = mwrequestid.WithRequestID(h)
@@ -115,6 +126,11 @@ func WithoutMetrics() Option {
 // WithoutRequestID disables request ID middleware.
 func WithoutRequestID() Option {
 	return func(cfg *Config) { cfg.EnableRequestID = false }
+}
+
+// WithoutCorrelationID disables correlation ID middleware.
+func WithoutCorrelationID() Option {
+	return func(cfg *Config) { cfg.EnableCorrelationID = false }
 }
 
 // WithoutTracing disables tracing middleware.

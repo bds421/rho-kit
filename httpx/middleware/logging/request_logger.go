@@ -26,6 +26,10 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 				attrs = append(attrs, slog.String("request_id", id))
 			}
 
+			if cid := httpx.CorrelationID(r.Context()); cid != "" {
+				attrs = append(attrs, slog.String("correlation_id", cid))
+			}
+
 			attrs = append(attrs, slog.String("method", r.Method))
 			attrs = append(attrs, slog.String("path", r.URL.Path))
 
