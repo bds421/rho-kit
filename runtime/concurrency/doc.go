@@ -7,7 +7,8 @@
 //
 //   - [FanOut] runs N functions concurrently and returns all results in
 //     submission order. The first error cancels remaining goroutines
-//     (fail-fast, like Promise.all).
+//     (fail-fast, like Promise.all). Only the first error is returned;
+//     errors from other concurrently-running goroutines are discarded.
 //
 //   - [FanOutSettled] runs N functions concurrently and collects every
 //     result regardless of individual errors (like Promise.allSettled).

@@ -10,6 +10,8 @@ import (
 )
 
 // PanicError indicates a goroutine panicked during execution.
+// In Go 1.21+, panic(nil) is wrapped by the runtime in *runtime.PanicNilError,
+// so PanicError.Value will be non-nil.
 type PanicError struct {
 	// Index is the position of the goroutine in the input slice.
 	Index int
@@ -68,8 +70,14 @@ func buildConfig(opts []Option) config {
 // FanOut runs fns concurrently and returns all results in submission order.
 // If any function returns an error (or panics), the derived context is
 // cancelled, remaining goroutines observe the cancellation, and the first
-// error is returned. On success the returned slice has the same length and
-// order as fns.
+// error is returned. Only the first error is returned; errors from other
+// concurrently-running goroutines are discarded. On success the returned
+// slice has the same length and order as fns.
+//
+// Note: when [WithMaxGoroutines] is set, FanOut delegates limiting to errgroup
+// which may briefly block after context cancellation until a running goroutine
+// frees a slot. [FanOutSettled] uses a context-aware semaphore that responds
+// immediately to cancellation.
 //
 // A nil or empty fns slice returns an empty (non-nil) slice and no error.
 func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...Option) ([]T, error) {

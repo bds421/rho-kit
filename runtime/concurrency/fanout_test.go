@@ -436,6 +436,23 @@ func TestFanOutSettled_MultipleConcurrentPanics(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// FanOut with MaxGoroutines + panic
+// ---------------------------------------------------------------------------
+
+func TestFanOut_WithMaxGoroutines_Panic(t *testing.T) {
+	// WithMaxGoroutines(1) forces sequential execution. Verify that the
+	// panic recovery frees the errgroup semaphore slot so the second
+	// function can still run.
+	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { panic("boom") },
+		func(_ context.Context) (int, error) { return 1, nil },
+	}, WithMaxGoroutines(1))
+
+	var pe *PanicError
+	require.ErrorAs(t, err, &pe)
+}
+
+// ---------------------------------------------------------------------------
 // WithMaxGoroutines edge cases
 // ---------------------------------------------------------------------------
 
@@ -526,5 +543,29 @@ func BenchmarkFanOutSettled(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		_ = FanOutSettled(context.Background(), fns)
+	}
+}
+
+func BenchmarkFanOut_Bounded(b *testing.B) {
+	fns := make([]func(ctx context.Context) (int, error), 10)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_, _ = FanOut(context.Background(), fns, WithMaxGoroutines(4))
+	}
+}
+
+func BenchmarkFanOutSettled_Bounded(b *testing.B) {
+	fns := make([]func(ctx context.Context) (int, error), 10)
+	for i := range fns {
+		fns[i] = func(_ context.Context) (int, error) { return 0, nil }
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		_ = FanOutSettled(context.Background(), fns, WithMaxGoroutines(4))
 	}
 }
