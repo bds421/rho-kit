@@ -20,7 +20,7 @@ func WithRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(Header)
 		if !isValidRequestID(id) {
-			id = idutil.Generate()
+			id = contextutil.NewID()
 		}
 		w.Header().Set(Header, id)
 		ctx := contextutil.SetRequestID(r.Context(), id)

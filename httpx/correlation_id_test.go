@@ -12,7 +12,7 @@ func TestPropagateHTTP(t *testing.T) {
 
 	PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(correlationIDHeader); got != "propagated-id" {
+	if got := req.Header.Get("X-Correlation-Id"); got != "propagated-id" {
 		t.Errorf("header = %q, want %q", got, "propagated-id")
 	}
 }
@@ -20,11 +20,11 @@ func TestPropagateHTTP(t *testing.T) {
 func TestPropagateHTTP_OverwritesExistingHeader(t *testing.T) {
 	ctx := SetCorrelationID(context.Background(), "from-context")
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set(correlationIDHeader, "pre-existing-value")
+	req.Header.Set("X-Correlation-Id", "pre-existing-value")
 
 	PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(correlationIDHeader); got != "from-context" {
+	if got := req.Header.Get("X-Correlation-Id"); got != "from-context" {
 		t.Errorf("header = %q, want %q; PropagateHTTP should overwrite pre-existing header", got, "from-context")
 	}
 }
@@ -35,7 +35,7 @@ func TestPropagateHTTP_NoCorrelationID(t *testing.T) {
 
 	PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(correlationIDHeader); got != "" {
+	if got := req.Header.Get("X-Correlation-Id"); got != "" {
 		t.Errorf("header should be empty when no correlation ID in context, got %q", got)
 	}
 }
@@ -43,11 +43,11 @@ func TestPropagateHTTP_NoCorrelationID(t *testing.T) {
 func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
 	ctx := context.Background()
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set(correlationIDHeader, "existing-id")
+	req.Header.Set("X-Correlation-Id", "existing-id")
 
 	PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(correlationIDHeader); got != "existing-id" {
+	if got := req.Header.Get("X-Correlation-Id"); got != "existing-id" {
 		t.Errorf("header = %q, want %q; pre-existing header should be preserved when context has no ID", got, "existing-id")
 	}
 }
@@ -57,8 +57,8 @@ func TestPropagateMessageHeader(t *testing.T) {
 
 	key, value := PropagateMessageHeader(ctx)
 
-	if key != correlationIDHeader {
-		t.Errorf("key = %q, want %q", key, correlationIDHeader)
+	if key != "X-Correlation-Id" {
+		t.Errorf("key = %q, want %q", key, "X-Correlation-Id")
 	}
 	if value != "msg-correlation-id" {
 		t.Errorf("value = %q, want %q", value, "msg-correlation-id")

@@ -64,6 +64,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = cfg.Inner[i](h)
 	}
 
+	// Both the access-log Logger (via extraAttrs below) and the per-handler
+	// WithRequestLogger emit request_id and correlation_id by design:
+	// the access-log middleware produces structured access log lines, while
+	// WithRequestLogger builds the handler-scoped logger returned by
+	// httpx.Logger(ctx, fallback). The duplication is intentional.
 	var extraAttrs []func(*http.Request) slog.Attr
 	if cfg.EnableRequestID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {

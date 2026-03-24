@@ -3,34 +3,7 @@ package idutil
 import (
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 )
-
-func TestGenerate(t *testing.T) {
-	id := Generate()
-
-	// Must be a valid UUID v7 (36 chars: 8-4-4-4-12 hex with hyphens).
-	parsed, err := uuid.Parse(id)
-	if err != nil {
-		t.Fatalf("Generate() returned invalid UUID %q: %v", id, err)
-	}
-	if parsed.Version() != 7 {
-		t.Errorf("Generate() UUID version = %d, want 7", parsed.Version())
-	}
-
-	id2 := Generate()
-	if id == id2 {
-		t.Error("Generate() should produce unique IDs")
-	}
-}
-
-func TestGenerate_Format(t *testing.T) {
-	id := Generate()
-	if len(id) != 36 {
-		t.Errorf("Generate() length = %d, want 36 (UUID format)", len(id))
-	}
-}
 
 func TestIsValid(t *testing.T) {
 	tests := []struct {

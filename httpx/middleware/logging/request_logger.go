@@ -12,6 +12,9 @@ import (
 // request context with pre-populated attributes (request_id, trace_id, etc.).
 // Handler code can retrieve it with httpx.Logger(ctx, fallback).
 //
+// request_id and correlation_id are always included when present in the
+// context. Do not pass them via extraAttrs.
+//
 // Attributes are built from the request context at the time the middleware
 // runs. Place this middleware after WithRequestID and after tracing
 // middleware so the context contains the relevant identifiers.

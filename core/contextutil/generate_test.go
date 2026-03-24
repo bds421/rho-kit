@@ -1,3 +1,4 @@
+// Package contextutil (not _test) to access unexported fallbackGenerate.
 package contextutil
 
 import (
