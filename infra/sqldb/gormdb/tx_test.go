@@ -36,7 +36,7 @@ func TestWithTx_RollbackOnError(t *testing.T) {
 	require.ErrorIs(t, err, sentinel)
 
 	var count int64
-	db.Model(&testModel{}).Count(&count)
+	require.NoError(t, db.Model(&testModel{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
 }
 
@@ -52,7 +52,7 @@ func TestWithTx_RollbackOnPanic(t *testing.T) {
 	})
 
 	var count int64
-	db.Model(&testModel{}).Count(&count)
+	require.NoError(t, db.Model(&testModel{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
 }
 
@@ -92,7 +92,7 @@ func TestWithTxResult_RollbackOnPanic(t *testing.T) {
 	})
 
 	var count int64
-	db.Model(&testModel{}).Count(&count)
+	require.NoError(t, db.Model(&testModel{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
 }
 

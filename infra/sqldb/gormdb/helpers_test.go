@@ -163,7 +163,7 @@ func TestDeleteByID_Found(t *testing.T) {
 	require.NoError(t, DeleteByID[testModel](db, "test", "1"))
 
 	var count int64
-	db.Model(&testModel{}).Count(&count)
+	require.NoError(t, db.Model(&testModel{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
 }
 
