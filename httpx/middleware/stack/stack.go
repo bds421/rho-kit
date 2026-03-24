@@ -33,7 +33,7 @@ type Config struct {
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// security headers -> metrics -> request ID -> tracing -> request logger -> logging -> inner -> handler
+// security headers -> metrics -> request ID -> correlation ID -> tracing -> request logger -> logging -> inner -> handler
 // Additional outer middleware wraps the entire chain.
 // The request logger is injected so that httpx.Logger(ctx, fallback) returns
 // a request-scoped logger in handler code.

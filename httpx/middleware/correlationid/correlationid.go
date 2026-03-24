@@ -5,22 +5,14 @@ package correlationid
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	"encoding/hex"
-	"log/slog"
 	"net/http"
-	"sync/atomic"
-	"time"
 
 	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/middleware/internal/idutil"
 )
 
 // Header is the canonical HTTP header name for correlation IDs.
 const Header = "X-Correlation-Id"
-
-// fallbackCounter provides uniqueness when crypto/rand is unavailable.
-var fallbackCounter atomic.Uint64
 
 // maxCorrelationIDLen is the maximum length for an incoming correlation ID header.
 const maxCorrelationIDLen = 128
@@ -32,7 +24,7 @@ func WithCorrelationID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(Header)
 		if !isValidCorrelationID(id) {
-			id = generateID()
+			id = idutil.Generate()
 		}
 		w.Header().Set(Header, id)
 		ctx := httpx.SetCorrelationID(r.Context(), id)
@@ -60,25 +52,5 @@ func PropagateMessageHeader(ctx context.Context) (key, value string) {
 // isValidCorrelationID returns true if id is non-empty, within length limits,
 // and contains only printable ASCII characters.
 func isValidCorrelationID(id string) bool {
-	if id == "" || len(id) > maxCorrelationIDLen {
-		return false
-	}
-	for _, c := range id {
-		if c < 0x20 || c > 0x7E {
-			return false
-		}
-	}
-	return true
-}
-
-// generateID produces a 32-character hex string from 16 random bytes.
-// Falls back to time+counter if crypto/rand is unavailable.
-func generateID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		slog.Warn("crypto/rand failed, using fallback for correlation ID", "error", err)
-		binary.BigEndian.PutUint64(b[:8], uint64(time.Now().UnixNano()))
-		binary.BigEndian.PutUint64(b[8:], fallbackCounter.Add(1))
-	}
-	return hex.EncodeToString(b)
+	return idutil.IsValid(id, maxCorrelationIDLen)
 }
