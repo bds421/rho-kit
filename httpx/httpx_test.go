@@ -377,8 +377,8 @@ func TestWriteServiceError_Unavailable_NoDependency_503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
 	}
-	if rec.Header().Get("Retry-After") != "5" {
-		t.Fatalf("expected Retry-After 5, got %q", rec.Header().Get("Retry-After"))
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("expected no Retry-After header when RetryAfter is 0, got %q", rec.Header().Get("Retry-After"))
 	}
 
 	var body struct {

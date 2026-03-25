@@ -8,9 +8,9 @@ import (
 )
 
 // Code identifies the category of an application error.
-// Codes are transport-agnostic: each maps cleanly to both HTTP status codes
-// (via [HTTPStatus]) and gRPC status codes (via a grpcx adapter). The error
-// model expresses domain intent; transport layers choose the appropriate mapping.
+// Codes are transport-agnostic: each transport adapter (httpx, grpcx) maps
+// codes to the appropriate transport status. The error model expresses domain
+// intent; transport layers choose the appropriate mapping.
 type Code string
 
 const (
@@ -151,13 +151,12 @@ func (e *OperationFailedError) Retryable() bool { return false }
 // Use this when a service cannot fulfill a request because a dependency it relies
 // on is down, overloaded, or not responding.
 //
-// When Dependency is set, the error represents an upstream failure (HTTP 502 Bad Gateway).
-// When Dependency is empty, the error represents the service itself being unavailable
-// (HTTP 503 Service Unavailable).
+// When Dependency is set, the error represents an upstream failure.
+// When Dependency is empty, the error represents the service itself being unavailable.
 type UnavailableError struct {
 	Message    string
 	Dependency string        // identifies the failed dependency (e.g., "payment-service", "redis")
-	RetryAfter time.Duration // suggested retry delay; 0 means use the transport default
+	RetryAfter time.Duration // suggested retry delay; 0 means no suggestion
 	cause      error
 }
 

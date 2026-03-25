@@ -48,8 +48,8 @@ if ve, ok := apperror.AsValidation(err); ok { ve.Fields }
 if rl, ok := apperror.AsRateLimit(err); ok { rl.RetryAfter }
 if ue, ok := apperror.AsUnavailable(err); ok { ue.Dependency; ue.RetryAfter }
 
-// HTTP status mapping (used by httpx.WriteServiceError):
-status := apperror.HTTPStatus(err) // returns int
+// HTTP status mapping (lives in httpx, not apperror — transport-agnostic):
+status := httpx.HTTPStatus(err) // returns int
 
 // Retry predicate (for resilience/retry integration):
 apperror.ShouldRetry(err) // true for Conflict, RateLimit, Unavailable

@@ -52,14 +52,10 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		logger.Error("upstream unavailable", logAttrs...)
 		// IMPORTANT: Do not send internal error details to clients.
 		// The dependency name is only included in logs, not in the response.
-		status := apperror.HTTPStatus(err)
+		status := HTTPStatus(err)
 		msg := "service unavailable"
-		// Set Retry-After header: use the error's RetryAfter if present,
-		// otherwise default to 5s for 503 responses.
 		if ue, ok := apperror.AsUnavailable(err); ok && ue.RetryAfter > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(ue.RetryAfter.Seconds()))))
-		} else if status == http.StatusServiceUnavailable {
-			w.Header().Set("Retry-After", "5")
 		}
 		WriteError(w, status, msg)
 
