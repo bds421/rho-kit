@@ -368,6 +368,129 @@ func TestWriteServiceError_OperationFailed(t *testing.T) {
 	}
 }
 
+func TestWriteServiceError_Unavailable_NoDependency_503(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	WriteServiceError(rec, req, logger, apperror.NewUnavailable("not ready"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("expected no Retry-After header when RetryAfter is 0, got %q", rec.Header().Get("Retry-After"))
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+	if body.Error != "service unavailable" {
+		t.Fatalf("expected 'service unavailable', got %q", body.Error)
+	}
+}
+
+func TestWriteServiceError_DependencyUnavailable_502(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	WriteServiceError(rec, req, logger, apperror.NewDependencyUnavailable("payment-service", "tcp dial timeout to 10.0.0.5:3000", errors.New("dial tcp 10.0.0.5:3000: i/o timeout")))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("expected no Retry-After header for 502, got %q", rec.Header().Get("Retry-After"))
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+	// Must not leak internal details (IP addresses, ports, dependency names).
+	if body.Error != "service unavailable" {
+		t.Fatalf("expected 'service unavailable', got %q", body.Error)
+	}
+}
+
+func TestWriteServiceError_Unavailable_WithRetryAfter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	ue := &apperror.UnavailableError{
+		Message:    "not ready",
+		RetryAfter: 30 * time.Second,
+	}
+	WriteServiceError(rec, req, logger, ue)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("expected Retry-After 30, got %q", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestWriteServiceError_DependencyUnavailable_WithRetryAfter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	ue := &apperror.UnavailableError{
+		Message:    "redis down",
+		Dependency: "redis",
+		RetryAfter: 10 * time.Second,
+	}
+	WriteServiceError(rec, req, logger, ue)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "10" {
+		t.Fatalf("expected Retry-After 10, got %q", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestWriteServiceError_Unavailable_DoesNotLeakInternalDetails(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	// The cause contains sensitive internal details.
+	WriteServiceError(rec, req, logger, apperror.NewUnavailableWithCause(
+		"connection to redis at 10.0.0.5:6379 refused",
+		errors.New("dial tcp 10.0.0.5:6379: connection refused"),
+	))
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+	// The generic "service unavailable" message must be used, not the internal error.
+	if body.Error != "service unavailable" {
+		t.Fatalf("expected generic message, got %q", body.Error)
+	}
+	if strings.Contains(body.Error, "10.0.0.5") {
+		t.Fatal("response body must not contain internal IP addresses")
+	}
+}
+
+func TestWriteServiceError_Forbidden(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	WriteServiceError(rec, req, logger, apperror.NewForbidden("access denied"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
 // --- WriteValidationError ---
 
 func TestWriteValidationError_WithFields(t *testing.T) {
@@ -529,6 +652,8 @@ func TestHttpStatusToCode(t *testing.T) {
 		{http.StatusTooManyRequests, "RATE_LIMITED"},
 		{http.StatusInternalServerError, "INTERNAL"},
 		{http.StatusForbidden, "FORBIDDEN"},
+		{http.StatusBadGateway, "BAD_GATEWAY"},
+		{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{http.StatusTeapot, "INTERNAL"},
 		{999, "INTERNAL"},
 	}
