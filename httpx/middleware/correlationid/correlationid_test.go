@@ -119,43 +119,37 @@ func TestWithCorrelationID_AcceptsMaxLength(t *testing.T) {
 func TestContextRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
-	//nolint:staticcheck // intentionally testing deprecated shim
-	if id := httpx.CorrelationID(ctx); id != "" {
+	if id := contextutil.CorrelationID(ctx); id != "" {
 		t.Errorf("empty context should return empty string, got %q", id)
 	}
 
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx = httpx.SetCorrelationID(ctx, "test-correlation-id")
-	//nolint:staticcheck // intentionally testing deprecated shim
-	if id := httpx.CorrelationID(ctx); id != "test-correlation-id" {
+	ctx = contextutil.SetCorrelationID(ctx, "test-correlation-id")
+	if id := contextutil.CorrelationID(ctx); id != "test-correlation-id" {
 		t.Errorf("CorrelationID = %q, want %q", id, "test-correlation-id")
 	}
 }
 
-func TestDeprecatedPropagateHTTP(t *testing.T) {
-	// Verify deprecated wrappers still delegate correctly.
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-id")
+func TestPropagateHTTP(t *testing.T) {
+	ctx := contextutil.SetCorrelationID(context.Background(), "propagate-id")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	PropagateHTTP(ctx, req)
+	httpx.PropagateHTTP(ctx, req)
 
-	if got := req.Header.Get(Header); got != "deprecated-id" {
-		t.Errorf("header = %q, want %q", got, "deprecated-id")
+	if got := req.Header.Get(Header); got != "propagate-id" {
+		t.Errorf("header = %q, want %q", got, "propagate-id")
 	}
 }
 
-func TestDeprecatedPropagateMessageHeader(t *testing.T) {
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx := httpx.SetCorrelationID(context.Background(), "deprecated-msg-id")
+func TestPropagateMessageHeader(t *testing.T) {
+	ctx := contextutil.SetCorrelationID(context.Background(), "msg-id")
 
-	key, value := PropagateMessageHeader(ctx)
+	key, value := httpx.PropagateMessageHeader(ctx)
 
 	if key != Header {
 		t.Errorf("key = %q, want %q", key, Header)
 	}
-	if value != "deprecated-msg-id" {
-		t.Errorf("value = %q, want %q", value, "deprecated-msg-id")
+	if value != "msg-id" {
+		t.Errorf("value = %q, want %q", value, "msg-id")
 	}
 }
 

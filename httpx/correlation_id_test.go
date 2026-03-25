@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/bds421/rho-kit/core/contextutil"
 )
 
 func TestPropagateHTTP(t *testing.T) {
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx := SetCorrelationID(context.Background(), "propagated-id")
+	ctx := contextutil.SetCorrelationID(context.Background(), "propagated-id")
 	req := httptest.NewRequest("GET", "/", nil)
 
 	PropagateHTTP(ctx, req)
@@ -19,8 +20,7 @@ func TestPropagateHTTP(t *testing.T) {
 }
 
 func TestPropagateHTTP_OverwritesExistingHeader(t *testing.T) {
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx := SetCorrelationID(context.Background(), "from-context")
+	ctx := contextutil.SetCorrelationID(context.Background(), "from-context")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Correlation-Id", "pre-existing-value")
 
@@ -55,8 +55,7 @@ func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
 }
 
 func TestPropagateMessageHeader(t *testing.T) {
-	//nolint:staticcheck // intentionally testing deprecated shim
-	ctx := SetCorrelationID(context.Background(), "msg-correlation-id")
+	ctx := contextutil.SetCorrelationID(context.Background(), "msg-correlation-id")
 
 	key, value := PropagateMessageHeader(ctx)
 

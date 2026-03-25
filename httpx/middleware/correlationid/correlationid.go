@@ -4,11 +4,9 @@
 package correlationid
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/middleware/internal/idutil"
 )
 
@@ -31,20 +29,6 @@ func WithCorrelationID(next http.Handler) http.Handler {
 		ctx := contextutil.SetCorrelationID(r.Context(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// PropagateHTTP injects the correlation ID from context into an outbound HTTP request header.
-//
-// Deprecated: Use httpx.PropagateHTTP instead.
-func PropagateHTTP(ctx context.Context, req *http.Request) {
-	httpx.PropagateHTTP(ctx, req)
-}
-
-// PropagateMessageHeader returns the correlation ID header key-value for messaging systems.
-//
-// Deprecated: Use httpx.PropagateMessageHeader instead.
-func PropagateMessageHeader(ctx context.Context) (key, value string) {
-	return httpx.PropagateMessageHeader(ctx)
 }
 
 // isValidCorrelationID returns true if id is non-empty, within length limits,
