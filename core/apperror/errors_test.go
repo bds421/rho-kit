@@ -241,6 +241,33 @@ func TestNewFieldValidation_ZeroArgs_Panics(t *testing.T) {
 	})
 }
 
+func TestHTTPStatus_Deprecated(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"NotFound", NewNotFound("x", 1), 404},
+		{"Validation", NewValidation("bad"), 400},
+		{"Conflict", NewConflict("dup"), 409},
+		{"Permanent", NewPermanent("no"), 422},
+		{"AuthRequired", NewAuthRequired("login"), 401},
+		{"RateLimit", NewRateLimit("slow", time.Second), 429},
+		{"OperationFailed", NewOperationFailed("fail"), 500},
+		{"Forbidden", NewForbidden("denied"), 403},
+		{"Generic", errors.New("generic"), 500},
+		{"Unavailable_NoDep_503", NewUnavailable("not ready"), 503},
+		{"Unavailable_WithCause_NoDep_503", NewUnavailableWithCause("not ready", errors.New("cause")), 503},
+		{"DependencyUnavailable_502", NewDependencyUnavailable("redis", "redis down", nil), 502},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			//nolint:staticcheck // testing deprecated function
+			assert.Equal(t, tt.want, HTTPStatus(tt.err))
+		})
+	}
+}
+
 func TestAppErrorInterface(t *testing.T) {
 	// All concrete types implement AppError.
 	var _ AppError = &NotFoundError{}
