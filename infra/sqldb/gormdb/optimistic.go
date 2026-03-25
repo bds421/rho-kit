@@ -14,7 +14,7 @@ import (
 // ErrVersionConflict is returned when an optimistic locking check fails.
 var ErrVersionConflict = apperror.NewConflict("version conflict: row was modified by another transaction")
 
-// ErrNilModel is returned when a nil model is passed to CheckVersion or UpdateWithVersion.
+// ErrNilModel is returned when a nil model is passed to UpdateWithVersion.
 var ErrNilModel = errors.New("gormdb: model must not be nil")
 
 // ErrEmptyUpdates is returned when UpdateWithVersion is called with a nil or empty updates map.
@@ -23,46 +23,6 @@ var ErrEmptyUpdates = errors.New("gormdb: updates must not be empty")
 // ErrVersionKeyInUpdates is returned when the updates map passed to UpdateWithVersion
 // contains a "version" key, which is managed automatically.
 var ErrVersionKeyInUpdates = errors.New("gormdb: updates must not contain \"version\"; it is managed automatically by UpdateWithVersion")
-
-// CheckVersion increments the version column only if it matches expectedVersion.
-// Use this to detect concurrent modifications without changing other fields.
-// For updating fields with optimistic locking, use [UpdateWithVersion] instead.
-//
-// Both CheckVersion and [UpdateWithVersion] require the model to have a database
-// column named "version". Custom column names are not supported. This convention
-// simplifies the API at the cost of flexibility. The model's struct must include
-// a field mapped to that column (e.g., Version int64 or
-// Version int64 `gorm:"column:version"`).
-//
-// Returns [ErrVersionConflict] if no rows were affected (the row was modified
-// by another transaction or does not exist). Any other database error is
-// wrapped and returned.
-//
-// The caller is responsible for ensuring expectedVersion does not overflow int64.
-//
-// Note: if the row identified by model's primary key does not exist,
-// RowsAffected will be 0, and ErrVersionConflict is returned. Callers
-// that need to distinguish "deleted" from "stale version" should check
-// existence separately.
-func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion int64) error {
-	if model == nil {
-		return ErrNilModel
-	}
-
-	result := db.WithContext(ctx).Model(model).
-		Where("version = ?", expectedVersion).
-		Update("version", expectedVersion+1)
-
-	if result.Error != nil {
-		return fmt.Errorf("gormdb: check version: %w", result.Error)
-	}
-
-	if result.RowsAffected == 0 {
-		return ErrVersionConflict
-	}
-
-	return nil
-}
 
 // UpdateWithVersion atomically updates the model's fields only if the current
 // version matches expectedVersion. On success, the version column is incremented.
@@ -79,6 +39,10 @@ func CheckVersion(ctx context.Context, db *gorm.DB, model any, expectedVersion i
 // The input updates map is never mutated; a shallow copy is used internally.
 //
 // The caller is responsible for ensuring expectedVersion does not overflow int64.
+//
+// Both the model and the database table must have a column named "version".
+// Custom column names are not supported. The model's struct must include a field
+// mapped to that column (e.g., Version int64 or Version int64 `gorm:"column:version"`).
 //
 // Note: if the row identified by model's primary key does not exist,
 // RowsAffected will be 0, and ErrVersionConflict is returned. Callers

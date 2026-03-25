@@ -16,46 +16,6 @@ type versionedModel struct {
 	Version int64
 }
 
-func TestCheckVersion_Success(t *testing.T) {
-	db := setupTestDB(t, &versionedModel{})
-	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
-
-	model := &versionedModel{ID: "1"}
-	err := CheckVersion(context.Background(), db, model, 1)
-	require.NoError(t, err)
-
-	var updated versionedModel
-	require.NoError(t, db.First(&updated, "id = ?", "1").Error)
-	assert.Equal(t, int64(2), updated.Version)
-}
-
-func TestCheckVersion_Conflict(t *testing.T) {
-	db := setupTestDB(t, &versionedModel{})
-	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 3}).Error)
-
-	model := &versionedModel{ID: "1"}
-	err := CheckVersion(context.Background(), db, model, 1)
-	require.ErrorIs(t, err, ErrVersionConflict)
-
-	// Verify version was not changed.
-	var unchanged versionedModel
-	require.NoError(t, db.First(&unchanged, "id = ?", "1").Error)
-	assert.Equal(t, int64(3), unchanged.Version)
-}
-
-func TestCheckVersion_NonExistentRow(t *testing.T) {
-	db := setupTestDB(t, &versionedModel{})
-
-	model := &versionedModel{ID: "nonexistent"}
-	err := CheckVersion(context.Background(), db, model, 1)
-	require.ErrorIs(t, err, ErrVersionConflict)
-	assert.True(t, apperror.IsConflict(err))
-}
-
-func TestCheckVersion_ErrVersionConflictIsConflict(t *testing.T) {
-	assert.True(t, apperror.IsConflict(ErrVersionConflict))
-}
-
 func TestUpdateWithVersion_Success(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
 	require.NoError(t, db.Create(&versionedModel{ID: "1", Name: "alice", Version: 1}).Error)
@@ -178,16 +138,13 @@ func TestUpdateWithVersion_RejectsVersionKey(t *testing.T) {
 	})
 }
 
-func TestCheckVersion_NilModelReturnsError(t *testing.T) {
-	db := setupTestDB(t, &versionedModel{})
-
-	err := CheckVersion(context.Background(), db, nil, 1)
-	require.ErrorIs(t, err, ErrNilModel)
-}
-
 func TestUpdateWithVersion_NilModelReturnsError(t *testing.T) {
 	db := setupTestDB(t, &versionedModel{})
 
 	err := UpdateWithVersion(context.Background(), db, nil, 1, map[string]any{"name": "bob"})
 	require.ErrorIs(t, err, ErrNilModel)
+}
+
+func TestErrVersionConflictIsConflict(t *testing.T) {
+	assert.True(t, apperror.IsConflict(ErrVersionConflict))
 }
