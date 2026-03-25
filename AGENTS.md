@@ -105,10 +105,11 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 ## Key Conventions
 
 - **Env vars**: `UPPER_SNAKE_CASE`. Secrets use `{PREFIX}_` prefix and support `_FILE` suffix for mounted secrets.
-- **Error handling**: Return typed `core/apperror` errors using `apperror.Code` enum (`CodeNotFound`, `CodeValidation`, `CodeConflict`, `CodeAuthRequired`, `CodeForbidden`, `CodeRateLimit`, `CodeOperationFailed`, `CodePermanent`). `httpx.WriteServiceError` maps them to HTTP status codes automatically via `apperror.HTTPStatus()`.
+- **Error handling**: Return typed `core/apperror` errors using `apperror.Code` enum (`CodeNotFound`, `CodeValidation`, `CodeConflict`, `CodeAuthRequired`, `CodeForbidden`, `CodeRateLimit`, `CodeOperationFailed`, `CodePermanent`, `CodeUnavailable`). `httpx.WriteServiceError` maps them to HTTP status codes automatically via `apperror.HTTPStatus()`. Every error type implements `Retryable() bool` — use `apperror.ShouldRetry` as a predicate for retry middleware (e.g. `retry.WithRetryIf(apperror.ShouldRetry)`). Error codes are transport-agnostic and map cleanly to both HTTP and gRPC status codes.
 - **Metrics**: All Prometheus metrics accept `prometheus.Registerer` via `WithRegisterer()` options. Defaults to `prometheus.DefaultRegisterer` for zero-config usage. Use custom registerers for test isolation.
 - **Permanent errors**: Wrap with `apperror.NewPermanent()` to skip retries in consumers.
 - **Operation errors**: Use `apperror.NewOperationFailed()` for known failures with client-safe messages (vs untyped errors which get generic "internal error").
+- **Unavailable errors**: Use `apperror.NewUnavailable()` when the service itself is not ready (maps to 503), or `apperror.NewDependencyUnavailable("redis", msg, cause)` when an upstream dependency is down (maps to 502). Both are retryable.
 - **Fail fast**: Configuration errors panic at startup (nil backends, empty names). Runtime errors return `error`.
 - **Health checks**: Internal port `:9090` serves `/ready` (dependency health) and `/metrics` (Prometheus).
 - **TLS**: Set `TLS_CA_CERT`, `TLS_CERT`, `TLS_KEY` together to enable mTLS globally.

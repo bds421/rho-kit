@@ -243,20 +243,27 @@ func TestNewFieldValidation_ZeroArgs_Panics(t *testing.T) {
 
 func TestHTTPStatus(t *testing.T) {
 	tests := []struct {
+		name string
 		err  error
 		want int
 	}{
-		{NewNotFound("x", 1), 404},
-		{NewValidation("bad"), 400},
-		{NewConflict("dup"), 409},
-		{NewPermanent("no"), 422},
-		{NewAuthRequired("login"), 401},
-		{NewRateLimit("slow", time.Second), 429},
-		{NewOperationFailed("fail"), 500},
-		{errors.New("generic"), 500},
+		{"NotFound", NewNotFound("x", 1), 404},
+		{"Validation", NewValidation("bad"), 400},
+		{"Conflict", NewConflict("dup"), 409},
+		{"Permanent", NewPermanent("no"), 422},
+		{"AuthRequired", NewAuthRequired("login"), 401},
+		{"RateLimit", NewRateLimit("slow", time.Second), 429},
+		{"OperationFailed", NewOperationFailed("fail"), 500},
+		{"Forbidden", NewForbidden("denied"), 403},
+		{"Generic", errors.New("generic"), 500},
+		{"Unavailable_NoDep_503", NewUnavailable("not ready"), 503},
+		{"Unavailable_WithCause_NoDep_503", NewUnavailableWithCause("not ready", errors.New("cause")), 503},
+		{"DependencyUnavailable_502", NewDependencyUnavailable("redis", "redis down", nil), 502},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, HTTPStatus(tt.err))
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, HTTPStatus(tt.err))
+		})
 	}
 }
 
@@ -269,4 +276,97 @@ func TestAppErrorInterface(t *testing.T) {
 	var _ AppError = &AuthRequiredError{}
 	var _ AppError = &RateLimitError{}
 	var _ AppError = &OperationFailedError{}
+	var _ AppError = &UnavailableError{}
+}
+
+func TestUnavailableError(t *testing.T) {
+	err := NewUnavailable("service not ready")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "service not ready")
+	assert.True(t, IsUnavailable(err))
+	assert.False(t, IsNotFound(err))
+	assert.False(t, IsOperationFailed(err))
+
+	var ue *UnavailableError
+	assert.True(t, errors.As(err, &ue))
+	assert.Nil(t, ue.Unwrap())
+	assert.Empty(t, ue.Dependency)
+}
+
+func TestUnavailableErrorWithCause(t *testing.T) {
+	cause := errors.New("connection refused")
+	err := NewUnavailableWithCause("redis down", cause)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "redis down")
+	assert.True(t, IsUnavailable(err))
+	assert.True(t, errors.Is(err, cause))
+
+	var ue *UnavailableError
+	assert.True(t, errors.As(err, &ue))
+	assert.Equal(t, cause, ue.Unwrap())
+}
+
+func TestDependencyUnavailable(t *testing.T) {
+	cause := errors.New("tcp dial timeout")
+	err := NewDependencyUnavailable("payment-service", "payment service unreachable", cause)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "payment service unreachable")
+	assert.True(t, IsUnavailable(err))
+	assert.True(t, errors.Is(err, cause))
+
+	ue, ok := AsUnavailable(err)
+	assert.True(t, ok)
+	assert.Equal(t, "payment-service", ue.Dependency)
+	assert.Equal(t, cause, ue.Unwrap())
+}
+
+func TestAsUnavailable_NotUnavailable(t *testing.T) {
+	err := NewNotFound("user", "1")
+	_, ok := AsUnavailable(err)
+	assert.False(t, ok)
+}
+
+func TestRetryable(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{"NotFound", NewNotFound("x", 1), false},
+		{"Validation", NewValidation("bad"), false},
+		{"Conflict", NewConflict("dup"), true},
+		{"Permanent", NewPermanent("no"), false},
+		{"AuthRequired", NewAuthRequired("login"), false},
+		{"Forbidden", NewForbidden("denied"), false},
+		{"RateLimit", NewRateLimit("slow", time.Second), true},
+		{"OperationFailed", NewOperationFailed("fail"), false},
+		{"Unavailable", NewUnavailable("down"), true},
+		{"DependencyUnavailable", NewDependencyUnavailable("redis", "down", nil), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var appErr AppError
+			assert.True(t, errors.As(tt.err, &appErr))
+			assert.Equal(t, tt.retryable, appErr.Retryable())
+		})
+	}
+}
+
+func TestShouldRetry(t *testing.T) {
+	// Retryable app errors return true.
+	assert.True(t, ShouldRetry(NewConflict("dup")))
+	assert.True(t, ShouldRetry(NewRateLimit("slow", time.Second)))
+	assert.True(t, ShouldRetry(NewUnavailable("down")))
+
+	// Non-retryable app errors return false.
+	assert.False(t, ShouldRetry(NewNotFound("x", 1)))
+	assert.False(t, ShouldRetry(NewValidation("bad")))
+	assert.False(t, ShouldRetry(NewPermanent("no")))
+	assert.False(t, ShouldRetry(NewOperationFailed("fail")))
+
+	// Non-apperror errors return false (fail-safe).
+	assert.False(t, ShouldRetry(errors.New("generic")))
+
+	// Nil errors return false.
+	assert.False(t, ShouldRetry(nil))
 }

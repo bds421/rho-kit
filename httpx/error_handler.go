@@ -39,6 +39,27 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case apperror.IsForbidden(err):
 		WriteError(w, http.StatusForbidden, "forbidden")
 
+	case apperror.IsUnavailable(err):
+		logger.Error("upstream unavailable",
+			logattr.Error(err),
+			logattr.RequestID(RequestID(r.Context())),
+			logattr.Method(r.Method),
+			logattr.Path(r.URL.Path),
+		)
+		// IMPORTANT: Do not send internal error details to clients.
+		// The dependency name is safe to include (it's developer-defined),
+		// but the underlying cause may contain hostnames, ports, etc.
+		status := apperror.HTTPStatus(err)
+		msg := "service unavailable"
+		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
+			msg = ue.Dependency + " unavailable"
+		}
+		// Set Retry-After header for 503 responses.
+		if status == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "5")
+		}
+		WriteError(w, status, msg)
+
 	case apperror.IsOperationFailed(err):
 		logger.Error("operation failed",
 			logattr.Error(err),
