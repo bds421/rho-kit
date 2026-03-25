@@ -206,6 +206,10 @@ func httpStatusToCode(status int) string {
 		return "UNPROCESSABLE_ENTITY"
 	case http.StatusTooManyRequests:
 		return "RATE_LIMITED"
+	case http.StatusBadGateway:
+		return "BAD_GATEWAY"
+	case http.StatusServiceUnavailable:
+		return "SERVICE_UNAVAILABLE"
 	default:
 		return "INTERNAL"
 	}

@@ -8,6 +8,9 @@ import (
 )
 
 // Code identifies the category of an application error.
+// Codes are transport-agnostic: each transport adapter (httpx, grpcx) maps
+// codes to the appropriate transport status. The error model expresses domain
+// intent; transport layers choose the appropriate mapping.
 type Code string
 
 const (
@@ -19,6 +22,7 @@ const (
 	CodeRateLimit       Code = "RATE_LIMITED"
 	CodeOperationFailed Code = "OPERATION_FAILED"
 	CodeForbidden       Code = "FORBIDDEN"
+	CodeUnavailable     Code = "UNAVAILABLE"
 )
 
 // FieldError represents a single field-level validation error.
@@ -29,10 +33,19 @@ type FieldError struct {
 }
 
 // AppError is the common interface for all application error types.
-// Use the Is*/As* functions rather than type-asserting directly.
+// This interface is sealed: it is only implemented by types within the
+// apperror package. External packages should use the constructor functions
+// (NewNotFound, NewValidation, etc.) and predicate functions (IsNotFound,
+// IsValidation, etc.) rather than implementing AppError directly.
+//
+// Retryable reports whether the operation that produced this error can be
+// retried with a reasonable expectation of success. Transport layers and
+// retry middleware (e.g. resilience/retry) use this to decide whether to
+// retry automatically. See [ShouldRetry] for a convenient predicate.
 type AppError interface {
 	error
 	ErrorCode() Code
+	Retryable() bool
 }
 
 // --- Concrete error types ---
@@ -46,6 +59,7 @@ type NotFoundError struct {
 
 func (e *NotFoundError) Error() string   { return e.Message }
 func (e *NotFoundError) ErrorCode() Code { return CodeNotFound }
+func (e *NotFoundError) Retryable() bool { return false }
 
 // ValidationError indicates invalid input, optionally with field-level details.
 type ValidationError struct {
@@ -65,14 +79,20 @@ func (e *ValidationError) Error() string {
 }
 
 func (e *ValidationError) ErrorCode() Code { return CodeValidation }
+func (e *ValidationError) Retryable() bool { return false }
 
 // ConflictError indicates a resource conflict (duplicate, version mismatch).
+// Retryable: true (assumes optimistic concurrency conflicts where retrying
+// with fresh state may succeed). For true duplicates (e.g., unique constraint
+// violations), consider using a non-retryable error or handling at the
+// application level.
 type ConflictError struct {
 	Message string
 }
 
 func (e *ConflictError) Error() string   { return e.Message }
 func (e *ConflictError) ErrorCode() Code { return CodeConflict }
+func (e *ConflictError) Retryable() bool { return true }
 
 // PermanentError indicates a non-retryable failure.
 type PermanentError struct {
@@ -83,6 +103,7 @@ type PermanentError struct {
 func (e *PermanentError) Error() string   { return e.Message }
 func (e *PermanentError) Unwrap() error   { return e.cause }
 func (e *PermanentError) ErrorCode() Code { return CodePermanent }
+func (e *PermanentError) Retryable() bool { return false }
 
 // AuthRequiredError indicates missing or invalid authentication.
 type AuthRequiredError struct {
@@ -91,6 +112,7 @@ type AuthRequiredError struct {
 
 func (e *AuthRequiredError) Error() string   { return e.Message }
 func (e *AuthRequiredError) ErrorCode() Code { return CodeAuthRequired }
+func (e *AuthRequiredError) Retryable() bool { return false }
 
 // ForbiddenError indicates the caller is authenticated but lacks permission.
 type ForbiddenError struct {
@@ -99,6 +121,7 @@ type ForbiddenError struct {
 
 func (e *ForbiddenError) Error() string   { return e.Message }
 func (e *ForbiddenError) ErrorCode() Code { return CodeForbidden }
+func (e *ForbiddenError) Retryable() bool { return false }
 
 // RateLimitError indicates a rate limit or quota has been exceeded.
 type RateLimitError struct {
@@ -108,8 +131,12 @@ type RateLimitError struct {
 
 func (e *RateLimitError) Error() string   { return e.Message }
 func (e *RateLimitError) ErrorCode() Code { return CodeRateLimit }
+func (e *RateLimitError) Retryable() bool { return true }
 
 // OperationFailedError indicates a server-side failure with a client-safe message.
+// For transient upstream failures, use [UnavailableError] instead.
+// OperationFailedError indicates a server-side failure that is unlikely to
+// resolve on retry.
 type OperationFailedError struct {
 	Message string
 	cause   error
@@ -118,6 +145,25 @@ type OperationFailedError struct {
 func (e *OperationFailedError) Error() string   { return e.Message }
 func (e *OperationFailedError) Unwrap() error   { return e.cause }
 func (e *OperationFailedError) ErrorCode() Code { return CodeOperationFailed }
+func (e *OperationFailedError) Retryable() bool { return false }
+
+// UnavailableError indicates an upstream dependency is unreachable or not ready.
+// Use this when a service cannot fulfill a request because a dependency it relies
+// on is down, overloaded, or not responding.
+//
+// When Dependency is set, the error represents an upstream failure.
+// When Dependency is empty, the error represents the service itself being unavailable.
+type UnavailableError struct {
+	Message    string
+	Dependency string        // identifies the failed dependency (e.g., "payment-service", "redis")
+	RetryAfter time.Duration // suggested retry delay; 0 means no suggestion
+	cause      error
+}
+
+func (e *UnavailableError) Error() string   { return e.Message }
+func (e *UnavailableError) Unwrap() error   { return e.cause }
+func (e *UnavailableError) ErrorCode() Code { return CodeUnavailable }
+func (e *UnavailableError) Retryable() bool { return true }
 
 // --- Constructors ---
 
@@ -185,6 +231,28 @@ func NewOperationFailedWithCause(msg string, cause error) error {
 	return &OperationFailedError{Message: msg, cause: cause}
 }
 
+// NewUnavailable creates an UnavailableError with a client-safe message.
+func NewUnavailable(msg string) error {
+	return &UnavailableError{Message: msg}
+}
+
+// NewUnavailableWithCause creates an UnavailableError that wraps an underlying cause.
+func NewUnavailableWithCause(msg string, cause error) error {
+	return &UnavailableError{Message: msg, cause: cause}
+}
+
+// NewDependencyUnavailable creates an UnavailableError identifying a specific
+// upstream dependency that is unreachable. The dependency name is safe to
+// include in client responses (it is developer-defined), but the cause may
+// contain internal details and must not be exposed.
+func NewDependencyUnavailable(dependency, msg string, cause error) error {
+	return &UnavailableError{
+		Message:    msg,
+		Dependency: dependency,
+		cause:      cause,
+	}
+}
+
 // --- Predicates ---
 
 // IsNotFound reports whether err contains a NotFoundError.
@@ -232,6 +300,12 @@ func IsRateLimit(err error) bool {
 // IsOperationFailed reports whether err contains an OperationFailedError.
 func IsOperationFailed(err error) bool {
 	var target *OperationFailedError
+	return errors.As(err, &target)
+}
+
+// IsUnavailable reports whether err contains an UnavailableError.
+func IsUnavailable(err error) bool {
+	var target *UnavailableError
 	return errors.As(err, &target)
 }
 
@@ -303,6 +377,15 @@ func AsForbidden(err error) (*ForbiddenError, bool) {
 // AsOperationFailed extracts the *OperationFailedError from the error chain.
 func AsOperationFailed(err error) (*OperationFailedError, bool) {
 	var target *OperationFailedError
+	if errors.As(err, &target) {
+		return target, true
+	}
+	return nil, false
+}
+
+// AsUnavailable extracts the *UnavailableError from the error chain.
+func AsUnavailable(err error) (*UnavailableError, bool) {
+	var target *UnavailableError
 	if errors.As(err, &target) {
 		return target, true
 	}
