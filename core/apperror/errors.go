@@ -33,7 +33,10 @@ type FieldError struct {
 }
 
 // AppError is the common interface for all application error types.
-// Use the Is*/As* functions rather than type-asserting directly.
+// This interface is sealed: it is only implemented by types within the
+// apperror package. External packages should use the constructor functions
+// (NewNotFound, NewValidation, etc.) and predicate functions (IsNotFound,
+// IsValidation, etc.) rather than implementing AppError directly.
 //
 // Retryable reports whether the operation that produced this error can be
 // retried with a reasonable expectation of success. Transport layers and
@@ -79,6 +82,10 @@ func (e *ValidationError) ErrorCode() Code { return CodeValidation }
 func (e *ValidationError) Retryable() bool { return false }
 
 // ConflictError indicates a resource conflict (duplicate, version mismatch).
+// Retryable: true (assumes optimistic concurrency conflicts where retrying
+// with fresh state may succeed). For true duplicates (e.g., unique constraint
+// violations), consider using a non-retryable error or handling at the
+// application level.
 type ConflictError struct {
 	Message string
 }
@@ -127,6 +134,9 @@ func (e *RateLimitError) ErrorCode() Code { return CodeRateLimit }
 func (e *RateLimitError) Retryable() bool { return true }
 
 // OperationFailedError indicates a server-side failure with a client-safe message.
+// For transient upstream failures, use [UnavailableError] instead.
+// OperationFailedError indicates a server-side failure that is unlikely to
+// resolve on retry.
 type OperationFailedError struct {
 	Message string
 	cause   error
@@ -146,7 +156,8 @@ func (e *OperationFailedError) Retryable() bool { return false }
 // (HTTP 503 Service Unavailable).
 type UnavailableError struct {
 	Message    string
-	Dependency string // identifies the failed dependency (e.g., "payment-service", "redis")
+	Dependency string        // identifies the failed dependency (e.g., "payment-service", "redis")
+	RetryAfter time.Duration // suggested retry delay; 0 means use the transport default
 	cause      error
 }
 

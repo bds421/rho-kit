@@ -4,7 +4,7 @@ Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `core/cache`, `r
 
 ## apperror — Sum-Type Application Errors
 
-Seven concrete error types, each carrying only their relevant fields. All implement the `apperror.AppError` interface. Constructors return `error`, so consumer code doesn't need to know the concrete types:
+Nine concrete error types, each carrying only their relevant fields. All implement the `apperror.AppError` interface (sealed — do not implement externally). Constructors return `error`, so consumer code doesn't need to know the concrete types:
 
 ```go
 apperror.NewNotFound("user", id)                       // CodeNotFound → 404
@@ -14,11 +14,20 @@ apperror.NewFieldValidation(                            // CodeValidation → 40
 )
 apperror.NewConflict("email already taken")             // CodeConflict → 409
 apperror.NewAuthRequired("session expired")             // CodeAuthRequired → 401
+apperror.NewForbidden("access denied")                  // CodeForbidden → 403
 apperror.NewRateLimit("quota exceeded", 30*time.Second) // CodeRateLimit → 429 + Retry-After header
 apperror.NewOperationFailed("payment declined")         // CodeOperationFailed → 500 (message exposed)
 apperror.NewOperationFailedWithCause("failed", err)     // CodeOperationFailed → 500 (wraps cause)
 apperror.NewPermanent("feature disabled")               // CodePermanent → 422 (skips retries)
 apperror.NewPermanentWithCause("failed", err)           // CodePermanent → 422 (wraps cause)
+apperror.NewUnavailable("not ready")                    // CodeUnavailable → 503 (self not ready)
+apperror.NewUnavailableWithCause("down", err)           // CodeUnavailable → 503 (wraps cause)
+apperror.NewDependencyUnavailable("redis", "msg", err)  // CodeUnavailable → 502 (upstream down)
+```
+
+Every error type implements `Retryable() bool`. Use `apperror.ShouldRetry` as a predicate for retry middleware:
+```go
+retry.Do(ctx, fn, retry.WithRetryIf(apperror.ShouldRetry))
 ```
 
 Inspection (predicates use `errors.As` internally):
@@ -27,18 +36,26 @@ apperror.IsNotFound(err)        // bool
 apperror.IsValidation(err)      // bool
 apperror.IsConflict(err)        // bool
 apperror.IsAuthRequired(err)    // bool
+apperror.IsForbidden(err)       // bool
 apperror.IsRateLimit(err)       // bool
 apperror.IsOperationFailed(err) // bool
 apperror.IsPermanent(err)       // bool
+apperror.IsUnavailable(err)     // bool
 
 // Extract concrete types for field access:
 if nf, ok := apperror.AsNotFound(err); ok { nf.Entity; nf.EntityID }
 if ve, ok := apperror.AsValidation(err); ok { ve.Fields }
 if rl, ok := apperror.AsRateLimit(err); ok { rl.RetryAfter }
+if ue, ok := apperror.AsUnavailable(err); ok { ue.Dependency; ue.RetryAfter }
 
 // HTTP status mapping (used by httpx.WriteServiceError):
 status := apperror.HTTPStatus(err) // returns int
+
+// Retry predicate (for resilience/retry integration):
+apperror.ShouldRetry(err) // true for Conflict, RateLimit, Unavailable
 ```
+
+**Key difference: `CodeOperationFailed` vs `CodeUnavailable`**: `OperationFailedError` indicates a server-side failure that is unlikely to resolve on retry (non-retryable). `UnavailableError` indicates a transient upstream failure that is worth retrying (retryable).
 
 **Key difference: `CodeOperationFailed` vs untyped errors**: Both map to 500, but `CodeOperationFailed` exposes its message to the client (e.g., "payment declined"), while untyped errors get the generic "internal error" message to avoid leaking internals.
 
@@ -46,7 +63,7 @@ status := apperror.HTTPStatus(err) // returns int
 
 **Key difference: `CodeRateLimit` vs middleware ratelimit**: Middleware (`httpx/middleware/ratelimit`) handles IP/key-based rate limiting. Use `CodeRateLimit` for business-level quotas (e.g., monthly API call limit).
 
-**Key integration**: `retry.RetryIfNotPermanent` skips retries for `CodePermanent`. Messaging consumers ACK permanently failed messages immediately.
+**Key integration**: `retry.RetryIfNotPermanent` skips retries for `CodePermanent`. Messaging consumers ACK permanently failed messages immediately. Use `apperror.ShouldRetry` as the retry predicate to integrate with `resilience/retry`.
 
 **Not covered by apperror** — handled directly by middleware:
 - **413 Payload Too Large** → `httpx/middleware/maxbody` rejects via `http.MaxBytesReader`

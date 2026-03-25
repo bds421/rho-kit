@@ -40,22 +40,25 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		WriteError(w, http.StatusForbidden, "forbidden")
 
 	case apperror.IsUnavailable(err):
-		logger.Error("upstream unavailable",
+		logAttrs := []any{
 			logattr.Error(err),
 			logattr.RequestID(RequestID(r.Context())),
 			logattr.Method(r.Method),
 			logattr.Path(r.URL.Path),
-		)
+		}
+		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
+			logAttrs = append(logAttrs, slog.String("dependency", ue.Dependency))
+		}
+		logger.Error("upstream unavailable", logAttrs...)
 		// IMPORTANT: Do not send internal error details to clients.
-		// The dependency name is safe to include (it's developer-defined),
-		// but the underlying cause may contain hostnames, ports, etc.
+		// The dependency name is only included in logs, not in the response.
 		status := apperror.HTTPStatus(err)
 		msg := "service unavailable"
-		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
-			msg = ue.Dependency + " unavailable"
-		}
-		// Set Retry-After header for 503 responses.
-		if status == http.StatusServiceUnavailable {
+		// Set Retry-After header: use the error's RetryAfter if present,
+		// otherwise default to 5s for 503 responses.
+		if ue, ok := apperror.AsUnavailable(err); ok && ue.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(ue.RetryAfter.Seconds()))))
+		} else if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "5")
 		}
 		WriteError(w, status, msg)

@@ -411,9 +411,46 @@ func TestWriteServiceError_DependencyUnavailable_502(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("failed to decode body: %v", err)
 	}
-	// Must not leak internal details (IP addresses, ports).
-	if body.Error != "payment-service unavailable" {
-		t.Fatalf("expected 'payment-service unavailable', got %q", body.Error)
+	// Must not leak internal details (IP addresses, ports, dependency names).
+	if body.Error != "service unavailable" {
+		t.Fatalf("expected 'service unavailable', got %q", body.Error)
+	}
+}
+
+func TestWriteServiceError_Unavailable_WithRetryAfter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	ue := &apperror.UnavailableError{
+		Message:    "not ready",
+		RetryAfter: 30 * time.Second,
+	}
+	WriteServiceError(rec, req, logger, ue)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("expected Retry-After 30, got %q", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestWriteServiceError_DependencyUnavailable_WithRetryAfter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	ue := &apperror.UnavailableError{
+		Message:    "redis down",
+		Dependency: "redis",
+		RetryAfter: 10 * time.Second,
+	}
+	WriteServiceError(rec, req, logger, ue)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "10" {
+		t.Fatalf("expected Retry-After 10, got %q", rec.Header().Get("Retry-After"))
 	}
 }
 
@@ -615,6 +652,8 @@ func TestHttpStatusToCode(t *testing.T) {
 		{http.StatusTooManyRequests, "RATE_LIMITED"},
 		{http.StatusInternalServerError, "INTERNAL"},
 		{http.StatusForbidden, "FORBIDDEN"},
+		{http.StatusBadGateway, "BAD_GATEWAY"},
+		{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{http.StatusTeapot, "INTERNAL"},
 		{999, "INTERNAL"},
 	}
