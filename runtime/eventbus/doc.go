@@ -29,6 +29,28 @@
 // Their errors are logged and sent to the [WithOnError] callback. Use async
 // for best-effort side-effects (analytics, notifications).
 //
+// # Bounded Worker Pool
+//
+// By default, async handlers launch one goroutine per event (unbounded). For
+// production use with high-throughput events, enable the bounded worker pool:
+//
+//	bus := eventbus.New(
+//	    eventbus.WithWorkerPool(4),          // 4 worker goroutines
+//	    eventbus.WithWorkerPoolBuffer(100),  // buffered channel of 100
+//	    eventbus.WithLogger(logger),
+//	)
+//
+//	// Start the pool (blocks until ctx is cancelled).
+//	go bus.Start(ctx)
+//
+//	// On shutdown, drain pending events with a deadline.
+//	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	defer cancel()
+//	bus.Stop(shutdownCtx)
+//
+// When the queue is full, new async events are dropped and logged. Use
+// [WithOnError] to hook into drop/error notifications.
+//
 // # When to Use
 //
 // Use eventbus for in-process domain event dispatch: decoupling handlers from

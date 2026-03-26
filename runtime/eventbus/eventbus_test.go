@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -249,6 +250,65 @@ func TestHasHandlers(t *testing.T) {
 	Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil })
 	assert.True(t, bus.HasHandlers("test.event"))
 	assert.False(t, bus.HasHandlers("other.event"))
+}
+
+func BenchmarkPublish_Sync(b *testing.B) {
+	bus := New()
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithName("noop"))
+
+	ctx := context.Background()
+	evt := testEvent{ID: "bench"}
+
+	b.ResetTimer()
+	for range b.N {
+		_ = Publish(bus, ctx, evt)
+	}
+}
+
+func BenchmarkPublish_Async_WithPool(b *testing.B) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(4),
+		WithWorkerPoolBuffer(1024),
+		WithRegisterer(reg),
+	)
+
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithAsync(), WithName("noop"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = bus.Start(ctx)
+	}()
+	<-started
+
+	// Warmup: publish one event and wait for it to be processed, ensuring
+	// workers are fully running before timing begins.
+	// Warmup handler stays registered but does not affect benchmark
+	// (only testEvent is published in the loop).
+	warmupDone := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ otherEvent) error {
+		close(warmupDone)
+		return nil
+	}, WithAsync(), WithName("warmup"))
+	_ = Publish(bus, context.Background(), otherEvent{Value: 0})
+	<-warmupDone
+
+	evt := testEvent{ID: "bench"}
+
+	b.ResetTimer()
+	for range b.N {
+		_ = Publish(bus, context.Background(), evt)
+	}
+	b.StopTimer()
+
+	cancel()
+	_ = bus.Stop(context.Background())
 }
 
 func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
