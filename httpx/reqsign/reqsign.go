@@ -28,6 +28,9 @@ const (
 	nilKeyStoreMsg = "reqsign: KeyStore must not be nil"
 )
 
+// ErrNilKeyStore is returned when a nil KeyStore is passed to SignRequest or VerifyRequest.
+var ErrNilKeyStore = errors.New("reqsign: KeyStore must not be nil")
+
 // ErrMissingHeaders is returned when required signature headers are absent.
 var ErrMissingHeaders = errors.New("reqsign: missing signature headers")
 
@@ -136,7 +139,7 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 // computation. The signature, timestamp, and key ID are set as request headers.
 func SignRequest(req *http.Request, body []byte, store signing.KeyStore, opts ...SignOption) error {
 	if store == nil {
-		panic(nilKeyStoreMsg)
+		return ErrNilKeyStore
 	}
 
 	cfg := signConfig{
@@ -214,7 +217,7 @@ func verifyRequestWithConfig(req *http.Request, body []byte, store signing.KeySt
 // builds canonical bytes, and delegates to signing.Signer.Verify.
 func VerifyRequest(req *http.Request, body []byte, store signing.KeyStore, opts ...VerifyOption) error {
 	if store == nil {
-		panic(nilKeyStoreMsg)
+		return ErrNilKeyStore
 	}
 
 	cfg := verifyConfig{

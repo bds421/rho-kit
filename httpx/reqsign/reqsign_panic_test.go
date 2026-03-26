@@ -1,37 +1,26 @@
 package reqsign
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
-func TestSignRequest_PanicsNilKeyStore(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for nil KeyStore")
-		}
-		if msg, ok := r.(string); !ok || msg != nilKeyStoreMsg {
-			t.Errorf("unexpected panic value: %v", r)
-		}
-	}()
+func TestSignRequest_NilKeyStoreReturnsError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	_ = SignRequest(req, nil, nil)
+	err := SignRequest(req, nil, nil)
+	if !errors.Is(err, ErrNilKeyStore) {
+		t.Fatalf("expected ErrNilKeyStore, got %v", err)
+	}
 }
 
-func TestVerifyRequest_PanicsNilKeyStore(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for nil KeyStore")
-		}
-		if msg, ok := r.(string); !ok || msg != nilKeyStoreMsg {
-			t.Errorf("unexpected panic value: %v", r)
-		}
-	}()
+func TestVerifyRequest_NilKeyStoreReturnsError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	_ = VerifyRequest(req, nil, nil)
+	err := VerifyRequest(req, nil, nil)
+	if !errors.Is(err, ErrNilKeyStore) {
+		t.Fatalf("expected ErrNilKeyStore, got %v", err)
+	}
 }
 
 func TestNewSigningTransport_PanicsNilKeyStore(t *testing.T) {
@@ -39,9 +28,6 @@ func TestNewSigningTransport_PanicsNilKeyStore(t *testing.T) {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected panic for nil KeyStore")
-		}
-		if msg, ok := r.(string); !ok || msg != nilKeyStoreMsg {
-			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	NewSigningTransport(http.DefaultTransport, nil)
@@ -52,9 +38,6 @@ func TestRequireSignedRequest_PanicsNilKeyStore(t *testing.T) {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected panic for nil KeyStore")
-		}
-		if msg, ok := r.(string); !ok || msg != nilKeyStoreMsg {
-			t.Errorf("unexpected panic value: %v", r)
 		}
 	}()
 	RequireSignedRequest(nil)
