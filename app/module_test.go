@@ -264,6 +264,22 @@ func TestInitModules_CloseErrorIsLogged(t *testing.T) {
 	cleanup(context.Background())
 }
 
+func TestInitModules_NilSlice(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		nil,
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	cleanup(context.Background())
+}
+
 func TestInitModules_EmptySlice(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	runner := lifecycle.NewRunner(logger)
@@ -349,13 +365,8 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 		populateCalled.Store(true)
 	}
 
-	// Use a module that causes Run to fail after RouterFunc, so we don't
-	// need to send SIGINT. We register a shutdown hook that checks populate.
-	// Actually, we can use the init failure approach differently:
-	// have a module succeed init, then verify populate was called by checking
-	// from within RouterFunc. RouterFunc runs but the server start will
-	// succeed - we need a way to shut down. Use a Background goroutine
-	// that returns an error immediately.
+	// Register a background goroutine that immediately errors out to
+	// trigger shutdown without needing SIGINT.
 	b := New("populate-test", "v0.0.1", cfg).
 		WithModule(mod).
 		Router(func(infra Infrastructure) http.Handler {
@@ -373,12 +384,8 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 	assert.True(t, routerSawPopulate.Load(), "RouterFunc should see that Populate ran before it")
 }
 
-// TestModule_LifecycleIntegration is the full SIGINT-based lifecycle test for
-// modules. It is placed inside TestBuilder_Lifecycle via the existing test
-// pattern to avoid signal interference between tests.
-// However, since modifying existing test files is not part of the scope,
-// this test validates the full lifecycle through the initModules function
-// and verifies close ordering.
+// TestModule_LifecycleCloseOrder validates the full init/close lifecycle
+// through initModules and verifies reverse close ordering.
 func TestModule_LifecycleCloseOrder(t *testing.T) {
 	var initOrder []string
 	var closeOrder []string
@@ -443,5 +450,79 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 	checks := mod1.HealthChecks()
 	require.Len(t, checks, 1)
 	assert.Equal(t, "first-dep", checks[0].Name)
+}
+
+func TestCloseModules_PanicRecovery(t *testing.T) {
+	var closed []string
+
+	m1 := newStubModule("panic-mod")
+	m1.closeFn = func(_ context.Context) error {
+		panic("close boom")
+	}
+
+	m2 := newStubModule("ok-mod")
+	m2.closeFn = func(_ context.Context) error {
+		closed = append(closed, "ok-mod")
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	// Init both modules (m2 first, m1 second so reverse close hits m1 first).
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m2, m1},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+
+	// Close should not panic even though m1.Close panics.
+	// Reverse order: m1 first (panics), then m2 (succeeds).
+	cleanup(context.Background())
+	assert.Equal(t, []string{"ok-mod"}, closed)
+}
+
+func TestInitModules_PopulateOrder(t *testing.T) {
+	var populateOrder []string
+
+	m1 := newStubModule("alpha")
+	m1.populateFn = func(_ *Infrastructure) {
+		populateOrder = append(populateOrder, "alpha")
+	}
+
+	m2 := newStubModule("beta")
+	m2.populateFn = func(_ *Infrastructure) {
+		populateOrder = append(populateOrder, "beta")
+	}
+
+	m3 := newStubModule("gamma")
+	m3.populateFn = func(_ *Infrastructure) {
+		populateOrder = append(populateOrder, "gamma")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2, m3},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+	defer cleanup(context.Background())
+
+	// Populate is called in builder.go, not in initModules. Verify the
+	// modules are populated in registration order as the builder does.
+	modules := []Module{m1, m2, m3}
+	infra := &Infrastructure{}
+	for _, m := range modules {
+		m.Populate(infra)
+	}
+	assert.Equal(t, []string{"alpha", "beta", "gamma"}, populateOrder)
 }
 

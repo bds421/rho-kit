@@ -17,7 +17,8 @@ import (
 //  1. Init — connect to external services, validate config, register background
 //     goroutines on the Runner. Return an error to abort startup.
 //  2. Populate — expose initialized resources on the Infrastructure struct so
-//     the RouterFunc and other modules can access them.
+//     the RouterFunc can access them. Populate is called in registration order,
+//     so later modules may observe fields set by earlier modules.
 //  3. HealthChecks — return dependency checks for the readiness probe.
 //  4. Close — release resources (connections, goroutines). Called in reverse
 //     registration order during shutdown.
@@ -34,8 +35,9 @@ type Module interface {
 
 	// Populate exposes the module's initialized resources on the Infrastructure
 	// struct. This is called after all modules have been Init'd, right before
-	// the RouterFunc executes. Modules should set fields on infra that downstream
-	// code (RouterFunc or other modules) needs.
+	// the RouterFunc executes. Populate is called in registration order, so
+	// later modules may observe fields set by earlier modules. Modules should
+	// set fields on infra that the RouterFunc needs.
 	Populate(infra *Infrastructure)
 
 	// Close releases resources held by this module. It is called in reverse
@@ -113,14 +115,26 @@ func initModules(
 }
 
 // closeModules closes modules in reverse order, logging any errors.
+// Each close is wrapped in panic recovery so that a misbehaving module
+// cannot prevent subsequent modules from being cleaned up.
 func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
 	for i := len(modules) - 1; i >= 0; i-- {
 		m := modules[i]
-		if err := m.Close(ctx); err != nil {
-			logger.Warn("module close error",
-				"module", m.Name(),
-				"error", err,
-			)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("module close panicked",
+						"module", m.Name(),
+						"panic", r,
+					)
+				}
+			}()
+			if err := m.Close(ctx); err != nil {
+				logger.Warn("module close error",
+					"module", m.Name(),
+					"error", err,
+				)
+			}
+		}()
 	}
 }
