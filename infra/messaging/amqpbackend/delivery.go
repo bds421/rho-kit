@@ -29,24 +29,33 @@ func fromAMQPDelivery(d amqp.Delivery, msg messaging.Message) messaging.Delivery
 
 // extractSchemaVersion reads the schema version from AMQP headers.
 // If the header is absent, the fallback value (typically from the JSON body) is used.
+// Negative values from untrusted headers are clamped to 0 (unversioned).
 func extractSchemaVersion(h amqp.Table, fallback int) int {
 	if h == nil {
-		return fallback
+		return clampVersion(fallback)
 	}
 	v, ok := h[messaging.HeaderSchemaVersion]
 	if !ok {
-		return fallback
+		return clampVersion(fallback)
 	}
 	switch n := v.(type) {
 	case int32:
-		return int(n)
+		return clampVersion(int(n))
 	case int64:
-		return int(n)
+		return clampVersion(int(n))
 	case int:
-		return n
+		return clampVersion(n)
 	default:
-		return fallback
+		return clampVersion(fallback)
 	}
+}
+
+// clampVersion ensures a schema version is never negative.
+func clampVersion(v int) int {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 // extractStringHeaders picks out string-valued AMQP headers for application-level

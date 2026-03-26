@@ -76,9 +76,10 @@ func (b *Broker) Drain(ctx context.Context) error {
 
 	for _, pm := range msgs {
 		d := messaging.Delivery{
-			Message:    pm.msg,
-			Exchange:   pm.exchange,
-			RoutingKey: pm.routingKey,
+			Message:       pm.msg,
+			Exchange:      pm.exchange,
+			RoutingKey:    pm.routingKey,
+			SchemaVersion: pm.msg.SchemaVersion,
 		}
 		for _, sub := range subs {
 			if matches(sub, pm.exchange, pm.routingKey) {

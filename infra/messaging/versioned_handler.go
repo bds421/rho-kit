@@ -12,15 +12,18 @@ import (
 // messages (backward compatibility). If no handler matches the delivery's
 // schema version, the returned handler returns an error.
 //
-// Panics if handlers is nil or empty.
+// Panics if handlers is nil, empty, or contains a nil handler value.
 func NewVersionedHandler(handlers map[SchemaVersion]Handler) Handler {
 	if len(handlers) == 0 {
 		panic("versioned handler requires at least one version handler")
 	}
 
-	// Copy the map to prevent external mutation.
+	// Copy the map to prevent external mutation and validate entries.
 	dispatch := make(map[SchemaVersion]Handler, len(handlers))
 	for v, h := range handlers {
+		if h == nil {
+			panic(fmt.Sprintf("versioned handler: nil handler for schema version %d", v))
+		}
 		dispatch[v] = h
 	}
 

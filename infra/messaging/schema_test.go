@@ -45,7 +45,21 @@ func TestInMemorySchemaRegistry_Register_NilSchemaError(t *testing.T) {
 	reg := messaging.NewInMemorySchemaRegistry()
 	err := reg.Register("order.created", 1, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must not be nil")
+	assert.Contains(t, err.Error(), "must not be nil or empty")
+}
+
+func TestInMemorySchemaRegistry_Register_EmptySchemaError(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	err := reg.Register("order.created", 1, json.RawMessage{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be nil or empty")
+}
+
+func TestInMemorySchemaRegistry_Register_NegativeVersionError(t *testing.T) {
+	reg := messaging.NewInMemorySchemaRegistry()
+	err := reg.Register("order.created", -1, json.RawMessage(`{}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be negative")
 }
 
 func TestInMemorySchemaRegistry_Lookup_NotFound(t *testing.T) {

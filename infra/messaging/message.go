@@ -15,7 +15,8 @@ const (
 	HeaderSchemaVersion = "X-Schema-Version"
 )
 
-// Message represents a structured RabbitMQ message with metadata.
+// Message represents a structured message with metadata.
+// It is transport-agnostic and used by both AMQP and Redis backends.
 type Message struct {
 	ID            string          `json:"id"`
 	Type          string          `json:"type"`
@@ -23,8 +24,9 @@ type Message struct {
 	Timestamp     time.Time       `json:"timestamp"`
 	SchemaVersion int             `json:"schema_version,omitempty"`
 
-	// Headers are propagated as AMQP headers for cross-service tracing.
-	// Not serialized into the JSON body — carried as AMQP transport metadata.
+	// Headers are propagated as transport-level metadata for cross-service tracing.
+	// Not serialized into the JSON body — carried as transport metadata
+	// (e.g. AMQP headers, Redis stream fields).
 	Headers map[string]string `json:"-"`
 }
 

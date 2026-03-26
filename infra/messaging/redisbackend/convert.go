@@ -58,14 +58,14 @@ func toDelivery(sm stream.Message, streamName string) messaging.Delivery {
 }
 
 // parseSchemaVersion extracts the schema version from string headers.
-// Returns 0 if the header is absent or cannot be parsed.
+// Returns 0 if the header is absent, cannot be parsed, or is negative.
 func parseSchemaVersion(headers map[string]string) int {
 	raw, ok := headers[messaging.HeaderSchemaVersion]
 	if !ok {
 		return 0
 	}
 	v, err := strconv.Atoi(raw)
-	if err != nil {
+	if err != nil || v < 0 {
 		return 0
 	}
 	return v

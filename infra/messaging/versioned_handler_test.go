@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewVersionedHandler_DispatchByVersion(t *testing.T) {
-	var called int
+	called := -1
 
 	handlers := map[messaging.SchemaVersion]messaging.Handler{
 		0: func(_ context.Context, _ messaging.Delivery) error {
@@ -34,6 +34,7 @@ func TestNewVersionedHandler_DispatchByVersion(t *testing.T) {
 	ctx := context.Background()
 
 	for _, version := range []int{0, 1, 2} {
+		called = -1
 		d := messaging.Delivery{
 			SchemaVersion: version,
 			Message: messaging.Message{
@@ -132,6 +133,14 @@ func TestNewVersionedHandler_PanicOnNilHandlers(t *testing.T) {
 func TestNewVersionedHandler_PanicOnEmptyHandlers(t *testing.T) {
 	assert.Panics(t, func() {
 		messaging.NewVersionedHandler(map[messaging.SchemaVersion]messaging.Handler{})
+	})
+}
+
+func TestNewVersionedHandler_PanicOnNilHandlerValue(t *testing.T) {
+	assert.Panics(t, func() {
+		messaging.NewVersionedHandler(map[messaging.SchemaVersion]messaging.Handler{
+			1: nil,
+		})
 	})
 }
 
