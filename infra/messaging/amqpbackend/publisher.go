@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -52,7 +53,12 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 			pub.Headers[k] = v
 		}
 		if msg.SchemaVersion != 0 {
-			pub.Headers[messaging.HeaderSchemaVersion] = int32(msg.SchemaVersion)
+			// Clamp to int32 range for AMQP wire format safety.
+			sv := msg.SchemaVersion
+			if sv > math.MaxInt32 {
+				sv = math.MaxInt32
+			}
+			pub.Headers[messaging.HeaderSchemaVersion] = int32(sv)
 		}
 	}
 

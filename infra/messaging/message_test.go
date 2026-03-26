@@ -195,3 +195,12 @@ func TestMessage_WithHeader_PreservesSchemaVersion(t *testing.T) {
 	assert.Equal(t, 3, msg.SchemaVersion)
 	assert.Equal(t, "trace-1", msg.Headers["X-Trace-Id"])
 }
+
+func TestMessage_WithSchemaVersion_PanicOnNegative(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+
+	assert.Panics(t, func() {
+		msg.WithSchemaVersion(-1)
+	})
+}

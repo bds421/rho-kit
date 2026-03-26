@@ -72,7 +72,12 @@ func (m Message) WithHeader(key, value string) Message {
 }
 
 // WithSchemaVersion returns a copy of the message with the given schema version.
+// Panics if version is negative because schema versions must be non-negative
+// (0 represents unversioned/legacy messages).
 func (m Message) WithSchemaVersion(version int) Message {
+	if version < 0 {
+		panic(fmt.Sprintf("schema version must not be negative, got %d", version))
+	}
 	headers := make(map[string]string, len(m.Headers))
 	for k, v := range m.Headers {
 		headers[k] = v
