@@ -42,10 +42,17 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 		Timestamp:    msg.Timestamp,
 		Body:         body,
 	}
-	if len(msg.Headers) > 0 {
-		pub.Headers = make(amqp.Table, len(msg.Headers))
+	headerCount := len(msg.Headers)
+	if msg.SchemaVersion != 0 {
+		headerCount++
+	}
+	if headerCount > 0 {
+		pub.Headers = make(amqp.Table, headerCount)
 		for k, v := range msg.Headers {
 			pub.Headers[k] = v
+		}
+		if msg.SchemaVersion != 0 {
+			pub.Headers[messaging.HeaderSchemaVersion] = int32(msg.SchemaVersion)
 		}
 	}
 

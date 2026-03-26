@@ -1,6 +1,7 @@
 package messaging_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -103,4 +104,94 @@ func TestMessage_DecodePayload_Error(t *testing.T) {
 	err := msg.DecodePayload(&target)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decode payload")
+}
+
+func TestMessage_WithSchemaVersion(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", "hello")
+	require.NoError(t, err)
+
+	msg2 := msg.WithSchemaVersion(2)
+	assert.Equal(t, 2, msg2.SchemaVersion)
+
+	// Original should be unmodified (immutability).
+	assert.Equal(t, 0, msg.SchemaVersion)
+}
+
+func TestMessage_WithSchemaVersion_PreservesHeaders(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+
+	msg = msg.WithHeader("X-Request-Id", "req-1")
+	msg = msg.WithSchemaVersion(3)
+
+	assert.Equal(t, 3, msg.SchemaVersion)
+	assert.Equal(t, "req-1", msg.Headers["X-Request-Id"])
+}
+
+func TestMessage_WithSchemaVersion_HeaderImmutability(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+	msg = msg.WithHeader("key", "value")
+
+	msg2 := msg.WithSchemaVersion(1)
+
+	// Mutating msg2 headers should not affect msg.
+	msg2.Headers["key"] = "changed"
+	assert.Equal(t, "value", msg.Headers["key"])
+}
+
+func TestMessage_SchemaVersion_JSONOmitEmpty(t *testing.T) {
+	msg := messaging.Message{
+		ID:      "test-id",
+		Type:    "test.event",
+		Payload: json.RawMessage(`{}`),
+	}
+
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+
+	// SchemaVersion 0 should be omitted from JSON.
+	assert.NotContains(t, string(data), "schema_version")
+}
+
+func TestMessage_SchemaVersion_JSONIncludedWhenSet(t *testing.T) {
+	msg := messaging.Message{
+		ID:            "test-id",
+		Type:          "test.event",
+		Payload:       json.RawMessage(`{}`),
+		SchemaVersion: 2,
+	}
+
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"schema_version":2`)
+}
+
+func TestMessage_SchemaVersion_JSONRoundTrip(t *testing.T) {
+	original := messaging.Message{
+		ID:            "test-id",
+		Type:          "test.event",
+		Payload:       json.RawMessage(`{"key":"val"}`),
+		SchemaVersion: 5,
+	}
+
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded messaging.Message
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 5, decoded.SchemaVersion)
+	assert.Equal(t, original.ID, decoded.ID)
+	assert.Equal(t, original.Type, decoded.Type)
+}
+
+func TestMessage_WithHeader_PreservesSchemaVersion(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+
+	msg = msg.WithSchemaVersion(3)
+	msg = msg.WithHeader("X-Trace-Id", "trace-1")
+
+	assert.Equal(t, 3, msg.SchemaVersion)
+	assert.Equal(t, "trace-1", msg.Headers["X-Trace-Id"])
 }
