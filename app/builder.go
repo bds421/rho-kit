@@ -126,6 +126,9 @@ type Builder struct {
 	// Shutdown hooks
 	shutdownHooks []func(context.Context)
 
+	// Modules
+	modules []Module
+
 	// Router
 	routerFn RouterFunc
 
@@ -377,6 +380,29 @@ func (b *Builder) Background(name string, fn func(ctx context.Context) error) *B
 // (10 seconds by default) so hooks can respect shutdown timeouts.
 func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	b.shutdownHooks = append(b.shutdownHooks, fn)
+	return b
+}
+
+// WithModule registers a module for initialization during Run(). Modules are
+// initialized in registration order, after all built-in infrastructure (DB,
+// Redis, MQ, etc.) but before the RouterFunc is called.
+//
+// Panics if module is nil or if a module with the same name is already registered.
+// This is a startup-time configuration error.
+func (b *Builder) WithModule(m Module) *Builder {
+	if m == nil {
+		panic("app: module must not be nil")
+	}
+	name := m.Name()
+	if name == "" {
+		panic("app: module name must not be empty")
+	}
+	for _, existing := range b.modules {
+		if existing.Name() == name {
+			panic(fmt.Sprintf("app: duplicate module name %q", name))
+		}
+	}
+	b.modules = append(b.modules, m)
 	return b
 }
 
@@ -665,6 +691,30 @@ func (b *Builder) Run() error {
 		runner.AddFunc(bg.name, bg.fn)
 	}
 
+	// 12.5. Modules — initialize in registration order, close in reverse on shutdown.
+	if len(b.modules) > 0 {
+		moduleCleanup, moduleErr := initModules(
+			context.Background(),
+			b.modules,
+			logger,
+			runner,
+			b.cfg,
+		)
+		if moduleErr != nil {
+			return moduleErr
+		}
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			moduleCleanup(cleanupCtx)
+		}()
+
+		// Collect health checks from all modules.
+		for _, m := range b.modules {
+			b.healthChecks = append(b.healthChecks, m.HealthChecks()...)
+		}
+	}
+
 	// 13. Router — build HTTP handler with all infrastructure available.
 	// lateBgs collects goroutines registered via infra.Background() inside routerFn.
 	// A mutex protects concurrent access, and a frozen flag prevents calls after
@@ -717,6 +767,11 @@ func (b *Builder) Run() error {
 			}
 			b.healthChecks = append(b.healthChecks, check)
 		},
+	}
+
+	// Let modules populate the infrastructure before the RouterFunc sees it.
+	for _, m := range b.modules {
+		m.Populate(&infra)
 	}
 
 	var httpHandler http.Handler

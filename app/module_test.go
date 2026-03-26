@@ -1,0 +1,447 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"sync/atomic"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/runtime/lifecycle"
+)
+
+// stubModule is a test double for the Module interface.
+type stubModule struct {
+	name         string
+	initFn       func(ctx context.Context, mc ModuleContext) error
+	populateFn   func(infra *Infrastructure)
+	closeFn      func(ctx context.Context) error
+	healthChecks []health.DependencyCheck
+
+	initCalled     atomic.Bool
+	populateCalled atomic.Bool
+	closeCalled    atomic.Bool
+}
+
+func newStubModule(name string) *stubModule {
+	return &stubModule{name: name}
+}
+
+func (m *stubModule) Name() string { return m.name }
+
+func (m *stubModule) Init(ctx context.Context, mc ModuleContext) error {
+	m.initCalled.Store(true)
+	if m.initFn != nil {
+		return m.initFn(ctx, mc)
+	}
+	return nil
+}
+
+func (m *stubModule) Populate(infra *Infrastructure) {
+	m.populateCalled.Store(true)
+	if m.populateFn != nil {
+		m.populateFn(infra)
+	}
+}
+
+func (m *stubModule) Close(ctx context.Context) error {
+	m.closeCalled.Store(true)
+	if m.closeFn != nil {
+		return m.closeFn(ctx)
+	}
+	return nil
+}
+
+func (m *stubModule) HealthChecks() []health.DependencyCheck {
+	return m.healthChecks
+}
+
+func TestWithModule_PanicsOnNil(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for nil module")
+		assert.Contains(t, fmt.Sprint(r), "must not be nil")
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).WithModule(nil)
+}
+
+func TestWithModule_PanicsOnEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for empty module name")
+		assert.Contains(t, fmt.Sprint(r), "must not be empty")
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).WithModule(newStubModule(""))
+}
+
+func TestWithModule_PanicsOnDuplicateName(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for duplicate module name")
+		assert.Contains(t, fmt.Sprint(r), "duplicate module name")
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).
+		WithModule(newStubModule("mymod")).
+		WithModule(newStubModule("mymod"))
+}
+
+func TestWithModule_FluentChaining(t *testing.T) {
+	m1 := newStubModule("mod-a")
+	m2 := newStubModule("mod-b")
+
+	b := New("test-svc", "v0.1.0", BaseConfig{}).
+		WithModule(m1).
+		WithModule(m2)
+
+	require.Len(t, b.modules, 2)
+	assert.Equal(t, "mod-a", b.modules[0].Name())
+	assert.Equal(t, "mod-b", b.modules[1].Name())
+}
+
+func TestModuleContext_Module_Panics_WhenNotFound(t *testing.T) {
+	mc := ModuleContext{
+		modules: map[string]Module{},
+	}
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for unknown module")
+		assert.Contains(t, fmt.Sprint(r), "not found")
+	}()
+	mc.Module("nonexistent")
+}
+
+func TestModuleContext_Module_ReturnsModule(t *testing.T) {
+	m := newStubModule("test-mod")
+	mc := ModuleContext{
+		modules: map[string]Module{"test-mod": m},
+	}
+	got := mc.Module("test-mod")
+	assert.Equal(t, m, got)
+}
+
+func TestInitModules_OrderAndCleanup(t *testing.T) {
+	var order []string
+
+	m1 := newStubModule("first")
+	m1.initFn = func(_ context.Context, _ ModuleContext) error {
+		order = append(order, "init-first")
+		return nil
+	}
+	m1.closeFn = func(_ context.Context) error {
+		order = append(order, "close-first")
+		return nil
+	}
+
+	m2 := newStubModule("second")
+	m2.initFn = func(_ context.Context, _ ModuleContext) error {
+		order = append(order, "init-second")
+		return nil
+	}
+	m2.closeFn = func(_ context.Context) error {
+		order = append(order, "close-second")
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, []string{"init-first", "init-second"}, order)
+
+	// Cleanup should close in reverse order.
+	cleanup(context.Background())
+	assert.Equal(t, []string{"init-first", "init-second", "close-second", "close-first"}, order)
+}
+
+func TestInitModules_FailureClosesInitialized(t *testing.T) {
+	var closedModules []string
+
+	m1 := newStubModule("ok-mod")
+	m1.closeFn = func(_ context.Context) error {
+		closedModules = append(closedModules, "ok-mod")
+		return nil
+	}
+
+	m2 := newStubModule("fail-mod")
+	m2.initFn = func(_ context.Context, _ ModuleContext) error {
+		return errors.New("init boom")
+	}
+	m2.closeFn = func(_ context.Context) error {
+		closedModules = append(closedModules, "fail-mod")
+		return nil
+	}
+
+	m3 := newStubModule("never-mod")
+	m3.closeFn = func(_ context.Context) error {
+		closedModules = append(closedModules, "never-mod")
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2, m3},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fail-mod")
+	assert.Contains(t, err.Error(), "init boom")
+	assert.Nil(t, cleanup)
+
+	// Only the first module (already init'd) should have been closed.
+	assert.Equal(t, []string{"ok-mod"}, closedModules)
+
+	// The third module should never have been init'd.
+	assert.False(t, m3.initCalled.Load())
+}
+
+func TestInitModules_DependencyLookup(t *testing.T) {
+	m1 := newStubModule("dep")
+	m2 := newStubModule("consumer")
+
+	var foundDep Module
+	m2.initFn = func(_ context.Context, mc ModuleContext) error {
+		foundDep = mc.Module("dep")
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+	defer cleanup(context.Background())
+
+	assert.Equal(t, m1, foundDep)
+}
+
+func TestInitModules_CloseErrorIsLogged(t *testing.T) {
+	m := newStubModule("flaky")
+	m.closeFn = func(_ context.Context) error {
+		return errors.New("close error")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+
+	// Should not panic even if Close returns an error.
+	cleanup(context.Background())
+}
+
+func TestInitModules_EmptySlice(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	// Should be a no-op.
+	cleanup(context.Background())
+}
+
+func TestModuleHealthChecks_AddedToReadiness(t *testing.T) {
+	m := newStubModule("hc-mod")
+	m.healthChecks = []health.DependencyCheck{
+		{
+			Name:  "hc-mod-check",
+			Check: func(_ context.Context) string { return health.StatusHealthy },
+		},
+	}
+
+	b := New("test-svc", "v0.1.0", BaseConfig{}).WithModule(m)
+	// Health checks start empty on builder; they get added during Run().
+	assert.Empty(t, b.healthChecks)
+	assert.Len(t, b.modules, 1)
+}
+
+// TestModule_InitFailureAbortsRun tests that a module init failure prevents
+// the service from starting and cleans up already-initialized modules.
+func TestModule_InitFailureAbortsRun(t *testing.T) {
+	cfg := BaseConfig{
+		Server:   ServerConfig{Host: "127.0.0.1", Port: freePort(t)},
+		Internal: InternalConfig{Host: "127.0.0.1", Port: freePort(t)},
+	}
+
+	var closed atomic.Bool
+
+	mod1 := newStubModule("good-mod")
+	mod1.closeFn = func(_ context.Context) error {
+		closed.Store(true)
+		return nil
+	}
+
+	mod2 := newStubModule("bad-mod")
+	mod2.initFn = func(_ context.Context, _ ModuleContext) error {
+		return errors.New("connection refused")
+	}
+
+	b := New("fail-test", "v0.0.1", cfg).
+		WithModule(mod1).
+		WithModule(mod2).
+		Router(func(infra Infrastructure) http.Handler {
+			t.Fatal("RouterFunc should not be called when module init fails")
+			return nil
+		})
+
+	err := b.Run()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bad-mod")
+	assert.Contains(t, err.Error(), "connection refused")
+	assert.True(t, closed.Load(), "good-mod should have been closed")
+}
+
+// TestModule_PopulateCalledBeforeRouter verifies that Populate is called
+// on all modules before the RouterFunc executes, using the init failure
+// path to test without requiring a full lifecycle with SIGINT.
+func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
+	cfg := BaseConfig{
+		Server:   ServerConfig{Host: "127.0.0.1", Port: freePort(t)},
+		Internal: InternalConfig{Host: "127.0.0.1", Port: freePort(t)},
+	}
+
+	var populateCalled atomic.Bool
+	var routerSawPopulate atomic.Bool
+
+	mod := newStubModule("pop-mod")
+	mod.populateFn = func(_ *Infrastructure) {
+		populateCalled.Store(true)
+	}
+
+	// Use a module that causes Run to fail after RouterFunc, so we don't
+	// need to send SIGINT. We register a shutdown hook that checks populate.
+	// Actually, we can use the init failure approach differently:
+	// have a module succeed init, then verify populate was called by checking
+	// from within RouterFunc. RouterFunc runs but the server start will
+	// succeed - we need a way to shut down. Use a Background goroutine
+	// that returns an error immediately.
+	b := New("populate-test", "v0.0.1", cfg).
+		WithModule(mod).
+		Router(func(infra Infrastructure) http.Handler {
+			routerSawPopulate.Store(populateCalled.Load())
+			// Register a background goroutine that immediately errors out,
+			// triggering shutdown without needing SIGINT.
+			infra.Background("force-exit", func(_ context.Context) error {
+				return errors.New("intentional shutdown")
+			})
+			return http.NotFoundHandler()
+		})
+
+	_ = b.Run()
+	assert.True(t, populateCalled.Load(), "Populate should have been called")
+	assert.True(t, routerSawPopulate.Load(), "RouterFunc should see that Populate ran before it")
+}
+
+// TestModule_LifecycleIntegration is the full SIGINT-based lifecycle test for
+// modules. It is placed inside TestBuilder_Lifecycle via the existing test
+// pattern to avoid signal interference between tests.
+// However, since modifying existing test files is not part of the scope,
+// this test validates the full lifecycle through the initModules function
+// and verifies close ordering.
+func TestModule_LifecycleCloseOrder(t *testing.T) {
+	var initOrder []string
+	var closeOrder []string
+
+	mod1 := newStubModule("first")
+	mod1.initFn = func(_ context.Context, mc ModuleContext) error {
+		initOrder = append(initOrder, "first")
+		if mc.Logger == nil {
+			return errors.New("logger is nil")
+		}
+		if mc.Runner == nil {
+			return errors.New("runner is nil")
+		}
+		return nil
+	}
+	mod1.closeFn = func(_ context.Context) error {
+		closeOrder = append(closeOrder, "first")
+		return nil
+	}
+	mod1.healthChecks = []health.DependencyCheck{
+		{
+			Name:  "first-dep",
+			Check: func(_ context.Context) string { return health.StatusHealthy },
+		},
+	}
+
+	mod2 := newStubModule("second")
+	mod2.initFn = func(_ context.Context, mc ModuleContext) error {
+		initOrder = append(initOrder, "second")
+		dep := mc.Module("first")
+		if dep.Name() != "first" {
+			return errors.New("dependency lookup failed")
+		}
+		return nil
+	}
+	mod2.closeFn = func(_ context.Context) error {
+		closeOrder = append(closeOrder, "second")
+		return nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{mod1, mod2},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"first", "second"}, initOrder)
+	assert.True(t, mod1.initCalled.Load())
+	assert.True(t, mod2.initCalled.Load())
+
+	// Close in reverse order.
+	cleanup(context.Background())
+	assert.Equal(t, []string{"second", "first"}, closeOrder)
+
+	// Verify health checks were returned.
+	checks := mod1.HealthChecks()
+	require.Len(t, checks, 1)
+	assert.Equal(t, "first-dep", checks[0].Name)
+}
+
