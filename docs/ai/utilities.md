@@ -1,6 +1,6 @@
 # Utilities — Errors, Validation, Pagination, Cache, Lifecycle, Concurrency
 
-Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `core/cache`, `runtime/lifecycle`, `core/contextutil`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
+Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `core/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
 
 ## apperror — Sum-Type Application Errors
 
@@ -190,6 +190,27 @@ err := runner.Run(context.Background()) // blocks until signal or error
 ```
 
 Components implement `lifecycle.Component` (Start + Stop). If any component returns an error, all others are cancelled. On SIGINT/SIGTERM, all components are stopped in reverse registration order. The Runner includes panic recovery per goroutine.
+
+## concurrency — Fan-Out Helpers
+
+Run N functions concurrently with panic recovery and optional bounded parallelism:
+
+```go
+// Fail-fast: first error cancels all goroutines.
+results, err := concurrency.FanOut(ctx, fns, concurrency.WithMaxGoroutines(5))
+
+// Settle-all: every function runs to completion regardless of individual errors.
+settled := concurrency.FanOutSettled(ctx, fns, concurrency.WithMaxGoroutines(5))
+for _, r := range settled {
+    if r.Err != nil { /* handle */ }
+    use(r.Value)
+}
+```
+
+- `FanOut[T]` — returns `([]T, error)`. Cancels derived context on first error. Panics are recovered into `*PanicError`.
+- `FanOutSettled[T]` — returns `[]Result[T]`. Never cancels siblings; each result carries its own `Err`. Panics are recovered per-goroutine.
+- `WithMaxGoroutines(n)` — limits concurrency via semaphore. Values < 1 are ignored (unbounded).
+- `PanicError` — wraps panic value, goroutine index, and stack trace. Implements `Unwrap()` so `errors.Is`/`errors.As` work when the panic value is an `error`.
 
 ## contextutil — Typed Context Keys
 
