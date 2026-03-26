@@ -365,14 +365,12 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 		populateCalled.Store(true)
 	}
 
-	// Register a background goroutine that immediately errors out to
-	// trigger shutdown without needing SIGINT.
+	// Use a background goroutine that immediately errors out to trigger
+	// shutdown without needing SIGINT.
 	b := New("populate-test", "v0.0.1", cfg).
 		WithModule(mod).
 		Router(func(infra Infrastructure) http.Handler {
 			routerSawPopulate.Store(populateCalled.Load())
-			// Register a background goroutine that immediately errors out,
-			// triggering shutdown without needing SIGINT.
 			infra.Background("force-exit", func(_ context.Context) error {
 				return errors.New("intentional shutdown")
 			})
