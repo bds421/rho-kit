@@ -2,6 +2,7 @@ package slo
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 )
 
@@ -12,24 +13,32 @@ type StatusResponse struct {
 }
 
 // SLOStatusJSON is the JSON-serialisable form of SLOStatus with Window as a
-// human-readable string instead of nanoseconds.
+// human-readable string instead of nanoseconds. Current is a pointer so that
+// NaN values (from missing metrics) serialise as JSON null instead of producing
+// invalid JSON.
 type SLOStatusJSON struct {
-	Name      string  `json:"name"`
-	Type      SLOType `json:"type"`
-	Threshold float64 `json:"threshold"`
-	Current   float64 `json:"current"`
-	Breached  bool    `json:"breached"`
-	BurnRate  float64 `json:"burn_rate"`
-	Window    string  `json:"window"`
+	Name      string   `json:"name"`
+	Type      SLOType  `json:"type"`
+	Threshold float64  `json:"threshold"`
+	Current   *float64 `json:"current"`
+	Breached  bool     `json:"breached"`
+	BurnRate  float64  `json:"burn_rate"`
+	Window    string   `json:"window"`
 }
 
 // toJSON converts an SLOStatus to its JSON-friendly representation.
+// NaN current values are represented as nil (JSON null) to avoid invalid JSON.
 func toJSON(s SLOStatus) SLOStatusJSON {
+	var current *float64
+	if !math.IsNaN(s.Current) {
+		v := s.Current
+		current = &v
+	}
 	return SLOStatusJSON{
 		Name:      s.Name,
 		Type:      s.Type,
 		Threshold: s.Threshold,
-		Current:   s.Current,
+		Current:   current,
 		Breached:  s.Breached,
 		BurnRate:  s.BurnRate,
 		Window:    s.Window.String(),
@@ -61,6 +70,7 @@ func Handler(checker *Checker) http.Handler {
 		resp := buildResponse(statuses)
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 }

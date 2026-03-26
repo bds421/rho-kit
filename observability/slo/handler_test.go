@@ -2,6 +2,7 @@ package slo
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -38,6 +39,8 @@ func TestHandler_OK(t *testing.T) {
 	assert.Equal(t, "ok", resp.Overall)
 	require.Len(t, resp.Statuses, 1)
 	assert.False(t, resp.Statuses[0].Breached)
+	require.NotNil(t, resp.Statuses[0].Current)
+	assert.InDelta(t, 0.0, *resp.Statuses[0].Current, 1e-9)
 }
 
 func TestHandler_Breached(t *testing.T) {
@@ -137,6 +140,39 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandler_MissingMetrics_ValidJSON(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	// No metrics registered -- all SLOs will have NaN current values.
+	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	handler := Handler(c)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/slo", nil)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp StatusResponse
+	err := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, err, "response must be valid JSON even with missing metrics")
+
+	require.Len(t, resp.Statuses, 1)
+	assert.Nil(t, resp.Statuses[0].Current, "NaN should serialise as null")
+	assert.False(t, resp.Statuses[0].Breached)
+}
+
+func TestHandler_CacheControl(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	c := NewChecker(reg)
+	handler := Handler(c)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/slo", nil)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+}
+
 func TestHandler_HeadMethod(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
@@ -171,6 +207,20 @@ func TestToJSON(t *testing.T) {
 	assert.Equal(t, "test", j.Name)
 	assert.Equal(t, TypeErrorRate, j.Type)
 	assert.Equal(t, "24h0m0s", j.Window)
+	require.NotNil(t, j.Current)
+	assert.InDelta(t, 0.005, *j.Current, 1e-9)
+}
+
+func TestToJSON_NaN(t *testing.T) {
+	s := SLOStatus{
+		Name:    "test-nan",
+		Type:    TypeErrorRate,
+		Current: math.NaN(),
+		Window:  time.Hour,
+	}
+
+	j := toJSON(s)
+	assert.Nil(t, j.Current, "NaN should become nil for valid JSON serialisation")
 }
 
 func TestBuildResponse_MixedStatuses(t *testing.T) {

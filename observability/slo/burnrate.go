@@ -100,7 +100,11 @@ func DefaultAlertThresholds() []BurnRateAlert {
 }
 
 // EvaluateAlerts checks the given burn rate against alert thresholds and
-// returns the highest-severity alert that fires, or nil if none fire.
+// returns the first matching alert, or nil if none fire. Alerts are evaluated
+// in slice order, so callers should sort by descending BurnRateThreshold
+// (highest severity first) to ensure the most severe matching alert is returned.
+// [DefaultAlertThresholds] already provides this ordering.
+//
 // Only the burn rate threshold is checked -- multi-window evaluation requires
 // separate short-window and long-window burn rate values from a time-series
 // database, which is outside the scope of point-in-time evaluation.
