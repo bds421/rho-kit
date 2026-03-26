@@ -46,6 +46,7 @@ use (
 	./resilience/circuitbreaker
 	./resilience/retry
 	./runtime/batchworker
+	./runtime/concurrency
 	./runtime/cron
 	./runtime/eventbus
 	./runtime/lifecycle
