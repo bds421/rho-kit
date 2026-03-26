@@ -11,7 +11,8 @@ type StatusResponse struct {
 	Overall  string          `json:"overall"` // "ok" or "breached"
 }
 
-// SLOStatusJSON is the JSON-serialisable form of SLOStatus with Window as a string.
+// SLOStatusJSON is the JSON-serialisable form of SLOStatus with Window as a
+// human-readable string instead of nanoseconds.
 type SLOStatusJSON struct {
 	Name      string  `json:"name"`
 	Type      SLOType `json:"type"`
@@ -37,13 +38,25 @@ func toJSON(s SLOStatus) SLOStatusJSON {
 
 // Handler returns an http.Handler that evaluates all SLOs and writes the result
 // as JSON. The response includes each SLO's status and an overall "ok"/"breached"
-// indicator.
+// indicator. Only GET and HEAD methods are allowed; other methods receive 405.
 //
 // Returns HTTP 200 when all SLOs are within budget, HTTP 200 with overall="breached"
 // when any SLO is violated. The HTTP status is always 200 because SLO breach is
-// informational — use [Checker.HealthCheck] for readiness integration.
+// informational -- use [Checker.HealthCheck] for readiness integration.
+//
+// Panics if checker is nil. This is a configuration error that should be caught
+// at startup.
 func Handler(checker *Checker) http.Handler {
+	if checker == nil {
+		panic("slo: checker must not be nil")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
 		statuses := checker.Evaluate()
 		resp := buildResponse(statuses)
 

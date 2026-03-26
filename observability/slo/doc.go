@@ -17,8 +17,8 @@
 //
 // # Health Integration
 //
-// Use [Checker.HealthCheck] to produce a [health.DependencyCheck] that reports
-// degraded status when any SLO is breached.
+// Use [Checker.DependencyCheckFunc] to produce a function compatible with
+// health.DependencyCheck that reports degraded status when any SLO is breached.
 //
 // # HTTP Endpoint
 //

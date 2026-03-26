@@ -3,6 +3,7 @@ package slo
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -91,8 +92,14 @@ func TestDefaultAlertThresholds(t *testing.T) {
 	alerts := DefaultAlertThresholds()
 	assert.Len(t, alerts, 3)
 	assert.Equal(t, "critical", alerts[0].Severity)
+	assert.Equal(t, 1*time.Hour, alerts[0].LongWindow)
+	assert.Equal(t, 5*time.Minute, alerts[0].ShortWindow)
 	assert.Equal(t, "warning", alerts[1].Severity)
+	assert.Equal(t, 6*time.Hour, alerts[1].LongWindow)
+	assert.Equal(t, 30*time.Minute, alerts[1].ShortWindow)
 	assert.Equal(t, "info", alerts[2].Severity)
+	assert.Equal(t, 72*time.Hour, alerts[2].LongWindow)
+	assert.Equal(t, 6*time.Hour, alerts[2].ShortWindow)
 }
 
 func TestEvaluateAlerts_Critical(t *testing.T) {

@@ -1,6 +1,7 @@
 package slo
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -48,6 +49,27 @@ func TestNewChecker_CopiesSLOs(t *testing.T) {
 	assert.Equal(t, "a", c.slos[0].Name)
 }
 
+func TestNewChecker_PanicsOnNilGatherer(t *testing.T) {
+	assert.PanicsWithValue(t, "slo: gatherer must not be nil", func() {
+		NewChecker(nil, HTTPErrorRateSLO("a", 0.01, time.Hour))
+	})
+}
+
+func TestNewChecker_PanicsOnEmptyName(t *testing.T) {
+	assert.PanicsWithValue(t, "slo: SLO name must not be empty", func() {
+		NewChecker(prometheus.NewRegistry(), SLO{Type: TypeErrorRate, Threshold: 0.01})
+	})
+}
+
+func TestNewChecker_PanicsOnDuplicateName(t *testing.T) {
+	assert.PanicsWithValue(t, `slo: duplicate SLO name "dup"`, func() {
+		NewChecker(prometheus.NewRegistry(),
+			HTTPErrorRateSLO("dup", 0.01, time.Hour),
+			HTTPErrorRateSLO("dup", 0.02, time.Hour),
+		)
+	})
+}
+
 func TestChecker_Evaluate_EmptyRegistry(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	c := NewChecker(reg,
@@ -72,7 +94,7 @@ func TestChecker_Evaluate_ErrorRate_NoBreach(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 1000 OK, 0 errors → 0% error rate
+	// 1000 OK, 0 errors -> 0% error rate
 	total.WithLabelValues("200").Add(1000)
 
 	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
@@ -91,7 +113,7 @@ func TestChecker_Evaluate_ErrorRate_Breached(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 900 OK, 100 errors → 10% error rate, threshold 1%
+	// 900 OK, 100 errors -> 10% error rate, threshold 1%
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)
 
@@ -112,7 +134,7 @@ func TestChecker_Evaluate_Availability_NoBreach(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 999 OK, 1 error → 99.9% availability, threshold 99.9%
+	// 999 OK, 1 error -> 99.9% availability, threshold 99.9%
 	total.WithLabelValues("200").Add(999)
 	total.WithLabelValues("500").Add(1)
 
@@ -132,7 +154,7 @@ func TestChecker_Evaluate_Availability_Breached(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 990 OK, 10 errors → 99.0% availability, threshold 99.9%
+	// 990 OK, 10 errors -> 99.0% availability, threshold 99.9%
 	total.WithLabelValues("200").Add(990)
 	total.WithLabelValues("500").Add(10)
 
@@ -153,7 +175,7 @@ func TestChecker_Evaluate_Latency_NoBreach(t *testing.T) {
 	})
 	reg.MustRegister(hist)
 
-	// All requests under 0.1s → p99 well under 0.5s threshold
+	// All requests under 0.1s -> p99 well under 0.5s threshold
 	for i := 0; i < 100; i++ {
 		hist.Observe(0.05)
 	}
@@ -175,7 +197,7 @@ func TestChecker_Evaluate_Latency_Breached(t *testing.T) {
 	})
 	reg.MustRegister(hist)
 
-	// Most requests slow → p99 above 0.5s threshold
+	// Most requests slow -> p99 above 0.5s threshold
 	for i := 0; i < 100; i++ {
 		hist.Observe(2.0)
 	}
@@ -287,7 +309,7 @@ func TestChecker_DependencyCheckFunc(t *testing.T) {
 	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
 	fn := c.DependencyCheckFunc()
 
-	assert.Equal(t, "healthy", fn())
+	assert.Equal(t, "healthy", fn(context.Background()))
 }
 
 func TestSLOStatus_String(t *testing.T) {

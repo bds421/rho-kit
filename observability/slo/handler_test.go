@@ -122,6 +122,40 @@ func TestHandler_EmptyChecker(t *testing.T) {
 	assert.Empty(t, resp.Statuses)
 }
 
+func TestHandler_MethodNotAllowed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	handler := Handler(c)
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/slo", nil)
+		handler.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusMethodNotAllowed, rec.Code, "method %s should be rejected", method)
+		assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+	}
+}
+
+func TestHandler_HeadMethod(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	handler := Handler(c)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "/slo", nil)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+}
+
+func TestHandler_PanicsOnNilChecker(t *testing.T) {
+	assert.PanicsWithValue(t, "slo: checker must not be nil", func() {
+		Handler(nil)
+	})
+}
+
 func TestToJSON(t *testing.T) {
 	s := SLOStatus{
 		Name:      "test",

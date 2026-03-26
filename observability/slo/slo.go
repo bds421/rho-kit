@@ -1,8 +1,10 @@
 package slo
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -55,13 +57,17 @@ type SLO struct {
 	ErrorLabelFilter LabelFilter
 }
 
-// LabelFilter defines a label name and regex pattern for filtering metrics.
+// LabelFilter defines a label name and a pattern for filtering metrics.
+// The pattern uses '.' as a single-character wildcard (e.g. "5.." matches "500", "502").
 type LabelFilter struct {
 	Name    string
 	Pattern string
 }
 
 // SLOStatus holds the evaluation result for a single SLO.
+// For JSON serialisation, use [SLOStatusJSON] via the [Handler] endpoint; the
+// Window field is excluded from direct JSON encoding because time.Duration
+// serialises as nanoseconds which is not human-friendly.
 type SLOStatus struct {
 	Name      string        `json:"name"`
 	Type      SLOType       `json:"type"`
@@ -69,7 +75,7 @@ type SLOStatus struct {
 	Current   float64       `json:"current"`
 	Breached  bool          `json:"breached"`
 	BurnRate  float64       `json:"burn_rate"`
-	Window    time.Duration `json:"window"`
+	Window    time.Duration `json:"-"`
 }
 
 // HTTPLatencySLO creates an SLO that tracks HTTP request latency at a given percentile.
@@ -113,9 +119,28 @@ type Checker struct {
 }
 
 // NewChecker creates a Checker that evaluates the given SLOs using metrics
-// from gatherer. The SLOs slice is copied — subsequent modifications to the
+// from gatherer. The SLOs slice is copied -- subsequent modifications to the
 // caller's slice have no effect.
+//
+// Panics if gatherer is nil, if any SLO has an empty Name, or if duplicate
+// SLO names are provided. These are configuration errors that should be caught
+// at startup.
 func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
+	if gatherer == nil {
+		panic("slo: gatherer must not be nil")
+	}
+
+	seen := make(map[string]struct{}, len(slos))
+	for _, s := range slos {
+		if s.Name == "" {
+			panic("slo: SLO name must not be empty")
+		}
+		if _, exists := seen[s.Name]; exists {
+			panic(fmt.Sprintf("slo: duplicate SLO name %q", s.Name))
+		}
+		seen[s.Name] = struct{}{}
+	}
+
 	copied := make([]SLO, len(slos))
 	copy(copied, slos)
 	return &Checker{
@@ -138,12 +163,11 @@ func (c *Checker) Evaluate() []SLOStatus {
 }
 
 // gatherFamilies collects all metric families from the gatherer and returns
-// them indexed by name for O(1) lookup.
+// them indexed by name for O(1) lookup. Prometheus Gather() may return partial
+// results alongside errors; we use whatever data is available.
 func (c *Checker) gatherFamilies() map[string]*dto.MetricFamily {
-	mfs, err := c.gatherer.Gather()
-	if err != nil {
-		// On gather error, return empty map — all SLOs will report NaN current
-		// values and will not be marked as breached (no data != breach).
+	mfs, _ := c.gatherer.Gather()
+	if len(mfs) == 0 {
 		return make(map[string]*dto.MetricFamily)
 	}
 
@@ -186,9 +210,7 @@ func evaluateSLO(s SLO, families map[string]*dto.MetricFamily) SLOStatus {
 // isSLOBreached returns true when the current value violates the SLO threshold.
 func isSLOBreached(s SLO, current float64) bool {
 	switch s.Type {
-	case TypeLatency:
-		return current > s.Threshold
-	case TypeErrorRate:
+	case TypeLatency, TypeErrorRate:
 		return current > s.Threshold
 	case TypeAvailability:
 		return current < s.Threshold
@@ -246,9 +268,11 @@ func evaluateErrorRate(s SLO, families map[string]*dto.MetricFamily) float64 {
 // evaluateAvailability computes the success ratio (1 - error rate).
 func evaluateAvailability(s SLO, families map[string]*dto.MetricFamily) float64 {
 	errorRate := evaluateErrorRate(SLO{
+		Name:             s.Name,
 		MetricName:       s.MetricName,
 		ErrorLabelFilter: s.ErrorLabelFilter,
 		Type:             TypeErrorRate,
+		Window:           s.Window,
 	}, families)
 
 	if math.IsNaN(errorRate) {
@@ -271,11 +295,6 @@ func histogramPercentile(mf *dto.MetricFamily, percentile float64) float64 {
 	}
 
 	// Aggregate across all label combinations.
-	type bucket struct {
-		upperBound      float64
-		cumulativeCount uint64
-	}
-
 	var totalCount uint64
 	bucketMap := make(map[float64]uint64)
 
@@ -294,8 +313,7 @@ func histogramPercentile(mf *dto.MetricFamily, percentile float64) float64 {
 		return math.NaN()
 	}
 
-	// Sort buckets by upper bound.
-	buckets := sortBuckets(bucketMap)
+	buckets := sortedBuckets(bucketMap)
 
 	target := percentile * float64(totalCount)
 	var prevCount float64
@@ -328,8 +346,9 @@ type sortableBucket struct {
 	cumulativeCount uint64
 }
 
-// sortBuckets converts a map of upper_bound->count into a sorted slice.
-func sortBuckets(m map[float64]uint64) []sortableBucket {
+// sortedBuckets converts a map of upper_bound->count into a slice sorted by upper bound.
+// The +Inf bucket is excluded because it is not useful for percentile interpolation.
+func sortedBuckets(m map[float64]uint64) []sortableBucket {
 	buckets := make([]sortableBucket, 0, len(m))
 	for ub, count := range m {
 		if math.IsInf(ub, 1) {
@@ -338,12 +357,16 @@ func sortBuckets(m map[float64]uint64) []sortableBucket {
 		buckets = append(buckets, sortableBucket{upperBound: ub, cumulativeCount: count})
 	}
 
-	// Simple insertion sort — bucket count is small (typically <20).
-	for i := 1; i < len(buckets); i++ {
-		for j := i; j > 0 && buckets[j].upperBound < buckets[j-1].upperBound; j-- {
-			buckets[j], buckets[j-1] = buckets[j-1], buckets[j]
+	slices.SortFunc(buckets, func(a, b sortableBucket) int {
+		switch {
+		case a.upperBound < b.upperBound:
+			return -1
+		case a.upperBound > b.upperBound:
+			return 1
+		default:
+			return 0
 		}
-	}
+	})
 	return buckets
 }
 
@@ -366,7 +389,6 @@ func sumCountersByLabel(mf *dto.MetricFamily, filter LabelFilter) (total, matche
 }
 
 // matchesLabel checks if any label on the metric matches the filter.
-// The pattern is matched as a simple prefix-based glob (e.g. "5.." matches "500", "502").
 func matchesLabel(labels []*dto.LabelPair, filter LabelFilter) bool {
 	for _, lp := range labels {
 		if lp.GetName() != filter.Name {
@@ -379,7 +401,9 @@ func matchesLabel(labels []*dto.LabelPair, filter LabelFilter) bool {
 	return false
 }
 
-// matchPattern performs a simple pattern match where '.' matches any single character.
+// matchPattern performs a fixed-length pattern match where '.' matches any
+// single character. For example, "5.." matches "500" and "502" but not "50"
+// or "5000".
 func matchPattern(pattern, value string) bool {
 	if len(pattern) != len(value) {
 		return false
@@ -392,9 +416,8 @@ func matchPattern(pattern, value string) bool {
 	return true
 }
 
-// HealthCheck returns a health.DependencyCheck that reports degraded status
-// when any SLO is breached. This integrates with the health package's
-// readiness endpoint.
+// HealthCheck evaluates all SLOs and returns a HealthCheckResult indicating
+// whether any SLO is breached. Use this with health package readiness checks.
 func (c *Checker) HealthCheck() HealthCheckResult {
 	statuses := c.Evaluate()
 	breached := false
@@ -417,8 +440,8 @@ type HealthCheckResult struct {
 	Breached bool
 }
 
-// Status returns [health.StatusDegraded] if any SLO is breached, otherwise
-// [health.StatusHealthy]. These are string constants matching the health package.
+// Status returns "degraded" if any SLO is breached, otherwise "healthy".
+// These values match the health package status constants.
 func (r HealthCheckResult) Status() string {
 	if r.Breached {
 		return "degraded"
@@ -428,8 +451,10 @@ func (r HealthCheckResult) Status() string {
 
 // DependencyCheckFunc returns a function compatible with health.DependencyCheck.Check.
 // The returned function evaluates all SLOs and returns "degraded" on breach.
-func (c *Checker) DependencyCheckFunc() func() string {
-	return func() string {
+// The context parameter is accepted for interface compatibility but is not used
+// by the SLO evaluation (which reads from an in-process Prometheus registry).
+func (c *Checker) DependencyCheckFunc() func(ctx context.Context) string {
+	return func(_ context.Context) string {
 		return c.HealthCheck().Status()
 	}
 }
