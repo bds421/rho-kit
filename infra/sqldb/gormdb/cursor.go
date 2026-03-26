@@ -6,8 +6,11 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb"
 )
 
-// CursorQuery builds a cursor-based pagination query on top of GORM.
-// Use it to eliminate the repeated pattern of search + cursor + order + limit
+// CursorQuery is a mutable query builder for cursor-based pagination.
+// Methods modify the receiver in place (builder pattern) and return it
+// for chaining. Create a new CursorQuery for each independent query.
+//
+// It eliminates the repeated pattern of search + cursor + order + limit
 // that appears in every List method of every GORM store.
 type CursorQuery struct {
 	db      *gorm.DB
