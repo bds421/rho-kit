@@ -22,6 +22,9 @@ const (
 
 	// tokenLength is the number of random bytes in a CSRF token (256 bits).
 	tokenLength = 32
+
+	// bearerPrefixLen is the length of the "Bearer " prefix (scheme + space).
+	bearerPrefixLen = 7
 )
 
 // Option configures the CSRF middleware.
@@ -223,7 +226,7 @@ func computeHMAC(data string, key []byte) string {
 // auto-attach the Authorization header in cross-origin requests.
 func HasBearerToken(r *http.Request) bool {
 	v := r.Header.Get("Authorization")
-	return len(v) > 7 && strings.EqualFold(v[:7], "bearer ")
+	return len(v) > bearerPrefixLen && strings.EqualFold(v[:bearerPrefixLen], "bearer ")
 }
 
 // HasAPIKey returns a predicate that checks for the presence of a non-empty
@@ -237,7 +240,7 @@ func HasAPIKey(header string) func(r *http.Request) bool {
 		panic("csrf: HasAPIKey header name must not be empty")
 	}
 	return func(r *http.Request) bool {
-		return r.Header.Get(header) != ""
+		return strings.TrimSpace(r.Header.Get(header)) != ""
 	}
 }
 
