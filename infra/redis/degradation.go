@@ -69,13 +69,6 @@ func (p CustomPolicy) Name() string { return p.name }
 // OnUnavailable delegates to the user-supplied function.
 func (p CustomPolicy) OnUnavailable(ctx context.Context) error { return p.fn(ctx) }
 
-// FeatureStatus represents the degradation state of a single feature.
-type FeatureStatus struct {
-	Feature  string `json:"feature"`
-	Policy   string `json:"policy"`
-	Degraded bool   `json:"degraded"`
-}
-
 // FeatureCheck holds a named feature and its degradation policy for health reporting.
 type FeatureCheck struct {
 	// Feature is the health check name for this feature (e.g. "cache", "rate-limit").
@@ -87,8 +80,11 @@ type FeatureCheck struct {
 
 // PerFeatureHealthChecks returns health DependencyChecks for each registered feature.
 // When Redis is healthy, all features report healthy. When Redis is unhealthy,
-// each feature reports based on its policy: passthrough policies report "degraded",
-// fail-fast policies report "unhealthy".
+// each feature reports based on its policy: FailFastPolicy features report
+// "unhealthy" and are marked critical; all other policies (including CustomPolicy)
+// report "degraded" and are non-critical.
+//
+// Panics if any feature name produces an invalid health check name.
 func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.DependencyCheck {
 	checks := make([]health.DependencyCheck, len(features))
 	for i, fc := range features {
@@ -98,9 +94,13 @@ func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.
 }
 
 func newFeatureHealthCheck(conn *Connection, fc FeatureCheck) health.DependencyCheck {
+	if err := health.ValidateCheckName(fc.Feature); err != nil {
+		panic(fmt.Sprintf("redis: invalid feature name: %v", err))
+	}
+	checkName := fmt.Sprintf("redis-%s", fc.Feature)
 	_, isFailFast := fc.Policy.(FailFastPolicy)
 	return health.DependencyCheck{
-		Name: fmt.Sprintf("redis-%s", fc.Feature),
+		Name: checkName,
 		Check: func(_ context.Context) string {
 			if conn.Healthy() {
 				return health.StatusHealthy

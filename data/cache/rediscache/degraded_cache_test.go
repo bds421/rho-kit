@@ -14,8 +14,7 @@ import (
 	"github.com/bds421/rho-kit/infra/redis"
 )
 
-// testSetup creates a miniredis, a Connection, a RedisCache, and an in-memory fallback.
-// The returned cleanup function stops the miniredis server.
+// testEnv bundles a miniredis, Connection, RedisCache, and in-memory fallback for tests.
 type testEnv struct {
 	mr       *miniredis.Miniredis
 	conn     *redis.Connection

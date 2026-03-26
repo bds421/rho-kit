@@ -148,6 +148,28 @@ func TestPerFeatureHealthChecks_CustomPolicy(t *testing.T) {
 	assert.False(t, checks[0].Critical)
 }
 
+func TestPerFeatureHealthChecks_PanicsOnInvalidFeatureName(t *testing.T) {
+	conn := newTestConnection(true, true)
+	features := []FeatureCheck{
+		{Feature: "INVALID NAME!", Policy: PassthroughPolicy{}},
+	}
+
+	assert.Panics(t, func() {
+		PerFeatureHealthChecks(conn, features)
+	})
+}
+
+func TestPerFeatureHealthChecks_PanicsOnEmptyFeatureName(t *testing.T) {
+	conn := newTestConnection(true, true)
+	features := []FeatureCheck{
+		{Feature: "", Policy: PassthroughPolicy{}},
+	}
+
+	assert.Panics(t, func() {
+		PerFeatureHealthChecks(conn, features)
+	})
+}
+
 func TestDegradationPolicy_Interface(t *testing.T) {
 	// Verify all policies implement the interface at compile time.
 	var _ DegradationPolicy = PassthroughPolicy{}
