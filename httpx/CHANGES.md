@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/bds421/rho-kit/compare/httpx/v1.1.0...httpx/v1.2.0) (2026-03-26)
+
+
+### Features
+
+* add correlation ID middleware with propagation helpers ([#6](https://github.com/bds421/rho-kit/issues/6)) ([96d0328](https://github.com/bds421/rho-kit/commit/96d0328306086f2c9060e8aaf2afd949cc1ae82e))
+* add request signing package for inter-service auth ([#13](https://github.com/bds421/rho-kit/issues/13)) ([812f57a](https://github.com/bds421/rho-kit/commit/812f57a270fc7e405dadabbef98f6e5f5973cc42))
+* **apperror:** add Retryable interface, enhance UnavailableError ([#20](https://github.com/bds421/rho-kit/issues/20)) ([473e687](https://github.com/bds421/rho-kit/commit/473e68701a3086e6ff80738930d9708da2129574))
+
+
+### Bug Fixes
+
+* **csrf:** reject whitespace-only API keys, extract bearerPrefixLen, add predicate tests ([#18](https://github.com/bds421/rho-kit/issues/18)) ([1a90f8c](https://github.com/bds421/rho-kit/commit/1a90f8c51fe4e451dfbc1520aaef2e0b68cf6324))
+* **httpx:** improve deadline budget docs and add expired-context test ([#19](https://github.com/bds421/rho-kit/issues/19)) ([8bfe9b1](https://github.com/bds421/rho-kit/commit/8bfe9b15873ca86c5e235db1966d05c6b1feaea4))
+
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/httpx-v1.0.0...httpx-v1.1.0) (2026-03-24)
 
 
