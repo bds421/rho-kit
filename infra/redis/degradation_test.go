@@ -170,6 +170,16 @@ func TestPerFeatureHealthChecks_PanicsOnEmptyFeatureName(t *testing.T) {
 	})
 }
 
+func TestPerFeatureHealthChecks_PanicsOnNilConnection(t *testing.T) {
+	features := []FeatureCheck{
+		{Feature: "cache", Policy: PassthroughPolicy{}},
+	}
+
+	assert.Panics(t, func() {
+		PerFeatureHealthChecks(nil, features)
+	})
+}
+
 func TestDegradationPolicy_Interface(t *testing.T) {
 	// Verify all policies implement the interface at compile time.
 	var _ DegradationPolicy = PassthroughPolicy{}

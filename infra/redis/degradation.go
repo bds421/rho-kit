@@ -84,8 +84,11 @@ type FeatureCheck struct {
 // "unhealthy" and are marked critical; all other policies (including CustomPolicy)
 // report "degraded" and are non-critical.
 //
-// Panics if any feature name produces an invalid health check name.
+// Panics if conn is nil or any feature name is invalid.
 func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.DependencyCheck {
+	if conn == nil {
+		panic("redis: connection must not be nil")
+	}
 	checks := make([]health.DependencyCheck, len(features))
 	for i, fc := range features {
 		checks[i] = newFeatureHealthCheck(conn, fc)
