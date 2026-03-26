@@ -17,17 +17,20 @@ type testModel struct {
 	IsDefault bool
 }
 
-func setupTestDB(t *testing.T) *gorm.DB {
+func setupTestDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&testModel{}))
+	if len(models) == 0 {
+		models = []any{&testModel{}}
+	}
+	require.NoError(t, db.AutoMigrate(models...))
 	return db
 }
 
 func TestFindByID_Found(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "alice"})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)
 
 	result, err := FindByID[testModel](db, "test", "1")
 	require.NoError(t, err)
@@ -43,7 +46,7 @@ func TestFindByID_NotFound(t *testing.T) {
 
 func TestFindOneByField_Found(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "alice"})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)
 
 	result, err := FindOneByField[testModel](db, "name", "alice")
 	require.NoError(t, err)
@@ -58,11 +61,9 @@ type testReservedWordModel struct {
 }
 
 func TestFindOneByField_ReservedWordColumn(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&testReservedWordModel{}))
+	db := setupTestDB(t, &testReservedWordModel{})
 
-	db.Create(&testReservedWordModel{ID: "1", Key: "my-flag"})
+	require.NoError(t, db.Create(&testReservedWordModel{ID: "1", Key: "my-flag"}).Error)
 
 	result, err := FindOneByField[testReservedWordModel](db, "key", "my-flag")
 	require.NoError(t, err)
@@ -80,70 +81,71 @@ func TestFindOneByField_NotFound(t *testing.T) {
 
 func TestCreateWithDefaultReset_SetsDefault(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "first", IsDefault: true})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "first", IsDefault: true}).Error)
 
 	record := &testModel{ID: "2", Name: "second", IsDefault: true}
 	require.NoError(t, CreateWithDefaultReset(db, record, true))
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 
 	var second testModel
-	db.First(&second, "id = ?", "2")
+	require.NoError(t, db.First(&second, "id = ?", "2").Error)
 	assert.True(t, second.IsDefault)
 }
 
 func TestCreateWithDefaultReset_NoDefault(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "first", IsDefault: true})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "first", IsDefault: true}).Error)
 
 	record := &testModel{ID: "2", Name: "second", IsDefault: false}
 	require.NoError(t, CreateWithDefaultReset(db, record, false))
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.True(t, first.IsDefault)
 }
 
 func TestUpdateWithDefaultReset_PromotesDefault(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "first", IsDefault: true})
-	db.Create(&testModel{ID: "2", Name: "second", IsDefault: false})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "first", IsDefault: true}).Error)
+	require.NoError(t, db.Create(&testModel{ID: "2", Name: "second", IsDefault: false}).Error)
 
 	err := UpdateWithDefaultReset[testModel](db, "test", "2", map[string]any{"is_default": true})
 	require.NoError(t, err)
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 
 	var second testModel
-	db.First(&second, "id = ?", "2")
+	require.NoError(t, db.First(&second, "id = ?", "2").Error)
 	assert.True(t, second.IsDefault)
 }
 
 func TestUpdateWithDefaultReset_SetDefaultFalse(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "first", IsDefault: true})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "first", IsDefault: true}).Error)
 
 	err := UpdateWithDefaultReset[testModel](db, "test", "1", map[string]any{"is_default": false})
 	require.NoError(t, err)
 
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.First(&first, "id = ?", "1").Error)
 	assert.False(t, first.IsDefault)
 }
 
 func TestUpdateWithDefaultReset_NonBoolDefault(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "first", IsDefault: false})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "first", IsDefault: false}).Error)
 
 	err := UpdateWithDefaultReset[testModel](db, "test", "1", map[string]any{"is_default": "yes", "name": "updated"})
 	require.NoError(t, err)
 
+	// Only select "name" to avoid scanning the non-bool "yes" back into a bool field.
 	var first testModel
-	db.First(&first, "id = ?", "1")
+	require.NoError(t, db.Select("name").First(&first, "id = ?", "1").Error)
 	assert.Equal(t, "updated", first.Name)
 }
 
@@ -156,12 +158,12 @@ func TestUpdateWithDefaultReset_NotFound(t *testing.T) {
 
 func TestDeleteByID_Found(t *testing.T) {
 	db := setupTestDB(t)
-	db.Create(&testModel{ID: "1", Name: "alice"})
+	require.NoError(t, db.Create(&testModel{ID: "1", Name: "alice"}).Error)
 
 	require.NoError(t, DeleteByID[testModel](db, "test", "1"))
 
 	var count int64
-	db.Model(&testModel{}).Count(&count)
+	require.NoError(t, db.Model(&testModel{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
 }
 
