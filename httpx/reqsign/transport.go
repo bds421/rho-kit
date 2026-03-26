@@ -5,19 +5,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/bds421/rho-kit/crypto/signing"
 )
 
 // SigningTransport wraps an http.RoundTripper to sign all outbound requests.
 type SigningTransport struct {
 	base        http.RoundTripper
-	store       KeyStore
+	store       signing.KeyStore
 	opts        []SignOption
 	maxBodySize int64
 }
 
 // NewSigningTransport creates a transport that signs every outbound request.
 // If base is nil, http.DefaultTransport is used.
-func NewSigningTransport(base http.RoundTripper, store KeyStore, opts ...SignOption) *SigningTransport {
+func NewSigningTransport(base http.RoundTripper, store signing.KeyStore, opts ...SignOption) *SigningTransport {
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}

@@ -1,9 +1,18 @@
-package reqsign
+package signing
 
 import (
 	"sync"
 	"testing"
 )
+
+// testKey generates a deterministic byte sequence of the given size for testing.
+func testKey(n int, seed int) []byte {
+	k := make([]byte, n)
+	for i := range k {
+		k[i] = byte((i*7 + seed) % 256)
+	}
+	return k
+}
 
 func TestNewStaticKeyStore(t *testing.T) {
 	key1 := testKey(32, 1)

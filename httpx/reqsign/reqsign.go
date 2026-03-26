@@ -134,7 +134,7 @@ func canonicalBytes(method, requestURI string, body []byte) []byte {
 // It builds canonical bytes from the request method, request URI (path and
 // query string), and body, then delegates to signing.Signer.Sign for HMAC
 // computation. The signature, timestamp, and key ID are set as request headers.
-func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOption) error {
+func SignRequest(req *http.Request, body []byte, store signing.KeyStore, opts ...SignOption) error {
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}
@@ -150,8 +150,8 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 	// Use unsafe access when available to avoid allocation on the hot path.
 	var keyID string
 	var secret []byte
-	if uks, ok := store.(unsafeKeyStore); ok {
-		keyID, secret = uks.currentKeyUnsafe()
+	if uks, ok := store.(signing.UnsafeKeyStore); ok {
+		keyID, secret = uks.CurrentKeyUnsafe()
 	} else {
 		keyID, secret = store.CurrentKeyID()
 	}
@@ -171,7 +171,7 @@ func SignRequest(req *http.Request, body []byte, store KeyStore, opts ...SignOpt
 
 // verifyRequestWithConfig verifies a request using a pre-built verifyConfig.
 // This avoids re-applying options on every request in the middleware hot path.
-func verifyRequestWithConfig(req *http.Request, body []byte, store KeyStore, cfg verifyConfig) error {
+func verifyRequestWithConfig(req *http.Request, body []byte, store signing.KeyStore, cfg verifyConfig) error {
 	sig := req.Header.Get(HeaderSignature)
 	tsStr := req.Header.Get(HeaderTimestamp)
 	keyID := req.Header.Get(HeaderKeyID)
@@ -188,8 +188,8 @@ func verifyRequestWithConfig(req *http.Request, body []byte, store KeyStore, cfg
 	// Use unsafe access when available to avoid allocation on the hot path.
 	var secret []byte
 	var ok bool
-	if uks, castOK := store.(unsafeKeyStore); castOK {
-		secret, ok = uks.keyUnsafe(keyID)
+	if uks, castOK := store.(signing.UnsafeKeyStore); castOK {
+		secret, ok = uks.KeyUnsafe(keyID)
 	} else {
 		secret, ok = store.Key(keyID)
 	}
@@ -212,7 +212,7 @@ func verifyRequestWithConfig(req *http.Request, body []byte, store KeyStore, cfg
 // VerifyRequest verifies the signature on an incoming HTTP request.
 // It reads the signature headers, looks up the key by ID from the store,
 // builds canonical bytes, and delegates to signing.Signer.Verify.
-func VerifyRequest(req *http.Request, body []byte, store KeyStore, opts ...VerifyOption) error {
+func VerifyRequest(req *http.Request, body []byte, store signing.KeyStore, opts ...VerifyOption) error {
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}

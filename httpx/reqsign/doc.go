@@ -31,7 +31,7 @@
 //
 // # Key Rotation
 //
-// [StaticKeyStore] supports multiple keys: sign with the current key, verify
+// [signing.StaticKeyStore] supports multiple keys: sign with the current key, verify
 // against any known key. This allows zero-downtime key rotation by adding
 // the new key, switching the current ID, and eventually removing the old key.
 //

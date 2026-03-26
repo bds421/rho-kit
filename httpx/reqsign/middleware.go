@@ -13,7 +13,7 @@ import (
 // Requests with missing or invalid signatures receive a 401 Unauthorized response.
 // The request body is read, verified, and then replaced so downstream handlers
 // can still read it.
-func RequireSignedRequest(store KeyStore, opts ...VerifyOption) func(http.Handler) http.Handler {
+func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(http.Handler) http.Handler {
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}

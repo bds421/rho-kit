@@ -71,7 +71,7 @@ func TestVerifyWrongKey(t *testing.T) {
 	}
 
 	// Verify against a different store with different key for "primary".
-	otherStore := NewStaticKeyStore(map[string][]byte{
+	otherStore := signing.NewStaticKeyStore(map[string][]byte{
 		"primary": testKey(64, 99),
 	}, "primary")
 
@@ -264,7 +264,7 @@ func TestVerifyWithRotatedKey(t *testing.T) {
 	key2 := testKey(48, 11)
 
 	// Sign with old key.
-	oldStore := NewStaticKeyStore(map[string][]byte{
+	oldStore := signing.NewStaticKeyStore(map[string][]byte{
 		"v1": key1,
 		"v2": key2,
 	}, "v1")
@@ -280,7 +280,7 @@ func TestVerifyWithRotatedKey(t *testing.T) {
 	}
 
 	// Verify with new store where v2 is current but v1 still present.
-	newStore := NewStaticKeyStore(map[string][]byte{
+	newStore := signing.NewStaticKeyStore(map[string][]byte{
 		"v1": key1,
 		"v2": key2,
 	}, "v2")

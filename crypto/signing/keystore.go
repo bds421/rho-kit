@@ -1,13 +1,13 @@
-package reqsign
+package signing
 
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
 const minKeyLen = 32
 
-// unsafeKeyStore provides zero-copy key access for performance-critical paths.
+// UnsafeKeyStore provides zero-copy key access for performance-critical paths.
 // Implementations must guarantee the returned slice is never mutated.
-type unsafeKeyStore interface {
-	keyUnsafe(keyID string) ([]byte, bool)
-	currentKeyUnsafe() (string, []byte)
+type UnsafeKeyStore interface {
+	KeyUnsafe(keyID string) ([]byte, bool)
+	CurrentKeyUnsafe() (string, []byte)
 }
 
 // KeyStore manages signing keys. Implementations must be safe for concurrent use.
@@ -22,6 +22,9 @@ type KeyStore interface {
 	// CurrentKeyID returns the active signing key ID and secret.
 	CurrentKeyID() (string, []byte)
 }
+
+// NilKeyStoreMsg is the panic message used when a nil KeyStore is passed.
+const NilKeyStoreMsg = "signing: KeyStore must not be nil"
 
 // StaticKeyStore holds a fixed set of keys. Multiple keys support rotation:
 // sign with current, verify against any.
@@ -41,14 +44,14 @@ type StaticKeyStore struct {
 // errors surface at startup, not at request time.
 func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
 	if len(keys) == 0 {
-		panic("reqsign: keys map must not be empty")
+		panic("signing: keys map must not be empty")
 	}
 	if _, ok := keys[currentID]; !ok {
-		panic("reqsign: currentID " + currentID + " not found in keys map")
+		panic("signing: currentID " + currentID + " not found in keys map")
 	}
 	for id, k := range keys {
 		if len(k) < minKeyLen {
-			panic("reqsign: key " + id + " must be at least 32 bytes")
+			panic("signing: key " + id + " must be at least 32 bytes")
 		}
 	}
 
@@ -78,18 +81,18 @@ func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
 	return dst, true
 }
 
-// keyUnsafe returns the internal key slice without copying. This avoids
+// KeyUnsafe returns the internal key slice without copying. This avoids
 // allocation on the hot path for internal sign/verify operations where the
 // caller does not expose the slice. The returned slice MUST NOT be mutated
 // or retained beyond the calling function's scope.
-func (s *StaticKeyStore) keyUnsafe(keyID string) ([]byte, bool) {
+func (s *StaticKeyStore) KeyUnsafe(keyID string) ([]byte, bool) {
 	k, ok := s.keys[keyID]
 	return k, ok
 }
 
-// currentKeyUnsafe returns the active signing key ID and internal secret
-// slice without copying. Same safety constraints as keyUnsafe apply.
-func (s *StaticKeyStore) currentKeyUnsafe() (string, []byte) {
+// CurrentKeyUnsafe returns the active signing key ID and internal secret
+// slice without copying. Same safety constraints as KeyUnsafe apply.
+func (s *StaticKeyStore) CurrentKeyUnsafe() (string, []byte) {
 	return s.currentID, s.keys[s.currentID]
 }
 
