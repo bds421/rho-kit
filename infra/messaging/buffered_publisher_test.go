@@ -533,8 +533,8 @@ func TestCompat_NewOutboxPublisher(t *testing.T) {
 	fp := &fakePublisher{}
 	pub := newTestBufferedPublisher(fp.publish, func() bool { return true })
 
-	// Alias the publisher through the deprecated type to verify compatibility.
-	var compat *OutboxPublisher = pub //nolint:ST1023 // explicit type tests deprecated alias compatibility
+	// Verify the deprecated type alias is assignment-compatible.
+	compat := (*OutboxPublisher)(pub)
 
 	msg, _ := NewMessage("test.event", map[string]string{"key": "value"})
 
