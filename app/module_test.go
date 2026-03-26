@@ -483,6 +483,40 @@ func TestCloseModules_PanicRecovery(t *testing.T) {
 	assert.Equal(t, []string{"ok-mod"}, closed)
 }
 
+func TestInitModules_InitPanicCleansUp(t *testing.T) {
+	var closed []string
+
+	m1 := newStubModule("ok-mod")
+	m1.closeFn = func(_ context.Context) error {
+		closed = append(closed, "ok-mod")
+		return nil
+	}
+
+	m2 := newStubModule("panic-init-mod")
+	m2.initFn = func(_ context.Context, _ ModuleContext) error {
+		panic("init boom")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panic-init-mod")
+	assert.Contains(t, err.Error(), "init boom")
+	assert.Nil(t, cleanup)
+
+	// The first module should have been cleaned up despite the panic.
+	assert.Equal(t, []string{"ok-mod"}, closed)
+}
+
 func TestInitModules_PopulateOrder(t *testing.T) {
 	var populateOrder []string
 

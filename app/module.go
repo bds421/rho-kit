@@ -98,7 +98,7 @@ func initModules(
 	}
 
 	for _, m := range modules {
-		if err := m.Init(ctx, mc); err != nil {
+		if err := initOneModule(ctx, m, mc); err != nil {
 			// Close already-initialized modules in reverse order.
 			closeModules(ctx, initialized, logger)
 			return nil, fmt.Errorf("module %q init failed: %w", m.Name(), err)
@@ -112,6 +112,18 @@ func initModules(
 	}
 
 	return cleanup, nil
+}
+
+// initOneModule calls Init on a single module with panic recovery.
+// A panic during Init is converted to an error so that the caller can
+// still clean up already-initialized modules.
+func initOneModule(ctx context.Context, m Module, mc ModuleContext) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic during init: %v", r)
+		}
+	}()
+	return m.Init(ctx, mc)
 }
 
 // closeModules closes modules in reverse order, logging any errors.
