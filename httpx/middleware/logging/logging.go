@@ -44,7 +44,9 @@ func Logger(logger *slog.Logger, quietPaths []string, extraAttrs ...func(r *http
 				slog.String("remote", clientip.ClientIP(r)),
 			}
 			for _, fn := range extraAttrs {
-				attrs = append(attrs, fn(r))
+				if a := fn(r); a.Key != "" {
+					attrs = append(attrs, a)
+				}
 			}
 
 			logger.LogAttrs(r.Context(), level, "request", attrs...)

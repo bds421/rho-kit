@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx"
 )
 
@@ -51,7 +52,7 @@ func TestWithRequestLogger_InjectsLogger_WithRequestID(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/orders", nil)
-	ctx := httpx.SetRequestID(req.Context(), "req-abc-123")
+	ctx := contextutil.SetRequestID(req.Context(), "req-abc-123")
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
@@ -165,6 +166,117 @@ func TestWithRequestLogger_MultipleExtraAttrs(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("role=admin")) {
 		t.Errorf("expected role=admin in logger attrs, got: %s", output)
+	}
+}
+
+func TestWithRequestLogger_InjectsLogger_WithCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/trace", nil)
+	ctx := contextutil.SetCorrelationID(req.Context(), "corr-xyz-789")
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	output := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("correlation_id=corr-xyz-789")) {
+		t.Errorf("expected correlation_id=corr-xyz-789 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("method=GET")) {
+		t.Errorf("expected method=GET in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("path=/api/trace")) {
+		t.Errorf("expected path=/api/trace in logger attrs, got: %s", output)
+	}
+}
+
+func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/users/42", nil)
+	ctx := contextutil.SetRequestID(req.Context(), "req-111")
+	ctx = contextutil.SetCorrelationID(ctx, "corr-222")
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	output := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("request_id=req-111")) {
+		t.Errorf("expected request_id=req-111 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("correlation_id=corr-222")) {
+		t.Errorf("expected correlation_id=corr-222 in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("method=PUT")) {
+		t.Errorf("expected method=PUT in logger attrs, got: %s", output)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("path=/api/users/42")) {
+		t.Errorf("expected path=/api/users/42 in logger attrs, got: %s", output)
+	}
+}
+
+func TestWithRequestLogger_OmitsEmptyKeyAttr(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base,
+		func(r *http.Request) slog.Attr {
+			return slog.Attr{} // zero-value attr with empty key
+		},
+		func(r *http.Request) slog.Attr {
+			return slog.String("keep", "this")
+		},
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+
+	got.Info("probe")
+
+	logOutput := buf.String()
+	// TextHandler renders a zero-value slog.Attr as ="" — check it was filtered out.
+	if bytes.Contains(buf.Bytes(), []byte("=\"\"")) {
+		t.Errorf("log should not contain empty-key attr, got: %s", logOutput)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("keep=this")) {
+		t.Errorf("expected keep=this in log, got: %s", logOutput)
 	}
 }
 

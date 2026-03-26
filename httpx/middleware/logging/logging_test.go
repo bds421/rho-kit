@@ -67,6 +67,35 @@ func TestLogger_ExtraAttrs(t *testing.T) {
 	}
 }
 
+func TestLogger_OmitsEmptyKeyAttr(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := Logger(logger, nil,
+		func(r *http.Request) slog.Attr {
+			return slog.Attr{} // zero-value attr with empty key
+		},
+		func(r *http.Request) slog.Attr {
+			return slog.String("keep", "this")
+		},
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	// TextHandler renders a zero-value slog.Attr as ="" — check it was filtered out.
+	if bytes.Contains(buf.Bytes(), []byte("=\"\"")) {
+		t.Errorf("log should not contain empty-key attr, got: %s", logOutput)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("keep=this")) {
+		t.Errorf("expected keep=this in log, got: %s", logOutput)
+	}
+}
+
 func TestLogger_CapturesStatus(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

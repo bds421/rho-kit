@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/google/uuid"
 )
 
 func TestWithRequestID_GeneratesID(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -23,10 +24,14 @@ func TestWithRequestID_GeneratesID(t *testing.T) {
 	if capturedID == "" {
 		t.Error("expected request ID to be generated")
 	}
-	if len(capturedID) != 32 {
-		t.Errorf("generated ID length = %d, want 32 (hex-encoded 16 bytes)", len(capturedID))
+	parsed, err := uuid.Parse(capturedID)
+	if err != nil {
+		t.Fatalf("generated ID %q is not a valid UUID: %v", capturedID, err)
 	}
-	if rec.Header().Get("X-Request-Id") != capturedID {
+	if parsed.Version() != 7 {
+		t.Errorf("generated UUID version = %d, want 7", parsed.Version())
+	}
+	if rec.Header().Get(Header) != capturedID {
 		t.Error("X-Request-Id response header doesn't match context value")
 	}
 }
@@ -34,12 +39,12 @@ func TestWithRequestID_GeneratesID(t *testing.T) {
 func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", "incoming-id-123")
+	req.Header.Set(Header, "incoming-id-123")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -51,13 +56,13 @@ func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 func TestWithRequestID_RejectsLongID(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	longID := strings.Repeat("a", 129)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", longID)
+	req.Header.Set(Header, longID)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -72,12 +77,12 @@ func TestWithRequestID_RejectsLongID(t *testing.T) {
 func TestWithRequestID_RejectsControlChars(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", "id-with\nnewline")
+	req.Header.Set(Header, "id-with\nnewline")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -89,13 +94,13 @@ func TestWithRequestID_RejectsControlChars(t *testing.T) {
 func TestWithRequestID_AcceptsMaxLength(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedID = httpx.RequestID(r.Context())
+		capturedID = contextutil.RequestID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	maxLenID := strings.Repeat("x", 128)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Request-Id", maxLenID)
+	req.Header.Set(Header, maxLenID)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -119,6 +124,8 @@ func TestIsValidRequestID(t *testing.T) {
 		{"null byte", "abc\x00123", false},
 		{"printable ascii", "ABCdef-123_456.789", true},
 		{"non-ascii", "abc\x80def", false},
+		{"contains space", "abc 123", false},
+		{"only spaces", "   ", false},
 	}
 
 	for _, tt := range tests {

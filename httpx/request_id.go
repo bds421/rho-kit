@@ -1,19 +1,21 @@
 package httpx
 
-import "context"
+import (
+	"context"
 
-type contextKey string
-
-const requestIDKey contextKey = "requestID"
+	"github.com/bds421/rho-kit/core/contextutil"
+)
 
 // SetRequestID stores a request ID in the context.
-// Used by the WithRequestID middleware to propagate IDs through the handler chain.
+//
+// Deprecated: Use contextutil.SetRequestID instead.
 func SetRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey, id)
+	return contextutil.SetRequestID(ctx, id)
 }
 
 // RequestID extracts the request ID from the context.
+//
+// Deprecated: Use contextutil.RequestID instead.
 func RequestID(ctx context.Context) string {
-	v, _ := ctx.Value(requestIDKey).(string)
-	return v
+	return contextutil.RequestID(ctx)
 }
