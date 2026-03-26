@@ -25,8 +25,6 @@ import (
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/security/jwtutil"
 	"github.com/bds421/rho-kit/runtime/lifecycle"
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
 	"github.com/bds421/rho-kit/infra/sqldb/migrate"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
@@ -433,7 +431,14 @@ func (b *Builder) Run() error {
 		return err
 	}
 
-	// 0. EventBus — always initialized (no With* required).
+	// 0. Convert builder config to modules. Modules created from With*()
+	// config are prepended so they initialize before user-registered modules.
+	builtinModules := b.buildIntegrationModules()
+	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
+	allModules = append(allModules, builtinModules...)
+	allModules = append(allModules, b.modules...)
+
+	// 0.5. EventBus — always initialized (no With* required).
 	eventBus := eventbus.New(eventbus.WithLogger(logger))
 
 	// 0.5. Tracing
@@ -476,30 +481,7 @@ func (b *Builder) Run() error {
 		httpClient = httpx.NewTracingHTTPClient(10*time.Second, clientTLS)
 	}
 
-	// 2. Redis
-	var redisConn *kitredis.Connection
-	if b.redisOpts != nil {
-		connOpts := []kitredis.ConnOption{
-			kitredis.WithLogger(logger),
-			kitredis.WithLazyConnect(),
-		}
-		connOpts = append(connOpts, b.redisConnOpts...)
-
-		redisConn, err = kitredis.Connect(b.redisOpts, connOpts...)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if closeErr := redisConn.Close(); closeErr != nil {
-				logger.Warn("error closing redis", "error", closeErr)
-			}
-		}()
-
-		b.healthChecks = append(b.healthChecks, kitredis.HealthCheck(redisConn))
-		logger.Info("redis connection configured")
-	}
-
-	// 3. Database (MySQL or PostgreSQL)
+	// 2. Database (MySQL or PostgreSQL)
 	var db *gorm.DB
 	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
 		openDB := func() (*gorm.DB, error) {
@@ -585,39 +567,7 @@ func (b *Builder) Run() error {
 		}
 	}
 
-	// 4. RabbitMQ
-	var mqConn *amqpbackend.Connection
-	var publisher messaging.MessagePublisher
-	var mqConsumer messaging.MessageConsumer
-	if b.mqURL != "" {
-		mqOpts := []amqpbackend.DialOption{amqpbackend.WithLazyConnect()}
-		if clientTLS != nil {
-			mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
-		}
-		mqConn, err = amqpbackend.Dial(b.mqURL, logger, mqOpts...)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if closeErr := mqConn.Close(); closeErr != nil {
-				logger.Warn("error closing rabbitmq", "error", closeErr)
-			}
-		}()
-
-		pub := amqpbackend.NewPublisher(mqConn, logger)
-		defer pub.Close()
-		publisher = pub
-
-		mqConsumer = amqpbackend.NewConsumer(mqConn, pub, logger)
-
-		if b.criticalBroker {
-			b.healthChecks = append(b.healthChecks, amqpbackend.CriticalHealthCheck(mqConn))
-		} else {
-			b.healthChecks = append(b.healthChecks, amqpbackend.HealthCheck(mqConn))
-		}
-	}
-
-	// 5. Lifecycle Runner — replaces manual WaitGroup + SafeGo.
+	// 3. Lifecycle Runner — manages all long-running goroutines.
 	runner := lifecycle.NewRunner(logger)
 
 	// 6. JWT
@@ -665,15 +615,7 @@ func (b *Builder) Run() error {
 		})
 	}
 
-	// 9. Redis pool metrics
-	if redisConn != nil {
-		runner.AddFunc("redis-pool-metrics", func(ctx context.Context) error {
-			kitredis.StartPoolMetricsCollector(ctx, redisConn.Client(), "default", 15*time.Second)
-			return nil
-		})
-	}
-
-	// 10. Audit log
+	// 9. Audit log
 	var auditLogger *auditlog.Logger
 	if b.auditStore != nil {
 		auditLogger = auditlog.New(b.auditStore, b.auditOpts...)
@@ -691,11 +633,11 @@ func (b *Builder) Run() error {
 		runner.AddFunc(bg.name, bg.fn)
 	}
 
-	// 12.5. Modules — initialize in registration order, close in reverse on shutdown.
-	if len(b.modules) > 0 {
+	// 4. Modules — initialize in registration order, close in reverse on shutdown.
+	if len(allModules) > 0 {
 		moduleCleanup, moduleErr := initModules(
 			context.Background(),
-			b.modules,
+			allModules,
 			logger,
 			runner,
 			b.cfg,
@@ -710,7 +652,7 @@ func (b *Builder) Run() error {
 		}()
 
 		// Collect health checks from all modules.
-		for _, m := range b.modules {
+		for _, m := range allModules {
 			b.healthChecks = append(b.healthChecks, m.HealthChecks()...)
 		}
 	}
@@ -725,24 +667,20 @@ func (b *Builder) Run() error {
 	storageMgr := buildStorageManager(b.storageSpecs)
 
 	infra := Infrastructure{
-		Logger:        logger,
-		ClientTLS:     clientTLS,
-		ServerTLS:     serverTLS,
-		DB:            db,
-		Redis:         redisConn,
-		Broker:        mqConn,
-		Publisher:     publisher,
-		Consumer:      mqConsumer,
-		JWT:           jwtProvider,
-		RateLimiter:   rl,
-		KeyedLimiters: keyedLimiters,
+		Logger:         logger,
+		ClientTLS:      clientTLS,
+		ServerTLS:      serverTLS,
+		DB:             db,
+		JWT:            jwtProvider,
+		RateLimiter:    rl,
+		KeyedLimiters:  keyedLimiters,
 		Storage:        b.storageBackend,
 		StorageManager: storageMgr,
 		Cron:           cronScheduler,
 		AuditLog:       auditLogger,
 		EventBus:       eventBus,
-		HTTPClient:    httpClient,
-		Config:        b.cfg,
+		HTTPClient:     httpClient,
+		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
@@ -770,7 +708,7 @@ func (b *Builder) Run() error {
 	}
 
 	// Let modules populate the infrastructure before the RouterFunc sees it.
-	for _, m := range b.modules {
+	for _, m := range allModules {
 		m.Populate(&infra)
 	}
 
@@ -896,6 +834,27 @@ func (b *Builder) Run() error {
 
 	// 17. Run — signal handling, component lifecycle, graceful shutdown.
 	return runner.Run(context.Background())
+}
+
+// buildIntegrationModules creates modules from builder config fields set by
+// the legacy With*() methods (WithRedis, WithRabbitMQ). These modules are
+// prepended to user-registered modules so built-in infrastructure initializes
+// first. The With*() methods remain public and functional for backward
+// compatibility.
+func (b *Builder) buildIntegrationModules() []Module {
+	var modules []Module
+
+	if b.redisOpts != nil {
+		modules = append(modules, newRedisModule(b.redisOpts, b.redisConnOpts...))
+	}
+
+	if b.mqURL != "" {
+		m := newMessagingModule(b.mqURL)
+		m.criticalBroker = b.criticalBroker
+		modules = append(modules, m)
+	}
+
+	return modules
 }
 
 // buildStorageManager creates a Manager from the named storage specs.
