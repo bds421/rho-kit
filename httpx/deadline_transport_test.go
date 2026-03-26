@@ -292,6 +292,44 @@ func TestWithSafetyMargin_IgnoresNegative(t *testing.T) {
 	}
 }
 
+func TestDeadlineBudgetTransport_AlreadyExpiredParentContext(t *testing.T) {
+	mock := &mockRoundTripper{
+		resp: &http.Response{StatusCode: http.StatusOK},
+		err:  context.DeadlineExceeded,
+	}
+	transport := &deadlineBudgetTransport{
+		base:         mock,
+		safetyMargin: 500 * time.Millisecond,
+		minTimeout:   1 * time.Second,
+	}
+
+	// Create an already-expired context.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	time.Sleep(5 * time.Millisecond) // ensure it has expired
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
+	_, err := transport.RoundTrip(req)
+
+	// The base transport should receive the request and return its error.
+	// The derived context will use minTimeout since remaining budget is negative.
+	if err == nil {
+		t.Fatal("expected error from expired parent context")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// Verify the outbound context still got a deadline (clamped to minTimeout).
+	outDeadline, ok := mock.capturedCtx.Deadline()
+	if !ok {
+		t.Fatal("outbound context should have a deadline even with expired parent")
+	}
+	if outDeadline.IsZero() {
+		t.Fatal("outbound deadline should not be zero")
+	}
+}
+
 func TestWithMinTimeout_IgnoresZeroAndNegative(t *testing.T) {
 	client := NewResilientHTTPClient(WithDeadlineBudget(
 		WithMinTimeout(0),
