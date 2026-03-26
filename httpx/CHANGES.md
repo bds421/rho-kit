@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/bds421/rho-kit/compare/httpx/v1.2.0...httpx/v1.2.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* bump httpx internal deps to v1.1.0 ([#22](https://github.com/bds421/rho-kit/issues/22)) ([155a590](https://github.com/bds421/rho-kit/commit/155a59090fd6b520b2b40e3f16c03888af1b4c53))
+
 ## [1.2.0](https://github.com/bds421/rho-kit/compare/httpx/v1.1.0...httpx/v1.2.0) (2026-03-26)
 
 

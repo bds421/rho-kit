@@ -15,7 +15,7 @@
   "data/queue/redisqueue": "1.0.0",
   "data/stream": "1.0.0",
   "data/stream/redisstream": "1.0.0",
-  "httpx": "1.2.0",
+  "httpx": "1.2.1",
   "infra/messaging": "1.0.1",
   "infra/messaging/amqpbackend": "1.0.0",
   "infra/messaging/amqpbackend/debughttp": "1.0.0",
