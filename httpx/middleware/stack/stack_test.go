@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 )
 
 func TestDefault_OrderWithOuterInner(t *testing.T) {
@@ -26,6 +28,7 @@ func TestDefault_OrderWithOuterInner(t *testing.T) {
 	stacked := Default(handler, slog.Default(),
 		WithoutMetrics(),
 		WithoutRequestID(),
+		WithoutCorrelationID(),
 		WithoutTracing(),
 		WithoutLogging(),
 		WithOuter(record("outer1"), record("outer2")),
@@ -44,5 +47,29 @@ func TestDefault_OrderWithOuterInner(t *testing.T) {
 		if calls[i] != entry {
 			t.Fatalf("calls[%d] = %q, want %q (full: %v)", i, calls[i], entry, calls)
 		}
+	}
+}
+
+func TestDefault_WithoutCorrelationID(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutCorrelationID(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get(mwcorrelationid.Header); got != "" {
+		t.Errorf("expected no %s header when correlation ID disabled, got %q", mwcorrelationid.Header, got)
 	}
 }

@@ -4,7 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/contextutil"
+	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
 	mwrequestid "github.com/bds421/rho-kit/httpx/middleware/requestid"
@@ -13,39 +14,42 @@ import (
 )
 
 // Config controls the default middleware stack.
+// Boolean fields are ordered to match middleware execution order (outermost first).
 type Config struct {
-	Logger           *slog.Logger
-	QuietPaths       []string
-	EnableMetrics    bool
-	EnableRequestID  bool
-	EnableTracing    bool
-	EnableLogging    bool
-	EnableReqLogger  bool
-	EnableSecHeaders bool
-	FrameOption      secheaders.FrameOption
-	Outer            []func(http.Handler) http.Handler
-	Inner            []func(http.Handler) http.Handler
+	Logger              *slog.Logger
+	QuietPaths          []string
+	EnableSecHeaders    bool
+	EnableMetrics       bool
+	EnableRequestID     bool
+	EnableCorrelationID bool
+	EnableTracing       bool
+	EnableReqLogger     bool
+	EnableLogging       bool
+	FrameOption         secheaders.FrameOption
+	Outer               []func(http.Handler) http.Handler
+	Inner               []func(http.Handler) http.Handler
 }
 
 // Option mutates the Config.
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// security headers -> metrics -> request ID -> tracing -> request logger -> logging -> inner -> handler
+// security headers -> metrics -> request ID -> correlation ID -> tracing -> request logger -> logging -> inner -> handler
 // Additional outer middleware wraps the entire chain.
 // The request logger is injected so that httpx.Logger(ctx, fallback) returns
 // a request-scoped logger in handler code.
 func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Handler {
 	cfg := Config{
-		Logger:           logger,
-		QuietPaths:       []string{"/ready"},
-		EnableMetrics:    true,
-		EnableRequestID:  true,
-		EnableTracing:    true,
-		EnableLogging:    true,
-		EnableReqLogger:  true,
-		EnableSecHeaders: true,
-		FrameOption:      secheaders.Deny,
+		Logger:              logger,
+		QuietPaths:          []string{"/ready"},
+		EnableSecHeaders:    true,
+		EnableMetrics:       true,
+		EnableRequestID:     true,
+		EnableCorrelationID: true,
+		EnableTracing:       true,
+		EnableReqLogger:     true,
+		EnableLogging:       true,
+		FrameOption:         secheaders.Deny,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -60,10 +64,26 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = cfg.Inner[i](h)
 	}
 
+	// Both the access-log Logger (via extraAttrs below) and the per-handler
+	// WithRequestLogger emit request_id and correlation_id by design:
+	// the access-log middleware produces structured access log lines, while
+	// WithRequestLogger builds the handler-scoped logger returned by
+	// httpx.Logger(ctx, fallback). The duplication is intentional.
 	var extraAttrs []func(*http.Request) slog.Attr
 	if cfg.EnableRequestID {
 		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
-			return slog.String("request_id", httpx.RequestID(r.Context()))
+			if rid := contextutil.RequestID(r.Context()); rid != "" {
+				return slog.String("request_id", rid)
+			}
+			return slog.Attr{}
+		})
+	}
+	if cfg.EnableCorrelationID {
+		extraAttrs = append(extraAttrs, func(r *http.Request) slog.Attr {
+			if cid := contextutil.CorrelationID(r.Context()); cid != "" {
+				return slog.String("correlation_id", cid)
+			}
+			return slog.Attr{}
 		})
 	}
 
@@ -75,6 +95,9 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 	if cfg.EnableTracing {
 		h = mwtracing.HTTPMiddleware(h)
+	}
+	if cfg.EnableCorrelationID {
+		h = mwcorrelationid.WithCorrelationID(h)
 	}
 	if cfg.EnableRequestID {
 		h = mwrequestid.WithRequestID(h)
@@ -115,6 +138,11 @@ func WithoutMetrics() Option {
 // WithoutRequestID disables request ID middleware.
 func WithoutRequestID() Option {
 	return func(cfg *Config) { cfg.EnableRequestID = false }
+}
+
+// WithoutCorrelationID disables correlation ID middleware.
+func WithoutCorrelationID() Option {
+	return func(cfg *Config) { cfg.EnableCorrelationID = false }
 }
 
 // WithoutTracing disables tracing middleware.
