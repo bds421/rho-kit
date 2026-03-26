@@ -1,11 +1,13 @@
-github.com/bds421/rho-kit/core/apperror v1.0.0 h1:Fg8tZ2HviRu+Tgr0+qRaAwy8pvUNt2N7xPJ8kRR/3Xk=
-github.com/bds421/rho-kit/core/apperror v1.0.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
+github.com/bds421/rho-kit/core/apperror v1.1.0 h1:LbL8SFLV/s44Jq5Eor16QhBA18QYixw/QeXfGSy5Szk=
+github.com/bds421/rho-kit/core/apperror v1.1.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
 github.com/bds421/rho-kit/core/config v1.0.0 h1:GGfhRiiWfX7wKxYa85H/+60IXwiA4NU8pIGm1h+h3TQ=
 github.com/bds421/rho-kit/core/config v1.0.0/go.mod h1:8svppGoTWL0zmkilgbTRdHSW2lb06LcpV0P0wAagsP8=
-github.com/bds421/rho-kit/core/contextutil v1.0.0 h1:MgeGoeskv25WdPZ46tvrXEYd/reb/oe3ozRMH96Jw+c=
-github.com/bds421/rho-kit/core/contextutil v1.0.0/go.mod h1:lTPcHj+ShOwuzEbDNs+95CJdryy3IoH2xp4h8sYGlXM=
+github.com/bds421/rho-kit/core/contextutil v1.1.0 h1:a9nFttL9sgu+z+UvSGhEwoUUb9IBMQug9LgoVi//7Tc=
+github.com/bds421/rho-kit/core/contextutil v1.1.0/go.mod h1:i4tWfLhCUoAz/7zeGTAXSOaR/cN7j4/3aFslLtcKR1M=
 github.com/bds421/rho-kit/core/validate v1.0.0 h1:cEe7K3VWJQbIyLSZIPUB332mydYO9tIq4DzuCsiJGQU=
 github.com/bds421/rho-kit/core/validate v1.0.0/go.mod h1:fBB11eJuTtr4H71hr1dgJ4oHo0hqRkgU+J8FsHXjOyo=
+github.com/bds421/rho-kit/crypto v1.1.0 h1:eQrfUVTOOmPDZADOYfPdZDeMUaGFC4OpcojAqlNSbMk=
+github.com/bds421/rho-kit/crypto v1.1.0/go.mod h1:xDNK81NVlN8b+nJ95MRKIPsGdWfxHAUQ8YKJMALl2ws=
 github.com/bds421/rho-kit/data/idempotency v1.0.0 h1:OZ/+g/leUeh7rZtw6ovwaSbahYhRzs1sL1WSeWPhVUA=
 github.com/bds421/rho-kit/data/idempotency v1.0.0/go.mod h1:gFskHkk7ZD6M97Q7u/E9H0EmWKOz7R4Uo/8PwhykDUw=
 github.com/bds421/rho-kit/observability/auditlog v1.0.0 h1:sRrrNfoBGdBfQnmOhoHeQuomyXzRtvY3ZBRpTg+PwSo=
