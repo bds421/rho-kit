@@ -37,20 +37,44 @@ func Handler(checker *health.Checker) http.Handler {
 	})
 }
 
+// InternalHandlerOption configures the internal ops handler.
+type InternalHandlerOption func(*internalConfig)
+
+type internalConfig struct {
+	sloHandler http.Handler
+}
+
+// WithSLOHandler adds a GET /slo endpoint to the internal ops handler.
+// Pass the handler from slohttp.Handler.
+func WithSLOHandler(h http.Handler) InternalHandlerOption {
+	return func(c *internalConfig) {
+		c.sloHandler = h
+	}
+}
+
 // NewInternalHandler builds the mux for the internal ops port:
 //
 //	GET /health  -> liveness (version only, no dependency checks)
 //	GET /ready   -> readiness handler (caller provides)
 //	GET /metrics -> Prometheus metrics
+//	GET /slo     -> SLO status (optional, via [WithSLOHandler])
 //
 // The readiness parameter accepts any http.Handler.
 // Use [Handler] to wrap a [health.Checker] as an http.Handler.
-func NewInternalHandler(version string, readiness http.Handler) http.Handler {
+func NewInternalHandler(version string, readiness http.Handler, opts ...InternalHandlerOption) http.Handler {
+	var cfg internalConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	mux := http.NewServeMux()
 	liveness := Handler(&health.Checker{Version: health.ResolveVersion(version)})
 	mux.Handle("GET /health", liveness)
 	mux.Handle("GET /ready", readiness)
 	mux.Handle("GET /metrics", promhttp.Handler())
+	if cfg.sloHandler != nil {
+		mux.Handle("GET /slo", cfg.sloHandler)
+	}
 	return mux
 }
 
