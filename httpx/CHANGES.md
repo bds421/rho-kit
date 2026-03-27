@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/bds421/rho-kit/compare/httpx/v1.2.1...httpx/v1.3.0) (2026-03-27)
+
+
+### Features
+
+* add degradation support to rate limiter and distributed lock ([#30](https://github.com/bds421/rho-kit/issues/30)) ([2038259](https://github.com/bds421/rho-kit/commit/2038259a72f397e08fbf9dd6d49799e222b3bf2b))
+
 ## [1.2.1](https://github.com/bds421/rho-kit/compare/httpx/v1.2.0...httpx/v1.2.1) (2026-03-26)
 
 
