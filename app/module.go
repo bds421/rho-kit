@@ -79,11 +79,11 @@ func NewBaseModule(name string) BaseModule {
 	return BaseModule{name: name}
 }
 
-func (b BaseModule) Name() string                             { return b.name }
+func (b BaseModule) Name() string                                  { return b.name }
 func (b BaseModule) Init(_ context.Context, _ ModuleContext) error { return nil }
-func (b BaseModule) Populate(_ *Infrastructure)                {}
-func (b BaseModule) Close(_ context.Context) error             { return nil }
-func (b BaseModule) HealthChecks() []health.DependencyCheck    { return nil }
+func (b BaseModule) Populate(_ *Infrastructure)                    {}
+func (b BaseModule) Close(_ context.Context) error                 { return nil }
+func (b BaseModule) HealthChecks() []health.DependencyCheck        { return nil }
 
 // ModuleContext provides the shared context available to modules during Init.
 type ModuleContext struct {

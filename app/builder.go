@@ -14,8 +14,8 @@ import (
 
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
-	"github.com/bds421/rho-kit/httpx/slohttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
+	"github.com/bds421/rho-kit/httpx/slohttp"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/storage"
@@ -26,7 +26,6 @@ import (
 	kitcron "github.com/bds421/rho-kit/runtime/cron"
 	"github.com/bds421/rho-kit/runtime/eventbus"
 	"github.com/bds421/rho-kit/runtime/lifecycle"
-	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
@@ -466,65 +465,22 @@ func (b *Builder) Run() error {
 	}
 	eventBus := eventbus.New(busOpts...)
 
-	// 0.5. Tracing
-	tracingActive := false
-	if b.tracingCfg != nil {
-		tp, tracingErr := tracing.Init(context.Background(), *b.tracingCfg)
-		if tracingErr != nil {
-			logger.Warn("tracing init failed, continuing without tracing", "error", tracingErr)
-			b.healthChecks = append(b.healthChecks, health.DependencyCheck{
-				Name: "tracing",
-				Check: func(_ context.Context) string {
-					return health.StatusDegraded
-				},
-			})
-		} else {
-			tracingActive = true
-			defer func() {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := tp.Shutdown(shutdownCtx); err != nil {
-					logger.Warn("tracing shutdown error", "error", err)
-				}
-			}()
-			logger.Info("tracing enabled", "endpoint", b.tracingCfg.Endpoint)
-		}
-	}
-
-	// 1. TLS
-	clientTLS, err := b.cfg.TLS.ClientTLS()
-	if err != nil {
-		return fmt.Errorf("build client TLS config: %w", err)
-	}
+	// 1. TLS -- server TLS is still needed here for the public server.
+	// Client TLS is now handled by the httpClientModule.
 	serverTLS, err := b.cfg.TLS.ServerTLS()
 	if err != nil {
 		return fmt.Errorf("build server TLS config: %w", err)
 	}
 
-	httpClient := httpx.NewHTTPClient(10*time.Second, clientTLS)
-	if tracingActive {
-		httpClient = httpx.NewTracingHTTPClient(10*time.Second, clientTLS)
-	}
-
-	// 2. Lifecycle Runner — manages all long-running goroutines.
+	// 2. Lifecycle Runner -- manages all long-running goroutines.
 	runner := lifecycle.NewRunner(logger)
 
-	// 2.5. EventBus pool lifecycle — register after runner creation.
+	// 2.5. EventBus pool lifecycle -- register after runner creation.
 	if b.eventBusPoolSize > 0 {
 		runner.Add("eventbus", eventBus)
 	}
 
-	// 3. JWT
-	var jwtProvider *jwtutil.Provider
-	if b.jwksURL != "" {
-		jwtProvider = jwtutil.NewProvider(b.jwksURL, httpClient, jwtutil.CacheTTL(), jwtutil.WithExpectedIssuer("https://oathkeeper"))
-		runner.AddFunc("jwt-provider", func(ctx context.Context) error {
-			jwtProvider.Run(ctx)
-			return nil
-		})
-	}
-
-	// 4. Rate limiters
+	// 3. Rate limiters
 	var rl *mwrl.RateLimiter
 	if b.ipRateRequests > 0 {
 		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow)
@@ -604,9 +560,7 @@ func (b *Builder) Run() error {
 
 	infra := Infrastructure{
 		Logger:         logger,
-		ClientTLS:      clientTLS,
 		ServerTLS:      serverTLS,
-		JWT:            jwtProvider,
 		RateLimiter:    rl,
 		KeyedLimiters:  keyedLimiters,
 		Storage:        b.storageBackend,
@@ -614,7 +568,6 @@ func (b *Builder) Run() error {
 		Cron:           cronScheduler,
 		AuditLog:       auditLogger,
 		EventBus:       eventBus,
-		HTTPClient:     httpClient,
 		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			lateBgsMu.Lock()
@@ -771,16 +724,33 @@ func (b *Builder) Run() error {
 }
 
 // buildIntegrationModules creates modules from builder config fields set by
-// the legacy With*() methods (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ).
-// These modules are prepended to user-registered modules so built-in
-// infrastructure initializes first. The With*() methods remain public and
-// functional for backward compatibility.
+// the legacy With*() methods (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ,
+// WithTracing, WithJWT). These modules are prepended to user-registered modules
+// so built-in infrastructure initializes first. The With*() methods remain
+// public and functional for backward compatibility.
+//
+// Registration order matters: tracing -> httpclient -> jwt, because each module
+// depends on the previous one during Init.
 //
 // The returned *databaseModule is non-nil when a database is configured. Run()
 // uses it to check for seed early-exit after module initialization.
 func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 	var modules []Module
 	var dbMod *databaseModule
+
+	// Tracing must come first -- httpClientModule reads its Active() state.
+	if b.tracingCfg != nil {
+		modules = append(modules, newTracingModule(*b.tracingCfg))
+	}
+
+	// HTTP client is always created -- other modules and infra need it.
+	// It reads tracing state when a tracing module is registered.
+	modules = append(modules, newHTTPClientModule(b.tracingCfg != nil))
+
+	// JWT depends on httpClientModule for the HTTP client.
+	if b.jwksURL != "" {
+		modules = append(modules, newJWTModule(b.jwksURL))
+	}
 
 	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
 		dbMod = newDatabaseModule(databaseModuleConfig{
