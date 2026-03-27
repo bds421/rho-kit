@@ -1,14 +1,19 @@
 // Package outbox implements the transactional outbox pattern for reliable
-// message publishing. It solves the dual-write problem by writing messages
+// event publishing. It solves the dual-write problem by writing entries
 // to a database table within the same transaction as domain state changes,
-// then asynchronously relaying them to the message broker.
+// then asynchronously relaying them to an external system via a pluggable
+// [Publisher] interface.
+//
+// The package is transport-agnostic: it does not depend on any specific
+// broker. Adapters for AMQP, Redis Streams, Kafka, or any other transport
+// implement the [Publisher] interface.
 //
 // # Architecture
 //
 // The package has two main components:
 //
 //   - [Writer] writes outbox entries within a caller-provided GORM transaction.
-//   - [Relay] polls the outbox table and publishes pending entries to the broker.
+//   - [Relay] polls the outbox table and publishes pending entries via a [Publisher].
 //     It implements [lifecycle.Component] for integration with the service runner.
 //
 // # Concurrency
@@ -35,7 +40,13 @@
 //	// Inside a transaction:
 //	gormdb.WithTx(ctx, db, func(tx *gorm.DB) error {
 //	    // ... domain writes ...
-//	    return writer.Write(ctx, tx, "exchange", "routing.key", msg)
+//	    return writer.Write(ctx, tx, outbox.WriteParams{
+//	        Topic:       "orders",
+//	        RoutingKey:  "order.created",
+//	        MessageID:   msg.ID,
+//	        MessageType: "order.created",
+//	        Payload:     payload,
+//	    })
 //	})
 //
 //	// Relay as a lifecycle component:

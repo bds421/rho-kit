@@ -1,13 +1,12 @@
 -- +goose Up
 CREATE TABLE IF NOT EXISTS outbox_entries (
     id             UUID        PRIMARY KEY,
-    exchange       TEXT        NOT NULL,
+    topic          TEXT        NOT NULL,
     routing_key    TEXT        NOT NULL,
     message_id     TEXT        NOT NULL,
     message_type   TEXT        NOT NULL,
     payload        JSONB       NOT NULL,
     headers        JSONB,
-    schema_version INT         NOT NULL DEFAULT 0,
     status         TEXT        NOT NULL DEFAULT 'pending',
     attempts       INT         NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),

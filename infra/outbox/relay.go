@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/bds421/rho-kit/infra/messaging"
 )
 
 const (
@@ -18,12 +16,12 @@ const (
 	staleRecoveryMultiplier = 10 // recover stale entries every N polls
 )
 
-// Relay polls the outbox table and publishes pending entries to the broker.
+// Relay polls the outbox table and publishes pending entries via a Publisher.
 // It implements lifecycle.Component for integration with the service runner.
 // Safe for concurrent use -- multiple instances can run against the same table.
 type Relay struct {
 	store     Store
-	publisher messaging.MessagePublisher
+	publisher Publisher
 	logger    *slog.Logger
 	metrics   *Metrics
 
@@ -87,9 +85,9 @@ func WithMetrics(m *Metrics) RelayOption {
 	}
 }
 
-// NewRelay creates a Relay that polls the outbox store and publishes to the
-// given publisher. Configure with RelayOption functions.
-func NewRelay(store Store, publisher messaging.MessagePublisher, logger *slog.Logger, opts ...RelayOption) *Relay {
+// NewRelay creates a Relay that polls the outbox store and publishes entries
+// via the given Publisher. Configure with RelayOption functions.
+func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...RelayOption) *Relay {
 	r := &Relay{
 		store:        store,
 		publisher:    publisher,
@@ -207,16 +205,10 @@ func (r *Relay) poll(ctx context.Context) {
 	r.updatePendingGauge(ctx)
 }
 
-// publishEntry attempts to publish a single entry to the broker.
+// publishEntry attempts to publish a single entry via the Publisher.
 func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
-	msg, err := entry.ToMessage()
-	if err != nil {
-		r.handlePublishError(ctx, entry, err)
-		return
-	}
-
 	start := time.Now()
-	err = r.publisher.Publish(ctx, entry.Exchange, entry.RoutingKey, msg)
+	err := r.publisher.Publish(ctx, entry)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -238,7 +230,7 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 	r.logger.Debug("outbox relay: published entry",
 		"entry_id", entry.ID,
 		"message_id", entry.MessageID,
-		"exchange", entry.Exchange,
+		"topic", entry.Topic,
 		"routing_key", entry.RoutingKey,
 	)
 }

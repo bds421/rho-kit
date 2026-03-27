@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging/outbox"
+	"github.com/bds421/rho-kit/infra/outbox"
 )
 
 func TestGormStore_Insert(t *testing.T) {
@@ -22,7 +22,7 @@ func TestGormStore_Insert(t *testing.T) {
 
 	entry := outbox.Entry{
 		ID:          id,
-		Exchange:    "orders",
+		Topic:       "orders",
 		RoutingKey:  "order.created",
 		MessageID:   "msg-1",
 		MessageType: "order.created",
@@ -37,7 +37,7 @@ func TestGormStore_Insert(t *testing.T) {
 	var found outbox.Entry
 	require.NoError(t, db.First(&found).Error)
 	assert.Equal(t, entry.ID, found.ID)
-	assert.Equal(t, "orders", found.Exchange)
+	assert.Equal(t, "orders", found.Topic)
 }
 
 func TestGormStore_FetchPending(t *testing.T) {
@@ -50,7 +50,7 @@ func TestGormStore_FetchPending(t *testing.T) {
 		id, _ := uuid.NewV7()
 		entry := outbox.Entry{
 			ID:          id,
-			Exchange:    "test",
+			Topic:       "test",
 			RoutingKey:  "test.key",
 			MessageID:   uuid.New().String(),
 			MessageType: "test.event",
@@ -66,7 +66,7 @@ func TestGormStore_FetchPending(t *testing.T) {
 	now := time.Now().UTC()
 	pubEntry := outbox.Entry{
 		ID:          pubID,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   uuid.New().String(),
 		MessageType: "test.event",
@@ -102,7 +102,7 @@ func TestGormStore_MarkPublished(t *testing.T) {
 	id, _ := uuid.NewV7()
 	entry := outbox.Entry{
 		ID:          id,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-1",
 		MessageType: "test.event",
@@ -130,7 +130,7 @@ func TestGormStore_MarkFailed(t *testing.T) {
 	id, _ := uuid.NewV7()
 	entry := outbox.Entry{
 		ID:          id,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-1",
 		MessageType: "test.event",
@@ -158,7 +158,7 @@ func TestGormStore_IncrementAttempts(t *testing.T) {
 	id, _ := uuid.NewV7()
 	entry := outbox.Entry{
 		ID:          id,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-1",
 		MessageType: "test.event",
@@ -190,7 +190,7 @@ func TestGormStore_DeletePublishedBefore(t *testing.T) {
 	id1, _ := uuid.NewV7()
 	entry1 := outbox.Entry{
 		ID:          id1,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-1",
 		MessageType: "test.event",
@@ -205,7 +205,7 @@ func TestGormStore_DeletePublishedBefore(t *testing.T) {
 	id2, _ := uuid.NewV7()
 	entry2 := outbox.Entry{
 		ID:          id2,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-2",
 		MessageType: "test.event",
@@ -240,7 +240,7 @@ func TestGormStore_CountPending(t *testing.T) {
 		id, _ := uuid.NewV7()
 		entry := outbox.Entry{
 			ID:          id,
-			Exchange:    "test",
+			Topic:       "test",
 			RoutingKey:  "test.key",
 			MessageID:   uuid.New().String(),
 			MessageType: "test.event",
@@ -268,7 +268,7 @@ func TestGormStore_ResetStaleProcessing(t *testing.T) {
 	staleID, _ := uuid.NewV7()
 	staleEntry := outbox.Entry{
 		ID:          staleID,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-stale",
 		MessageType: "test.event",
@@ -282,7 +282,7 @@ func TestGormStore_ResetStaleProcessing(t *testing.T) {
 	recentID, _ := uuid.NewV7()
 	recentEntry := outbox.Entry{
 		ID:          recentID,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-recent",
 		MessageType: "test.event",

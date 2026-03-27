@@ -14,34 +14,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/infra/messaging/outbox"
+	"github.com/bds421/rho-kit/infra/outbox"
 )
 
-// fakePublisher records published messages and can simulate errors.
+// fakePublisher records published entries and can simulate errors.
 type fakePublisher struct {
 	mu        sync.Mutex
-	published []publishedMsg
+	published []outbox.Entry
 	err       error
 }
 
-type publishedMsg struct {
-	exchange   string
-	routingKey string
-	msg        messaging.Message
-}
-
-func (f *fakePublisher) Publish(_ context.Context, exchange, routingKey string, msg messaging.Message) error {
+func (f *fakePublisher) Publish(_ context.Context, entry outbox.Entry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
-	f.published = append(f.published, publishedMsg{
-		exchange:   exchange,
-		routingKey: routingKey,
-		msg:        msg,
-	})
+	f.published = append(f.published, entry)
 	return nil
 }
 
@@ -65,10 +54,22 @@ func TestRelay_PublishesPendingEntries(t *testing.T) {
 	logger := slog.Default()
 	ctx := context.Background()
 
-	msg1 := testMessage(t)
-	msg2 := testMessage(t)
-	require.NoError(t, writer.Write(ctx, db, "exchange1", "key1", msg1))
-	require.NoError(t, writer.Write(ctx, db, "exchange2", "key2", msg2))
+	params1 := outbox.WriteParams{
+		Topic:       "topic1",
+		RoutingKey:  "key1",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     []byte(`{"key":"value"}`),
+	}
+	params2 := outbox.WriteParams{
+		Topic:       "topic2",
+		RoutingKey:  "key2",
+		MessageID:   "msg-2",
+		MessageType: "test.event",
+		Payload:     []byte(`{"key":"value2"}`),
+	}
+	require.NoError(t, writer.Write(ctx, db, params1))
+	require.NoError(t, writer.Write(ctx, db, params2))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -104,8 +105,14 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 	logger := slog.Default()
 	ctx := context.Background()
 
-	msg := testMessage(t)
-	require.NoError(t, writer.Write(ctx, db, "exchange", "key", msg))
+	params := outbox.WriteParams{
+		Topic:       "topic",
+		RoutingKey:  "key",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+	}
+	require.NoError(t, writer.Write(ctx, db, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -171,7 +178,7 @@ func TestRelay_Cleanup(t *testing.T) {
 	id, _ := uuid.NewV7()
 	entry := outbox.Entry{
 		ID:          id,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-old",
 		MessageType: "test.event",
@@ -206,7 +213,7 @@ func TestRelay_Cleanup(t *testing.T) {
 	require.NoError(t, <-relayDone)
 }
 
-func TestRelay_PublishesWithCorrectMessageContent(t *testing.T) {
+func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
 	db := testDB(t)
 	store := outbox.NewGormStore(db)
 	writer := outbox.NewWriter(store)
@@ -214,10 +221,18 @@ func TestRelay_PublishesWithCorrectMessageContent(t *testing.T) {
 	logger := slog.Default()
 	ctx := context.Background()
 
-	msg := testMessage(t).
-		WithHeader("X-Correlation-Id", "corr-1").
-		WithSchemaVersion(3)
-	require.NoError(t, writer.Write(ctx, db, "events", "order.paid", msg))
+	payload, err := json.Marshal(map[string]string{"key": "value"})
+	require.NoError(t, err)
+
+	params := outbox.WriteParams{
+		Topic:       "events",
+		RoutingKey:  "order.paid",
+		MessageID:   "msg-1",
+		MessageType: "order.paid",
+		Payload:     payload,
+		Headers:     map[string]string{"X-Correlation-Id": "corr-1"},
+	}
+	require.NoError(t, writer.Write(ctx, db, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -241,16 +256,18 @@ func TestRelay_PublishesWithCorrectMessageContent(t *testing.T) {
 	require.Len(t, pub.published, 1)
 
 	published := pub.published[0]
-	assert.Equal(t, "events", published.exchange)
-	assert.Equal(t, "order.paid", published.routingKey)
-	assert.Equal(t, msg.ID, published.msg.ID)
-	assert.Equal(t, msg.Type, published.msg.Type)
-	assert.Equal(t, uint(3), published.msg.SchemaVersion)
-	assert.Equal(t, "corr-1", published.msg.Headers["X-Correlation-Id"])
+	assert.Equal(t, "events", published.Topic)
+	assert.Equal(t, "order.paid", published.RoutingKey)
+	assert.Equal(t, "msg-1", published.MessageID)
+	assert.Equal(t, "order.paid", published.MessageType)
 
-	var payload map[string]string
-	require.NoError(t, json.Unmarshal(published.msg.Payload, &payload))
-	assert.Equal(t, "value", payload["key"])
+	headers, err := published.HeadersMap()
+	require.NoError(t, err)
+	assert.Equal(t, "corr-1", headers["X-Correlation-Id"])
+
+	var p map[string]string
+	require.NoError(t, json.Unmarshal(published.Payload, &p))
+	assert.Equal(t, "value", p["key"])
 }
 
 func TestRelay_Options(t *testing.T) {
@@ -288,8 +305,14 @@ func TestRelay_WithMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := outbox.NewMetrics(outbox.WithRegisterer(reg))
 
-	msg := testMessage(t)
-	require.NoError(t, writer.Write(ctx, db, "exchange", "key", msg))
+	params := outbox.WriteParams{
+		Topic:       "topic",
+		RoutingKey:  "key",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+	}
+	require.NoError(t, writer.Write(ctx, db, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -333,7 +356,7 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 	staleID, _ := uuid.NewV7()
 	staleEntry := outbox.Entry{
 		ID:          staleID,
-		Exchange:    "test",
+		Topic:       "test",
 		RoutingKey:  "test.key",
 		MessageID:   "msg-stale",
 		MessageType: "test.event",
@@ -383,8 +406,14 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	logger := slog.Default()
 	ctx := context.Background()
 
-	msg := testMessage(t)
-	require.NoError(t, writer.Write(ctx, db, "exchange", "key", msg))
+	params := outbox.WriteParams{
+		Topic:       "topic",
+		RoutingKey:  "key",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+	}
+	require.NoError(t, writer.Write(ctx, db, params))
 
 	pub.setErr(errors.New("temporary error"))
 

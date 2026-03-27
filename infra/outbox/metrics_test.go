@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging/outbox"
+	"github.com/bds421/rho-kit/infra/outbox"
 )
 
 func TestNewMetrics(t *testing.T) {

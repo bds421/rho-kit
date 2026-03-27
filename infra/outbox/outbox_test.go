@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,8 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/infra/messaging/outbox"
+	"github.com/bds421/rho-kit/infra/outbox"
 )
 
 // testDBCounter provides unique names for SQLite databases.
@@ -36,13 +34,12 @@ func testDB(t *testing.T) *gorm.DB {
 	// Create table manually since SQLite doesn't support UUID type.
 	err = db.Exec(`CREATE TABLE IF NOT EXISTS outbox_entries (
 		id             TEXT PRIMARY KEY,
-		exchange       TEXT NOT NULL,
+		topic          TEXT NOT NULL,
 		routing_key    TEXT NOT NULL,
 		message_id     TEXT NOT NULL,
 		message_type   TEXT NOT NULL,
 		payload        TEXT NOT NULL,
 		headers        TEXT,
-		schema_version INTEGER NOT NULL DEFAULT 0,
 		status         TEXT NOT NULL DEFAULT 'pending',
 		attempts       INTEGER NOT NULL DEFAULT 0,
 		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -54,22 +51,25 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func testMessage(t *testing.T) messaging.Message {
-	t.Helper()
-	msg, err := messaging.NewMessage("test.event", map[string]string{"key": "value"})
-	require.NoError(t, err)
-	return msg
-}
-
 func TestWriter_Write(t *testing.T) {
 	db := testDB(t)
 	store := outbox.NewGormStore(db)
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
-	msg := testMessage(t)
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, "orders", "order.created", msg)
+	payload, err := json.Marshal(map[string]string{"key": "value"})
+	require.NoError(t, err)
+
+	params := outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     payload,
+	}
+
+	err = db.Transaction(func(tx *gorm.DB) error {
+		return writer.Write(ctx, tx, params)
 	})
 	require.NoError(t, err)
 
@@ -78,27 +78,32 @@ func TestWriter_Write(t *testing.T) {
 	assert.Len(t, entries, 1)
 
 	entry := entries[0]
-	assert.Equal(t, "orders", entry.Exchange)
+	assert.Equal(t, "orders", entry.Topic)
 	assert.Equal(t, "order.created", entry.RoutingKey)
-	assert.Equal(t, msg.ID, entry.MessageID)
-	assert.Equal(t, msg.Type, entry.MessageType)
+	assert.Equal(t, "msg-1", entry.MessageID)
+	assert.Equal(t, "order.created", entry.MessageType)
 	assert.Equal(t, outbox.StatusPending, entry.Status)
 	assert.Equal(t, 0, entry.Attempts)
 	assert.Nil(t, entry.PublishedAt)
 }
 
-func TestWriter_Write_EmptyExchange(t *testing.T) {
+func TestWriter_Write_EmptyTopic(t *testing.T) {
 	db := testDB(t)
 	store := outbox.NewGormStore(db)
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
-	msg := testMessage(t)
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, "", "order.created", msg)
+		return writer.Write(ctx, tx, outbox.WriteParams{
+			Topic:       "",
+			RoutingKey:  "order.created",
+			MessageID:   "msg-1",
+			MessageType: "order.created",
+			Payload:     []byte(`{}`),
+		})
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exchange must not be empty")
+	assert.Contains(t, err.Error(), "topic must not be empty")
 }
 
 func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
@@ -106,10 +111,15 @@ func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
 	store := outbox.NewGormStore(db)
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
-	msg := testMessage(t)
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, "orders", "", msg)
+		return writer.Write(ctx, tx, outbox.WriteParams{
+			Topic:       "orders",
+			RoutingKey:  "",
+			MessageID:   "msg-1",
+			MessageType: "order.created",
+			Payload:     []byte(`{}`),
+		})
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "routing key must not be empty")
@@ -120,53 +130,43 @@ func TestWriter_Write_PreservesHeaders(t *testing.T) {
 	store := outbox.NewGormStore(db)
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
-	msg := testMessage(t).WithHeader("X-Correlation-Id", "abc-123")
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, "orders", "order.created", msg)
+		return writer.Write(ctx, tx, outbox.WriteParams{
+			Topic:       "orders",
+			RoutingKey:  "order.created",
+			MessageID:   "msg-1",
+			MessageType: "order.created",
+			Payload:     []byte(`{}`),
+			Headers:     map[string]string{"X-Correlation-Id": "abc-123"},
+		})
 	})
 	require.NoError(t, err)
 
 	var entry outbox.Entry
 	require.NoError(t, db.First(&entry).Error)
 
-	var headers map[string]string
-	require.NoError(t, json.Unmarshal(entry.Headers, &headers))
+	headers, err := entry.HeadersMap()
+	require.NoError(t, err)
 	assert.Equal(t, "abc-123", headers["X-Correlation-Id"])
 }
 
-func TestEntry_ToMessage(t *testing.T) {
+func TestEntry_HeadersMap(t *testing.T) {
 	headers, _ := json.Marshal(map[string]string{"X-Request-Id": "req-1"})
-	payload, _ := json.Marshal(map[string]string{"order": "123"})
 
-	now := time.Now().UTC()
 	entry := outbox.Entry{
-		MessageID:     "msg-1",
-		MessageType:   "order.created",
-		Payload:       payload,
-		Headers:       headers,
-		SchemaVersion: 2,
-		CreatedAt:     now,
+		Headers: headers,
 	}
 
-	msg, err := entry.ToMessage()
+	got, err := entry.HeadersMap()
 	require.NoError(t, err)
-	assert.Equal(t, "msg-1", msg.ID)
-	assert.Equal(t, "order.created", msg.Type)
-	assert.Equal(t, uint(2), msg.SchemaVersion)
-	assert.Equal(t, "req-1", msg.Headers["X-Request-Id"])
+	assert.Equal(t, "req-1", got["X-Request-Id"])
 }
 
-func TestEntry_ToMessage_NilHeaders(t *testing.T) {
-	payload, _ := json.Marshal("test")
-	entry := outbox.Entry{
-		MessageID:   "msg-1",
-		MessageType: "test.event",
-		Payload:     payload,
-	}
+func TestEntry_HeadersMap_NilHeaders(t *testing.T) {
+	entry := outbox.Entry{}
 
-	msg, err := entry.ToMessage()
+	got, err := entry.HeadersMap()
 	require.NoError(t, err)
-	assert.Equal(t, "msg-1", msg.ID)
-	assert.Nil(t, msg.Headers)
+	assert.Nil(t, got)
 }
