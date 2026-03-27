@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/bds421/rho-kit/compare/core/contextutil/v1.1.0...core/contextutil/v1.1.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* add missing plan items (eventbus lifecycle, config watch, propagation docs) ([#35](https://github.com/bds421/rho-kit/issues/35)) ([a2cac81](https://github.com/bds421/rho-kit/commit/a2cac817c3bd18ffe1664afc6faafdc0f3a189e3))
+
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/core/contextutil/v1.0.0...core/contextutil/v1.1.0) (2026-03-26)
 
 
