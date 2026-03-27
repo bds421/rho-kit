@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -30,7 +31,7 @@ func TestRedisModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestRedisModule_CloseBeforeInit(t *testing.T) {
 	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
-	err := m.Close(nil)
+	err := m.Close(context.TODO())
 	require.NoError(t, err, "Close before Init should not error")
 }
 

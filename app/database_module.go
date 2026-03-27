@@ -84,12 +84,12 @@ func (m *databaseModule) Init(_ context.Context, mc ModuleContext) error {
 	m.db = db
 
 	if err := m.runMigrations(); err != nil {
-		m.closeDB()
+		_ = m.closeDB()
 		return err
 	}
 
 	if err := m.runSeed(); err != nil {
-		m.closeDB()
+		_ = m.closeDB()
 		return err
 	}
 

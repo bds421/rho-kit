@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,7 +57,7 @@ func TestDatabaseModule_CloseBeforeInit(t *testing.T) {
 		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
-	err := m.Close(nil)
+	err := m.Close(context.TODO())
 	require.NoError(t, err, "Close before Init should not error")
 }
 
