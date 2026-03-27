@@ -32,6 +32,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		WithNamedStorage("local", membackend.New()).
 		WithTracing(tracing.Config{}).
 		WithCron().
+		WithEventBusPool(4).
 		WithServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).
@@ -41,6 +42,30 @@ func TestBuilder_FluentChaining(t *testing.T) {
 	if b == nil {
 		t.Fatal("builder chain returned nil")
 	}
+}
+
+func TestBuilder_WithEventBusPool(t *testing.T) {
+	b := New("test-svc", "v0.1.0", BaseConfig{}).
+		WithEventBusPool(4)
+	assert.Equal(t, 4, b.eventBusPoolSize)
+}
+
+func TestBuilder_WithEventBusPoolPanicsOnZero(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero pool size")
+		}
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).WithEventBusPool(0)
+}
+
+func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative pool size")
+		}
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).WithEventBusPool(-1)
 }
 
 func TestBuilder_WithRedis(t *testing.T) {
