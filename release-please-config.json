@@ -110,6 +110,9 @@
     "observability/promutil": {
       "component": "observability/promutil"
     },
+    "observability/slo": {
+      "component": "observability/slo"
+    },
     "observability/tracing": {
       "component": "observability/tracing"
     },
