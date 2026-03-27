@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/bds421/rho-kit/compare/app/v1.1.1...app/v1.2.0) (2026-03-27)
+
+
+### Features
+
+* **app:** add WithSLO builder option ([#37](https://github.com/bds421/rho-kit/issues/37)) ([0b2b8da](https://github.com/bds421/rho-kit/commit/0b2b8dac980dabb98fcbf1b620d98dbd743d00b0))
+
 ## [1.1.1](https://github.com/bds421/rho-kit/compare/app/v1.1.0...app/v1.1.1) (2026-03-27)
 
 

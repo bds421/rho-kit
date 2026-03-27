@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/bds421/rho-kit/compare/httpx/v1.4.0...httpx/v1.4.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* **csrf:** only require JSON Content-Type when request has a body ([#47](https://github.com/bds421/rho-kit/issues/47)) ([33b390a](https://github.com/bds421/rho-kit/commit/33b390a52d6cc8dc3d1755d01346237a08ef22af))
+
 ## [1.4.0](https://github.com/bds421/rho-kit/compare/httpx/v1.3.0...httpx/v1.4.0) (2026-03-27)
 
 
