@@ -8,21 +8,25 @@ import (
 	"github.com/google/uuid"
 )
 
-// Header keys for cross-service tracing.
+// Header keys for cross-service tracing and schema versioning.
 const (
 	HeaderCorrelationID = "X-Correlation-Id"
 	HeaderRequestID     = "X-Request-Id"
+	HeaderSchemaVersion = "X-Schema-Version"
 )
 
-// Message represents a structured RabbitMQ message with metadata.
+// Message represents a structured message with metadata.
+// It is transport-agnostic and used by both AMQP and Redis backends.
 type Message struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	Payload   json.RawMessage `json:"payload"`
-	Timestamp time.Time       `json:"timestamp"`
+	ID            string          `json:"id"`
+	Type          string          `json:"type"`
+	Payload       json.RawMessage `json:"payload"`
+	Timestamp     time.Time       `json:"timestamp"`
+	SchemaVersion uint            `json:"schema_version,omitempty"`
 
-	// Headers are propagated as AMQP headers for cross-service tracing.
-	// Not serialized into the JSON body — carried as AMQP transport metadata.
+	// Headers are propagated as transport-level metadata for cross-service tracing.
+	// Not serialized into the JSON body — carried as transport metadata
+	// (e.g. AMQP headers, Redis stream fields).
 	Headers map[string]string `json:"-"`
 }
 
@@ -58,11 +62,29 @@ func (m Message) WithHeader(key, value string) Message {
 	}
 	headers[key] = value
 	return Message{
-		ID:        m.ID,
-		Type:      m.Type,
-		Payload:   m.Payload,
-		Timestamp: m.Timestamp,
-		Headers:   headers,
+		ID:            m.ID,
+		Type:          m.Type,
+		Payload:       m.Payload,
+		Timestamp:     m.Timestamp,
+		SchemaVersion: m.SchemaVersion,
+		Headers:       headers,
+	}
+}
+
+// WithSchemaVersion returns a copy of the message with the given schema version.
+// Version 0 represents unversioned/legacy messages.
+func (m Message) WithSchemaVersion(version uint) Message {
+	headers := make(map[string]string, len(m.Headers))
+	for k, v := range m.Headers {
+		headers[k] = v
+	}
+	return Message{
+		ID:            m.ID,
+		Type:          m.Type,
+		Payload:       m.Payload,
+		Timestamp:     m.Timestamp,
+		SchemaVersion: version,
+		Headers:       headers,
 	}
 }
 
