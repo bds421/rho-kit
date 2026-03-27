@@ -35,7 +35,9 @@ type KeyedRateLimiter struct {
 	shards [numShards]keyedShard
 	limit  int
 	window time.Duration
-	now    func() time.Time
+	now         func() time.Time
+	health      HealthIndicator
+	degradation DegradationHandler
 }
 
 // KeyedOption configures a KeyedRateLimiter.
@@ -154,9 +156,20 @@ func (rl *KeyedRateLimiter) cleanup() {
 // KeyedRateLimitMiddleware returns middleware that rate-limits requests using
 // the provided KeyedRateLimiter. The keyFunc extracts the rate-limit key from
 // each request (e.g., user ID, API key, IP address).
+// When degradation is configured via [WithKeyedDegradation], the middleware
+// checks the health indicator before enforcing rate limits.
 func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
+			if handled {
+				return
+			}
+			if skip {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			key := keyFunc(r)
 			allowed, retryAfter := rl.Allow(key)
 			if !allowed {

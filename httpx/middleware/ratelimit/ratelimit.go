@@ -41,6 +41,8 @@ type RateLimiter struct {
 	now            func() time.Time
 	trustedProxies []*net.IPNet
 	maxPerShard    int
+	health         HealthIndicator
+	degradation    DegradationHandler
 }
 
 // RateLimiterOption configures optional RateLimiter behaviour.
@@ -195,8 +197,19 @@ func (rl *RateLimiter) ClientIP(r *http.Request) string {
 }
 
 // Middleware returns an HTTP middleware that rejects requests exceeding the rate limit.
+// When degradation is configured via [WithDegradation], the middleware checks
+// the health indicator before enforcing rate limits.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
+		if handled {
+			return
+		}
+		if skip {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		ip := rl.clientIP(r)
 		allowed, remaining := rl.allow(ip)
 		if !allowed {
