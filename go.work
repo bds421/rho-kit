@@ -19,6 +19,7 @@ use (
 	./data/queue/redisqueue
 	./data/stream
 	./data/stream/redisstream
+	./grpcx
 	./httpx
 	./infra/messaging
 	./infra/messaging/amqpbackend
