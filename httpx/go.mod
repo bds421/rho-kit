@@ -13,6 +13,7 @@ require (
 	github.com/bds421/rho-kit/observability/logattr v1.0.0
 	github.com/bds421/rho-kit/observability/logging v1.0.0
 	github.com/bds421/rho-kit/observability/promutil v1.0.0
+	github.com/bds421/rho-kit/observability/slo v0.1.0
 	github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0
 	github.com/bds421/rho-kit/security/jwtutil v1.0.0
 	github.com/google/uuid v1.6.0
