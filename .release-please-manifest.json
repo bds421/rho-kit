@@ -1,5 +1,5 @@
 {
-  "app": "1.1.1",
+  "app": "1.2.0",
   "core/apperror": "1.1.0",
   "core/config": "1.1.1",
   "core/contextutil": "1.1.1",
@@ -15,7 +15,7 @@
   "data/queue/redisqueue": "1.0.0",
   "data/stream": "1.0.0",
   "data/stream/redisstream": "1.0.0",
-  "httpx": "1.4.0",
+  "httpx": "1.4.1",
   "infra/messaging": "1.1.0",
   "infra/messaging/amqpbackend": "1.1.0",
   "infra/messaging/amqpbackend/debughttp": "1.0.0",
