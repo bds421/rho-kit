@@ -14,12 +14,14 @@ import (
 
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
+	"github.com/bds421/rho-kit/httpx/slohttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/slo"
 	"github.com/bds421/rho-kit/observability/tracing"
 	kitcron "github.com/bds421/rho-kit/runtime/cron"
 	"github.com/bds421/rho-kit/runtime/eventbus"
@@ -416,6 +418,13 @@ func (b *Builder) WithModule(m Module) *Builder {
 	return b
 }
 
+// WithSLO enables SLO monitoring with the given definitions. Creates a checker
+// backed by prometheus.DefaultGatherer, registers a non-critical health check,
+// and wires a /slo JSON endpoint on the internal ops server.
+func (b *Builder) WithSLO(slos ...slo.SLO) *Builder {
+	return b.WithModule(newSLOModule(slos...))
+}
+
 // Router sets the function that builds the HTTP handler from infrastructure.
 func (b *Builder) Router(fn RouterFunc) *Builder {
 	b.routerFn = fn
@@ -668,7 +677,14 @@ func (b *Builder) Run() error {
 			Checks:  b.healthChecks,
 		})
 	}
-	internalHandler := healthhttp.NewInternalHandler(b.version, readiness)
+	var internalOpts []healthhttp.InternalHandlerOption
+	for _, m := range allModules {
+		if sm, ok := m.(*sloModule); ok && sm.Checker() != nil {
+			internalOpts = append(internalOpts, healthhttp.WithSLOHandler(slohttp.Handler(sm.Checker())))
+			break
+		}
+	}
+	internalHandler := healthhttp.NewInternalHandler(b.version, readiness, internalOpts...)
 	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler)
 	internalErrCh := make(chan error, 1)
 	go func() {
