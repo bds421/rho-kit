@@ -517,30 +517,6 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 	assert.Equal(t, []string{"ok-mod"}, closed)
 }
 
-func TestInitModules_DuplicateNameReturnsError(t *testing.T) {
-	m1 := newStubModule("dup")
-	m2 := newStubModule("dup")
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	runner := lifecycle.NewRunner(logger)
-
-	cleanup, err := initModules(
-		context.Background(),
-		[]Module{m1, m2},
-		logger,
-		runner,
-		BaseConfig{},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate module name")
-	assert.Contains(t, err.Error(), "dup")
-	assert.Nil(t, cleanup)
-
-	// Neither module should have been initialized.
-	assert.False(t, m1.initCalled.Load())
-	assert.False(t, m2.initCalled.Load())
-}
-
 func TestInitModules_PopulateOrder(t *testing.T) {
 	var populateOrder []string
 
@@ -580,5 +556,52 @@ func TestInitModules_PopulateOrder(t *testing.T) {
 		m.Populate(infra)
 	}
 	assert.Equal(t, []string{"alpha", "beta", "gamma"}, populateOrder)
+}
+
+func TestBaseModule_Defaults(t *testing.T) {
+	bm := NewBaseModule("test-module")
+
+	assert.Equal(t, "test-module", bm.Name())
+	assert.NoError(t, bm.Init(context.Background(), ModuleContext{}))
+	assert.NoError(t, bm.Close(context.Background()))
+	assert.Nil(t, bm.HealthChecks())
+
+	// Populate is a no-op; should not panic.
+	bm.Populate(&Infrastructure{})
+}
+
+func TestBaseModule_SatisfiesInterface(t *testing.T) {
+	var _ Module = BaseModule{}
+	var _ Module = &BaseModule{}
+}
+
+func TestNewBaseModule_PanicsOnEmptyName(t *testing.T) {
+	assert.Panics(t, func() { NewBaseModule("") })
+}
+
+func TestBaseModule_EmbeddingPattern(t *testing.T) {
+	// Demonstrates the intended usage: embed BaseModule, override only what you need.
+	type customModule struct {
+		BaseModule
+		initCalled bool
+	}
+
+	m := &customModule{BaseModule: NewBaseModule("custom")}
+	assert.Equal(t, "custom", m.Name())
+	assert.Nil(t, m.HealthChecks()) // inherited no-op
+	assert.NoError(t, m.Close(context.Background())) // inherited no-op
+
+	m.initCalled = true // custom logic would go in an overridden Init
+	assert.True(t, m.initCalled)
+}
+
+func TestInitModules_DuplicateNamePanics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	m1 := &stubModule{name: "dup"}
+	m2 := &stubModule{name: "dup"}
+
+	assert.Panics(t, func() {
+		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{})
+	})
 }
 

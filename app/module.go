@@ -49,6 +49,42 @@ type Module interface {
 	HealthChecks() []health.DependencyCheck
 }
 
+// BaseModule provides no-op defaults for optional Module methods. Embed it in
+// custom module structs to avoid implementing methods you don't need:
+//
+//	type MyModule struct {
+//	    app.BaseModule
+//	    conn *db.Conn
+//	}
+//
+//	func NewMyModule() *MyModule {
+//	    return &MyModule{BaseModule: app.NewBaseModule("my-module")}
+//	}
+//
+//	func (m *MyModule) Init(ctx context.Context, mc app.ModuleContext) error { ... }
+//	func (m *MyModule) Close(ctx context.Context) error { return m.conn.Close() }
+//
+// Only Name is required at construction; Init, Populate, Close, and HealthChecks
+// all have safe no-op defaults.
+type BaseModule struct {
+	name string
+}
+
+// NewBaseModule creates a BaseModule with the given name.
+// Panics if name is empty.
+func NewBaseModule(name string) BaseModule {
+	if name == "" {
+		panic("app: module name must not be empty")
+	}
+	return BaseModule{name: name}
+}
+
+func (b BaseModule) Name() string                             { return b.name }
+func (b BaseModule) Init(_ context.Context, _ ModuleContext) error { return nil }
+func (b BaseModule) Populate(_ *Infrastructure)                {}
+func (b BaseModule) Close(_ context.Context) error             { return nil }
+func (b BaseModule) HealthChecks() []health.DependencyCheck    { return nil }
+
 // ModuleContext provides the shared context available to modules during Init.
 type ModuleContext struct {
 	// Logger is the service-level logger. Modules should create child loggers
@@ -94,7 +130,7 @@ func initModules(
 	seen := make(map[string]bool, len(modules))
 	for _, m := range modules {
 		if seen[m.Name()] {
-			return nil, fmt.Errorf("duplicate module name %q", m.Name())
+			panic(fmt.Sprintf("app: duplicate module name %q (builtin + user modules must have unique names)", m.Name()))
 		}
 		seen[m.Name()] = true
 	}
@@ -110,6 +146,7 @@ func initModules(
 	}
 
 	for _, m := range modules {
+		logger.Info("initializing module", "module", m.Name())
 		if err := initOneModule(ctx, m, mc); err != nil {
 			// Close already-initialized modules in reverse order.
 			closeModules(ctx, initialized, logger)
@@ -153,6 +190,7 @@ func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
 					)
 				}
 			}()
+			logger.Info("closing module", "module", m.Name())
 			if err := m.Close(ctx); err != nil {
 				logger.Warn("module close error",
 					"module", m.Name(),
