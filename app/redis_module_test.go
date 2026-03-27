@@ -53,12 +53,14 @@ func TestBuildIntegrationModules_Redis(t *testing.T) {
 		WithRedis(&goredis.Options{Addr: "localhost:6379"})
 
 	modules, _ := b.buildIntegrationModules()
-	require.Len(t, modules, 1)
-	assert.Equal(t, "redis", modules[0].Name())
+	assert.True(t, hasModule(modules, "redis"), "redis module should be present")
+	assert.True(t, hasModule(modules, "httpclient"), "httpclient module should always be present")
 }
 
 func TestBuildIntegrationModules_NoRedis(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
 	modules, _ := b.buildIntegrationModules()
-	assert.Empty(t, modules)
+	// httpclient is always present even without redis.
+	assert.True(t, hasModule(modules, "httpclient"), "httpclient should always be present")
+	assert.False(t, hasModule(modules, "redis"), "redis should not be present")
 }

@@ -8,15 +8,15 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/bds421/rho-kit/observability/auditlog"
-	kitcron "github.com/bds421/rho-kit/runtime/cron"
-	"github.com/bds421/rho-kit/runtime/eventbus"
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/security/jwtutil"
-	"github.com/bds421/rho-kit/infra/messaging"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
+	"github.com/bds421/rho-kit/infra/messaging"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/observability/auditlog"
+	"github.com/bds421/rho-kit/observability/health"
+	kitcron "github.com/bds421/rho-kit/runtime/cron"
+	"github.com/bds421/rho-kit/runtime/eventbus"
+	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
 // RouterFunc builds the service's HTTP handler from the initialized infrastructure.
@@ -43,8 +43,8 @@ type Infrastructure struct {
 	ClientTLS *tls.Config
 	ServerTLS *tls.Config
 
-	DB        *gorm.DB                  // nil if no WithMySQL or WithPostgres
-	Broker    messaging.Connector      // nil if no WithRabbitMQ
+	DB        *gorm.DB                   // nil if no WithMySQL or WithPostgres
+	Broker    messaging.Connector        // nil if no WithRabbitMQ
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
 	Consumer  messaging.MessageConsumer  // nil if no WithRabbitMQ
 
@@ -55,11 +55,11 @@ type Infrastructure struct {
 
 	Redis *kitredis.Connection // nil if no WithRedis
 
-	Storage        storage.Storage      // nil if no WithStorage
-	StorageManager *storage.Manager     // nil if no WithNamedStorage
-	Cron           *kitcron.Scheduler   // nil if no WithCron
-	AuditLog       *auditlog.Logger     // nil if no WithAuditLog
-	EventBus       *eventbus.Bus        // always non-nil; in-process domain event dispatch
+	Storage        storage.Storage    // nil if no WithStorage
+	StorageManager *storage.Manager   // nil if no WithNamedStorage
+	Cron           *kitcron.Scheduler // nil if no WithCron
+	AuditLog       *auditlog.Logger   // nil if no WithAuditLog
+	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
 
 	HTTPClient *http.Client
 	Config     BaseConfig
@@ -86,10 +86,10 @@ type Infrastructure struct {
 // testing RouterFunc implementations.
 func TestInfrastructure() Infrastructure {
 	return Infrastructure{
-		Logger:     slog.Default(),
-		EventBus:   eventbus.New(),
-		HTTPClient: &http.Client{},
-		Background: func(_ string, _ func(ctx context.Context) error) {},
+		Logger:             slog.Default(),
+		EventBus:           eventbus.New(),
+		HTTPClient:         &http.Client{},
+		Background:         func(_ string, _ func(ctx context.Context) error) {},
 		SetCustomReadiness: func(_ http.Handler) {},
 		AddHealthCheck:     func(_ health.DependencyCheck) {},
 	}
