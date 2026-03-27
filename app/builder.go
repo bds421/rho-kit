@@ -723,11 +723,11 @@ func (b *Builder) Run() error {
 	return runner.Run(context.Background())
 }
 
-// buildIntegrationModules creates modules from builder config fields set by
-// the legacy With*() methods (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ,
-// WithTracing, WithJWT). These modules are prepended to user-registered modules
-// so built-in infrastructure initializes first. The With*() methods remain
-// public and functional for backward compatibility.
+// buildIntegrationModules converts builder config from the With*() methods
+// (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT)
+// into internal modules. The With*() methods are the primary public API;
+// modules are the internal implementation. These modules are prepended to
+// user-registered modules so built-in infrastructure initializes first.
 //
 // Registration order matters: tracing -> httpclient -> jwt, because each module
 // depends on the previous one during Init.
