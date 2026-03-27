@@ -93,6 +93,9 @@ type Builder struct {
 	auditStore auditlog.Store
 	auditOpts  []auditlog.Option
 
+	// EventBus worker pool
+	eventBusPoolSize int
+
 	// Cron
 	cronOpts    []kitcron.Option
 	cronEnabled bool
@@ -309,6 +312,20 @@ func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
 	return b
 }
 
+// WithEventBusPool configures a bounded worker pool for the in-process event
+// bus. Without this, async event handlers launch unbounded goroutines.
+// The pool is registered on the lifecycle runner so it starts and stops
+// with the service.
+//
+// Panics if size is not positive.
+func (b *Builder) WithEventBusPool(size int) *Builder {
+	if size <= 0 {
+		panic("app: WithEventBusPool requires a positive pool size")
+	}
+	b.eventBusPoolSize = size
+	return b
+}
+
 // WithMigrations configures goose SQL migrations. Requires WithMySQL or
 // WithPostgres — panics at Run() if neither is configured.
 //
@@ -434,7 +451,11 @@ func (b *Builder) Run() error {
 	allModules = append(allModules, b.modules...)
 
 	// 0.5. EventBus — always initialized (no With* required).
-	eventBus := eventbus.New(eventbus.WithLogger(logger))
+	busOpts := []eventbus.Option{eventbus.WithLogger(logger)}
+	if b.eventBusPoolSize > 0 {
+		busOpts = append(busOpts, eventbus.WithWorkerPool(b.eventBusPoolSize))
+	}
+	eventBus := eventbus.New(busOpts...)
 
 	// 0.5. Tracing
 	tracingActive := false
@@ -478,6 +499,11 @@ func (b *Builder) Run() error {
 
 	// 2. Lifecycle Runner — manages all long-running goroutines.
 	runner := lifecycle.NewRunner(logger)
+
+	// 2.5. EventBus pool lifecycle — register after runner creation.
+	if b.eventBusPoolSize > 0 {
+		runner.Add("eventbus", eventBus)
+	}
 
 	// 3. JWT
 	var jwtProvider *jwtutil.Provider
