@@ -83,9 +83,9 @@ type SLOStatus struct {
 	Window    time.Duration `json:"-"`
 }
 
-// HTTPLatencySLO creates an SLO that tracks HTTP request latency at a given percentile.
+// LatencySLO creates an SLO that tracks request latency at a given percentile.
 // maxSeconds is the maximum acceptable latency in seconds at the specified percentile.
-func HTTPLatencySLO(name string, percentile, maxSeconds float64, window time.Duration) SLO {
+func LatencySLO(name string, percentile, maxSeconds float64, window time.Duration) SLO {
 	return SLO{
 		Name:       name,
 		Type:       TypeLatency,
@@ -95,9 +95,9 @@ func HTTPLatencySLO(name string, percentile, maxSeconds float64, window time.Dur
 	}
 }
 
-// HTTPErrorRateSLO creates an SLO that tracks the HTTP error rate.
+// ErrorRateSLO creates an SLO that tracks the error rate.
 // maxRate is the maximum acceptable error ratio (e.g. 0.001 for 0.1%).
-func HTTPErrorRateSLO(name string, maxRate float64, window time.Duration) SLO {
+func ErrorRateSLO(name string, maxRate float64, window time.Duration) SLO {
 	return SLO{
 		Name:      name,
 		Type:      TypeErrorRate,
@@ -106,12 +106,12 @@ func HTTPErrorRateSLO(name string, maxRate float64, window time.Duration) SLO {
 	}
 }
 
-// HTTPSuccessRateSLO creates an SLO that tracks the HTTP success rate
-// (1 - error rate) from the service's own Prometheus counters. This measures
-// "of the requests I handled, what percentage succeeded?" — it does NOT
-// measure true availability. If the service is down, no metrics are recorded.
+// SuccessRateSLO creates an SLO that tracks the success rate (1 - error rate)
+// from the service's own Prometheus counters. This measures "of the requests
+// I handled, what percentage succeeded?" — it does NOT measure true
+// availability. If the service is down, no metrics are recorded.
 // minSuccessRate is the minimum acceptable success ratio (e.g. 0.999 for 99.9%).
-func HTTPSuccessRateSLO(name string, minSuccessRate float64, window time.Duration) SLO {
+func SuccessRateSLO(name string, minSuccessRate float64, window time.Duration) SLO {
 	return SLO{
 		Name:      name,
 		Type:      TypeSuccessRate,

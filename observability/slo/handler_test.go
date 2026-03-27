@@ -22,7 +22,7 @@ func TestHandler_OK(t *testing.T) {
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(1000)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	handler := Handler(c)
 
 	rec := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestHandler_Breached(t *testing.T) {
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	handler := Handler(c)
 
 	rec := httptest.NewRecorder()
@@ -91,8 +91,8 @@ func TestHandler_MultiSLO(t *testing.T) {
 	}
 
 	c := NewChecker(reg,
-		HTTPErrorRateSLO("err", 0.01, time.Hour),
-		HTTPLatencySLO("lat", 0.99, 0.5, time.Hour),
+		ErrorRateSLO("err", 0.01, time.Hour),
+		LatencySLO("lat", 0.99, 0.5, time.Hour),
 	)
 	handler := Handler(c)
 
@@ -127,7 +127,7 @@ func TestHandler_EmptyChecker(t *testing.T) {
 
 func TestHandler_MethodNotAllowed(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	handler := Handler(c)
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
@@ -143,7 +143,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 func TestHandler_MissingMetrics_ValidJSON(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	// No metrics registered -- all SLOs will have NaN current values.
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	handler := Handler(c)
 
 	rec := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestHandler_CacheControl(t *testing.T) {
 
 func TestHandler_HeadMethod(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	handler := Handler(c)
 
 	rec := httptest.NewRecorder()

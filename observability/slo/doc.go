@@ -22,9 +22,9 @@
 // # Quick Start
 //
 //	slos := []slo.SLO{
-//	    slo.HTTPErrorRateSLO("api-errors", 0.001, 24*time.Hour),
-//	    slo.HTTPSuccessRateSLO("api-success", 0.999, 24*time.Hour),
-//	    slo.HTTPLatencySLO("api-latency", 0.99, 0.5, 24*time.Hour),
+//	    slo.ErrorRateSLO("api-errors", 0.001, 24*time.Hour),
+//	    slo.SuccessRateSLO("api-success", 0.999, 24*time.Hour),
+//	    slo.LatencySLO("api-latency", 0.99, 0.5, 24*time.Hour),
 //	}
 //	checker := slo.NewChecker(prometheus.DefaultGatherer, slos...)
 //	statuses := checker.Evaluate()
@@ -36,5 +36,6 @@
 //
 // # HTTP Endpoint
 //
-// Use [Handler] to expose SLO status as a JSON endpoint.
+// The SLO evaluation results can be exposed as JSON via an HTTP handler.
+// See the httpx package for the HTTP adapter (httpx/slohttp).
 package slo

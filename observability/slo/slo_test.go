@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHTTPLatencySLO(t *testing.T) {
-	s := HTTPLatencySLO("api-latency", 0.99, 0.5, 24*time.Hour)
+func TestLatencySLO(t *testing.T) {
+	s := LatencySLO("api-latency", 0.99, 0.5, 24*time.Hour)
 
 	assert.Equal(t, "api-latency", s.Name)
 	assert.Equal(t, TypeLatency, s.Type)
@@ -22,8 +22,8 @@ func TestHTTPLatencySLO(t *testing.T) {
 	assert.Equal(t, 24*time.Hour, s.Window)
 }
 
-func TestHTTPErrorRateSLO(t *testing.T) {
-	s := HTTPErrorRateSLO("api-errors", 0.001, 24*time.Hour)
+func TestErrorRateSLO(t *testing.T) {
+	s := ErrorRateSLO("api-errors", 0.001, 24*time.Hour)
 
 	assert.Equal(t, "api-errors", s.Name)
 	assert.Equal(t, TypeErrorRate, s.Type)
@@ -31,8 +31,8 @@ func TestHTTPErrorRateSLO(t *testing.T) {
 	assert.Equal(t, 24*time.Hour, s.Window)
 }
 
-func TestHTTPSuccessRateSLO(t *testing.T) {
-	s := HTTPSuccessRateSLO("api-avail", 0.999, 24*time.Hour)
+func TestSuccessRateSLO(t *testing.T) {
+	s := SuccessRateSLO("api-avail", 0.999, 24*time.Hour)
 
 	assert.Equal(t, "api-avail", s.Name)
 	assert.Equal(t, TypeSuccessRate, s.Type)
@@ -41,7 +41,7 @@ func TestHTTPSuccessRateSLO(t *testing.T) {
 }
 
 func TestNewChecker_CopiesSLOs(t *testing.T) {
-	slos := []SLO{HTTPErrorRateSLO("a", 0.01, time.Hour)}
+	slos := []SLO{ErrorRateSLO("a", 0.01, time.Hour)}
 	c := NewChecker(prometheus.NewRegistry(), slos...)
 
 	// Mutating the original slice should not affect the checker.
@@ -51,7 +51,7 @@ func TestNewChecker_CopiesSLOs(t *testing.T) {
 
 func TestNewChecker_PanicsOnNilGatherer(t *testing.T) {
 	assert.PanicsWithValue(t, "slo: gatherer must not be nil", func() {
-		NewChecker(nil, HTTPErrorRateSLO("a", 0.01, time.Hour))
+		NewChecker(nil, ErrorRateSLO("a", 0.01, time.Hour))
 	})
 }
 
@@ -64,8 +64,8 @@ func TestNewChecker_PanicsOnEmptyName(t *testing.T) {
 func TestNewChecker_PanicsOnDuplicateName(t *testing.T) {
 	assert.PanicsWithValue(t, `slo: duplicate SLO name "dup"`, func() {
 		NewChecker(prometheus.NewRegistry(),
-			HTTPErrorRateSLO("dup", 0.01, time.Hour),
-			HTTPErrorRateSLO("dup", 0.02, time.Hour),
+			ErrorRateSLO("dup", 0.01, time.Hour),
+			ErrorRateSLO("dup", 0.02, time.Hour),
 		)
 	})
 }
@@ -73,8 +73,8 @@ func TestNewChecker_PanicsOnDuplicateName(t *testing.T) {
 func TestChecker_Evaluate_EmptyRegistry(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	c := NewChecker(reg,
-		HTTPErrorRateSLO("err", 0.01, time.Hour),
-		HTTPLatencySLO("lat", 0.99, 0.5, time.Hour),
+		ErrorRateSLO("err", 0.01, time.Hour),
+		LatencySLO("lat", 0.99, 0.5, time.Hour),
 	)
 
 	statuses := c.Evaluate()
@@ -97,7 +97,7 @@ func TestChecker_Evaluate_ErrorRate_NoBreach(t *testing.T) {
 	// 1000 OK, 0 errors -> 0% error rate
 	total.WithLabelValues("200").Add(1000)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -117,7 +117,7 @@ func TestChecker_Evaluate_ErrorRate_Breached(t *testing.T) {
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -138,7 +138,7 @@ func TestChecker_Evaluate_SuccessRate_NoBreach(t *testing.T) {
 	total.WithLabelValues("200").Add(999)
 	total.WithLabelValues("500").Add(1)
 
-	c := NewChecker(reg, HTTPSuccessRateSLO("avail", 0.999, time.Hour))
+	c := NewChecker(reg, SuccessRateSLO("avail", 0.999, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -158,7 +158,7 @@ func TestChecker_Evaluate_SuccessRate_Breached(t *testing.T) {
 	total.WithLabelValues("200").Add(990)
 	total.WithLabelValues("500").Add(10)
 
-	c := NewChecker(reg, HTTPSuccessRateSLO("avail", 0.999, time.Hour))
+	c := NewChecker(reg, SuccessRateSLO("avail", 0.999, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -180,7 +180,7 @@ func TestChecker_Evaluate_Latency_NoBreach(t *testing.T) {
 		hist.Observe(0.05)
 	}
 
-	c := NewChecker(reg, HTTPLatencySLO("lat", 0.99, 0.5, time.Hour))
+	c := NewChecker(reg, LatencySLO("lat", 0.99, 0.5, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -202,7 +202,7 @@ func TestChecker_Evaluate_Latency_Breached(t *testing.T) {
 		hist.Observe(2.0)
 	}
 
-	c := NewChecker(reg, HTTPLatencySLO("lat", 0.99, 0.5, time.Hour))
+	c := NewChecker(reg, LatencySLO("lat", 0.99, 0.5, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -272,7 +272,7 @@ func TestChecker_HealthCheck_NoBreach(t *testing.T) {
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(1000)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	result := c.HealthCheck()
 
 	assert.Equal(t, "slo", result.Name)
@@ -290,7 +290,7 @@ func TestChecker_HealthCheck_Breached(t *testing.T) {
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	result := c.HealthCheck()
 
 	assert.True(t, result.Breached)
@@ -306,7 +306,7 @@ func TestChecker_DependencyCheckFunc(t *testing.T) {
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(1000)
 
-	c := NewChecker(reg, HTTPErrorRateSLO("err", 0.01, time.Hour))
+	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
 	fn := c.DependencyCheckFunc()
 
 	assert.Equal(t, "healthy", fn(context.Background()))
