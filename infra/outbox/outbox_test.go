@@ -3,57 +3,194 @@ package outbox_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/bds421/rho-kit/infra/outbox"
 )
 
-// testDBCounter provides unique names for SQLite databases.
-var testDBCounter atomic.Int64
+// fakeStore is an in-memory Store implementation for unit testing.
+// Safe for concurrent use.
+type fakeStore struct {
+	mu      sync.Mutex
+	entries []outbox.Entry
 
-func testDB(t *testing.T) *gorm.DB {
-	t.Helper()
+	insertErr              error
+	fetchPendingErr        error
+	markPublishedErr       error
+	markFailedErr          error
+	incrementAttemptsErr   error
+	deletePublishedErr     error
+	resetStaleErr          error
+	countPendingErr        error
+}
 
-	// Use a temp file per test for isolation. File-based SQLite avoids
-	// shared-cache lifetime issues with in-memory databases.
-	dbPath := fmt.Sprintf("%s/outbox_test_%d.db", t.TempDir(), testDBCounter.Add(1))
+func (s *fakeStore) Insert(_ context.Context, entry outbox.Entry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.insertErr != nil {
+		return s.insertErr
+	}
+	s.entries = append(s.entries, entry)
+	return nil
+}
 
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: logger.Discard,
-	})
-	require.NoError(t, err)
+func (s *fakeStore) FetchPending(_ context.Context, limit int) ([]outbox.Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fetchPendingErr != nil {
+		return nil, s.fetchPendingErr
+	}
 
-	// Create table manually since SQLite doesn't support UUID type.
-	err = db.Exec(`CREATE TABLE IF NOT EXISTS outbox_entries (
-		id             TEXT PRIMARY KEY,
-		topic          TEXT NOT NULL,
-		routing_key    TEXT NOT NULL,
-		message_id     TEXT NOT NULL,
-		message_type   TEXT NOT NULL,
-		payload        TEXT NOT NULL,
-		headers        TEXT,
-		status         TEXT NOT NULL DEFAULT 'pending',
-		attempts       INTEGER NOT NULL DEFAULT 0,
-		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		published_at   DATETIME,
-		last_error     TEXT
-	)`).Error
-	require.NoError(t, err)
+	var result []outbox.Entry
+	for i := range s.entries {
+		if s.entries[i].Status == outbox.StatusPending && len(result) < limit {
+			s.entries[i] = withStatus(s.entries[i], outbox.StatusProcessing)
+			result = append(result, s.entries[i])
+		}
+	}
+	return result, nil
+}
 
-	return db
+func (s *fakeStore) MarkPublished(_ context.Context, id string, publishedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.markPublishedErr != nil {
+		return s.markPublishedErr
+	}
+	for i := range s.entries {
+		if s.entries[i].ID.String() == id {
+			e := s.entries[i]
+			e.Status = outbox.StatusPublished
+			e.PublishedAt = &publishedAt
+			s.entries[i] = e
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) MarkFailed(_ context.Context, id string, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.markFailedErr != nil {
+		return s.markFailedErr
+	}
+	for i := range s.entries {
+		if s.entries[i].ID.String() == id {
+			e := s.entries[i]
+			e.Status = outbox.StatusFailed
+			e.LastError = &lastError
+			s.entries[i] = e
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.incrementAttemptsErr != nil {
+		return s.incrementAttemptsErr
+	}
+	for i := range s.entries {
+		if s.entries[i].ID.String() == id {
+			e := s.entries[i]
+			e.Attempts++
+			e.LastError = &lastError
+			e.Status = outbox.StatusPending
+			s.entries[i] = e
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) DeletePublishedBefore(_ context.Context, before time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deletePublishedErr != nil {
+		return 0, s.deletePublishedErr
+	}
+
+	var kept []outbox.Entry
+	var deleted int64
+	for _, e := range s.entries {
+		if e.Status == outbox.StatusPublished && e.PublishedAt != nil && e.PublishedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	s.entries = kept
+	return deleted, nil
+}
+
+func (s *fakeStore) ResetStaleProcessing(_ context.Context, staleDuration time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resetStaleErr != nil {
+		return 0, s.resetStaleErr
+	}
+
+	cutoff := time.Now().UTC().Add(-staleDuration)
+	var reset int64
+	for i := range s.entries {
+		if s.entries[i].Status == outbox.StatusProcessing && s.entries[i].CreatedAt.Before(cutoff) {
+			s.entries[i] = withStatus(s.entries[i], outbox.StatusPending)
+			reset++
+		}
+	}
+	return reset, nil
+}
+
+func (s *fakeStore) CountPending(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.countPendingErr != nil {
+		return 0, s.countPendingErr
+	}
+
+	var count int64
+	for _, e := range s.entries {
+		if e.Status == outbox.StatusPending {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *fakeStore) findByID(id uuid.UUID) (outbox.Entry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return outbox.Entry{}, false
+}
+
+func (s *fakeStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries)
+}
+
+// withStatus returns a copy of the entry with the given status.
+func withStatus(e outbox.Entry, status outbox.Status) outbox.Entry {
+	e.Status = status
+	return e
 }
 
 func TestWriter_Write(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
 
@@ -68,16 +205,15 @@ func TestWriter_Write(t *testing.T) {
 		Payload:     payload,
 	}
 
-	err = db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, params)
-	})
+	err = writer.Write(ctx, params)
 	require.NoError(t, err)
 
-	var entries []outbox.Entry
-	require.NoError(t, db.Find(&entries).Error)
-	assert.Len(t, entries, 1)
+	require.Equal(t, 1, store.count())
 
-	entry := entries[0]
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
+
 	assert.Equal(t, "orders", entry.Topic)
 	assert.Equal(t, "order.created", entry.RoutingKey)
 	assert.Equal(t, "msg-1", entry.MessageID)
@@ -88,63 +224,55 @@ func TestWriter_Write(t *testing.T) {
 }
 
 func TestWriter_Write_EmptyTopic(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, outbox.WriteParams{
-			Topic:       "",
-			RoutingKey:  "order.created",
-			MessageID:   "msg-1",
-			MessageType: "order.created",
-			Payload:     []byte(`{}`),
-		})
+	err := writer.Write(ctx, outbox.WriteParams{
+		Topic:       "",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     []byte(`{}`),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "topic must not be empty")
 }
 
 func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, outbox.WriteParams{
-			Topic:       "orders",
-			RoutingKey:  "",
-			MessageID:   "msg-1",
-			MessageType: "order.created",
-			Payload:     []byte(`{}`),
-		})
+	err := writer.Write(ctx, outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     []byte(`{}`),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "routing key must not be empty")
 }
 
 func TestWriter_Write_PreservesHeaders(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	ctx := context.Background()
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		return writer.Write(ctx, tx, outbox.WriteParams{
-			Topic:       "orders",
-			RoutingKey:  "order.created",
-			MessageID:   "msg-1",
-			MessageType: "order.created",
-			Payload:     []byte(`{}`),
-			Headers:     map[string]string{"X-Correlation-Id": "abc-123"},
-		})
+	err := writer.Write(ctx, outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     []byte(`{}`),
+		Headers:     map[string]string{"X-Correlation-Id": "abc-123"},
 	})
 	require.NoError(t, err)
 
-	var entry outbox.Entry
-	require.NoError(t, db.First(&entry).Error)
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
 
 	headers, err := entry.HeadersMap()
 	require.NoError(t, err)

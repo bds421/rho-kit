@@ -3,15 +3,15 @@ package outbox
 import (
 	"context"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 // Store abstracts the persistence layer for outbox entries.
 // Implementations must be safe for concurrent use.
 type Store interface {
-	// Insert creates a new outbox entry within the given transaction.
-	Insert(ctx context.Context, tx *gorm.DB, entry Entry) error
+	// Insert creates a new outbox entry.
+	// For transactional writes, the implementation should accept a
+	// transaction handle via context or a separate method.
+	Insert(ctx context.Context, entry Entry) error
 
 	// FetchPending atomically claims up to limit pending entries by setting
 	// their status to "processing", ordered by creation time. Implementations

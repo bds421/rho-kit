@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // Publisher publishes outbox entries to an external system.
@@ -36,28 +35,22 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Entry is the database model for an outbox row.
-// Each entry represents a single event to be published. Field names are
-// transport-agnostic: Topic maps to an exchange (AMQP), stream name
-// (Redis Streams), or Kafka topic depending on the Publisher implementation.
+// Entry represents a single outbox row. It is a plain value object with no
+// ORM-specific tags or dependencies. Storage implementations map this struct
+// to their own persistence model.
 type Entry struct {
-	ID          uuid.UUID       `gorm:"type:uuid;primaryKey"`
-	Topic       string          `gorm:"type:text;not null"`
-	RoutingKey  string          `gorm:"type:text;not null;column:routing_key"`
-	MessageID   string          `gorm:"type:text;not null;column:message_id"`
-	MessageType string          `gorm:"type:text;not null;column:message_type"`
-	Payload     json.RawMessage `gorm:"type:jsonb;not null"`
-	Headers     json.RawMessage `gorm:"type:jsonb"`
-	Status      Status          `gorm:"type:text;not null;default:pending"`
-	Attempts    int             `gorm:"not null;default:0"`
-	CreatedAt   time.Time       `gorm:"not null;default:now()"`
-	PublishedAt *time.Time      `gorm:"column:published_at"`
-	LastError   *string         `gorm:"type:text;column:last_error"`
-}
-
-// TableName returns the database table name for GORM.
-func (Entry) TableName() string {
-	return "outbox_entries"
+	ID          uuid.UUID
+	Topic       string
+	RoutingKey  string
+	MessageID   string
+	MessageType string
+	Payload     json.RawMessage
+	Headers     json.RawMessage
+	Status      Status
+	Attempts    int
+	CreatedAt   time.Time
+	PublishedAt *time.Time
+	LastError   *string
 }
 
 // HeadersMap returns the headers as a map. Returns nil if no headers are set.
@@ -85,7 +78,7 @@ type WriteParams struct {
 	Headers     map[string]string
 }
 
-// Writer writes outbox entries within a caller-provided GORM transaction.
+// Writer writes outbox entries via a Store implementation.
 // Safe for concurrent use.
 type Writer struct {
 	store Store
@@ -96,9 +89,9 @@ func NewWriter(store Store) *Writer {
 	return &Writer{store: store}
 }
 
-// Write inserts a new outbox entry within the provided transaction.
+// Write inserts a new outbox entry via the configured store.
 // The entry will be picked up by the Relay for publishing.
-func (w *Writer) Write(ctx context.Context, tx *gorm.DB, params WriteParams) error {
+func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 	if params.Topic == "" {
 		return fmt.Errorf("outbox: topic must not be empty")
 	}
@@ -129,5 +122,5 @@ func (w *Writer) Write(ctx context.Context, tx *gorm.DB, params WriteParams) err
 		CreatedAt:   time.Now().UTC(),
 	}
 
-	return w.store.Insert(ctx, tx, entry)
+	return w.store.Insert(ctx, entry)
 }

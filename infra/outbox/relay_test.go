@@ -46,9 +46,24 @@ func (f *fakePublisher) setErr(err error) {
 	f.err = err
 }
 
+func newTestEntry(t *testing.T, topic, routingKey string) outbox.Entry {
+	t.Helper()
+	id, err := uuid.NewV7()
+	require.NoError(t, err)
+	return outbox.Entry{
+		ID:          id,
+		Topic:       topic,
+		RoutingKey:  routingKey,
+		MessageID:   uuid.New().String(),
+		MessageType: topic + ".event",
+		Payload:     []byte(`{}`),
+		Status:      outbox.StatusPending,
+		CreatedAt:   time.Now().UTC(),
+	}
+}
+
 func TestRelay_PublishesPendingEntries(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
@@ -68,8 +83,8 @@ func TestRelay_PublishesPendingEntries(t *testing.T) {
 		MessageType: "test.event",
 		Payload:     []byte(`{"key":"value2"}`),
 	}
-	require.NoError(t, writer.Write(ctx, db, params1))
-	require.NoError(t, writer.Write(ctx, db, params2))
+	require.NoError(t, writer.Write(ctx, params1))
+	require.NoError(t, writer.Write(ctx, params2))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -89,17 +104,17 @@ func TestRelay_PublishesPendingEntries(t *testing.T) {
 	cancel()
 	require.NoError(t, <-done)
 
-	var entries []outbox.Entry
-	require.NoError(t, db.Find(&entries).Error)
-	for _, e := range entries {
+	// Verify entries are marked published in the store.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, e := range store.entries {
 		assert.Equal(t, outbox.StatusPublished, e.Status)
 		assert.NotNil(t, e.PublishedAt)
 	}
 }
 
 func TestRelay_RetriesOnPublishError(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	pub := &fakePublisher{err: errors.New("broker down")}
 	logger := slog.Default()
@@ -112,7 +127,7 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 		MessageType: "test.event",
 		Payload:     []byte(`{}`),
 	}
-	require.NoError(t, writer.Write(ctx, db, params))
+	require.NoError(t, writer.Write(ctx, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -126,26 +141,28 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		var entry outbox.Entry
-		if err := db.First(&entry).Error; err != nil {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		if len(store.entries) == 0 {
 			return false
 		}
-		return entry.Status == outbox.StatusFailed
+		return store.entries[0].Status == outbox.StatusFailed
 	}, 2*time.Second, 10*time.Millisecond)
 
 	cancel()
 	require.NoError(t, <-done)
 
-	var entry outbox.Entry
-	require.NoError(t, db.First(&entry).Error)
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
+
 	assert.Equal(t, outbox.StatusFailed, entry.Status)
 	require.NotNil(t, entry.LastError)
 	assert.Contains(t, *entry.LastError, "broker down")
 }
 
 func TestRelay_Stop(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	pub := &fakePublisher{}
 	logger := slog.Default()
 
@@ -168,8 +185,7 @@ func TestRelay_Stop(t *testing.T) {
 }
 
 func TestRelay_Cleanup(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -187,7 +203,7 @@ func TestRelay_Cleanup(t *testing.T) {
 		PublishedAt: &oldTime,
 		CreatedAt:   oldTime,
 	}
-	require.NoError(t, store.Insert(ctx, db, entry))
+	require.NoError(t, store.Insert(ctx, entry))
 
 	// Verify cleanup works via store directly since cleanup interval
 	// is too long for unit tests.
@@ -214,8 +230,7 @@ func TestRelay_Cleanup(t *testing.T) {
 }
 
 func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
@@ -232,7 +247,7 @@ func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
 		Payload:     payload,
 		Headers:     map[string]string{"X-Correlation-Id": "corr-1"},
 	}
-	require.NoError(t, writer.Write(ctx, db, params))
+	require.NoError(t, writer.Write(ctx, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -271,8 +286,7 @@ func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
 }
 
 func TestRelay_Options(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	pub := &fakePublisher{}
 	logger := slog.Default()
 
@@ -295,8 +309,7 @@ func TestRelay_Options(t *testing.T) {
 }
 
 func TestRelay_WithMetrics(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
@@ -312,7 +325,7 @@ func TestRelay_WithMetrics(t *testing.T) {
 		MessageType: "test.event",
 		Payload:     []byte(`{}`),
 	}
-	require.NoError(t, writer.Write(ctx, db, params))
+	require.NoError(t, writer.Write(ctx, params))
 
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
@@ -345,8 +358,7 @@ func TestRelay_WithMetrics(t *testing.T) {
 }
 
 func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -364,7 +376,7 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 		Status:      outbox.StatusProcessing,
 		CreatedAt:   staleTime,
 	}
-	require.NoError(t, store.Insert(ctx, db, staleEntry))
+	require.NoError(t, store.Insert(ctx, staleEntry))
 
 	// Run relay with very short poll interval so stale recovery triggers
 	// (every 10 polls).
@@ -384,14 +396,10 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 		return pub.count() >= 1
 	}, 2*time.Second, 10*time.Millisecond)
 
-	// Wait for the final status to be published (SQLite may need an extra
-	// poll cycle to complete the MarkPublished call).
+	// Wait for the final status to be published.
 	require.Eventually(t, func() bool {
-		var found outbox.Entry
-		if err := db.First(&found, "id = ?", staleID).Error; err != nil {
-			return false
-		}
-		return found.Status == outbox.StatusPublished
+		found, ok := store.findByID(staleID)
+		return ok && found.Status == outbox.StatusPublished
 	}, 2*time.Second, 10*time.Millisecond)
 
 	cancel()
@@ -399,8 +407,7 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 }
 
 func TestRelay_RecoverAfterPublisherError(t *testing.T) {
-	db := testDB(t)
-	store := outbox.NewGormStore(db)
+	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
@@ -413,7 +420,7 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 		MessageType: "test.event",
 		Payload:     []byte(`{}`),
 	}
-	require.NoError(t, writer.Write(ctx, db, params))
+	require.NoError(t, writer.Write(ctx, params))
 
 	pub.setErr(errors.New("temporary error"))
 
@@ -441,7 +448,8 @@ func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	cancel()
 	require.NoError(t, <-done)
 
-	var entry outbox.Entry
-	require.NoError(t, db.First(&entry).Error)
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
 	assert.Equal(t, outbox.StatusPublished, entry.Status)
 }
