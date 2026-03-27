@@ -12,9 +12,9 @@ import (
 )
 
 // SchemaVersion identifies the version of a message schema.
-// It is a type alias for int to allow ergonomic use without explicit conversions.
+// It is a type alias for uint to allow ergonomic use without explicit conversions.
 // Version 0 represents unversioned (legacy) messages.
-type SchemaVersion = int
+type SchemaVersion = uint
 
 // SchemaRegistry stores and retrieves JSON schemas for message types and versions.
 // Implementations must be safe for concurrent use.
@@ -59,15 +59,12 @@ func NewInMemorySchemaRegistry() *InMemorySchemaRegistry {
 
 // Register stores a schema for the given message type and version.
 // Returns an error if the type/version combination is already registered,
-// if the version is negative, if the schema is nil or empty, or if the
-// schema fails to compile as valid JSON Schema.
-// The schema is compiled at registration time for fail-fast behavior.
+// if the schema is nil or empty, or if the schema fails to compile as
+// valid JSON Schema. The schema is compiled at registration time for
+// fail-fast behavior.
 func (r *InMemorySchemaRegistry) Register(msgType string, version SchemaVersion, schema json.RawMessage) error {
 	if msgType == "" {
 		return fmt.Errorf("message type must not be empty")
-	}
-	if version < 0 {
-		return fmt.Errorf("schema version must not be negative, got %d", version)
 	}
 	if len(schema) == 0 {
 		return fmt.Errorf("schema must not be nil or empty")

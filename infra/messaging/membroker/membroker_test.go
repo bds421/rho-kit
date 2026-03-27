@@ -134,8 +134,8 @@ func TestBroker_Drain_PropagatesSchemaVersion(t *testing.T) {
 	err = b.PublishAndDrain(context.Background(), "ex", "test.event", msg)
 	require.NoError(t, err)
 
-	assert.Equal(t, 3, received.SchemaVersion)
-	assert.Equal(t, 3, received.Message.SchemaVersion)
+	assert.Equal(t, uint(3), received.SchemaVersion)
+	assert.Equal(t, uint(3), received.Message.SchemaVersion)
 }
 
 func TestBroker_Drain_UnversionedMessage(t *testing.T) {
@@ -153,6 +153,6 @@ func TestBroker_Drain_UnversionedMessage(t *testing.T) {
 	err = b.PublishAndDrain(context.Background(), "ex", "test.event", msg)
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, received.SchemaVersion)
-	assert.Equal(t, 0, received.Message.SchemaVersion)
+	assert.Equal(t, uint(0), received.SchemaVersion)
+	assert.Equal(t, uint(0), received.Message.SchemaVersion)
 }

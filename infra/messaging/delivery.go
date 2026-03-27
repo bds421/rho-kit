@@ -8,7 +8,7 @@ type Delivery struct {
 	CorrelationID string
 	Exchange      string // exchange name (AMQP) or stream name (Redis)
 	RoutingKey    string // routing key (AMQP) or message type (Redis)
-	SchemaVersion int    // schema version from transport header (0 = unversioned)
+	SchemaVersion uint   // schema version from transport header (0 = unversioned)
 	Redelivered   bool
 	Headers       map[string]any
 }

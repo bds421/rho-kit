@@ -22,7 +22,7 @@ type Message struct {
 	Type          string          `json:"type"`
 	Payload       json.RawMessage `json:"payload"`
 	Timestamp     time.Time       `json:"timestamp"`
-	SchemaVersion int             `json:"schema_version,omitempty"`
+	SchemaVersion uint            `json:"schema_version,omitempty"`
 
 	// Headers are propagated as transport-level metadata for cross-service tracing.
 	// Not serialized into the JSON body — carried as transport metadata
@@ -72,12 +72,8 @@ func (m Message) WithHeader(key, value string) Message {
 }
 
 // WithSchemaVersion returns a copy of the message with the given schema version.
-// Panics if version is negative because schema versions must be non-negative
-// (0 represents unversioned/legacy messages).
-func (m Message) WithSchemaVersion(version int) Message {
-	if version < 0 {
-		panic(fmt.Sprintf("schema version must not be negative, got %d", version))
-	}
+// Version 0 represents unversioned/legacy messages.
+func (m Message) WithSchemaVersion(version uint) Message {
 	headers := make(map[string]string, len(m.Headers))
 	for k, v := range m.Headers {
 		headers[k] = v

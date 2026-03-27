@@ -55,13 +55,6 @@ func TestInMemorySchemaRegistry_Register_EmptySchemaError(t *testing.T) {
 	assert.Contains(t, err.Error(), "must not be nil or empty")
 }
 
-func TestInMemorySchemaRegistry_Register_NegativeVersionError(t *testing.T) {
-	reg := messaging.NewInMemorySchemaRegistry()
-	err := reg.Register("order.created", -1, json.RawMessage(`{}`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must not be negative")
-}
-
 func TestInMemorySchemaRegistry_Lookup_NotFound(t *testing.T) {
 	reg := messaging.NewInMemorySchemaRegistry()
 
@@ -110,7 +103,7 @@ func TestInMemorySchemaRegistry_Versions(t *testing.T) {
 	require.NoError(t, reg.Register("user.updated", 1, schema))
 
 	versions := reg.Versions("order.created")
-	assert.Equal(t, []int{1, 2, 3}, versions)
+	assert.Equal(t, []uint{1, 2, 3}, versions)
 }
 
 func TestInMemorySchemaRegistry_Versions_UnknownType(t *testing.T) {
@@ -140,10 +133,10 @@ func TestInMemorySchemaRegistry_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Add(1)
-		go func(version int) {
+		go func(version uint) {
 			defer wg.Done()
 			_ = reg.Register("test.event", version, schema)
-		}(i)
+		}(uint(i))
 	}
 	wg.Wait()
 

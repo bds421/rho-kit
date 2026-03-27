@@ -106,8 +106,8 @@ func TestToDelivery_ExtractsSchemaVersion(t *testing.T) {
 
 	d := toDelivery(sm, "stream")
 
-	assert.Equal(t, 5, d.SchemaVersion)
-	assert.Equal(t, 5, d.Message.SchemaVersion)
+	assert.Equal(t, uint(5), d.SchemaVersion)
+	assert.Equal(t, uint(5), d.Message.SchemaVersion)
 }
 
 func TestToDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
@@ -119,38 +119,38 @@ func TestToDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
 
 	d := toDelivery(sm, "stream")
 
-	assert.Equal(t, 0, d.SchemaVersion)
-	assert.Equal(t, 0, d.Message.SchemaVersion)
+	assert.Equal(t, uint(0), d.SchemaVersion)
+	assert.Equal(t, uint(0), d.Message.SchemaVersion)
 }
 
 // --- parseSchemaVersion ---
 
 func TestParseSchemaVersion_ValidPositive(t *testing.T) {
 	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "7"})
-	assert.Equal(t, 7, v)
+	assert.Equal(t, uint(7), v)
 }
 
 func TestParseSchemaVersion_MissingHeader(t *testing.T) {
 	v := parseSchemaVersion(map[string]string{"other": "value"})
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }
 
 func TestParseSchemaVersion_NilHeaders(t *testing.T) {
 	v := parseSchemaVersion(nil)
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }
 
 func TestParseSchemaVersion_InvalidString(t *testing.T) {
 	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "abc"})
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }
 
 func TestParseSchemaVersion_NegativeValue(t *testing.T) {
 	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "-3"})
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }
 
 func TestParseSchemaVersion_Zero(t *testing.T) {
 	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "0"})
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }

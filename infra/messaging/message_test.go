@@ -111,10 +111,10 @@ func TestMessage_WithSchemaVersion(t *testing.T) {
 	require.NoError(t, err)
 
 	msg2 := msg.WithSchemaVersion(2)
-	assert.Equal(t, 2, msg2.SchemaVersion)
+	assert.Equal(t, uint(2), msg2.SchemaVersion)
 
 	// Original should be unmodified (immutability).
-	assert.Equal(t, 0, msg.SchemaVersion)
+	assert.Equal(t, uint(0), msg.SchemaVersion)
 }
 
 func TestMessage_WithSchemaVersion_PreservesHeaders(t *testing.T) {
@@ -124,7 +124,7 @@ func TestMessage_WithSchemaVersion_PreservesHeaders(t *testing.T) {
 	msg = msg.WithHeader("X-Request-Id", "req-1")
 	msg = msg.WithSchemaVersion(3)
 
-	assert.Equal(t, 3, msg.SchemaVersion)
+	assert.Equal(t, uint(3), msg.SchemaVersion)
 	assert.Equal(t, "req-1", msg.Headers["X-Request-Id"])
 }
 
@@ -180,7 +180,7 @@ func TestMessage_SchemaVersion_JSONRoundTrip(t *testing.T) {
 
 	var decoded messaging.Message
 	require.NoError(t, json.Unmarshal(data, &decoded))
-	assert.Equal(t, 5, decoded.SchemaVersion)
+	assert.Equal(t, uint(5), decoded.SchemaVersion)
 	assert.Equal(t, original.ID, decoded.ID)
 	assert.Equal(t, original.Type, decoded.Type)
 }
@@ -192,15 +192,6 @@ func TestMessage_WithHeader_PreservesSchemaVersion(t *testing.T) {
 	msg = msg.WithSchemaVersion(3)
 	msg = msg.WithHeader("X-Trace-Id", "trace-1")
 
-	assert.Equal(t, 3, msg.SchemaVersion)
+	assert.Equal(t, uint(3), msg.SchemaVersion)
 	assert.Equal(t, "trace-1", msg.Headers["X-Trace-Id"])
-}
-
-func TestMessage_WithSchemaVersion_PanicOnNegative(t *testing.T) {
-	msg, err := messaging.NewMessage("test.event", nil)
-	require.NoError(t, err)
-
-	assert.Panics(t, func() {
-		msg.WithSchemaVersion(-1)
-	})
 }

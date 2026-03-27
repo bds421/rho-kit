@@ -230,47 +230,42 @@ func TestFromAMQPDelivery_PreservesMessageID(t *testing.T) {
 func TestExtractSchemaVersion_FromInt32Header(t *testing.T) {
 	h := amqp.Table{messaging.HeaderSchemaVersion: int32(3)}
 	v := extractSchemaVersion(h, 0)
-	assert.Equal(t, 3, v)
+	assert.Equal(t, uint(3), v)
 }
 
 func TestExtractSchemaVersion_FromInt64Header(t *testing.T) {
 	h := amqp.Table{messaging.HeaderSchemaVersion: int64(5)}
 	v := extractSchemaVersion(h, 0)
-	assert.Equal(t, 5, v)
+	assert.Equal(t, uint(5), v)
 }
 
 func TestExtractSchemaVersion_FromIntHeader(t *testing.T) {
 	h := amqp.Table{messaging.HeaderSchemaVersion: 7}
 	v := extractSchemaVersion(h, 0)
-	assert.Equal(t, 7, v)
+	assert.Equal(t, uint(7), v)
 }
 
 func TestExtractSchemaVersion_MissingHeader_UsesFallback(t *testing.T) {
 	h := amqp.Table{"other": "value"}
 	v := extractSchemaVersion(h, 2)
-	assert.Equal(t, 2, v)
+	assert.Equal(t, uint(2), v)
 }
 
 func TestExtractSchemaVersion_NilHeaders_UsesFallback(t *testing.T) {
 	v := extractSchemaVersion(nil, 4)
-	assert.Equal(t, 4, v)
+	assert.Equal(t, uint(4), v)
 }
 
 func TestExtractSchemaVersion_UnsupportedType_UsesFallback(t *testing.T) {
 	h := amqp.Table{messaging.HeaderSchemaVersion: "not-a-number"}
 	v := extractSchemaVersion(h, 1)
-	assert.Equal(t, 1, v)
+	assert.Equal(t, uint(1), v)
 }
 
 func TestExtractSchemaVersion_NegativeHeader_ClampsToZero(t *testing.T) {
 	h := amqp.Table{messaging.HeaderSchemaVersion: int32(-5)}
 	v := extractSchemaVersion(h, 99)
-	assert.Equal(t, 0, v)
-}
-
-func TestExtractSchemaVersion_NegativeFallback_ClampsToZero(t *testing.T) {
-	v := extractSchemaVersion(nil, -3)
-	assert.Equal(t, 0, v)
+	assert.Equal(t, uint(0), v)
 }
 
 // --- fromAMQPDelivery schema version ---
@@ -289,8 +284,8 @@ func TestFromAMQPDelivery_SchemaVersionFromHeader(t *testing.T) {
 
 	d := fromAMQPDelivery(rawDelivery, msg)
 
-	assert.Equal(t, 2, d.SchemaVersion)
-	assert.Equal(t, 2, d.Message.SchemaVersion)
+	assert.Equal(t, uint(2), d.SchemaVersion)
+	assert.Equal(t, uint(2), d.Message.SchemaVersion)
 }
 
 func TestFromAMQPDelivery_SchemaVersionFallsBackToBody(t *testing.T) {
@@ -305,8 +300,8 @@ func TestFromAMQPDelivery_SchemaVersionFallsBackToBody(t *testing.T) {
 
 	d := fromAMQPDelivery(rawDelivery, msg)
 
-	assert.Equal(t, 4, d.SchemaVersion)
-	assert.Equal(t, 4, d.Message.SchemaVersion)
+	assert.Equal(t, uint(4), d.SchemaVersion)
+	assert.Equal(t, uint(4), d.Message.SchemaVersion)
 }
 
 func TestFromAMQPDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
@@ -320,6 +315,6 @@ func TestFromAMQPDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
 
 	d := fromAMQPDelivery(rawDelivery, msg)
 
-	assert.Equal(t, 0, d.SchemaVersion)
-	assert.Equal(t, 0, d.Message.SchemaVersion)
+	assert.Equal(t, uint(0), d.SchemaVersion)
+	assert.Equal(t, uint(0), d.Message.SchemaVersion)
 }

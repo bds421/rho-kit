@@ -19,7 +19,7 @@ func toStreamMessage(msg messaging.Message) stream.Message {
 		headers[k] = v
 	}
 	if msg.SchemaVersion != 0 {
-		headers[messaging.HeaderSchemaVersion] = strconv.Itoa(msg.SchemaVersion)
+		headers[messaging.HeaderSchemaVersion] = strconv.FormatUint(uint64(msg.SchemaVersion), 10)
 	}
 
 	return stream.Message{
@@ -58,15 +58,16 @@ func toDelivery(sm stream.Message, streamName string) messaging.Delivery {
 }
 
 // parseSchemaVersion extracts the schema version from string headers.
-// Returns 0 if the header is absent, cannot be parsed, or is negative.
-func parseSchemaVersion(headers map[string]string) int {
+// Returns 0 if the header is absent, cannot be parsed, or is negative
+// (untrusted transport boundary: the raw string may represent a negative number).
+func parseSchemaVersion(headers map[string]string) uint {
 	raw, ok := headers[messaging.HeaderSchemaVersion]
 	if !ok {
 		return 0
 	}
-	v, err := strconv.Atoi(raw)
+	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || v < 0 {
 		return 0
 	}
-	return v
+	return uint(v)
 }

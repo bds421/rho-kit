@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewVersionedHandler_DispatchByVersion(t *testing.T) {
-	called := -1
+	var called uint
 
 	handlers := map[messaging.SchemaVersion]messaging.Handler{
 		0: func(_ context.Context, _ messaging.Delivery) error {
@@ -33,8 +33,8 @@ func TestNewVersionedHandler_DispatchByVersion(t *testing.T) {
 	h := messaging.NewVersionedHandler(handlers)
 	ctx := context.Background()
 
-	for _, version := range []int{0, 1, 2} {
-		called = -1
+	for _, version := range []uint{0, 1, 2} {
+		called = 999
 		d := messaging.Delivery{
 			SchemaVersion: version,
 			Message: messaging.Message{

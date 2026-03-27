@@ -29,33 +29,34 @@ func fromAMQPDelivery(d amqp.Delivery, msg messaging.Message) messaging.Delivery
 
 // extractSchemaVersion reads the schema version from AMQP headers.
 // If the header is absent, the fallback value (typically from the JSON body) is used.
-// Negative values from untrusted headers are clamped to 0 (unversioned).
-func extractSchemaVersion(h amqp.Table, fallback int) int {
+// Negative values from untrusted AMQP int headers are clamped to 0 (unversioned).
+func extractSchemaVersion(h amqp.Table, fallback uint) uint {
 	if h == nil {
-		return clampVersion(fallback)
+		return fallback
 	}
 	v, ok := h[messaging.HeaderSchemaVersion]
 	if !ok {
-		return clampVersion(fallback)
+		return fallback
 	}
 	switch n := v.(type) {
 	case int32:
-		return clampVersion(int(n))
+		return intToUint(int64(n))
 	case int64:
-		return clampVersion(int(n))
+		return intToUint(n)
 	case int:
-		return clampVersion(n)
+		return intToUint(int64(n))
 	default:
-		return clampVersion(fallback)
+		return fallback
 	}
 }
 
-// clampVersion ensures a schema version is never negative.
-func clampVersion(v int) int {
+// intToUint converts a signed integer from an untrusted transport header to uint.
+// Negative values are clamped to 0 (unversioned).
+func intToUint(v int64) uint {
 	if v < 0 {
 		return 0
 	}
-	return v
+	return uint(v)
 }
 
 // extractStringHeaders picks out string-valued AMQP headers for application-level
