@@ -55,7 +55,7 @@ func TestBuildIntegrationModules_Messaging(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithRabbitMQ("amqp://localhost")
 
-	modules := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	require.Len(t, modules, 1)
 	assert.Equal(t, "rabbitmq", modules[0].Name())
 }
@@ -65,7 +65,7 @@ func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {
 		WithRabbitMQ("amqp://localhost").
 		WithCriticalBroker()
 
-	modules := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	require.Len(t, modules, 1)
 	mm, ok := modules[0].(*messagingModule)
 	require.True(t, ok)
@@ -74,7 +74,7 @@ func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {
 
 func TestBuildIntegrationModules_NoMessaging(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
-	modules := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	assert.Empty(t, modules)
 }
 
@@ -86,7 +86,7 @@ func TestBuildIntegrationModules_Both(t *testing.T) {
 		mqURL:     "amqp://localhost",
 	}
 
-	modules := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	require.Len(t, modules, 2)
 	assert.Equal(t, "redis", modules[0].Name())
 	assert.Equal(t, "rabbitmq", modules[1].Name())
