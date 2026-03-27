@@ -117,3 +117,42 @@ func TestBroker_Reset(t *testing.T) {
 func TestBroker_ImplementsMessagePublisher(t *testing.T) {
 	var _ messaging.MessagePublisher = (*Broker)(nil)
 }
+
+func TestBroker_Drain_PropagatesSchemaVersion(t *testing.T) {
+	b := New()
+
+	var received messaging.Delivery
+	b.Subscribe("*", "#", func(_ context.Context, d messaging.Delivery) error {
+		received = d
+		return nil
+	})
+
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+	msg = msg.WithSchemaVersion(3)
+
+	err = b.PublishAndDrain(context.Background(), "ex", "test.event", msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, uint(3), received.SchemaVersion)
+	assert.Equal(t, uint(3), received.Message.SchemaVersion)
+}
+
+func TestBroker_Drain_UnversionedMessage(t *testing.T) {
+	b := New()
+
+	var received messaging.Delivery
+	b.Subscribe("*", "#", func(_ context.Context, d messaging.Delivery) error {
+		received = d
+		return nil
+	})
+
+	msg, err := messaging.NewMessage("test.event", nil)
+	require.NoError(t, err)
+
+	err = b.PublishAndDrain(context.Background(), "ex", "test.event", msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, uint(0), received.SchemaVersion)
+	assert.Equal(t, uint(0), received.Message.SchemaVersion)
+}

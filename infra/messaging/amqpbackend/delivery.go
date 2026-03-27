@@ -9,18 +9,54 @@ import (
 // fromAMQPDelivery creates a messaging.Delivery from a raw AMQP delivery
 // and a decoded Message. String-valued AMQP headers are extracted into
 // msg.Headers so handlers can access tracing metadata via msg.CorrelationID()
-// and similar helpers.
+// and similar helpers. The schema version is read from X-Schema-Version header
+// and propagated to both the Message and Delivery.
 func fromAMQPDelivery(d amqp.Delivery, msg messaging.Message) messaging.Delivery {
 	msg.Headers = extractStringHeaders(d.Headers)
+	schemaVersion := extractSchemaVersion(d.Headers, msg.SchemaVersion)
+	msg.SchemaVersion = schemaVersion
 	return messaging.Delivery{
 		Message:       msg,
 		ReplyTo:       d.ReplyTo,
 		CorrelationID: d.CorrelationId,
 		Exchange:      d.Exchange,
 		RoutingKey:    d.RoutingKey,
+		SchemaVersion: schemaVersion,
 		Redelivered:   d.Redelivered,
 		Headers:       headerToMap(d.Headers),
 	}
+}
+
+// extractSchemaVersion reads the schema version from AMQP headers.
+// If the header is absent, the fallback value (typically from the JSON body) is used.
+// Negative values from untrusted AMQP int headers are clamped to 0 (unversioned).
+func extractSchemaVersion(h amqp.Table, fallback uint) uint {
+	if h == nil {
+		return fallback
+	}
+	v, ok := h[messaging.HeaderSchemaVersion]
+	if !ok {
+		return fallback
+	}
+	switch n := v.(type) {
+	case int32:
+		return intToUint(int64(n))
+	case int64:
+		return intToUint(n)
+	case int:
+		return intToUint(int64(n))
+	default:
+		return fallback
+	}
+}
+
+// intToUint converts a signed integer from an untrusted transport header to uint.
+// Negative values are clamped to 0 (unversioned).
+func intToUint(v int64) uint {
+	if v < 0 {
+		return 0
+	}
+	return uint(v)
 }
 
 // extractStringHeaders picks out string-valued AMQP headers for application-level

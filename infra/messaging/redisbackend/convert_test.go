@@ -24,7 +24,6 @@ func TestToStreamMessage(t *testing.T) {
 	assert.Equal(t, msg.Timestamp, sm.Timestamp)
 	assert.Equal(t, "abc-123", sm.Headers["trace-id"])
 
-	// Payload should be equivalent JSON.
 	var msgPayload, smPayload any
 	require.NoError(t, json.Unmarshal(msg.Payload, &msgPayload))
 	require.NoError(t, json.Unmarshal(sm.Payload, &smPayload))
@@ -74,4 +73,84 @@ func TestToDelivery_EmptyHeaders(t *testing.T) {
 
 	assert.Empty(t, d.Message.Headers)
 	assert.Empty(t, d.Headers)
+}
+
+// --- schema version propagation ---
+
+func TestToStreamMessage_PropagatesSchemaVersion(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", nil)
+	require.NoError(t, err)
+	msg = msg.WithSchemaVersion(3)
+
+	sm := toStreamMessage(msg)
+
+	assert.Equal(t, "3", sm.Headers[messaging.HeaderSchemaVersion])
+}
+
+func TestToStreamMessage_OmitsSchemaVersionWhenZero(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", nil)
+	require.NoError(t, err)
+
+	sm := toStreamMessage(msg)
+
+	_, exists := sm.Headers[messaging.HeaderSchemaVersion]
+	assert.False(t, exists, "schema version header should be absent for version 0")
+}
+
+func TestToDelivery_ExtractsSchemaVersion(t *testing.T) {
+	sm := stream.Message{
+		ID:      "msg-id",
+		Type:    "test.event",
+		Headers: map[string]string{messaging.HeaderSchemaVersion: "5"},
+	}
+
+	d := toDelivery(sm, "stream")
+
+	assert.Equal(t, uint(5), d.SchemaVersion)
+	assert.Equal(t, uint(5), d.Message.SchemaVersion)
+}
+
+func TestToDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
+	sm := stream.Message{
+		ID:      "msg-id",
+		Type:    "test.event",
+		Headers: map[string]string{"other": "value"},
+	}
+
+	d := toDelivery(sm, "stream")
+
+	assert.Equal(t, uint(0), d.SchemaVersion)
+	assert.Equal(t, uint(0), d.Message.SchemaVersion)
+}
+
+// --- parseSchemaVersion ---
+
+func TestParseSchemaVersion_ValidPositive(t *testing.T) {
+	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "7"})
+	assert.Equal(t, uint(7), v)
+}
+
+func TestParseSchemaVersion_MissingHeader(t *testing.T) {
+	v := parseSchemaVersion(map[string]string{"other": "value"})
+	assert.Equal(t, uint(0), v)
+}
+
+func TestParseSchemaVersion_NilHeaders(t *testing.T) {
+	v := parseSchemaVersion(nil)
+	assert.Equal(t, uint(0), v)
+}
+
+func TestParseSchemaVersion_InvalidString(t *testing.T) {
+	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "abc"})
+	assert.Equal(t, uint(0), v)
+}
+
+func TestParseSchemaVersion_NegativeValue(t *testing.T) {
+	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "-3"})
+	assert.Equal(t, uint(0), v)
+}
+
+func TestParseSchemaVersion_Zero(t *testing.T) {
+	v := parseSchemaVersion(map[string]string{messaging.HeaderSchemaVersion: "0"})
+	assert.Equal(t, uint(0), v)
 }
