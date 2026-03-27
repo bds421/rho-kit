@@ -57,7 +57,10 @@ func newReadReplicaModule(cfg readReplicaModuleConfig) *readReplicaModule {
 func (m *readReplicaModule) Init(_ context.Context, mc ModuleContext) error {
 	m.logger = mc.Logger
 
-	dbMod := mc.Module("database").(*databaseModule)
+	dbMod, ok := mc.Module("database").(*databaseModule)
+	if !ok {
+		return fmt.Errorf("read replica module: \"database\" module is not a *databaseModule (check registration order)")
+	}
 	primaryDB := dbMod.DB()
 	if primaryDB == nil {
 		return fmt.Errorf("read replica module: primary database not initialized")

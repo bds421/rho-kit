@@ -91,6 +91,33 @@ func TestWithReadReplicaMySQL_PanicsWithoutMySQL(t *testing.T) {
 		WithReadReplicaMySQL(sqldb.MySQLConfig{Host: "replica"}, sqldb.PoolConfig{})
 }
 
+func TestWithReadReplica_PanicsWhenMySQLReplicaAlreadySet(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for mutual exclusivity")
+		assert.Contains(t, r, "mutually exclusive")
+	}()
+	b := New("test", "v1", BaseConfig{}).
+		WithPostgres(sqldb.PostgresConfig{Host: "primary"}, sqldb.PoolConfig{})
+	// Simulate a MySQL replica already set by directly setting the field,
+	// since WithReadReplicaMySQL requires WithMySQL which conflicts with WithPostgres.
+	b.replicaMySQLCfg = &sqldb.MySQLConfig{Host: "replica-mysql"}
+	b.WithReadReplica(sqldb.PostgresConfig{Host: "replica"}, sqldb.PoolConfig{})
+}
+
+func TestWithReadReplicaMySQL_PanicsWhenPgReplicaAlreadySet(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for mutual exclusivity")
+		assert.Contains(t, r, "mutually exclusive")
+	}()
+	b := New("test", "v1", BaseConfig{}).
+		WithMySQL(sqldb.MySQLConfig{Host: "primary"}, sqldb.PoolConfig{})
+	// Simulate a Pg replica already set by directly setting the field.
+	b.replicaPgCfg = &sqldb.PostgresConfig{Host: "replica-pg"}
+	b.WithReadReplicaMySQL(sqldb.MySQLConfig{Host: "replica"}, sqldb.PoolConfig{})
+}
+
 func TestWithReadReplica_StoresConfig(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithPostgres(sqldb.PostgresConfig{Host: "primary"}, sqldb.PoolConfig{}).
