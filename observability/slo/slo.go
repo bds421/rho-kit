@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bds421/rho-kit/observability/health"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -424,46 +425,23 @@ func matchPattern(pattern, value string) bool {
 	return true
 }
 
-// HealthCheck evaluates all SLOs and returns a HealthCheckResult indicating
-// whether any SLO is breached. Use this with health package readiness checks.
-func (c *Checker) HealthCheck() HealthCheckResult {
-	statuses := c.Evaluate()
-	breached := false
-	for _, s := range statuses {
-		if s.Breached {
-			breached = true
-			break
-		}
-	}
-	return HealthCheckResult{
+// DependencyCheck returns a health.DependencyCheck that reports "degraded" when
+// any SLO is breached. It is configured as non-critical: an SLO breach should
+// not make the service unready (killing traffic to an already-struggling service
+// makes things worse). The check is informational — use the /slo endpoint for
+// dashboards and alerting.
+func (c *Checker) DependencyCheck() health.DependencyCheck {
+	return health.DependencyCheck{
 		Name:     "slo",
-		Breached: breached,
-	}
-}
-
-// HealthCheckResult holds the outcome of an SLO health check evaluation.
-// Callers can use Breached to decide the health status string.
-type HealthCheckResult struct {
-	Name     string
-	Breached bool
-}
-
-// Status returns "degraded" if any SLO is breached, otherwise "healthy".
-// These values match the health package status constants.
-func (r HealthCheckResult) Status() string {
-	if r.Breached {
-		return "degraded"
-	}
-	return "healthy"
-}
-
-// DependencyCheckFunc returns a function compatible with health.DependencyCheck.Check.
-// The returned function evaluates all SLOs and returns "degraded" on breach.
-// The context parameter is accepted for interface compatibility but is not used
-// by the SLO evaluation (which reads from an in-process Prometheus registry).
-func (c *Checker) DependencyCheckFunc() func(ctx context.Context) string {
-	return func(_ context.Context) string {
-		return c.HealthCheck().Status()
+		Critical: false,
+		Check: func(_ context.Context) string {
+			for _, s := range c.Evaluate() {
+				if s.Breached {
+					return health.StatusDegraded
+				}
+			}
+			return health.StatusHealthy
+		},
 	}
 }
 

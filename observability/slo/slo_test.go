@@ -263,7 +263,7 @@ func TestChecker_Evaluate_CustomErrorLabel(t *testing.T) {
 	assert.InDelta(t, 0.1, statuses[0].Current, 1e-9)
 }
 
-func TestChecker_HealthCheck_NoBreach(t *testing.T) {
+func TestChecker_DependencyCheck_NoBreach(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
@@ -273,14 +273,14 @@ func TestChecker_HealthCheck_NoBreach(t *testing.T) {
 	total.WithLabelValues("200").Add(1000)
 
 	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
-	result := c.HealthCheck()
+	dc := c.DependencyCheck()
 
-	assert.Equal(t, "slo", result.Name)
-	assert.False(t, result.Breached)
-	assert.Equal(t, "healthy", result.Status())
+	assert.Equal(t, "slo", dc.Name)
+	assert.False(t, dc.Critical)
+	assert.Equal(t, "healthy", dc.Check(context.Background()))
 }
 
-func TestChecker_HealthCheck_Breached(t *testing.T) {
+func TestChecker_DependencyCheck_Breached(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
@@ -291,25 +291,9 @@ func TestChecker_HealthCheck_Breached(t *testing.T) {
 	total.WithLabelValues("500").Add(100)
 
 	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
-	result := c.HealthCheck()
+	dc := c.DependencyCheck()
 
-	assert.True(t, result.Breached)
-	assert.Equal(t, "degraded", result.Status())
-}
-
-func TestChecker_DependencyCheckFunc(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	total := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "http_requests_total",
-		Help: "Total requests.",
-	}, []string{"code"})
-	reg.MustRegister(total)
-	total.WithLabelValues("200").Add(1000)
-
-	c := NewChecker(reg, ErrorRateSLO("err", 0.01, time.Hour))
-	fn := c.DependencyCheckFunc()
-
-	assert.Equal(t, "healthy", fn(context.Background()))
+	assert.Equal(t, "degraded", dc.Check(context.Background()))
 }
 
 func TestSLOStatus_String(t *testing.T) {
