@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
 )
@@ -68,7 +69,21 @@ func TestReadReplicaModule_HealthChecksBeforeInit(t *testing.T) {
 		poolCfg: sqldb.PoolConfig{},
 	})
 	checks := m.HealthChecks()
-	assert.Nil(t, checks, "should return nil health checks (inherits BaseModule)")
+	assert.Nil(t, checks, "should return nil health checks before Init (replicaDB is nil)")
+}
+
+func TestReadReplicaModule_HealthCheckName(t *testing.T) {
+	m := newReadReplicaModule(readReplicaModuleConfig{
+		pgCfg:   &sqldb.PostgresConfig{Host: "replica-host"},
+		poolCfg: sqldb.PoolConfig{},
+	})
+	// Simulate a post-Init state by setting replicaDB to a non-nil value.
+	// We cannot actually connect, but HealthChecks only checks for nil.
+	m.replicaDB = &gorm.DB{}
+	checks := m.HealthChecks()
+	require.Len(t, checks, 1)
+	assert.Equal(t, "database-replica", checks[0].Name)
+	assert.False(t, checks[0].Critical, "replica health check should be non-critical (degraded, not unhealthy)")
 }
 
 func TestWithReadReplica_PanicsWithoutPostgres(t *testing.T) {

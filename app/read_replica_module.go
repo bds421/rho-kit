@@ -10,8 +10,10 @@ import (
 	"gorm.io/plugin/dbresolver"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
+	"github.com/bds421/rho-kit/observability/health"
 )
 
 // readReplicaModule implements the Module interface for database read replicas.
@@ -88,6 +90,23 @@ func (m *readReplicaModule) Init(_ context.Context, mc ModuleContext) error {
 
 func (m *readReplicaModule) Populate(infra *Infrastructure) {
 	infra.DBReader = m.replicaDB
+}
+
+func (m *readReplicaModule) HealthChecks() []health.DependencyCheck {
+	if m.replicaDB == nil {
+		return nil
+	}
+	pinger := gormdb.NewPinger(m.replicaDB)
+	return []health.DependencyCheck{{
+		Name: "database-replica",
+		Check: func(_ context.Context) string {
+			if err := pinger.Ping(); err != nil {
+				return health.StatusDegraded
+			}
+			return health.StatusHealthy
+		},
+		Critical: false,
+	}}
 }
 
 func (m *readReplicaModule) Close(_ context.Context) error {
