@@ -10,10 +10,12 @@ import (
 )
 
 const (
-	defaultPollInterval = 1 * time.Second
-	defaultBatchSize    = 100
-	defaultMaxAttempts  = 10
-	defaultRetention    = 7 * 24 * time.Hour // 7 days
+	defaultPollInterval     = 1 * time.Second
+	defaultBatchSize        = 100
+	defaultMaxAttempts      = 10
+	defaultRetention        = 7 * 24 * time.Hour // 7 days
+	defaultStaleDuration    = 5 * time.Minute
+	staleRecoveryMultiplier = 10 // recover stale entries every N polls
 )
 
 // Relay polls the outbox table and publishes pending entries to the broker.
@@ -30,9 +32,10 @@ type Relay struct {
 	maxAttempts  int
 	retention    time.Duration
 
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	done   chan struct{}
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	done      chan struct{}
+	pollCount int
 }
 
 // RelayOption configures a Relay.
@@ -178,6 +181,12 @@ func (r *Relay) poll(ctx context.Context) {
 		return
 	}
 
+	// Periodically recover entries stuck in "processing" from crashed relays.
+	r.pollCount++
+	if r.pollCount%staleRecoveryMultiplier == 0 {
+		r.recoverStale(ctx)
+	}
+
 	entries, err := r.store.FetchPending(ctx, r.batchSize)
 	if err != nil {
 		r.logger.Error("outbox relay: fetch pending failed", "error", err)
@@ -187,8 +196,6 @@ func (r *Relay) poll(ctx context.Context) {
 	if len(entries) == 0 {
 		return
 	}
-
-	r.updatePendingGauge(ctx)
 
 	for i := range entries {
 		if ctx.Err() != nil {
@@ -269,6 +276,24 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 		"max_attempts", r.maxAttempts,
 		"error", errMsg,
 	)
+}
+
+// recoverStale resets entries stuck in "processing" status from crashed relays.
+func (r *Relay) recoverStale(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	reset, err := r.store.ResetStaleProcessing(ctx, defaultStaleDuration)
+	if err != nil {
+		r.logger.Error("outbox relay: recover stale failed", "error", err)
+		return
+	}
+
+	if reset > 0 {
+		r.logger.Warn("outbox relay: recovered stale processing entries",
+			"count", reset, "stale_duration", defaultStaleDuration)
+	}
 }
 
 // cleanup removes published entries older than the retention period.

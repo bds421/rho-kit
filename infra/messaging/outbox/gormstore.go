@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -13,7 +14,8 @@ import (
 var _ Store = (*GormStore)(nil)
 
 // GormStore implements Store using GORM with PostgreSQL.
-// It uses SELECT ... FOR UPDATE SKIP LOCKED for safe concurrent polling.
+// It uses SELECT FOR UPDATE SKIP LOCKED with an atomic claim pattern to
+// prevent concurrent relay instances from processing the same entries.
 type GormStore struct {
 	db *gorm.DB
 }
@@ -28,21 +30,23 @@ func NewGormStore(db *gorm.DB) *GormStore {
 }
 
 // Insert creates a new outbox entry within the provided transaction.
-func (s *GormStore) Insert(_ context.Context, tx *gorm.DB, entry Entry) error {
-	if err := tx.Create(&entry).Error; err != nil {
+func (s *GormStore) Insert(ctx context.Context, tx *gorm.DB, entry Entry) error {
+	if err := tx.WithContext(ctx).Create(&entry).Error; err != nil {
 		return fmt.Errorf("outbox: insert entry: %w", err)
 	}
 	return nil
 }
 
-// FetchPending retrieves up to limit pending entries using SELECT FOR UPDATE
+// FetchPending atomically claims up to limit pending entries by setting their
+// status to "processing" within a single transaction. It uses SELECT FOR UPDATE
 // SKIP LOCKED to allow multiple relay instances to poll concurrently without
-// processing the same entries.
+// processing the same entries. The claimed entries are returned for publishing.
 func (s *GormStore) FetchPending(ctx context.Context, limit int) ([]Entry, error) {
 	var entries []Entry
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.
+		// Lock and read pending entries.
+		if err := tx.
 			Where("status = ?", StatusPending).
 			Order("created_at ASC").
 			Limit(limit).
@@ -50,7 +54,24 @@ func (s *GormStore) FetchPending(ctx context.Context, limit int) ([]Entry, error
 				Strength: "UPDATE",
 				Options:  "SKIP LOCKED",
 			}).
-			Find(&entries).Error
+			Find(&entries).Error; err != nil {
+			return err
+		}
+
+		if len(entries) == 0 {
+			return nil
+		}
+
+		// Atomically claim them by setting status to processing.
+		ids := make([]uuid.UUID, len(entries))
+		for i, e := range entries {
+			ids[i] = e.ID
+		}
+
+		return tx.
+			Model(&Entry{}).
+			Where("id IN ?", ids).
+			Update("status", StatusProcessing).Error
 	})
 	if err != nil {
 		return nil, fmt.Errorf("outbox: fetch pending: %w", err)
@@ -89,12 +110,14 @@ func (s *GormStore) MarkFailed(ctx context.Context, id string, lastError string)
 	return nil
 }
 
-// IncrementAttempts bumps the attempt counter and records the error.
+// IncrementAttempts bumps the attempt counter, records the error, and resets
+// the entry status to pending so it will be retried on the next poll cycle.
 func (s *GormStore) IncrementAttempts(ctx context.Context, id string, lastError string) error {
 	result := s.db.WithContext(ctx).
 		Model(&Entry{}).
 		Where("id = ?", id).
 		Updates(map[string]any{
+			"status":     StatusPending,
 			"attempts":   gorm.Expr("attempts + 1"),
 			"last_error": lastError,
 		})
@@ -111,6 +134,20 @@ func (s *GormStore) DeletePublishedBefore(ctx context.Context, before time.Time)
 		Delete(&Entry{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("outbox: delete published: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// ResetStaleProcessing resets entries stuck in "processing" status back to
+// "pending" if they have been in that state longer than staleDuration.
+func (s *GormStore) ResetStaleProcessing(ctx context.Context, staleDuration time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-staleDuration)
+	result := s.db.WithContext(ctx).
+		Model(&Entry{}).
+		Where("status = ? AND created_at < ?", StatusProcessing, cutoff).
+		Update("status", StatusPending)
+	if result.Error != nil {
+		return 0, fmt.Errorf("outbox: reset stale processing: %w", result.Error)
 	}
 	return result.RowsAffected, nil
 }

@@ -19,6 +19,11 @@ const (
 	// StatusPending indicates the entry is waiting to be published.
 	StatusPending Status = "pending"
 
+	// StatusProcessing indicates the entry has been claimed by a relay instance
+	// and is being published. This prevents concurrent relay instances from
+	// processing the same entry.
+	StatusProcessing Status = "processing"
+
 	// StatusPublished indicates the entry was successfully published.
 	StatusPublished Status = "published"
 

@@ -321,6 +321,60 @@ func TestRelay_WithMetrics(t *testing.T) {
 	assert.True(t, metricNames["outbox_relay_latency_seconds"])
 }
 
+func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
+	db := testDB(t)
+	store := outbox.NewGormStore(db)
+	pub := &fakePublisher{}
+	logger := slog.Default()
+	ctx := context.Background()
+
+	// Insert an entry that is stuck in "processing" with a very old created_at.
+	staleTime := time.Now().UTC().Add(-10 * time.Minute)
+	staleID, _ := uuid.NewV7()
+	staleEntry := outbox.Entry{
+		ID:          staleID,
+		Exchange:    "test",
+		RoutingKey:  "test.key",
+		MessageID:   "msg-stale",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+		Status:      outbox.StatusProcessing,
+		CreatedAt:   staleTime,
+	}
+	require.NoError(t, store.Insert(ctx, db, staleEntry))
+
+	// Run relay with very short poll interval so stale recovery triggers
+	// (every 10 polls).
+	relay := outbox.NewRelay(store, pub, logger,
+		outbox.WithPollInterval(5*time.Millisecond),
+	)
+
+	relayCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Start(relayCtx)
+	}()
+
+	// Wait for the message to be published (stale recovery resets to pending,
+	// then FetchPending picks it up and publishes).
+	require.Eventually(t, func() bool {
+		return pub.count() >= 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Wait for the final status to be published (SQLite may need an extra
+	// poll cycle to complete the MarkPublished call).
+	require.Eventually(t, func() bool {
+		var found outbox.Entry
+		if err := db.First(&found, "id = ?", staleID).Error; err != nil {
+			return false
+		}
+		return found.Status == outbox.StatusPublished
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
 func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	db := testDB(t)
 	store := outbox.NewGormStore(db)

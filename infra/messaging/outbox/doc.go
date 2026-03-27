@@ -14,8 +14,11 @@
 // # Concurrency
 //
 // Multiple relay instances can run safely against the same table.
-// The GORM store uses SELECT ... FOR UPDATE SKIP LOCKED (PostgreSQL) to
-// prevent duplicate delivery across instances.
+// The GORM store uses SELECT FOR UPDATE SKIP LOCKED (PostgreSQL) with an
+// atomic claim pattern: entries are set to "processing" status within the
+// same transaction as the lock, preventing other relays from claiming them.
+// If a relay crashes, stale "processing" entries are automatically recovered
+// back to "pending" after a configurable timeout (default 5 minutes).
 //
 // # Dead-letter
 //

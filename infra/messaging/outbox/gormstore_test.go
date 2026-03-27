@@ -81,9 +81,17 @@ func TestGormStore_FetchPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 2)
 
+	// Verify entries are now in "processing" status in the database.
 	for _, e := range entries {
-		assert.Equal(t, outbox.StatusPending, e.Status)
+		var found outbox.Entry
+		require.NoError(t, db.First(&found, "id = ?", e.ID).Error)
+		assert.Equal(t, outbox.StatusProcessing, found.Status)
 	}
+
+	// A second fetch should not return the same entries (they are claimed).
+	entries2, err := store.FetchPending(ctx, 10)
+	require.NoError(t, err)
+	assert.Len(t, entries2, 1, "only the unclaimed pending entry should be returned")
 }
 
 func TestGormStore_MarkPublished(t *testing.T) {
@@ -155,7 +163,7 @@ func TestGormStore_IncrementAttempts(t *testing.T) {
 		MessageID:   "msg-1",
 		MessageType: "test.event",
 		Payload:     []byte(`{}`),
-		Status:      outbox.StatusPending,
+		Status:      outbox.StatusProcessing,
 		Attempts:    0,
 		CreatedAt:   time.Now().UTC(),
 	}
@@ -167,6 +175,7 @@ func TestGormStore_IncrementAttempts(t *testing.T) {
 	var found outbox.Entry
 	require.NoError(t, db.First(&found, "id = ?", id).Error)
 	assert.Equal(t, 1, found.Attempts)
+	assert.Equal(t, outbox.StatusPending, found.Status, "status should be reset to pending for retry")
 	require.NotNil(t, found.LastError)
 	assert.Equal(t, "timeout", *found.LastError)
 }
@@ -245,6 +254,55 @@ func TestGormStore_CountPending(t *testing.T) {
 	count, err = store.CountPending(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), count)
+}
+
+func TestGormStore_ResetStaleProcessing(t *testing.T) {
+	db := testDB(t)
+	store := outbox.NewGormStore(db)
+	ctx := context.Background()
+
+	staleTime := time.Now().UTC().Add(-10 * time.Minute)
+	recentTime := time.Now().UTC()
+
+	// Insert a stale processing entry.
+	staleID, _ := uuid.NewV7()
+	staleEntry := outbox.Entry{
+		ID:          staleID,
+		Exchange:    "test",
+		RoutingKey:  "test.key",
+		MessageID:   "msg-stale",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+		Status:      outbox.StatusProcessing,
+		CreatedAt:   staleTime,
+	}
+	require.NoError(t, store.Insert(ctx, db, staleEntry))
+
+	// Insert a recent processing entry (should not be reset).
+	recentID, _ := uuid.NewV7()
+	recentEntry := outbox.Entry{
+		ID:          recentID,
+		Exchange:    "test",
+		RoutingKey:  "test.key",
+		MessageID:   "msg-recent",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+		Status:      outbox.StatusProcessing,
+		CreatedAt:   recentTime,
+	}
+	require.NoError(t, store.Insert(ctx, db, recentEntry))
+
+	reset, err := store.ResetStaleProcessing(ctx, 5*time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), reset)
+
+	var staleFound outbox.Entry
+	require.NoError(t, db.First(&staleFound, "id = ?", staleID).Error)
+	assert.Equal(t, outbox.StatusPending, staleFound.Status)
+
+	var recentFound outbox.Entry
+	require.NoError(t, db.First(&recentFound, "id = ?", recentID).Error)
+	assert.Equal(t, outbox.StatusProcessing, recentFound.Status)
 }
 
 func TestNewGormStore_NilDB_Panics(t *testing.T) {
