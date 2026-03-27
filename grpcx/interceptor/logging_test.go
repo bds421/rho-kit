@@ -101,3 +101,40 @@ func TestLoggingStream_NilLogger(t *testing.T) {
 	i := interceptor.LoggingStream(nil)
 	assert.NotNil(t, i)
 }
+
+func TestLoggingStream_LogsMethod(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer(
+		grpc.ChainStreamInterceptor(
+			interceptor.LoggingStream(logger),
+		),
+	)
+	healthpb.RegisterHealthServer(srv, &healthpb.UnimplementedHealthServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := healthpb.NewHealthClient(conn)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	if err == nil {
+		_, _ = stream.Recv()
+	}
+
+	var logEntry map[string]any
+	err = json.Unmarshal(buf.Bytes(), &logEntry)
+	require.NoError(t, err)
+	assert.Equal(t, "grpc request", logEntry["msg"])
+	assert.Contains(t, logEntry["grpc.method"], "/grpc.health.v1.Health/Watch")
+}

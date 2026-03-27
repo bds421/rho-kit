@@ -102,3 +102,47 @@ func TestRecoveryStream_NilLogger(t *testing.T) {
 	i := interceptor.RecoveryStream(nil)
 	assert.NotNil(t, i)
 }
+
+// panicWatchHealthServer panics on Watch (streaming RPC).
+type panicWatchHealthServer struct {
+	healthpb.UnimplementedHealthServer
+}
+
+func (p *panicWatchHealthServer) Watch(_ *healthpb.HealthCheckRequest, _ healthpb.Health_WatchServer) error {
+	panic("stream panic")
+}
+
+func TestRecoveryStream_CatchesPanic(t *testing.T) {
+	lis := bufconn.Listen(bufSize)
+
+	srv := grpc.NewServer(
+		grpc.ChainStreamInterceptor(
+			interceptor.RecoveryStream(slog.Default()),
+		),
+	)
+	healthpb.RegisterHealthServer(srv, &panicWatchHealthServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := healthpb.NewHealthClient(conn)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Internal, st.Code())
+	assert.Equal(t, "internal error", st.Message())
+}

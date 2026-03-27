@@ -166,6 +166,9 @@
     },
     "runtime/concurrency": {
       "component": "runtime/concurrency"
+    },
+    "grpcx": {
+      "component": "grpcx"
     }
   }
 }

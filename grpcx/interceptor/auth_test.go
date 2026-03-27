@@ -228,3 +228,118 @@ func TestAuthStream_PanicsOnNilProvider(t *testing.T) {
 		interceptor.AuthStream(nil)
 	})
 }
+
+func TestAuthStream_MissingToken(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer(
+		grpc.ChainStreamInterceptor(
+			interceptor.AuthStream(provider),
+		),
+	)
+	healthpb.RegisterHealthServer(srv, &healthpb.UnimplementedHealthServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := healthpb.NewHealthClient(conn)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestAuthStream_SkipMethods(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer(
+		grpc.ChainStreamInterceptor(
+			interceptor.AuthStream(provider,
+				interceptor.WithSkipMethods("/grpc.health.v1.Health/Watch"),
+			),
+		),
+	)
+	healthpb.RegisterHealthServer(srv, &healthpb.UnimplementedHealthServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// No auth token, but method is skipped.
+	client := healthpb.NewHealthClient(conn)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+
+	// Should reach handler (Unimplemented), not be rejected by auth.
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unimplemented, st.Code())
+}
+
+func TestAuthStream_ValidToken(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "user-stream-123", []string{"read"})
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer(
+		grpc.ChainStreamInterceptor(
+			interceptor.AuthStream(provider),
+		),
+	)
+	healthpb.RegisterHealthServer(srv, &healthpb.UnimplementedHealthServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx := metadata.AppendToOutgoingContext(context.Background(),
+		"authorization", "Bearer "+token,
+	)
+
+	client := healthpb.NewHealthClient(conn)
+	stream, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+
+	// Should reach handler (Unimplemented), not be rejected by auth.
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unimplemented, st.Code())
+}
