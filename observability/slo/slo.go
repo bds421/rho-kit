@@ -70,9 +70,9 @@ type LabelFilter struct {
 }
 
 // SLOStatus holds the evaluation result for a single SLO.
-// For JSON serialisation, use [SLOStatusJSON] via the [Handler] endpoint; the
-// Window field is excluded from direct JSON encoding because time.Duration
-// serialises as nanoseconds which is not human-friendly.
+// The Window field is excluded from direct JSON encoding (json:"-") because
+// time.Duration serialises as nanoseconds. Use the httpx/slohttp package for
+// a JSON-friendly HTTP handler.
 type SLOStatus struct {
 	Name      string        `json:"name"`
 	Type      SLOType       `json:"type"`
