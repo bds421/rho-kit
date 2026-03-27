@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/observability/health"
 	"github.com/bds421/rho-kit/infra/messaging"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
+	"github.com/bds421/rho-kit/observability/health"
 )
 
 // messagingModule implements the Module interface for RabbitMQ connections.

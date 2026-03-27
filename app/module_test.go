@@ -588,7 +588,7 @@ func TestBaseModule_EmbeddingPattern(t *testing.T) {
 
 	m := &customModule{BaseModule: NewBaseModule("custom")}
 	assert.Equal(t, "custom", m.Name())
-	assert.Nil(t, m.HealthChecks()) // inherited no-op
+	assert.Nil(t, m.HealthChecks())                  // inherited no-op
 	assert.NoError(t, m.Close(context.Background())) // inherited no-op
 
 	m.initCalled = true // custom logic would go in an overridden Init
@@ -604,4 +604,3 @@ func TestInitModules_DuplicateNamePanics(t *testing.T) {
 		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{})
 	})
 }
-

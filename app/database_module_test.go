@@ -92,8 +92,9 @@ func TestBuildIntegrationModules_Database(t *testing.T) {
 		WithPostgres(sqldb.PostgresConfig{Host: "localhost"}, sqldb.PoolConfig{})
 
 	modules, dbMod := b.buildIntegrationModules()
-	require.Len(t, modules, 1)
-	assert.Equal(t, "database", modules[0].Name())
+	// httpclient is always present; database is added when configured.
+	assert.True(t, hasModule(modules, "httpclient"), "httpclient module should be present")
+	assert.True(t, hasModule(modules, "database"), "database module should be present")
 	require.NotNil(t, dbMod, "dbMod should be returned")
 	assert.Equal(t, "database", dbMod.Name())
 }
@@ -103,8 +104,7 @@ func TestBuildIntegrationModules_DatabaseMySQL(t *testing.T) {
 		WithMySQL(sqldb.MySQLConfig{Host: "localhost"}, sqldb.PoolConfig{})
 
 	modules, dbMod := b.buildIntegrationModules()
-	require.Len(t, modules, 1)
-	assert.Equal(t, "database", modules[0].Name())
+	assert.True(t, hasModule(modules, "database"), "database module should be present")
 	require.NotNil(t, dbMod)
 	assert.Equal(t, "mysql", dbMod.driver())
 }
@@ -122,7 +122,9 @@ func TestBuildIntegrationModules_DatabaseWithMetrics(t *testing.T) {
 func TestBuildIntegrationModules_NoDatabase(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
 	modules, dbMod := b.buildIntegrationModules()
-	assert.Empty(t, modules)
+	// httpclient is always present even without DB.
+	assert.True(t, hasModule(modules, "httpclient"), "httpclient module should always be present")
+	assert.False(t, hasModule(modules, "database"), "database module should not be present")
 	assert.Nil(t, dbMod, "dbMod should be nil when no DB configured")
 }
 
@@ -137,8 +139,27 @@ func TestBuildIntegrationModules_DatabaseOrder(t *testing.T) {
 	}
 
 	modules, dbMod := b.buildIntegrationModules()
-	require.Len(t, modules, 2)
-	assert.Equal(t, "database", modules[0].Name(), "database should be first")
-	assert.Equal(t, "rabbitmq", modules[1].Name(), "rabbitmq should be second")
+	// Order: httpclient -> database -> rabbitmq
+	names := moduleNames(modules)
+	assert.Equal(t, []string{"httpclient", "database", "rabbitmq"}, names)
 	require.NotNil(t, dbMod)
+}
+
+// hasModule reports whether the module list contains a module with the given name.
+func hasModule(modules []Module, name string) bool {
+	for _, m := range modules {
+		if m.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleNames returns the names of all modules in order.
+func moduleNames(modules []Module) []string {
+	names := make([]string, len(modules))
+	for i, m := range modules {
+		names[i] = m.Name()
+	}
+	return names
 }

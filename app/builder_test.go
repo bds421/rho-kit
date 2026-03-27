@@ -19,8 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
-	"github.com/bds421/rho-kit/observability/health"
 	"github.com/bds421/rho-kit/infra/storage/membackend"
+	"github.com/bds421/rho-kit/observability/health"
 	"github.com/bds421/rho-kit/observability/tracing"
 )
 
@@ -371,4 +371,3 @@ func drainSignals() {
 	}
 	signal.Stop(ch)
 }
-
