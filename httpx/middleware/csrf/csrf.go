@@ -267,26 +267,26 @@ func RequireCSRF(next http.Handler) http.Handler {
 }
 
 // RequireJSONContentType rejects state-changing requests that carry a body
-// without an application/json Content-Type.
+// without an application/json Content-Type. Requests without a body
+// (ContentLength == 0 and Body is nil or http.NoBody) are allowed through
+// regardless of Content-Type — this supports body-less actions like
+// POST /restart.
 func RequireJSONContentType(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodPost, http.MethodPut, http.MethodPatch:
-			if !isJSONContentType(r.Header.Get("Content-Type")) {
-				httpx.WriteError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
-				return
-			}
-		case http.MethodDelete:
-			// ContentLength is -1 for chunked/unknown bodies. Check Content-Type
-			// header presence instead — a DELETE with no body has no Content-Type.
-			ct := r.Header.Get("Content-Type")
-			if ct != "" && !isJSONContentType(ct) {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if hasBody(r) && !isJSONContentType(r.Header.Get("Content-Type")) {
 				httpx.WriteError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hasBody reports whether the request appears to carry a body.
+func hasBody(r *http.Request) bool {
+	return r.ContentLength > 0 || (r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody)
 }
 
 // isJSONContentType returns true if the Content-Type is application/json.

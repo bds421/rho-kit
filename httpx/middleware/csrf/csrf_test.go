@@ -3,6 +3,7 @@ package csrf
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -550,10 +551,9 @@ func TestRequireJSONContentType_POST_WithCharset(t *testing.T) {
 	}
 }
 
-func TestRequireJSONContentType_POST_WithoutJSON(t *testing.T) {
-	called := false
+func TestRequireJSONContentType_POST_WithoutJSON_NoBody(t *testing.T) {
 	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
+		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -561,11 +561,8 @@ func TestRequireJSONContentType_POST_WithoutJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("POST with non-JSON should be 415, got %d", rec.Code)
-	}
-	if called {
-		t.Error("next handler should not be called")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST with text/plain but no body should pass, got %d", rec.Code)
 	}
 }
 
@@ -578,8 +575,38 @@ func TestRequireJSONContentType_POST_NoContentType(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST without Content-Type (no body) should pass, got %d", rec.Code)
+	}
+}
+
+func TestRequireJSONContentType_POST_WithBodyNoContentType(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"value"}`))
+	req.Header.Del("Content-Type")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("POST without Content-Type should be 415, got %d", rec.Code)
+		t.Fatalf("POST with body but no Content-Type should be 415, got %d", rec.Code)
+	}
+}
+
+func TestRequireJSONContentType_POST_WrongContentType(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("data"))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("POST with text/plain should be 415, got %d", rec.Code)
 	}
 }
 
@@ -598,7 +625,7 @@ func TestRequireJSONContentType_PUT_WithJSON(t *testing.T) {
 	}
 }
 
-func TestRequireJSONContentType_PATCH_WithoutJSON(t *testing.T) {
+func TestRequireJSONContentType_PATCH_NoContentType(t *testing.T) {
 	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -607,8 +634,23 @@ func TestRequireJSONContentType_PATCH_WithoutJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH without Content-Type (no body) should pass, got %d", rec.Code)
+	}
+}
+
+func TestRequireJSONContentType_PATCH_WrongContentType(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader("data"))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("PATCH without JSON should be 415, got %d", rec.Code)
+		t.Fatalf("PATCH with text/plain should be 415, got %d", rec.Code)
 	}
 }
 
