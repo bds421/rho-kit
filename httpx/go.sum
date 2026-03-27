@@ -20,6 +20,8 @@ github.com/bds421/rho-kit/observability/logging v1.0.0 h1:vB1ECVwFPjsyTrNwnPEc94
 github.com/bds421/rho-kit/observability/logging v1.0.0/go.mod h1:yUSUl79uJkPBCmUSMy0ke5W5vmwcX9E5eypPODAO7YA=
 github.com/bds421/rho-kit/observability/promutil v1.0.0 h1:SalpVktna3VywVSUX2mYZIFMKAl4yIleOXOmc0scf+g=
 github.com/bds421/rho-kit/observability/promutil v1.0.0/go.mod h1:VfFVXD33Y3zVjoUBRgjAfUNX6yyOugsBvnW/xlI92+M=
+github.com/bds421/rho-kit/observability/slo v0.1.0 h1:O15r3Cat7kd9xVolHQYDuTYnDIGbbQmfFkPql8FK1sw=
+github.com/bds421/rho-kit/observability/slo v0.1.0/go.mod h1:MVbkaa2vPV7AAFP4d9gXouoR8OLtLnWTF4cGsXEOyXI=
 github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0 h1:4CmjSByHLiOOkrfGC8Iy3RgKbOm2kEqqCcoMXVmjIA8=
 github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0/go.mod h1:sHXXDH7imFhN/grD00ErNmJfSZNv/oq2uUq5zbjgpHE=
 github.com/bds421/rho-kit/resilience/retry v1.0.0 h1:c69voWW6+4aQSQLsWyyngWTKrK5EHBDbkoKvk2je9F8=
