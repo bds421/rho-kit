@@ -11,27 +11,20 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
 
-	"github.com/bds421/rho-kit/observability/auditlog"
-	"github.com/bds421/rho-kit/runtime/eventbus"
-	kitcron "github.com/bds421/rho-kit/runtime/cron"
-	"github.com/bds421/rho-kit/infra/sqldb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/httpx/healthhttp"
 	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/security/jwtutil"
-	"github.com/bds421/rho-kit/runtime/lifecycle"
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
-	"github.com/bds421/rho-kit/infra/sqldb/migrate"
+	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/observability/auditlog"
+	"github.com/bds421/rho-kit/observability/health"
 	"github.com/bds421/rho-kit/observability/tracing"
+	kitcron "github.com/bds421/rho-kit/runtime/cron"
+	"github.com/bds421/rho-kit/runtime/eventbus"
+	"github.com/bds421/rho-kit/runtime/lifecycle"
+	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
@@ -125,6 +118,9 @@ type Builder struct {
 
 	// Shutdown hooks
 	shutdownHooks []func(context.Context)
+
+	// Modules
+	modules []Module
 
 	// Router
 	routerFn RouterFunc
@@ -380,6 +376,29 @@ func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	return b
 }
 
+// WithModule registers a module for initialization during Run(). Modules are
+// initialized in registration order, after all built-in infrastructure (DB,
+// Redis, MQ, etc.) but before the RouterFunc is called.
+//
+// Panics if module is nil or if a module with the same name is already registered.
+// This is a startup-time configuration error.
+func (b *Builder) WithModule(m Module) *Builder {
+	if m == nil {
+		panic("app: module must not be nil")
+	}
+	name := m.Name()
+	if name == "" {
+		panic("app: module name must not be empty")
+	}
+	for _, existing := range b.modules {
+		if existing.Name() == name {
+			panic(fmt.Sprintf("app: duplicate module name %q", name))
+		}
+	}
+	b.modules = append(b.modules, m)
+	return b
+}
+
 // Router sets the function that builds the HTTP handler from infrastructure.
 func (b *Builder) Router(fn RouterFunc) *Builder {
 	b.routerFn = fn
@@ -407,7 +426,14 @@ func (b *Builder) Run() error {
 		return err
 	}
 
-	// 0. EventBus — always initialized (no With* required).
+	// 0. Convert builder config to modules. Modules created from With*()
+	// config are prepended so they initialize before user-registered modules.
+	builtinModules, dbMod := b.buildIntegrationModules()
+	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
+	allModules = append(allModules, builtinModules...)
+	allModules = append(allModules, b.modules...)
+
+	// 0.5. EventBus — always initialized (no With* required).
 	eventBus := eventbus.New(eventbus.WithLogger(logger))
 
 	// 0.5. Tracing
@@ -450,151 +476,10 @@ func (b *Builder) Run() error {
 		httpClient = httpx.NewTracingHTTPClient(10*time.Second, clientTLS)
 	}
 
-	// 2. Redis
-	var redisConn *kitredis.Connection
-	if b.redisOpts != nil {
-		connOpts := []kitredis.ConnOption{
-			kitredis.WithLogger(logger),
-			kitredis.WithLazyConnect(),
-		}
-		connOpts = append(connOpts, b.redisConnOpts...)
-
-		redisConn, err = kitredis.Connect(b.redisOpts, connOpts...)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if closeErr := redisConn.Close(); closeErr != nil {
-				logger.Warn("error closing redis", "error", closeErr)
-			}
-		}()
-
-		b.healthChecks = append(b.healthChecks, kitredis.HealthCheck(redisConn))
-		logger.Info("redis connection configured")
-	}
-
-	// 3. Database (MySQL or PostgreSQL)
-	var db *gorm.DB
-	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
-		openDB := func() (*gorm.DB, error) {
-			if b.dbMySQLCfg != nil {
-				dbOpts := []gormmysql.Option{}
-				if clientTLS != nil {
-					dbOpts = append(dbOpts, gormmysql.WithTLS(clientTLS))
-				}
-				logger.Info("connecting to database", "driver", "mysql", "host", b.dbMySQLCfg.Host, "database", b.dbMySQLCfg.Name)
-				return gormmysql.New(*b.dbMySQLCfg, *b.dbPoolCfg, logger, dbOpts...)
-			}
-
-			dbOpts := []gormpostgres.Option{}
-			if clientTLS != nil {
-				dbOpts = append(dbOpts, gormpostgres.WithTLS(clientTLS))
-			}
-			logger.Info("connecting to database", "driver", "postgres", "host", b.dbPgCfg.Host, "database", b.dbPgCfg.Name)
-			return gormpostgres.New(*b.dbPgCfg, *b.dbPoolCfg, logger, dbOpts...)
-		}
-
-		setupDB := func(openFn func() (*gorm.DB, error)) (*gorm.DB, bool, error) {
-			opened, openErr := openFn()
-			if openErr != nil {
-				return nil, false, openErr
-			}
-
-			// Schema migration: always use goose when configured.
-			// Same migration path for dev, staging, and production ensures
-			// schema consistency across environments.
-			if b.migrationsDir != nil {
-				dialect := "mysql"
-				if b.dbPgCfg != nil {
-					dialect = "postgres"
-				}
-				applied, migrateErr := migrate.Up(context.Background(), opened, migrate.Config{
-					Dir:     b.migrationsDir,
-					Dialect: dialect,
-				})
-				if migrateErr != nil {
-					return opened, false, fmt.Errorf("database migrations failed: %w", migrateErr)
-				}
-				if applied > 0 {
-					logger.Info("database migrations applied", "count", applied)
-				}
-			}
-
-			// Seed check (early return if --seed flag present).
-			if b.seedFn != nil {
-				if seedPath := parseSeedFlag(); seedPath != "" {
-					if err := b.seedFn(opened, seedPath, logger); err != nil {
-						return opened, false, err
-					}
-					logger.Info("seed completed, exiting")
-					return opened, true, nil
-				}
-			}
-
-			return opened, false, nil
-		}
-
-		var seedExit bool
-		db, seedExit, err = setupDB(openDB)
-		// Register the close defer BEFORE checking err, because setupDB may
-		// return a non-nil *gorm.DB alongside an error (e.g., AutoMigrate failure
-		// after a successful open). Without this, the connection pool leaks.
-		if db != nil {
-			defer func() {
-				if sqlDB, dbErr := db.DB(); dbErr == nil {
-					if closeErr := sqlDB.Close(); closeErr != nil {
-						logger.Warn("error closing database", "error", closeErr)
-					}
-				}
-			}()
-		}
-		if err != nil {
-			return err
-		}
-
-		b.healthChecks = append(b.healthChecks, sqldb.HealthCheck(gormdb.NewPinger(db)))
-
-		if seedExit {
-			return nil
-		}
-	}
-
-	// 4. RabbitMQ
-	var mqConn *amqpbackend.Connection
-	var publisher messaging.MessagePublisher
-	var mqConsumer messaging.MessageConsumer
-	if b.mqURL != "" {
-		mqOpts := []amqpbackend.DialOption{amqpbackend.WithLazyConnect()}
-		if clientTLS != nil {
-			mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
-		}
-		mqConn, err = amqpbackend.Dial(b.mqURL, logger, mqOpts...)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if closeErr := mqConn.Close(); closeErr != nil {
-				logger.Warn("error closing rabbitmq", "error", closeErr)
-			}
-		}()
-
-		pub := amqpbackend.NewPublisher(mqConn, logger)
-		defer pub.Close()
-		publisher = pub
-
-		mqConsumer = amqpbackend.NewConsumer(mqConn, pub, logger)
-
-		if b.criticalBroker {
-			b.healthChecks = append(b.healthChecks, amqpbackend.CriticalHealthCheck(mqConn))
-		} else {
-			b.healthChecks = append(b.healthChecks, amqpbackend.HealthCheck(mqConn))
-		}
-	}
-
-	// 5. Lifecycle Runner — replaces manual WaitGroup + SafeGo.
+	// 2. Lifecycle Runner — manages all long-running goroutines.
 	runner := lifecycle.NewRunner(logger)
 
-	// 6. JWT
+	// 3. JWT
 	var jwtProvider *jwtutil.Provider
 	if b.jwksURL != "" {
 		jwtProvider = jwtutil.NewProvider(b.jwksURL, httpClient, jwtutil.CacheTTL(), jwtutil.WithExpectedIssuer("https://oathkeeper"))
@@ -604,7 +489,7 @@ func (b *Builder) Run() error {
 		})
 	}
 
-	// 7. Rate limiters
+	// 4. Rate limiters
 	var rl *mwrl.RateLimiter
 	if b.ipRateRequests > 0 {
 		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow)
@@ -625,47 +510,55 @@ func (b *Builder) Run() error {
 		})
 	}
 
-	// 8. DB metrics
-	if b.dbMetrics && db != nil {
-		dbMetrics := sqldb.NewPoolMetrics(b.dbNamespace, nil)
-		runner.AddFunc("db-pool-metrics", func(ctx context.Context) error {
-			sqlDB, dbErr := db.DB()
-			if dbErr != nil {
-				logger.Warn("cannot export DB pool metrics", "error", dbErr)
-				return nil
-			}
-			sqldb.ExportPoolMetrics(ctx, sqlDB, dbMetrics, 15*time.Second)
-			return nil
-		})
-	}
-
-	// 9. Redis pool metrics
-	if redisConn != nil {
-		runner.AddFunc("redis-pool-metrics", func(ctx context.Context) error {
-			kitredis.StartPoolMetricsCollector(ctx, redisConn.Client(), "default", 15*time.Second)
-			return nil
-		})
-	}
-
-	// 10. Audit log
+	// 5. Audit log
 	var auditLogger *auditlog.Logger
 	if b.auditStore != nil {
 		auditLogger = auditlog.New(b.auditStore, b.auditOpts...)
 	}
 
-	// 11. Cron scheduler
+	// 6. Cron scheduler
 	var cronScheduler *kitcron.Scheduler
 	if b.cronEnabled {
 		cronScheduler = kitcron.New(logger, b.cronOpts...)
 		runner.Add("cron-scheduler", cronScheduler)
 	}
 
-	// 12. Early background goroutines
+	// 7. Early background goroutines
 	for _, bg := range b.earlyBgs {
 		runner.AddFunc(bg.name, bg.fn)
 	}
 
-	// 13. Router — build HTTP handler with all infrastructure available.
+	// 8. Modules — initialize in registration order, close in reverse on shutdown.
+	if len(allModules) > 0 {
+		moduleCleanup, moduleErr := initModules(
+			context.Background(),
+			allModules,
+			logger,
+			runner,
+			b.cfg,
+		)
+		if moduleErr != nil {
+			return moduleErr
+		}
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			moduleCleanup(cleanupCtx)
+		}()
+
+		// Collect health checks from all modules.
+		for _, m := range allModules {
+			b.healthChecks = append(b.healthChecks, m.HealthChecks()...)
+		}
+	}
+
+	// 9. Seed early exit — if WithSeed was configured and --seed was passed,
+	// the database module completed seeding during Init. Exit cleanly now.
+	if dbMod != nil && dbMod.SeedExit() {
+		return nil
+	}
+
+	// 10. Router — build HTTP handler with all infrastructure available.
 	// lateBgs collects goroutines registered via infra.Background() inside routerFn.
 	// A mutex protects concurrent access, and a frozen flag prevents calls after
 	// routerFn returns (the goroutines would be lost).
@@ -675,24 +568,19 @@ func (b *Builder) Run() error {
 	storageMgr := buildStorageManager(b.storageSpecs)
 
 	infra := Infrastructure{
-		Logger:        logger,
-		ClientTLS:     clientTLS,
-		ServerTLS:     serverTLS,
-		DB:            db,
-		Redis:         redisConn,
-		Broker:        mqConn,
-		Publisher:     publisher,
-		Consumer:      mqConsumer,
-		JWT:           jwtProvider,
-		RateLimiter:   rl,
-		KeyedLimiters: keyedLimiters,
+		Logger:         logger,
+		ClientTLS:      clientTLS,
+		ServerTLS:      serverTLS,
+		JWT:            jwtProvider,
+		RateLimiter:    rl,
+		KeyedLimiters:  keyedLimiters,
 		Storage:        b.storageBackend,
 		StorageManager: storageMgr,
 		Cron:           cronScheduler,
 		AuditLog:       auditLogger,
 		EventBus:       eventBus,
-		HTTPClient:    httpClient,
-		Config:        b.cfg,
+		HTTPClient:     httpClient,
+		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
@@ -719,6 +607,11 @@ func (b *Builder) Run() error {
 		},
 	}
 
+	// Let modules populate the infrastructure before the RouterFunc sees it.
+	for _, m := range allModules {
+		m.Populate(&infra)
+	}
+
 	var httpHandler http.Handler
 	if b.routerFn != nil {
 		httpHandler = b.routerFn(infra)
@@ -737,7 +630,7 @@ func (b *Builder) Run() error {
 		runner.AddFunc(bg.name, bg.fn)
 	}
 
-	// 14. Internal server (readiness + health + metrics).
+	// 11. Internal server (readiness + health + metrics).
 	// Started outside the Runner so it outlives workers during drain —
 	// health checks and metrics remain available while components shut down.
 	var readiness http.Handler
@@ -766,14 +659,6 @@ func (b *Builder) Run() error {
 	}()
 
 	// Brief pause to detect early bind failures (port conflict, permission denied).
-	// If the server fails immediately, return the error instead of continuing
-	// without health checks/metrics. Note: 50ms is a heuristic — bind failures
-	// from the kernel are synchronous and return well within this window on all
-	// tested platforms. On heavily loaded systems or slow container runtimes,
-	// a late bind failure will be caught by the internal-server-monitor below,
-	// which triggers a full service shutdown. A more robust alternative would
-	// be to call net.Listen first and pass the listener to http.Server.Serve,
-	// but that complicates TLS configuration and server option application.
 	select {
 	case srvErr := <-internalErrCh:
 		return fmt.Errorf("internal server failed to start: %w", srvErr)
@@ -793,7 +678,7 @@ func (b *Builder) Run() error {
 		}
 	})
 
-	// 15. Shutdown hooks — run when the Runner's context is cancelled.
+	// 12. Shutdown hooks — run when the Runner's context is cancelled.
 	// Each hook runs with individual panic recovery and a per-hook timeout
 	// to prevent a single misbehaving hook from blocking the entire shutdown.
 	// WARNING: Infrastructure connections (DB, Redis, Broker) may already be
@@ -830,7 +715,7 @@ func (b *Builder) Run() error {
 		})
 	}
 
-	// 16. Public server — added last so it is stopped first (reverse order).
+	// 13. Public server — added last so it is stopped first (reverse order).
 	srvOpts := make([]httpx.ServerOption, 0, len(b.serverOpts)+1)
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
@@ -839,8 +724,46 @@ func (b *Builder) Run() error {
 	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
 	runner.Add("public-server", lifecycle.HTTPServer(srv))
 
-	// 17. Run — signal handling, component lifecycle, graceful shutdown.
+	// 14. Run — signal handling, component lifecycle, graceful shutdown.
 	return runner.Run(context.Background())
+}
+
+// buildIntegrationModules creates modules from builder config fields set by
+// the legacy With*() methods (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ).
+// These modules are prepended to user-registered modules so built-in
+// infrastructure initializes first. The With*() methods remain public and
+// functional for backward compatibility.
+//
+// The returned *databaseModule is non-nil when a database is configured. Run()
+// uses it to check for seed early-exit after module initialization.
+func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
+	var modules []Module
+	var dbMod *databaseModule
+
+	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
+		dbMod = newDatabaseModule(databaseModuleConfig{
+			mysqlCfg:      b.dbMySQLCfg,
+			pgCfg:         b.dbPgCfg,
+			poolCfg:       *b.dbPoolCfg,
+			namespace:     b.dbNamespace,
+			migrationsDir: b.migrationsDir,
+			seedFn:        b.seedFn,
+			metrics:       b.dbMetrics,
+		})
+		modules = append(modules, dbMod)
+	}
+
+	if b.redisOpts != nil {
+		modules = append(modules, newRedisModule(b.redisOpts, b.redisConnOpts...))
+	}
+
+	if b.mqURL != "" {
+		m := newMessagingModule(b.mqURL)
+		m.criticalBroker = b.criticalBroker
+		modules = append(modules, m)
+	}
+
+	return modules, dbMod
 }
 
 // buildStorageManager creates a Manager from the named storage specs.
