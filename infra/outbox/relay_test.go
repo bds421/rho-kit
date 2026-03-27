@@ -46,21 +46,7 @@ func (f *fakePublisher) setErr(err error) {
 	f.err = err
 }
 
-func newTestEntry(t *testing.T, topic, routingKey string) outbox.Entry {
-	t.Helper()
-	id, err := uuid.NewV7()
-	require.NoError(t, err)
-	return outbox.Entry{
-		ID:          id,
-		Topic:       topic,
-		RoutingKey:  routingKey,
-		MessageID:   uuid.New().String(),
-		MessageType: topic + ".event",
-		Payload:     []byte(`{}`),
-		Status:      outbox.StatusPending,
-		CreatedAt:   time.Now().UTC(),
-	}
-}
+
 
 func TestRelay_PublishesPendingEntries(t *testing.T) {
 	store := &fakeStore{}
