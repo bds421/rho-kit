@@ -72,6 +72,14 @@ func applyWatcherOpts(opts []WatcherOption) watcherConfig {
 
 // FileWatcher watches a config file and reloads on change.
 // It is compatible with lifecycle.Runner.AddFunc.
+//
+// To integrate with the app.Builder, register the watcher as a background
+// goroutine inside the RouterFunc:
+//
+//	watchable := config.NewWatchable(initialCfg)
+//	fw := config.NewFileWatcher("config.yaml", loadFn, watchable)
+//	watchable.OnChange(func(old, new MyConfig) { /* react to changes */ })
+//	infra.Background("config-watcher", fw.Start)
 type FileWatcher[T any] struct {
 	path      string
 	watchable *Watchable[T]
