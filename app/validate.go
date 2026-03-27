@@ -24,15 +24,6 @@ func (b *Builder) Validate() error {
 	if b.migrationsDir != nil && b.dbMySQLCfg == nil && b.dbPgCfg == nil {
 		return fmt.Errorf("migrations require a configured database (use WithMySQL or WithPostgres)")
 	}
-	if (b.replicaPgCfg != nil || b.replicaMySQLCfg != nil) && b.dbMySQLCfg == nil && b.dbPgCfg == nil {
-		return fmt.Errorf("read replica requires a configured primary database")
-	}
-	if b.replicaPgCfg != nil && b.dbPgCfg == nil {
-		return fmt.Errorf("WithReadReplica requires WithPostgres (driver mismatch)")
-	}
-	if b.replicaMySQLCfg != nil && b.dbMySQLCfg == nil {
-		return fmt.Errorf("WithReadReplicaMySQL requires WithMySQL (driver mismatch)")
-	}
 	if b.criticalBroker && b.mqURL == "" {
 		return fmt.Errorf("critical broker requires a RabbitMQ URL")
 	}

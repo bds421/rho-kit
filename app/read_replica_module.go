@@ -7,9 +7,7 @@ import (
 	"log/slog"
 
 	"gorm.io/gorm"
-	"gorm.io/plugin/dbresolver"
 
-	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
@@ -17,47 +15,44 @@ import (
 )
 
 // readReplicaModule implements the Module interface for database read replicas.
-// It registers the GORM DBResolver plugin on the primary database connection,
-// routing reads to the replica and writes/transactions to the primary.
+// It opens a replica connection, delegates DBResolver registration to
+// [gormdb.RegisterReplica], and exposes the replica as infra.DBReader.
 //
-// This module depends on the "database" module being initialized first (it
-// retrieves the primary *gorm.DB via ModuleContext.Module("database")).
+// This module depends on the "database" module being initialized first.
 type readReplicaModule struct {
 	BaseModule
 
 	// config -- set at construction time, never mutated after.
-	mysqlCfg *sqldb.MySQLConfig
-	pgCfg    *sqldb.PostgresConfig
-	poolCfg  sqldb.PoolConfig
+	cfg gormdb.ReplicaConfig
 
 	// initialized during Init
 	replicaDB *gorm.DB
 	logger    *slog.Logger
 }
 
-// readReplicaModuleConfig holds the configuration for constructing a readReplicaModule.
-type readReplicaModuleConfig struct {
-	mysqlCfg *sqldb.MySQLConfig
-	pgCfg    *sqldb.PostgresConfig
-	poolCfg  sqldb.PoolConfig
-}
-
-// newReadReplicaModule creates a read replica module from the given config.
-// Panics if neither MySQL nor Postgres config is set.
-func newReadReplicaModule(cfg readReplicaModuleConfig) *readReplicaModule {
-	if cfg.mysqlCfg == nil && cfg.pgCfg == nil {
-		panic("app: read replica module requires MySQL or Postgres config")
-	}
+// NewReadReplicaModule creates a read replica module for use with
+// [Builder.WithModule]. The ReplicaConfig must have exactly one of
+// MySQL or Postgres set; validation happens at Init time.
+//
+// Usage:
+//
+//	builder.WithModule(app.NewReadReplicaModule(gormdb.ReplicaConfig{
+//	    Postgres: &sqldb.PostgresConfig{Host: "replica.db"},
+//	    Pool:     sqldb.PoolConfig{MaxOpenConns: 10},
+//	}))
+func NewReadReplicaModule(cfg gormdb.ReplicaConfig) Module {
 	return &readReplicaModule{
 		BaseModule: NewBaseModule("read-replica"),
-		mysqlCfg:   cfg.mysqlCfg,
-		pgCfg:      cfg.pgCfg,
-		poolCfg:    cfg.poolCfg,
+		cfg:        cfg,
 	}
 }
 
 func (m *readReplicaModule) Init(_ context.Context, mc ModuleContext) error {
 	m.logger = mc.Logger
+
+	if err := m.cfg.Validate(); err != nil {
+		return fmt.Errorf("read replica module: %w", err)
+	}
 
 	dbMod, ok := mc.Module("database").(*databaseModule)
 	if !ok {
@@ -79,12 +74,13 @@ func (m *readReplicaModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	m.replicaDB = replicaDB
 
-	if err := m.registerResolver(primaryDB); err != nil {
-		_ = m.closeReplica()
-		return fmt.Errorf("read replica module: register resolver: %w", err)
+	if regErr := gormdb.RegisterReplica(primaryDB, replicaDB, mc.Logger); regErr != nil {
+		_ = gormdb.CloseDB(replicaDB)
+		m.replicaDB = nil
+		return fmt.Errorf("read replica module: %w", regErr)
 	}
 
-	mc.Logger.Info("read replica configured", "driver", m.driver())
+	mc.Logger.Info("read replica configured", "driver", m.cfg.Driver())
 	return nil
 }
 
@@ -110,18 +106,16 @@ func (m *readReplicaModule) HealthChecks() []health.DependencyCheck {
 }
 
 func (m *readReplicaModule) Close(_ context.Context) error {
-	return m.closeReplica()
-}
-
-func (m *readReplicaModule) driver() string {
-	if m.mysqlCfg != nil {
-		return "mysql"
+	if err := gormdb.CloseDB(m.replicaDB); err != nil {
+		m.logger.Warn("error closing read replica", "error", err)
+		return err
 	}
-	return "postgres"
+	m.replicaDB = nil
+	return nil
 }
 
 func (m *readReplicaModule) openReplica(clientTLS *tls.Config) (*gorm.DB, error) {
-	if m.mysqlCfg != nil {
+	if m.cfg.MySQL != nil {
 		return m.openMySQL(clientTLS)
 	}
 	return m.openPostgres(clientTLS)
@@ -133,8 +127,8 @@ func (m *readReplicaModule) openMySQL(clientTLS *tls.Config) (*gorm.DB, error) {
 		opts = append(opts, gormmysql.WithTLS(clientTLS))
 	}
 	m.logger.Info("connecting to read replica", "driver", "mysql",
-		"host", m.mysqlCfg.Host, "database", m.mysqlCfg.Name)
-	return gormmysql.New(*m.mysqlCfg, m.poolCfg, m.logger, opts...)
+		"host", m.cfg.MySQL.Host, "database", m.cfg.MySQL.Name)
+	return gormmysql.New(*m.cfg.MySQL, m.cfg.Pool, m.logger, opts...)
 }
 
 func (m *readReplicaModule) openPostgres(clientTLS *tls.Config) (*gorm.DB, error) {
@@ -143,30 +137,6 @@ func (m *readReplicaModule) openPostgres(clientTLS *tls.Config) (*gorm.DB, error
 		opts = append(opts, gormpostgres.WithTLS(clientTLS))
 	}
 	m.logger.Info("connecting to read replica", "driver", "postgres",
-		"host", m.pgCfg.Host, "database", m.pgCfg.Name)
-	return gormpostgres.New(*m.pgCfg, m.poolCfg, m.logger, opts...)
-}
-
-func (m *readReplicaModule) registerResolver(primaryDB *gorm.DB) error {
-	return primaryDB.Use(dbresolver.Register(dbresolver.Config{
-		Replicas: []gorm.Dialector{m.replicaDB.Dialector},
-		Policy:   dbresolver.RandomPolicy{},
-	}))
-}
-
-func (m *readReplicaModule) closeReplica() error {
-	if m.replicaDB == nil {
-		return nil
-	}
-	sqlDB, err := m.replicaDB.DB()
-	if err != nil {
-		m.logger.Warn("cannot get underlying sql.DB for replica close", "error", err)
-		return err
-	}
-	if closeErr := sqlDB.Close(); closeErr != nil {
-		m.logger.Warn("error closing read replica", "error", closeErr)
-		return closeErr
-	}
-	m.replicaDB = nil
-	return nil
+		"host", m.cfg.Postgres.Host, "database", m.cfg.Postgres.Name)
+	return gormpostgres.New(*m.cfg.Postgres, m.cfg.Pool, m.logger, opts...)
 }

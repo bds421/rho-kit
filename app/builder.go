@@ -71,11 +71,6 @@ type Builder struct {
 	dbMetrics   bool
 	dbNamespace string
 
-	// Read replica
-	replicaMySQLCfg *sqldb.MySQLConfig
-	replicaPgCfg    *sqldb.PostgresConfig
-	replicaPoolCfg  *sqldb.PoolConfig
-
 	// Redis
 	redisOpts     *goredis.Options
 	redisConnOpts []kitredis.ConnOption
@@ -193,42 +188,6 @@ func (b *Builder) WithPostgres(cfg sqldb.PostgresConfig, pool sqldb.PoolConfig) 
 // WithDBMetrics enables Prometheus pool metrics exported every 15s.
 func (b *Builder) WithDBMetrics() *Builder {
 	b.dbMetrics = true
-	return b
-}
-
-// WithReadReplica configures a PostgreSQL read replica. GORM DBResolver routes
-// reads to the replica and writes/transactions to the primary. The replica is
-// also available directly as infra.DBReader for explicit read targeting.
-//
-// Requires [WithPostgres] -- panics if called without a primary PostgreSQL database.
-// Panics if [WithReadReplicaMySQL] was already called.
-func (b *Builder) WithReadReplica(cfg sqldb.PostgresConfig, pool sqldb.PoolConfig) *Builder {
-	if b.dbPgCfg == nil {
-		panic("app.Builder: WithReadReplica requires WithPostgres")
-	}
-	if b.replicaMySQLCfg != nil {
-		panic("app.Builder: WithReadReplica and WithReadReplicaMySQL are mutually exclusive")
-	}
-	b.replicaPgCfg = &cfg
-	b.replicaPoolCfg = &pool
-	return b
-}
-
-// WithReadReplicaMySQL configures a MySQL/MariaDB read replica. GORM DBResolver
-// routes reads to the replica and writes/transactions to the primary. The
-// replica is also available directly as infra.DBReader for explicit read targeting.
-//
-// Requires [WithMySQL] -- panics if called without a primary MySQL database.
-// Panics if [WithReadReplica] was already called.
-func (b *Builder) WithReadReplicaMySQL(cfg sqldb.MySQLConfig, pool sqldb.PoolConfig) *Builder {
-	if b.dbMySQLCfg == nil {
-		panic("app.Builder: WithReadReplicaMySQL requires WithMySQL")
-	}
-	if b.replicaPgCfg != nil {
-		panic("app.Builder: WithReadReplicaMySQL and WithReadReplica are mutually exclusive")
-	}
-	b.replicaMySQLCfg = &cfg
-	b.replicaPoolCfg = &pool
 	return b
 }
 
@@ -840,14 +799,6 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 			metrics:       b.dbMetrics,
 		})
 		modules = append(modules, dbMod)
-	}
-
-	if b.replicaPgCfg != nil || b.replicaMySQLCfg != nil {
-		modules = append(modules, newReadReplicaModule(readReplicaModuleConfig{
-			mysqlCfg: b.replicaMySQLCfg,
-			pgCfg:    b.replicaPgCfg,
-			poolCfg:  *b.replicaPoolCfg,
-		}))
 	}
 
 	if b.redisOpts != nil {

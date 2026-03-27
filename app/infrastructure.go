@@ -44,7 +44,7 @@ type Infrastructure struct {
 	ServerTLS *tls.Config
 
 	DB        *gorm.DB                  // nil if no WithMySQL or WithPostgres
-	DBReader  *gorm.DB                  // replica for reads; falls back to DB if no WithReadReplica
+	DBReader  *gorm.DB                  // read replica; falls back to DB when no replica module is registered
 	Broker    messaging.Connector      // nil if no WithRabbitMQ
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
 	Consumer  messaging.MessageConsumer  // nil if no WithRabbitMQ
