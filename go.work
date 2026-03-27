@@ -23,6 +23,7 @@ use (
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
+	./infra/messaging/outbox
 	./infra/messaging/redisbackend
 	./infra/redis
 	./infra/sqldb

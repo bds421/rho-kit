@@ -19,6 +19,7 @@
   "infra/messaging": "1.1.0",
   "infra/messaging/amqpbackend": "1.1.0",
   "infra/messaging/amqpbackend/debughttp": "1.0.0",
+  "infra/messaging/outbox": "0.0.0",
   "infra/messaging/redisbackend": "1.1.0",
   "infra/redis": "1.1.0",
   "infra/storage": "1.0.0",
