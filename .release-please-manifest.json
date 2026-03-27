@@ -48,5 +48,6 @@
   "data/idempotency/pgstore": "1.0.0",
   "infra/sqldb/gormdb/gormmysql": "1.0.0",
   "infra/sqldb/gormdb/gormpostgres": "1.0.0",
-  "runtime/batchworker": "1.0.0"
+  "runtime/batchworker": "1.0.0",
+  "runtime/concurrency": "0.0.0"
 }
