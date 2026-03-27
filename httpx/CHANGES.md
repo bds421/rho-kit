@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/bds421/rho-kit/compare/httpx/v1.3.0...httpx/v1.4.0) (2026-03-27)
+
+
+### Features
+
+* **httpx:** add SLO HTTP handler and healthhttp wiring ([#33](https://github.com/bds421/rho-kit/issues/33)) ([55a93eb](https://github.com/bds421/rho-kit/commit/55a93ebdb70c417f0e804a25eeaca9751fa84bb6))
+
 ## [1.3.0](https://github.com/bds421/rho-kit/compare/httpx/v1.2.1...httpx/v1.3.0) (2026-03-27)
 
 
