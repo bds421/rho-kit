@@ -10,8 +10,8 @@ github.com/alicebob/miniredis/v2 v2.37.0 h1:RheObYW32G1aiJIj81XVt78ZHJpHonHLHW7O
 github.com/alicebob/miniredis/v2 v2.37.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/bds421/rho-kit/core/apperror v1.1.0 h1:LbL8SFLV/s44Jq5Eor16QhBA18QYixw/QeXfGSy5Szk=
 github.com/bds421/rho-kit/core/apperror v1.1.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
-github.com/bds421/rho-kit/core/config v1.0.0 h1:GGfhRiiWfX7wKxYa85H/+60IXwiA4NU8pIGm1h+h3TQ=
-github.com/bds421/rho-kit/core/config v1.0.0/go.mod h1:8svppGoTWL0zmkilgbTRdHSW2lb06LcpV0P0wAagsP8=
+github.com/bds421/rho-kit/core/config v1.1.1 h1:lniYqHCx0U93Pl1vk2VudCfJeVl3QkJBbFo3m0X757M=
+github.com/bds421/rho-kit/core/config v1.1.1/go.mod h1:IyPHeucdigrMI0bXSXygRUJRflgcKWwvSP589pgxXq4=
 github.com/bds421/rho-kit/core/contextutil v1.1.0 h1:a9nFttL9sgu+z+UvSGhEwoUUb9IBMQug9LgoVi//7Tc=
 github.com/bds421/rho-kit/core/contextutil v1.1.0/go.mod h1:i4tWfLhCUoAz/7zeGTAXSOaR/cN7j4/3aFslLtcKR1M=
 github.com/bds421/rho-kit/core/validate v1.0.0 h1:cEe7K3VWJQbIyLSZIPUB332mydYO9tIq4DzuCsiJGQU=
@@ -24,8 +24,8 @@ github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0 h1:FWK9CsyPJV5seOHa
 github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0/go.mod h1:r7dDj9zfD70catPsNHOk1pvcyHQoVfKI+X2YgetT4/Q=
 github.com/bds421/rho-kit/infra/redis v1.0.0 h1:gv1S4hgIovRR9UjOTu40VBvA9HSKjiEhz7lriFvveDw=
 github.com/bds421/rho-kit/infra/redis v1.0.0/go.mod h1:JYTyj5SViE8oeAGUD1Qpab9Qml99jSWJ85hAEWhP6AE=
-github.com/bds421/rho-kit/infra/sqldb v1.0.0 h1:HhKCklEbDAChCnOba2znqjLcae/pEVjwOw45VAGAkgM=
-github.com/bds421/rho-kit/infra/sqldb v1.0.0/go.mod h1:Cb2qXcDvjcVLZkrkfiQWpAAVjAVjmOC88BF+wYGDKNk=
+github.com/bds421/rho-kit/infra/sqldb v1.1.0 h1:G0/b2VoibkSUGPlhYFU7SvsGhlMHVhB9cWxTme9GPME=
+github.com/bds421/rho-kit/infra/sqldb v1.1.0/go.mod h1:JfgX4eUDM48mYD9SLZwn1ThnUXeqU49nSmyUROMO07Y=
 github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.0.0 h1:54Jx4yaQ8i7ey49S9ury1c1HS6PlUYCNSAOAOsAbBRc=
 github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.0.0/go.mod h1:VTZ0S02UmsM64gsIPK8EuVLT5Pl0yKF/hHLKzFwbzTo=
 github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.0.0 h1:NdmJdQs1nbGOd7fUzWxu7CIyNlT68GoJlaq5heegins=
@@ -56,8 +56,8 @@ github.com/bds421/rho-kit/resilience/retry v1.0.0 h1:c69voWW6+4aQSQLsWyyngWTKrK5
 github.com/bds421/rho-kit/resilience/retry v1.0.0/go.mod h1:qQ3G6PPmRLya9Xqd9xBmZrSTJp0BV25T/4yBNWeV7Sw=
 github.com/bds421/rho-kit/runtime/cron v1.0.0 h1:7kNvShIXJVrH0NA35WVKN7/1K/EsceKTuNLYFR7Dj4E=
 github.com/bds421/rho-kit/runtime/cron v1.0.0/go.mod h1:2Jg/VXLAgnATT658wY/DtPI87Gz26o6ztWqoBdqLw5U=
-github.com/bds421/rho-kit/runtime/eventbus v1.0.0 h1:bGDMNjjiFPRa3owVmD6VpzbBZibEzPZlbrjA8H7e1oA=
-github.com/bds421/rho-kit/runtime/eventbus v1.0.0/go.mod h1:Z/e2MRbdAjUWYISIx8XfcH/nKTqPR3eT1bNwfgoFDSM=
+github.com/bds421/rho-kit/runtime/eventbus v1.1.0 h1:T6CgVT5dD1JDfUxFB4rDw+UkiEdQ2d3BEdF5dDJThRE=
+github.com/bds421/rho-kit/runtime/eventbus v1.1.0/go.mod h1:dtBA3WSqarOoxjNJAWJHXcy9/EIKEBbh1Xc+z1ofecY=
 github.com/bds421/rho-kit/runtime/lifecycle v1.0.0 h1:2JTc9XPevTjZ2foToxC5U7MWPOYwfLHiTl8WMdebbAk=
 github.com/bds421/rho-kit/runtime/lifecycle v1.0.0/go.mod h1:bhduX/FozHAkBx6szDT8s8jhGFx3HE26CC9a+nkx2SQ=
 github.com/bds421/rho-kit/security/jwtutil v1.0.0 h1:brHEYB0A92jwrts8kfQkDZHPLMXOG3DeGLYtoQUiRjk=
@@ -107,6 +107,8 @@ github.com/ebitengine/purego v0.10.0 h1:QIw4xfpWT6GWTzaW5XEKy3HXoqrJGx1ijYHzTF0/
 github.com/ebitengine/purego v0.10.0/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
+github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
+github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/gabriel-vasile/mimetype v1.4.12 h1:e9hWvmLYvtp846tLHam2o++qitpguFiYCKbn0w9jyqw=
 github.com/gabriel-vasile/mimetype v1.4.12/go.mod h1:d+9Oxyo1wTzWdyVUPMmXFvp4F9tea18J8ufA774AB3s=
 github.com/glebarez/go-sqlite v1.22.0 h1:uAcMJhaA6r3LHMTFgP0SifzgXg46yJkgxqyuyec+ruQ=
