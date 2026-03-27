@@ -21,8 +21,13 @@ const (
 	// TypeErrorRate tracks the ratio of failed requests.
 	TypeErrorRate SLOType = "error_rate"
 
-	// TypeAvailability tracks the ratio of successful requests (1 - error rate).
-	TypeAvailability SLOType = "availability"
+	// TypeSuccessRate tracks the ratio of successful requests (1 - error rate).
+	// This measures success ratio from the service's own Prometheus counters
+	// ("of the requests I handled, what percentage succeeded?"). It does NOT
+	// measure true availability/uptime — if the service is down it records
+	// nothing. True availability requires an external observer (load balancer
+	// metrics, synthetic probes, Blackbox Exporter).
+	TypeSuccessRate SLOType = "success_rate"
 )
 
 // SLO defines a single service level objective.
@@ -30,13 +35,13 @@ type SLO struct {
 	// Name identifies this SLO (must be unique per Checker).
 	Name string
 
-	// Type is the category of the objective (latency, error_rate, availability).
+	// Type is the category of the objective (latency, error_rate, success_rate).
 	Type SLOType
 
 	// Threshold is the target value. Interpretation depends on Type:
 	//   - Latency: maximum acceptable seconds at the given Percentile.
 	//   - ErrorRate: maximum acceptable error ratio (e.g. 0.001 for 0.1%).
-	//   - Availability: minimum acceptable success ratio (e.g. 0.999).
+	//   - SuccessRate: minimum acceptable success ratio (e.g. 0.999).
 	Threshold float64
 
 	// Percentile is used only for TypeLatency SLOs (e.g. 0.99 for p99).
@@ -48,11 +53,11 @@ type SLO struct {
 	// MetricName overrides the default Prometheus metric name used for evaluation.
 	// If empty, the Checker uses well-known defaults:
 	//   - Latency: "http_request_duration_seconds"
-	//   - ErrorRate / Availability: "http_requests_total"
+	//   - ErrorRate / SuccessRate: "http_requests_total"
 	MetricName string
 
 	// ErrorLabelFilter specifies the label name and value that identifies error
-	// responses. Only used for ErrorRate and Availability types.
+	// responses. Only used for ErrorRate and SuccessRate types.
 	// Defaults to code=~"5.." if empty.
 	ErrorLabelFilter LabelFilter
 }
@@ -101,13 +106,16 @@ func HTTPErrorRateSLO(name string, maxRate float64, window time.Duration) SLO {
 	}
 }
 
-// HTTPAvailabilitySLO creates an SLO that tracks HTTP availability.
-// minAvailability is the minimum acceptable success ratio (e.g. 0.999 for 99.9%).
-func HTTPAvailabilitySLO(name string, minAvailability float64, window time.Duration) SLO {
+// HTTPSuccessRateSLO creates an SLO that tracks the HTTP success rate
+// (1 - error rate) from the service's own Prometheus counters. This measures
+// "of the requests I handled, what percentage succeeded?" — it does NOT
+// measure true availability. If the service is down, no metrics are recorded.
+// minSuccessRate is the minimum acceptable success ratio (e.g. 0.999 for 99.9%).
+func HTTPSuccessRateSLO(name string, minSuccessRate float64, window time.Duration) SLO {
 	return SLO{
 		Name:      name,
-		Type:      TypeAvailability,
-		Threshold: minAvailability,
+		Type:      TypeSuccessRate,
+		Threshold: minSuccessRate,
 		Window:    window,
 	}
 }
@@ -193,8 +201,8 @@ func evaluateSLO(s SLO, families map[string]*dto.MetricFamily) SLOStatus {
 		status.Current = evaluateLatency(s, families)
 	case TypeErrorRate:
 		status.Current = evaluateErrorRate(s, families)
-	case TypeAvailability:
-		status.Current = evaluateAvailability(s, families)
+	case TypeSuccessRate:
+		status.Current = evaluateSuccessRate(s, families)
 	}
 
 	if math.IsNaN(status.Current) {
@@ -212,7 +220,7 @@ func isSLOBreached(s SLO, current float64) bool {
 	switch s.Type {
 	case TypeLatency, TypeErrorRate:
 		return current > s.Threshold
-	case TypeAvailability:
+	case TypeSuccessRate:
 		return current < s.Threshold
 	default:
 		return false
@@ -222,7 +230,7 @@ func isSLOBreached(s SLO, current float64) bool {
 // defaultLatencyMetric is the default histogram name for latency SLOs.
 const defaultLatencyMetric = "http_request_duration_seconds"
 
-// defaultRequestMetric is the default counter name for error rate / availability SLOs.
+// defaultRequestMetric is the default counter name for error rate / success rate SLOs.
 const defaultRequestMetric = "http_requests_total"
 
 // evaluateLatency extracts the current percentile latency from a histogram metric.
@@ -265,8 +273,8 @@ func evaluateErrorRate(s SLO, families map[string]*dto.MetricFamily) float64 {
 	return errors / total
 }
 
-// evaluateAvailability computes the success ratio (1 - error rate).
-func evaluateAvailability(s SLO, families map[string]*dto.MetricFamily) float64 {
+// evaluateSuccessRate computes the success ratio (1 - error rate).
+func evaluateSuccessRate(s SLO, families map[string]*dto.MetricFamily) float64 {
 	errorRate := evaluateErrorRate(SLO{
 		Name:             s.Name,
 		MetricName:       s.MetricName,

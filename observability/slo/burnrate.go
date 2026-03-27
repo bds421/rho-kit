@@ -13,7 +13,7 @@ import (
 //
 // The formula depends on the SLO type:
 //   - ErrorRate: current / threshold (how many times over the budget)
-//   - Availability: (1 - current) / (1 - threshold)
+//   - SuccessRate: (1 - current) / (1 - threshold)
 //   - Latency: current / threshold
 //
 // Returns 0 when no meaningful burn rate can be computed (NaN current, zero threshold).
@@ -25,8 +25,8 @@ func CalculateBurnRate(s SLO, current float64) float64 {
 	switch s.Type {
 	case TypeErrorRate:
 		return burnRateErrorRate(s.Threshold, current)
-	case TypeAvailability:
-		return burnRateAvailability(s.Threshold, current)
+	case TypeSuccessRate:
+		return burnRateSuccessRate(s.Threshold, current)
 	case TypeLatency:
 		return burnRateLatency(s.Threshold, current)
 	default:
@@ -44,10 +44,10 @@ func burnRateErrorRate(threshold, current float64) float64 {
 	return current / threshold
 }
 
-// burnRateAvailability computes burn rate for availability SLOs.
-// threshold is the min acceptable availability (e.g. 0.999).
-// current is the observed availability.
-func burnRateAvailability(threshold, current float64) float64 {
+// burnRateSuccessRate computes burn rate for success rate SLOs.
+// threshold is the min acceptable success rate (e.g. 0.999).
+// current is the observed success rate.
+func burnRateSuccessRate(threshold, current float64) float64 {
 	budget := 1 - threshold
 	if budget <= 0 {
 		return 0

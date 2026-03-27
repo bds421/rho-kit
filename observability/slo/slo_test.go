@@ -31,11 +31,11 @@ func TestHTTPErrorRateSLO(t *testing.T) {
 	assert.Equal(t, 24*time.Hour, s.Window)
 }
 
-func TestHTTPAvailabilitySLO(t *testing.T) {
-	s := HTTPAvailabilitySLO("api-avail", 0.999, 24*time.Hour)
+func TestHTTPSuccessRateSLO(t *testing.T) {
+	s := HTTPSuccessRateSLO("api-avail", 0.999, 24*time.Hour)
 
 	assert.Equal(t, "api-avail", s.Name)
-	assert.Equal(t, TypeAvailability, s.Type)
+	assert.Equal(t, TypeSuccessRate, s.Type)
 	assert.Equal(t, 0.999, s.Threshold)
 	assert.Equal(t, 24*time.Hour, s.Window)
 }
@@ -126,7 +126,7 @@ func TestChecker_Evaluate_ErrorRate_Breached(t *testing.T) {
 	assert.Greater(t, statuses[0].BurnRate, 1.0)
 }
 
-func TestChecker_Evaluate_Availability_NoBreach(t *testing.T) {
+func TestChecker_Evaluate_SuccessRate_NoBreach(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
@@ -134,11 +134,11 @@ func TestChecker_Evaluate_Availability_NoBreach(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 999 OK, 1 error -> 99.9% availability, threshold 99.9%
+	// 999 OK, 1 error -> 99.9% success rate, threshold 99.9%
 	total.WithLabelValues("200").Add(999)
 	total.WithLabelValues("500").Add(1)
 
-	c := NewChecker(reg, HTTPAvailabilitySLO("avail", 0.999, time.Hour))
+	c := NewChecker(reg, HTTPSuccessRateSLO("avail", 0.999, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -146,7 +146,7 @@ func TestChecker_Evaluate_Availability_NoBreach(t *testing.T) {
 	assert.False(t, statuses[0].Breached)
 }
 
-func TestChecker_Evaluate_Availability_Breached(t *testing.T) {
+func TestChecker_Evaluate_SuccessRate_Breached(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
@@ -154,11 +154,11 @@ func TestChecker_Evaluate_Availability_Breached(t *testing.T) {
 	}, []string{"code"})
 	reg.MustRegister(total)
 
-	// 990 OK, 10 errors -> 99.0% availability, threshold 99.9%
+	// 990 OK, 10 errors -> 99.0% success rate, threshold 99.9%
 	total.WithLabelValues("200").Add(990)
 	total.WithLabelValues("500").Add(10)
 
-	c := NewChecker(reg, HTTPAvailabilitySLO("avail", 0.999, time.Hour))
+	c := NewChecker(reg, HTTPSuccessRateSLO("avail", 0.999, time.Hour))
 	statuses := c.Evaluate()
 
 	require.Len(t, statuses, 1)
@@ -411,8 +411,8 @@ func TestIsSLOBreached(t *testing.T) {
 		{TypeLatency, 0.5, 0.6, true},
 		{TypeErrorRate, 0.01, 0.005, false},
 		{TypeErrorRate, 0.01, 0.02, true},
-		{TypeAvailability, 0.999, 0.9995, false},
-		{TypeAvailability, 0.999, 0.998, true},
+		{TypeSuccessRate, 0.999, 0.9995, false},
+		{TypeSuccessRate, 0.999, 0.998, true},
 		{SLOType("unknown"), 0.5, 0.6, false},
 	}
 

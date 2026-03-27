@@ -31,14 +31,14 @@ func TestCalculateBurnRate_ErrorRate(t *testing.T) {
 	}
 }
 
-func TestCalculateBurnRate_Availability(t *testing.T) {
+func TestCalculateBurnRate_SuccessRate(t *testing.T) {
 	tests := []struct {
 		name      string
 		threshold float64
 		current   float64
 		want      float64
 	}{
-		{"perfect availability", 0.999, 1.0, 0.0},
+		{"perfect success rate", 0.999, 1.0, 0.0},
 		{"at budget", 0.999, 0.999, 1.0},
 		{"double budget consumed", 0.999, 0.998, 2.0},
 		{"threshold 1.0 (zero budget)", 1.0, 0.999, 0.0},
@@ -47,7 +47,7 @@ func TestCalculateBurnRate_Availability(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := SLO{Type: TypeAvailability, Threshold: tt.threshold}
+			s := SLO{Type: TypeSuccessRate, Threshold: tt.threshold}
 			got := CalculateBurnRate(s, tt.current)
 			assert.InDelta(t, tt.want, got, 1e-9)
 		})
