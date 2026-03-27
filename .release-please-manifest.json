@@ -34,6 +34,7 @@
   "observability/logattr": "1.0.0",
   "observability/logging": "1.0.0",
   "observability/promutil": "1.0.0",
+  "observability/slo": "0.0.0",
   "observability/tracing": "1.0.0",
   "resilience/circuitbreaker": "1.0.0",
   "resilience/retry": "1.0.0",
