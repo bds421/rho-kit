@@ -3,18 +3,21 @@ module github.com/bds421/rho-kit/app
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/httpx v1.0.0
+	github.com/bds421/rho-kit/httpx v1.4.0
 	github.com/bds421/rho-kit/infra/messaging v1.0.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0
 	github.com/bds421/rho-kit/infra/redis v1.0.0
-	github.com/bds421/rho-kit/infra/sqldb v1.0.0
+	github.com/bds421/rho-kit/infra/sqldb v1.1.0
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.0.0
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.0.0
 	github.com/bds421/rho-kit/infra/storage v1.0.0
 	github.com/bds421/rho-kit/observability/auditlog v1.0.0
 	github.com/bds421/rho-kit/observability/health v1.0.0
 	github.com/bds421/rho-kit/observability/logging v1.0.0
+	github.com/bds421/rho-kit/observability/slo v0.1.0
 	github.com/bds421/rho-kit/observability/tracing v1.0.0
 	github.com/bds421/rho-kit/runtime/cron v1.0.0
-	github.com/bds421/rho-kit/runtime/eventbus v1.0.0
+	github.com/bds421/rho-kit/runtime/eventbus v1.1.0
 	github.com/bds421/rho-kit/runtime/lifecycle v1.0.0
 	github.com/bds421/rho-kit/security/jwtutil v1.0.0
 	github.com/redis/go-redis/v9 v9.18.0
@@ -23,15 +26,24 @@ require (
 )
 
 require (
+	github.com/bds421/rho-kit/core/contextutil v1.1.0 // indirect
+	github.com/bds421/rho-kit/core/validate v1.0.0 // indirect
 	github.com/bds421/rho-kit/observability/logattr v1.0.0 // indirect
 	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
+	github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0 // indirect
 	github.com/bds421/rho-kit/resilience/retry v1.0.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.30.1 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/apperror v1.0.0 // indirect
-	github.com/bds421/rho-kit/core/config v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.1.0 // indirect
+	github.com/bds421/rho-kit/core/config v1.1.1
 	github.com/bds421/rho-kit/io/atomicfile v1.0.0 // indirect
 	github.com/bds421/rho-kit/io/progress v1.0.0 // indirect
 	github.com/bds421/rho-kit/security/netutil v1.0.0
@@ -67,7 +79,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/pressly/goose/v3 v3.27.0 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
+	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
