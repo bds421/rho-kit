@@ -517,6 +517,30 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 	assert.Equal(t, []string{"ok-mod"}, closed)
 }
 
+func TestInitModules_DuplicateNameReturnsError(t *testing.T) {
+	m1 := newStubModule("dup")
+	m2 := newStubModule("dup")
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := lifecycle.NewRunner(logger)
+
+	cleanup, err := initModules(
+		context.Background(),
+		[]Module{m1, m2},
+		logger,
+		runner,
+		BaseConfig{},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate module name")
+	assert.Contains(t, err.Error(), "dup")
+	assert.Nil(t, cleanup)
+
+	// Neither module should have been initialized.
+	assert.False(t, m1.initCalled.Load())
+	assert.False(t, m2.initCalled.Load())
+}
+
 func TestInitModules_PopulateOrder(t *testing.T) {
 	var populateOrder []string
 

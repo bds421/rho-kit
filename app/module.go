@@ -87,6 +87,18 @@ func initModules(
 	runner *lifecycle.Runner,
 	cfg BaseConfig,
 ) (func(context.Context), error) {
+	// Validate name uniqueness across all modules (builtin + user-registered).
+	// WithModule only checks user-registered modules; this catches collisions
+	// between builtin integration modules and user modules (e.g., a user module
+	// named "database" when WithPostgres was also called).
+	seen := make(map[string]bool, len(modules))
+	for _, m := range modules {
+		if seen[m.Name()] {
+			return nil, fmt.Errorf("duplicate module name %q", m.Name())
+		}
+		seen[m.Name()] = true
+	}
+
 	initialized := make([]Module, 0, len(modules))
 	moduleMap := make(map[string]Module, len(modules))
 

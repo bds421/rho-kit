@@ -84,10 +84,12 @@ func (m *databaseModule) Init(_ context.Context, mc ModuleContext) error {
 	m.db = db
 
 	if err := m.runMigrations(); err != nil {
+		m.closeDB()
 		return err
 	}
 
 	if err := m.runSeed(); err != nil {
+		m.closeDB()
 		return err
 	}
 
@@ -111,6 +113,15 @@ func (m *databaseModule) Populate(infra *Infrastructure) {
 }
 
 func (m *databaseModule) Close(_ context.Context) error {
+	return m.closeDB()
+}
+
+// closeDB closes the underlying sql.DB connection pool and nils m.db.
+// Called from Close (normal shutdown) and from Init when a post-open step
+// (migrations, seeding) fails. Without this, a failed Init would leak the
+// connection because initModules only calls Close on already-initialized
+// modules, not the one whose Init returned an error.
+func (m *databaseModule) closeDB() error {
 	if m.db == nil {
 		return nil
 	}
@@ -123,6 +134,7 @@ func (m *databaseModule) Close(_ context.Context) error {
 		m.logger.Warn("error closing database", "error", closeErr)
 		return closeErr
 	}
+	m.db = nil
 	return nil
 }
 
