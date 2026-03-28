@@ -35,14 +35,14 @@ func TestBuildIntegrationModules_JWT(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithJWT("https://example.com/.well-known/jwks.json")
 
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "jwt"), "jwt module should be present")
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient should be present")
 }
 
 func TestBuildIntegrationModules_NoJWT(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	assert.False(t, hasModule(modules, "jwt"), "jwt should not be present without config")
 }
 
@@ -51,7 +51,7 @@ func TestBuildIntegrationModules_FullChain(t *testing.T) {
 		WithTracing(tracing.Config{ServiceName: "test"}).
 		WithJWT("https://example.com/.well-known/jwks.json")
 
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	names := moduleNames(modules)
 	// Order: tracing -> httpclient -> jwt
 	assert.Equal(t, []string{"tracing", "httpclient", "jwt"}, names)

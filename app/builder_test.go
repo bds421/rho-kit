@@ -34,7 +34,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		WithTracing(tracing.Config{}).
 		WithCron().
 		WithEventBusPool(4).
-		WithGRPC(func(_ *grpc.Server) {}, ":50051").
+		WithModule(NewGRPCModule(func(_ *grpc.Server) {}, ":50051")).
 		WithServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).

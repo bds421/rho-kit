@@ -22,30 +22,27 @@ import (
 	"github.com/bds421/rho-kit/runtime/lifecycle"
 )
 
-func TestWithGRPC_PanicsOnNilRegistrar(t *testing.T) {
-	defer func() {
-		r := recover()
-		require.NotNil(t, r, "expected panic for nil registrar")
-		assert.Contains(t, fmt.Sprint(r), "non-nil registrar")
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithGRPC(nil, ":50051")
+func TestNewGRPCModule_ReturnsModule(t *testing.T) {
+	m := NewGRPCModule(func(_ *grpc.Server) {}, ":50051")
+	assert.Equal(t, "grpc", m.Name())
 }
 
-func TestWithGRPC_PanicsOnEmptyAddr(t *testing.T) {
-	defer func() {
-		r := recover()
-		require.NotNil(t, r, "expected panic for empty address")
-		assert.Contains(t, fmt.Sprint(r), "non-empty address")
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithGRPC(func(_ *grpc.Server) {}, "")
+func TestNewGRPCModule_PanicsOnNilRegistrarViaExported(t *testing.T) {
+	assert.Panics(t, func() {
+		NewGRPCModule(nil, ":50051")
+	})
 }
 
-func TestWithGRPC_FluentChaining(t *testing.T) {
+func TestNewGRPCModule_PanicsOnEmptyAddrViaExported(t *testing.T) {
+	assert.Panics(t, func() {
+		NewGRPCModule(func(_ *grpc.Server) {}, "")
+	})
+}
+
+func TestNewGRPCModule_WithModuleChaining(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithGRPC(func(_ *grpc.Server) {}, ":50051")
-
-	assert.NotNil(t, b.grpcRegistrar)
-	assert.Equal(t, ":50051", b.grpcAddr)
+		WithModule(NewGRPCModule(func(_ *grpc.Server) {}, ":50051"))
+	assert.NotNil(t, b)
 }
 
 func TestNewGRPCModule_PanicsOnNilRegistrar(t *testing.T) {
@@ -213,9 +210,9 @@ func TestGRPCModule_Lifecycle(t *testing.T) {
 	var registrarCalled atomic.Bool
 
 	b := New("grpc-test", "v0.0.1", cfg).
-		WithGRPC(func(_ *grpc.Server) {
+		WithModule(NewGRPCModule(func(_ *grpc.Server) {
 			registrarCalled.Store(true)
-		}, fmt.Sprintf("127.0.0.1:%d", grpcPort)).
+		}, fmt.Sprintf("127.0.0.1:%d", grpcPort))).
 		Router(func(infra Infrastructure) http.Handler {
 			assert.NotNil(t, infra.GRPCServer, "GRPCServer should be set")
 			infra.Background("force-exit", func(_ context.Context) error {

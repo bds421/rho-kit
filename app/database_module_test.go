@@ -91,7 +91,7 @@ func TestBuildIntegrationModules_Database(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithPostgres(sqldb.PostgresConfig{Host: "localhost"}, sqldb.PoolConfig{})
 
-	modules, dbMod, _ := b.buildIntegrationModules()
+	modules, dbMod := b.buildIntegrationModules()
 	// httpclient is always present; database is added when configured.
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient module should be present")
 	assert.True(t, hasModule(modules, "database"), "database module should be present")
@@ -103,7 +103,7 @@ func TestBuildIntegrationModules_DatabaseMySQL(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithMySQL(sqldb.MySQLConfig{Host: "localhost"}, sqldb.PoolConfig{})
 
-	modules, dbMod, _ := b.buildIntegrationModules()
+	modules, dbMod := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "database"), "database module should be present")
 	require.NotNil(t, dbMod)
 	assert.Equal(t, "mysql", dbMod.driver())
@@ -114,14 +114,14 @@ func TestBuildIntegrationModules_DatabaseWithMetrics(t *testing.T) {
 		WithPostgres(sqldb.PostgresConfig{Host: "localhost"}, sqldb.PoolConfig{}).
 		WithDBMetrics()
 
-	_, dbMod, _ := b.buildIntegrationModules()
+	_, dbMod := b.buildIntegrationModules()
 	require.NotNil(t, dbMod)
 	assert.True(t, dbMod.metrics, "metrics flag should be set")
 }
 
 func TestBuildIntegrationModules_NoDatabase(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
-	modules, dbMod, _ := b.buildIntegrationModules()
+	modules, dbMod := b.buildIntegrationModules()
 	// httpclient is always present even without DB.
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient module should always be present")
 	assert.False(t, hasModule(modules, "database"), "database module should not be present")
@@ -138,7 +138,7 @@ func TestBuildIntegrationModules_DatabaseOrder(t *testing.T) {
 		mqURL:       "amqp://localhost",
 	}
 
-	modules, dbMod, _ := b.buildIntegrationModules()
+	modules, dbMod := b.buildIntegrationModules()
 	// Order: httpclient -> database -> rabbitmq
 	names := moduleNames(modules)
 	assert.Equal(t, []string{"httpclient", "database", "rabbitmq"}, names)
