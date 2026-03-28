@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/bds421/rho-kit/compare/app/v1.2.0...app/v1.3.0) (2026-03-28)
+
+
+### Features
+
+* **app:** add WithGRPC builder integration ([#43](https://github.com/bds421/rho-kit/issues/43)) ([191c239](https://github.com/bds421/rho-kit/commit/191c2395e49ecd319b3b7ff14cbaf5a05420c2d6))
+
 ## [1.2.0](https://github.com/bds421/rho-kit/compare/app/v1.1.1...app/v1.2.0) (2026-03-27)
 
 
