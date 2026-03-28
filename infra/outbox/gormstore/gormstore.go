@@ -73,9 +73,10 @@ func (entry) TableName() string {
 // Compile-time interface check.
 var _ outbox.Store = (*Store)(nil)
 
-// Store implements outbox.Store using GORM with PostgreSQL.
-// It uses SELECT FOR UPDATE SKIP LOCKED with an atomic claim pattern to
-// prevent concurrent relay instances from processing the same entries.
+// Store implements outbox.Store using GORM. It works with any database
+// supported by GORM (PostgreSQL, MySQL 8.0+, SQLite). It uses SELECT FOR
+// UPDATE SKIP LOCKED with an atomic claim pattern to prevent concurrent
+// relay instances from processing the same entries.
 type Store struct {
 	db *gorm.DB
 }
@@ -131,10 +132,19 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 			ids[i] = r.ID
 		}
 
-		return tx.
+		if err := tx.
 			Model(&entry{}).
 			Where("id IN ?", ids).
-			Update("status", outbox.StatusProcessing).Error
+			Update("status", outbox.StatusProcessing).Error; err != nil {
+			return err
+		}
+
+		// Reflect the database state in the in-memory rows.
+		for i := range rows {
+			rows[i].Status = outbox.StatusProcessing
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gormstore: fetch pending: %w", err)
@@ -207,7 +217,7 @@ func (s *Store) ResetStaleProcessing(ctx context.Context, staleDuration time.Dur
 	cutoff := time.Now().UTC().Add(-staleDuration)
 	result := s.db.WithContext(ctx).
 		Model(&entry{}).
-		Where("status = ? AND created_at < ?", outbox.StatusProcessing, cutoff).
+		Where("status = ? AND updated_at < ?", outbox.StatusProcessing, cutoff).
 		Update("status", outbox.StatusPending)
 	if result.Error != nil {
 		return 0, fmt.Errorf("gormstore: reset stale processing: %w", result.Error)

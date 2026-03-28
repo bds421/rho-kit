@@ -147,6 +147,11 @@ func TestStore_FetchPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 2)
 
+	// Returned entries must reflect the claimed "processing" status.
+	for _, e := range entries {
+		assert.Equal(t, outbox.StatusProcessing, e.Status, "claimed entries must have processing status")
+	}
+
 	// A second fetch should not return the same entries (they are claimed).
 	entries2, err := store.FetchPending(ctx, 10)
 	require.NoError(t, err)
@@ -254,12 +259,14 @@ func TestStore_ResetStaleProcessing(t *testing.T) {
 
 	staleEntry := newEntry(t)
 	staleEntry.Status = outbox.StatusProcessing
-	staleEntry.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
 	require.NoError(t, store.Insert(ctx, staleEntry))
+
+	// Backdate updated_at to simulate a stale processing entry.
+	staleTime := time.Now().UTC().Add(-10 * time.Minute)
+	db.Exec("UPDATE outbox_entries SET updated_at = ? WHERE id = ?", staleTime, staleEntry.ID.String())
 
 	recentEntry := newEntry(t)
 	recentEntry.Status = outbox.StatusProcessing
-	recentEntry.CreatedAt = time.Now().UTC()
 	require.NoError(t, store.Insert(ctx, recentEntry))
 
 	reset, err := store.ResetStaleProcessing(ctx, 5*time.Minute)
