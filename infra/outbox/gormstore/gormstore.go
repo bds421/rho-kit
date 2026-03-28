@@ -1,6 +1,7 @@
 // Package gormstore provides a GORM-backed implementation of [outbox.Store].
-// It uses PostgreSQL-specific features (SELECT FOR UPDATE SKIP LOCKED) for
-// safe concurrent relay operation.
+// It works with any database supported by GORM (PostgreSQL, MySQL 8.0+,
+// SQLite). Concurrent relay operation uses SELECT FOR UPDATE SKIP LOCKED
+// which is supported by PostgreSQL 9.5+ and MySQL 8.0+.
 //
 // # Transaction Participation
 //
@@ -46,20 +47,22 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 )
 
-// entry is the GORM model for an outbox row.
+// entry is the GORM model for an outbox row. Tags use portable types
+// compatible with PostgreSQL, MySQL, and SQLite.
 type entry struct {
-	ID          uuid.UUID       `gorm:"type:uuid;primaryKey"`
-	Topic       string          `gorm:"type:text;not null"`
-	RoutingKey  string          `gorm:"type:text;not null;column:routing_key"`
-	MessageID   string          `gorm:"type:text;not null;column:message_id"`
-	MessageType string          `gorm:"type:text;not null;column:message_type"`
-	Payload     json.RawMessage `gorm:"type:jsonb;not null"`
-	Headers     json.RawMessage `gorm:"type:jsonb"`
-	Status      outbox.Status   `gorm:"type:text;not null;default:pending"`
+	ID          uuid.UUID       `gorm:"type:varchar(36);primaryKey"`
+	Topic       string          `gorm:"not null"`
+	RoutingKey  string          `gorm:"not null;column:routing_key"`
+	MessageID   string          `gorm:"not null;column:message_id"`
+	MessageType string          `gorm:"not null;column:message_type"`
+	Payload     json.RawMessage `gorm:"type:text;not null"`
+	Headers     json.RawMessage `gorm:"type:text"`
+	Status      outbox.Status   `gorm:"type:varchar(20);not null;default:pending"`
 	Attempts    int             `gorm:"not null;default:0"`
-	CreatedAt   time.Time       `gorm:"not null;default:now()"`
+	LastError   *string         `gorm:"column:last_error"`
+	CreatedAt   time.Time       `gorm:"not null;autoCreateTime"`
+	UpdatedAt   time.Time       `gorm:"not null;autoUpdateTime"`
 	PublishedAt *time.Time      `gorm:"column:published_at"`
-	LastError   *string         `gorm:"type:text;column:last_error"`
 }
 
 // TableName returns the database table name for GORM.

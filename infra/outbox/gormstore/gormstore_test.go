@@ -42,9 +42,10 @@ func testDB(t *testing.T) *gorm.DB {
 		headers        TEXT,
 		status         TEXT NOT NULL DEFAULT 'pending',
 		attempts       INTEGER NOT NULL DEFAULT 0,
+		last_error     TEXT,
 		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		published_at   DATETIME,
-		last_error     TEXT
+		updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		published_at   DATETIME
 	)`).Error
 	require.NoError(t, err)
 
