@@ -3,6 +3,7 @@ module github.com/bds421/rho-kit/app
 go 1.26.0
 
 require (
+	github.com/bds421/rho-kit/grpcx v0.1.0
 	github.com/bds421/rho-kit/httpx v1.4.0
 	github.com/bds421/rho-kit/infra/messaging v1.0.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0
@@ -26,7 +27,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/contextutil v1.1.0 // indirect
+	github.com/bds421/rho-kit/core/contextutil v1.1.1 // indirect
 	github.com/bds421/rho-kit/core/validate v1.0.0 // indirect
 	github.com/bds421/rho-kit/observability/logattr v1.0.0 // indirect
 	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
@@ -38,6 +39,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
 )
 
 require (
@@ -106,8 +108,8 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260217215200-42d3e9bedb6d // indirect
-	google.golang.org/grpc v1.79.2 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/grpc v1.79.2
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.6.0 // indirect

@@ -16,6 +16,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
@@ -33,6 +34,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		WithTracing(tracing.Config{}).
 		WithCron().
 		WithEventBusPool(4).
+		WithGRPC(func(_ *grpc.Server) {}, ":50051").
 		WithServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).

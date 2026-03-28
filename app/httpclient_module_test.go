@@ -67,7 +67,7 @@ func TestHTTPClientModule_ClientBeforeInit(t *testing.T) {
 func TestHTTPClientModule_AlwaysPresent(t *testing.T) {
 	// The httpclient module should be present even without any With*() calls.
 	b := New("test", "v1", BaseConfig{})
-	modules, _ := b.buildIntegrationModules()
+	modules, _, _ := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient should always be present")
 }
 

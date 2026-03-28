@@ -11,7 +11,9 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 
+	"github.com/bds421/rho-kit/grpcx"
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
@@ -94,6 +96,11 @@ type Builder struct {
 	auditStore auditlog.Store
 	auditOpts  []auditlog.Option
 
+	// gRPC
+	grpcRegistrar func(*grpc.Server)
+	grpcAddr      string
+	grpcOpts      []grpcx.ServerOption
+
 	// EventBus worker pool
 	eventBusPoolSize int
 
@@ -131,22 +138,6 @@ type Builder struct {
 
 	// ran guards against reuse after Run().
 	ran bool
-}
-
-type storageSpec struct {
-	name    string
-	backend storage.Storage
-}
-
-type keyedLimiterSpec struct {
-	name     string
-	requests int
-	window   time.Duration
-}
-
-type bgSpec struct {
-	name string
-	fn   func(ctx context.Context) error
 }
 
 // New creates a Builder for the given service.
@@ -313,6 +304,29 @@ func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
 	return b
 }
 
+// WithGRPC configures a gRPC server with the given service registrar, listen
+// address, and server options. The registrar is called during module Init to
+// register service implementations on the grpc.Server. The gRPC health
+// service is registered automatically using the accumulated health checks.
+//
+// The server is started as a lifecycle component and stopped gracefully during
+// shutdown. The grpc.Server is available via infra.GRPCServer in the RouterFunc.
+//
+// Panics if registrar is nil or addr is empty -- these are startup-time
+// configuration errors.
+func (b *Builder) WithGRPC(registrar func(*grpc.Server), addr string, opts ...grpcx.ServerOption) *Builder {
+	if registrar == nil {
+		panic("app: WithGRPC requires a non-nil registrar")
+	}
+	if addr == "" {
+		panic("app: WithGRPC requires a non-empty address")
+	}
+	b.grpcRegistrar = registrar
+	b.grpcAddr = addr
+	b.grpcOpts = opts
+	return b
+}
+
 // WithEventBusPool configures a bounded worker pool for the in-process event
 // bus. Without this, async event handlers launch unbounded goroutines.
 // The pool is registered on the lifecycle runner so it starts and stops
@@ -453,7 +467,7 @@ func (b *Builder) Run() error {
 
 	// 0. Convert builder config to modules. Modules created from With*()
 	// config are prepended so they initialize before user-registered modules.
-	builtinModules, dbMod := b.buildIntegrationModules()
+	builtinModules, dbMod, grpcMod := b.buildIntegrationModules()
 	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
 	allModules = append(allModules, builtinModules...)
 	allModules = append(allModules, b.modules...)
@@ -621,14 +635,21 @@ func (b *Builder) Run() error {
 	// 11. Internal server (readiness + health + metrics).
 	// Started outside the Runner so it outlives workers during drain —
 	// health checks and metrics remain available while components shut down.
+	healthChecker := &health.Checker{
+		Version: health.ResolveVersion(b.version),
+		Checks:  b.healthChecks,
+	}
+
+	// Register gRPC health service with the same checker used for HTTP readiness.
+	if grpcMod != nil {
+		grpcMod.RegisterHealth(healthChecker)
+	}
+
 	var readiness http.Handler
 	if b.customReadiness != nil {
 		readiness = b.customReadiness
 	} else {
-		readiness = healthhttp.Handler(&health.Checker{
-			Version: health.ResolveVersion(b.version),
-			Checks:  b.healthChecks,
-		})
+		readiness = healthhttp.Handler(healthChecker)
 	}
 	var internalOpts []healthhttp.InternalHandlerOption
 	for _, m := range allModules {
@@ -710,7 +731,16 @@ func (b *Builder) Run() error {
 		})
 	}
 
-	// 13. Public server — added last so it is stopped first (reverse order).
+	// 13. gRPC server — added before the public HTTP server so it is
+	// stopped after HTTP during graceful shutdown (reverse order).
+	if grpcMod != nil {
+		gm := grpcMod
+		runner.AddFunc("grpc-server", func(ctx context.Context) error {
+			return gm.serve(ctx)
+		})
+	}
+
+	// 14. Public server — added last so it is stopped first (reverse order).
 	srvOpts := make([]httpx.ServerOption, 0, len(b.serverOpts)+1)
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
@@ -719,74 +749,7 @@ func (b *Builder) Run() error {
 	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
 	runner.Add("public-server", lifecycle.HTTPServer(srv))
 
-	// 14. Run — signal handling, component lifecycle, graceful shutdown.
+	// 15. Run — signal handling, component lifecycle, graceful shutdown.
 	return runner.Run(context.Background())
 }
 
-// buildIntegrationModules converts builder config from the With*() methods
-// (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT)
-// into internal modules. The With*() methods are the primary public API;
-// modules are the internal implementation. These modules are prepended to
-// user-registered modules so built-in infrastructure initializes first.
-//
-// Registration order matters: tracing -> httpclient -> jwt, because each module
-// depends on the previous one during Init.
-//
-// The returned *databaseModule is non-nil when a database is configured. Run()
-// uses it to check for seed early-exit after module initialization.
-func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
-	var modules []Module
-	var dbMod *databaseModule
-
-	// Tracing must come first -- httpClientModule reads its Active() state.
-	if b.tracingCfg != nil {
-		modules = append(modules, newTracingModule(*b.tracingCfg))
-	}
-
-	// HTTP client is always created -- other modules and infra need it.
-	// It reads tracing state when a tracing module is registered.
-	modules = append(modules, newHTTPClientModule(b.tracingCfg != nil))
-
-	// JWT depends on httpClientModule for the HTTP client.
-	if b.jwksURL != "" {
-		modules = append(modules, newJWTModule(b.jwksURL))
-	}
-
-	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
-		dbMod = newDatabaseModule(databaseModuleConfig{
-			mysqlCfg:      b.dbMySQLCfg,
-			pgCfg:         b.dbPgCfg,
-			poolCfg:       *b.dbPoolCfg,
-			namespace:     b.dbNamespace,
-			migrationsDir: b.migrationsDir,
-			seedFn:        b.seedFn,
-			metrics:       b.dbMetrics,
-		})
-		modules = append(modules, dbMod)
-	}
-
-	if b.redisOpts != nil {
-		modules = append(modules, newRedisModule(b.redisOpts, b.redisConnOpts...))
-	}
-
-	if b.mqURL != "" {
-		m := newMessagingModule(b.mqURL)
-		m.criticalBroker = b.criticalBroker
-		modules = append(modules, m)
-	}
-
-	return modules, dbMod
-}
-
-// buildStorageManager creates a Manager from the named storage specs.
-// Returns nil if no specs were registered.
-func buildStorageManager(specs []storageSpec) *storage.Manager {
-	if len(specs) == 0 {
-		return nil
-	}
-	mgr := storage.NewManager()
-	for _, s := range specs {
-		mgr.Register(s.name, s.backend)
-	}
-	return mgr
-}
