@@ -30,6 +30,15 @@ type grpcModule struct {
 	logger *slog.Logger
 }
 
+// NewGRPCModule creates a module that runs a gRPC server.
+// The registrar function is called during Init to register gRPC services.
+// Options are passed to grpcx.NewServer.
+//
+// Panics if registrar is nil or addr is empty (startup-time configuration errors).
+func NewGRPCModule(registrar func(*grpc.Server), addr string, opts ...grpcx.ServerOption) Module {
+	return newGRPCModule(registrar, addr, opts)
+}
+
 // newGRPCModule creates a gRPC module with the given registrar, address, and options.
 // Panics if registrar is nil (startup-time configuration error).
 func newGRPCModule(registrar func(*grpc.Server), addr string, opts []grpcx.ServerOption) *grpcModule {

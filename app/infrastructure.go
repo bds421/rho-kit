@@ -61,7 +61,7 @@ type Infrastructure struct {
 	Cron           *kitcron.Scheduler // nil if no WithCron
 	AuditLog       *auditlog.Logger   // nil if no WithAuditLog
 	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
-	GRPCServer     *grpc.Server       // nil if no WithGRPC
+	GRPCServer     *grpc.Server       // nil if no NewGRPCModule
 
 	HTTPClient *http.Client
 	Config     BaseConfig

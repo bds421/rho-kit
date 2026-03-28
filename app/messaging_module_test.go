@@ -56,7 +56,7 @@ func TestBuildIntegrationModules_Messaging(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithRabbitMQ("amqp://localhost")
 
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "rabbitmq"), "rabbitmq module should be present")
 }
 
@@ -65,7 +65,7 @@ func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {
 		WithRabbitMQ("amqp://localhost").
 		WithCriticalBroker()
 
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	var mm *messagingModule
 	for _, m := range modules {
 		if mqm, ok := m.(*messagingModule); ok {
@@ -79,7 +79,7 @@ func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {
 
 func TestBuildIntegrationModules_NoMessaging(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	// httpclient is always present.
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient should always be present")
 	assert.False(t, hasModule(modules, "rabbitmq"), "rabbitmq should not be present")
@@ -93,7 +93,7 @@ func TestBuildIntegrationModules_Both(t *testing.T) {
 		mqURL:     "amqp://localhost",
 	}
 
-	modules, _, _ := b.buildIntegrationModules()
+	modules, _ := b.buildIntegrationModules()
 	// Order: httpclient -> redis -> rabbitmq
 	names := moduleNames(modules)
 	assert.Equal(t, []string{"httpclient", "redis", "rabbitmq"}, names)

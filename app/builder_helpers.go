@@ -24,9 +24,9 @@ type bgSpec struct {
 }
 
 // buildIntegrationModules converts builder config from the With*() methods
-// (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT,
-// WithGRPC) into internal modules. The With*() methods are the primary public
-// API; modules are the internal implementation. These modules are prepended to
+// (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT)
+// into internal modules. The With*() methods are the primary public API;
+// modules are the internal implementation. These modules are prepended to
 // user-registered modules so built-in infrastructure initializes first.
 //
 // Registration order matters: tracing -> httpclient -> jwt, because each module
@@ -34,12 +34,9 @@ type bgSpec struct {
 //
 // The returned *databaseModule is non-nil when a database is configured. Run()
 // uses it to check for seed early-exit after module initialization.
-// The returned *grpcModule is non-nil when gRPC is configured. Run() uses it
-// to start the gRPC server and register the health service.
-func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule, *grpcModule) {
+func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 	var modules []Module
 	var dbMod *databaseModule
-	var grpcMod *grpcModule
 
 	// Tracing must come first -- httpClientModule reads its Active() state.
 	if b.tracingCfg != nil {
@@ -78,12 +75,7 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule, *grpcMod
 		modules = append(modules, m)
 	}
 
-	if b.grpcRegistrar != nil {
-		grpcMod = newGRPCModule(b.grpcRegistrar, b.grpcAddr, b.grpcOpts)
-		modules = append(modules, grpcMod)
-	}
-
-	return modules, dbMod, grpcMod
+	return modules, dbMod
 }
 
 // buildStorageManager creates a Manager from the named storage specs.
