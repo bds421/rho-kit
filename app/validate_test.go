@@ -8,6 +8,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 )
 
 func newTestBuilder() *Builder {
@@ -28,20 +30,26 @@ func TestValidate_EmptyBuilder(t *testing.T) {
 	}
 }
 
-func TestValidate_DualDatabase(t *testing.T) {
+func TestValidate_DatabaseWithoutPool(t *testing.T) {
 	b := newTestBuilder()
-	b.dbMySQLCfg = &sqldb.MySQLConfig{}
-	b.dbPgCfg = &sqldb.PostgresConfig{}
+	b.dbDriver = gormmysql.MySQLDriver{}
+	b.dbCfg = &sqldb.Config{Host: "localhost"}
 	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for dual database")
+		t.Fatal("expected error for database without pool")
 	}
 }
 
-func TestValidate_DatabaseWithoutPool(t *testing.T) {
+// Note: dual database (MySQL + Postgres) is no longer possible since both
+// use the same dbDriver field. The mutex exclusion is handled by panics in
+// WithMySQL/WithPostgres.
+
+func TestValidate_DatabaseWithPool(t *testing.T) {
 	b := newTestBuilder()
-	b.dbMySQLCfg = &sqldb.MySQLConfig{}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for database without pool")
+	b.dbDriver = gormpostgres.PostgresDriver{}
+	b.dbCfg = &sqldb.Config{Host: "localhost"}
+	b.dbPoolCfg = &sqldb.PoolConfig{}
+	if err := b.Validate(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
 }
 

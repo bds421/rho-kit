@@ -8,9 +8,9 @@ require (
 	github.com/bds421/rho-kit/infra/messaging v1.0.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0
 	github.com/bds421/rho-kit/infra/redis v1.0.0
-	github.com/bds421/rho-kit/infra/sqldb v1.1.0
-	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.0.0
-	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.0.0
+	github.com/bds421/rho-kit/infra/sqldb v1.1.1
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.1.0
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.1.0
 	github.com/bds421/rho-kit/infra/storage v1.0.0
 	github.com/bds421/rho-kit/observability/auditlog v1.0.0
 	github.com/bds421/rho-kit/observability/health v1.0.0
