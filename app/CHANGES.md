@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/bds421/rho-kit/compare/app/v1.4.0...app/v1.5.0) (2026-03-28)
+
+
+### Features
+
+* **app:** use Driver interface for database modules and add read replica support ([#46](https://github.com/bds421/rho-kit/issues/46)) ([02c7f8b](https://github.com/bds421/rho-kit/commit/02c7f8b4529455c39fb1d7d9b36c1e672f67c52d))
+
 ## [1.4.0](https://github.com/bds421/rho-kit/compare/app/v1.3.0...app/v1.4.0) (2026-03-28)
 
 
