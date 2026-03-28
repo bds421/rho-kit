@@ -50,8 +50,5 @@ jobs:
           key: golangci-lint-${{ hashFiles('**/*.go') }}
           restore-keys: golangci-lint-
 
-      - name: Lint (affected)
-        run: npx nx affected -t lint
-
-      - name: Test & Build (affected)
-        run: npx nx affected -t test build
+      - name: Lint, Test & Build (affected)
+        run: npx nx affected -t lint test build
