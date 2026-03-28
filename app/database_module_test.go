@@ -8,44 +8,31 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 )
 
-func TestNewDatabaseModule_PanicsOnNoConfig(t *testing.T) {
+func TestNewDatabaseModule_PanicsOnNoDriver(t *testing.T) {
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "expected panic for missing DB config")
-		assert.Contains(t, r, "requires MySQL or Postgres config")
+		require.NotNil(t, r, "expected panic for missing Driver")
+		assert.Contains(t, r, "requires a Driver")
 	}()
 	newDatabaseModule(databaseModuleConfig{})
 }
 
 func TestDatabaseModule_Name(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	assert.Equal(t, "database", m.Name())
 }
 
-func TestDatabaseModule_DriverMySQL(t *testing.T) {
-	m := newDatabaseModule(databaseModuleConfig{
-		mysqlCfg: &sqldb.MySQLConfig{Host: "localhost"},
-		poolCfg:  sqldb.PoolConfig{},
-	})
-	assert.Equal(t, "mysql", m.driver())
-}
-
-func TestDatabaseModule_DriverPostgres(t *testing.T) {
-	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
-		poolCfg: sqldb.PoolConfig{},
-	})
-	assert.Equal(t, "postgres", m.driver())
-}
-
 func TestDatabaseModule_HealthChecksBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	checks := m.HealthChecks()
@@ -54,7 +41,8 @@ func TestDatabaseModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_CloseBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	err := m.Close(context.TODO())
@@ -63,7 +51,8 @@ func TestDatabaseModule_CloseBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_PopulateBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	infra := &Infrastructure{}
@@ -71,9 +60,23 @@ func TestDatabaseModule_PopulateBeforeInit(t *testing.T) {
 	assert.Nil(t, infra.DB, "DB should be nil before Init")
 }
 
+func TestDatabaseModule_PopulateSetsDBReader(t *testing.T) {
+	m := newDatabaseModule(databaseModuleConfig{
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
+		poolCfg: sqldb.PoolConfig{},
+	})
+	infra := &Infrastructure{}
+	m.Populate(infra)
+	// Both DB and DBReader should be nil before Init.
+	assert.Nil(t, infra.DB)
+	assert.Nil(t, infra.DBReader)
+}
+
 func TestDatabaseModule_DBBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	assert.Nil(t, m.DB(), "DB() should be nil before Init")
@@ -81,7 +84,8 @@ func TestDatabaseModule_DBBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_SeedExitBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		pgCfg:   &sqldb.PostgresConfig{Host: "localhost"},
+		driver:  gormpostgres.PostgresDriver{},
+		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
 	assert.False(t, m.SeedExit(), "SeedExit should be false before Init")
@@ -89,7 +93,7 @@ func TestDatabaseModule_SeedExitBeforeInit(t *testing.T) {
 
 func TestBuildIntegrationModules_Database(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithPostgres(sqldb.PostgresConfig{Host: "localhost"}, sqldb.PoolConfig{})
+		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
 
 	modules, dbMod := b.buildIntegrationModules()
 	// httpclient is always present; database is added when configured.
@@ -101,17 +105,17 @@ func TestBuildIntegrationModules_Database(t *testing.T) {
 
 func TestBuildIntegrationModules_DatabaseMySQL(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithMySQL(sqldb.MySQLConfig{Host: "localhost"}, sqldb.PoolConfig{})
+		WithMySQL(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
 
 	modules, dbMod := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "database"), "database module should be present")
 	require.NotNil(t, dbMod)
-	assert.Equal(t, "mysql", dbMod.driver())
+	assert.Equal(t, "mysql", dbMod.driver.Name())
 }
 
 func TestBuildIntegrationModules_DatabaseWithMetrics(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithPostgres(sqldb.PostgresConfig{Host: "localhost"}, sqldb.PoolConfig{}).
+		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{}).
 		WithDBMetrics()
 
 	_, dbMod := b.buildIntegrationModules()
@@ -132,7 +136,8 @@ func TestBuildIntegrationModules_DatabaseOrder(t *testing.T) {
 	b := &Builder{
 		name:        "test",
 		version:     "v1",
-		dbPgCfg:     &sqldb.PostgresConfig{Host: "localhost"},
+		dbDriver:    gormpostgres.PostgresDriver{},
+		dbCfg:       &sqldb.Config{Host: "localhost"},
 		dbPoolCfg:   &sqldb.PoolConfig{},
 		dbNamespace: "test",
 		mqURL:       "amqp://localhost",
