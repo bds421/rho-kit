@@ -36,6 +36,10 @@ func WithTLS(cfg *tls.Config) Option {
 }
 
 // New opens a GORM database connection to PostgreSQL with connection pooling.
+//
+// Deprecated: Use [PostgresDriver.Open] with the unified [sqldb.Config] instead.
+//
+//nolint:staticcheck // Uses deprecated PostgresConfig for backward compat.
 func New(cfg sqldb.PostgresConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, opts ...Option) (*gorm.DB, error) {
 	var o pgOpts
 	for _, opt := range opts {
