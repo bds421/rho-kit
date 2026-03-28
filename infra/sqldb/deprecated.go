@@ -7,14 +7,10 @@ import (
 	"strings"
 )
 
-// MySQLConfig is an alias for [Config].
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Config] instead.
+// Deprecated: Use [Config] instead.
 type MySQLConfig = Config
 
-// PostgresConfig holds PostgreSQL connection settings.
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Config] with Options["sslmode"] instead.
+// Deprecated: Use [Config] with Options["sslmode"] instead.
 type PostgresConfig struct {
 	Host     string
 	Port     int
@@ -42,9 +38,7 @@ func (c PostgresConfig) ToConfig() Config {
 	}
 }
 
-// DSN returns a PostgreSQL data source name (keyword/value format).
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. DSN building is a driver concern. Use the driver's Open method.
+// Deprecated: DSN building is a driver concern.
 func (c PostgresConfig) DSN(tlsEnabled ...bool) string {
 	sslMode := c.SSLMode
 	if sslMode == "" {
@@ -64,9 +58,7 @@ func (c PostgresConfig) LogValue() slog.Value {
 	return c.ToConfig().LogValue()
 }
 
-// DSN returns a MySQL/MariaDB data source name.
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. DSN building is a driver concern. Use the driver's Open method.
+// Deprecated: DSN building is a driver concern.
 func (c Config) DSN(tlsOpt ...any) string {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true",
 		url.QueryEscape(c.User), url.QueryEscape(c.Password), c.Host, c.Port, url.QueryEscape(c.Name))
@@ -94,9 +86,7 @@ func escapePostgresDSNValue(s string) string {
 	return s
 }
 
-// ParsePostgresDSNCompat parses a PostgreSQL connection URI into a [PostgresConfig].
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [ParsePostgresDSN] which returns the unified [Config] type.
+// Deprecated: Use [ParsePostgresDSN] instead.
 func ParsePostgresDSNCompat(rawURL string) (PostgresConfig, error) {
 	cfg, err := ParsePostgresDSN(rawURL)
 	if err != nil {
@@ -113,25 +103,21 @@ func ParsePostgresDSNCompat(rawURL string) (PostgresConfig, error) {
 	}, nil
 }
 
-// MySQLFields is an alias for [Fields].
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Fields] instead.
+// Deprecated: Use [Fields] instead.
 type MySQLFields = Fields
 
-// PostgresFields holds PostgreSQL connection and pool configuration.
-//
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Fields] instead.
+// Deprecated: Use [Fields] instead.
 type PostgresFields struct {
 	Database     PostgresConfig
 	DatabasePool PoolConfig
 }
 
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [LoadFields] with driver defaults instead.
+// Deprecated: Use [LoadFields] instead.
 func LoadMySQLFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (Fields, error) {
 	return LoadFields(envPrefix, 3306, "mysql", defaultMaxIdle, defaultMaxOpen)
 }
 
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [LoadFields] with driver defaults instead.
+// Deprecated: Use [LoadFields] instead.
 func LoadPostgresFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (PostgresFields, error) {
 	f, err := LoadFields(envPrefix, 5432, "postgres", defaultMaxIdle, defaultMaxOpen)
 	if err != nil {
@@ -151,12 +137,12 @@ func LoadPostgresFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (P
 	}, nil
 }
 
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Fields.Validate] with driver "mysql" instead.
+// Deprecated: Use [Fields.Validate] instead.
 func (f Fields) ValidateMySQL(envPrefix, environment string) error {
 	return f.Validate(envPrefix, environment, "mysql")
 }
 
-// Superseded by the unified API. Will be deprecated once all consumers migrate. Use [Fields.Validate] with driver "postgres" instead.
+// Deprecated: Use [Fields.Validate] instead.
 func (f PostgresFields) ValidatePostgres(envPrefix, environment string) error {
 	unified := Fields{
 		Database:     f.Database.ToConfig(),
