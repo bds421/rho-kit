@@ -20,8 +20,8 @@ Standard review checklist for rho-kit PRs. Reviewers must cover ALL sections.
 ## 3. Package Separation
 - [ ] No transport concerns in domain packages (no `net/http` in core/*, no HTTP in observability/*)
 - [ ] HTTP adapters live in `httpx` or sub-packages
-- [ ] New modules registered in `release-please-config.json` and `.release-please-manifest.json`
-- [ ] Multi-module release rule respected (no unreleased sibling features used)
+- [ ] New modules have `go.mod` and are listed in `go.work` (NX auto-detects from `go.mod`)
+- [ ] Release projects glob patterns in `nx.json` cover new module paths
 
 ## 4. Concurrency
 - [ ] Shared mutable state protected (mutex, atomic, or immutable-by-design)

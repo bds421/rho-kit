@@ -14,6 +14,8 @@ env:
   GOWORK: ${{ github.workspace }}/go.work
   GOPRIVATE: github.com/bds421/*
   GONOSUMCHECK: github.com/bds421/*
+  NX_BASE: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+  NX_HEAD: ${{ github.sha }}
 
 jobs:
   ci:
@@ -21,14 +23,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
       - name: Configure git for private modules
         env:
           TOKEN: ${{ github.token }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install dependencies
+        run: npm ci
 
       # Install once, reuse across all modules (faster than go run per module)
       - name: Install golangci-lint
@@ -41,26 +52,18 @@ jobs:
           key: golangci-lint-${{ hashFiles('**/*.go') }}
           restore-keys: golangci-lint-
 
-      - name: Lint
+      # Lint uses golangci-lint directly on affected projects.
+      # NX determines which projects are affected, then runs golangci-lint on each.
+      - name: Lint (affected)
         run: |
-          WORKSPACE_MODULES=$(sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work | grep -v '^\.')
-          for dir in $WORKSPACE_MODULES; do
+          AFFECTED=$(npx nx show projects --affected --json 2>/dev/null | python3 -c "import json,sys; [print(p) for p in json.load(sys.stdin) if p != 'rho-kit']")
+          for dir in $AFFECTED; do
             echo "==> Linting $dir"
             (cd "$dir" && golangci-lint run --timeout=5m ./...) || exit 1
           done
 
-      - name: Test
-        run: |
-          WORKSPACE_MODULES=$(sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work | grep -v '^\.')
-          for dir in $WORKSPACE_MODULES; do
-            echo "==> Testing $dir"
-            (cd "$dir" && go test -race ./...) || exit 1
-          done
+      - name: Test (affected)
+        run: npx nx affected -t test
 
-      - name: Build
-        run: |
-          WORKSPACE_MODULES=$(sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work | grep -v '^\.')
-          for dir in $WORKSPACE_MODULES; do
-            echo "==> Building $dir"
-            (cd "$dir" && go build ./...) || exit 1
-          done
+      - name: Build (affected)
+        run: npx nx affected -t build

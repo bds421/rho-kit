@@ -2,3 +2,11 @@
 coverage.out
 vendor/
 cmd/kit-migrate/kit-migrate
+
+# NX
+node_modules/
+.nx/
+
+# Claude
+.claude/worktrees
+.claude/settings.local.json

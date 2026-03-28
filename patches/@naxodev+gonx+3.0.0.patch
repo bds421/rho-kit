@@ -1,0 +1,13 @@
+diff --git a/node_modules/@naxodev/gonx/src/graph/utils/create-nodes-internal.js b/node_modules/@naxodev/gonx/src/graph/utils/create-nodes-internal.js
+index 2f5a9bd..fb278eb 100644
+--- a/node_modules/@naxodev/gonx/src/graph/utils/create-nodes-internal.js
++++ b/node_modules/@naxodev/gonx/src/graph/utils/create-nodes-internal.js
+@@ -28,7 +28,7 @@ context) {
+         // Add release configuration for nx release
+         release: {
+             version: {
+-                versionActions: '@naxodev/gonx/src/release/go-version-actions',
++                versionActions: './tools/nx-release/go-version-actions.js',
+             },
+         },
+     };
