@@ -1,3 +1,5 @@
+github.com/bds421/rho-kit/infra/outbox v0.1.0 h1:NTsa75vPpUn9k6dtUg0A4Qdo1oDvr9kr+iqO7HDFeo0=
+github.com/bds421/rho-kit/infra/outbox v0.1.0/go.mod h1:aaNAxKnZxBsekH3RpaN7SAfzRjt3B2/fTju9eBklK08=
 github.com/bds421/rho-kit/observability/promutil v1.0.0 h1:SalpVktna3VywVSUX2mYZIFMKAl4yIleOXOmc0scf+g=
 github.com/bds421/rho-kit/observability/promutil v1.0.0/go.mod h1:VfFVXD33Y3zVjoUBRgjAfUNX6yyOugsBvnW/xlI92+M=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
