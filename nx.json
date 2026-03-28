@@ -40,21 +40,7 @@
     }
   ],
   "release": {
-    "projects": [
-      "app",
-      "core/*",
-      "crypto",
-      "data/**",
-      "grpcx",
-      "httpx",
-      "infra/**",
-      "io/*",
-      "observability/**",
-      "resilience/*",
-      "runtime/*",
-      "security/*",
-      "cmd/*"
-    ],
+    "projects": ["*"],
     "projectsRelationship": "independent",
     "version": {
       "conventionalCommits": true,
