@@ -8,7 +8,7 @@ require (
 	github.com/bds421/rho-kit/infra/messaging v1.0.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0
 	github.com/bds421/rho-kit/infra/redis v1.0.0
-	github.com/bds421/rho-kit/infra/sqldb v1.1.0
+	github.com/bds421/rho-kit/infra/sqldb v1.1.1
 	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.0.0
 	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.0.0
 	github.com/bds421/rho-kit/infra/storage v1.0.0
@@ -114,4 +114,13 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.6.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
+)
+
+// TODO: Remove replace directives once gormmysql/gormpostgres v1.1.0 is tagged
+// (pending PR #51/#52 release). The Driver implementations (MySQLDriver,
+// PostgresDriver) only exist on main, not in the v1.0.0 tags.
+replace (
+	github.com/bds421/rho-kit/infra/sqldb => ../infra/sqldb
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql => ../infra/sqldb/gormdb/gormmysql
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres => ../infra/sqldb/gormdb/gormpostgres
 )

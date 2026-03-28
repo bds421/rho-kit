@@ -18,6 +18,9 @@ import (
 	"github.com/bds421/rho-kit/httpx/slohttp"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/sqldb"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/observability/health"
@@ -64,8 +67,8 @@ type Builder struct {
 	logger  *slog.Logger
 
 	// DB
-	dbMySQLCfg  *sqldb.MySQLConfig
-	dbPgCfg     *sqldb.PostgresConfig
+	dbDriver    gormdb.Driver
+	dbCfg       *sqldb.Config
 	dbPoolCfg   *sqldb.PoolConfig
 	dbMetrics   bool
 	dbNamespace string
@@ -145,11 +148,12 @@ func New(name, version string, cfg BaseConfig) *Builder {
 // WithMySQL configures a MariaDB connection.
 // Panics if WithPostgres was already called — the two are mutually exclusive.
 // Use [WithMigrations] to apply goose schema migrations.
-func (b *Builder) WithMySQL(cfg sqldb.MySQLConfig, pool sqldb.PoolConfig) *Builder {
-	if b.dbPgCfg != nil {
+func (b *Builder) WithMySQL(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder {
+	if b.dbDriver != nil {
 		panic("app.Builder: WithMySQL and WithPostgres are mutually exclusive")
 	}
-	b.dbMySQLCfg = &cfg
+	b.dbDriver = gormmysql.MySQLDriver{}
+	b.dbCfg = &cfg
 	b.dbPoolCfg = &pool
 	b.dbNamespace = b.name
 	return b
@@ -158,11 +162,12 @@ func (b *Builder) WithMySQL(cfg sqldb.MySQLConfig, pool sqldb.PoolConfig) *Build
 // WithPostgres configures a PostgreSQL connection.
 // Panics if WithMySQL was already called — the two are mutually exclusive.
 // Use [WithMigrations] to apply goose schema migrations.
-func (b *Builder) WithPostgres(cfg sqldb.PostgresConfig, pool sqldb.PoolConfig) *Builder {
-	if b.dbMySQLCfg != nil {
+func (b *Builder) WithPostgres(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder {
+	if b.dbDriver != nil {
 		panic("app.Builder: WithPostgres and WithMySQL are mutually exclusive")
 	}
-	b.dbPgCfg = &cfg
+	b.dbDriver = gormpostgres.PostgresDriver{}
+	b.dbCfg = &cfg
 	b.dbPoolCfg = &pool
 	b.dbNamespace = b.name
 	return b
