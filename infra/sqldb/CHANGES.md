@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/bds421/rho-kit/compare/infra/sqldb/v1.1.1...infra/sqldb/v1.2.0) (2026-03-28)
+
+
+### Features
+
+* **sqldb:** add deprecation markers to legacy type aliases ([#55](https://github.com/bds421/rho-kit/issues/55)) ([4cdb2f2](https://github.com/bds421/rho-kit/commit/4cdb2f278a56b7f1860453a132443133a3b2f949))
+
 ## [1.1.1](https://github.com/bds421/rho-kit/compare/infra/sqldb/v1.1.0...infra/sqldb/v1.1.1) (2026-03-28)
 
 
