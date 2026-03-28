@@ -4,6 +4,8 @@ github.com/bds421/rho-kit/core/config v1.0.0 h1:GGfhRiiWfX7wKxYa85H/+60IXwiA4NU8
 github.com/bds421/rho-kit/core/config v1.0.0/go.mod h1:8svppGoTWL0zmkilgbTRdHSW2lb06LcpV0P0wAagsP8=
 github.com/bds421/rho-kit/core/contextutil v1.0.0 h1:MgeGoeskv25WdPZ46tvrXEYd/reb/oe3ozRMH96Jw+c=
 github.com/bds421/rho-kit/core/contextutil v1.0.0/go.mod h1:lTPcHj+ShOwuzEbDNs+95CJdryy3IoH2xp4h8sYGlXM=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1 h1:Na+VmqBB6AGspqYANXIak02N+5qQKzllf4GRin8tdV0=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1/go.mod h1:JfgX4eUDM48mYD9SLZwn1ThnUXeqU49nSmyUROMO07Y=
 github.com/bds421/rho-kit/observability/health v1.0.0 h1:gAFHyXIeOr/5wUK6Mi1HrmdGujcRMUwE9V4J6Z+jVF0=
 github.com/bds421/rho-kit/observability/health v1.0.0/go.mod h1:6cHMZ29DpihCJPBpYjYWrDueSEGvAw9vN6G5rVX6GDY=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=

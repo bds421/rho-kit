@@ -2,12 +2,8 @@ module github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres
 
 go 1.26.0
 
-// TODO: Remove replace directive before merge. The Driver interface in
-// gormdb requires infra/sqldb >= v1.2.0 which is not yet tagged.
-replace github.com/bds421/rho-kit/infra/sqldb => ../../
-
 require (
-	github.com/bds421/rho-kit/infra/sqldb v1.2.0
+	github.com/bds421/rho-kit/infra/sqldb v1.1.1
 	github.com/jackc/pgx/v5 v5.8.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
