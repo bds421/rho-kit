@@ -65,6 +65,9 @@
     "infra/messaging/amqpbackend/debughttp": {
       "component": "infra/messaging/amqpbackend/debughttp"
     },
+    "infra/outbox": {
+      "component": "infra/outbox"
+    },
     "infra/messaging/redisbackend": {
       "component": "infra/messaging/redisbackend"
     },
