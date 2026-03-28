@@ -13,3 +13,16 @@ If module A (e.g., `httpx`) needs a new type/function from module B (e.g., `core
 Combining both in one release creates a broken tag: A's `go.mod` pins B at the old version but uses features that only exist in B's new version. `go get` will fail for consumers.
 
 **When reviewing PRs:** If a PR modifies multiple modules AND one module's `go.mod` depends on the other, verify the dependency is already published at the required version. If not, split the PR.
+
+## PR Title Convention (CRITICAL for release-please)
+
+release-please only creates releases for `feat:` and `fix:` prefixed commits. Other prefixes (`refactor:`, `chore:`, `docs:`, `test:`) are ignored.
+
+**Rule: If a PR adds, removes, or changes public API, use `feat:` — even if it also refactors.**
+
+- Adding new types/functions → `feat:`
+- Removing/renaming public API → `feat:` (it's a feature change, not just cleanup)
+- Bug fixes → `fix:`
+- Internal refactoring with NO public API change → `refactor:` (won't trigger release, which is correct)
+
+Using `refactor:` for a PR that adds new public API means it won't be tagged, breaking downstream consumers who depend on it.
