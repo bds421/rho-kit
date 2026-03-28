@@ -200,7 +200,7 @@ func TestParsePostgresDSN_Compat(t *testing.T) {
 		{
 			name:  "standard URL",
 			input: "postgres://pguser:pgpass@pg-host:5432/pgdb?sslmode=require",
-			want:  Config{Host: "pg-host", Port: 5432, User: "pguser", Password: "pgpass", Name: "pgdb", SSLMode: "require"},
+			want:  Config{Host: "pg-host", Port: 5432, User: "pguser", Password: "pgpass", Name: "pgdb", Options: map[string]string{"sslmode": "require"}},
 		},
 		{
 			name:  "postgresql scheme",
@@ -319,7 +319,7 @@ func TestLoadPostgresFields_DATABASE_URL(t *testing.T) {
 	assert.Equal(t, "pguser", f.Database.User)
 	assert.Equal(t, "pgpass", f.Database.Password)
 	assert.Equal(t, "pgdb", f.Database.Name)
-	assert.Equal(t, "require", f.Database.SSLMode)
+	assert.Equal(t, "require", f.Database.SSLMode) //nolint:staticcheck // testing deprecated type
 	assert.Equal(t, "info", f.Database.LogLevel)
 	assert.Equal(t, 5, f.DatabasePool.MaxIdleConns)
 }

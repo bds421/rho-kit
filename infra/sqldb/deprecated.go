@@ -1,7 +1,10 @@
 package sqldb
 
 import (
+	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 )
 
 // MySQLConfig is an alias for [Config].
@@ -11,7 +14,7 @@ type MySQLConfig = Config
 
 // PostgresConfig holds PostgreSQL connection settings.
 //
-// Deprecated: Use [Config] with the SSLMode field instead.
+// Deprecated: Use [Config] with Options["sslmode"] instead.
 type PostgresConfig struct {
 	Host     string
 	Port     int
@@ -24,13 +27,36 @@ type PostgresConfig struct {
 
 // ToConfig converts a PostgresConfig to the unified Config type.
 func (c PostgresConfig) ToConfig() Config {
-	return Config(c)
+	opts := make(map[string]string)
+	if c.SSLMode != "" {
+		opts["sslmode"] = c.SSLMode
+	}
+	return Config{
+		Host:     c.Host,
+		Port:     c.Port,
+		User:     c.User,
+		Password: c.Password,
+		Name:     c.Name,
+		LogLevel: c.LogLevel,
+		Options:  opts,
+	}
 }
 
 // DSN returns a PostgreSQL data source name (keyword/value format).
-// When tlsEnabled is true and SSLMode is empty, it defaults to "verify-full".
+//
+// Deprecated: DSN building is a driver concern. Use the driver's Open method.
 func (c PostgresConfig) DSN(tlsEnabled ...bool) string {
-	return c.ToConfig().PostgresDSN(tlsEnabled...)
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+		if len(tlsEnabled) > 0 && tlsEnabled[0] {
+			sslMode = "verify-full"
+		}
+	}
+	return fmt.Sprintf("host='%s' port=%d user='%s' password='%s' dbname='%s' sslmode='%s'",
+		escapePostgresDSNValue(c.Host), c.Port, escapePostgresDSNValue(c.User),
+		escapePostgresDSNValue(c.Password), escapePostgresDSNValue(c.Name),
+		escapePostgresDSNValue(sslMode))
 }
 
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials.
@@ -38,17 +64,53 @@ func (c PostgresConfig) LogValue() slog.Value {
 	return c.ToConfig().LogValue()
 }
 
-// ParsePostgresDSNCompat parses a PostgreSQL connection URI into a
-// [PostgresConfig].
+// DSN returns a MySQL/MariaDB data source name.
 //
-// Deprecated: Use [ParsePostgresDSN] which returns the unified [Config]
-// type instead.
+// Deprecated: DSN building is a driver concern. Use the driver's Open method.
+func (c Config) DSN(tlsOpt ...any) string {
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true",
+		url.QueryEscape(c.User), url.QueryEscape(c.Password), c.Host, c.Port, url.QueryEscape(c.Name))
+	if len(tlsOpt) > 0 {
+		switch v := tlsOpt[0].(type) {
+		case bool:
+			if v {
+				dsn += "&tls=custom"
+			}
+		case string:
+			if v != "" {
+				dsn += "&tls=" + url.QueryEscape(v)
+			}
+		}
+	}
+	return dsn
+}
+
+// escapePostgresDSNValue escapes single quotes and backslashes for PostgreSQL DSN.
+func escapePostgresDSNValue(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return s
+}
+
+// ParsePostgresDSNCompat parses a PostgreSQL connection URI into a [PostgresConfig].
+//
+// Deprecated: Use [ParsePostgresDSN] which returns the unified [Config] type.
 func ParsePostgresDSNCompat(rawURL string) (PostgresConfig, error) {
 	cfg, err := ParsePostgresDSN(rawURL)
 	if err != nil {
 		return PostgresConfig{}, err
 	}
-	return PostgresConfig(cfg), nil
+	return PostgresConfig{
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+		User:     cfg.User,
+		Password: cfg.Password,
+		Name:     cfg.Name,
+		SSLMode:  cfg.Option("sslmode", ""),
+		LogLevel: cfg.LogLevel,
+	}, nil
 }
 
 // MySQLFields is an alias for [Fields].
@@ -64,34 +126,36 @@ type PostgresFields struct {
 	DatabasePool PoolConfig
 }
 
-// Deprecated: Use [LoadFields] with appropriate driver defaults instead.
-// Example: LoadFields(envPrefix, 3306, "mysql", maxIdle, maxOpen)
+// Deprecated: Use [LoadFields] with driver defaults instead.
 func LoadMySQLFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (Fields, error) {
 	return LoadFields(envPrefix, 3306, "mysql", defaultMaxIdle, defaultMaxOpen)
 }
 
-// Deprecated: Use [LoadFields] with appropriate driver defaults instead.
-// Example: LoadFields(envPrefix, 5432, "postgres", maxIdle, maxOpen)
+// Deprecated: Use [LoadFields] with driver defaults instead.
 func LoadPostgresFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (PostgresFields, error) {
 	f, err := LoadFields(envPrefix, 5432, "postgres", defaultMaxIdle, defaultMaxOpen)
 	if err != nil {
 		return PostgresFields{}, err
 	}
 	return PostgresFields{
-		Database:     PostgresConfig(f.Database),
+		Database: PostgresConfig{
+			Host:     f.Database.Host,
+			Port:     f.Database.Port,
+			User:     f.Database.User,
+			Password: f.Database.Password,
+			Name:     f.Database.Name,
+			SSLMode:  f.Database.Option("sslmode", ""),
+			LogLevel: f.Database.LogLevel,
+		},
 		DatabasePool: f.DatabasePool,
 	}, nil
 }
 
-// ValidateMySQL checks that all required MySQL/MariaDB fields are present.
-//
 // Deprecated: Use [Fields.Validate] with driver "mysql" instead.
 func (f Fields) ValidateMySQL(envPrefix, environment string) error {
 	return f.Validate(envPrefix, environment, "mysql")
 }
 
-// ValidatePostgres checks that all required PostgreSQL fields are present.
-//
 // Deprecated: Use [Fields.Validate] with driver "postgres" instead.
 func (f PostgresFields) ValidatePostgres(envPrefix, environment string) error {
 	unified := Fields{
@@ -100,4 +164,3 @@ func (f PostgresFields) ValidatePostgres(envPrefix, environment string) error {
 	}
 	return unified.Validate(envPrefix, environment, "postgres")
 }
-

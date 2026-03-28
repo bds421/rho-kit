@@ -12,62 +12,27 @@ import (
 	"github.com/bds421/rho-kit/core/config"
 )
 
-// Config holds database connection settings for any SQL driver (MySQL,
-// MariaDB, PostgreSQL). Driver-specific fields like SSLMode are ignored
-// by drivers that do not use them.
+// Config holds database connection settings for any SQL driver.
+// Driver-specific settings (e.g. PostgreSQL sslmode, MySQL charset) go in
+// the Options map. The Driver implementation reads the options it needs
+// and ignores the rest.
 type Config struct {
 	Host     string
 	Port     int
 	User     string
 	Password string
 	Name     string
-	SSLMode  string // PostgreSQL only: "disable", "require", "verify-ca", "verify-full"
-	LogLevel string // "info" for verbose SQL logging, default "warn"
+	LogLevel string            // "info" for verbose SQL logging, default "warn"
+	Options  map[string]string // driver-specific options (e.g. "sslmode", "charset", "tls")
 }
 
-// MySQLDSN returns a MySQL/MariaDB data source name.
-// Special characters in user/password are escaped to prevent DSN parsing errors.
-// url.QueryEscape is used instead of url.PathEscape because PathEscape does not
-// encode '@' or '/' which are DSN delimiters.
-// The optional first argument can be a bool (true enables tls=custom) or
-// a string TLS config name registered via mysql.RegisterTLSConfig.
-func (c Config) MySQLDSN(tlsOpt ...any) string {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true",
-		url.QueryEscape(c.User), url.QueryEscape(c.Password), c.Host, c.Port, url.QueryEscape(c.Name))
-	if len(tlsOpt) > 0 {
-		switch v := tlsOpt[0].(type) {
-		case bool:
-			if v {
-				dsn += "&tls=custom"
-			}
-		case string:
-			if v != "" {
-				dsn += "&tls=" + url.QueryEscape(v)
-			}
-		}
+// Option returns the value for the given driver-specific option key, or
+// the fallback if not set. Keys are case-sensitive.
+func (c Config) Option(key, fallback string) string {
+	if v, ok := c.Options[key]; ok {
+		return v
 	}
-	return dsn
-}
-
-// DSN returns the MySQL/MariaDB data source name (alias for [MySQLDSN]).
-// The optional first argument can be a bool (true enables tls=custom) or
-// a string TLS config name registered via mysql.RegisterTLSConfig.
-func (c Config) DSN(tlsOpt ...any) string {
-	return c.MySQLDSN(tlsOpt...)
-}
-
-// PostgresDSN returns a PostgreSQL data source name (keyword/value format).
-// When tlsEnabled is true and SSLMode is empty, it defaults to "verify-full".
-func (c Config) PostgresDSN(tlsEnabled ...bool) string {
-	sslMode := c.SSLMode
-	if sslMode == "" {
-		sslMode = "disable"
-		if len(tlsEnabled) > 0 && tlsEnabled[0] {
-			sslMode = "verify-full"
-		}
-	}
-	return fmt.Sprintf("host='%s' port=%d user='%s' password='%s' dbname='%s' sslmode='%s'",
-		escapePostgresDSNValue(c.Host), c.Port, escapePostgresDSNValue(c.User), escapePostgresDSNValue(c.Password), escapePostgresDSNValue(c.Name), escapePostgresDSNValue(sslMode))
+	return fallback
 }
 
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials.
@@ -79,18 +44,6 @@ func (c Config) LogValue() slog.Value {
 		slog.String("name", c.Name),
 		slog.String("password", "[REDACTED]"),
 	)
-}
-
-// escapePostgresDSNValue escapes single quotes and backslashes in a value
-// for use inside single-quoted PostgreSQL keyword/value DSN parameters.
-// Also strips null bytes (which terminate C strings in libpq) and replaces
-// newlines (which break keyword/value parsing).
-func escapePostgresDSNValue(s string) string {
-	s = strings.ReplaceAll(s, "\x00", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	return s
 }
 
 // ParsePostgresDSN parses a PostgreSQL connection URI into a [Config].
@@ -123,13 +76,18 @@ func ParsePostgresDSN(rawURL string) (Config, error) {
 		password, _ = u.User.Password()
 	}
 
+	var opts map[string]string
+	if sslMode := u.Query().Get("sslmode"); sslMode != "" {
+		opts = map[string]string{"sslmode": sslMode}
+	}
+
 	return Config{
 		Host:     u.Hostname(),
 		Port:     port,
 		User:     user,
 		Password: password,
 		Name:     strings.TrimPrefix(u.Path, "/"),
-		SSLMode:  u.Query().Get("sslmode"),
+		Options:  opts,
 	}, nil
 }
 
@@ -262,11 +220,10 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 		return Fields{}, err
 	}
 
-	sslMode := ""
+	opts := make(map[string]string)
 	if driver == "postgres" {
-		sslMode = config.Get("DB_SSL_MODE", "")
-		if sslMode != "" {
-			sslMode = strings.ToLower(sslMode)
+		if sslMode := config.Get("DB_SSL_MODE", ""); sslMode != "" {
+			opts["sslmode"] = strings.ToLower(sslMode)
 		}
 	}
 
@@ -277,8 +234,8 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 			User:     config.Get(envPrefix+"_DB_USER", ""),
 			Password: config.GetSecret(envPrefix+"_DB_PASSWORD", ""),
 			Name:     config.Get(envPrefix+"_DB_NAME", ""),
-			SSLMode:  sslMode,
 			LogLevel: config.Get("DB_LOG_LEVEL", "warn"),
+			Options:  opts,
 		},
 		DatabasePool: dbPool,
 	}, nil
@@ -308,7 +265,7 @@ func (f Fields) Validate(envPrefix, environment, driver string) error {
 		return fmt.Errorf("%s_DB_NAME is required", envPrefix)
 	}
 	if driver == "postgres" {
-		if err := validatePostgresSSLMode(f.Database.SSLMode); err != nil {
+		if err := validatePostgresSSLMode(f.Database.Option("sslmode", "")); err != nil {
 			return err
 		}
 	}
