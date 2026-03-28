@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Verify config types implement slog.LogValuer.
+// Verify deprecated config types still implement slog.LogValuer.
 var _ slog.LogValuer = MySQLConfig{}
 
 func TestMySQLConfig_DSN(t *testing.T) {
@@ -189,38 +189,38 @@ func TestMySQLFields_ValidateMySQL(t *testing.T) {
 	})
 }
 
-func TestParsePostgresDSN(t *testing.T) {
+func TestParsePostgresDSN_Compat(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		want     PostgresConfig
+		want     Config
 		wantErr  bool
 		errMatch string
 	}{
 		{
 			name:  "standard URL",
 			input: "postgres://pguser:pgpass@pg-host:5432/pgdb?sslmode=require",
-			want:  PostgresConfig{Host: "pg-host", Port: 5432, User: "pguser", Password: "pgpass", Name: "pgdb", SSLMode: "require"},
+			want:  Config{Host: "pg-host", Port: 5432, User: "pguser", Password: "pgpass", Name: "pgdb", SSLMode: "require"},
 		},
 		{
 			name:  "postgresql scheme",
 			input: "postgresql://user:pass@host/db",
-			want:  PostgresConfig{Host: "host", Port: 5432, User: "user", Password: "pass", Name: "db"},
+			want:  Config{Host: "host", Port: 5432, User: "user", Password: "pass", Name: "db"},
 		},
 		{
 			name:  "special characters in password",
 			input: "postgres://user:p%40ss%2Fw0rd@host:5432/db",
-			want:  PostgresConfig{Host: "host", Port: 5432, User: "user", Password: "p@ss/w0rd", Name: "db"},
+			want:  Config{Host: "host", Port: 5432, User: "user", Password: "p@ss/w0rd", Name: "db"},
 		},
 		{
 			name:  "no sslmode",
 			input: "postgres://u:p@h:5432/db",
-			want:  PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db"},
+			want:  Config{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db"},
 		},
 		{
 			name:  "default port",
 			input: "postgres://u:p@h/db",
-			want:  PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db"},
+			want:  Config{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db"},
 		},
 		{
 			name:     "wrong scheme",
@@ -251,33 +251,33 @@ func TestParsePostgresDSN(t *testing.T) {
 	}
 }
 
-func TestParseMySQLDSN(t *testing.T) {
+func TestParseMySQLDSN_Compat(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		want     MySQLConfig
+		want     Config
 		wantErr  bool
 		errMatch string
 	}{
 		{
 			name:  "standard URL",
 			input: "mysql://myuser:mypass@db-host:3306/mydb",
-			want:  MySQLConfig{Host: "db-host", Port: 3306, User: "myuser", Password: "mypass", Name: "mydb"},
+			want:  Config{Host: "db-host", Port: 3306, User: "myuser", Password: "mypass", Name: "mydb"},
 		},
 		{
 			name:  "special characters in password",
 			input: "mysql://user:p%40ss%2Fw0rd@host:3306/db",
-			want:  MySQLConfig{Host: "host", Port: 3306, User: "user", Password: "p@ss/w0rd", Name: "db"},
+			want:  Config{Host: "host", Port: 3306, User: "user", Password: "p@ss/w0rd", Name: "db"},
 		},
 		{
 			name:  "default port",
 			input: "mysql://u:p@h/db",
-			want:  MySQLConfig{Host: "h", Port: 3306, User: "u", Password: "p", Name: "db"},
+			want:  Config{Host: "h", Port: 3306, User: "u", Password: "p", Name: "db"},
 		},
 		{
 			name:  "custom port",
 			input: "mysql://u:p@h:3307/db",
-			want:  MySQLConfig{Host: "h", Port: 3307, User: "u", Password: "p", Name: "db"},
+			want:  Config{Host: "h", Port: 3307, User: "u", Password: "p", Name: "db"},
 		},
 		{
 			name:     "wrong scheme",
@@ -359,3 +359,4 @@ func TestLoadMySQLFields_DATABASE_URL_Precedence(t *testing.T) {
 	assert.Equal(t, "urlhost", f.Database.Host)
 	assert.Equal(t, "urluser", f.Database.User)
 }
+

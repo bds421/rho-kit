@@ -9,52 +9,52 @@ import (
 // Verify PostgresConfig implements slog.LogValuer.
 var _ slog.LogValuer = PostgresConfig{}
 
-func TestPostgresConfig_DSN_Defaults(t *testing.T) {
+func TestPostgresConfig_PostgresDSN_Defaults(t *testing.T) {
 	cfg := PostgresConfig{
 		Host: "pg-host", Port: 5432, User: "pguser",
 		Password: "pgpass", Name: "pgdb",
 	}
-	dsn := cfg.DSN()
+	dsn := cfg.PostgresDSN()
 	expected := "host='pg-host' port=5432 user='pguser' password='pgpass' dbname='pgdb' sslmode='disable'"
 	if dsn != expected {
-		t.Errorf("DSN() = %q, want %q", dsn, expected)
+		t.Errorf("PostgresDSN() = %q, want %q", dsn, expected)
 	}
 }
 
-func TestPostgresConfig_DSN_TLSEnabled(t *testing.T) {
+func TestPostgresConfig_PostgresDSN_TLSEnabled(t *testing.T) {
 	cfg := PostgresConfig{
 		Host: "pg-host", Port: 5432, User: "pguser",
 		Password: "pgpass", Name: "pgdb",
 	}
-	dsn := cfg.DSN(true)
+	dsn := cfg.PostgresDSN(true)
 	expected := "host='pg-host' port=5432 user='pguser' password='pgpass' dbname='pgdb' sslmode='verify-full'"
 	if dsn != expected {
-		t.Errorf("DSN(true) = %q, want %q", dsn, expected)
+		t.Errorf("PostgresDSN(true) = %q, want %q", dsn, expected)
 	}
 }
 
-func TestPostgresConfig_DSN_ExplicitSSLMode(t *testing.T) {
+func TestPostgresConfig_PostgresDSN_ExplicitSSLMode(t *testing.T) {
 	cfg := PostgresConfig{
 		Host: "pg-host", Port: 5432, User: "pguser",
 		Password: "pgpass", Name: "pgdb", SSLMode: "require",
 	}
 	// Explicit SSLMode should be used regardless of tlsEnabled.
-	dsn := cfg.DSN(true)
+	dsn := cfg.PostgresDSN(true)
 	expected := "host='pg-host' port=5432 user='pguser' password='pgpass' dbname='pgdb' sslmode='require'"
 	if dsn != expected {
-		t.Errorf("DSN(true) with SSLMode = %q, want %q", dsn, expected)
+		t.Errorf("PostgresDSN(true) with SSLMode = %q, want %q", dsn, expected)
 	}
 }
 
-func TestPostgresConfig_DSN_SpecialCharsEscaped(t *testing.T) {
+func TestPostgresConfig_PostgresDSN_SpecialCharsEscaped(t *testing.T) {
 	cfg := PostgresConfig{
 		Host: "pg-host", Port: 5432, User: "pguser",
 		Password: "p'ass\\word", Name: "pgdb",
 	}
-	dsn := cfg.DSN()
+	dsn := cfg.PostgresDSN()
 	expected := `host='pg-host' port=5432 user='pguser' password='p\'ass\\word' dbname='pgdb' sslmode='disable'`
 	if dsn != expected {
-		t.Errorf("DSN() = %q, want %q", dsn, expected)
+		t.Errorf("PostgresDSN() = %q, want %q", dsn, expected)
 	}
 }
 
