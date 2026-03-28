@@ -46,7 +46,7 @@
   "runtime/lifecycle": "1.0.0",
   "security/jwtutil": "1.0.0",
   "security/netutil": "1.1.0",
-  "infra/sqldb": "1.1.0",
+  "infra/sqldb": "1.1.1",
   "observability/auditlog/gormstore": "1.0.0",
   "cmd/kit-migrate": "1.0.0",
   "data/idempotency/pgstore": "1.0.0",
