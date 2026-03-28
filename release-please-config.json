@@ -53,6 +53,9 @@
     "data/stream/redisstream": {
       "component": "data/stream/redisstream"
     },
+    "grpcx": {
+      "component": "grpcx"
+    },
     "httpx": {
       "component": "httpx"
     },
