@@ -39,13 +39,17 @@
 //	store := gormstore.New(db)   // from infra/outbox/gormstore
 //	writer := outbox.NewWriter(store)
 //
-//	// Inside a transaction (using store-specific transaction support):
-//	writer.Write(ctx, outbox.WriteParams{
-//	    Topic:       "orders",
-//	    RoutingKey:  "order.created",
-//	    MessageID:   msg.ID,
-//	    MessageType: "order.created",
-//	    Payload:     payload,
+//	// Inside a transaction (using gormdb.ContextWithTx for atomicity):
+//	err := db.Transaction(func(tx *gorm.DB) error {
+//	    ctx := gormdb.ContextWithTx(ctx, tx)
+//	    // ... domain writes using tx ...
+//	    return writer.Write(ctx, outbox.WriteParams{
+//	        Topic:       "orders",
+//	        RoutingKey:  "order.created",
+//	        MessageID:   msg.ID,
+//	        MessageType: "order.created",
+//	        Payload:     payload,
+//	    })
 //	})
 //
 //	// Relay as a lifecycle component:

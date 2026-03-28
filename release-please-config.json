@@ -71,6 +71,9 @@
     "infra/outbox": {
       "component": "infra/outbox"
     },
+    "infra/outbox/gormstore": {
+      "component": "infra/outbox/gormstore"
+    },
     "infra/messaging/redisbackend": {
       "component": "infra/messaging/redisbackend"
     },
