@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -12,19 +11,17 @@ import (
 
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 	"github.com/bds421/rho-kit/infra/sqldb/migrate"
 	"github.com/bds421/rho-kit/observability/health"
 )
 
-// databaseModule implements the Module interface for MySQL and PostgreSQL
-// connections. It handles connection setup, schema migrations, optional
-// seeding, health checks, pool metrics, and cleanup.
+// databaseModule implements the Module interface for database connections
+// using the unified Driver abstraction. It handles connection setup, schema
+// migrations, optional seeding, health checks, pool metrics, and cleanup.
 type databaseModule struct {
 	// config -- set at construction time, never mutated after.
-	mysqlCfg  *sqldb.MySQLConfig
-	pgCfg     *sqldb.PostgresConfig
+	driver    gormdb.Driver
+	cfg       sqldb.Config
 	poolCfg   sqldb.PoolConfig
 	namespace string
 
@@ -41,8 +38,8 @@ type databaseModule struct {
 
 // databaseModuleConfig holds the configuration for constructing a databaseModule.
 type databaseModuleConfig struct {
-	mysqlCfg      *sqldb.MySQLConfig
-	pgCfg         *sqldb.PostgresConfig
+	driver        gormdb.Driver
+	cfg           sqldb.Config
 	poolCfg       sqldb.PoolConfig
 	namespace     string
 	migrationsDir fs.FS
@@ -51,19 +48,19 @@ type databaseModuleConfig struct {
 }
 
 // newDatabaseModule creates a database module from the given config.
-// Panics if neither MySQL nor Postgres config is set.
-func newDatabaseModule(cfg databaseModuleConfig) *databaseModule {
-	if cfg.mysqlCfg == nil && cfg.pgCfg == nil {
-		panic("app: database module requires MySQL or Postgres config")
+// Panics if no driver is set.
+func newDatabaseModule(dmCfg databaseModuleConfig) *databaseModule {
+	if dmCfg.driver == nil {
+		panic("app: database module requires a Driver")
 	}
 	return &databaseModule{
-		mysqlCfg:      cfg.mysqlCfg,
-		pgCfg:         cfg.pgCfg,
-		poolCfg:       cfg.poolCfg,
-		namespace:     cfg.namespace,
-		migrationsDir: cfg.migrationsDir,
-		seedFn:        cfg.seedFn,
-		metrics:       cfg.metrics,
+		driver:        dmCfg.driver,
+		cfg:           dmCfg.cfg,
+		poolCfg:       dmCfg.poolCfg,
+		namespace:     dmCfg.namespace,
+		migrationsDir: dmCfg.migrationsDir,
+		seedFn:        dmCfg.seedFn,
+		metrics:       dmCfg.metrics,
 	}
 }
 
@@ -77,7 +74,12 @@ func (m *databaseModule) Init(_ context.Context, mc ModuleContext) error {
 		return fmt.Errorf("database module: build client TLS: %w", err)
 	}
 
-	db, openErr := m.openDB(clientTLS)
+	m.logger.Info("connecting to database",
+		"driver", m.driver.Name(),
+		"host", m.cfg.Host,
+		"database", m.cfg.Name)
+
+	db, openErr := m.driver.Open(m.cfg, m.poolCfg, m.logger, clientTLS)
 	if openErr != nil {
 		return fmt.Errorf("database module: %w", openErr)
 	}
@@ -97,7 +99,7 @@ func (m *databaseModule) Init(_ context.Context, mc ModuleContext) error {
 		m.registerMetrics(mc)
 	}
 
-	mc.Logger.Info("database connection configured", "driver", m.driver())
+	mc.Logger.Info("database connection configured", "driver", m.driver.Name())
 	return nil
 }
 
@@ -110,6 +112,10 @@ func (m *databaseModule) HealthChecks() []health.DependencyCheck {
 
 func (m *databaseModule) Populate(infra *Infrastructure) {
 	infra.DB = m.db
+	// When no read replica is configured, readers fall back to the primary.
+	if infra.DBReader == nil {
+		infra.DBReader = m.db
+	}
 }
 
 func (m *databaseModule) Close(_ context.Context) error {
@@ -149,48 +155,13 @@ func (m *databaseModule) SeedExit() bool {
 	return m.seedExit
 }
 
-// driver returns the database driver name for logging.
-func (m *databaseModule) driver() string {
-	if m.mysqlCfg != nil {
-		return "mysql"
-	}
-	return "postgres"
-}
-
-func (m *databaseModule) openDB(clientTLS *tls.Config) (*gorm.DB, error) {
-	if m.mysqlCfg != nil {
-		return m.openMySQL(clientTLS)
-	}
-	return m.openPostgres(clientTLS)
-}
-
-func (m *databaseModule) openMySQL(clientTLS *tls.Config) (*gorm.DB, error) {
-	var dbOpts []gormmysql.Option
-	if clientTLS != nil {
-		dbOpts = append(dbOpts, gormmysql.WithTLS(clientTLS))
-	}
-	m.logger.Info("connecting to database", "driver", "mysql",
-		"host", m.mysqlCfg.Host, "database", m.mysqlCfg.Name)
-	return gormmysql.New(*m.mysqlCfg, m.poolCfg, m.logger, dbOpts...)
-}
-
-func (m *databaseModule) openPostgres(clientTLS *tls.Config) (*gorm.DB, error) {
-	var dbOpts []gormpostgres.Option
-	if clientTLS != nil {
-		dbOpts = append(dbOpts, gormpostgres.WithTLS(clientTLS))
-	}
-	m.logger.Info("connecting to database", "driver", "postgres",
-		"host", m.pgCfg.Host, "database", m.pgCfg.Name)
-	return gormpostgres.New(*m.pgCfg, m.poolCfg, m.logger, dbOpts...)
-}
-
 func (m *databaseModule) runMigrations() error {
 	if m.migrationsDir == nil {
 		return nil
 	}
 	applied, err := migrate.Up(context.Background(), m.db, migrate.Config{
 		Dir:     m.migrationsDir,
-		Dialect: m.driver(),
+		Dialect: m.driver.Name(),
 	})
 	if err != nil {
 		return fmt.Errorf("database migrations failed: %w", err)

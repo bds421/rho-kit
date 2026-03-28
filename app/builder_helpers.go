@@ -52,10 +52,10 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, newJWTModule(b.jwksURL))
 	}
 
-	if b.dbMySQLCfg != nil || b.dbPgCfg != nil {
+	if b.dbDriver != nil {
 		dbMod = newDatabaseModule(databaseModuleConfig{
-			mysqlCfg:      b.dbMySQLCfg,
-			pgCfg:         b.dbPgCfg,
+			driver:        b.dbDriver,
+			cfg:           *b.dbCfg,
 			poolCfg:       *b.dbPoolCfg,
 			namespace:     b.dbNamespace,
 			migrationsDir: b.migrationsDir,

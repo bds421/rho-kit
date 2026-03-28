@@ -147,24 +147,30 @@ func TestBuilder_RunPanicsOnReuse(t *testing.T) {
 
 func TestBuilder_WithMySQL(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithMySQL(sqldb.MySQLConfig{}, sqldb.PoolConfig{})
-	if b.dbMySQLCfg == nil {
-		t.Fatal("MySQL config should be set")
+		WithMySQL(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
+	if b.dbDriver == nil {
+		t.Fatal("driver should be set")
 	}
-	if b.dbPgCfg != nil {
-		t.Fatal("PostgreSQL config should be nil after WithMySQL")
-	}
+	assert.Equal(t, "mysql", b.dbDriver.Name())
 }
 
 func TestBuilder_WithPostgres(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithPostgres(sqldb.PostgresConfig{}, sqldb.PoolConfig{})
-	if b.dbPgCfg == nil {
-		t.Fatal("PostgreSQL config should be set")
+		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
+	if b.dbDriver == nil {
+		t.Fatal("driver should be set")
 	}
-	if b.dbMySQLCfg != nil {
-		t.Fatal("MySQL config should be nil after WithPostgres")
-	}
+	assert.Equal(t, "postgres", b.dbDriver.Name())
+}
+
+func TestBuilder_WithMySQLAndPostgresMutuallyExclusive(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for mutually exclusive DB drivers")
+	}()
+	New("test-svc", "v0.1.0", BaseConfig{}).
+		WithMySQL(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{}).
+		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
 }
 
 func TestTestInfrastructure(t *testing.T) {
