@@ -36,6 +36,10 @@ func WithTLS(cfg *tls.Config) Option {
 }
 
 // New opens a GORM database connection to MySQL/MariaDB with connection pooling.
+//
+// Deprecated: Use [MySQLDriver.Open] with the unified [sqldb.Config] instead.
+//
+//nolint:staticcheck // Uses deprecated MySQLConfig for backward compat.
 func New(cfg sqldb.MySQLConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, opts ...Option) (*gorm.DB, error) {
 	var o dbOpts
 	for _, opt := range opts {
