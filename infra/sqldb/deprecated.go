@@ -24,15 +24,7 @@ type PostgresConfig struct {
 
 // ToConfig converts a PostgresConfig to the unified Config type.
 func (c PostgresConfig) ToConfig() Config {
-	return Config{
-		Host:     c.Host,
-		Port:     c.Port,
-		User:     c.User,
-		Password: c.Password,
-		Name:     c.Name,
-		SSLMode:  c.SSLMode,
-		LogLevel: c.LogLevel,
-	}
+	return Config(c)
 }
 
 // DSN returns a PostgreSQL data source name (keyword/value format).
@@ -56,15 +48,7 @@ func ParsePostgresDSNCompat(rawURL string) (PostgresConfig, error) {
 	if err != nil {
 		return PostgresConfig{}, err
 	}
-	return PostgresConfig{
-		Host:     cfg.Host,
-		Port:     cfg.Port,
-		User:     cfg.User,
-		Password: cfg.Password,
-		Name:     cfg.Name,
-		SSLMode:  cfg.SSLMode,
-		LogLevel: cfg.LogLevel,
-	}, nil
+	return PostgresConfig(cfg), nil
 }
 
 // MySQLFields is an alias for [Fields].
@@ -94,15 +78,7 @@ func LoadPostgresFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (P
 		return PostgresFields{}, err
 	}
 	return PostgresFields{
-		Database: PostgresConfig{
-			Host:     f.Database.Host,
-			Port:     f.Database.Port,
-			User:     f.Database.User,
-			Password: f.Database.Password,
-			Name:     f.Database.Name,
-			SSLMode:  f.Database.SSLMode,
-			LogLevel: f.Database.LogLevel,
-		},
+		Database:     PostgresConfig(f.Database),
 		DatabasePool: f.DatabasePool,
 	}, nil
 }
