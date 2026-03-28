@@ -120,7 +120,7 @@ func (m *grpcModule) serve(ctx context.Context) error {
 	// When the runner cancels the context, trigger graceful stop.
 	go func() {
 		<-ctx.Done()
-		m.gracefulStop()
+		_ = m.gracefulStop()
 	}()
 
 	m.logger.Info("gRPC server listening", "addr", m.addr)
