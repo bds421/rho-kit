@@ -26,6 +26,12 @@ github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0 h1:FWK9CsyPJV5seOHa
 github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0/go.mod h1:r7dDj9zfD70catPsNHOk1pvcyHQoVfKI+X2YgetT4/Q=
 github.com/bds421/rho-kit/infra/redis v1.0.0 h1:gv1S4hgIovRR9UjOTu40VBvA9HSKjiEhz7lriFvveDw=
 github.com/bds421/rho-kit/infra/redis v1.0.0/go.mod h1:JYTyj5SViE8oeAGUD1Qpab9Qml99jSWJ85hAEWhP6AE=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1 h1:Na+VmqBB6AGspqYANXIak02N+5qQKzllf4GRin8tdV0=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1/go.mod h1:JfgX4eUDM48mYD9SLZwn1ThnUXeqU49nSmyUROMO07Y=
+github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.1.0 h1:Fj18HNVaBPpKkA4epGoxCrGxuAK7mjusTwgXUqcIcdA=
+github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.1.0/go.mod h1:7T1/ozyUrs0tgWlJ1cEOxv5wys7omi0m18hrYYlh8YA=
+github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.1.0 h1:/Ldd0R8Vj3w+oBOisQteuZHgH0+3J00YMxKajuHG9tI=
+github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.1.0/go.mod h1:hH9XMhIeRfQo154TDzM9Sa2xGFxOLk4Es++DVcgZ4ms=
 github.com/bds421/rho-kit/infra/storage v1.0.0 h1:qx+YVUvTYzBZBOIvoUnKLDMMawKQPlkh3cnvknrHxzM=
 github.com/bds421/rho-kit/infra/storage v1.0.0/go.mod h1:k+POAYlH2G7wat5RpAis4GFZmlT5EofZNCGDISZUPH0=
 github.com/bds421/rho-kit/io/atomicfile v1.0.0 h1:TwG7zTXoKz7/3Lp/988aOgTukBDpvHRJ4FXz1P3+55U=
