@@ -9,19 +9,16 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("builder is nil")
 	}
 
-	if b.dbMySQLCfg != nil && b.dbPgCfg != nil {
-		return fmt.Errorf("only one database can be configured (MySQL or Postgres)")
-	}
-	if (b.dbMySQLCfg != nil || b.dbPgCfg != nil) && b.dbPoolCfg == nil {
+	if b.dbDriver != nil && b.dbPoolCfg == nil {
 		return fmt.Errorf("database pool config is required when a database is configured")
 	}
-	if b.dbMetrics && b.dbMySQLCfg == nil && b.dbPgCfg == nil {
+	if b.dbMetrics && b.dbDriver == nil {
 		return fmt.Errorf("database metrics require a configured database")
 	}
-	if b.seedFn != nil && b.dbMySQLCfg == nil && b.dbPgCfg == nil {
+	if b.seedFn != nil && b.dbDriver == nil {
 		return fmt.Errorf("seed requires a configured database")
 	}
-	if b.migrationsDir != nil && b.dbMySQLCfg == nil && b.dbPgCfg == nil {
+	if b.migrationsDir != nil && b.dbDriver == nil {
 		return fmt.Errorf("migrations require a configured database (use WithMySQL or WithPostgres)")
 	}
 	if b.criticalBroker && b.mqURL == "" {
