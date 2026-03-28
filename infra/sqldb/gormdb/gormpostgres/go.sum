@@ -1,9 +1,11 @@
-filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
-filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+github.com/bds421/rho-kit/core/apperror v1.0.0 h1:Fg8tZ2HviRu+Tgr0+qRaAwy8pvUNt2N7xPJ8kRR/3Xk=
+github.com/bds421/rho-kit/core/apperror v1.0.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
 github.com/bds421/rho-kit/core/config v1.0.0 h1:GGfhRiiWfX7wKxYa85H/+60IXwiA4NU8pIGm1h+h3TQ=
 github.com/bds421/rho-kit/core/config v1.0.0/go.mod h1:8svppGoTWL0zmkilgbTRdHSW2lb06LcpV0P0wAagsP8=
-github.com/bds421/rho-kit/infra/sqldb v1.0.0 h1:HhKCklEbDAChCnOba2znqjLcae/pEVjwOw45VAGAkgM=
-github.com/bds421/rho-kit/infra/sqldb v1.0.0/go.mod h1:Cb2qXcDvjcVLZkrkfiQWpAAVjAVjmOC88BF+wYGDKNk=
+github.com/bds421/rho-kit/core/contextutil v1.0.0 h1:MgeGoeskv25WdPZ46tvrXEYd/reb/oe3ozRMH96Jw+c=
+github.com/bds421/rho-kit/core/contextutil v1.0.0/go.mod h1:lTPcHj+ShOwuzEbDNs+95CJdryy3IoH2xp4h8sYGlXM=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1 h1:Na+VmqBB6AGspqYANXIak02N+5qQKzllf4GRin8tdV0=
+github.com/bds421/rho-kit/infra/sqldb v1.1.1/go.mod h1:JfgX4eUDM48mYD9SLZwn1ThnUXeqU49nSmyUROMO07Y=
 github.com/bds421/rho-kit/observability/health v1.0.0 h1:gAFHyXIeOr/5wUK6Mi1HrmdGujcRMUwE9V4J6Z+jVF0=
 github.com/bds421/rho-kit/observability/health v1.0.0/go.mod h1:6cHMZ29DpihCJPBpYjYWrDueSEGvAw9vN6G5rVX6GDY=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
@@ -18,8 +20,8 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/glebarez/go-sqlite v1.22.0 h1:uAcMJhaA6r3LHMTFgP0SifzgXg46yJkgxqyuyec+ruQ=
 github.com/glebarez/go-sqlite v1.22.0/go.mod h1:PlBIdHe0+aUEFn+r2/uthrWq4FxbzugL0L8Li6yQJbc=
-github.com/go-sql-driver/mysql v1.9.3 h1:U/N249h2WzJ3Ukj8SowVFjdtZKfu9vlLZxjPXV1aweo=
-github.com/go-sql-driver/mysql v1.9.3/go.mod h1:qn46aNg1333BRMNU69Lq93t8du/dwxI64Gl8i5p1WMU=
+github.com/glebarez/sqlite v1.11.0 h1:wSG0irqzP6VurnMEpFGer5Li19RpIRi2qvQz++w0GMw=
+github.com/glebarez/sqlite v1.11.0/go.mod h1:h8/o8j5wiAsqSPoWELDUdJXhjAhsVliSn7bWZjOhrgQ=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
