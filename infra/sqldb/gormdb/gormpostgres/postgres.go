@@ -52,7 +52,7 @@ func New(cfg sqldb.PostgresConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger
 		logLevel = gormlogger.Info
 	}
 
-	dsn := cfg.PostgresDSN(tlsEnabled)
+	dsn := cfg.DSN(tlsEnabled)
 
 	pgCfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
