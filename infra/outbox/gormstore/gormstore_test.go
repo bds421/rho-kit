@@ -16,6 +16,7 @@ import (
 
 	"github.com/bds421/rho-kit/infra/outbox"
 	"github.com/bds421/rho-kit/infra/outbox/gormstore"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 )
 
 // testDBCounter provides unique names for SQLite databases.
@@ -90,7 +91,7 @@ func TestStore_Insert_WithTx(t *testing.T) {
 	entry := newEntry(t)
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-		txCtx := gormstore.WithTx(ctx, tx)
+		txCtx := gormdb.ContextWithTx(ctx, tx)
 		return store.Insert(txCtx, entry)
 	})
 	require.NoError(t, err)
@@ -98,6 +99,29 @@ func TestStore_Insert_WithTx(t *testing.T) {
 	count, err := store.CountPending(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
+}
+
+func TestStore_Insert_RollbackUndoesInsert(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	entry := newEntry(t)
+
+	// Begin a transaction, insert via context, then rollback.
+	tx := db.Begin()
+	require.NoError(t, tx.Error)
+
+	txCtx := gormdb.ContextWithTx(ctx, tx)
+	err := store.Insert(txCtx, entry)
+	require.NoError(t, err)
+
+	require.NoError(t, tx.Rollback().Error)
+
+	// The entry must NOT be persisted — proving Insert used the transaction.
+	count, err := store.CountPending(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), count, "rolled-back insert must not persist")
 }
 
 func TestStore_FetchPending(t *testing.T) {

@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/bds421/rho-kit/infra/outbox v0.1.0
+	github.com/bds421/rho-kit/infra/sqldb v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/driver/sqlite v1.6.0
@@ -11,6 +12,10 @@ require (
 )
 
 require (
+	github.com/bds421/rho-kit/core/apperror v1.0.0 // indirect
+	github.com/bds421/rho-kit/core/config v1.0.0 // indirect
+	github.com/bds421/rho-kit/core/contextutil v1.0.0 // indirect
+	github.com/bds421/rho-kit/observability/health v1.0.0 // indirect
 	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -26,7 +31,7 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

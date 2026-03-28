@@ -1,6 +1,35 @@
-// Package gormstore provides a GORM-backed implementation of outbox.Store.
+// Package gormstore provides a GORM-backed implementation of [outbox.Store].
 // It uses PostgreSQL-specific features (SELECT FOR UPDATE SKIP LOCKED) for
 // safe concurrent relay operation.
+//
+// # Transaction Participation
+//
+// [Store.Insert] transparently participates in ambient GORM transactions via
+// [gormdb.DBFromContext]. To guarantee atomicity between domain writes and
+// outbox entries, wrap both in a single transaction using [gormdb.ContextWithTx]:
+//
+//	err := db.Transaction(func(tx *gorm.DB) error {
+//	    ctx := gormdb.ContextWithTx(ctx, tx)
+//
+//	    // Domain write — uses the same transaction.
+//	    if err := tx.Create(&order).Error; err != nil {
+//	        return err
+//	    }
+//
+//	    // Outbox write — also uses the same transaction.
+//	    return writer.Write(ctx, outbox.WriteParams{
+//	        Topic:       "orders",
+//	        RoutingKey:  "order.created",
+//	        MessageID:   msg.ID,
+//	        MessageType: "order.created",
+//	        Payload:     payload,
+//	    })
+//	})
+//
+// When no transaction is in context, Insert uses the root DB connection.
+// All other store methods (FetchPending, MarkPublished, etc.) always use
+// the root DB connection because they are called by the relay, not by
+// user code inside transactions.
 package gormstore
 
 import (
@@ -14,17 +43,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/bds421/rho-kit/infra/outbox"
+	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 )
-
-// txKey is the context key for injecting a GORM transaction.
-type txKey struct{}
-
-// WithTx returns a context carrying the given GORM transaction.
-// When the store receives this context, Insert will use the transaction
-// instead of the root DB connection.
-func WithTx(ctx context.Context, tx *gorm.DB) context.Context {
-	return context.WithValue(ctx, txKey{}, tx)
-}
 
 // entry is the GORM model for an outbox row.
 type entry struct {
@@ -66,19 +86,14 @@ func New(db *gorm.DB) *Store {
 	return &Store{db: db}
 }
 
-// conn returns the transaction from context if present, otherwise the root DB.
-func (s *Store) conn(ctx context.Context) *gorm.DB {
-	if tx, ok := ctx.Value(txKey{}).(*gorm.DB); ok {
-		return tx.WithContext(ctx)
-	}
-	return s.db.WithContext(ctx)
-}
-
 // Insert creates a new outbox entry. If the context carries a GORM
-// transaction (via WithTx), the insert happens within that transaction.
+// transaction (via gormdb.ContextWithTx), the insert happens within that
+// transaction — guaranteeing atomicity with the caller's business data.
+// When no transaction is in context, it falls back to the root DB connection.
 func (s *Store) Insert(ctx context.Context, e outbox.Entry) error {
+	db := gormdb.DBFromContext(ctx, s.db)
 	row := toRow(e)
-	if err := s.conn(ctx).Create(&row).Error; err != nil {
+	if err := db.WithContext(ctx).Create(&row).Error; err != nil {
 		return fmt.Errorf("gormstore: insert entry: %w", err)
 	}
 	return nil
