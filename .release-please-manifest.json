@@ -1,5 +1,5 @@
 {
-  "app": "1.3.0",
+  "app": "1.4.0",
   "core/apperror": "1.1.0",
   "core/config": "1.1.1",
   "core/contextutil": "1.1.1",
@@ -50,8 +50,8 @@
   "observability/auditlog/gormstore": "1.0.0",
   "cmd/kit-migrate": "1.0.0",
   "data/idempotency/pgstore": "1.0.0",
-  "infra/sqldb/gormdb/gormmysql": "1.0.0",
-  "infra/sqldb/gormdb/gormpostgres": "1.0.0",
+  "infra/sqldb/gormdb/gormmysql": "1.1.0",
+  "infra/sqldb/gormdb/gormpostgres": "1.1.0",
   "runtime/batchworker": "1.0.0",
   "runtime/concurrency": "0.1.0"
 }

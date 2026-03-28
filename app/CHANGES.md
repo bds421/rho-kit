@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/bds421/rho-kit/compare/app/v1.3.0...app/v1.4.0) (2026-03-28)
+
+
+### Features
+
+* **app:** export NewGRPCModule, remove WithGRPC builder method ([#52](https://github.com/bds421/rho-kit/issues/52)) ([f251f37](https://github.com/bds421/rho-kit/commit/f251f37a8826c47204d5290a2de27bf464c7d7c2))
+
 ## [1.3.0](https://github.com/bds421/rho-kit/compare/app/v1.2.0...app/v1.3.0) (2026-03-28)
 
 
