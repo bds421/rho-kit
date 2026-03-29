@@ -44,19 +44,14 @@
     "projectsRelationship": "independent",
     "version": {
       "conventionalCommits": true,
-      "versionActions": "./tools/nx-release/go-version-actions.js",
-      "git": {
-        "commitMessage": "chore(release): {projectName} v{version}"
-      }
+      "versionActions": "./tools/nx-release/go-version-actions.js"
     },
     "changelog": {
-      "projectChangelogs": true,
-      "git": {
-        "commitMessage": "chore(release): update changelogs"
-      }
+      "projectChangelogs": true
     },
-    "releaseTag": {
-      "pattern": "{projectName}/v{version}"
-    }
+    "git": {
+      "commitMessage": "chore(release): {version}"
+    },
+    "releaseTagPattern": "{projectName}/v{version}"
   }
 }
