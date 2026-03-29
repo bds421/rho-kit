@@ -1,0 +1,57 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "go-sources": [
+      "{projectRoot}/go.mod",
+      "{projectRoot}/go.sum",
+      "{projectRoot}/**/*.go"
+    ]
+  },
+  "targetDefaults": {
+    "build": {
+      "cache": true,
+      "inputs": ["go-sources"],
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "cache": true,
+      "inputs": ["go-sources"],
+      "dependsOn": ["^build"]
+    },
+    "lint": {
+      "cache": true,
+      "inputs": ["go-sources"]
+    },
+    "tidy": {
+      "cache": true,
+      "inputs": ["go-sources"]
+    }
+  },
+  "plugins": [
+    {
+      "plugin": "@naxodev/gonx",
+      "options": {
+        "buildTargetName": "build",
+        "serveTargetName": "serve",
+        "testTargetName": "test",
+        "lintTargetName": "lint",
+        "tidyTargetName": "tidy"
+      }
+    }
+  ],
+  "release": {
+    "projects": ["*"],
+    "projectsRelationship": "independent",
+    "version": {
+      "conventionalCommits": true,
+      "versionActions": "./tools/nx-release/go-version-actions.js"
+    },
+    "changelog": {
+      "projectChangelogs": true
+    },
+    "git": {
+      "commitMessage": "chore(release): {version}"
+    },
+    "releaseTagPattern": "{projectName}/v{version}"
+  }
+}
