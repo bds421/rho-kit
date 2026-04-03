@@ -78,6 +78,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |
 | Task queue (single consumer) | `data/queue/redisqueue` | [redis](docs/ai/redis.md) |
 | Cross-service messaging | `infra/messaging` interfaces + backend | [messaging](docs/ai/messaging.md) |
+| Kafka/NATS/SQL messaging | `messaging/wmconvert` (Watermill adapter) | [messaging](docs/ai/messaging.md) |
 | Connect to MariaDB/PostgreSQL | `infra/sqldb`, `infra/sqldb/gormdb` | [database](docs/ai/sqldb.md) |
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |

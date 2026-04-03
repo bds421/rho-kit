@@ -1,6 +1,6 @@
 # Messaging — Cross-Service Durable Messaging
 
-Packages: `infra/messaging` (interfaces), `messaging/amqpbackend` (RabbitMQ), `messaging/redisbackend` (Redis Streams), `messaging/membroker` (unit tests)
+Packages: `infra/messaging` (interfaces), `messaging/amqpbackend` (RabbitMQ), `messaging/redisbackend` (Redis Streams), `messaging/wmconvert` (Watermill adapter), `messaging/membroker` (unit tests)
 
 ## When to Use
 
@@ -10,9 +10,41 @@ Use `infra/messaging` for **cross-service durable messaging**. The root package 
 |---|---|
 | `amqpbackend` | Complex routing (topic/fanout/headers), DLX retry, publisher confirms, buffered publishing |
 | `redisbackend` | Redis Streams pub/sub (lighter weight, no extra broker) |
+| `wmconvert` | Any [Watermill](https://github.com/ThreeDotsLabs/watermill)-supported broker (Kafka, NATS, Google Pub/Sub, SQL) via `wmconvert.NewBackend` |
 | `membroker` | Unit tests (in-memory, synchronous drain) |
 
 If you only need in-process event dispatch, use `runtime/eventbus` instead.
+
+## Watermill Integration
+
+The `wmconvert` package provides a generic adapter that wraps any [Watermill](https://github.com/ThreeDotsLabs/watermill) publisher/subscriber behind rho-kit's messaging interfaces. Use this for provider portability when you don't need backend-specific features.
+
+```go
+import (
+    "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
+    "github.com/bds421/rho-kit/infra/messaging/wmconvert"
+)
+
+// Create Watermill Kafka publisher/subscriber
+kafkaPub, _ := kafka.NewPublisher(kafkaConfig, watermillLogger)
+kafkaSub, _ := kafka.NewSubscriber(kafkaConfig, watermillLogger)
+
+// Wrap as rho-kit messaging interfaces
+backend := wmconvert.NewBackend(kafkaPub, kafkaSub, logger,
+    wmconvert.WithTopicFunc(wmconvert.RoutingKeyTopic),
+    wmconvert.WithHealthFunc(func() bool { return kafkaPub.Connected() }),
+)
+
+// Use exactly like amqpbackend or redisbackend
+err := backend.Publisher().Publish(ctx, "exchange", "user.created", msg)
+```
+
+Available topic functions: `ExchangeTopic` (default, maps to exchange/stream name), `RoutingKeyTopic` (maps to routing key), `CombinedTopic` (exchange.routingKey).
+
+**When NOT to use wmconvert:**
+- AMQP with DLX retry counting (x-death headers are AMQP-specific)
+- Redis Streams with dead-letter routing, XCLAIM, or MINID trimming
+- When you need `BufferedPublisher` or `PublishRaw`
 
 ## Quick Start (AMQP)
 

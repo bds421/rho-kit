@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	defaultBufferedMaxSize            = 10_000
-	bufferedDrainInterval             = 5 * time.Second
-	bufferedDrainBatchLimit           = 100
-	defaultBufferedFinalDrainTimeout  = 15 * time.Second
+	defaultBufferedMaxSize           = 10_000
+	bufferedDrainInterval            = 5 * time.Second
+	bufferedDrainBatchLimit          = 100
+	defaultBufferedFinalDrainTimeout = 15 * time.Second
 )
 
 // pendingMessage is a message waiting to be published.
@@ -38,9 +38,9 @@ type pendingMessage struct {
 // database outbox table within the same transaction and poll/CDC them to
 // the broker.
 type BufferedPublisher struct {
-	logger  *slog.Logger
-	mu      sync.Mutex
-	pending []pendingMessage
+	logger            *slog.Logger
+	mu                sync.Mutex
+	pending           []pendingMessage
 	maxSize           int
 	finalDrainTimeout time.Duration
 

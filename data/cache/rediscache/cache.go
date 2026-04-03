@@ -10,8 +10,8 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	sharedcache "github.com/bds421/rho-kit/data/cache"
-	"github.com/bds421/rho-kit/observability/promutil"
 	"github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/observability/promutil"
 )
 
 // Compile-time interface compliance check.
@@ -168,4 +168,3 @@ func (rc *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	return n > 0, nil
 }
-

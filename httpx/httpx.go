@@ -24,7 +24,7 @@ import (
 func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
+		transport.TLSClientConfig = tlsConfig.Clone()
 	}
 	return &http.Client{
 		Timeout:   timeout,
@@ -37,7 +37,7 @@ func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
 func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
+		transport.TLSClientConfig = tlsConfig.Clone()
 	}
 	return &http.Client{
 		Timeout:   timeout,

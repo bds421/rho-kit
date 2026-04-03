@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/infra/sqldb/memdb"
+	"github.com/bds421/rho-kit/observability/auditlog"
 )
 
 func setupStore(t *testing.T) *GormStore {
@@ -78,7 +78,6 @@ func TestQuery_Filters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, result, 2)
 }
-
 
 func TestDeleteBefore(t *testing.T) {
 	s := setupStore(t)

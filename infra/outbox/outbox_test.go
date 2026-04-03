@@ -20,14 +20,14 @@ type fakeStore struct {
 	mu      sync.Mutex
 	entries []outbox.Entry
 
-	insertErr              error
-	fetchPendingErr        error
-	markPublishedErr       error
-	markFailedErr          error
-	incrementAttemptsErr   error
-	deletePublishedErr     error
-	resetStaleErr          error
-	countPendingErr        error
+	insertErr            error
+	fetchPendingErr      error
+	markPublishedErr     error
+	markFailedErr        error
+	incrementAttemptsErr error
+	deletePublishedErr   error
+	resetStaleErr        error
+	countPendingErr      error
 }
 
 func (s *fakeStore) Insert(_ context.Context, entry outbox.Entry) error {

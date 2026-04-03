@@ -14,7 +14,7 @@ import (
 // that appears in every List method of every GORM store.
 type CursorQuery struct {
 	db      *gorm.DB
-	table   string           // optional table qualifier for id column (needed for JOINs)
+	table   string        // optional table qualifier for id column (needed for JOINs)
 	dialect sqldb.Dialect // quoting style (default: DialectMySQL)
 }
 

@@ -5,8 +5,8 @@ import (
 	"io"
 	"time"
 
-	kitretry "github.com/bds421/rho-kit/resilience/retry"
 	"github.com/bds421/rho-kit/infra/storage"
+	kitretry "github.com/bds421/rho-kit/resilience/retry"
 )
 
 // Compile-time interface compliance check.

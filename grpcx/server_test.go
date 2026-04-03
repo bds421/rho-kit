@@ -21,8 +21,8 @@ func TestNewServer_DefaultsDoNotPanic(t *testing.T) {
 
 func TestNewServer_WithOptions(t *testing.T) {
 	srv := grpcx.NewServer(
-		grpcx.WithMaxRecvMsgSize(8 << 20),
-		grpcx.WithMaxSendMsgSize(8 << 20),
+		grpcx.WithMaxRecvMsgSize(8<<20),
+		grpcx.WithMaxSendMsgSize(8<<20),
 		grpcx.WithKeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 10 * time.Minute,
 		}),

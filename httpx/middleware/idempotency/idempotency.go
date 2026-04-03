@@ -12,8 +12,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/httpx"
 	idem "github.com/bds421/rho-kit/data/idempotency"
+	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/observability/promutil"
 )
 

@@ -52,4 +52,3 @@ func TestRunWithBackoff_RestartsOnError(t *testing.T) {
 		return calls.Load() >= 3
 	}, 5*time.Second, 10*time.Millisecond)
 }
-

@@ -46,8 +46,6 @@ func (f *fakePublisher) setErr(err error) {
 	f.err = err
 }
 
-
-
 func TestRelay_PublishesPendingEntries(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
