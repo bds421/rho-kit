@@ -16,8 +16,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/storage/membackend"

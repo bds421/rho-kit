@@ -24,9 +24,10 @@ use (
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
+	./infra/messaging/redisbackend
+	./infra/messaging/wmconvert
 	./infra/outbox
 	./infra/outbox/gormstore
-	./infra/messaging/redisbackend
 	./infra/redis
 	./infra/sqldb
 	./infra/sqldb/gormdb/gormmysql

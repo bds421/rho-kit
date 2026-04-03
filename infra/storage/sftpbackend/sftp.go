@@ -56,11 +56,11 @@ type SFTPBackend struct {
 	logger     *slog.Logger
 	metrics    *SFTPMetrics
 
-	mu         sync.RWMutex
-	client     SFTPClient
-	sshConn    io.Closer
-	connected  bool
-	lazyConn   bool
+	mu        sync.RWMutex
+	client    SFTPClient
+	sshConn   io.Closer
+	connected bool
+	lazyConn  bool
 
 	// cleanupWg tracks pending cleanup goroutines that close replaced connections.
 	// Close() waits for them to finish to prevent file descriptor leaks on shutdown.

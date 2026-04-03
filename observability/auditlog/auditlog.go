@@ -14,13 +14,13 @@ import (
 type Event struct {
 	ID        string          `json:"id"`
 	Timestamp time.Time       `json:"timestamp"`
-	Actor     string          `json:"actor"`              // user ID, service name, "system"
-	Action    string          `json:"action"`             // "create", "update", "delete", custom
-	Resource  string          `json:"resource"`           // "users/123", "orders/456"
-	Status    string          `json:"status"`             // "success", "failure", "denied"
+	Actor     string          `json:"actor"`                // user ID, service name, "system"
+	Action    string          `json:"action"`               // "create", "update", "delete", custom
+	Resource  string          `json:"resource"`             // "users/123", "orders/456"
+	Status    string          `json:"status"`               // "success", "failure", "denied"
 	IPAddress string          `json:"ip_address,omitempty"` // client IP for compliance/security
-	Metadata  json.RawMessage `json:"metadata,omitempty"` // arbitrary context
-	TraceID   string          `json:"trace_id,omitempty"` // OpenTelemetry trace correlation
+	Metadata  json.RawMessage `json:"metadata,omitempty"`   // arbitrary context
+	TraceID   string          `json:"trace_id,omitempty"`   // OpenTelemetry trace correlation
 }
 
 // Store is the append-only persistence interface for audit events.
@@ -35,10 +35,10 @@ type Store interface {
 
 // Filter controls which events are returned by Query.
 type Filter struct {
-	Actor    string
-	Action   string
-	Resource string
-	Since    time.Time
+	Actor     string
+	Action    string
+	Resource  string
+	Since     time.Time
 	Until     time.Time
 	IPAddress string
 }

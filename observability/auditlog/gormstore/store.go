@@ -40,7 +40,6 @@ func New(db *gorm.DB) *GormStore {
 	return &GormStore{db: db}
 }
 
-
 // Append persists an audit event.
 func (s *GormStore) Append(ctx context.Context, event auditlog.Event) error {
 	row := auditEvent{

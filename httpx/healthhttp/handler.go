@@ -3,10 +3,10 @@
 package healthhttp
 
 import (
-	"encoding/json"
-	"log/slog"
 	"context"
+	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 

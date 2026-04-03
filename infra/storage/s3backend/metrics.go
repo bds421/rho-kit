@@ -60,4 +60,3 @@ func (m *S3Metrics) observeOp(instance, op string, start time.Time, err error) {
 		m.opErrors.WithLabelValues(instance, op).Inc()
 	}
 }
-

@@ -79,10 +79,10 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 
 			l.Log(auditCtx, auditlog.Event{
 				IPAddress: r.RemoteAddr,
-				Actor:    cfg.actorExtractor(r),
-				Action:   r.Method,
-				Resource: r.URL.Path,
-				Status:   status,
+				Actor:     cfg.actorExtractor(r),
+				Action:    r.Method,
+				Resource:  r.URL.Path,
+				Status:    status,
 			})
 		})
 	}
