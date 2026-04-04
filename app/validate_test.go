@@ -32,7 +32,7 @@ func TestValidate_EmptyBuilder(t *testing.T) {
 
 func TestValidate_DatabaseWithoutPool(t *testing.T) {
 	b := newTestBuilder()
-	b.dbDriver = gormmysql.MySQLDriver{}
+	b.dbDriver = &gormmysql.MySQLDriver{}
 	b.dbCfg = &sqldb.Config{Host: "localhost"}
 	if err := b.Validate(); err == nil {
 		t.Fatal("expected error for database without pool")
@@ -45,7 +45,7 @@ func TestValidate_DatabaseWithoutPool(t *testing.T) {
 
 func TestValidate_DatabaseWithPool(t *testing.T) {
 	b := newTestBuilder()
-	b.dbDriver = gormpostgres.PostgresDriver{}
+	b.dbDriver = &gormpostgres.PostgresDriver{}
 	b.dbCfg = &sqldb.Config{Host: "localhost"}
 	b.dbPoolCfg = &sqldb.PoolConfig{}
 	if err := b.Validate(); err != nil {

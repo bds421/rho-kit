@@ -22,7 +22,7 @@ func TestNewReadReplicaModule_PanicsOnNilDriver(t *testing.T) {
 
 func TestNewReadReplicaModule_Name(t *testing.T) {
 	m := NewReadReplicaModule(
-		gormpostgres.PostgresDriver{},
+		&gormpostgres.PostgresDriver{},
 		sqldb.Config{Host: "localhost"},
 		sqldb.PoolConfig{},
 	)
@@ -31,7 +31,7 @@ func TestNewReadReplicaModule_Name(t *testing.T) {
 
 func TestReadReplicaModule_HealthChecksBeforeInit(t *testing.T) {
 	m := NewReadReplicaModule(
-		gormpostgres.PostgresDriver{},
+		&gormpostgres.PostgresDriver{},
 		sqldb.Config{Host: "localhost"},
 		sqldb.PoolConfig{},
 	)
@@ -41,7 +41,7 @@ func TestReadReplicaModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestReadReplicaModule_CloseBeforeInit(t *testing.T) {
 	m := NewReadReplicaModule(
-		gormpostgres.PostgresDriver{},
+		&gormpostgres.PostgresDriver{},
 		sqldb.Config{Host: "localhost"},
 		sqldb.PoolConfig{},
 	)

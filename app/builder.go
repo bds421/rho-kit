@@ -100,6 +100,9 @@ type Builder struct {
 	// EventBus worker pool
 	eventBusPoolSize int
 
+	// Secret rotation
+	secretRotation bool
+
 	// Cron
 	cronOpts    []kitcron.Option
 	cronEnabled bool
@@ -152,7 +155,7 @@ func (b *Builder) WithMySQL(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder {
 	if b.dbDriver != nil {
 		panic("app.Builder: WithMySQL and WithPostgres are mutually exclusive")
 	}
-	b.dbDriver = gormmysql.MySQLDriver{}
+	b.dbDriver = &gormmysql.MySQLDriver{}
 	b.dbCfg = &cfg
 	b.dbPoolCfg = &pool
 	b.dbNamespace = b.name
@@ -166,7 +169,7 @@ func (b *Builder) WithPostgres(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder
 	if b.dbDriver != nil {
 		panic("app.Builder: WithPostgres and WithMySQL are mutually exclusive")
 	}
-	b.dbDriver = gormpostgres.PostgresDriver{}
+	b.dbDriver = &gormpostgres.PostgresDriver{}
 	b.dbCfg = &cfg
 	b.dbPoolCfg = &pool
 	b.dbNamespace = b.name
@@ -313,6 +316,21 @@ func (b *Builder) WithEventBusPool(size int) *Builder {
 		panic("app: WithEventBusPool requires a positive pool size")
 	}
 	b.eventBusPoolSize = size
+	return b
+}
+
+// WithSecretRotation enables runtime credential rotation for all configured
+// infrastructure. When enabled:
+//   - AMQP: watches RABBITMQ_URL_FILE or RABBITMQ_PASSWORD_FILE; reconnects with new credentials
+//   - Redis: watches REDIS_PASSWORD_FILE; swaps client with new credentials
+//   - TLS: watches cert/key/CA files; reloads certificates dynamically
+//   - Database: watches DB password file; triggers graceful shutdown for rolling restart
+//
+// This is opt-in because file watching adds goroutines and fsnotify overhead.
+// Only enable in environments where secrets are rotated at runtime (Kubernetes
+// with external-secrets, Vault agent, etc.).
+func (b *Builder) WithSecretRotation() *Builder {
+	b.secretRotation = true
 	return b
 }
 

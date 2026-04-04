@@ -20,20 +20,27 @@ import (
 )
 
 // Compile-time interface check.
-var _ gormdb.Driver = PostgresDriver{}
+var _ gormdb.Driver = (*PostgresDriver)(nil)
 
 // PostgresDriver implements [gormdb.Driver] for PostgreSQL. It constructs the
 // DSN from the unified [sqldb.Config] and opens a GORM connection using the
 // pgx/v5 driver.
-type PostgresDriver struct{}
+//
+// After Open, the [SwappablePool] is accessible for credential rotation.
+type PostgresDriver struct {
+	// Pool is set by Open and can be used for credential rotation via Swap.
+	// Nil before Open is called.
+	Pool *gormdb.SwappablePool
+}
 
 // Name returns "postgres".
-func (PostgresDriver) Name() string { return "postgres" }
+func (*PostgresDriver) Name() string { return "postgres" }
 
 // Open creates a GORM database connection to PostgreSQL using the unified
 // config. It merges clientTLS settings when non-nil and applies connection
-// pool settings.
-func (PostgresDriver) Open(
+// pool settings. The underlying [gormdb.SwappablePool] is stored on the
+// driver for credential rotation via [SwappablePool.Swap].
+func (d *PostgresDriver) Open(
 	cfg sqldb.Config,
 	pool sqldb.PoolConfig,
 	logger *slog.Logger,
@@ -59,12 +66,15 @@ func (PostgresDriver) Open(
 
 	sqlDB := stdlib.OpenDB(*pgCfg, options...)
 
+	swappable := gormdb.NewSwappablePool(sqlDB, logger, pool.ConnMaxLifetime)
+	d.Pool = swappable
+
 	logLevel := gormlogger.Warn
 	if cfg.LogLevel == "info" {
 		logLevel = gormlogger.Info
 	}
 
-	dialector := postgres.New(postgres.Config{Conn: sqlDB})
+	dialector := postgres.New(postgres.Config{Conn: swappable})
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: gormlogger.Default.LogMode(logLevel),
 	})

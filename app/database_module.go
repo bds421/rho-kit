@@ -18,6 +18,19 @@ import (
 // databaseModule implements the Module interface for database connections
 // using the unified Driver abstraction. It handles connection setup, schema
 // migrations, optional seeding, health checks, pool metrics, and cleanup.
+//
+// # Credential Rotation
+//
+// With [Builder.WithSecretRotation], database credentials are rotated live.
+// The PostgreSQL driver uses a [gormdb.SwappablePool] that sits between GORM
+// and the underlying *sql.DB. On credential change:
+//  1. A new *sql.DB is created with the new password
+//  2. The SwappablePool atomically swaps to the new pool
+//  3. All new queries immediately use the new pool
+//  4. The old pool is closed after a grace period (ConnMaxLifetime)
+//
+// No code changes are needed in repositories — the *gorm.DB pointer stays
+// the same. Only the underlying connection pool changes.
 type databaseModule struct {
 	// config -- set at construction time, never mutated after.
 	driver    gormdb.Driver

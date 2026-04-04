@@ -22,7 +22,7 @@ func TestNewDatabaseModule_PanicsOnNoDriver(t *testing.T) {
 
 func TestDatabaseModule_Name(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -31,7 +31,7 @@ func TestDatabaseModule_Name(t *testing.T) {
 
 func TestDatabaseModule_HealthChecksBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -41,7 +41,7 @@ func TestDatabaseModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_CloseBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -51,7 +51,7 @@ func TestDatabaseModule_CloseBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_PopulateBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -62,7 +62,7 @@ func TestDatabaseModule_PopulateBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_PopulateSetsDBReader(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -75,7 +75,7 @@ func TestDatabaseModule_PopulateSetsDBReader(t *testing.T) {
 
 func TestDatabaseModule_DBBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -84,7 +84,7 @@ func TestDatabaseModule_DBBeforeInit(t *testing.T) {
 
 func TestDatabaseModule_SeedExitBeforeInit(t *testing.T) {
 	m := newDatabaseModule(databaseModuleConfig{
-		driver:  gormpostgres.PostgresDriver{},
+		driver:  &gormpostgres.PostgresDriver{},
 		cfg:     sqldb.Config{Host: "localhost"},
 		poolCfg: sqldb.PoolConfig{},
 	})
@@ -136,7 +136,7 @@ func TestBuildIntegrationModules_DatabaseOrder(t *testing.T) {
 	b := &Builder{
 		name:        "test",
 		version:     "v1",
-		dbDriver:    gormpostgres.PostgresDriver{},
+		dbDriver:    &gormpostgres.PostgresDriver{},
 		dbCfg:       &sqldb.Config{Host: "localhost"},
 		dbPoolCfg:   &sqldb.PoolConfig{},
 		dbNamespace: "test",

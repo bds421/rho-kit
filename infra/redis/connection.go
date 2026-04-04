@@ -168,8 +168,61 @@ func Connect(opts *redis.Options, connOpts ...ConnOption) (*Connection, error) {
 
 // Client returns the underlying Redis client. The returned client is safe
 // for concurrent use and handles connection pooling internally.
+//
+// After a credential rotation via [SwapClient], this returns the new client.
+// Callers that cache the return value across operations should re-call Client()
+// after receiving an [WithOnReconnect] callback.
 func (c *Connection) Client() redis.UniversalClient {
-	return c.client
+	c.mu.RLock()
+	cl := c.client
+	c.mu.RUnlock()
+	return cl
+}
+
+// SwapClient replaces the underlying Redis client with a new one created from
+// the given options. This enables runtime credential rotation: a
+// [config.SecretWatcher] detects a password file change and calls SwapClient
+// with updated options.
+//
+// The new client is validated with a ping before swapping. If the ping fails,
+// the old client is retained and an error is returned. On success, the old
+// client is closed asynchronously and [WithOnReconnect] is fired so subscribers
+// can refresh their client references.
+func (c *Connection) SwapClient(opts *redis.Options) error {
+	newClient := redis.NewClient(opts)
+	newClient.AddHook(&metricsHook{instance: c.instance, metrics: c.metrics})
+
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	if err := newClient.Ping(ctx).Err(); err != nil {
+		_ = newClient.Close()
+		return fmt.Errorf("redis swap client: ping with new credentials failed: %w", err)
+	}
+
+	c.mu.Lock()
+	oldClient := c.client
+	c.client = newClient
+	c.healthy = true
+	c.mu.Unlock()
+
+	c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(1)
+	c.logger.Info("redis client swapped with new credentials")
+
+	// Close old client asynchronously — in-flight operations will get errors
+	// and callers should retry (go-redis retries internally for most cases).
+	go func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		// Wait briefly for in-flight operations before closing.
+		<-closeCtx.Done()
+		if err := oldClient.Close(); err != nil {
+			c.logger.Warn("failed to close old redis client", "error", err)
+		}
+	}()
+
+	c.fireOnReconnect()
+	return nil
 }
 
 // Healthy reports whether the connection is currently healthy. This is used
@@ -211,7 +264,10 @@ func (c *Connection) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		err = c.client.Close()
+		c.mu.RLock()
+		cl := c.client
+		c.mu.RUnlock()
+		err = cl.Close()
 		c.mu.Lock()
 		c.healthy = false
 		c.mu.Unlock()
@@ -249,7 +305,11 @@ func (c *Connection) checkHealth() {
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
-	err := c.client.Ping(ctx).Err()
+	c.mu.RLock()
+	cl := c.client
+	c.mu.RUnlock()
+
+	err := cl.Ping(ctx).Err()
 
 	c.mu.Lock()
 	wasHealthy := c.healthy

@@ -18,7 +18,7 @@ import (
 )
 
 // Compile-time interface check.
-var _ gormdb.Driver = MySQLDriver{}
+var _ gormdb.Driver = (*MySQLDriver)(nil)
 
 // MySQLDriver implements [gormdb.Driver] for MySQL/MariaDB. It constructs the
 // DSN from the unified [sqldb.Config] and opens a GORM connection using the
@@ -26,12 +26,12 @@ var _ gormdb.Driver = MySQLDriver{}
 type MySQLDriver struct{}
 
 // Name returns "mysql".
-func (MySQLDriver) Name() string { return "mysql" }
+func (*MySQLDriver) Name() string { return "mysql" }
 
 // Open creates a GORM database connection to MySQL/MariaDB using the unified
 // config. It registers TLS when clientTLS is non-nil and applies connection
 // pool settings.
-func (MySQLDriver) Open(
+func (*MySQLDriver) Open(
 	cfg sqldb.Config,
 	pool sqldb.PoolConfig,
 	logger *slog.Logger,

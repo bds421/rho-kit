@@ -8,14 +8,14 @@ import (
 )
 
 func TestMySQLDriver_Name(t *testing.T) {
-	d := MySQLDriver{}
+	d := &MySQLDriver{}
 	if got := d.Name(); got != "mysql" {
 		t.Errorf("Name() = %q, want %q", got, "mysql")
 	}
 }
 
 func TestMySQLDriver_ImplementsDriver(t *testing.T) {
-	var _ gormdb.Driver = MySQLDriver{}
+	var _ gormdb.Driver = &MySQLDriver{}
 }
 
 func TestBuildMySQLDSN_Defaults(t *testing.T) {
