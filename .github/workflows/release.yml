@@ -42,6 +42,6 @@ jobs:
         run: npm ci
 
       - name: Release
-        run: npx nx release
+        run: npx nx release --yes
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
