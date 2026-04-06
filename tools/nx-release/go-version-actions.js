@@ -203,41 +203,22 @@ class GoVersionActions extends VersionActions {
     if (logMessages.length > 0) {
       tree.write(projectModPath, content);
 
-      // Run `go mod tidy` to recompute go.sum after version changes.
-      // The tree.write above flushes go.mod to disk, so `go mod tidy`
-      // sees the updated versions and regenerates checksums.
+      // Run go mod tidy to update go.sum. NX processes projects in
+      // topological order (dependencies first), so by the time this
+      // runs, all dependency go.mod files are already on disk with
+      // their new versions. The workspace resolves them locally.
       const projectRoot = this.projectGraphNode.data.root;
-      try {
-        execFileSync("go", ["mod", "tidy"], {
-          cwd: projectRoot,
-          encoding: "utf-8",
-          stdio: "pipe",
-          env: {
-            ...process.env,
-            // Use the workspace so sibling modules resolve locally
-            // (their new versions aren't published yet when this runs).
-            GOWORK: join(process.cwd(), "go.work"),
-          },
-        });
-        // Read the updated go.sum back into the tree so it's included
-        // in the release commit.
-        const goSumPath = join(projectRoot, "go.sum");
-        try {
-          const goSumContent = require("node:fs").readFileSync(
-            goSumPath,
-            "utf-8"
-          );
-          tree.write(goSumPath, goSumContent);
-        } catch {
-          // go.sum may not exist for modules with no external deps
-        }
-        logMessages.push("Ran go mod tidy to update go.sum");
-      } catch (e) {
-        // Log but don't fail — go.sum staleness is non-fatal with GONOSUMCHECK.
-        logMessages.push(
-          `Warning: go mod tidy failed (${e.message}), go.sum may be stale`
-        );
-      }
+      const goWorkPath = join(process.cwd(), "go.work");
+      execFileSync("go", ["mod", "tidy"], {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        env: { ...process.env, GOWORK: goWorkPath },
+      });
+
+      const goSumPath = join(projectRoot, "go.sum");
+      const goSumContent = require("node:fs").readFileSync(goSumPath, "utf-8");
+      tree.write(goSumPath, goSumContent);
+      logMessages.push("Updated go.sum via go mod tidy");
     }
 
     return logMessages;
