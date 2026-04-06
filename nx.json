@@ -47,7 +47,10 @@
       "versionActions": "./tools/nx-release/go-version-actions.js"
     },
     "changelog": {
-      "projectChangelogs": true
+      "workspaceChangelog": false,
+      "projectChangelogs": {
+        "file": "{projectRoot}/CHANGES.md"
+      }
     },
     "git": {
       "commitMessage": "chore(release): {version}"
