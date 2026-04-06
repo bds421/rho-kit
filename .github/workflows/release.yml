@@ -41,7 +41,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Release
+      - name: Version, changelog, and tag
         run: npx nx release --skip-publish
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Push tags
+        run: git push --tags
+
+      - name: Push release commit to main
+        # May fail if branch protection requires PRs. Tags (the actual
+        # release artifacts) are already pushed above. The release commit
+        # contains only CHANGES.md and go.mod updates.
+        run: git push
+        continue-on-error: true
