@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/observability/logattr v1.0.0 h1:W8vre8KeNkX/cxeaXmuWTQ907eLVnbYIEHKdA6JOq3w=
-github.com/bds421/rho-kit/observability/logattr v1.0.0/go.mod h1:hI0uGuJq2AVPqw4xh7nnzfmgd1Y/AWMo7kefXgtbW+s=
+github.com/bds421/rho-kit/observability/logattr v1.1.0 h1:xc0SoRLPU8eQQgo+xtDR23Hpq7N4TOt5L6+Fi4hUXbU=
+github.com/bds421/rho-kit/observability/logattr v1.1.0/go.mod h1:hI0uGuJq2AVPqw4xh7nnzfmgd1Y/AWMo7kefXgtbW+s=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

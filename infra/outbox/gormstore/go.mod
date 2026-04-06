@@ -12,14 +12,15 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.0.0 // indirect
-	github.com/bds421/rho-kit/core/config v1.0.0 // indirect
-	github.com/bds421/rho-kit/core/contextutil v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/health v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
+	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
+	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
+	github.com/bds421/rho-kit/core/contextutil v1.2.0 // indirect
+	github.com/bds421/rho-kit/observability/health v1.1.0 // indirect
+	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect

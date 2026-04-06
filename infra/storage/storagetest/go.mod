@@ -33,11 +33,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7 // indirect
 	github.com/aws/smithy-go v1.24.1 // indirect
-	github.com/bds421/rho-kit/core/config v1.0.0 // indirect
-	github.com/bds421/rho-kit/crypto v1.0.0 // indirect
-	github.com/bds421/rho-kit/io/progress v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/health v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
+	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
+	github.com/bds421/rho-kit/crypto v1.2.0 // indirect
+	github.com/bds421/rho-kit/io/progress v1.1.0 // indirect
+	github.com/bds421/rho-kit/observability/health v1.1.0 // indirect
+	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -53,6 +53,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
