@@ -1,3 +1,10 @@
+## 1.2.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/promutil to 1.1.0
+- Updated observability/logattr to 1.1.0
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/runtime/eventbus/v1.0.0...runtime/eventbus/v1.1.0) (2026-03-26)

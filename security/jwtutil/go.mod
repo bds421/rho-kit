@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/security/jwtutil
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/resilience/retry v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/resilience/retry v1.1.0
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 )
 

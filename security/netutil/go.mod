@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/security/netutil
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/config v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/stretchr/testify v1.11.1
 )
 

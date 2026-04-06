@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/core/validate
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.2.0
 	github.com/go-playground/validator/v10 v10.30.1
 )
 

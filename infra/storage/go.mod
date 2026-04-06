@@ -3,10 +3,10 @@ module github.com/bds421/rho-kit/infra/storage
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/io/progress v1.0.0
-	github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0
-	github.com/bds421/rho-kit/resilience/retry v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/io/progress v1.1.0
+	github.com/bds421/rho-kit/resilience/circuitbreaker v1.1.0
+	github.com/bds421/rho-kit/resilience/retry v1.1.0
 	github.com/gabriel-vasile/mimetype v1.4.12
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
@@ -15,7 +15,7 @@ require (
 require github.com/bds421/rho-kit/core/apperror v1.0.0 // indirect
 
 require (
-	github.com/bds421/rho-kit/crypto v1.0.0
+	github.com/bds421/rho-kit/crypto v1.2.0
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect

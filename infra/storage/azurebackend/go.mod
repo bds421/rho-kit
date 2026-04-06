@@ -4,8 +4,8 @@ go 1.26.0
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/infra/storage v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/infra/storage v1.1.0
 	go.opentelemetry.io/otel v1.42.0
 )
 

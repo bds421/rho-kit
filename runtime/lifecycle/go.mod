@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/runtime/lifecycle
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/observability/logattr v1.0.0
+	github.com/bds421/rho-kit/observability/logattr v1.1.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.20.0
 )

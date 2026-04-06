@@ -1,3 +1,13 @@
+## 1.2.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/health to 1.1.0
+- Updated resilience/retry to 1.1.0
+- Updated infra/messaging to 1.2.0
+- Updated core/apperror to 1.2.0
+- Updated core/config to 1.2.0
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/infra/messaging/amqpbackend/v1.0.0...infra/messaging/amqpbackend/v1.1.0) (2026-03-27)

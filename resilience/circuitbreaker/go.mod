@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/resilience/circuitbreaker
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.2.0
 	github.com/sony/gobreaker/v2 v2.4.0
 	github.com/stretchr/testify v1.11.1
 )

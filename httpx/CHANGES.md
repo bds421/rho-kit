@@ -1,3 +1,28 @@
+## 1.5.0 (2026-04-06)
+
+### 🚀 Features
+
+- **secheaders:** add OWASP security headers and mTLS enforcement option ([#60](https://github.com/bds421/rho-kit/pull/60))
+
+### 🧱 Updated Dependencies
+
+- Updated resilience/circuitbreaker to 1.1.0
+- Updated observability/auditlog to 1.1.0
+- Updated observability/promutil to 1.1.0
+- Updated observability/logattr to 1.1.0
+- Updated observability/logging to 1.1.0
+- Updated observability/slo to 0.2.0
+- Updated core/contextutil to 1.2.0
+- Updated data/idempotency to 1.1.0
+- Updated security/jwtutil to 1.1.0
+- Updated core/apperror to 1.2.0
+- Updated core/validate to 1.1.0
+- Updated crypto to 1.2.0
+
+### ❤️ Thank You
+
+- Markus Nissl @markusnissl
+
 # Changelog
 
 ## [1.4.1](https://github.com/bds421/rho-kit/compare/httpx/v1.4.0...httpx/v1.4.1) (2026-03-27)

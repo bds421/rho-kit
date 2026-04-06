@@ -1,3 +1,7 @@
+## 1.2.0 (2026-04-06)
+
+This was a version bump only for core/contextutil to align it with other projects, there were no code changes.
+
 # Changelog
 
 ## [1.1.1](https://github.com/bds421/rho-kit/compare/core/contextutil/v1.1.0...core/contextutil/v1.1.1) (2026-03-27)

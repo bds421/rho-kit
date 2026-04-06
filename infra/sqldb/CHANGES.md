@@ -1,3 +1,12 @@
+## 1.3.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/health to 1.1.0
+- Updated core/contextutil to 1.2.0
+- Updated core/apperror to 1.2.0
+- Updated core/config to 1.2.0
+
 # Changelog
 
 ## [1.2.0](https://github.com/bds421/rho-kit/compare/infra/sqldb/v1.1.1...infra/sqldb/v1.2.0) (2026-03-28)

@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/infra/outbox/gormstore
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/infra/outbox v0.1.0
-	github.com/bds421/rho-kit/infra/sqldb v1.1.0
+	github.com/bds421/rho-kit/infra/outbox v0.2.0
+	github.com/bds421/rho-kit/infra/sqldb v1.3.0
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/driver/sqlite v1.6.0

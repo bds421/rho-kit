@@ -1,3 +1,28 @@
+## 1.6.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated infra/sqldb/gormdb/gormpostgres to 1.3.0
+- Updated infra/sqldb/gormdb/gormmysql to 1.3.0
+- Updated infra/messaging/amqpbackend to 1.2.0
+- Updated observability/auditlog to 1.1.0
+- Updated observability/logging to 1.1.0
+- Updated observability/tracing to 1.1.0
+- Updated observability/health to 1.1.0
+- Updated observability/slo to 0.2.0
+- Updated runtime/lifecycle to 1.1.0
+- Updated runtime/eventbus to 1.2.0
+- Updated security/jwtutil to 1.1.0
+- Updated security/netutil to 1.2.0
+- Updated infra/messaging to 1.2.0
+- Updated infra/storage to 1.1.0
+- Updated runtime/cron to 1.1.0
+- Updated core/config to 1.2.0
+- Updated infra/redis to 1.2.0
+- Updated infra/sqldb to 1.3.0
+- Updated grpcx to 0.2.0
+- Updated httpx to 1.5.0
+
 # Changelog
 
 ## [1.5.0](https://github.com/bds421/rho-kit/compare/app/v1.4.0...app/v1.5.0) (2026-03-28)
