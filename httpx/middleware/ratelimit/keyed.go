@@ -32,9 +32,9 @@ type keyedShard struct {
 // arbitrary string. Sharding reduces mutex contention under high concurrency,
 // matching the approach used by [RateLimiter].
 type KeyedRateLimiter struct {
-	shards [numShards]keyedShard
-	limit  int
-	window time.Duration
+	shards      [numShards]keyedShard
+	limit       int
+	window      time.Duration
 	now         func() time.Time
 	health      HealthIndicator
 	degradation DegradationHandler

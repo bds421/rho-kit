@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,9 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/ThreeDotsLabs/watermill"
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/observability/logattr"
@@ -41,43 +45,33 @@ func WithOnError(fn func(ctx context.Context, eventName string, handlerName stri
 }
 
 // WithWorkerPool enables bounded async dispatch with the given number of
-// workers. Without this option, async handlers launch unbounded goroutines
-// (legacy behavior). The pool must be started via [Bus.Start] before
-// publishing events.
+// concurrent goroutines. When the pool is full, new async events are dropped
+// and logged. Without this option, async handlers launch unbounded goroutines.
 func WithWorkerPool(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
 			panic("eventbus: worker pool size must be positive")
 		}
-		if b.poolCfg == nil {
-			b.poolCfg = &poolConfig{}
-		}
-		b.poolCfg.workers = size
+		b.poolSize = size
 	}
 }
 
-// WithWorkerPoolBuffer sets the channel buffer size for the worker pool.
-// Default: workers * 10. Has no effect without [WithWorkerPool].
+// WithWorkerPoolBuffer sets the GoChannel output buffer size.
+// Default: 256. Has no effect without [WithWorkerPool].
 func WithWorkerPoolBuffer(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
 			panic("eventbus: worker pool buffer size must be positive")
 		}
-		if b.poolCfg == nil {
-			b.poolCfg = &poolConfig{}
-		}
-		b.poolCfg.bufSize = size
+		b.bufSize = size
 	}
 }
 
 // WithRegisterer sets the Prometheus registerer for eventbus metrics.
-// Default: [prometheus.DefaultRegisterer]. Has no effect without [WithWorkerPool].
+// Default: [prometheus.DefaultRegisterer].
 func WithRegisterer(reg prometheus.Registerer) Option {
 	return func(b *Bus) {
-		if b.poolCfg == nil {
-			b.poolCfg = &poolConfig{}
-		}
-		b.poolCfg.registerer = reg
+		b.registerer = reg
 	}
 }
 
@@ -89,9 +83,9 @@ type handlerConfig struct {
 	name  string
 }
 
-// WithAsync makes the handler execute in a new goroutine.
-// Errors from async handlers are reported via the [WithOnError] callback
-// instead of being returned from [Publish].
+// WithAsync makes the handler execute asynchronously via the GoChannel
+// backend. Errors from async handlers are reported via the [WithOnError]
+// callback instead of being returned from [Publish].
 func WithAsync() HandlerOption {
 	return func(c *handlerConfig) {
 		c.async = true
@@ -114,50 +108,75 @@ type registeredHandler struct {
 	fn        func(ctx context.Context, event any) error
 }
 
-// poolConfig holds configuration for the optional bounded worker pool.
-type poolConfig struct {
-	workers    int
-	bufSize    int
-	registerer prometheus.Registerer
-}
-
 // Bus dispatches domain events to registered handlers within a single process.
 // It is safe for concurrent use. Create one with [New].
+//
+// Sync handlers (default) are called sequentially in [Publish]. Their errors
+// are collected via [errors.Join] and returned to the caller.
+//
+// Async handlers ([WithAsync]) are dispatched via a Watermill GoChannel
+// backend. Their errors are logged and sent to the [WithOnError] callback.
+// With [WithWorkerPool], async dispatch is bounded; events are dropped when
+// the pool is full.
 type Bus struct {
-	mu       sync.RWMutex
+	goChan *gochannel.GoChannel
+	mu     sync.RWMutex
+
+	// handlers stores all registered handlers keyed by event name.
 	handlers map[string][]registeredHandler
-	logger   *slog.Logger
-	onError  func(ctx context.Context, eventName string, handlerName string, err error)
-	pool     *workerPool
-	poolCfg  *poolConfig // nil = no pool (backward compat)
+
+	// dispatchers tracks event names that have an active GoChannel subscriber.
+	// Only one GoChannel subscriber is created per event name; it fans out
+	// to all async handlers internally.
+	dispatchers map[string]bool
+
+	logger  *slog.Logger
+	onError func(ctx context.Context, eventName string, handlerName string, err error)
+
+	// Bounded async pool.
+	poolSize int
+	bufSize  int
+	sem      chan struct{} // nil = unbounded
+
+	// Metrics
+	registerer prometheus.Registerer
+	metrics    *busMetrics
+
+	closed bool
 }
 
 // New creates a [Bus]. The zero value is not usable; always use New.
-//
-// When [WithWorkerPool] is used, the pool is constructed eagerly but workers
-// are not started until [Bus.Start] is called.
 func New(opts ...Option) *Bus {
 	b := &Bus{
-		handlers: make(map[string][]registeredHandler),
-		logger:   slog.Default(),
+		handlers:    make(map[string][]registeredHandler),
+		dispatchers: make(map[string]bool),
+		logger:      slog.Default(),
+		bufSize:     256,
 	}
 	for _, opt := range opts {
 		opt(b)
 	}
-	if b.poolCfg != nil && b.poolCfg.workers > 0 {
-		bufSize := b.poolCfg.bufSize
-		if bufSize <= 0 {
-			bufSize = b.poolCfg.workers * 10
-		}
-		m := newPoolMetrics(b.poolCfg.registerer)
-		b.pool = newWorkerPool(b.poolCfg.workers, bufSize, b.logger, b.onError, m)
+
+	if b.poolSize > 0 {
+		b.sem = make(chan struct{}, b.poolSize)
 	}
+
+	b.goChan = gochannel.NewGoChannel(gochannel.Config{
+		OutputChannelBuffer: int64(b.bufSize),
+		PreserveContext:     true,
+	}, watermill.NewSlogLogger(b.logger))
+
+	b.metrics = newBusMetrics(b.registerer)
+
 	return b
 }
 
 // Subscribe registers a typed handler for events of type E.
 // The event name is derived from E's [Event.EventName] method at registration time.
 // Panics if handler is nil.
+//
+// Sync handlers (default) are called sequentially within [Publish].
+// Async handlers ([WithAsync]) are dispatched via GoChannel with panic recovery.
 func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error, opts ...HandlerOption) {
 	if handler == nil {
 		panic("eventbus: handler must not be nil")
@@ -177,35 +196,41 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 		async:     cfg.async,
 		eventType: expectedType,
 		fn: func(ctx context.Context, event any) error {
-			e, ok := event.(E)
+			e, ok := event.(*E)
 			if !ok {
 				return fmt.Errorf("eventbus: handler %q expects %v but got %T (duplicate EventName?)",
 					cfg.name, expectedType, event)
 			}
-			return handler(ctx, e)
+			return handler(ctx, *e)
 		},
 	}
 
 	b.mu.Lock()
 	b.handlers[eventName] = append(b.handlers[eventName], rh)
+
+	// Start a single GoChannel subscriber per event name for async dispatch.
+	if cfg.async && !b.dispatchers[eventName] {
+		b.dispatchers[eventName] = true
+		msgs, err := b.goChan.Subscribe(context.Background(), eventName)
+		if err != nil {
+			b.mu.Unlock()
+			panic(fmt.Sprintf("eventbus: subscribe to %q failed: %v", eventName, err))
+		}
+		go b.asyncDispatcher(msgs, eventName, expectedType)
+	}
 	b.mu.Unlock()
 }
 
 // Publish dispatches event to all handlers registered for E's event name.
-// Sync handlers are called sequentially; their errors are joined via [errors.Join].
-// Async handlers run in separate goroutines; their errors go to the [WithOnError] callback.
-// Returns nil if no handlers are registered for the event.
 //
-// Async events may be silently dropped if the worker pool queue is full.
-// Dropped events are logged and counted via the eventbus_events_dropped_total
-// metric. Security-critical events should use synchronous handlers (without
-// [WithAsync]) to guarantee delivery.
+// Sync handlers are called sequentially; their errors are joined via [errors.Join].
+// Async handlers are published to the GoChannel backend; their errors go to
+// the [WithOnError] callback.
+//
+// Returns nil if no handlers are registered for the event.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	eventName := event.EventName()
 
-	// Performance note: the handler slice is copied on every Publish call.
-	// For very high publish rates (100K+/sec), consider replacing with
-	// atomic.Pointer to eliminate the copy.
 	b.mu.RLock()
 	src := b.handlers[eventName]
 	if len(src) == 0 {
@@ -216,89 +241,121 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	copy(snapshot, src)
 	b.mu.RUnlock()
 
+	// 1. Run sync handlers directly — preserves context, returns errors.
 	var syncErrs []error
 	for _, h := range snapshot {
-		if h.async {
-			b.dispatchAsync(ctx, eventName, h, event)
-		} else {
-			if err := h.fn(ctx, event); err != nil {
+		if !h.async {
+			if err := h.fn(ctx, &event); err != nil {
 				syncErrs = append(syncErrs, fmt.Errorf("handler %q: %w", h.name, err))
 			}
+		}
+	}
+
+	// 2. Publish to GoChannel for async handlers.
+	hasAsync := false
+	for _, h := range snapshot {
+		if h.async {
+			hasAsync = true
+			break
+		}
+	}
+	if hasAsync {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("eventbus: marshal event: %w", err)
+		}
+		wmMsg := message.NewMessage(watermill.NewUUID(), payload)
+		wmMsg.SetContext(ctx)
+		if pubErr := b.goChan.Publish(eventName, wmMsg); pubErr != nil {
+			b.logger.Error("eventbus: GoChannel publish failed",
+				slog.String("event", eventName),
+				logattr.Error(pubErr),
+			)
 		}
 	}
 
 	return errors.Join(syncErrs...)
 }
 
-// HasHandlers reports whether any handlers are registered for the given event name.
-func (b *Bus) HasHandlers(eventName string) bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.handlers[eventName]) > 0
+// asyncDispatcher reads from a single GoChannel subscriber and fans out
+// to all registered async handlers for the event name.
+func (b *Bus) asyncDispatcher(msgs <-chan *message.Message, eventName string, eventType reflect.Type) {
+	for msg := range msgs {
+		b.dispatchAsync(msg, eventName, eventType)
+	}
 }
 
-// dispatchAsync routes an async handler invocation to either the bounded
-// worker pool (if configured) or an unbounded goroutine (legacy behavior).
-func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
-	if b.pool != nil {
-		// submit() logs with full detail on drop; no additional logging needed here.
-		task := taskPool.Get().(*asyncTask)
-		task.ctx = ctx
-		task.eventName = eventName
-		task.handler = h
-		task.event = event
-		b.pool.submit(task)
+func (b *Bus) dispatchAsync(msg *message.Message, eventName string, eventType reflect.Type) {
+	// Deserialize event once for all async handlers.
+	eventPtr := reflect.New(eventType).Interface()
+	if err := json.Unmarshal(msg.Payload, eventPtr); err != nil {
+		b.logger.Error("event deserialization failed",
+			slog.String("event", eventName),
+			logattr.Error(err),
+		)
+		msg.Ack()
 		return
 	}
-	go b.runAsync(ctx, eventName, h, event)
-}
 
-// Start starts the worker pool. If no pool is configured, Start blocks until
-// ctx is cancelled (for lifecycle.Component compatibility).
-// Implements lifecycle.Component.
-func (b *Bus) Start(ctx context.Context) error {
-	if b.pool == nil {
-		<-ctx.Done()
-		return nil
+	ctx := msg.Context()
+
+	// Snapshot async handlers under lock.
+	b.mu.RLock()
+	var asyncHandlers []registeredHandler
+	for _, h := range b.handlers[eventName] {
+		if h.async {
+			asyncHandlers = append(asyncHandlers, h)
+		}
+	}
+	b.mu.RUnlock()
+
+	for _, h := range asyncHandlers {
+		h := h
+		if b.sem != nil {
+			// Bounded pool: try to acquire semaphore.
+			select {
+			case b.sem <- struct{}{}:
+				if b.metrics != nil {
+					b.metrics.activeWorkers.Inc()
+				}
+				go func() {
+					defer func() {
+						<-b.sem
+						if b.metrics != nil {
+							b.metrics.activeWorkers.Dec()
+						}
+					}()
+					b.runAsyncHandler(ctx, eventName, h, eventPtr)
+					if b.metrics != nil {
+						b.metrics.processed.WithLabelValues(eventName).Inc()
+					}
+				}()
+			default:
+				// Pool full — drop the event for this handler.
+				if b.metrics != nil {
+					b.metrics.dropped.Inc()
+				}
+				b.logger.Warn("eventbus: worker pool full, event dropped",
+					slog.String("event", eventName),
+					slog.String("handler", h.name),
+				)
+			}
+		} else {
+			// Unbounded: launch goroutine directly.
+			go func() {
+				b.runAsyncHandler(ctx, eventName, h, eventPtr)
+				if b.metrics != nil {
+					b.metrics.processed.WithLabelValues(eventName).Inc()
+				}
+			}()
+		}
 	}
 
-	b.logger.Info("eventbus worker pool started",
-		slog.Int("workers", b.pool.workers),
-		slog.Int("buffer_size", cap(b.pool.queue)),
-	)
-	b.pool.start(ctx)
-	return nil
+	msg.Ack()
 }
 
-// Stop drains pending events and stops workers. No-op if no pool is configured.
-// If the context has a deadline, Stop returns ctx.Err() if the deadline is
-// reached before all workers finish draining.
-//
-// If Stop returns ctx.Err(), the pool goroutine and its workers may still be
-// running. This is an inherent limitation of Go's lack of goroutine preemption.
-// Ensure handler functions respect context cancellation to minimize drain time.
-//
-// Implements lifecycle.Component.
-func (b *Bus) Stop(ctx context.Context) error {
-	if b.pool == nil {
-		return nil
-	}
-	done := make(chan struct{})
-	go func() {
-		b.pool.stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-		b.logger.Info("eventbus worker pool stopped")
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// runAsync executes a handler in a goroutine with panic recovery.
-func (b *Bus) runAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
+// runAsyncHandler executes a single async handler with panic recovery.
+func (b *Bus) runAsyncHandler(ctx context.Context, eventName string, h registeredHandler, event any) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			err := fmt.Errorf("panic: %v", rec)
@@ -324,4 +381,29 @@ func (b *Bus) runAsync(ctx context.Context, eventName string, h registeredHandle
 			b.onError(ctx, eventName, h.name, err)
 		}
 	}
+}
+
+// HasHandlers reports whether any handlers are registered for the given event name.
+func (b *Bus) HasHandlers(eventName string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.handlers[eventName]) > 0
+}
+
+// Start blocks until ctx is cancelled. Implements lifecycle.Component.
+func (b *Bus) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+// Stop closes the GoChannel, stopping all async subscriber goroutines.
+// Implements lifecycle.Component.
+func (b *Bus) Stop(_ context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+	return b.goChan.Close()
 }

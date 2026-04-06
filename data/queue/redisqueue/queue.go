@@ -13,8 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/observability/promutil"
 	"github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/observability/promutil"
 )
 
 const (
@@ -61,14 +61,14 @@ type Handler func(ctx context.Context, msg Message) error
 
 // Metrics holds Prometheus collectors for queue monitoring.
 type Metrics struct {
-	messagesEnqueued    *prometheus.CounterVec
-	messagesProcessed   *prometheus.CounterVec
-	messagesFailed      *prometheus.CounterVec
+	messagesEnqueued     *prometheus.CounterVec
+	messagesProcessed    *prometheus.CounterVec
+	messagesFailed       *prometheus.CounterVec
 	messagesDeadLettered *prometheus.CounterVec
-	processingDuration  *prometheus.HistogramVec
-	messagesRetried     *prometheus.CounterVec
-	processingDepth     *prometheus.GaugeVec
-	queueDepth          *prometheus.GaugeVec
+	processingDuration   *prometheus.HistogramVec
+	messagesRetried      *prometheus.CounterVec
+	processingDepth      *prometheus.GaugeVec
+	queueDepth           *prometheus.GaugeVec
 }
 
 // NewMetrics creates and registers queue metrics with the given registerer.
@@ -452,4 +452,3 @@ func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 	}
 	return n, nil
 }
-

@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bds421/rho-kit/security/jwtutil"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jwt"
-	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
 const testUUID = "550e8400-e29b-41d4-a716-446655440000"

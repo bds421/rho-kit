@@ -31,7 +31,7 @@ type Connection struct {
 	lazyConnect          bool          // defer initial connection to background
 	generation           uint64        // incremented on each reconnect; stale watchers self-terminate
 	reconnecting         atomic.Bool   // prevents overlapping reconnect goroutines
-	reconnectSignal      chan struct{}  // buffered(1); queues a reconnect when loop is finishing
+	reconnectSignal      chan struct{} // buffered(1); queues a reconnect when loop is finishing
 
 	// onReconnect is called after a successful reconnect. Typically used
 	// to re-declare topology. Best-effort: failures are logged but do not
@@ -126,6 +126,14 @@ func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, err
 	go c.watchConnection(conn, 1)
 
 	return c, nil
+}
+
+// amqpConnection returns the underlying amqp.Connection for use by Watermill.
+// Returns nil if not connected. Callers must handle the nil case.
+func (c *Connection) amqpConnection() *amqp.Connection {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn
 }
 
 // Channel opens a new AMQP channel on the current connection.
@@ -349,9 +357,12 @@ func (c *Connection) reconnect() {
 }
 
 // dial opens an AMQP connection, using TLS when configured.
+// The TLS config is cloned before each dial to prevent amqp.DialTLS from
+// mutating the shared *tls.Config (Go's TLS handshake writes ServerName
+// into the config when it is empty).
 func (c *Connection) dial() (*amqp.Connection, error) {
 	if c.tlsConfig != nil {
-		return amqp.DialTLS(c.url, c.tlsConfig)
+		return amqp.DialTLS(c.url, c.tlsConfig.Clone())
 	}
 	return amqp.Dial(c.url)
 }

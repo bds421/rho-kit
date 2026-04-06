@@ -22,16 +22,16 @@ const (
 type Connection struct {
 	client redis.UniversalClient
 
-	mu                   sync.RWMutex
-	healthy              bool
-	consecutiveFailures  int
-	reconnecting         bool
-	closed               chan struct{}
-	closeOnce            sync.Once
-	dead                 chan struct{}
-	deadOnce             sync.Once
-	connected            chan struct{}
-	connectedOnce        sync.Once
+	mu                  sync.RWMutex
+	healthy             bool
+	consecutiveFailures int
+	reconnecting        bool
+	closed              chan struct{}
+	closeOnce           sync.Once
+	dead                chan struct{}
+	deadOnce            sync.Once
+	connected           chan struct{}
+	connectedOnce       sync.Once
 
 	logger               *slog.Logger
 	instance             string

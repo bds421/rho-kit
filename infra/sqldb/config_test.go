@@ -359,4 +359,3 @@ func TestLoadMySQLFields_DATABASE_URL_Precedence(t *testing.T) {
 	assert.Equal(t, "urlhost", f.Database.Host)
 	assert.Equal(t, "urluser", f.Database.User)
 }
-

@@ -302,4 +302,3 @@ func validatePostgresSSLMode(mode string) error {
 		return fmt.Errorf("DB_SSL_MODE must be one of disable, allow, prefer, require, verify-ca, verify-full")
 	}
 }
-

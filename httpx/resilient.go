@@ -112,7 +112,7 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if cfg.tlsConfig != nil {
-		transport.TLSClientConfig = cfg.tlsConfig
+		transport.TLSClientConfig = cfg.tlsConfig.Clone()
 	}
 
 	var cbOpts []circuitbreaker.Option

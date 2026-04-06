@@ -23,12 +23,12 @@ const maxBufferSize = 10 << 20 // 10 MiB
 type timeoutWriter struct {
 	w http.ResponseWriter
 
-	mu      sync.Mutex
-	h       http.Header
-	code    int
-	buf          []byte
-	written      bool
-	flushWarned  bool
+	mu          sync.Mutex
+	h           http.Header
+	code        int
+	buf         []byte
+	written     bool
+	flushWarned bool
 }
 
 // Header returns the buffered header map.

@@ -733,4 +733,3 @@ func (b *Builder) Run() error {
 	// 15. Run — signal handling, component lifecycle, graceful shutdown.
 	return runner.Run(context.Background())
 }
-

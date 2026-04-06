@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/infra/messaging"
 	stream "github.com/bds421/rho-kit/data/stream/redisstream"
+	"github.com/bds421/rho-kit/infra/messaging"
 )
 
 // Consumer wraps a stream.Consumer to satisfy messaging.MessageConsumer.
