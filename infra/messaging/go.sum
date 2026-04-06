@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/io/atomicfile v1.0.0 h1:TwG7zTXoKz7/3Lp/988aOgTukBDpvHRJ4FXz1P3+55U=
-github.com/bds421/rho-kit/io/atomicfile v1.0.0/go.mod h1:zmbT4gMtPxfkLz9251iehPK7/9YR4BbQvuNFrMQH+Zs=
+github.com/bds421/rho-kit/io/atomicfile v1.1.0 h1:4aV1hY6Qjn2P1H/Jrm0Cxsc7BgBEpxJDbP5s3LxBjEs=
+github.com/bds421/rho-kit/io/atomicfile v1.1.0/go.mod h1:zmbT4gMtPxfkLz9251iehPK7/9YR4BbQvuNFrMQH+Zs=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

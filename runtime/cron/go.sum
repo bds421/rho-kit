@@ -1,7 +1,7 @@
-github.com/bds421/rho-kit/observability/logattr v1.0.0 h1:W8vre8KeNkX/cxeaXmuWTQ907eLVnbYIEHKdA6JOq3w=
-github.com/bds421/rho-kit/observability/logattr v1.0.0/go.mod h1:hI0uGuJq2AVPqw4xh7nnzfmgd1Y/AWMo7kefXgtbW+s=
-github.com/bds421/rho-kit/observability/promutil v1.0.0 h1:SalpVktna3VywVSUX2mYZIFMKAl4yIleOXOmc0scf+g=
-github.com/bds421/rho-kit/observability/promutil v1.0.0/go.mod h1:VfFVXD33Y3zVjoUBRgjAfUNX6yyOugsBvnW/xlI92+M=
+github.com/bds421/rho-kit/observability/logattr v1.1.0 h1:xc0SoRLPU8eQQgo+xtDR23Hpq7N4TOt5L6+Fi4hUXbU=
+github.com/bds421/rho-kit/observability/logattr v1.1.0/go.mod h1:hI0uGuJq2AVPqw4xh7nnzfmgd1Y/AWMo7kefXgtbW+s=
+github.com/bds421/rho-kit/observability/promutil v1.1.0 h1:WG4/2Lxw/a6BEx5kWd5gQgPQveHZjz7bUBfS7IR3sx0=
+github.com/bds421/rho-kit/observability/promutil v1.1.0/go.mod h1:VfFVXD33Y3zVjoUBRgjAfUNX6yyOugsBvnW/xlI92+M=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

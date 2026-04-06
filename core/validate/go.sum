@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/core/apperror v1.0.0 h1:Fg8tZ2HviRu+Tgr0+qRaAwy8pvUNt2N7xPJ8kRR/3Xk=
-github.com/bds421/rho-kit/core/apperror v1.0.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
+github.com/bds421/rho-kit/core/apperror v1.2.0 h1:19yoGDuNLj18HQ8guEI9zyAeZXshEfCxHQHgf+8Owh8=
+github.com/bds421/rho-kit/core/apperror v1.2.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gabriel-vasile/mimetype v1.4.12 h1:e9hWvmLYvtp846tLHam2o++qitpguFiYCKbn0w9jyqw=

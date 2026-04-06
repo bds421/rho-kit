@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/observability/health v1.0.0 h1:gAFHyXIeOr/5wUK6Mi1HrmdGujcRMUwE9V4J6Z+jVF0=
-github.com/bds421/rho-kit/observability/health v1.0.0/go.mod h1:6cHMZ29DpihCJPBpYjYWrDueSEGvAw9vN6G5rVX6GDY=
+github.com/bds421/rho-kit/observability/health v1.1.0 h1:x5pLqiQiaY4bIYd3/yyx6W6xhMUXv/BqT3ZQvs7BJrM=
+github.com/bds421/rho-kit/observability/health v1.1.0/go.mod h1:6cHMZ29DpihCJPBpYjYWrDueSEGvAw9vN6G5rVX6GDY=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

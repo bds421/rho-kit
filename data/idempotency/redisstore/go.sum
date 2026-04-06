@@ -1,5 +1,5 @@
-github.com/bds421/rho-kit/data/idempotency v1.0.0 h1:OZ/+g/leUeh7rZtw6ovwaSbahYhRzs1sL1WSeWPhVUA=
-github.com/bds421/rho-kit/data/idempotency v1.0.0/go.mod h1:gFskHkk7ZD6M97Q7u/E9H0EmWKOz7R4Uo/8PwhykDUw=
+github.com/bds421/rho-kit/data/idempotency v1.1.0 h1:9KW2TYs7Fr8azbnvh4XJsx7yX1+m0EKR2ab++fYiN1c=
+github.com/bds421/rho-kit/data/idempotency v1.1.0/go.mod h1:gFskHkk7ZD6M97Q7u/E9H0EmWKOz7R4Uo/8PwhykDUw=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=

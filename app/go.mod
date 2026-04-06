@@ -27,27 +27,28 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/contextutil v1.1.1 // indirect
-	github.com/bds421/rho-kit/core/validate v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/logattr v1.0.0 // indirect
-	github.com/bds421/rho-kit/observability/promutil v1.0.0 // indirect
-	github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0 // indirect
-	github.com/bds421/rho-kit/resilience/retry v1.0.0 // indirect
+	github.com/bds421/rho-kit/core/contextutil v1.2.0 // indirect
+	github.com/bds421/rho-kit/core/validate v1.1.0 // indirect
+	github.com/bds421/rho-kit/observability/logattr v1.1.0 // indirect
+	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
+	github.com/bds421/rho-kit/resilience/circuitbreaker v1.1.0 // indirect
+	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/apperror v1.1.0 // indirect
+	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/config v1.2.0
-	github.com/bds421/rho-kit/io/atomicfile v1.0.0 // indirect
-	github.com/bds421/rho-kit/io/progress v1.0.0 // indirect
+	github.com/bds421/rho-kit/io/atomicfile v1.1.0 // indirect
+	github.com/bds421/rho-kit/io/progress v1.1.0 // indirect
 	github.com/bds421/rho-kit/security/netutil v1.2.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

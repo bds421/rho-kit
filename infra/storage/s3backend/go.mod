@@ -16,7 +16,10 @@ require (
 	go.opentelemetry.io/otel v1.42.0
 )
 
-require github.com/bds421/rho-kit/io/progress v1.0.0 // indirect
+require (
+	github.com/bds421/rho-kit/io/progress v1.1.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+)
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.5 // indirect
