@@ -1,3 +1,17 @@
+## 1.2.0 (2026-04-06)
+
+### 🚀 Features
+
+- **secheaders:** add OWASP security headers and mTLS enforcement option ([#60](https://github.com/bds421/rho-kit/pull/60))
+
+### 🧱 Updated Dependencies
+
+- Updated core/config to 1.2.0
+
+### ❤️ Thank You
+
+- Markus Nissl @markusnissl
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/security/netutil-v1.0.0...security/netutil-v1.1.0) (2026-03-24)

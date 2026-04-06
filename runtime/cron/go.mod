@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/runtime/cron
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/observability/logattr v1.0.0
-	github.com/bds421/rho-kit/observability/promutil v1.0.0
+	github.com/bds421/rho-kit/observability/logattr v1.1.0
+	github.com/bds421/rho-kit/observability/promutil v1.1.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/robfig/cron/v3 v3.0.1

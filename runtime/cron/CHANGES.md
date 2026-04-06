@@ -1,0 +1,6 @@
+## 1.1.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/promutil to 1.1.0
+- Updated observability/logattr to 1.1.0

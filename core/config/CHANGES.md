@@ -1,3 +1,7 @@
+## 1.2.0 (2026-04-06)
+
+This was a version bump only for core/config to align it with other projects, there were no code changes.
+
 # Changelog
 
 ## [1.1.1](https://github.com/bds421/rho-kit/compare/core/config/v1.1.0...core/config/v1.1.1) (2026-03-27)

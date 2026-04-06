@@ -3,24 +3,24 @@ module github.com/bds421/rho-kit/app
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/grpcx v0.1.0
-	github.com/bds421/rho-kit/httpx v1.4.0
-	github.com/bds421/rho-kit/infra/messaging v1.0.0
-	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.0.0
-	github.com/bds421/rho-kit/infra/redis v1.0.0
-	github.com/bds421/rho-kit/infra/sqldb v1.1.1
-	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.1.0
-	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.1.0
-	github.com/bds421/rho-kit/infra/storage v1.0.0
-	github.com/bds421/rho-kit/observability/auditlog v1.0.0
-	github.com/bds421/rho-kit/observability/health v1.0.0
-	github.com/bds421/rho-kit/observability/logging v1.0.0
-	github.com/bds421/rho-kit/observability/slo v0.1.0
-	github.com/bds421/rho-kit/observability/tracing v1.0.0
-	github.com/bds421/rho-kit/runtime/cron v1.0.0
-	github.com/bds421/rho-kit/runtime/eventbus v1.1.0
-	github.com/bds421/rho-kit/runtime/lifecycle v1.0.0
-	github.com/bds421/rho-kit/security/jwtutil v1.0.0
+	github.com/bds421/rho-kit/grpcx v0.2.0
+	github.com/bds421/rho-kit/httpx v1.5.0
+	github.com/bds421/rho-kit/infra/messaging v1.2.0
+	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.2.0
+	github.com/bds421/rho-kit/infra/redis v1.2.0
+	github.com/bds421/rho-kit/infra/sqldb v1.3.0
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.3.0
+	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres v1.3.0
+	github.com/bds421/rho-kit/infra/storage v1.1.0
+	github.com/bds421/rho-kit/observability/auditlog v1.1.0
+	github.com/bds421/rho-kit/observability/health v1.1.0
+	github.com/bds421/rho-kit/observability/logging v1.1.0
+	github.com/bds421/rho-kit/observability/slo v0.2.0
+	github.com/bds421/rho-kit/observability/tracing v1.1.0
+	github.com/bds421/rho-kit/runtime/cron v1.1.0
+	github.com/bds421/rho-kit/runtime/eventbus v1.2.0
+	github.com/bds421/rho-kit/runtime/lifecycle v1.1.0
+	github.com/bds421/rho-kit/security/jwtutil v1.1.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/gorm v1.31.1
@@ -45,10 +45,10 @@ require (
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/apperror v1.1.0 // indirect
-	github.com/bds421/rho-kit/core/config v1.1.1
+	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/bds421/rho-kit/io/atomicfile v1.0.0 // indirect
 	github.com/bds421/rho-kit/io/progress v1.0.0 // indirect
-	github.com/bds421/rho-kit/security/netutil v1.0.0
+	github.com/bds421/rho-kit/security/netutil v1.2.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

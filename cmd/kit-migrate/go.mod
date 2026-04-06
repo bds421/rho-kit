@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/cmd/kit-migrate
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/data/idempotency/pgstore v1.0.0
-	github.com/bds421/rho-kit/observability/auditlog/gormstore v1.0.0
+	github.com/bds421/rho-kit/data/idempotency/pgstore v1.1.0
+	github.com/bds421/rho-kit/observability/auditlog/gormstore v1.1.0
 )
 
 require (

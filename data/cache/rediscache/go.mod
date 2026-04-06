@@ -4,9 +4,9 @@ go 1.26.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
-	github.com/bds421/rho-kit/data/cache v1.0.0
-	github.com/bds421/rho-kit/infra/redis v1.0.0
-	github.com/bds421/rho-kit/observability/promutil v1.0.0
+	github.com/bds421/rho-kit/data/cache v1.2.0
+	github.com/bds421/rho-kit/infra/redis v1.2.0
+	github.com/bds421/rho-kit/observability/promutil v1.1.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1

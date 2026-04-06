@@ -1,3 +1,9 @@
+## 1.3.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated infra/sqldb to 1.3.0
+
 # Changelog
 
 ## [1.2.0](https://github.com/bds421/rho-kit/compare/infra/sqldb/gormdb/gormpostgres/v1.1.0...infra/sqldb/gormdb/gormpostgres/v1.2.0) (2026-03-28)

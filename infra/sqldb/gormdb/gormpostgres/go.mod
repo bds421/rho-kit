@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/infra/sqldb v1.1.1
+	github.com/bds421/rho-kit/infra/sqldb v1.3.0
 	github.com/jackc/pgx/v5 v5.8.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1

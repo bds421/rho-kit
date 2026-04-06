@@ -1,3 +1,9 @@
+## 0.2.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/promutil to 1.1.0
+
 # Changelog
 
 ## [0.1.1](https://github.com/bds421/rho-kit/compare/infra/outbox/v0.1.0...infra/outbox/v0.1.1) (2026-03-28)

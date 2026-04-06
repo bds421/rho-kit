@@ -3,19 +3,19 @@ module github.com/bds421/rho-kit/httpx
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.1.0
-	github.com/bds421/rho-kit/core/contextutil v1.1.0
-	github.com/bds421/rho-kit/core/validate v1.0.0
-	github.com/bds421/rho-kit/crypto v1.1.0
-	github.com/bds421/rho-kit/data/idempotency v1.0.0
-	github.com/bds421/rho-kit/observability/auditlog v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.2.0
+	github.com/bds421/rho-kit/core/contextutil v1.2.0
+	github.com/bds421/rho-kit/core/validate v1.1.0
+	github.com/bds421/rho-kit/crypto v1.2.0
+	github.com/bds421/rho-kit/data/idempotency v1.1.0
+	github.com/bds421/rho-kit/observability/auditlog v1.1.0
 	github.com/bds421/rho-kit/observability/health v1.0.0
-	github.com/bds421/rho-kit/observability/logattr v1.0.0
-	github.com/bds421/rho-kit/observability/logging v1.0.0
-	github.com/bds421/rho-kit/observability/promutil v1.0.0
-	github.com/bds421/rho-kit/observability/slo v0.1.0
-	github.com/bds421/rho-kit/resilience/circuitbreaker v1.0.0
-	github.com/bds421/rho-kit/security/jwtutil v1.0.0
+	github.com/bds421/rho-kit/observability/logattr v1.1.0
+	github.com/bds421/rho-kit/observability/logging v1.1.0
+	github.com/bds421/rho-kit/observability/promutil v1.1.0
+	github.com/bds421/rho-kit/observability/slo v0.2.0
+	github.com/bds421/rho-kit/resilience/circuitbreaker v1.1.0
+	github.com/bds421/rho-kit/security/jwtutil v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jub0bs/cors v0.13.4

@@ -1,3 +1,7 @@
+## 1.2.0 (2026-04-06)
+
+This was a version bump only for crypto to align it with other projects, there were no code changes.
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/crypto/v1.0.0...crypto/v1.1.0) (2026-03-26)

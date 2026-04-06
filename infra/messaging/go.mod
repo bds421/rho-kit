@@ -3,7 +3,7 @@ module github.com/bds421/rho-kit/infra/messaging
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/io/atomicfile v1.0.0
+	github.com/bds421/rho-kit/io/atomicfile v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1

@@ -3,8 +3,8 @@ module github.com/bds421/rho-kit/infra/messaging/redisbackend
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/data/stream/redisstream v1.0.0
-	github.com/bds421/rho-kit/infra/messaging v1.0.0
+	github.com/bds421/rho-kit/data/stream/redisstream v1.1.0
+	github.com/bds421/rho-kit/infra/messaging v1.2.0
 	github.com/stretchr/testify v1.11.1
 )
 

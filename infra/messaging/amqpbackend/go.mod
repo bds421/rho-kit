@@ -3,11 +3,11 @@ module github.com/bds421/rho-kit/infra/messaging/amqpbackend
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.0.0
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/infra/messaging v1.0.0
-	github.com/bds421/rho-kit/observability/health v1.0.0
-	github.com/bds421/rho-kit/resilience/retry v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.2.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/infra/messaging v1.2.0
+	github.com/bds421/rho-kit/observability/health v1.1.0
+	github.com/bds421/rho-kit/resilience/retry v1.1.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.40.0

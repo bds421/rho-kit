@@ -3,10 +3,10 @@ module github.com/bds421/rho-kit/grpcx
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.1.0
-	github.com/bds421/rho-kit/core/contextutil v1.1.1
-	github.com/bds421/rho-kit/observability/health v1.0.0
-	github.com/bds421/rho-kit/security/jwtutil v1.0.0
+	github.com/bds421/rho-kit/core/apperror v1.2.0
+	github.com/bds421/rho-kit/core/contextutil v1.2.0
+	github.com/bds421/rho-kit/observability/health v1.1.0
+	github.com/bds421/rho-kit/security/jwtutil v1.1.0
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1

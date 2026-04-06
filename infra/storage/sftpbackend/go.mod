@@ -3,10 +3,10 @@ module github.com/bds421/rho-kit/infra/storage/sftpbackend
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/infra/storage v1.0.0
-	github.com/bds421/rho-kit/observability/health v1.0.0
-	github.com/bds421/rho-kit/observability/promutil v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/infra/storage v1.1.0
+	github.com/bds421/rho-kit/observability/health v1.1.0
+	github.com/bds421/rho-kit/observability/promutil v1.1.0
 	github.com/pkg/sftp v1.13.10
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1

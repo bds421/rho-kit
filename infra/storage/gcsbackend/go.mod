@@ -4,8 +4,8 @@ go 1.26.0
 
 require (
 	cloud.google.com/go/storage v1.60.0
-	github.com/bds421/rho-kit/core/config v1.0.0
-	github.com/bds421/rho-kit/infra/storage v1.0.0
+	github.com/bds421/rho-kit/core/config v1.2.0
+	github.com/bds421/rho-kit/infra/storage v1.1.0
 	go.opentelemetry.io/otel v1.42.0
 	google.golang.org/api v0.265.0
 )

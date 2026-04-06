@@ -1,3 +1,9 @@
+## 1.2.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated infra/redis to 1.2.0
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/data/lock/redislock/v1.0.0...data/lock/redislock/v1.1.0) (2026-03-27)

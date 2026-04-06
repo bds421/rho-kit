@@ -3,9 +3,9 @@ module github.com/bds421/rho-kit/infra/storage/storagetest
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/infra/storage v1.0.0
-	github.com/bds421/rho-kit/infra/storage/s3backend v1.0.0
-	github.com/bds421/rho-kit/infra/storage/sftpbackend v1.0.0
+	github.com/bds421/rho-kit/infra/storage v1.1.0
+	github.com/bds421/rho-kit/infra/storage/s3backend v1.1.0
+	github.com/bds421/rho-kit/infra/storage/sftpbackend v1.1.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.41.0
 )

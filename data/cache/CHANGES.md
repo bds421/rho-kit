@@ -1,3 +1,9 @@
+## 1.2.0 (2026-04-06)
+
+### 🧱 Updated Dependencies
+
+- Updated observability/promutil to 1.1.0
+
 # Changelog
 
 ## [1.1.0](https://github.com/bds421/rho-kit/compare/data/cache/v1.0.0...data/cache/v1.1.0) (2026-03-26)
