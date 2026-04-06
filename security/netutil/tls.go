@@ -43,14 +43,40 @@ func (c TLSConfig) Validate() error {
 	return nil
 }
 
-// ServerTLS returns a *tls.Config for an HTTP server that verifies
-// client certificates when presented (mTLS). Clients that do not present
-// a certificate are still allowed — this enables trusted gateways like
-// Oathkeeper to proxy requests while service-to-service calls use mutual auth.
+// ServerTLSOption configures server-side TLS behavior.
+type ServerTLSOption func(*serverTLSOpts)
+
+type serverTLSOpts struct {
+	requireClientCert bool
+}
+
+// WithRequireClientCert enforces that all clients present a valid certificate.
+// Without this option, client certificates are verified if presented but not
+// required (tls.VerifyClientCertIfGiven). Use this when all clients are known
+// to have certificates — e.g., internal service mesh without a gateway.
+func WithRequireClientCert() ServerTLSOption {
+	return func(o *serverTLSOpts) { o.requireClientCert = true }
+}
+
+// ServerTLS returns a *tls.Config for an HTTP server with mTLS support.
+//
+// By default, client certificates are verified when presented but not required
+// (tls.VerifyClientCertIfGiven). This enables trusted gateways like Oathkeeper
+// to proxy requests without certificates while service-to-service calls use
+// mutual auth.
+//
+// Use [WithRequireClientCert] to enforce that ALL clients present a valid
+// certificate (tls.RequireAndVerifyClientCert).
+//
 // Returns nil if TLS is not enabled.
-func (c TLSConfig) ServerTLS() (*tls.Config, error) {
+func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
 	if !c.Enabled() {
 		return nil, nil
+	}
+
+	var o serverTLSOpts
+	for _, opt := range opts {
+		opt(&o)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()
@@ -58,9 +84,14 @@ func (c TLSConfig) ServerTLS() (*tls.Config, error) {
 		return nil, err
 	}
 
+	clientAuth := tls.VerifyClientCertIfGiven
+	if o.requireClientCert {
+		clientAuth = tls.RequireAndVerifyClientCert
+	}
+
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientAuth:   clientAuth,
 		ClientCAs:    caPool,
 		MinVersion:   tls.VersionTLS13,
 	}, nil
