@@ -8,6 +8,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/config"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/observability/health"
 )
@@ -15,8 +16,9 @@ import (
 // redisModule implements the Module interface for Redis connections.
 // It handles connection setup, health checks, pool metrics, and cleanup.
 type redisModule struct {
-	opts     *goredis.Options
-	connOpts []kitredis.ConnOption
+	opts           *goredis.Options
+	connOpts       []kitredis.ConnOption
+	secretRotation bool
 
 	// initialized during Init
 	conn   *kitredis.Connection
@@ -58,6 +60,26 @@ func (m *redisModule) Init(_ context.Context, mc ModuleContext) error {
 		)
 		return nil
 	})
+
+	// Secret rotation: watch REDIS_PASSWORD_FILE.
+	if m.secretRotation {
+		if pwPath := config.GetSecretPath("REDIS_PASSWORD"); pwPath != "" {
+			currentPW := config.GetSecret("REDIS_PASSWORD", "")
+			w := config.NewWatchable(currentPW)
+			sw := config.NewSecretWatcher("REDIS_PASSWORD", w,
+				config.WithWatchLogger(mc.Logger),
+			)
+			w.OnChange(func(_, newPW string) {
+				newOpts := *m.opts // shallow copy
+				newOpts.Password = newPW
+				if err := m.conn.SwapClient(&newOpts); err != nil {
+					mc.Logger.Error("redis credential rotation failed", "error", err)
+				}
+			})
+			mc.Runner.AddFunc("redis-secret-watcher", sw.Start)
+			mc.Logger.Info("redis secret rotation enabled", "source", "REDIS_PASSWORD_FILE")
+		}
+	}
 
 	mc.Logger.Info("redis connection configured")
 	return nil

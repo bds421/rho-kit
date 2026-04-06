@@ -8,14 +8,14 @@ import (
 )
 
 func TestPostgresDriver_Name(t *testing.T) {
-	d := PostgresDriver{}
+	d := &PostgresDriver{}
 	if got := d.Name(); got != "postgres" {
 		t.Errorf("Name() = %q, want %q", got, "postgres")
 	}
 }
 
 func TestPostgresDriver_ImplementsDriver(t *testing.T) {
-	var _ gormdb.Driver = PostgresDriver{}
+	var _ gormdb.Driver = &PostgresDriver{}
 }
 
 func TestBuildPostgresDSN_Defaults(t *testing.T) {

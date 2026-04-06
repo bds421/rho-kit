@@ -18,6 +18,17 @@ func Get(key, fallback string) string {
 	return fallback
 }
 
+// GetSecretPath returns the file path for a secret env var following the
+// Docker Secrets / Kubernetes volume mount convention. If KEY_FILE is set,
+// returns its value (the path to the mounted secret file). Otherwise returns
+// empty string, meaning the secret is inline (not file-backed).
+//
+// Use this to determine whether a secret is file-backed and therefore
+// eligible for runtime rotation via [SecretWatcher].
+func GetSecretPath(key string) string {
+	return os.Getenv(key + "_FILE")
+}
+
 // GetSecret reads a secret value using the Docker Secrets convention:
 // if <key>_FILE is set, the secret is read from that file path (trimmed of
 // whitespace); otherwise the value of <key> is returned directly.

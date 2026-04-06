@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 
+	"github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/infra/messaging"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
 	"github.com/bds421/rho-kit/observability/health"
@@ -16,6 +18,7 @@ import (
 type messagingModule struct {
 	url            string
 	criticalBroker bool
+	secretRotation bool
 
 	// initialized during Init
 	conn      *amqpbackend.Connection
@@ -58,8 +61,59 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 	m.publisher = pub
 	m.consumer = amqpbackend.NewConsumer(conn, pub, mc.Logger)
 
+	// Secret rotation: watch RABBITMQ_URL_FILE or RABBITMQ_PASSWORD_FILE.
+	if m.secretRotation {
+		m.startSecretWatcher(mc)
+	}
+
 	mc.Logger.Info("rabbitmq connection configured")
 	return nil
+}
+
+func (m *messagingModule) startSecretWatcher(mc ModuleContext) {
+	// Prefer watching the full URL file. Fall back to password-only.
+	urlPath := config.GetSecretPath("RABBITMQ_URL")
+	pwPath := config.GetSecretPath("RABBITMQ_PASSWORD")
+
+	switch {
+	case urlPath != "":
+		w := config.NewWatchable(m.url)
+		sw := config.NewSecretWatcher("RABBITMQ_URL", w,
+			config.WithWatchLogger(mc.Logger),
+		)
+		w.OnChange(func(_, newURL string) {
+			m.conn.UpdateURL(newURL)
+		})
+		mc.Runner.AddFunc("rabbitmq-secret-watcher", sw.Start)
+		mc.Logger.Info("rabbitmq secret rotation enabled", "source", "RABBITMQ_URL_FILE")
+
+	case pwPath != "":
+		currentPW := config.GetSecret("RABBITMQ_PASSWORD", "")
+		w := config.NewWatchable(currentPW)
+		sw := config.NewSecretWatcher("RABBITMQ_PASSWORD", w,
+			config.WithWatchLogger(mc.Logger),
+		)
+		w.OnChange(func(_, newPW string) {
+			newURL := replaceURLPassword(m.url, newPW)
+			m.conn.UpdateURL(newURL)
+		})
+		mc.Runner.AddFunc("rabbitmq-secret-watcher", sw.Start)
+		mc.Logger.Info("rabbitmq secret rotation enabled", "source", "RABBITMQ_PASSWORD_FILE")
+	}
+}
+
+// replaceURLPassword replaces the password in an AMQP URL.
+func replaceURLPassword(rawURL, newPassword string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	user := ""
+	if u.User != nil {
+		user = u.User.Username()
+	}
+	u.User = url.UserPassword(user, newPassword)
+	return u.String()
 }
 
 func (m *messagingModule) HealthChecks() []health.DependencyCheck {

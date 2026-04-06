@@ -274,7 +274,10 @@ func (c *Connection) reconnect() {
 
 		conn, err := c.dial()
 		if err != nil {
-			c.logger.Error("amqp reconnect failed", "error", err, "attempt", attempts+1, "url", sanitizeURL(c.url))
+			c.mu.RLock()
+			logURL := sanitizeURL(c.url)
+			c.mu.RUnlock()
+			c.logger.Error("amqp reconnect failed", "error", err, "attempt", attempts+1, "url", logURL)
 			attempts++
 			continue
 		}
@@ -348,12 +351,64 @@ func (c *Connection) reconnect() {
 	}
 }
 
-// dial opens an AMQP connection, using TLS when configured.
-func (c *Connection) dial() (*amqp.Connection, error) {
-	if c.tlsConfig != nil {
-		return amqp.DialTLS(c.url, c.tlsConfig)
+// UpdateURL replaces the AMQP URL used for future connection attempts and
+// triggers a reconnect. In-flight operations on the current connection will
+// fail gracefully (channel errors); publishers and consumers retry via the
+// existing reconnect mechanism.
+//
+// This enables runtime credential rotation: a [config.SecretWatcher] detects
+// a secret file change and calls UpdateURL with the new URL.
+func (c *Connection) UpdateURL(newURL string) {
+	if newURL == "" {
+		return
 	}
-	return amqp.Dial(c.url)
+
+	c.mu.Lock()
+	c.url = newURL
+	conn := c.conn
+	c.mu.Unlock()
+
+	c.logger.Info("amqp URL updated, triggering reconnect", "url", sanitizeURL(newURL))
+
+	// Close the current connection to trigger the watchConnection → startReconnect
+	// flow. The reconnect loop reads c.url under lock and will use the new URL.
+	if conn != nil && !conn.IsClosed() {
+		_ = conn.Close()
+	} else {
+		c.startReconnect()
+	}
+}
+
+// UpdateTLS replaces the TLS config used for future connection attempts and
+// triggers a reconnect. Use this for TLS certificate rotation.
+func (c *Connection) UpdateTLS(cfg *tls.Config) {
+	c.mu.Lock()
+	c.tlsConfig = cfg
+	conn := c.conn
+	c.mu.Unlock()
+
+	c.logger.Info("amqp TLS config updated, triggering reconnect")
+
+	if conn != nil && !conn.IsClosed() {
+		_ = conn.Close()
+	} else {
+		c.startReconnect()
+	}
+}
+
+// dial opens an AMQP connection, using TLS when configured.
+// Reads c.url and c.tlsConfig under RLock to prevent races with
+// UpdateURL/UpdateTLS.
+func (c *Connection) dial() (*amqp.Connection, error) {
+	c.mu.RLock()
+	dialURL := c.url
+	tlsCfg := c.tlsConfig
+	c.mu.RUnlock()
+
+	if tlsCfg != nil {
+		return amqp.DialTLS(dialURL, tlsCfg.Clone())
+	}
+	return amqp.Dial(dialURL)
 }
 
 // sanitizeURL strips credentials from an AMQP URL for safe logging.

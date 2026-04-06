@@ -66,12 +66,15 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 	}
 
 	if b.redisOpts != nil {
-		modules = append(modules, newRedisModule(b.redisOpts, b.redisConnOpts...))
+		rm := newRedisModule(b.redisOpts, b.redisConnOpts...)
+		rm.secretRotation = b.secretRotation
+		modules = append(modules, rm)
 	}
 
 	if b.mqURL != "" {
 		m := newMessagingModule(b.mqURL)
 		m.criticalBroker = b.criticalBroker
+		m.secretRotation = b.secretRotation
 		modules = append(modules, m)
 	}
 
