@@ -53,7 +53,9 @@
       }
     },
     "git": {
-      "commitMessage": "chore(release): {version}"
+      "commit": false,
+      "tag": false,
+      "stageChanges": false
     },
     "releaseTagPattern": "{projectName}/v{version}"
   }
