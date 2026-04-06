@@ -11,6 +11,7 @@ env:
   GOWORK: ${{ github.workspace }}/go.work
   GOPRIVATE: github.com/bds421/*
   GONOSUMCHECK: github.com/bds421/*
+  GONOSUMDB: github.com/bds421/*
 
 jobs:
   release:
@@ -41,10 +42,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Step 1: NX versions go.mod + changelogs, commits, tags (locally)
       - name: Version, changelog, and tag
         run: npx nx release --skip-publish
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
-      - name: Push release commit and tags
-        run: git push --follow-tags
+      # Step 2: Push tags first so modules are resolvable from git
+      - name: Push tags
+        run: git push --tags
+
+      # Step 3: Now that tags exist, regenerate go.sum with GOWORK=off
+      # so checksums for internal modules are correct
+      - name: Regenerate go.sum files
+        run: |
+          set -e
+          for dir in $(grep '^\s*\./' go.work | sed 's/^[[:space:]]*//'); do
+            echo "go mod tidy: $dir"
+            (cd "$dir" && GOWORK=off go mod tidy)
+          done
+
+      # Step 4: Amend the release commit with updated go.sum files
+      - name: Amend release commit with go.sum updates
+        run: |
+          git add '**/go.sum' '*/go.sum' go.work.sum
+          # Only amend if there are staged changes
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+            # Move tags to the amended commit
+            for tag in $(git tag --points-at HEAD~1 2>/dev/null); do
+              git tag -f "$tag"
+            done
+          fi
+
+      # Step 5: Force-push the amended commit and updated tags
+      - name: Push release commit and updated tags
+        run: |
+          git push --force-with-lease
+          git push --tags --force

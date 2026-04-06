@@ -202,23 +202,8 @@ class GoVersionActions extends VersionActions {
 
     if (logMessages.length > 0) {
       tree.write(projectModPath, content);
-
-      // Run go mod tidy to update go.sum. NX processes projects in
-      // topological order (dependencies first), so by the time this
-      // runs, all dependency go.mod files are already on disk with
-      // their new versions. The workspace resolves them locally.
-      const projectRoot = this.projectGraphNode.data.root;
-      const goWorkPath = join(process.cwd(), "go.work");
-      execFileSync("go", ["mod", "tidy"], {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        env: { ...process.env, GOWORK: goWorkPath },
-      });
-
-      const goSumPath = join(projectRoot, "go.sum");
-      const goSumContent = require("node:fs").readFileSync(goSumPath, "utf-8");
-      tree.write(goSumPath, goSumContent);
-      logMessages.push("Updated go.sum via go mod tidy");
+      // go.sum is updated in the release workflow AFTER tags are pushed,
+      // because go mod tidy needs the tags to exist to resolve checksums.
     }
 
     return logMessages;
