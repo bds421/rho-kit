@@ -41,7 +41,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Release
+      - name: Version, changelog, and tag
         run: npx nx release --skip-publish
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Push release commit and tags
+        run: git push --follow-tags
