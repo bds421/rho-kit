@@ -212,6 +212,12 @@ class GoVersionActions extends VersionActions {
           cwd: projectRoot,
           encoding: "utf-8",
           stdio: "pipe",
+          env: {
+            ...process.env,
+            // Use the workspace so sibling modules resolve locally
+            // (their new versions aren't published yet when this runs).
+            GOWORK: join(process.cwd(), "go.work"),
+          },
         });
         // Read the updated go.sum back into the tree so it's included
         // in the release commit.
