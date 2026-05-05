@@ -25,19 +25,56 @@ import (
 // registerTLSConfigDedup registers cfg in the MySQL driver's global TLS map,
 // reusing an existing registration when an identical config has been seen
 // before. Returns the key under which the config is registered.
+//
+// Each call increments the per-fingerprint refcount; pair with [ReleaseTLS]
+// to deregister when the last connection using the config closes.
 func registerTLSConfigDedup(cfg *tls.Config) (string, error) {
 	fp := tlsFingerprint(cfg)
-	if existing, ok := tlsRegistry.Load(fp); ok {
-		return existing.(string), nil
+	tlsRegistryMu.Lock()
+	defer tlsRegistryMu.Unlock()
+	if entry, ok := tlsRegistry[fp]; ok {
+		entry.refCount++
+		return entry.key, nil
 	}
 	key := fmt.Sprintf("custom-%d", tlsConfigCounter.Add(1))
 	if err := mysqldriver.RegisterTLSConfig(key, cfg); err != nil {
 		return "", err
 	}
-	// Race: two goroutines may both reach this point. Last writer wins on
-	// the registry; the registered key is still valid either way.
-	tlsRegistry.Store(fp, key)
+	tlsRegistry[fp] = &tlsRegEntry{key: key, refCount: 1}
 	return key, nil
+}
+
+// ReleaseTLS deregisters cfg from the MySQL driver's TLS registry once the
+// last connection using an equivalent config has closed. Each successful
+// [New] / [MySQLDriver.Open] call with cfg adds one reference; ReleaseTLS
+// removes one. Calling with a cfg that was never registered is a no-op.
+//
+// Long-running services that open one connection for their lifetime need
+// not call ReleaseTLS — process exit reclaims the registry entry. The
+// helper exists for tests that recycle connections, multi-tenant services
+// that rotate TLS material per tenant, and hot-reload paths.
+//
+// Equivalence is by content fingerprint (cert chain, root CAs, ServerName,
+// InsecureSkipVerify), not pointer identity, so callers can construct a
+// fresh *tls.Config equivalent to the one they passed to WithTLS and the
+// release will still hit the right entry.
+func ReleaseTLS(cfg *tls.Config) {
+	if cfg == nil {
+		return
+	}
+	fp := tlsFingerprint(cfg)
+	tlsRegistryMu.Lock()
+	defer tlsRegistryMu.Unlock()
+	entry, ok := tlsRegistry[fp]
+	if !ok {
+		return
+	}
+	entry.refCount--
+	if entry.refCount > 0 {
+		return
+	}
+	mysqldriver.DeregisterTLSConfig(entry.key)
+	delete(tlsRegistry, fp)
 }
 
 // tlsFingerprint hashes the security-relevant fields of a tls.Config so
@@ -71,18 +108,28 @@ func tlsFingerprint(cfg *tls.Config) string {
 // map overwrite when multiple connections use different TLS configs.
 var tlsConfigCounter atomic.Uint64
 
+// tlsRegEntry tracks a TLS config registered with the MySQL driver. The
+// refCount field is updated under tlsRegistryMu and decremented by
+// [ReleaseTLS]; the entry is dropped (and the driver entry deregistered)
+// when the count reaches zero.
+type tlsRegEntry struct {
+	key      string
+	refCount int
+}
+
 // tlsRegistry deduplicates TLS config registrations by content fingerprint.
-// The MySQL driver's RegisterTLSConfig writes to a global map with no
-// Deregister exposed by this package; without dedup, every Open with TLS
-// leaks a registry entry on connection close. By hashing the cert/RootCA
-// material we reuse the same entry across connections that share TLS
-// settings (the common case: every reconnect after a transient failure).
+// The MySQL driver's RegisterTLSConfig writes to a global map; without dedup,
+// every Open with TLS leaks a registry entry on connection close. By hashing
+// the cert/RootCA material we reuse the same entry across connections that
+// share TLS settings (the common case: every reconnect after a transient
+// failure).
 //
-// Different TLS configs still produce different keys and still leak, but
-// real services don't dynamically permute TLS material per connection — the
-// pre-existing test/reconnect leak is what this addresses.
+// Reference counting is necessary because dedup means several callers share
+// one driver entry: a naive deregister-on-close would yank the entry while
+// other connections still rely on it.
 var (
-	tlsRegistry   sync.Map // map[string]string — fingerprint → registered key
+	tlsRegistryMu sync.Mutex
+	tlsRegistry   = map[string]*tlsRegEntry{} // fingerprint → entry
 )
 
 // Option configures the MySQL connection.

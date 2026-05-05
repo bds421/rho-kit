@@ -1,6 +1,8 @@
 package gormmysql
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"testing"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
@@ -46,6 +48,99 @@ func TestBuildMySQLDSN_CustomCharset(t *testing.T) {
 	want := "app:p%40ss@tcp(db.example.com:3307)/mydb?charset=utf8&parseTime=True&loc=UTC&clientFoundRows=true"
 	if got != want {
 		t.Errorf("buildMySQLDSN() =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestRegisterTLSConfigDedup_RefCountReuse(t *testing.T) {
+	cfg := &tls.Config{ServerName: "dedup.example.test", RootCAs: x509.NewCertPool()}
+	defer ReleaseTLS(cfg)
+	defer ReleaseTLS(cfg)
+
+	keyA, err := registerTLSConfigDedup(cfg)
+	if err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	keyB, err := registerTLSConfigDedup(cfg)
+	if err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if keyA != keyB {
+		t.Fatalf("expected dedup to reuse key, got %q vs %q", keyA, keyB)
+	}
+
+	fp := tlsFingerprint(cfg)
+	tlsRegistryMu.Lock()
+	entry, ok := tlsRegistry[fp]
+	tlsRegistryMu.Unlock()
+	if !ok {
+		t.Fatal("expected registry to retain entry after two registers")
+	}
+	if entry.refCount != 2 {
+		t.Errorf("refCount = %d, want 2", entry.refCount)
+	}
+}
+
+func TestReleaseTLS_DropsEntryAtZero(t *testing.T) {
+	cfg := &tls.Config{ServerName: "release.example.test", RootCAs: x509.NewCertPool()}
+
+	if _, err := registerTLSConfigDedup(cfg); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := registerTLSConfigDedup(cfg); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	fp := tlsFingerprint(cfg)
+
+	ReleaseTLS(cfg)
+
+	tlsRegistryMu.Lock()
+	entry, stillThere := tlsRegistry[fp]
+	tlsRegistryMu.Unlock()
+	if !stillThere {
+		t.Fatal("entry dropped after first release; expected still present (refCount > 0)")
+	}
+	if entry.refCount != 1 {
+		t.Errorf("refCount after first Release = %d, want 1", entry.refCount)
+	}
+
+	ReleaseTLS(cfg)
+
+	tlsRegistryMu.Lock()
+	_, stillThere = tlsRegistry[fp]
+	tlsRegistryMu.Unlock()
+	if stillThere {
+		t.Error("entry still present after refCount hit zero")
+	}
+}
+
+func TestReleaseTLS_NoOpForUnknownConfig(t *testing.T) {
+	cfg := &tls.Config{ServerName: "never-registered.example.test"}
+	// Must not panic and must not affect any other entry.
+	ReleaseTLS(cfg)
+	ReleaseTLS(nil)
+}
+
+func TestReleaseTLS_FingerprintEquivalence(t *testing.T) {
+	pool := x509.NewCertPool()
+	cfgA := &tls.Config{ServerName: "fp.example.test", RootCAs: pool}
+	cfgB := &tls.Config{ServerName: "fp.example.test", RootCAs: pool}
+
+	if _, err := registerTLSConfigDedup(cfgA); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	fp := tlsFingerprint(cfgA)
+
+	// A different *tls.Config pointer with equivalent content must release
+	// the same entry — callers shouldn't have to retain the original pointer.
+	ReleaseTLS(cfgB)
+
+	tlsRegistryMu.Lock()
+	_, stillThere := tlsRegistry[fp]
+	tlsRegistryMu.Unlock()
+	if stillThere {
+		t.Error("entry still present; ReleaseTLS via equivalent cfg did not match by fingerprint")
 	}
 }
 
