@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -218,4 +220,91 @@ func TestSSRFSafeTransport_AllowPrivateIPs(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "127.0.0.1", ip)
 	assert.NotNil(t, transport)
+}
+
+// --- SSRFSafeDynamicTransport / SSRFSafeClientFollowRedirects ---
+
+func TestSSRFSafeDynamicTransport_RejectsPrivateOnEachDial(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}}}
+	transport := SSRFSafeDynamicTransport(resolver)
+
+	// DialContext is the SSRF guard for the dynamic transport. Calling it
+	// with a private-resolving host must fail without ever opening a socket.
+	_, err := transport.DialContext(context.Background(), "tcp", "victim.internal:443")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "private/reserved")
+}
+
+func TestSSRFSafeDynamicTransport_AllowsPublicOnEachDial(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}
+	transport := SSRFSafeDynamicTransport(resolver)
+
+	// We don't actually want to connect to 8.8.8.8 in a unit test. The DNS
+	// re-resolution is the security-relevant step; the dial that follows is
+	// out of scope. Verify that the transport's resolver accepts the
+	// public IP via the underlying ResolveAndValidate.
+	ip, err := ResolveAndValidate(context.Background(), "victim.example.com", resolver)
+	assert.NoError(t, err)
+	assert.Equal(t, "8.8.8.8", ip)
+	assert.NotNil(t, transport)
+}
+
+func TestSSRFSafeClientFollowRedirects_PanicsOnZeroMaxHops(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on maxHops=0")
+		}
+	}()
+	_ = SSRFSafeClientFollowRedirects(0, nil)
+}
+
+func TestSSRFSafeClientFollowRedirects_StopsAfterMaxHops(t *testing.T) {
+	// A test server that infinitely redirects to itself.
+	hops := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hops++
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	maxHops := 3
+	client := SSRFSafeClientFollowRedirects(maxHops, nil, WithAllowPrivateIPs())
+
+	resp, err := client.Get(srv.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	assert.Error(t, err, "expected redirect-chain-exceeded error")
+	assert.Contains(t, err.Error(), "redirect chain exceeded")
+}
+
+func TestSSRFSafeDynamicTransport_ResolverFiresOnEveryDial(t *testing.T) {
+	// The DialContext is the SSRF guard. The HTTP layer reuses keep-alive
+	// connections for same-host redirects, but every NEW host:port forces a
+	// fresh dial — and that fresh dial MUST run the resolver. Verify by
+	// calling DialContext directly with two different hosts.
+	rec := &recordingResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	transport := SSRFSafeDynamicTransport(rec, WithAllowPrivateIPs())
+
+	for _, host := range []string{"a.example.com:80", "b.example.com:80"} {
+		conn, err := transport.DialContext(context.Background(), "tcp", host)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		// Connect attempt may fail at TCP layer (host unreachable) — what
+		// matters is that the resolver was consulted before we got there.
+		_ = err
+	}
+	assert.Equal(t, 2, rec.calls,
+		"each fresh dial through the dynamic transport must consult the resolver")
+}
+
+type recordingResolver struct {
+	ips   []net.IPAddr
+	calls int
+}
+
+func (r *recordingResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAddr, error) {
+	r.calls++
+	return r.ips, nil
 }

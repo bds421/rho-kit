@@ -207,3 +207,71 @@ func SSRFSafeClient(ctx context.Context, host string, resolver DNSResolver, opts
 		},
 	}, ip, nil
 }
+
+// SSRFSafeDynamicTransport returns an *http.Transport whose DialContext
+// re-resolves AND re-validates the destination host on every dial.
+//
+// Use this in two scenarios where the IP-pinned [SSRFSafeTransport] is
+// unsafe:
+//
+//   - Long-lived clients (the cached IP would grow stale as the upstream's
+//     DNS rotates).
+//   - Following redirects to potentially-different hosts (the per-dial
+//     resolver re-validates the redirect target before connecting, so a
+//     302 → http://169.254.169.254/ cannot escape the SSRF guard).
+//
+// Cost: one extra DNS lookup per dial. Acceptable for outbound requests to
+// user-supplied URLs, which are rarely on a hot path.
+//
+// Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
+// development only).
+func SSRFSafeDynamicTransport(resolver DNSResolver, opts ...Option) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("ssrf: invalid address %q: %w", addr, err)
+			}
+			ip, err := ResolveAndValidate(ctx, host, resolver, opts...)
+			if err != nil {
+				return nil, fmt.Errorf("ssrf: resolve %s: %w", host, err)
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
+		},
+		TLSClientConfig: &tls.Config{
+			// Default to TLS 1.3 to match the kit's internal mTLS profile.
+			MinVersion: tls.VersionTLS13,
+			// ServerName intentionally left empty — Go's http.Transport
+			// derives it from the request URL, which is correct for
+			// dynamic / redirect-following clients.
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+}
+
+// SSRFSafeClientFollowRedirects returns an *http.Client that follows
+// redirects up to maxHops, re-validating each hop's host through the
+// SSRF guard. Built on [SSRFSafeDynamicTransport] so the per-dial DNS
+// lookup blocks any redirect that would land on an internal IP — the
+// classic SSRF-via-redirect bypass.
+//
+// maxHops <= 0 panics; the recommended value is 5–10. Returns an error
+// from the request when the redirect chain exceeds maxHops.
+//
+// Pass [WithAllowPrivateIPs] to permit localhost and private IPs (local
+// development only).
+func SSRFSafeClientFollowRedirects(maxHops int, resolver DNSResolver, opts ...Option) *http.Client {
+	if maxHops <= 0 {
+		panic("ssrf: SSRFSafeClientFollowRedirects requires maxHops > 0")
+	}
+	return &http.Client{
+		Transport: SSRFSafeDynamicTransport(resolver, opts...),
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= maxHops {
+				return fmt.Errorf("ssrf: redirect chain exceeded %d hops", maxHops)
+			}
+			return nil
+		},
+	}
+}
