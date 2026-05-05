@@ -10,6 +10,8 @@ github.com/bds421/rho-kit/core/apperror v1.2.0 h1:19yoGDuNLj18HQ8guEI9zyAeZXshEf
 github.com/bds421/rho-kit/core/apperror v1.2.0/go.mod h1:m+Dl7Sr5J+30fjeuhDDswUeBiFtOP1wtJgVw0b2thtw=
 github.com/bds421/rho-kit/core/config v1.2.0 h1:IcK+pduyaHxysJ+8GRu4sPeLBPPt9ckxS0sBjxdzm9Y=
 github.com/bds421/rho-kit/core/config v1.2.0/go.mod h1:IyPHeucdigrMI0bXSXygRUJRflgcKWwvSP589pgxXq4=
+github.com/bds421/rho-kit/data/lock v1.1.0 h1:mRlA5HpGCgK7CJ9BqwpCc0PbSMzlGKBnxDXD6X9dIq4=
+github.com/bds421/rho-kit/data/lock v1.1.0/go.mod h1:FXOXqK8CO1dJ3VvW+hSSOTSuiAKydXUFObMftaASC7I=
 github.com/bds421/rho-kit/infra/redis v1.2.0 h1:OC8+Iv5dhv05sLEPvMpFHxmsfrzN/ZhWYQRUrbSsMhM=
 github.com/bds421/rho-kit/infra/redis v1.2.0/go.mod h1:rHe+NTbCPIaX2OMTU5489GKZNGo+8B//mxRkVo8FFyI=
 github.com/bds421/rho-kit/observability/health v1.1.0 h1:x5pLqiQiaY4bIYd3/yyx6W6xhMUXv/BqT3ZQvs7BJrM=

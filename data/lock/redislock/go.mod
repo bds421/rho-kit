@@ -12,6 +12,7 @@ require (
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
+	github.com/bds421/rho-kit/data/lock v1.1.0
 	github.com/bds421/rho-kit/observability/health v1.1.0 // indirect
 	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
 	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect

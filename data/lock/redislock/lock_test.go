@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/data/lock"
 	redislock "github.com/bds421/rho-kit/data/lock/redislock"
 )
 
@@ -272,4 +273,132 @@ func TestWithLock_ReleasesOnPanic(t *testing.T) {
 	if !acquired {
 		t.Error("expected second Acquire to succeed after panic released the lock, but it failed")
 	}
+}
+
+// --- New Locker (per-call returned handle) ---
+
+func TestLocker_AcquireReleaseRoundTrip(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(2*time.Second))
+
+	l, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Second Acquire on the same key from the same Locker returns (nil, false, nil)
+	// — different fresh handle internally, but the SETNX still fails.
+	l2, ok2, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	assert.False(t, ok2)
+	assert.Nil(t, l2)
+
+	// Release the first handle. After release, the key is reacquirable.
+	require.NoError(t, l.Release(ctx))
+
+	l3, ok3, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok3)
+	require.NoError(t, l3.Release(ctx))
+}
+
+func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(1*time.Second))
+	l, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// TTL expires, someone else takes the key.
+	mr.FastForward(2 * time.Second)
+	mr.Set("test:lock", "stolen-by-someone-else")
+
+	relErr := l.Release(ctx)
+	assert.ErrorIs(t, relErr, lock.ErrLockLost)
+}
+
+func TestLocker_WithLockSurfacesErrLockLost(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(1*time.Second))
+
+	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
+		mr.FastForward(2 * time.Second)
+		mr.Set("test:lock", "stolen-by-someone-else")
+		return nil
+	})
+	assert.ErrorIs(t, err, lock.ErrLockLost)
+}
+
+func TestLocker_WithLockJoinsFnErrAndLockLost(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(1*time.Second))
+	fnErr := errors.New("downstream blew up")
+
+	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
+		mr.FastForward(2 * time.Second)
+		mr.Set("test:lock", "stolen-by-someone-else")
+		return fnErr
+	})
+	assert.ErrorIs(t, err, fnErr)
+	assert.ErrorIs(t, err, lock.ErrLockLost)
+}
+
+func TestLocker_WithLockReleasesOnPanic(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client)
+
+	var panicVal any
+	func() {
+		defer func() { panicVal = recover() }()
+		_ = lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
+			panic("intentional")
+		})
+	}()
+	assert.Equal(t, "intentional", panicVal)
+
+	// Re-acquire must succeed — defer ran the Release.
+	l, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, l.Release(ctx))
+}
+
+// LockerWithValue smoke test — generic alternative for return values.
+func TestLockerWithValue(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+	lc := redislock.NewLocker(client)
+
+	got, err := redislock.LockerWithValue(ctx, lc, "test:lock", func(_ context.Context) (int, error) {
+		return 42, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 42, got)
+}
+
+// --- Stateful Lock.Release semantic guarantee ---
+
+func TestLock_ReleaseAfterTTLExpiryReturnsErrLockLost(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	l := redislock.New(client, "test:lock", redislock.WithTTL(1*time.Second))
+	ok, err := l.Acquire(ctx)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	mr.FastForward(2 * time.Second)
+	mr.Set("test:lock", "someone-else")
+
+	relErr := l.Release(ctx)
+	assert.ErrorIs(t, relErr, lock.ErrLockLost)
 }
