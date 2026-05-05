@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 )
@@ -47,6 +48,62 @@ func TestDefault_OrderWithOuterInner(t *testing.T) {
 		if calls[i] != entry {
 			t.Fatalf("calls[%d] = %q, want %q (full: %v)", i, calls[i], entry, calls)
 		}
+	}
+}
+
+func TestDefault_TimeoutFiresOnSlowHandler(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+			// honour cancellation so the middleware can return promptly
+		}
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithTimeout(20*time.Millisecond),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from timeout, got %d", rec.Code)
+	}
+}
+
+func TestDefault_WithoutTimeoutAllowsSlowHandler(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with timeout disabled, got %d", rec.Code)
 	}
 }
 

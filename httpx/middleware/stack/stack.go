@@ -3,6 +3,7 @@ package stack
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bds421/rho-kit/core/contextutil"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
@@ -10,6 +11,7 @@ import (
 	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
 	mwrequestid "github.com/bds421/rho-kit/httpx/middleware/requestid"
 	"github.com/bds421/rho-kit/httpx/middleware/secheaders"
+	mwtimeout "github.com/bds421/rho-kit/httpx/middleware/timeout"
 	mwtracing "github.com/bds421/rho-kit/httpx/middleware/tracing"
 )
 
@@ -23,8 +25,10 @@ type Config struct {
 	EnableRequestID     bool
 	EnableCorrelationID bool
 	EnableTracing       bool
-	EnableReqLogger     bool
 	EnableLogging       bool
+	EnableTimeout       bool
+	EnableReqLogger     bool
+	Timeout             time.Duration
 	FrameOption         secheaders.FrameOption
 	Outer               []func(http.Handler) http.Handler
 	Inner               []func(http.Handler) http.Handler
@@ -34,10 +38,13 @@ type Config struct {
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// security headers -> metrics -> request ID -> correlation ID -> tracing -> request logger -> logging -> inner -> handler
+// security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler
 // Additional outer middleware wraps the entire chain.
+//
 // The request logger is injected so that httpx.Logger(ctx, fallback) returns
-// a request-scoped logger in handler code.
+// a request-scoped logger in handler code. Timeout sits inside logging so 503
+// timeout responses still appear in access logs, and outside the request
+// logger so the handler running under the deadline still has the scoped logger.
 func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Handler {
 	cfg := Config{
 		Logger:              logger,
@@ -47,8 +54,10 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		EnableRequestID:     true,
 		EnableCorrelationID: true,
 		EnableTracing:       true,
-		EnableReqLogger:     true,
 		EnableLogging:       true,
+		EnableTimeout:       true,
+		EnableReqLogger:     true,
+		Timeout:             30 * time.Second,
 		FrameOption:         secheaders.Deny,
 	}
 	for _, opt := range opts {
@@ -89,6 +98,9 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 
 	if cfg.EnableReqLogger {
 		h = mwlogging.WithRequestLogger(cfg.Logger)(h)
+	}
+	if cfg.EnableTimeout && cfg.Timeout > 0 {
+		h = mwtimeout.Timeout(cfg.Timeout)(h)
 	}
 	if cfg.EnableLogging {
 		h = mwlogging.Logger(cfg.Logger, cfg.QuietPaths, extraAttrs...)(h)
@@ -153,6 +165,24 @@ func WithoutTracing() Option {
 // WithoutLogging disables logging middleware.
 func WithoutLogging() Option {
 	return func(cfg *Config) { cfg.EnableLogging = false }
+}
+
+// WithTimeout sets the per-request handler timeout. Must be > 0 to take effect.
+// Default: 30s. Handlers exceeding the deadline receive a 503 JSON response;
+// the handler goroutine is expected to honour ctx.Done().
+//
+// WebSocket upgrade requests bypass the timeout middleware automatically. SSE
+// or other streaming endpoints should be mounted on a sub-stack built with
+// [WithoutTimeout] (the timeout buffers the response, which defeats streaming).
+func WithTimeout(d time.Duration) Option {
+	return func(cfg *Config) { cfg.Timeout = d }
+}
+
+// WithoutTimeout disables the per-request timeout middleware. Use only for
+// stacks fronting long-lived or streaming responses; the default 30s timeout
+// is the recommended production setting for ordinary request/response handlers.
+func WithoutTimeout() Option {
+	return func(cfg *Config) { cfg.EnableTimeout = false }
 }
 
 // WithoutRequestLogger disables the request-scoped logger middleware.
