@@ -15,20 +15,33 @@ var ErrResponseTooLarge = errors.New("timeout: response exceeds buffer limit")
 // timeoutWriter buffers the handler's response so we can discard it if the
 // timeout fires first. Only one of writeToReal (success) or writeTimeout
 // writes to the real ResponseWriter.
-// maxBufferSize limits the amount of response data buffered before timeout.
-// Responses exceeding this are truncated — a large response racing a timeout
-// should not cause unbounded memory growth.
-const maxBufferSize = 10 << 20 // 10 MiB
+
+// defaultMaxBufferSize is the default per-request response buffer cap.
+// Lowered from 10 MiB to 1 MiB: under a thundering-herd of timing-out
+// requests, the previous cap let 10k concurrent attackers hold 100 GiB of
+// transient memory. Production callers expecting larger response payloads
+// should pair Timeout with body-size limits and override via
+// [WithMaxBufferSize].
+const defaultMaxBufferSize = 1 << 20 // 1 MiB
 
 type timeoutWriter struct {
 	w http.ResponseWriter
 
-	mu      sync.Mutex
-	h       http.Header
-	code    int
-	buf          []byte
-	written      bool
-	flushWarned  bool
+	mu          sync.Mutex
+	h           http.Header
+	code        int
+	buf         []byte
+	written     bool
+	flushWarned bool
+
+	maxBuffer int // per-instance cap; 0 falls back to defaultMaxBufferSize
+}
+
+func (tw *timeoutWriter) bufferCap() int {
+	if tw.maxBuffer > 0 {
+		return tw.maxBuffer
+	}
+	return defaultMaxBufferSize
 }
 
 // Header returns the buffered header map.
@@ -69,7 +82,7 @@ func (tw *timeoutWriter) Write(b []byte) (int, error) {
 	if tw.written {
 		return 0, http.ErrHandlerTimeout
 	}
-	remaining := maxBufferSize - len(tw.buf)
+	remaining := tw.bufferCap() - len(tw.buf)
 	if remaining <= 0 {
 		return 0, ErrResponseTooLarge
 	}

@@ -148,17 +148,17 @@ func TestTimeout_WriteAfterTimeout(t *testing.T) {
 }
 
 func TestTimeout_BufferOverflow(t *testing.T) {
-	const overLimit = maxBufferSize + 1<<20 // 11 MiB — 1 MiB over the cap
+	const overLimit = defaultMaxBufferSize + 1<<20 // 11 MiB — 1 MiB over the cap
 
 	handler := Timeout(5 * time.Second)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bigPayload := bytes.Repeat([]byte("x"), overLimit)
-		// First write truncates to maxBufferSize and returns ErrResponseTooLarge.
+		// First write truncates to defaultMaxBufferSize and returns ErrResponseTooLarge.
 		n, err := w.Write(bigPayload)
 		if !errors.Is(err, ErrResponseTooLarge) {
 			t.Errorf("first Write: expected ErrResponseTooLarge, got %v", err)
 		}
-		if n != maxBufferSize {
-			t.Errorf("first Write: expected %d bytes written, got %d", maxBufferSize, n)
+		if n != defaultMaxBufferSize {
+			t.Errorf("first Write: expected %d bytes written, got %d", defaultMaxBufferSize, n)
 		}
 		// Second write hits the full buffer and returns ErrResponseTooLarge.
 		n, err = w.Write([]byte("more"))
@@ -178,10 +178,10 @@ func TestTimeout_BufferOverflow(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
-	// The response body must be truncated to at most maxBufferSize bytes.
+	// The response body must be truncated to at most defaultMaxBufferSize bytes.
 	bodyLen := rec.Body.Len()
-	if bodyLen > maxBufferSize {
-		t.Errorf("response body exceeds maxBufferSize: got %d bytes, want <= %d", bodyLen, maxBufferSize)
+	if bodyLen > defaultMaxBufferSize {
+		t.Errorf("response body exceeds defaultMaxBufferSize: got %d bytes, want <= %d", bodyLen, defaultMaxBufferSize)
 	}
 	if bodyLen == 0 {
 		t.Error("response body is empty; expected truncated content")
