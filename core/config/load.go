@@ -189,7 +189,12 @@ func resolveWithSource(envName string, isSecret bool) (val string, fromEnv bool,
 	if err != nil {
 		return "", false, fmt.Errorf("config: failed to read secret file for %s from %q: %w", envName, filePath, err)
 	}
-	return strings.TrimSpace(string(data)), true, nil
+	// Trim only trailing line terminators that secret-mounting tools add
+	// (Docker, Kubernetes, Vault all append a single \n). strings.TrimSpace
+	// would also strip meaningful interior/leading whitespace from a base64
+	// secret or a password that legitimately ends in spaces — silent
+	// corruption that's hard to debug.
+	return strings.TrimRight(string(data), "\r\n"), true, nil
 }
 
 func setField(fv reflect.Value, val, envName string) error {

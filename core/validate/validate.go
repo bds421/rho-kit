@@ -20,6 +20,13 @@ var (
 	instance *validator.Validate
 	once     sync.Once
 	frozen   atomic.Bool // set after first Struct() call to detect late registrations
+	// regMu serialises RegisterValidation against Struct so the underlying
+	// go-playground validator's tag-function map can never be mutated and
+	// read concurrently. Without this, the frozen-bool TOCTOU window allows
+	// a goroutine that just observed frozen=false to call RegisterValidation
+	// in parallel with a concurrent Struct() that already crossed the
+	// CompareAndSwap line, producing a data race in the validator's cache.
+	regMu sync.Mutex
 )
 
 // get returns the singleton validator instance.
@@ -41,8 +48,16 @@ func get() *validator.Validate {
 // Struct validates a struct using go-playground/validator tags.
 // Returns nil on success or an *apperror.ValidationError with field-level details.
 func Struct(s any) error {
+	// Acquire regMu so a concurrent RegisterValidation cannot mutate the
+	// validator's tag-function map while we're reading it. The mutex is
+	// only contended on the very first Struct call (registrations should
+	// happen during init); after that the atomic frozen flag short-circuits
+	// future RegisterValidation attempts with an explicit error.
+	regMu.Lock()
 	frozen.CompareAndSwap(false, true)
-	err := get().Struct(s)
+	v := get()
+	regMu.Unlock()
+	err := v.Struct(s)
 	if err == nil {
 		return nil
 	}
@@ -70,6 +85,8 @@ func Struct(s any) error {
 // registration while Struct() calls are in flight. Returns an error if
 // called after the first Struct() call, indicating a data race risk.
 func RegisterValidation(tag string, fn validator.Func) error {
+	regMu.Lock()
+	defer regMu.Unlock()
 	if frozen.Load() {
 		return fmt.Errorf("validate: RegisterValidation(%q) called after Struct(); this is not safe for concurrent use — call during init only", tag)
 	}

@@ -62,13 +62,21 @@ type Policy struct {
 	OnRetry func(err error, attempt int, delay time.Duration)
 }
 
-// DefaultPolicy is a sensible default: 3 retries, 1s base, 30s max, 2x factor, ±25% jitter.
+// DefaultPolicy is a sensible default: 3 retries, 1s base, 30s max, 2x factor,
+// ±25% jitter, and a RetryIf predicate that skips apperror.Permanent errors.
+//
+// The RetryIf default matters: without it (nil), every error — including
+// validation failures, permission denials, and explicitly permanent errors —
+// would be retried, which is rarely correct for a generic helper. Callers
+// that genuinely want "retry every error" must pass WithRetryIf(nil) or a
+// custom predicate.
 var DefaultPolicy = Policy{
 	MaxRetries: 3,
 	BaseDelay:  1 * time.Second,
 	MaxDelay:   30 * time.Second,
 	Factor:     2.0,
 	Jitter:     0.25,
+	RetryIf:    RetryIfNotPermanent,
 }
 
 // WorkerPolicy is tuned for long-running worker loops: unlimited retries,
@@ -163,6 +171,14 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		err := fn(ctx)
 
 		if ctx.Err() != nil {
+			return
+		}
+
+		// Workers that return nil mean "graceful completion" — Loop should
+		// exit, not infinitely restart. Without this guard a nil-returning
+		// worker burns the full retry/backoff sequence with nil errors and
+		// hands nil to RetryIf predicates that don't expect it.
+		if err == nil {
 			return
 		}
 

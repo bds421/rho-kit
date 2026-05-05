@@ -34,7 +34,10 @@ func GetSecret(key, fallback string) string {
 				"key", key+"_FILE", "path", filePath, "error", err)
 			panic(fmt.Sprintf("secret file %s for %s_FILE is unreadable: %v", filePath, key, err))
 		}
-		if v := strings.TrimSpace(string(data)); v != "" {
+		// Match the same trim semantics as the struct-tag loader: strip only
+		// trailing line terminators that secret-mounting tools append, never
+		// significant whitespace.
+		if v := strings.TrimRight(string(data), "\r\n"); v != "" {
 			return v
 		}
 	}
