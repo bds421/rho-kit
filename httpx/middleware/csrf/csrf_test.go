@@ -845,7 +845,7 @@ func TestNew_AllowedOrigins_FallsBackToReferer(t *testing.T) {
 }
 
 func TestNew_AllowedOrigins_SafeMethodsAreNotChecked(t *testing.T) {
-	mw := New(WithAllowedOrigins("https://app.example.com"))
+	mw := New(WithSecret(testSecret()), WithAllowedOrigins("https://app.example.com"))
 	handler := mw(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -871,4 +871,56 @@ func TestNew_AllowedOrigins_CaseInsensitiveHost(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// --- Mandatory secret in non-dev ---
+
+func TestNew_PanicsWithoutSecretInProduction(t *testing.T) {
+	t.Setenv("KIT_ENV", "production")
+	t.Setenv("APP_ENV", "")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when no secret is configured in non-dev")
+		}
+		assert.Contains(t, r.(string), "no HMAC secret configured")
+	}()
+	_ = New() // no WithSecret, no WithDevSecret
+}
+
+func TestNew_DevSecretFallbackInDev(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	t.Setenv("APP_ENV", "")
+	mw := New() // no panic — dev allows per-process random fallback
+	assert.NotNil(t, mw)
+}
+
+func TestNew_DevSecretExplicitOptIn(t *testing.T) {
+	t.Setenv("KIT_ENV", "production") // would normally panic
+	t.Setenv("APP_ENV", "")
+	mw := New(WithDevSecret()) // explicit override
+	assert.NotNil(t, mw)
+}
+
+// --- SkipCheck regen bug ---
+
+func TestNew_RegeneratedCookieRejectsRequest(t *testing.T) {
+	// Reproduce the audit's bug: an invalid cookie triggered regeneration,
+	// but the same request was being compared against the (now-stale)
+	// invalid cookie, returning a confusing 403 even though a fresh
+	// cookie was just issued. The fix short-circuits with a clear 403
+	// message that tells the client to retry.
+	mw := New(WithSecret(testSecret()))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: "tampered-bogus-cookie"})
+	req.Header.Set("X-CSRF-Token", "tampered-bogus-cookie")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "reissued")
+	// Response carries the fresh cookie so the retry succeeds.
+	assert.NotEmpty(t, rec.Header().Get("Set-Cookie"))
 }
