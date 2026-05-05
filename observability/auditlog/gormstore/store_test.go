@@ -2,6 +2,7 @@ package gormstore
 
 import (
 	"context"
+	"encoding/base64"
 	"io/fs"
 	"testing"
 	"time"
@@ -9,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/infra/sqldb/memdb"
+	"github.com/bds421/rho-kit/observability/auditlog"
 )
 
 func setupStore(t *testing.T) *GormStore {
@@ -107,3 +108,78 @@ func TestDeleteBefore(t *testing.T) {
 func TestNew_PanicsOnNilDB(t *testing.T) {
 	assert.Panics(t, func() { New(nil) })
 }
+
+func TestWithCursorSecret_PanicsOnShortKey(t *testing.T) {
+	assert.Panics(t, func() { WithCursorSecret([]byte("too-short")) })
+}
+
+func TestCursor_RoundTripVerifies(t *testing.T) {
+	s := setupStore(t)
+	ts := time.Now().UTC()
+	cursor := s.encodeCursor(ts, "evt-42")
+	gotTS, gotID, err := s.decodeCursor(cursor)
+	require.NoError(t, err)
+	assert.Equal(t, ts.UnixNano(), gotTS.UnixNano())
+	assert.Equal(t, "evt-42", gotID)
+}
+
+func TestCursor_RejectsTamperedTimestamp(t *testing.T) {
+	s := setupStore(t)
+	cursor := s.encodeCursor(time.Now().UTC(), "evt-1")
+
+	// Decode the payload, change the timestamp to year 3000, re-encode WITHOUT
+	// touching the signature — the verify step must reject it.
+	parts := splitCursor(t, cursor)
+	body, err := base64Decode(parts[0])
+	require.NoError(t, err)
+	tampered := []byte("99999999999999999999|evt-1") // far-future nanos
+	_ = body
+	tamperedCursor := base64Encode(tampered) + "." + parts[1]
+
+	_, _, err = s.decodeCursor(tamperedCursor)
+	require.ErrorIs(t, err, ErrCursorInvalid)
+}
+
+func TestCursor_RejectsCrossSecretCursor(t *testing.T) {
+	// A cursor minted by store-A (one secret) must be rejected by store-B
+	// (different secret). Mirrors the production scenario where two
+	// replicas with different lazily-generated secrets reject each other's
+	// cursors — the warning to set WithCursorSecret in production exists
+	// precisely for this.
+	storeA := setupStore(t)
+	storeB := setupStore(t)
+	cursor := storeA.encodeCursor(time.Now().UTC(), "evt-1")
+	_, _, err := storeB.decodeCursor(cursor)
+	require.ErrorIs(t, err, ErrCursorInvalid)
+}
+
+func TestCursor_RejectsMalformed(t *testing.T) {
+	s := setupStore(t)
+	cases := []string{
+		"",
+		"no-dot",
+		"!!.!!",
+		"YWJj.YWJj", // base64-valid but signature won't match
+	}
+	for _, c := range cases {
+		_, _, err := s.decodeCursor(c)
+		assert.ErrorIs(t, err, ErrCursorInvalid, "input %q", c)
+	}
+}
+
+// splitCursor isolates the payload and signature halves of a signed cursor
+// so the tamper test can rewrite the payload without touching the signature
+// — the exact attack the HMAC defends against.
+func splitCursor(t *testing.T, cursor string) [2]string {
+	t.Helper()
+	for i := 0; i < len(cursor); i++ {
+		if cursor[i] == '.' {
+			return [2]string{cursor[:i], cursor[i+1:]}
+		}
+	}
+	t.Fatalf("malformed cursor %q has no '.'", cursor)
+	return [2]string{}
+}
+
+func base64Encode(b []byte) string         { return base64.RawURLEncoding.EncodeToString(b) }
+func base64Decode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }

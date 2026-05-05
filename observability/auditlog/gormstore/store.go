@@ -2,10 +2,18 @@ package gormstore
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,26 +31,83 @@ func likeEscape(s string) string {
 	return r.Replace(s)
 }
 
-// encodeCursor packs (timestamp, id) into the opaque pagination cursor.
-// Composite cursor is necessary because the query orders by (timestamp DESC,
-// id DESC) — using id alone caused rows to be skipped or duplicated whenever
-// timestamps tied or IDs were not perfectly correlated with timestamps.
-func encodeCursor(ts time.Time, id string) string {
-	return strconv.FormatInt(ts.UnixNano(), 10) + "|" + id
+// ErrCursorInvalid is returned when a cursor is malformed, has been tampered
+// with, or was minted by a different secret. Callers receiving this should
+// reject the request rather than restart pagination from the beginning —
+// silently restarting masks attempted forgeries.
+var ErrCursorInvalid = errors.New("gormstore: invalid or tampered audit cursor")
+
+// encodeCursor packs (timestamp, id) into an HMAC-signed opaque pagination
+// token. Format: base64url(payload) "." base64url(signature) where payload
+// is "{nanos}|{id}". Signing prevents callers from hand-editing the cursor
+// to skip arbitrary spans of the audit trail (the attack the audit calls
+// out — a forged timestamp of "year 3000" would otherwise bypass any
+// page-by-page review).
+//
+// Composite cursor is necessary because the query orders by
+// (timestamp DESC, id DESC) — using id alone caused rows to be skipped or
+// duplicated whenever timestamps tied or IDs were not perfectly correlated
+// with timestamps.
+func (s *GormStore) encodeCursor(ts time.Time, id string) string {
+	payload := strconv.FormatInt(ts.UnixNano(), 10) + "|" + id
+	sig := s.cursorMAC(payload)
+	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-// decodeCursor parses a cursor produced by encodeCursor. Returns (zero, "",
-// error) for malformed input so the caller can fail closed.
-func decodeCursor(cursor string) (time.Time, string, error) {
-	idx := strings.IndexByte(cursor, '|')
+// decodeCursor parses + verifies a cursor produced by encodeCursor. Returns
+// ErrCursorInvalid for malformed input or HMAC mismatch so the caller can
+// fail closed.
+func (s *GormStore) decodeCursor(cursor string) (time.Time, string, error) {
+	idx := strings.IndexByte(cursor, '.')
 	if idx < 0 {
-		return time.Time{}, "", fmt.Errorf("gormstore: invalid cursor format")
+		return time.Time{}, "", ErrCursorInvalid
 	}
-	nanos, err := strconv.ParseInt(cursor[:idx], 10, 64)
+	payloadB64 := cursor[:idx]
+	sigB64 := cursor[idx+1:]
+
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("gormstore: invalid cursor timestamp: %w", err)
+		return time.Time{}, "", ErrCursorInvalid
 	}
-	return time.Unix(0, nanos).UTC(), cursor[idx+1:], nil
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil {
+		return time.Time{}, "", ErrCursorInvalid
+	}
+	expected := s.cursorMAC(string(payload))
+	if subtle.ConstantTimeCompare(sig, expected) != 1 {
+		return time.Time{}, "", ErrCursorInvalid
+	}
+
+	pipeIdx := strings.IndexByte(string(payload), '|')
+	if pipeIdx < 0 {
+		return time.Time{}, "", ErrCursorInvalid
+	}
+	nanos, err := strconv.ParseInt(string(payload[:pipeIdx]), 10, 64)
+	if err != nil {
+		return time.Time{}, "", ErrCursorInvalid
+	}
+	return time.Unix(0, nanos).UTC(), string(payload[pipeIdx+1:]), nil
+}
+
+// cursorMAC returns the HMAC-SHA256 of payload using the store's cursor
+// secret. The first call lazily generates a process-local secret if none
+// was supplied via [WithCursorSecret]; a one-time warning is emitted so
+// operators see that cross-process pagination won't survive restart.
+func (s *GormStore) cursorMAC(payload string) []byte {
+	s.cursorSecretOnce.Do(func() {
+		if s.cursorSecret != nil {
+			return
+		}
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			panic("gormstore: failed to generate cursor secret: " + err.Error())
+		}
+		s.cursorSecret = key
+		slog.Warn("gormstore: no cursor secret configured; generated process-local key (cursors will not survive process restart). Set WithCursorSecret in production for cross-process pagination.")
+	})
+	mac := hmac.New(sha256.New, s.cursorSecret)
+	mac.Write([]byte(payload))
+	return mac.Sum(nil)
 }
 
 // auditEvent is the GORM model for the audit_events table.
@@ -64,14 +129,46 @@ func (auditEvent) TableName() string { return "audit_events" }
 // It implements both [auditlog.Store] and [auditlog.RetentionStore].
 type GormStore struct {
 	db *gorm.DB
+
+	cursorSecretOnce sync.Once
+	cursorSecret     []byte
+}
+
+// Option configures a GormStore.
+type Option func(*GormStore)
+
+// WithCursorSecret sets the HMAC key used to sign pagination cursors.
+// Cursors signed by one process can be verified by another that holds the
+// same secret — required for any deployment where pagination requests may
+// land on different replicas.
+//
+// Without this option, the store generates a per-process random secret on
+// first use and emits a one-time warning. That's safe but means cursors
+// produced by pod A are rejected by pod B; pagination will appear to break
+// after a redeploy or load-balancer rotation.
+//
+// Panics if key is shorter than 32 bytes.
+func WithCursorSecret(key []byte) Option {
+	if len(key) < 32 {
+		panic("gormstore: cursor secret must be at least 32 bytes")
+	}
+	return func(s *GormStore) {
+		dup := make([]byte, len(key))
+		copy(dup, key)
+		s.cursorSecret = dup
+	}
 }
 
 // New creates a GormStore backed by the given database.
-func New(db *gorm.DB) *GormStore {
+func New(db *gorm.DB, opts ...Option) *GormStore {
 	if db == nil {
 		panic("gormstore: db must not be nil")
 	}
-	return &GormStore{db: db}
+	s := &GormStore{db: db}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 
@@ -121,7 +218,7 @@ func (s *GormStore) Query(ctx context.Context, filter auditlog.Filter, cursor st
 		q = q.Where("ip_address = ?", filter.IPAddress)
 	}
 	if cursor != "" {
-		ts, id, err := decodeCursor(cursor)
+		ts, id, err := s.decodeCursor(cursor)
 		if err != nil {
 			return nil, "", err
 		}
@@ -141,7 +238,7 @@ func (s *GormStore) Query(ctx context.Context, filter auditlog.Filter, cursor st
 	var nextCursor string
 	if len(rows) > limit {
 		last := rows[limit-1]
-		nextCursor = encodeCursor(last.Timestamp, last.ID)
+		nextCursor = s.encodeCursor(last.Timestamp, last.ID)
 		rows = rows[:limit]
 	}
 
