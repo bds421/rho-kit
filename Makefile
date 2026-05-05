@@ -10,11 +10,14 @@ WORKSPACE_MODULES := $(shell sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## lint: Run golangci-lint (all workspace modules, parallel)
+## lint: Run golangci-lint sequentially across workspace modules
+# Sequential because golangci-lint v2 uses a shared cache lock that collides
+# with parallel invocations across modules in the same workspace.
 lint:
-	@echo "$(WORKSPACE_MODULES)" | tr ' ' '\n' | xargs -P$$(nproc 2>/dev/null || sysctl -n hw.ncpu) -I{} sh -c \
-		'echo "==> Linting {}" && cd {} && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m' \
-		|| exit 1
+	@for dir in $(WORKSPACE_MODULES); do \
+		echo "==> Linting $$dir"; \
+		(cd $$dir && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m) || exit 1; \
+	done
 
 ## vulncheck: Run Go vulnerability analysis (all workspace modules)
 vulncheck:
