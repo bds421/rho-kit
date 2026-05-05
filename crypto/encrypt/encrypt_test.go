@@ -2,6 +2,7 @@ package encrypt
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
 )
 
@@ -81,24 +82,103 @@ func TestFieldEncryptor_PlaintextPassthrough(t *testing.T) {
 	}
 }
 
-func TestFieldEncryptor_IdempotentEncrypt(t *testing.T) {
+func TestFieldEncryptor_DoubleEncryptYieldsDifferentCiphertext(t *testing.T) {
+	// Renamed + flipped: the previous "idempotent re-encrypt" behaviour was a
+	// security footgun (any user value starting with "enc:v1:" or
+	// "\x00enc:v2:" was stored verbatim). Encrypt now always encrypts; the
+	// safe idempotent path is EncryptIfPlain, which AEAD-verifies.
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatalf("new encryptor: %v", err)
 	}
 
-	original := "password123"
-	first, err := enc.Encrypt(original)
+	first, err := enc.Encrypt("password123")
 	if err != nil {
 		t.Fatalf("first encrypt: %v", err)
 	}
-
 	second, err := enc.Encrypt(first)
 	if err != nil {
 		t.Fatalf("second encrypt: %v", err)
 	}
-	if second != first {
-		t.Fatal("double encryption should be idempotent")
+	if second == first {
+		t.Fatal("Encrypt must always produce fresh ciphertext (no prefix shortcut); use EncryptIfPlain for idempotent re-encrypt")
+	}
+}
+
+func TestFieldEncryptor_EncryptIfPlain_PassesThroughValidCiphertext(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	first, err := enc.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	again, err := enc.EncryptIfPlain(first)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain: %v", err)
+	}
+	if again != first {
+		t.Fatal("EncryptIfPlain must pass through verifiable ciphertext unchanged")
+	}
+}
+
+func TestFieldEncryptor_EncryptIfPlain_RejectsAttackerControlledPrefix(t *testing.T) {
+	// The attack we're defending against: previously, an input like
+	// "enc:v1:not-real" was treated as already-encrypted and stored verbatim.
+	// EncryptIfPlain must AEAD-verify before passing through, so a bogus
+	// prefix gets re-encrypted (and the original attacker value never reaches
+	// storage in plaintext).
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	attackerInput := "enc:v1:" + base64.StdEncoding.EncodeToString([]byte("not-real-ciphertext"))
+	out, err := enc.EncryptIfPlain(attackerInput)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain: %v", err)
+	}
+	if out == attackerInput {
+		t.Fatal("EncryptIfPlain must NOT pass through forged-prefix inputs that fail AEAD verification")
+	}
+	// Round-trips: decrypting the output gives back the original input.
+	got, err := enc.Decrypt(out)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if got != attackerInput {
+		t.Fatalf("round-trip mismatch: got %q, want %q", got, attackerInput)
+	}
+}
+
+func TestFieldEncryptor_EncryptWithContext_AADBindsCiphertextToRow(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	rowAAAD := []byte("users:42:email")
+	rowBAAD := []byte("users:99:email")
+
+	cipherForRowA, err := enc.EncryptWithContext("alice@example.com", rowAAAD)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	// Same AAD round-trips.
+	got, err := enc.DecryptWithContext(cipherForRowA, rowAAAD)
+	if err != nil {
+		t.Fatalf("decrypt with matching AAD: %v", err)
+	}
+	if got != "alice@example.com" {
+		t.Fatalf("round-trip: got %q, want %q", got, "alice@example.com")
+	}
+
+	// Swapping the ciphertext into a different row (different AAD) MUST fail.
+	if _, err := enc.DecryptWithContext(cipherForRowA, rowBAAD); err == nil {
+		t.Fatal("DecryptWithContext must reject ciphertext copied across rows (AAD mismatch)")
 	}
 }
 

@@ -56,17 +56,35 @@ func zeroBytes(b []byte) {
 
 // SealBytes encrypts plaintext using AES-256-GCM and returns
 // [nonce || ciphertext+tag]. A fresh random nonce is generated for each call.
+// Equivalent to [SealBytesAAD] with nil AAD.
 func SealBytes(gcm cipher.AEAD, plaintext []byte) ([]byte, error) {
+	return SealBytesAAD(gcm, plaintext, nil)
+}
+
+// SealBytesAAD encrypts plaintext using AES-256-GCM with associated data
+// (AAD). The AAD is authenticated but not encrypted — it must be supplied
+// identically at Open time. Use this to bind ciphertext to a stable
+// out-of-band identifier (e.g. row primary key, tenant ID, file path) so a
+// ciphertext copy-pasted into a different row fails authentication.
+func SealBytesAAD(gcm cipher.AEAD, plaintext, aad []byte) ([]byte, error) {
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("encrypt: generate nonce: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
 // OpenBytes decrypts ciphertext produced by [SealBytes].
 // Expects the format [nonce || ciphertext+tag].
+// Equivalent to [OpenBytesAAD] with nil AAD.
 func OpenBytes(gcm cipher.AEAD, ciphertext []byte) ([]byte, error) {
+	return OpenBytesAAD(gcm, ciphertext, nil)
+}
+
+// OpenBytesAAD decrypts ciphertext produced by [SealBytesAAD]. The AAD must
+// match the value supplied at Seal time exactly; mismatch produces an
+// authentication error indistinguishable from a tampered ciphertext.
+func OpenBytesAAD(gcm cipher.AEAD, ciphertext, aad []byte) ([]byte, error) {
 	nonceSize := gcm.NonceSize()
 	// Ciphertext must contain at least nonce + authentication tag (overhead).
 	// Without this, gcm.Open would receive an empty or too-short ciphertext
@@ -75,7 +93,7 @@ func OpenBytes(gcm cipher.AEAD, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < minLen {
 		return nil, errors.New("encrypt: ciphertext too short")
 	}
-	plaintext, err := gcm.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	plaintext, err := gcm.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: decrypt: %w", err)
 	}
