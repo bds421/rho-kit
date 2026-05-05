@@ -1,6 +1,15 @@
 // Package debughttp provides HTTP handlers for debugging AMQP message
 // consumption and publishing. Import this package only if you need
 // debug endpoints — it pulls in httpx as a dependency.
+//
+// SECURITY: ConsumeHandler and PublishHandler accept arbitrary input and
+// invoke registered handlers / publish to brokers based on attacker-supplied
+// JSON. They MUST be wrapped with [Guard] before being mounted on any
+// listener that is reachable from outside the operator's debug environment.
+// Guard requires a non-production environment AND an Authenticator (see
+// [BasicAuth] / [AllowFromHeader]). Mounting unguarded handlers is a remote
+// code-execution-equivalent risk for any service that performs side-effecting
+// work in handlers.
 package debughttp
 
 import (

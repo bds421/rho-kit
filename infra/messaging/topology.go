@@ -71,8 +71,13 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 			if b.Retry.MaxRetries < 1 {
 				return fmt.Errorf("binding %q: RetryPolicy.MaxRetries must be >= 1", b.Queue)
 			}
-			if b.Retry.Delay <= 0 {
-				return fmt.Errorf("binding %q: RetryPolicy.Delay must be > 0", b.Queue)
+			// Reject sub-millisecond delays. The amqpbackend topology emits
+			// x-message-ttl as `int64(Delay / time.Millisecond)` which
+			// truncates to 0 for sub-ms inputs — and a 0-TTL retry queue
+			// re-delivers immediately, producing a tight loop on every
+			// transient handler error.
+			if b.Retry.Delay < time.Millisecond {
+				return fmt.Errorf("binding %q: RetryPolicy.Delay must be >= 1ms (got %s); sub-ms delays truncate to 0 in the AMQP TTL", b.Queue, b.Retry.Delay)
 			}
 		}
 	}

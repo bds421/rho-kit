@@ -3,6 +3,7 @@ package amqpbackend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -96,9 +97,21 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 	return nil
 }
 
+// ErrUnroutable indicates the broker accepted the message but no queue was
+// bound to receive it. Callers (outbox/buffered publisher) should treat this
+// as a publish failure so the message is retried after topology is fixed,
+// rather than silently lost.
+var ErrUnroutable = errors.New("amqp: message returned by broker (no route to any queue)")
+
 // publishConfirmed opens a dedicated channel, publishes, waits for the
 // broker confirmation, and closes the channel. Each call is independent —
 // no shared state, no mutex, no head-of-line blocking.
+//
+// Mandatory mode is enabled: messages that cannot be routed to any queue
+// trigger a basic.return from the broker. The amqp091-go library guarantees
+// the return is delivered on NotifyReturn before the corresponding ack, so
+// after WaitContext returns we can non-blockingly check for an unroutable
+// notification and surface it as ErrUnroutable.
 func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey string, pub amqp.Publishing) error {
 	ch, err := p.conn.Channel()
 	if err != nil {
@@ -110,12 +123,17 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 		}
 	}()
 
+	// Buffered(1) so the broker's basic.return frame doesn't block the
+	// channel reader if we're slow to read it.
+	returnCh := make(chan amqp.Return, 1)
+	ch.NotifyReturn(returnCh)
+
 	if err := ch.Confirm(false); err != nil {
 		return fmt.Errorf("enable confirm mode: %w", err)
 	}
 
 	dc, err := ch.PublishWithDeferredConfirmWithContext(ctx,
-		exchange, routingKey, false, false, pub,
+		exchange, routingKey, true /* mandatory */, false, pub,
 	)
 	if err != nil {
 		return fmt.Errorf("publish message: %w", err)
@@ -129,7 +147,16 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 		return fmt.Errorf("message %s was nacked by broker", pub.MessageId)
 	}
 
-	return nil
+	// Non-blocking check: if the broker returned the message as unroutable,
+	// the amqp091-go reader has already delivered it to returnCh by the time
+	// the ack arrives.
+	select {
+	case ret := <-returnCh:
+		return fmt.Errorf("%w: id=%s exchange=%s routing_key=%s reply=%d %s",
+			ErrUnroutable, pub.MessageId, ret.Exchange, ret.RoutingKey, ret.ReplyCode, ret.ReplyText)
+	default:
+		return nil
+	}
 }
 
 // Close is a no-op — channels are opened and closed per-publish.

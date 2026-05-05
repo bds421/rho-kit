@@ -228,7 +228,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 				RoutingKey:   "rk",
 				Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: 0},
 			},
-			errMsg: "Delay must be > 0",
+			errMsg: "Delay must be >= 1ms",
 		},
 		{
 			name: "retry Delay negative",
@@ -239,7 +239,7 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 				RoutingKey:   "rk",
 				Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: -time.Second},
 			},
-			errMsg: "Delay must be > 0",
+			errMsg: "Delay must be >= 1ms",
 		},
 	}
 
