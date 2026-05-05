@@ -38,8 +38,16 @@ type Config struct {
 	Insecure bool
 
 	// SampleRate is the fraction of traces to sample (0.0 to 1.0).
-	// Default 1.0 samples everything. Use lower values in production.
+	// Default is 0.05 (5%) when unset — toolkit defaults are conservative
+	// because the cost of sampling everything (CPU + collector storage)
+	// surprises operators. Set to 1.0 explicitly for development.
 	SampleRate float64
+
+	// EnableBaggage enables OpenTelemetry Baggage propagation. Off by default
+	// because Baggage attaches arbitrary cross-service key/value pairs to
+	// every outgoing request — easy vector for accidental PII propagation
+	// if any handler logs the baggage map.
+	EnableBaggage bool
 }
 
 // Provider wraps a TracerProvider and its shutdown function.
@@ -67,7 +75,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 
 	if cfg.SampleRate <= 0 {
-		cfg.SampleRate = 1.0
+		cfg.SampleRate = 0.05
 	}
 
 	res, err := buildResource(ctx, cfg)
@@ -99,10 +107,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 
 	// Set globals so libraries using otel.Tracer() get the real provider.
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(propagators(cfg.EnableBaggage))
 
 	return &Provider{tp: tp}, nil
 }
@@ -111,11 +116,24 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 func initNoop() (*Provider, error) {
 	tp := sdktrace.NewTracerProvider() // no exporter = noop
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	// Even with tracing disabled, propagate W3C trace headers so downstream
+	// services that DO have tracing enabled see the request graph; just
+	// don't propagate Baggage by default.
+	otel.SetTextMapPropagator(propagators(false))
 	return &Provider{tp: tp}, nil
+}
+
+// propagators returns the configured TextMapPropagator. Baggage is opt-in
+// because it carries arbitrary cross-service KVs and is easy to leak into
+// logs accidentally.
+func propagators(enableBaggage bool) propagation.TextMapPropagator {
+	if enableBaggage {
+		return propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		)
+	}
+	return propagation.TraceContext{}
 }
 
 func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) {

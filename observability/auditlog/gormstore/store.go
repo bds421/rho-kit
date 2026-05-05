@@ -4,12 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/bds421/rho-kit/observability/auditlog"
 )
+
+// likeEscape escapes the LIKE metacharacters %, _, and \ in s so the input
+// is treated as a literal prefix when interpolated into a `LIKE ? ESCAPE '\'`
+// clause. Without this, a caller-controlled filter.Resource of `users/%/secrets`
+// would match any resource path under "users/" — an audit-log information
+// disclosure even though the SQL is parameterised.
+func likeEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// encodeCursor packs (timestamp, id) into the opaque pagination cursor.
+// Composite cursor is necessary because the query orders by (timestamp DESC,
+// id DESC) — using id alone caused rows to be skipped or duplicated whenever
+// timestamps tied or IDs were not perfectly correlated with timestamps.
+func encodeCursor(ts time.Time, id string) string {
+	return strconv.FormatInt(ts.UnixNano(), 10) + "|" + id
+}
+
+// decodeCursor parses a cursor produced by encodeCursor. Returns (zero, "",
+// error) for malformed input so the caller can fail closed.
+func decodeCursor(cursor string) (time.Time, string, error) {
+	idx := strings.IndexByte(cursor, '|')
+	if idx < 0 {
+		return time.Time{}, "", fmt.Errorf("gormstore: invalid cursor format")
+	}
+	nanos, err := strconv.ParseInt(cursor[:idx], 10, 64)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("gormstore: invalid cursor timestamp: %w", err)
+	}
+	return time.Unix(0, nanos).UTC(), cursor[idx+1:], nil
+}
 
 // auditEvent is the GORM model for the audit_events table.
 type auditEvent struct {
@@ -75,7 +109,7 @@ func (s *GormStore) Query(ctx context.Context, filter auditlog.Filter, cursor st
 		q = q.Where("action = ?", filter.Action)
 	}
 	if filter.Resource != "" {
-		q = q.Where("resource LIKE ?", filter.Resource+"%")
+		q = q.Where(`resource LIKE ? ESCAPE '\'`, likeEscape(filter.Resource)+"%")
 	}
 	if !filter.Since.IsZero() {
 		q = q.Where("timestamp >= ?", filter.Since)
@@ -87,7 +121,15 @@ func (s *GormStore) Query(ctx context.Context, filter auditlog.Filter, cursor st
 		q = q.Where("ip_address = ?", filter.IPAddress)
 	}
 	if cursor != "" {
-		q = q.Where("id < ?", cursor)
+		ts, id, err := decodeCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		// Composite (timestamp, id) DESC pagination. Avoid the row-tuple
+		// `(timestamp, id) < (?, ?)` form because not every dialect (notably
+		// older MySQL) supports it consistently; the OR-expanded form below
+		// is dialect-portable.
+		q = q.Where("timestamp < ? OR (timestamp = ? AND id < ?)", ts, ts, id)
 	}
 
 	// Fetch limit+1 to detect if there are more pages.
@@ -98,7 +140,8 @@ func (s *GormStore) Query(ctx context.Context, filter auditlog.Filter, cursor st
 
 	var nextCursor string
 	if len(rows) > limit {
-		nextCursor = rows[limit-1].ID
+		last := rows[limit-1]
+		nextCursor = encodeCursor(last.Timestamp, last.ID)
 		rows = rows[:limit]
 	}
 
