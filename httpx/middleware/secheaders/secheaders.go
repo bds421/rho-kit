@@ -1,6 +1,10 @@
 package secheaders
 
-import "net/http"
+import (
+	"net"
+	"net/http"
+	"strings"
+)
 
 // FrameOption controls the X-Frame-Options header value.
 type FrameOption string
@@ -24,6 +28,8 @@ type config struct {
 	hsts              string
 	cacheControl      string
 	csp               string
+	trustedProxies    []*net.IPNet // for X-Forwarded-Proto trust
+	forceHSTS         bool
 }
 
 // WithFrameOption sets the X-Frame-Options value.
@@ -68,6 +74,29 @@ func WithoutHSTS() Option {
 // Default: "no-store". Set to empty string to disable (let handlers set it).
 func WithCacheControl(value string) Option {
 	return func(c *config) { c.cacheControl = value }
+}
+
+// WithTrustedProxiesForProto enables HSTS to fire when the request arrived
+// over TLS at a trusted proxy (X-Forwarded-Proto: https) even if the
+// connection from the proxy to this service is plaintext. The default
+// `r.TLS != nil` check fails behind any TLS-terminating ingress (the
+// most common Kubernetes / Oathkeeper topology), so without this option
+// HSTS is silently disabled for the majority of production deployments.
+//
+// Pass the same proxy CIDRs you supplied to clientip / ratelimit so all
+// trust decisions agree. Pass nil or an empty slice to revert to the
+// strict r.TLS-only check.
+func WithTrustedProxiesForProto(proxies []*net.IPNet) Option {
+	return func(c *config) { c.trustedProxies = proxies }
+}
+
+// WithForceHSTS enables HSTS unconditionally on every response, regardless
+// of whether r.TLS is set or X-Forwarded-Proto is honoured. Use this when
+// the kit cannot observe the TLS state at all (custom listeners, unusual
+// ingress topologies). Combine with care — sending HSTS over a plaintext
+// origin is harmless but pointless.
+func WithForceHSTS() Option {
+	return func(c *config) { c.forceHSTS = true }
 }
 
 // WithContentSecurityPolicy sets the Content-Security-Policy header.
@@ -121,7 +150,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			if cfg.permissionsPolicy != "" {
 				h.Set("Permissions-Policy", cfg.permissionsPolicy)
 			}
-			if cfg.hsts != "" && r.TLS != nil {
+			if cfg.hsts != "" && shouldSetHSTS(r, &cfg) {
 				h.Set("Strict-Transport-Security", cfg.hsts)
 			}
 			if cfg.cacheControl != "" {
@@ -133,4 +162,42 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// shouldSetHSTS reports whether HSTS should be sent for this request. The
+// default behaviour (r.TLS != nil) is the strict reading of RFC 6797 §7.2,
+// but it fails in the common k8s / Oathkeeper topology where TLS terminates
+// at an ingress. WithTrustedProxiesForProto and WithForceHSTS expand that
+// surface deliberately.
+func shouldSetHSTS(r *http.Request, cfg *config) bool {
+	if cfg.forceHSTS {
+		return true
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if len(cfg.trustedProxies) == 0 {
+		return false
+	}
+	if !isTrustedRemote(r.RemoteAddr, cfg.trustedProxies) {
+		return false
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trusted {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

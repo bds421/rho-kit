@@ -2,6 +2,7 @@ package secheaders
 
 import (
 	crypto_tls "crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -137,5 +138,58 @@ func TestDisableAll(t *testing.T) {
 		if got := rec.Header().Get(h); got != "" {
 			t.Errorf("%s = %q, want empty", h, got)
 		}
+	}
+}
+
+func TestHSTS_BehindTrustedProxyXFP(t *testing.T) {
+	// Audit's k8s/Oathkeeper case: r.TLS == nil, but X-Forwarded-Proto: https
+	// from a trusted proxy IP must enable HSTS. Default behaviour silently
+	// dropped HSTS for the most common ingress topology.
+	_, ipnet, _ := net.ParseCIDR("10.0.0.0/8")
+	handler := New(WithTrustedProxiesForProto([]*net.IPNet{ipnet}))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:9999"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Error("HSTS missing — trusted proxy with XFP=https must enable HSTS")
+	}
+}
+
+func TestHSTS_UntrustedProxyXFPRejected(t *testing.T) {
+	_, ipnet, _ := net.ParseCIDR("10.0.0.0/8")
+	handler := New(WithTrustedProxiesForProto([]*net.IPNet{ipnet}))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Same XFP=https header but RemoteAddr is OUTSIDE the trusted CIDR —
+	// must be ignored.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.1:9999"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS = %q on untrusted-proxy XFP, want empty", got)
+	}
+}
+
+func TestHSTS_ForceHSTS(t *testing.T) {
+	handler := New(WithForceHSTS())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Error("HSTS missing despite WithForceHSTS")
 	}
 }
