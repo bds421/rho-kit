@@ -90,8 +90,30 @@ func (b *LocalBackend) Put(_ context.Context, key string, r io.Reader, meta stor
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("localbackend: rename %q: %w", key, err)
 	}
+	// rename(2) on Linux is durable across crashes only if the containing
+	// directory is also fsynced. Without this step a crash after rename but
+	// before the directory entry is flushed can leave the file with stale or
+	// zero contents — silent data loss for an operation that just returned ok.
+	if err := fsyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("localbackend: fsync dir for %q: %w", key, err)
+	}
 
 	return nil
+}
+
+// fsyncDir opens dir read-only and calls Sync on it. Best-effort on platforms
+// where directory fsync isn't required (or is a no-op).
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 // Get opens <root>/<key> for reading. Caller must close the returned ReadCloser.

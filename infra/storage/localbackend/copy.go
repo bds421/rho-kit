@@ -63,6 +63,9 @@ func (b *LocalBackend) Copy(_ context.Context, srcKey, dstKey string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("localbackend: copy rename %q: %w", dstKey, err)
 	}
+	if err := fsyncDir(filepath.Dir(dstPath)); err != nil {
+		return fmt.Errorf("localbackend: copy fsync dir for %q: %w", dstKey, err)
+	}
 
 	return nil
 }
