@@ -1,12 +1,15 @@
 // Package pgstore provides a PostgreSQL-backed implementation of the
 // idempotency.Store interface for deployments without Redis.
 //
-// Locking uses INSERT ... ON CONFLICT with conditional update for atomic
-// lock acquisition. Cached responses and locks are stored in a single
-// table with TTL-based expiration.
+// Locking uses INSERT ... ON CONFLICT with a conditional update for atomic
+// lock acquisition. Each row carries an owner_token (set by TryLock; required
+// for Set/Unlock) and a fingerprint of the request that originally claimed
+// the slot, so the store can reject reuse of the same key with a different
+// body — see [idempotency.Store] for the full contract.
 package pgstore
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -36,11 +39,6 @@ func WithTableName(name string) Option {
 
 // PgStore implements idempotency.Store using PostgreSQL.
 // Safe for concurrent use across multiple service instances.
-//
-// The store uses a single table for both cached responses and processing
-// locks. Locks are rows with a NULL response_body; cached responses have
-// the full response populated. This avoids a separate locks table and
-// simplifies cleanup.
 type PgStore struct {
 	db    *sql.DB
 	table string
@@ -67,30 +65,34 @@ func New(db *sql.DB, opts ...Option) *PgStore {
 	return s
 }
 
-// Get returns a cached response for the key, or (nil, nil) if not found
-// or expired.
-func (s *PgStore) Get(ctx context.Context, key string) (*idempotency.CachedResponse, error) {
+// Get returns a cached response for the key, applying fingerprint comparison
+// when a non-nil fingerprint is supplied.
+func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	query := fmt.Sprintf(
-		`SELECT status_code, headers, response_body FROM %s
+		`SELECT status_code, headers, response_body, fingerprint FROM %s
 		 WHERE key = $1 AND response_body IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
 
 	var statusCode int
-	var headersJSON, body []byte
+	var headersJSON, body, storedFP []byte
 
-	err := s.db.QueryRowContext(ctx, query, key).Scan(&statusCode, &headersJSON, &body)
+	err := s.db.QueryRowContext(ctx, query, key).Scan(&statusCode, &headersJSON, &body, &storedFP)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("pgstore: get %q: %w", key, err)
+		return nil, false, fmt.Errorf("pgstore: get %q: %w", key, err)
+	}
+
+	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
+		return nil, true, nil
 	}
 
 	var headers map[string][]string
 	if len(headersJSON) > 0 {
 		if err := json.Unmarshal(headersJSON, &headers); err != nil {
-			return nil, fmt.Errorf("pgstore: unmarshal headers %q: %w", key, err)
+			return nil, false, fmt.Errorf("pgstore: unmarshal headers %q: %w", key, err)
 		}
 	}
 
@@ -98,76 +100,108 @@ func (s *PgStore) Get(ctx context.Context, key string) (*idempotency.CachedRespo
 		StatusCode: statusCode,
 		Headers:    headers,
 		Body:       body,
-	}, nil
+	}, false, nil
 }
 
-// Set stores a response for the key with the given TTL.
-// This replaces the lock row (if any) with the full cached response.
-func (s *PgStore) Set(ctx context.Context, key string, resp idempotency.CachedResponse, ttl time.Duration) error {
+// Set replaces the lock row with the cached response. Returns
+// [idempotency.ErrLockLost] if the caller's token no longer matches the
+// current row's owner_token (TTL expired and another caller acquired).
+func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
 	headersJSON, err := json.Marshal(resp.Headers)
 	if err != nil {
 		return fmt.Errorf("pgstore: marshal headers: %w", err)
 	}
 
 	query := fmt.Sprintf(
-		`INSERT INTO %s (key, status_code, headers, response_body, expires_at)
-		 VALUES ($1, $2, $3, $4, now() + $5::interval)
-		 ON CONFLICT (key) DO UPDATE SET
-		   status_code = EXCLUDED.status_code,
-		   headers = EXCLUDED.headers,
-		   response_body = EXCLUDED.response_body,
-		   expires_at = EXCLUDED.expires_at`,
+		`UPDATE %s SET
+		   status_code   = $1,
+		   headers       = $2,
+		   response_body = $3,
+		   expires_at    = now() + $4::interval
+		 WHERE key = $5 AND owner_token = $6 AND expires_at > now()`,
 		s.table,
 	)
 
-	_, err = s.db.ExecContext(ctx, query, key, resp.StatusCode, headersJSON, resp.Body, intervalSeconds(ttl))
+	result, err := s.db.ExecContext(ctx, query,
+		resp.StatusCode, headersJSON, resp.Body, intervalSeconds(ttl), key, token)
 	if err != nil {
 		return fmt.Errorf("pgstore: set %q: %w", key, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("pgstore: set %q rows affected: %w", key, err)
+	}
+	if rows == 0 {
+		return idempotency.ErrLockLost
 	}
 	return nil
 }
 
-// TryLock attempts to acquire a processing lock for the key.
-// Returns true if the lock was acquired, false if already locked.
-//
-// Uses INSERT ... ON CONFLICT with a conditional update. If the row
-// exists and is not expired, the update is skipped (lock not acquired).
-// Expired rows are reclaimed by nulling out any stale cached response.
-func (s *PgStore) TryLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+// TryLock implements the contract from [idempotency.Store.TryLock]. The
+// fingerprint is stored alongside the owner_token so subsequent TryLock
+// calls with a *different* fingerprint can be rejected with
+// fingerprintMismatch=true.
+func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	token := idempotency.GenerateToken()
+
 	query := fmt.Sprintf(
-		`INSERT INTO %s (key, expires_at)
-		 VALUES ($1, now() + $2::interval)
+		`INSERT INTO %s (key, owner_token, fingerprint, expires_at)
+		 VALUES ($1, $2, $3, now() + $4::interval)
 		 ON CONFLICT (key) DO UPDATE SET
-		   expires_at = now() + $2::interval,
-		   status_code = NULL,
-		   headers = NULL,
+		   owner_token   = $2,
+		   fingerprint   = $3,
+		   expires_at    = now() + $4::interval,
+		   status_code   = NULL,
+		   headers       = NULL,
 		   response_body = NULL
 		 WHERE %s.expires_at <= now()`,
 		s.table, s.table,
 	)
 
-	result, err := s.db.ExecContext(ctx, query, key, intervalSeconds(ttl))
+	result, err := s.db.ExecContext(ctx, query, key, token, fingerprint, intervalSeconds(ttl))
 	if err != nil {
-		return false, fmt.Errorf("pgstore: lock %q: %w", key, err)
+		return "", false, false, fmt.Errorf("pgstore: lock %q: %w", key, err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("pgstore: lock %q rows affected: %w", key, err)
+		return "", false, false, fmt.Errorf("pgstore: lock %q rows affected: %w", key, err)
+	}
+	if rows == 1 {
+		return token, false, true, nil
 	}
 
-	// rows == 1 means we either inserted a new row or updated an expired one.
-	return rows == 1, nil
+	// Acquisition failed because the row exists and is not expired. Inspect
+	// the existing fingerprint to distinguish "concurrent retry, same body"
+	// from "different body, 422".
+	var storedFP []byte
+	err = s.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT fingerprint FROM %s WHERE key = $1 AND expires_at > now()`, s.table),
+		key,
+	).Scan(&storedFP)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Race: row TTL expired between our INSERT and our SELECT. The
+			// next TryLock will succeed.
+			return "", false, false, nil
+		}
+		return "", false, false, fmt.Errorf("pgstore: inspect %q: %w", key, err)
+	}
+	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
+		return "", true, false, nil
+	}
+	return "", false, false, nil
 }
 
-// Unlock releases the processing lock for the key by deleting the row
-// (only if it has no cached response yet — i.e., still just a lock).
-func (s *PgStore) Unlock(ctx context.Context, key string) error {
+// Unlock releases the processing lock. Best-effort: token mismatch is a
+// silent no-op (returns nil) because Unlock runs in panic-cleanup paths
+// where surfacing lock-loss would mask the original panic.
+func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
 	query := fmt.Sprintf(
-		`DELETE FROM %s WHERE key = $1 AND response_body IS NULL`,
+		`DELETE FROM %s WHERE key = $1 AND owner_token = $2 AND response_body IS NULL`,
 		s.table,
 	)
-	_, err := s.db.ExecContext(ctx, query, key)
+	_, err := s.db.ExecContext(ctx, query, key, token)
 	if err != nil {
 		return fmt.Errorf("pgstore: unlock %q: %w", key, err)
 	}

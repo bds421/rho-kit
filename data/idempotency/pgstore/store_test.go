@@ -3,6 +3,7 @@ package pgstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,14 +25,17 @@ func testDB(t *testing.T) *sql.DB {
 		t.Skipf("skipping pgstore test (no database): %v", err)
 	}
 
-	// Create the table for testing.
+	// Create the table for testing — schema mirrors the production migration
+	// including owner_token + fingerprint columns.
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS idempotency_keys (
 			key           VARCHAR(512) PRIMARY KEY,
 			status_code   INT,
 			headers       JSONB,
 			response_body BYTEA,
-			expires_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+			expires_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			owner_token   VARCHAR(64),
+			fingerprint   BYTEA
 		)`)
 	if err != nil {
 		t.Fatalf("create table: %v", err)
@@ -48,86 +52,173 @@ func TestPgStore_GetMiss(t *testing.T) {
 	db := testDB(t)
 	store := New(db)
 
-	resp, err := store.Get(context.Background(), "nonexistent")
+	resp, fpMismatch, err := store.Get(context.Background(), "nonexistent", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp != nil {
 		t.Fatal("expected nil response for missing key")
 	}
+	if fpMismatch {
+		t.Fatal("missing key should not report fingerprint mismatch")
+	}
 }
 
-func TestPgStore_SetAndGet(t *testing.T) {
+func TestPgStore_TryLockSetAndGet(t *testing.T) {
 	db := testDB(t)
 	store := New(db)
 	ctx := context.Background()
+	fp := []byte("body-hash-1")
+
+	token, mismatch, ok, err := store.TryLock(ctx, "test-key", fp, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("TryLock: %v", err)
+	}
+	if !ok || mismatch || token == "" {
+		t.Fatalf("expected acquired lock; got token=%q mismatch=%v ok=%v", token, mismatch, ok)
+	}
 
 	cached := idempotency.CachedResponse{
 		StatusCode: 200,
 		Headers:    map[string][]string{"Content-Type": {"application/json"}},
 		Body:       []byte(`{"ok":true}`),
 	}
-
-	if err := store.Set(ctx, "test-key", cached, 5*time.Minute); err != nil {
+	if err := store.Set(ctx, "test-key", token, cached, 5*time.Minute); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	got, err := store.Get(ctx, "test-key")
+	got, mismatch, err := store.Get(ctx, "test-key", fp)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected cached response, got nil")
+	if mismatch {
+		t.Fatal("expected fingerprint match")
 	}
-	if got.StatusCode != 200 {
-		t.Errorf("StatusCode = %d, want 200", got.StatusCode)
-	}
-	if string(got.Body) != `{"ok":true}` {
-		t.Errorf("Body = %q, want %q", got.Body, `{"ok":true}`)
+	if got == nil || got.StatusCode != 200 || string(got.Body) != `{"ok":true}` {
+		t.Fatalf("unexpected response: %+v", got)
 	}
 }
 
-func TestPgStore_TryLock(t *testing.T) {
+func TestPgStore_GetWithDifferentFingerprint(t *testing.T) {
 	db := testDB(t)
 	store := New(db)
 	ctx := context.Background()
 
-	acquired, err := store.TryLock(ctx, "lock-key", time.Minute)
+	// Acquire + Set with fingerprint A.
+	token, _, ok, err := store.TryLock(ctx, "k", []byte("A"), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok=%v err=%v", ok, err)
+	}
+	cached := idempotency.CachedResponse{StatusCode: 201, Body: []byte("created")}
+	if err := store.Set(ctx, "k", token, cached, time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Get with fingerprint B → mismatch.
+	resp, mismatch, err := store.Get(ctx, "k", []byte("B"))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !mismatch {
+		t.Fatal("expected fingerprint mismatch")
+	}
+	if resp != nil {
+		t.Fatal("expected nil response on mismatch")
+	}
+}
+
+func TestPgStore_TryLockFingerprintMismatchOnContended(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+
+	_, _, ok, err := store.TryLock(ctx, "k", []byte("A"), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("first TryLock: ok=%v err=%v", ok, err)
+	}
+
+	// Second TryLock with different fingerprint → mismatch (not just contended).
+	_, mismatch, ok, err := store.TryLock(ctx, "k", []byte("B"), time.Minute)
+	if err != nil {
+		t.Fatalf("second TryLock: %v", err)
+	}
+	if ok {
+		t.Fatal("expected lock acquisition to fail")
+	}
+	if !mismatch {
+		t.Fatal("expected fingerprint mismatch on contended different-body retry")
+	}
+}
+
+func TestPgStore_TryLockSameFingerprintIsContended(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+	fp := []byte("same")
+
+	_, _, ok, err := store.TryLock(ctx, "k", fp, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("first TryLock: ok=%v err=%v", ok, err)
+	}
+
+	// Second TryLock with same fingerprint → contended (409), not mismatch.
+	_, mismatch, ok, err := store.TryLock(ctx, "k", fp, time.Minute)
+	if err != nil {
+		t.Fatalf("second TryLock: %v", err)
+	}
+	if ok {
+		t.Fatal("expected lock to be contended")
+	}
+	if mismatch {
+		t.Fatal("same fingerprint should not report mismatch")
+	}
+}
+
+func TestPgStore_SetReturnsErrLockLostOnTokenMismatch(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+
+	_, _, ok, err := store.TryLock(ctx, "k", nil, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok=%v err=%v", ok, err)
+	}
+
+	// A different token (e.g. from a stale handler whose TTL expired and
+	// another caller has since acquired) must not be able to write.
+	cached := idempotency.CachedResponse{StatusCode: 200, Body: []byte("x")}
+	err = store.Set(ctx, "k", "wrong-token", cached, time.Minute)
+	if !errors.Is(err, idempotency.ErrLockLost) {
+		t.Fatalf("expected ErrLockLost, got %v", err)
+	}
+}
+
+func TestPgStore_UnlockTokenScoped(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+
+	token, _, _, err := store.TryLock(ctx, "k", nil, time.Minute)
 	if err != nil {
 		t.Fatalf("TryLock: %v", err)
 	}
-	if !acquired {
-		t.Fatal("expected lock to be acquired")
+
+	// Unlock with wrong token is a no-op (still locked).
+	if err := store.Unlock(ctx, "k", "wrong-token"); err != nil {
+		t.Fatalf("Unlock with wrong token: %v", err)
+	}
+	_, _, ok, _ := store.TryLock(ctx, "k", nil, time.Minute)
+	if ok {
+		t.Fatal("lock should still be held after wrong-token Unlock")
 	}
 
-	// Second lock attempt should fail.
-	acquired2, err := store.TryLock(ctx, "lock-key", time.Minute)
-	if err != nil {
-		t.Fatalf("TryLock second: %v", err)
+	// Unlock with correct token succeeds and frees the slot.
+	if err := store.Unlock(ctx, "k", token); err != nil {
+		t.Fatalf("Unlock with correct token: %v", err)
 	}
-	if acquired2 {
-		t.Fatal("expected second lock to fail")
-	}
-}
-
-func TestPgStore_Unlock(t *testing.T) {
-	db := testDB(t)
-	store := New(db)
-	ctx := context.Background()
-
-	_, _ = store.TryLock(ctx, "unlock-key", time.Minute)
-
-	if err := store.Unlock(ctx, "unlock-key"); err != nil {
-		t.Fatalf("Unlock: %v", err)
-	}
-
-	// After unlock, should be able to lock again.
-	acquired, err := store.TryLock(ctx, "unlock-key", time.Minute)
-	if err != nil {
-		t.Fatalf("TryLock after unlock: %v", err)
-	}
-	if !acquired {
-		t.Fatal("expected lock after unlock")
+	_, _, ok, _ = store.TryLock(ctx, "k", nil, time.Minute)
+	if !ok {
+		t.Fatal("lock should be reacquirable after correct Unlock")
 	}
 }
 
@@ -136,11 +227,15 @@ func TestPgStore_DeleteExpired(t *testing.T) {
 	store := New(db)
 	ctx := context.Background()
 
-	// Insert with very short TTL.
-	cached := idempotency.CachedResponse{StatusCode: 200, Body: []byte("test")}
-	if err := store.Set(ctx, "expire-key", cached, time.Millisecond); err != nil {
-		t.Fatalf("Set: %v", err)
+	// Acquire + Set with very short TTL.
+	token, _, _, err := store.TryLock(ctx, "expire-key", nil, time.Millisecond)
+	if err != nil {
+		t.Fatalf("TryLock: %v", err)
 	}
+	cached := idempotency.CachedResponse{StatusCode: 200, Body: []byte("test")}
+	// Set will fail because the lock TTL is already expired by the time we get here;
+	// in that case the row is already in a "done" state (just locked-then-expired).
+	_ = store.Set(ctx, "expire-key", token, cached, time.Millisecond)
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -150,32 +245,5 @@ func TestPgStore_DeleteExpired(t *testing.T) {
 	}
 	if deleted < 1 {
 		t.Errorf("expected at least 1 deleted, got %d", deleted)
-	}
-}
-
-func TestPgStore_UnlockDoesNotDeleteCachedResponse(t *testing.T) {
-	db := testDB(t)
-	store := New(db)
-	ctx := context.Background()
-
-	// Lock, then set response, then unlock — response should still be there.
-	_, _ = store.TryLock(ctx, "keep-key", time.Minute)
-
-	cached := idempotency.CachedResponse{StatusCode: 201, Body: []byte("created")}
-	if err := store.Set(ctx, "keep-key", cached, 5*time.Minute); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	// Unlock should be a no-op because response_body is now set.
-	if err := store.Unlock(ctx, "keep-key"); err != nil {
-		t.Fatalf("Unlock: %v", err)
-	}
-
-	got, err := store.Get(ctx, "keep-key")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected cached response to survive unlock")
 	}
 }

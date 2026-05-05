@@ -1,19 +1,26 @@
-// Package idempotencystore provides a Redis-backed implementation of the
+// Package redisstore provides a Redis-backed implementation of the
 // idempotency.Store interface for multi-instance deployments.
 //
-// Keys are stored as JSON values with a TTL. Processing locks use Redis
-// SET NX with a random token and Lua-based conditional delete to ensure
-// only the lock owner can release it.
+// Each lock is a Redis string whose value encodes both the owner token and
+// the request fingerprint, separated by ':'. SET NX gives us atomic acquire;
+// a Lua script handles compare-then-replace for both Set and Unlock so the
+// caller's token is required to mutate or release the slot.
+//
+// Cached responses are stored as a JSON envelope under the same key, with
+// the fingerprint embedded so Get can detect "same key, different body"
+// reuse and return [idempotency.ErrLockLost] is reserved for token-mismatch
+// on Set; the Get / TryLock paths surface body-mismatch via the
+// `fingerprintMismatch` return value per the [idempotency.Store] contract.
 package redisstore
 
 import (
+	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -21,11 +28,32 @@ import (
 	"github.com/bds421/rho-kit/data/idempotency"
 )
 
-// unlockScript atomically releases the lock only if the caller still owns it.
+// setIfLockedScript atomically replaces the lock value with the cached
+// response envelope iff the caller still owns the lock.
 //
-//	KEYS[1] = lock key
-//	ARGV[1] = owner token
-var unlockScript = goredis.NewScript(`
+// Returns "OK" on success, "LOST" on token mismatch (caller must surface
+// idempotency.ErrLockLost).
+//
+//	KEYS[1] = key
+//	ARGV[1] = expected lock value (token:fingerprintB64)
+//	ARGV[2] = new payload (envelope JSON)
+//	ARGV[3] = TTL in milliseconds
+var setIfLockedScript = goredis.NewScript(`
+local cur = redis.call("GET", KEYS[1])
+if cur == false or cur ~= ARGV[1] then
+	return "LOST"
+end
+redis.call("SET", KEYS[1], ARGV[2], "PX", tonumber(ARGV[3]))
+return "OK"
+`)
+
+// unlockIfOwnerScript atomically deletes the lock iff the caller still owns
+// it. Returns 1 on successful DEL, 0 on token mismatch — the wrapper treats
+// both as success because Unlock is best-effort cleanup.
+//
+//	KEYS[1] = key
+//	ARGV[1] = expected lock value (token:fingerprintB64)
+var unlockIfOwnerScript = goredis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
 	return redis.call("DEL", KEYS[1])
 end
@@ -44,16 +72,11 @@ func WithKeyPrefix(prefix string) Option {
 	return func(s *RedisStore) { s.prefix = prefix }
 }
 
-// RedisStore implements idempotency.Store using Redis.
-// Safe for concurrent use across multiple service instances.
+// RedisStore implements idempotency.Store using Redis. Safe for concurrent
+// use across processes.
 type RedisStore struct {
 	client goredis.UniversalClient
 	prefix string
-
-	// mu protects tokens. Each goroutine (request) acquires a lock for a
-	// unique idempotency key, so contention is low.
-	mu     sync.Mutex
-	tokens map[string]string // lockKey → token
 }
 
 // New creates a RedisStore backed by the given Redis client.
@@ -61,7 +84,6 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 	s := &RedisStore{
 		client: client,
 		prefix: "idempotency:",
-		tokens: make(map[string]string),
 	}
 	for _, o := range opts {
 		o(s)
@@ -69,81 +91,193 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 	return s
 }
 
-func (s *RedisStore) dataKey(key string) string { return s.prefix + key }
-func (s *RedisStore) lockKey(key string) string { return s.prefix + key + ":lock" }
+func (s *RedisStore) k(key string) string { return s.prefix + key }
 
-// Get returns a cached response for the key, or (nil, nil) if not found.
-func (s *RedisStore) Get(ctx context.Context, key string) (*idempotency.CachedResponse, error) {
-	data, err := s.client.Get(ctx, s.dataKey(key)).Bytes()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("idempotencystore: get %q: %w", key, err)
-	}
-	var resp idempotency.CachedResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("idempotencystore: unmarshal %q: %w", key, err)
-	}
-	return &resp, nil
+// envelope is the JSON payload stored under a key once a response has been
+// cached. The leading lock value (token:fingerprint) is overwritten with
+// this envelope by setIfLockedScript.
+type envelope struct {
+	Marker      string                     `json:"_m"` // "resp" — distinguishes from a lock value
+	Fingerprint []byte                     `json:"fp,omitempty"`
+	Response    idempotency.CachedResponse `json:"resp"`
 }
 
-// Set stores a response for the key with the given TTL.
-func (s *RedisStore) Set(ctx context.Context, key string, resp idempotency.CachedResponse, ttl time.Duration) error {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("idempotencystore: marshal: %w", err)
+const lockMarker = "lock:"
+const respMarker = "resp"
+
+// encodeLockValue produces the value stored under the key while a lock is
+// held. Format: "lock:" + token + ":" + base64(fingerprint).
+func encodeLockValue(token string, fingerprint []byte) string {
+	return lockMarker + token + ":" + base64.RawStdEncoding.EncodeToString(fingerprint)
+}
+
+// decodeLockValue parses a lock value. Returns ok=false if the value isn't a
+// lock (e.g. it's the response envelope JSON).
+func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
+	if !strings.HasPrefix(v, lockMarker) {
+		return "", nil, false
 	}
-	if err := s.client.Set(ctx, s.dataKey(key), data, ttl).Err(); err != nil {
+	rest := v[len(lockMarker):]
+	idx := strings.IndexByte(rest, ':')
+	if idx < 0 {
+		return "", nil, false
+	}
+	token = rest[:idx]
+	fp, err := base64.RawStdEncoding.DecodeString(rest[idx+1:])
+	if err != nil {
+		return "", nil, false
+	}
+	return token, fp, true
+}
+
+// Get returns a cached response and applies fingerprint comparison if a
+// non-nil fingerprint is supplied.
+func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	data, err := s.client.Get(ctx, s.k(key)).Bytes()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("idempotencystore: get %q: %w", key, err)
+	}
+	// Distinguish between a lock value (in-flight) and a response envelope.
+	if strings.HasPrefix(string(data), lockMarker) {
+		// Lock present; fingerprint check still applies so a Get-only caller
+		// can detect mismatched-body reuse in the contended state.
+		_, fp, ok := decodeLockValue(string(data))
+		if ok && fingerprint != nil && len(fp) > 0 && !bytes.Equal(fp, fingerprint) {
+			return nil, true, nil
+		}
+		return nil, false, nil
+	}
+
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, false, fmt.Errorf("idempotencystore: unmarshal %q: %w", key, err)
+	}
+	if env.Marker != respMarker {
+		// Unrecognised payload — treat as miss to avoid silently replaying
+		// arbitrary bytes.
+		return nil, false, nil
+	}
+	if fingerprint != nil && env.Fingerprint != nil && !bytes.Equal(env.Fingerprint, fingerprint) {
+		return nil, true, nil
+	}
+	resp := env.Response
+	return &resp, false, nil
+}
+
+// TryLock implements the contract from [idempotency.Store.TryLock].
+func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	token := idempotency.GenerateToken()
+	value := encodeLockValue(token, fingerprint)
+
+	ok, err := s.client.SetNX(ctx, s.k(key), value, ttl).Result()
+	if err != nil {
+		return "", false, false, fmt.Errorf("idempotencystore: lock %q: %w", key, err)
+	}
+	if ok {
+		return token, false, true, nil
+	}
+
+	// SETNX failed — inspect the existing value to distinguish "same
+	// fingerprint, contended" from "different fingerprint, conflict".
+	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			// Race: TTL expired between SETNX and GET. Caller will retry.
+			return "", false, false, nil
+		}
+		return "", false, false, fmt.Errorf("idempotencystore: inspect %q: %w", key, err)
+	}
+
+	// Existing slot is a lock — compare fingerprints from the lock value.
+	if strings.HasPrefix(string(existing), lockMarker) {
+		_, fp, ok := decodeLockValue(string(existing))
+		if !ok {
+			return "", false, false, nil
+		}
+		if fingerprint != nil && len(fp) > 0 && !bytes.Equal(fp, fingerprint) {
+			return "", true, false, nil
+		}
+		return "", false, false, nil
+	}
+
+	// Existing slot is a cached response — compare fingerprints from the
+	// envelope.
+	var env envelope
+	if err := json.Unmarshal(existing, &env); err != nil {
+		return "", false, false, nil
+	}
+	if fingerprint != nil && env.Fingerprint != nil && !bytes.Equal(env.Fingerprint, fingerprint) {
+		return "", true, false, nil
+	}
+	return "", false, false, nil
+}
+
+// Set replaces the lock value with the response envelope, atomically
+// requiring that the caller still holds the lock.
+func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	// We need the same fingerprint that was passed at TryLock time so the
+	// envelope embeds it. Recover it by reading the lock value back.
+	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return idempotency.ErrLockLost
+		}
+		return fmt.Errorf("idempotencystore: read lock %q: %w", key, err)
+	}
+	curToken, fp, ok := decodeLockValue(string(existing))
+	if !ok || curToken != token {
+		return idempotency.ErrLockLost
+	}
+
+	env := envelope{
+		Marker:      respMarker,
+		Fingerprint: fp,
+		Response:    resp,
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("idempotencystore: marshal %q: %w", key, err)
+	}
+	expectedLockValue := encodeLockValue(token, fp)
+	result, err := setIfLockedScript.Run(ctx, s.client,
+		[]string{s.k(key)},
+		expectedLockValue,
+		payload,
+		ttl.Milliseconds(),
+	).Text()
+	if err != nil {
 		return fmt.Errorf("idempotencystore: set %q: %w", key, err)
+	}
+	if result != "OK" {
+		return idempotency.ErrLockLost
 	}
 	return nil
 }
 
-// TryLock attempts to acquire a processing lock for the key using SET NX
-// with a random token. Returns true if the lock was acquired. The token is
-// stored internally so that only this caller can release it via Unlock.
-func (s *RedisStore) TryLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	token := generateToken()
-	lk := s.lockKey(key)
-	ok, err := s.client.SetNX(ctx, lk, token, ttl).Result()
+// Unlock releases the processing lock under the caller's token. Token
+// mismatch is silently ignored (best-effort cleanup, e.g. on handler panic).
+func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
+	// We don't know the fingerprint here — but the lock value encoding is
+	// "lock:token:b64fp", so we read once to recover the original value.
+	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
 	if err != nil {
-		return false, fmt.Errorf("idempotencystore: lock %q: %w", key, err)
+		if errors.Is(err, goredis.Nil) {
+			return nil
+		}
+		return fmt.Errorf("idempotencystore: read lock %q: %w", key, err)
 	}
-	if ok {
-		s.mu.Lock()
-		s.tokens[lk] = token
-		s.mu.Unlock()
-	}
-	return ok, nil
-}
-
-// Unlock releases the processing lock for the key, but only if the caller
-// still owns it (token matches). This prevents one processor from deleting
-// a lock that was acquired by another after TTL expiration.
-func (s *RedisStore) Unlock(ctx context.Context, key string) error {
-	lk := s.lockKey(key)
-	s.mu.Lock()
-	token := s.tokens[lk]
-	delete(s.tokens, lk)
-	s.mu.Unlock()
-
-	if token == "" {
-		// No token — lock was never acquired or already released.
+	curToken, fp, ok := decodeLockValue(string(existing))
+	if !ok || curToken != token {
+		// Either it's already a response envelope (Set ran), or someone
+		// else holds the lock now. Either way, nothing for us to do.
 		return nil
 	}
-
-	_, err := unlockScript.Run(ctx, s.client, []string{lk}, token).Result()
-	if err != nil && !errors.Is(err, goredis.Nil) {
+	expectedLockValue := encodeLockValue(token, fp)
+	if _, err := unlockIfOwnerScript.Run(ctx, s.client, []string{s.k(key)}, expectedLockValue).Result(); err != nil && !errors.Is(err, goredis.Nil) {
 		return fmt.Errorf("idempotencystore: unlock %q: %w", key, err)
 	}
 	return nil
-}
-
-func generateToken() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("idempotencystore: failed to generate token: " + err.Error())
-	}
-	return hex.EncodeToString(b)
 }

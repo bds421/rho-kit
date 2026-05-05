@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,8 +14,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/httpx"
 	idem "github.com/bds421/rho-kit/data/idempotency"
+	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/observability/promutil"
 )
 
@@ -68,6 +69,13 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
+// maxFingerprintBodySize is the largest request body we'll buffer to compute
+// a fingerprint. Bodies larger than this are not fingerprinted — the
+// middleware degrades to "no body comparison" rather than blocking the
+// request, on the assumption that very large payloads are the wrong shape
+// for idempotent retry semantics anyway.
+const maxFingerprintBodySize = 1 << 20 // 1 MiB
+
 type config struct {
 	userExtractor   func(*http.Request) string
 	ttl             time.Duration
@@ -75,6 +83,7 @@ type config struct {
 	requiredMethods map[string]bool
 	logger          *slog.Logger
 	metrics         *Metrics
+	fingerprintBody bool
 }
 
 // WithTTL sets the cache TTL for stored responses. Default: 24h.
@@ -115,6 +124,20 @@ func WithRequiredMethods(methods ...string) Option {
 			c.requiredMethods[m] = true
 		}
 	}
+}
+
+// WithBodyFingerprint enables request-body fingerprinting. When enabled, the
+// middleware buffers the request body (up to maxFingerprintBodySize), hashes
+// it with SHA-256, and passes the digest to the Store. If a subsequent
+// request reuses the same Idempotency-Key with a *different* body, the Store
+// reports a mismatch and the middleware returns 422 Unprocessable Entity —
+// the standard Stripe-style mitigation against "client retried with mutated
+// body" silently corrupting state.
+//
+// Off by default for backward compatibility. Enable in any new deployment;
+// it costs one SHA-256 hash + a buffered body per write request.
+func WithBodyFingerprint() Option {
+	return func(c *config) { c.fingerprintBody = true }
 }
 
 // defaultConfig returns the default middleware configuration.
@@ -172,12 +195,36 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			}
 			key := fingerprintKey(r.Method, r.URL.Path, rawKey, userID)
 
-			cached, err := store.Get(r.Context(), key)
+			var bodyFingerprint []byte
+			if cfg.fingerprintBody {
+				fp, body, fpErr := readAndFingerprintBody(r)
+				if fpErr != nil {
+					if cfg.metrics != nil {
+						cfg.metrics.errors.Inc()
+					}
+					httpx.WriteError(w, http.StatusBadRequest, "could not read request body")
+					return
+				}
+				bodyFingerprint = fp
+				// Replace the request body so the downstream handler can
+				// still read it.
+				r.Body = io.NopCloser(bytes.NewReader(body))
+			}
+
+			cached, fpMismatch, err := store.Get(r.Context(), key, bodyFingerprint)
 			if err != nil {
 				if cfg.metrics != nil {
 					cfg.metrics.errors.Inc()
 				}
 				httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
+				return
+			}
+			if fpMismatch {
+				if cfg.metrics != nil {
+					cfg.metrics.conflicts.Inc()
+				}
+				httpx.WriteError(w, http.StatusUnprocessableEntity,
+					cfg.header+" reused with a different request body")
 				return
 			}
 			if cached != nil {
@@ -188,12 +235,20 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				return
 			}
 
-			locked, lockErr := store.TryLock(r.Context(), key, cfg.ttl)
+			token, fpMismatchOnLock, locked, lockErr := store.TryLock(r.Context(), key, bodyFingerprint, cfg.ttl)
 			if lockErr != nil {
 				if cfg.metrics != nil {
 					cfg.metrics.errors.Inc()
 				}
 				httpx.WriteError(w, http.StatusInternalServerError, "idempotency store error")
+				return
+			}
+			if fpMismatchOnLock {
+				if cfg.metrics != nil {
+					cfg.metrics.conflicts.Inc()
+				}
+				httpx.WriteError(w, http.StatusUnprocessableEntity,
+					cfg.header+" reused with a different request body")
 				return
 			}
 			if !locked {
@@ -217,7 +272,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			panicked := true
 			defer func() {
 				if panicked {
-					if unlockErr := store.Unlock(context.Background(), key); unlockErr != nil {
+					if unlockErr := store.Unlock(context.Background(), key, token); unlockErr != nil {
 						cfg.logger.Error("idempotency: failed to unlock after panic",
 							"error", unlockErr, "key", rawKey)
 					}
@@ -230,7 +285,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			if rec.bodyOverflow {
 				cfg.logger.Warn("idempotency: response too large to cache, skipping",
 					"key", rawKey)
-				if unlockErr := store.Unlock(context.Background(), key); unlockErr != nil {
+				if unlockErr := store.Unlock(context.Background(), key, token); unlockErr != nil {
 					cfg.logger.Error("idempotency: failed to unlock after overflow",
 						"error", unlockErr, "key", rawKey)
 				}
@@ -248,17 +303,53 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				Headers:    headers,
 				Body:       append([]byte(nil), rec.body.Bytes()...),
 			}
-			if setErr := store.Set(context.Background(), key, resp, cfg.ttl); setErr != nil {
-				cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
-					"error", setErr, "key", rawKey)
-				// Do NOT unlock — keeping the lock prevents duplicate execution
-				// during the TTL window. The lock expires naturally.
-			} else if unlockErr := store.Unlock(context.Background(), key); unlockErr != nil {
-				cfg.logger.Error("idempotency: failed to unlock (key blocked until TTL expiry)",
-					"error", unlockErr, "key", rawKey)
+			if setErr := store.Set(context.Background(), key, token, resp, cfg.ttl); setErr != nil {
+				if errors.Is(setErr, idem.ErrLockLost) {
+					// TTL expired and another caller has taken the slot —
+					// don't fight them. Their response will be the one
+					// future requests replay.
+					cfg.logger.Warn("idempotency: lock lost before Set; another caller now owns the slot",
+						"key", rawKey)
+				} else {
+					cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
+						"error", setErr, "key", rawKey)
+					// Do NOT unlock — keeping the lock prevents duplicate execution
+					// during the TTL window. The lock expires naturally.
+				}
 			}
+			// On success, Set has already replaced the lock with the response;
+			// no separate Unlock is needed.
 		})
 	}
+}
+
+// readAndFingerprintBody buffers the request body up to maxFingerprintBodySize,
+// computes a SHA-256 digest, and returns both the digest and the buffered
+// body so the caller can install a fresh reader before forwarding.
+func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
+	if r.Body == nil {
+		// Empty body still gets a stable fingerprint so empty-body retries
+		// match each other.
+		empty := sha256.Sum256(nil)
+		return empty[:], nil, nil
+	}
+	limited := io.LimitReader(r.Body, maxFingerprintBodySize+1)
+	body, err := io.ReadAll(limited)
+	if cerr := r.Body.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(body) > maxFingerprintBodySize {
+		// Body too big to fingerprint; fall back to length-prefixed sentinel
+		// so length-mismatch alone is still detectable.
+		h := sha256.New()
+		_, _ = io.WriteString(h, "rho-kit:idempotency:body-too-large")
+		return h.Sum(nil), body, nil
+	}
+	digest := sha256.Sum256(body)
+	return digest[:], body, nil
 }
 
 func fingerprintKey(method, path, rawKey, userID string) string {

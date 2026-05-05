@@ -2,8 +2,10 @@ package idempotency
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,7 +40,7 @@ func TestFirstRequestPassesThroughAndCaches(t *testing.T) {
 
 	// The store key is fingerprinted with method+path, so look up the hashed key.
 	storeKey := fingerprintKey(http.MethodPost, "/orders", "key-1", "")
-	cached, err := store.Get(context.Background(), storeKey)
+	cached, _, err := store.Get(context.Background(), storeKey, nil)
 	if err != nil {
 		t.Fatalf("store.Get error: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestWithTTLOption(t *testing.T) {
 
 func TestMemoryStoreGetMiss(t *testing.T) {
 	store := idem.NewMemoryStore()
-	resp, err := store.Get(context.Background(), "nonexistent")
+	resp, _, err := store.Get(context.Background(), "nonexistent", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,12 +222,15 @@ func TestMemoryStoreSetAndGet(t *testing.T) {
 		Body:       []byte(`{"id":42}`),
 	}
 
-	err := store.Set(context.Background(), "store-key", original, time.Hour)
-	if err != nil {
+	token, _, ok, err := store.TryLock(context.Background(), "store-key", nil, time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok=%v err=%v", ok, err)
+	}
+	if err := store.Set(context.Background(), "store-key", token, original, time.Hour); err != nil {
 		t.Fatalf("Set error: %v", err)
 	}
 
-	got, err := store.Get(context.Background(), "store-key")
+	got, _, err := store.Get(context.Background(), "store-key", nil)
 	if err != nil {
 		t.Fatalf("Get error: %v", err)
 	}
@@ -297,7 +302,7 @@ func TestConcurrentRequestsSameKey(t *testing.T) {
 func TestTryLock(t *testing.T) {
 	store := idem.NewMemoryStore()
 
-	locked, err := store.TryLock(context.Background(), "lock-key", time.Minute)
+	_, _, locked, err := store.TryLock(context.Background(), "lock-key", nil, time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,7 +311,7 @@ func TestTryLock(t *testing.T) {
 	}
 
 	// Second attempt should fail.
-	locked2, err := store.TryLock(context.Background(), "lock-key", time.Minute)
+	_, _, locked2, err := store.TryLock(context.Background(), "lock-key", nil, time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,17 +323,17 @@ func TestTryLock(t *testing.T) {
 func TestUnlock(t *testing.T) {
 	store := idem.NewMemoryStore()
 
-	locked, err := store.TryLock(context.Background(), "unlock-key", time.Minute)
+	token, _, locked, err := store.TryLock(context.Background(), "unlock-key", nil, time.Minute)
 	if err != nil || !locked {
 		t.Fatal("expected to acquire lock")
 	}
 
 	// Unlock should allow re-acquisition.
-	if err := store.Unlock(context.Background(), "unlock-key"); err != nil {
+	if err := store.Unlock(context.Background(), "unlock-key", token); err != nil {
 		t.Fatalf("Unlock error: %v", err)
 	}
 
-	locked2, err := store.TryLock(context.Background(), "unlock-key", time.Minute)
+	_, _, locked2, err := store.TryLock(context.Background(), "unlock-key", nil, time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,7 +345,7 @@ func TestUnlock(t *testing.T) {
 func TestLockTTLExpiry(t *testing.T) {
 	store := idem.NewMemoryStore()
 
-	locked, _ := store.TryLock(context.Background(), "ttl-lock", 1*time.Millisecond)
+	_, _, locked, _ := store.TryLock(context.Background(), "ttl-lock", nil, 1*time.Millisecond)
 	if !locked {
 		t.Fatal("expected to acquire lock")
 	}
@@ -348,7 +353,7 @@ func TestLockTTLExpiry(t *testing.T) {
 	// Wait for TTL to expire.
 	time.Sleep(5 * time.Millisecond)
 
-	locked2, _ := store.TryLock(context.Background(), "ttl-lock", time.Minute)
+	_, _, locked2, _ := store.TryLock(context.Background(), "ttl-lock", nil, time.Minute)
 	if !locked2 {
 		t.Error("expected expired lock to be reclaimable")
 	}
@@ -422,7 +427,7 @@ func TestPanicInHandlerReleasesLock(t *testing.T) {
 	// The lock should have been released, allowing a new TryLock.
 	// Use the fingerprinted key that the middleware actually stores.
 	storeKey := fingerprintKey(http.MethodPost, "/", "panic-key", "")
-	locked, err := store.TryLock(context.Background(), storeKey, time.Minute)
+	_, _, locked, err := store.TryLock(context.Background(), storeKey, nil, time.Minute)
 	if err != nil {
 		t.Fatalf("TryLock error: %v", err)
 	}
@@ -439,13 +444,84 @@ func TestMemoryStoreReturnsCopy(t *testing.T) {
 		Body:       []byte("hello"),
 	}
 
-	_ = store.Set(context.Background(), "copy-key", original, time.Hour)
+	token, _, _, _ := store.TryLock(context.Background(), "copy-key", nil, time.Hour)
+	_ = store.Set(context.Background(), "copy-key", token, original, time.Hour)
 
-	got1, _ := store.Get(context.Background(), "copy-key")
+	got1, _, _ := store.Get(context.Background(), "copy-key", nil)
 	got1.Body[0] = 'X' // mutate returned copy
 
-	got2, _ := store.Get(context.Background(), "copy-key")
+	got2, _, _ := store.Get(context.Background(), "copy-key", nil)
 	if string(got2.Body) != "hello" {
 		t.Error("mutation of returned value affected store; expected defensive copy")
+	}
+}
+
+// --- New: body-fingerprint plumbing ---
+
+func TestBodyFingerprint_MismatchReturns422(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handler := Middleware(store, WithBodyFingerprint())(newTestHandler(`{"ok":true}`, http.StatusCreated))
+
+	// First request with body A.
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
+	req1.Header.Set("Idempotency-Key", "fp-key")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first request status = %d, want 201", rec1.Code)
+	}
+
+	// Same key, different body → 422.
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":999}`))
+	req2.Header.Set("Idempotency-Key", "fp-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnprocessableEntity {
+		t.Errorf("second request status = %d, want 422", rec2.Code)
+	}
+}
+
+func TestBodyFingerprint_SameBodyReplaysCache(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	})
+	handler := Middleware(store, WithBodyFingerprint())(inner)
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
+		req.Header.Set("Idempotency-Key", "fp-same")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", rec.Code)
+		}
+	}
+
+	if calls != 1 {
+		t.Errorf("inner called %d times, want 1 (second request should replay)", calls)
+	}
+}
+
+func TestBodyFingerprint_DownstreamHandlerCanReadBody(t *testing.T) {
+	store := idem.NewMemoryStore()
+	var seen string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = string(body)
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Middleware(store, WithBodyFingerprint())(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"hello":"world"}`))
+	req.Header.Set("Idempotency-Key", "fp-passthrough")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if seen != `{"hello":"world"}` {
+		t.Errorf("inner saw body %q, want %q — middleware must restore body after fingerprinting", seen, `{"hello":"world"}`)
 	}
 }
