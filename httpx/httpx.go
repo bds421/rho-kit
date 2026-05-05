@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,35 +15,46 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+// defaultMaxIdleConnsPerHost overrides the stdlib default of 2, which causes
+// connection churn when a service makes many concurrent requests to a single
+// downstream. 100 matches the typical service-to-service workload without
+// being so large that misbehaving downstreams hog file descriptors.
+const defaultMaxIdleConnsPerHost = 100
+
+// newKitTransport clones http.DefaultTransport and applies kit-wide overrides:
+// raises MaxIdleConnsPerHost above the stdlib default of 2 (which causes
+// connection churn under load) and sets the TLS config when supplied.
+func newKitTransport(tlsConfig *tls.Config) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
+	if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
+	return transport
+}
+
 // NewHTTPClient returns an *http.Client with the given timeout and optional TLS
 // configuration. When tlsConfig is non-nil the client trusts the internal CA,
 // ensuring all inter-service HTTPS calls work under mTLS.
 // Use this instead of &http.Client{} to avoid accidentally creating a client
-// that cannot verify the internal PKI certificates.
+// that cannot verify the internal PKI certificates or that hits the stdlib's
+// MaxIdleConnsPerHost=2 perf cliff.
 //
 // The transport is cloned from http.DefaultTransport to inherit production
 // defaults (idle connection management, TLS handshake timeout, proxy support).
 func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
-	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: newKitTransport(tlsConfig),
 	}
 }
 
 // NewTracingHTTPClient returns an *http.Client instrumented with OpenTelemetry
 // spans for outbound requests. It uses the same TLS setup as NewHTTPClient.
 func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
-	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: otelhttp.NewTransport(transport, opts...),
+		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig), opts...),
 	}
 }
 
@@ -60,8 +73,22 @@ func WithTLSConfig(cfg *tls.Config) ServerOption {
 	return func(s *http.Server) { s.TLSConfig = cfg }
 }
 
+// WithErrorLog sets the logger used by net/http for protocol errors (TLS
+// handshake failures, connection-level read errors). When unset, NewServer
+// routes ErrorLog through slog so client RemoteAddrs and other connection
+// errors land in structured logs instead of plain stdout via the global
+// "log" package.
+func WithErrorLog(l *log.Logger) ServerOption {
+	return func(s *http.Server) { s.ErrorLog = l }
+}
+
 // NewServer returns an *http.Server with safe production defaults.
 // Options may override individual fields.
+//
+// ErrorLog defaults to a slog-backed adapter so net/http's connection-level
+// error messages (TLS handshake failures, peer-reset reads) flow through the
+// structured logger rather than the global "log" package — without this,
+// raw client RemoteAddrs leak to stdout and pollute SIEMs.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
 	srv := &http.Server{
 		Addr:              addr,
@@ -71,6 +98,7 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 		WriteTimeout:      35 * time.Second, // Must exceed the configured request timeout so middleware can write 503
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB
+		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
 	for _, opt := range opts {
 		opt(srv)
@@ -172,8 +200,13 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		WriteError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
-	// Reject trailing data after the first JSON object.
-	if dec.More() {
+	// Reject trailing data after the first JSON object. dec.More() only
+	// detects continuation within an array/object stream, not a second
+	// top-level value: bodies like `{"a":1} {"b":2}` slip past it. The
+	// reliable check is to attempt one more decode and require io.EOF —
+	// anything else means trailing content.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		WriteError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}

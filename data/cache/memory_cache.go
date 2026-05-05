@@ -111,7 +111,13 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	maxCost := mc.maxCost
 	numCounters := mc.numCounters
 	if maxCost <= 0 {
-		maxCost = int64(math.MaxInt64)
+		// Default cap (64 MiB) so an unconfigured MemoryCache cannot grow
+		// without bound. Previously the default was math.MaxInt64 — which
+		// silently turned attacker-controlled or high-cardinality cache
+		// keys into an OOM vector. Production deployments should set
+		// WithMaxCost / WithMaxSize explicitly; this default is a safety
+		// net rather than a sizing recommendation.
+		maxCost = int64(64 * 1024 * 1024)
 		if mc.maxSize > 0 {
 			maxCost = int64(mc.maxSize)
 		}

@@ -93,6 +93,11 @@ type ComputeCache[T any] struct {
 	bgCtx     context.Context
 	closeOnce sync.Once
 	closed    atomic.Bool
+	// bgMu serialises bgWg.Add against bgWg.Wait. Without it, the closed-load
+	// → Add(1) sequence in triggerBackgroundRefresh can run concurrently
+	// with Close's Wait — sync.WaitGroup explicitly forbids Add called in
+	// parallel with Wait and may panic or skip the goroutine entirely.
+	bgMu sync.Mutex
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
@@ -309,13 +314,17 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 
 // triggerBackgroundRefresh starts an async refresh using singleflight.DoChan.
 func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[T]) {
+	// Hold bgMu across the closed-load and bgWg.Add so a concurrent Close
+	// (which acquires bgMu before reading closed) cannot race the Add with
+	// its own Wait. Once closed is observed true, no further Add is issued —
+	// the WaitGroup is then safe for Wait to consume.
+	cc.bgMu.Lock()
 	if cc.closed.Load() {
-		return // Cache closed; skip background refresh.
+		cc.bgMu.Unlock()
+		return
 	}
-	// Note: there is a narrow TOCTOU window where Close() could be called
-	// between the closed check and bgWg.Add(1). The worst case is one extra
-	// background goroutine that immediately hits a cancelled context.
 	cc.bgWg.Add(1)
+	cc.bgMu.Unlock()
 
 	ch := cc.group.DoChan(full, func() (interface{}, error) {
 		// Use a timeout-scoped context derived from the background context
@@ -346,9 +355,16 @@ func (cc *ComputeCache[T]) Wait() {
 // finish. After Close returns, no new background refreshes will be started.
 // Close is idempotent; calling it multiple times is safe.
 // Implements io.Closer.
+//
+// The bgMu acquisition publishes the closed=true store to any concurrent
+// triggerBackgroundRefresh — once Close releases bgMu, every subsequent
+// trigger sees closed and skips the Add. Wait then drains the in-flight
+// refreshes that observed closed=false before this Store ran.
 func (cc *ComputeCache[T]) Close() error {
 	cc.closeOnce.Do(func() {
+		cc.bgMu.Lock()
 		cc.closed.Store(true)
+		cc.bgMu.Unlock()
 		cc.cancelBg()
 	})
 	cc.bgWg.Wait()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -77,7 +78,16 @@ type config struct {
 }
 
 // WithTTL sets the cache TTL for stored responses. Default: 24h.
+//
+// Panics on non-positive durations. The three idempotency stores disagree
+// dangerously about TTL=0: Redis SET NX with EX 0 creates a permanent lock
+// (no expiry), MemoryStore treats it as immediately expired, and pgstore
+// rounds sub-second durations to 0. Rejecting at construction prevents the
+// "works in tests, breaks Redis in prod" surprise.
 func WithTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic(fmt.Sprintf("idempotency: WithTTL requires a positive duration (got %s); zero/negative TTLs create permanent locks in Redis", d))
+	}
 	return func(c *config) { c.ttl = d }
 }
 
