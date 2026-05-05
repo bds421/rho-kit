@@ -1,11 +1,10 @@
 # infra/storage — local, S3, Azure, GCS, SFTP, encryption, storagehttp, manager
 
-### [CRITICAL] Local backend doesn't fsync parent directory after rename
-**File**: `infra/storage/localbackend/local.go:80-92` (also `copy.go`)
-**Issue**: Writes to temp + `tmp.Sync()` + `os.Rename`. On Linux, `rename(2)` is durable across crash only if the **containing directory** is also fsynced. Without it, a crash post-rename can leave the file with stale or zero contents — silent data loss for an operation that just successfully returned.
-**Fix**: After successful `os.Rename`, open parent dir with `os.OpenFile(filepath.Dir(path), os.O_RDONLY, 0)`, call `dir.Sync()`, close. Same fix in `copy.go`.
-**Effort**: S
-**Phase**: 1
+## Landed
+
+- ✅ **Local backend parent-dir fsync** — `Save` and `Copy` now `fsyncDir()` the destination after `os.Rename` so a crash post-rename can't leave the file with stale or zero contents (commit `1622196`).
+
+## Open
 
 ### [HIGH] S3 backend: no SSE on PutObject or PresignPutURL
 **File**: `infra/storage/s3backend/s3.go:194-203` + `s3backend/presign.go:59-67`
@@ -55,7 +54,6 @@
 
 ### Migration checklist
 
-- [ ] Phase 1: local backend parent-dir fsync (and in `copy.go`).
 - [ ] Phase 2: S3 SSE defaults + presigned PUT enforcement.
 - [ ] Phase 2: storagehttp `MaxMemory` — fix or drop.
 - [ ] Phase 2: storagehttp `UUIDKeyFunc` extension fallback.

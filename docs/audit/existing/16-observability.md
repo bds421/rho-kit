@@ -1,32 +1,14 @@
 # observability/ — auditlog, health, logattr, logging, promutil, slo, tracing
 
-### [HIGH] Tracing default sample rate is 100%
-**File**: `observability/tracing/tracing.go:69-71`
-**Issue**: `if cfg.SampleRate <= 0 { cfg.SampleRate = 1.0 }`. Toolkit-level defaults should be conservative; sampling everything is expensive (CPU + collector + storage) and wrong for production-bound services.
-**Fix**: Default to a small fraction (0.05 or 0.01). Or require an explicit value; treat `<= 0` as "disabled" not "100%".
-**Effort**: S
-**Phase**: 1
+## Landed
 
-### [HIGH] Tracing always enables Baggage propagator
-**File**: `observability/tracing/tracing.go:102-105,114-117`
-**Issue**: `propagation.Baggage{}` added unconditionally. Baggage = arbitrary cross-service KV attached to every outgoing request — easy vector for accidental PII propagation, privacy concern if any handler logs it.
-**Fix**: Make Baggage opt-in via Config (`WithBaggage bool`). Default to TraceContext only.
-**Effort**: S
-**Phase**: 1
+- ✅ **Tracing default sample rate dropped to 0.05** — was 1.0, which is wrong-shape for a kit-level default; collector + storage cost goes from impossible to budgeted (commit `1198dd5`).
+- ✅ **Tracing Baggage opt-in only** — `Config.EnableBaggage` gates the `propagation.Baggage{}` propagator; default is TraceContext only, eliminating accidental PII propagation across services (commit `1198dd5`).
+- ✅ **auditlog gormstore composite cursor** — pagination predicate is now `(timestamp, id) DESC` so events with identical microseconds don't get skipped or duplicated across page boundaries (commit `1198dd5`).
+- ✅ **auditlog gormstore LIKE escape** — Resource filter uses `LIKE ? ESCAPE '\'` with `%` / `_` / `\` escaped in caller input (commit `1198dd5`).
+- ✅ **auditlog gormstore signed cursors** — base64url(payload).base64url(HMAC); `decodeCursor` returns `ErrCursorInvalid` on tamper or cross-secret cursor; `WithCursorSecret` lets multi-replica deployments share signing key (commit `98f05e4`).
 
-### [HIGH] auditlog gormstore cursor ignores timestamp tiebreaker
-**File**: `observability/auditlog/gormstore/store.go:69,89-91,100-102`
-**Issue**: Order is `timestamp DESC, id DESC` but cursor is `WHERE id < ?`. UUIDv7 IDs are roughly time-ordered but not strictly aligned with `timestamp` column (clock skew, batch inserts). Across timestamp boundaries the cursor can skip rows or duplicate them.
-**Fix**: Composite cursor `(timestamp, id)` with predicate `WHERE (timestamp, id) < (?, ?)`. Or order purely by `id DESC` (drop timestamp ordering since UUIDv7 carries time).
-**Effort**: S
-**Phase**: 3
-
-### [HIGH] auditlog gormstore: resource filter doesn't escape LIKE wildcards
-**File**: `observability/auditlog/gormstore/store.go:78`
-**Issue**: `q.Where("resource LIKE ?", filter.Resource+"%")` doesn't escape `%`, `_`, `\`. Caller-influenced `filter.Resource` (e.g., search query) returns events from other resources by sending `users/%/secrets`. For an audit log this is a security boundary.
-**Fix**: Escape the three LIKE metacharacters before appending `%`. Or restrict `Resource` filters to exact match unless an explicit prefix flag is set.
-**Effort**: S
-**Phase**: 3
+## Open
 
 ### [MEDIUM] `observability/health` provides no `/live`/`/ready` HTTP handlers
 **File**: `observability/health/doc.go:1` + `healthcheck_cli.go:20`
@@ -61,8 +43,6 @@
 
 ### Migration checklist
 
-- [ ] Phase 1: tracing default sample rate 0.05; Baggage opt-in only.
-- [ ] Phase 3: auditlog gormstore composite cursor + LIKE escape.
 - [ ] Phase 3: `observability/health` ship Liveness/Readiness handlers.
 - [ ] Phase 3: `logattr.Secret` + `Email` helpers.
 - [ ] Phase 3: tracing `Init` timeout + noop fallback.

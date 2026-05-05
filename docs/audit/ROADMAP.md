@@ -1,81 +1,110 @@
-# Execution roadmap
+# Execution roadmap — current state
 
-Six to ten weeks of focused work to close all CRITICAL + HIGH findings and ship Tier‑1 missing primitives. The kit becomes "secure and fast by default" at the end of phase 3.
+The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + most of Phase 2 has landed** (Wave 1+2+3 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
 
-## Phase 0 — Unblock (days, not weeks)
+The new-package work (Phases 4–6) is unstarted; those proposals live in `new/01-25`.
 
-Two things that gate the rest. Land them first or every later PR carries hidden risk.
+## Phase 0 — Unblock — ✅ done
 
-- [existing/00] **Bump Go to 1.26.2+** across the workspace and every module; **bump `google.golang.org/grpc` to v1.79.3+**. Re-run `make vulncheck` until green.
-- [existing/00] Fix `make lint` (sequential or per-module cache so parallel runners don't collide).
+- ✅ gRPC bumped to v1.79.3 across all modules (`56bf04e`).
+- ✅ `make lint` switched to sequential to dodge golangci-lint v2 cache lock collisions (`56bf04e`).
+- 🟡 Go runtime → 1.26.2+ requires the operator to install the toolchain locally; the workspace + module `go` directives can be bumped immediately afterwards.
 
-## Phase 1 — Stop the bleeding (1–2 weeks)
+## Phase 1 — Stop the bleeding — mostly done
 
-Defaults that ship insecure today. All small focused PRs, can land in parallel.
+Done (commits in parens):
 
-- [existing/05] Add `httpx/middleware/recover` and prepend it in `stack.Default`. → [new/01]
-- [existing/06] Prepend Recovery interceptors in `grpcx.NewServer`. → [new/02]
-- [existing/10] AMQP publisher: `mandatory=true` + `NotifyReturn` handling.
-- [existing/12] Local storage: parent-dir fsync after rename.
-- [existing/13] Postgres `sslmode`: default `require` in non-dev; reject empty/`disable` in `Validate`.
-- [existing/11] Outbox: add `next_retry_at`, exponential backoff, `DeleteFailedBefore`.
-- [existing/10] Gate `debughttp` behind auth + non-prod env check.
-- [existing/15] `resilience/retry`: default `RetryIf` to `RetryIfNotPermanent`.
-- [existing/14] `retry.Loop`: return on `nil` error (don't restart graceful workers forever).
-- [existing/16] Tracing: default sample rate 0.05; Baggage opt-in only.
-- [existing/16] Cron + batchworker histogram buckets sized for the workload.
-- [existing/04] `httpx.DecodeJSON`: reject trailing top-level JSON via second-decode + EOF.
-- [existing/05] `clientip` default to no-trusted-proxies; require explicit CIDRs (closes the IP-spoof + cross-middleware-disagreement findings together).
-- [existing/05] CSRF require shared secret in non-dev (no per-process random fallback).
-- [existing/08] Idempotency `WithTTL` reject non-positive; backend tests assert agreement.
-- [existing/08] `ComputeCache` fix WaitGroup race (mutex around closed-check + Add).
-- [existing/08] `MemoryCache` conservative default `MaxCost`; require opt-in for unbounded.
+- ✅ AMQP publisher mandatory + NotifyReturn (`068eeb5`).
+- ✅ Local storage parent-dir fsync (`1622196`).
+- ✅ Postgres sslmode safer defaults + Validate rejection (`a8fa6ed`).
+- ✅ Outbox `next_retry_at` + exponential backoff + DeleteFailedBefore (`4b522b3`).
+- ✅ debughttp Guard middleware (`068eeb5`).
+- ✅ resilience/retry default RetryIf + Loop nil-error return (`270c901`).
+- ✅ Tracing default sample rate 0.05 + Baggage opt-in (`1198dd5`).
+- ✅ Cron + batchworker histogram buckets (`6a76329`).
+- ✅ DecodeJSON strict trailing-data rejection (`36cf34b`).
+- ✅ Idempotency `WithTTL` reject non-positive (`36cf34b`).
+- ✅ ComputeCache WaitGroup race fixed (`36cf34b`).
+- ✅ MemoryCache default 64 MiB cap (`36cf34b`).
+- ✅ http.Server.ErrorLog defaults to slog adapter; client MaxIdleConnsPerHost raised (`36cf34b`).
 
-## Phase 2 — Tighten the contracts (2–3 weeks)
+Still open:
 
-Interface drift and ownership-token plumbing. These touch public types so plan them as a coordinated release.
+- 🔴 [existing/05] Add `httpx/middleware/recover` and prepend in `stack.Default` → blocked on [new/01].
+- 🔴 [existing/06] Prepend Recovery interceptors in `grpcx.NewServer` → blocked on [new/02].
+- 🔴 [existing/05] `clientip` default to no-trusted-proxies; require explicit CIDRs.
+- 🔴 [existing/05] CSRF require shared secret in non-dev (no per-process random fallback).
+- 🔴 [existing/05] Timeout middleware buffer cap default 1 MiB.
+- 🔴 [existing/05] secheaders honor X-Forwarded-Proto from trusted proxies (HSTS behind TLS-terminating LB).
+- 🔴 [existing/05] CSRF SkipCheck regeneration uses tampered cookie.
+- 🔴 [existing/04] Include `Timeout` in `stack.Default` (or validate WriteTimeout sizing).
+- 🔴 [existing/13] gormmysql TLS registry deregister on close.
 
-- [new/19] **Ship `app.WithProductionDefaults()`** — bundles every phase-1 hardening into one switch with startup validation. Lands after the individual fixes are in place; becomes the recommended path.
-- [existing/00] Nil-dependency validation sweep across constructors that fail-late; document the convention in CLAUDE.md/AGENTS.md.
-- [existing/07] Reconcile `data/lock` interface with redislock impl (per-call `Lock` value); fix Release `ErrLockLost` surfacing; fix transient-error orphan window.
-- [existing/08] Reshape `data/idempotency.Store`: add owner token (fixes pgstore split-brain) and request fingerprint (fixes body-mismatch).
-- [existing/05] Wire request-body fingerprint through idempotency middleware; strip identity headers from the cached response.
-- [existing/05] Timeout middleware: hard-timeout mode (or rename existing as `Cooperative` and document the contract).
-- [existing/07] Redis list queue: per-consumer processing list + ID-keyed in-flight hash + Lua atomic re-queue on dispatch failure.
-- [existing/11] Outbox: `WithRequireTransaction` strict mode (default on for new constructions).
-- [existing/03] `crypto/signing`: `New*E`/`Must*` split; `WithFutureSkew`.
-- [existing/03] Remove `FieldEncryptor.Encrypt` prefix shortcut; add AAD parameter for row-binding.
-- [existing/03] JWT: add `WithExpectedAudience`, `lastSuccessfulFetch` staleness gauge.
-- [existing/03] `SSRFSafeTransport`/`SSRFSafeClient`: accept `*url.URL`; safe-redirect mode that re-validates each hop; default TLS 1.3.
-- [existing/14] Lifecycle.Runner signal-goroutine leak fix.
-- [existing/08] `ComputeCache` zero-TTL contract decision.
+## Phase 2 — Tighten the contracts — mostly done
 
-## Phase 3 — Observability and DX (1–2 weeks)
+Done (commits in parens):
 
-- [existing/16] Audit-log gormstore: composite cursor `(timestamp, id)`; LIKE-wildcard escape in Resource filter.
-- [existing/16] `observability/health`: ship `Liveness()`/`Readiness(*Checker)` HTTP handlers.
-- [existing/04] HTTP server: route `ErrorLog` through slog (no plain stdout); raise `MaxIdleConnsPerHost` default.
-- [existing/05] `httpx/middleware/timeout`: lower per-request buffer cap; document pairing with `maxbody`.
-- [existing/05] Logging middleware: shared client-IP resolver so log/ratelimit agree.
-- [new/15] `/debug/pprof` + go-runtime metrics on the internal :9090 port.
-- [new/16] RED-metrics middleware constructor with proper buckets.
-- [new/17] RFC 7807 problem-details writer alongside `WriteError`.
-- [new/22] **Observability pack** — Grafana dashboards + Prometheus alert templates that consume the metric names emitted by `redmetrics`.
+- ✅ data/lock interface refit + ErrLockLost (`2408d15`).
+- ✅ Idempotency Store reshape + pgstore owner_token migration (`1f06b5e`).
+- ✅ Idempotency middleware body-fingerprint plumbing (`1f06b5e`).
+- ✅ Redis queue per-consumer processing list + ID-keyed remove (`f4a0a95`).
+- ✅ FieldEncryptor prefix-shortcut removal + AAD support (`99917ac`).
+- ✅ JWT WithExpectedAudience (`c502dd2`).
+- ✅ SSRF safe-redirect + TLS 1.3 default (`b6a4a9a`, `c502dd2`).
+- ✅ Auth middleware VerifiedChains check (`c502dd2`).
+- ✅ atomicfile mode preservation + EXDEV fallback (`c502dd2`).
+- ✅ Auditlog cursor signing + LIKE escape + composite cursor (`98f05e4`, `1198dd5`).
+- ✅ CSRF Origin allowlist (`409cdbb`).
+- ✅ Lifecycle.Runner signal-goroutine leak + joined start+stop errors (`6a76329`).
 
-## Phase 4 — Tier‑1 missing primitives (3–4 weeks)
+Still open:
 
-Primitives every Go service needs sooner or later. None of these exist in the kit today.
+- 🔴 [existing/00] Nil-dependency validation sweep across constructors.
+- 🔴 [existing/03] crypto/signing `New*E` / `Must*` split; `WithFutureSkew`.
+- 🔴 [existing/03] JWT staleness metric + max-stale rejection; mandatory issuer in app builder.
+- 🔴 [existing/03] SSRF `*FromURL` constructors.
+- 🔴 [existing/05] Timeout middleware hard-timeout mode.
+- 🔴 [existing/05] Idempotency identity-header strip + mandatory user extractor.
+- 🔴 [existing/05] CSRF session-bound HMAC + Secure default.
+- 🔴 [existing/07] redislock Acquire surfaces transient-SET orphans (probe via GET).
+- 🔴 [existing/07] Bounded recoverProcessing interleaved with new-message reads.
+- 🔴 [existing/08] ComputeCache zero-TTL contract decision.
+- 🔴 [existing/09] Per-stream consumer ID (or panic on multi-stream Consume).
+- 🔴 [existing/10] AMQP consumer ctx semantics on shutdown (`WithoutCancel`).
+- 🔴 [existing/10] Dead-letter publish failure cap.
+- 🔴 [existing/10] BufferedPublisher state-file mandatory in prod; surface persistence errors; restrictive umask.
+- 🔴 [existing/11] Outbox `Writer.WithRequireTransaction()` (default on for new constructions).
+- 🔴 [existing/12] S3 SSE defaults + presigned PUT enforcement; storagehttp MaxMemory + UUIDKeyFunc fallback; encryption Put concurrency cap.
+- 🔴 [new/19] Ship `app.WithProductionDefaults()` after the per-finding fixes above complete.
+
+## Phase 3 — Polish — small items, mostly Phase 3 quality
+
+Most Phase 3 items in the original plan have either landed (auditlog cursor + LIKE escape, http server defaults) or are open as listed inline in each existing-package file. The remaining work is small:
+
+- 🔴 [existing/02] core/config: `GetSecret` (string, error) split; `EnvReloader.WithImmediateLoad()`; `apperror.HTTPStatus` decision.
+- 🔴 [existing/04] httpxtest `DoRealServer` variant; expose client `IdleConnTimeout`; cursor signing for `httpx/pagination` (mirror auditlog pattern).
+- 🔴 [existing/05] Shared client-IP resolver across logging+ratelimit; tracing hijack handling.
+- 🔴 [existing/08] MemoryStore eviction heap/sweeper; cache.Cache add MGet/MSet/SetNX; compute cache surface backend Set errors.
+- 🔴 [existing/09] Drop dead `errors.Is(err, goredis.Nil)` branch.
+- 🔴 [existing/10] Connection.WaitForConnection; default-Retry; xDeath validation; membroker Unsubscribe.
+- 🔴 [existing/11] Outbox MaxConcurrentPublishes; SQLite multi-instance guard.
+- 🔴 [existing/12] sftp generation-based cleanup; Manager.Default invariant; URL templating.
+- 🔴 [existing/13] redis Connection Sentinel/Cluster support; redistest per-test isolation.
+- 🔴 [existing/14] cron per-job timeout + ctx sync; eventbus Unsubscribe + OnFull policy; FanOut default cap.
+- 🔴 [existing/15] CircuitBreaker.ExecuteCtx; nil-receiver semantics.
+- 🔴 [existing/16] Health Liveness/Readiness handlers; logattr Secret/Email; tracing Init timeout; auditlog memory IPAddress; promutil register semantics; SLO label filter.
+- 🔴 [existing/17] progressReader concurrency doc + throttle option.
+
+## Phase 4 — Tier‑1 missing primitives (unstarted)
 
 - [new/03] `crypto/passhash` — argon2id with verify-then-rehash.
 - [new/04] `crypto/envelope` — DEK/KEK split, key-version metadata, KMS providers (AWS/GCP/Vault).
 - [new/05] `crypto/paseto` — safer JWT alternative for new services.
-- [new/06] `security/csrf` — session-bound CSRF tokens (the existing middleware stays as a thin wrapper).
+- [new/06] `security/csrf` — session-bound CSRF tokens (existing middleware stays as a wrapper).
 - [new/07] `core/secret` — `SecretString` type that zeroes on Close, refuses to print/marshal.
-- [new/08] CSP-nonce middleware (or `httpx/middleware/secheaders` extension).
+- [new/08] CSP-nonce middleware.
 
-## Phase 5 — Tier‑2 infrastructure (rolling)
-
-These are larger, mostly independent. Pick based on what the consuming services need.
+## Phase 5 — Tier‑2 infrastructure (unstarted)
 
 - [new/09] `data/lock/pgadvisory` — Postgres advisory lock.
 - [new/10] `data/ratelimit/slidingwindow` — GCRA / token bucket.
@@ -83,20 +112,20 @@ These are larger, mostly independent. Pick based on what the consuming services 
 - [new/12] `infra/messaging/natsbackend` — JetStream.
 - [new/13] `infra/messaging/kafkabackend` — Kafka.
 - [new/14] `infra/sqldb/pgx` — `pgx`-native option for LISTEN/NOTIFY, COPY, pipelines.
-- [new/20] **Multi-tenant primitives** — `core/tenant`, tenant-aware cache/idempotency/ratelimit wrappers, label allowlists for cardinality safety.
-- [new/24] `httpx/middleware/signedrequest` — webhook/S2S request signing with replay cache.
-- [new/25] `storagehttp/uploadsec` — MIME sniffing, AV adapter, image dimension limits, quotas.
+- [new/20] Multi-tenant primitives.
+- [new/24] `httpx/middleware/signedrequest`.
+- [new/25] `storagehttp/uploadsec`.
 
-## Phase 6 — Agent-readiness (1–2 weeks)
+## Phase 6 — Agent-readiness (unstarted)
 
-Tooling that makes the kit's "secure by default" promise *visible* to humans and agents.
-
-- [new/18] `cmd/kit-doctor` — scan a service's wiring for dangerous defaults; programmatic version of this audit.
-- [new/21] `cmd/kit-new` — scaffold generator (companion to `kit-doctor`).
-- [new/23] `cmd/kit-bench-gate` — CI benchmark regression gate.
-- AGENTS.md generator from code + `docs/ai/index.json` machine-readable surface (separate task; not a package).
-- Per-package `EXAMPLES_test.go` files. Reduces "tests pass, prod doesn't" surface.
+- [new/15] `/debug/pprof` + go-runtime metrics on internal port.
+- [new/16] RED-metrics middleware with proper buckets.
+- [new/17] RFC 7807 problem-details writer.
+- [new/18] `cmd/kit-doctor`.
+- [new/21] `cmd/kit-new`.
+- [new/22] Observability pack (Grafana + alert templates).
+- [new/23] `cmd/kit-bench-gate`.
 
 ## Tracking
 
-Each existing-package file ends with a checklist suitable to copy into a project tracker. Each new-package file ends with a definition-of-done.
+Each existing-package file's `## Landed` block lists the commit that closed each finding. The `## Open` block + migration checklist is the live to-do list.

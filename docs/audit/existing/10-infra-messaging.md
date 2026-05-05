@@ -1,21 +1,12 @@
 # infra/messaging — AMQP backend, buffered publisher, debug HTTP, membroker
 
-The AMQP path has two CRITICAL findings (silent drop, debug auth) and the buffered publisher loses messages on shutdown without an opt-in state file.
+## Landed
 
-### [CRITICAL] AMQP publisher silently drops unroutable messages (mandatory=false)
-**File**: `infra/messaging/amqpbackend/publisher.go:117-119`
-**Issue**: `PublishWithDeferredConfirmWithContext(..., mandatory=false, immediate=false)`. Confirm-mode is enabled (good), but a message published to an exchange with no matching binding is **silently dropped and ack'd**. No `NotifyReturn` channel handling either. Topology drift = silent data loss.
-**Fix**: Set `mandatory=true`. Register `ch.NotifyReturn` on the channel before publish. Treat returned messages as a publish failure (return error so outbox/buffered retries them).
-**Effort**: M
-**Phase**: 1
-**Migration**: Existing topologies that intentionally publish to exchanges with no bindings will start erroring. Document and add `WithAllowReturned()` opt-out for that case.
+- ✅ **AMQP publisher `mandatory=true` + `NotifyReturn`** — unroutable messages now surface as `ErrUnroutable` to the caller instead of being silently ack'd (commit `068eeb5`).
+- ✅ **`debughttp` Guard middleware** — refuses to register in production env, requires an injected `Authenticator` (BasicAuth or AllowFromHeader, both with constant-time compare) (commit `068eeb5`).
+- ✅ **Topology rejects sub-millisecond `Retry.Delay`** — eliminates the "TTL truncates to 0 → tight redelivery loop" bug (commit `068eeb5`).
 
-### [CRITICAL] `debughttp` Publish/Consume endpoints have no authentication
-**File**: `infra/messaging/amqpbackend/debughttp/debug.go:42-99,108-161`
-**Issue**: Both handlers accept arbitrary input and bypass normal queueing/auth. `PublishHandler` writes to any `allowedExchanges`; `ConsumeHandler` invokes any registered handler with attacker-supplied JSON. No middleware, no auth, no env-gating. If mounted on a public listener (or internal one with admin-network access misconfigured), an attacker forges events of any type and triggers handler side effects.
-**Fix**: Refuse to register if `environment == production`. Require an injected `http.Handler` middleware (basic auth at minimum) wrapping both handlers. Document the requirement and gate by an `internal-only` Listen config.
-**Effort**: S
-**Phase**: 1
+## Open
 
 ### [HIGH] AMQP consumer detaches handler ctx during shutdown — handlers can't see it
 **File**: `infra/messaging/amqpbackend/consumer.go:174-182`
@@ -58,11 +49,6 @@ The AMQP path has two CRITICAL findings (silent drop, debug auth) and the buffer
 **Issue**: Filters by `reason=rejected`. Works as long as retry-queue naming convention isn't violated. Operator override that names retry queue identically to main queue could double-count.
 **Fix**: `ValidateBindingSpecs` should require retry queue name differ from main queue name; document the dependency.
 
-### [MEDIUM] Topology `x-message-ttl` truncates sub-ms `Retry.Delay` to 0 → tight loop
-**File**: `infra/messaging/amqpbackend/topology.go:148`
-**Issue**: `int64(b.Retry.Delay / time.Millisecond)`. `Retry.Delay = 500*time.Microsecond` → 0 → retry queue immediately re-delivers.
-**Fix**: `ValidateBindingSpecs` reject `Retry.Delay < time.Millisecond`.
-
 ### [MEDIUM] BufferedPublisher: `directInFlight` reservation underflows when `maxSize=1`
 **File**: `infra/messaging/buffered_publisher.go:222-237`
 **Issue**: With `maxSize=1` and `directInFlight=true`, `effectiveMax=0` → second message rejected during normal operation.
@@ -75,12 +61,10 @@ The AMQP path has two CRITICAL findings (silent drop, debug auth) and the buffer
 
 ### Migration checklist
 
-- [ ] Phase 1: AMQP publisher `mandatory=true` + `NotifyReturn`; opt-out for intentional fanout-no-binding cases.
-- [ ] Phase 1: gate `debughttp` behind auth + non-prod env check.
 - [ ] Phase 2: handler ctx semantics on shutdown (`WithoutCancel`).
 - [ ] Phase 2: dead-letter publish failure cap; consider reserved DLE channel.
 - [ ] Phase 2: BufferedPublisher state-file mandatory in prod; surface persistence errors to caller; restrictive umask.
-- [ ] Phase 3: `Connection.WaitForConnection`; default-Retry; `xDeathCount` retry-queue-name validation; `Retry.Delay` minimum; membroker `Unsubscribe`.
+- [ ] Phase 3: `Connection.WaitForConnection`; default-Retry; `xDeathCount` retry-queue-name validation; membroker `Unsubscribe`.
 
 ### Related new packages
 

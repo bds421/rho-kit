@@ -1,12 +1,10 @@
 # resilience/ — retry, circuitbreaker
 
-### [HIGH] Default retry policy retries ALL errors (no `RetryIf` predicate)
-**File**: `resilience/retry/retry.go:66-72,240`
-**Issue**: `DefaultPolicy.RetryIf == nil`. `doWithPolicy` interprets nil as "retry every error" — non-idempotent ops, validation errors, permission denials, `apperror.Permanent` failures. The convenience `RetryIfNotPermanent` exists but isn't wired into the default. AGENTS.md implies `apperror.ShouldRetry` is wired by default; reality is it isn't.
-**Fix**: Default `DefaultPolicy.RetryIf` to `RetryIfNotPermanent` (or `apperror.ShouldRetry`). Document that nil = "retry everything" and require explicit opt-in for that behavior.
-**Effort**: S
-**Phase**: 1
-**Migration**: Existing callers relying on the retry-everything default for permanent errors will see fewer retries — this is a correctness improvement but document loudly.
+## Landed
+
+- ✅ **`retry.DefaultPolicy.RetryIf = RetryIfNotPermanent`** — retrying everything by default (including `apperror.Permanent` failures and validation errors) was the documented-but-not-actual behaviour; now wrapping `retry.Permanent(err)` actually short-circuits the loop (commit `270c901`).
+
+## Open
 
 ### [MEDIUM] CircuitBreaker has no context support; nil receiver silently passes through
 **File**: `resilience/circuitbreaker/circuitbreaker.go:101-112`
@@ -15,5 +13,4 @@
 
 ### Migration checklist
 
-- [ ] Phase 1: `DefaultPolicy.RetryIf = RetryIfNotPermanent`.
 - [ ] Phase 3: `CircuitBreaker.ExecuteCtx`; document or change nil-receiver semantics.

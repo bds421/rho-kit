@@ -1,6 +1,15 @@
 # httpx/middleware/ — stack, csrf, idempotency, ratelimit, timeout, logging, auth, secheaders
 
-Largest single audit area. Many findings combine: the middleware composition (`stack.Default`) ships incomplete and individual middleware have safety gaps that compound.
+Largest single audit area. Middleware composition (`stack.Default`) ships incomplete and individual middleware have safety gaps that compound.
+
+## Landed
+
+- ✅ **Auth middleware checks `VerifiedChains`** — `RequireS2SAuth` rejects when `r.TLS.VerifiedChains == nil` in addition to the PeerCertificates check (commit `c502dd2`).
+- ✅ **Idempotency body-fingerprint plumbing** — middleware computes SHA-256 of request body (≤1 MiB), passes through `Store.Get` / `Store.TryLock`, returns 422 on mismatch (commit `1f06b5e`). Identity-header strip and mandatory user-extractor are still open below.
+- ✅ **CSRF Origin allowlist** — `WithAllowedOrigins(...)` validates Origin/Referer against allowlist on state-changing requests (commit `409cdbb`). Session-bound HMAC and Secure-default still open below.
+- ✅ **Idempotency `WithTTL` rejects non-positive durations** — panics in constructor instead of producing permanent locks in Redis (commit `36cf34b`).
+
+## Open
 
 ### [CRITICAL] `stack.Default` has no panic recovery
 **File**: `httpx/middleware/stack/stack.go:41-121`
@@ -11,7 +20,7 @@ Largest single audit area. Many findings combine: the middleware composition (`s
 
 ### [HIGH] `clientip` default trusts ALL RFC1918 + ULA IPv6 — internal callers can spoof client IP
 **File**: `httpx/middleware/clientip/clientip.go:9,43,81` + `httpx/middleware/ratelimit/ratelimit.go:56`
-**Issue**: Default trusted-proxy list includes all RFC1918 ranges and unique-local IPv6. Any caller reaching the service from inside the VPC, pod network, or Docker network can set `X-Real-IP`/`X-Forwarded-For` and be treated as that client IP. Invalid explicit proxy config is silently skipped and falls back to the same broad defaults. IP rate limits, audit logs, abuse detection, and any auth that consumes client IP can be bypassed or poisoned by an internal client. (Also explains why the logging/ratelimit IP attribution issue manifests — both consume the same too-broad default.)
+**Issue**: Default trusted-proxy list includes all RFC1918 ranges and unique-local IPv6. Any caller reaching the service from inside the VPC, pod network, or Docker network can set `X-Real-IP`/`X-Forwarded-For` and be treated as that client IP. Invalid explicit proxy config is silently skipped and falls back to the same broad defaults. IP rate limits, audit logs, abuse detection, and any auth that consumes client IP can be bypassed or poisoned by an internal client.
 **Fix**: Default to trusting NO forwarded headers (or loopback only). Require explicit proxy CIDRs from config for production. Fail fast on invalid entries. Expose through `app.Builder.WithTrustedProxies(cidrs)`.
 **Effort**: S
 **Phase**: 1
@@ -31,10 +40,10 @@ Largest single audit area. Many findings combine: the middleware composition (`s
 **Effort**: M
 **Phase**: 2
 
-### [HIGH] CSRF middleware doesn't validate Origin/Referer; double-submit alone is insufficient
+### [HIGH] CSRF middleware session-bound HMAC + Secure default still missing
 **File**: `httpx/middleware/csrf/csrf.go:128-189`
-**Issue**: HMAC + double-submit cookie. But (a) any subdomain or sibling app on the same eTLD+1 can `Set-Cookie` overwriting the cookie; the HMAC validates because the kit only knows that *some* server-signed token was sent — there's no session binding. (b) No Origin/Referer check. (c) Cookie default `Secure=false`.
-**Fix**: Add Origin allowlist check; bind token to session (HMAC over `session_id || nonce`); default `Secure=true` when SameSite is None. See also [new/06-security-csrf-tokens.md](../new/06-security-csrf-tokens.md) for the underlying primitive.
+**Issue**: Origin allowlist landed in commit `409cdbb`; the remaining gaps are (a) the HMAC is over a random nonce only — bind it to the session ID so a sibling app on the same eTLD+1 cannot Set-Cookie an attacker-controlled token, and (b) `Secure` defaults to `false` which leaks the cookie over plaintext when SameSite is None.
+**Fix**: HMAC over `session_id || nonce`; default `Secure=true` when SameSite is None. See [new/06-security-csrf-tokens.md](../new/06-security-csrf-tokens.md) for the underlying primitive.
 **Effort**: M
 
 ### [HIGH] CSRF SkipCheck still uses tampered cookie after regeneration
@@ -43,23 +52,10 @@ Largest single audit area. Many findings combine: the middleware composition (`s
 **Fix**: After regenerating, update local `cookie.Value` to the new token, OR short-circuit with a 403 explaining the client must retry with the new cookie.
 **Effort**: S
 
-### [HIGH] Idempotency middleware fingerprint omits body hash
-**File**: `httpx/middleware/idempotency/idempotency.go:163,254-266`
-**Issue**: `fingerprintKey(method, path, rawKey, userID)` — no body. A client reusing an Idempotency-Key with a different body silently receives the cached response of the first request. Stripe/AWS/Square all bind the key to a body hash and return 422 on mismatch (RFC draft requires it).
-**Fix**: Read body up to a cap, hash sha256, include in fingerprint. On key match with mismatched body fingerprint, return 422 instead of replaying. Requires interface change (see [08-data-cache-and-idempotency.md](08-data-cache-and-idempotency.md)).
-**Effort**: M
-**Phase**: 2
-
 ### [HIGH] Idempotency replays Set-Cookie / Authorization headers verbatim
 **File**: `httpx/middleware/idempotency/idempotency.go:230-249,268-276`
 **Issue**: Cached response copies ALL headers and replays them. Includes `Set-Cookie`, `Authorization`, `WWW-Authenticate`, `Strict-Transport-Security`. If the original handler set a session cookie, every replay over the next 24h sets it for potentially different users. Per-user scoping is opt-in (warning logged), not enforced.
 **Fix**: Drop hop-by-hop and identity-bearing headers from cached response. Make `WithUserExtractor` mandatory (panic without it).
-**Effort**: S
-
-### [HIGH] Auth middleware checks `PeerCertificates` not `VerifiedChains`
-**File**: `httpx/middleware/auth/auth.go:95-181`
-**Issue**: `RequireS2SAuth` checks `r.TLS.PeerCertificates` length. A misconfigured proxy injecting a fake `r.TLS` could let an unverified client through; the actual verification status is in `VerifiedChains`.
-**Fix**: Reject when `r.TLS.VerifiedChains == nil` or empty. Also document that `RequireS2SAuth` requires termination at the Go process — not at an upstream proxy.
 **Effort**: S
 
 ### [HIGH] Timeout middleware buffers up to 10 MiB per in-flight request
@@ -95,12 +91,12 @@ Largest single audit area. Many findings combine: the middleware composition (`s
 - [ ] Phase 1: prepend recover middleware in `stack.Default` (depends on [new/01](../new/01-httpx-middleware-recover.md)).
 - [ ] Phase 1: timeout middleware buffer cap default 1 MiB.
 - [ ] Phase 1: secheaders honor `X-Forwarded-Proto` from trusted proxies.
-- [ ] Phase 1: auth `VerifiedChains` check.
 - [ ] Phase 1: `clientip` default to no-trusted-proxies; require explicit CIDRs via `Builder.WithTrustedProxies`.
 - [ ] Phase 1: CSRF require shared secret in non-dev; add `Builder.WithCSRFSecret`.
+- [ ] Phase 1: CSRF SkipCheck regeneration bug fix.
 - [ ] Phase 2: timeout middleware hard-timeout mode (or rename to Cooperative).
-- [ ] Phase 2: idempotency body-fingerprint + identity-header strip + mandatory user extractor.
-- [ ] Phase 2: CSRF Origin allowlist + session-bound HMAC + Secure default.
+- [ ] Phase 2: idempotency identity-header strip + mandatory user extractor.
+- [ ] Phase 2: CSRF session-bound HMAC + Secure default.
 - [ ] Phase 3: shared client-IP resolver for logging + ratelimit.
 - [ ] Phase 3: tracing hijack handling.
 

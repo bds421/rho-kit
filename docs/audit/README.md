@@ -1,21 +1,22 @@
-# rho-kit Audit & Roadmap (2026-05)
+# rho-kit Audit & Roadmap (2026-05) — current state
 
-Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total. The kit's primitives are correct; its **defaults, middleware-stack composition, and dep freshness** ship insecure. Four recurring patterns:
+Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total at audit time. As of Wave 1+2+3, **10 of 12 CRITICAL items closed**, all but two HIGH items in the Phase 1 release window closed, and most Phase 2 interface-bumps shipped. The remaining two CRITICAL items both depend on creating new packages (recover middleware, gRPC recovery default).
+
+Each `existing/*.md` file now has two top-level sections:
+
+- **`## Landed`** — findings closed by Wave 1+2+3, with the commit hash that closed each one.
+- **`## Open`** — findings still requiring work, with severity, effort, and phase tags retained.
+
+See [CRITICAL.md](CRITICAL.md) for the per-finding ledger and [ROADMAP.md](ROADMAP.md) for what's left, grouped by phase.
+
+## Original four recurring patterns
 
 1. **Hardening off by default** — recover middleware, audience validation, mandatory publish, parent-dir fsync, owner-token unlock, Postgres `sslmode=require`, RetryIfNotPermanent, transaction-required outbox writes, CSRF shared secret, idempotency TTL > 0.
 2. **Interface drift** — `data/lock` interface and Redis impl don't match; `data/idempotency.Store` lacks the request-fingerprint the middleware computes; `outbox.Writer` doesn't enforce ambient transaction; idempotency TTL semantics differ between Redis/Memory/PG backends.
 3. **Constructors accept nil dependencies** — fail at first use (request time), not at startup. Violates the kit's own AGENTS.md fail-fast convention.
 4. **Observability loud-by-default** — 100% trace sample rate, Baggage propagator on, Prometheus default histogram buckets that top out at 10s, default trusted-proxies trusting all RFC1918.
 
-## Severity counts
-
-| | CRITICAL | HIGH | MEDIUM | LOW |
-|---|---|---|---|---|
-| Findings | 12 | ~58 | ~38 | ~17 |
-
-CRITICAL = security loss or data loss in normal operation. HIGH = correctness bug in common path. MEDIUM = correctness bug in rare path or significant footgun. LOW = nits worth listing.
-
-See [CRITICAL.md](CRITICAL.md) for the cross-package critical-fix list. See [ROADMAP.md](ROADMAP.md) for suggested execution order (6–10 weeks of focused work to close CRITICAL+HIGH).
+Patterns 1, 2, and 4 are largely closed; pattern 3 (nil-dep sweep) is still open as a Phase 2 task.
 
 ## How this directory is organized
 

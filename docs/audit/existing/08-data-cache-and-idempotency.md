@@ -1,75 +1,16 @@
 # data/cache + data/idempotency — caching and idempotency stores
 
-### [CRITICAL] pgstore `Unlock` has no owner check (split-brain)
-**File**: `data/idempotency/pgstore/store.go:165-175`
-**Issue**: `DELETE FROM ... WHERE key=$1 AND response_body IS NULL` — no token/owner check. After A's TTL expires and B reacquires via the expired-row UPDATE branch, A's delayed `Unlock` removes B's still-valid lock row. C then `TryLock`s while B is still mid-flight → two concurrent in-flight processors for the same Idempotency-Key.
-**Fix**: Add an owner_token column (or use the row's `expires_at` snapshot as the token). `Unlock` becomes `DELETE ... WHERE key=$1 AND response_body IS NULL AND owner_token=$2`. Migration adds the column.
-**Effort**: M
-**Phase**: 2
-**Migration**: New column; `Store` interface change to return token from `TryLock` and accept it in `Unlock`/`Set`. Coordinate with the redisstore fix below.
+## Landed
 
-### [HIGH] Idempotency `WithTTL(0)` creates permanent locks; backends disagree on zero/sub-second TTLs
-**Files**: `httpx/middleware/idempotency/idempotency.go:79,132,181` + `data/idempotency/redisstore/store.go:106` + `data/idempotency/pgstore/store.go:49`
-**Issue**: `WithTTL` accepts zero and negative durations. Three backends, three behaviors:
-- Redis `SET NX` with `EX 0` creates a lock without expiry (the EX is ignored). Permanent lock if the consumer crashes before clearing it.
-- MemoryStore treats TTL=0 as immediately expired.
-- PostgreSQL rounds sub-second durations down to `"0 seconds"` interval, so anything < 1s also expires immediately.
+- ✅ **pgstore `Unlock` owner-token check** — split-brain finding closed; `Unlock` requires `owner_token` match, migration `20260505000001` adds the column (commit `1f06b5e`).
+- ✅ **Idempotency `WithTTL` rejects non-positive durations** — panics in constructor; eliminates the Redis "permanent lock on TTL=0" path (commit `36cf34b`).
+- ✅ **`ComputeCache` WaitGroup race fixed** — `bgMu` serialises `bgWg.Add` against `Wait` so `Close` can't race with a refresh trigger (commit `36cf34b`).
+- ✅ **`MemoryCache` default `MaxCost = 64 MiB`** instead of `math.MaxInt64`; opt-in for unbounded (commit `36cf34b`).
+- ✅ **`Store` interface reshaped with token + fingerprint** — `TryLock(ctx, key, fingerprint, ttl) → (token, fingerprintMismatch, ok, err)`, `Set` requires token, `Get` reports body-mismatch (commit `1f06b5e`).
+- ✅ **redisstore drops in-process `tokens` map** — token round-trips through caller; new Lua compare-then-write script in `Set` requires token+fingerprint match (commit `1f06b5e`).
+- ✅ **MemoryStore body-nil semantics preserved** — defensive copy keeps nil bodies as nil through `Set` → `Get` (commit `1f06b5e`).
 
-The same TTL value produces three different operational behaviors. Misconfigured middleware can permanently brick a request key in Redis; the same config "works" in tests with MemoryStore.
-**Fix**: Make `WithTTL` panic (or return an error) on non-positive values. Document the minimum-precision (1 second). Add backend tests for zero, negative, and sub-second TTLs that all agree on the rejection path.
-**Effort**: S
-**Phase**: 1
-
-### [HIGH] `ComputeCache` races `bgWg.Add` with `Close`/`Wait` (WaitGroup misuse)
-**File**: `data/cache/compute.go:311`
-**Issue**: `triggerBackgroundRefresh` checks `closed` then calls `bgWg.Add(1)`. `Close` sets `closed` and immediately calls `bgWg.Wait()`. A concurrent refresh can call `Add` while `Wait` is active — classic `sync.WaitGroup` misuse. May panic, may let refresh work start after `Close` returns, makes shutdown nondeterministic.
-**Fix**: Guard the closed-check + Add with a mutex. Or replace the WaitGroup lifecycle with a channel/errgroup that cannot accept new work after close begins.
-**Effort**: S
-**Phase**: 1
-
-### [HIGH] `data/idempotency.Store` interface lacks request-fingerprint + owner-token
-**File**: `data/idempotency/idempotency.go:13-25`
-**Issue**: The standard Idempotency-Key pattern requires the store to detect body mismatch (same key, different body) and return 422. Interface has no place for a request hash; responsibility punted to middleware. Also no owner token plumbing → split-brain (above).
-**Fix**: Reshape interface:
-
-```go
-type Store interface {
-    TryLock(ctx, key string, fingerprint []byte, ttl time.Duration) (token string, fingerprintMatch bool, ok bool, err error)
-    Set(ctx, key, token string, resp CachedResponse, ttl time.Duration) error
-    Unlock(ctx, key, token string) error
-    Get(ctx, key string, fingerprint []byte) (resp *CachedResponse, fingerprintMismatch bool, err error)
-}
-```
-
-Middleware uses `fingerprintMismatch` → 422.
-**Effort**: M
-**Phase**: 2
-**Migration**: All three implementations (memory, pg, redis) must update together. Add a `StoreV1` shim if external consumers exist.
-
-### [HIGH] redisstore `tokens` map is process-local and overwritten on duplicate TryLock
-**File**: `data/idempotency/redisstore/store.go:106-141`
-**Issue**: `RedisStore.tokens` keyed only by lockKey. Concurrent same-key `TryLock` from same process overwrites the token; first goroutine's later `Unlock` reads the second's token and erroneously releases someone else's lock. Also unbounded growth without cleanup if `Unlock` never runs (e.g., handler panic).
-**Fix**: Don't keep an in-process map; return token from `TryLock` and pass it back in `Unlock`/`Set`. Ties into the interface change above.
-**Effort**: S (depends on interface change)
-
-### [HIGH] redisstore `Set` doesn't require lock-token match
-**File**: `data/idempotency/redisstore/store.go:91-101`
-**Issue**: Plain `SET key val EX ttl` — a stale/late writer can overwrite a fresh response from another caller.
-**Fix**: Lua script that writes the response only if the lock token matches (or atomically replaces lock with response). Documented prerequisite of the interface change.
-**Effort**: S
-
-### [HIGH] MemoryStore `Set` normalizes nil vs empty body inconsistently
-**File**: `data/idempotency/idempotency.go:122-158`
-**Issue**: Always `make([]byte, len(resp.Body))` — caller passing `Body=nil` gets a non-nil empty body back from `Get`. Middleware that distinguishes "no body" (204) from "empty body" (200) gets confused.
-**Fix**: Preserve nil-ness, or normalize semantics in the type and apply consistently across all three implementations.
-**Effort**: S
-
-### [HIGH] `MemoryCache` default `MaxCost = math.MaxInt64` (effectively unbounded)
-**File**: `data/cache/memory_cache.go:111`
-**Issue**: `NewMemoryCache` defaults `MaxCost` to `math.MaxInt64`. Attacker-controlled or high-cardinality cache keys can grow memory until process pressure or OOM unless every caller remembers to set `WithMaxSize`/`WithMaxCost`. Same class of bug as the rate limiter's keyed map — but the rate limiter has it right (sharded LRU bound at 10k/shard) and the memory cache doesn't.
-**Fix**: Set a conservative default cap (e.g., 64 MiB or 100k entries). Require explicit opt-in for unbounded caches via `WithUnboundedCost()`. Expose memory-cache sizing in the golden-path config so `app.Builder.WithProductionDefaults()` enforces it.
-**Effort**: S
-**Phase**: 1
+## Open
 
 ### [MEDIUM] `ComputeCache` zero TTL contradicts the base cache interface
 **Files**: `data/cache/cache.go:56` + `data/cache/compute.go:276`
@@ -101,14 +42,8 @@ Middleware uses `fingerprintMismatch` → 422.
 
 ### Migration checklist
 
-- [ ] Phase 1: idempotency `WithTTL` reject non-positive; backend tests assert agreement.
-- [ ] Phase 1: ComputeCache fix WaitGroup race (mutex around closed-check + Add).
-- [ ] Phase 1: MemoryCache conservative default MaxCost; require opt-in for unbounded.
-- [ ] Phase 2: reshape `Store` interface (token + fingerprint plumbing).
-- [ ] Phase 2: pgstore add owner_token column + migration.
-- [ ] Phase 2: redisstore drop in-process tokens map; Lua-guarded `Set`.
-- [ ] Phase 2: normalize body-nil semantics across all three impls.
 - [ ] Phase 2: ComputeCache zero-TTL contract (reject, or encode no-expire sentinel).
 - [ ] Phase 3: MemoryStore eviction heap/sweeper.
 - [ ] Phase 3: cache.Cache add MGet/MSet/SetNX.
 - [ ] Phase 3: compute cache surface backend Set errors.
+- [ ] Phase 3: pgstore Get corrupted-headers policy decision.

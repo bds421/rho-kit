@@ -2,18 +2,12 @@
 
 Foundation packages. Bugs here ripple everywhere.
 
-### [HIGH] `validate.RegisterValidation` TOCTOU race with `Struct()`
-**File**: `core/validate/validate.go:72-77`
-**Issue**: Checks `frozen.Load()` then calls `get().RegisterValidation(...)` non-atomically. A concurrent goroutine can call `Struct()` between the two operations: it does `frozen.CompareAndSwap(false, true)` then forwards to the underlying validator — which is **not concurrency-safe between Register and Struct**. The check claims to prevent this but doesn't actually serialize the operations.
-**Fix**: Wrap both `RegisterValidation` and the read+forward in `Struct` with a `sync.Mutex`. Or move registration into a single-shot init-only API that does not need the runtime check.
-**Effort**: S
-**Migration**: None — internal change.
+## Landed
 
-### [MEDIUM] `config.Load` `_FILE` reads use `TrimSpace` (strips meaningful whitespace)
-**File**: `core/config/load.go:192`
-**Issue**: `strings.TrimSpace` removes ALL leading/trailing whitespace. Most secret-injection tools only add a single trailing `\n`. A secret that legitimately ends in a space gets silently mangled.
-**Fix**: Use `bytes.TrimRight(data, "\r\n")`.
-**Effort**: S
+- ✅ **`validate.RegisterValidation` TOCTOU race** — registration now serialised against `Struct()` via mutex (commit `270c901`).
+- ✅ **`config.Load` `_FILE` reads** — switched from `TrimSpace` (which clobbered intentional leading/trailing whitespace) to `TrimRight(s, "\r\n")` (commit `270c901`).
+
+## Open
 
 ### [MEDIUM] `config.GetSecret` panics on unreadable secret file
 **File**: `core/config/envutil.go:35`
@@ -46,7 +40,6 @@ Foundation packages. Bugs here ripple everywhere.
 
 ### Migration checklist
 
-- [ ] Phase 1: fix `validate` race; fix `_FILE` TrimSpace.
 - [ ] Phase 2: split `GetSecret` into `(string, error)` + `MustGetSecret`.
 - [ ] Phase 3: `EnvReloader.WithImmediateLoad()`.
 - [ ] Phase 3: decide on `apperror.HTTPStatus` removal vs keep.
