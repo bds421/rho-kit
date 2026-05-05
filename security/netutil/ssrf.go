@@ -177,7 +177,12 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
-			MinVersion: tls.VersionTLS12,
+			// Default to TLS 1.3 to match the kit's internal mTLS profile.
+			// The previous TLS 1.2 default for outbound calls to user-supplied
+			// URLs was strictly weaker than the rest of the kit. Callers with
+			// legacy interop needs can wrap the returned transport and lower
+			// MinVersion explicitly.
+			MinVersion: tls.VersionTLS13,
 		},
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,

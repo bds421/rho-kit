@@ -37,9 +37,15 @@ func fakePeerCert(cn string) *x509.Certificate {
 }
 
 // withMTLS sets the TLS connection state with a peer certificate on the request.
+// VerifiedChains is also populated so the middleware's chain-verified check
+// passes — production traffic only ever reaches the handler when the TLS
+// layer has actually validated the chain, so the test fixture must mirror
+// that to be representative.
 func withMTLS(r *http.Request, cn string) *http.Request {
+	cert := fakePeerCert(cn)
 	r.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{fakePeerCert(cn)},
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
 	}
 	return r
 }

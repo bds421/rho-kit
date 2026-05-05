@@ -45,6 +45,11 @@ type KeySet struct {
 	set jwk.Set
 	// ExpectedIssuer, when non-empty, is validated against the "iss" claim.
 	ExpectedIssuer string
+	// ExpectedAudience, when non-empty, is validated against the "aud" claim.
+	// REQUIRED for multi-service deployments — without it, a token issued for
+	// service A is silently valid at service B as long as both trust the same
+	// signer. Standard JWT confused-deputy mitigation (RFC 7519 §4.1.3).
+	ExpectedAudience string
 }
 
 // ParseKeySet parses a JWKS JSON document into a KeySet.
@@ -87,6 +92,9 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	}
 	if ks.ExpectedIssuer != "" {
 		parseOpts = append(parseOpts, jwt.WithIssuer(ks.ExpectedIssuer))
+	}
+	if ks.ExpectedAudience != "" {
+		parseOpts = append(parseOpts, jwt.WithAudience(ks.ExpectedAudience))
 	}
 	tok, err := jwt.Parse([]byte(tokenString), parseOpts...)
 	if err != nil {
@@ -154,10 +162,11 @@ func toStringSlice(v any) []string {
 // making it unsuitable here — we need aggressive retry on startup (2s backoff)
 // but infrequent periodic refresh (5–10 min).
 type Provider struct {
-	url            string
-	httpClient     *http.Client
-	refresh        time.Duration
-	expectedIssuer string
+	url              string
+	httpClient       *http.Client
+	refresh          time.Duration
+	expectedIssuer   string
+	expectedAudience string
 
 	mu     sync.RWMutex
 	keyset *KeySet
@@ -169,6 +178,15 @@ type ProviderOption func(*Provider)
 // WithExpectedIssuer sets the JWT issuer claim that Verify will validate.
 func WithExpectedIssuer(issuer string) ProviderOption {
 	return func(p *Provider) { p.expectedIssuer = issuer }
+}
+
+// WithExpectedAudience sets the JWT audience claim that Verify will validate.
+// This is the standard mitigation against the confused-deputy attack: without
+// it, any service that trusts the same JWKS will accept tokens issued for any
+// other service. Set this to the canonical URL or identifier of the service
+// processing the token.
+func WithExpectedAudience(audience string) ProviderOption {
+	return func(p *Provider) { p.expectedAudience = audience }
 }
 
 // NewProvider creates a JWKS provider that fetches public keys from the given URL.
@@ -278,6 +296,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 		return err
 	}
 	ks.ExpectedIssuer = p.expectedIssuer
+	ks.ExpectedAudience = p.expectedAudience
 
 	p.mu.Lock()
 	p.keyset = ks

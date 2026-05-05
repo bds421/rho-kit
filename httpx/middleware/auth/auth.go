@@ -102,12 +102,17 @@ func s2sHandler(provider *jwtutil.Provider, allowedCNs map[string]struct{}, next
 	})
 }
 
-// verifyClientCert checks that the request was made over TLS with a verified
-// client certificate whose CN is in the allowlist. The TLS layer already
-// verified the certificate chain against the CA (VerifyClientCertIfGiven);
-// this function only checks the identity.
+// verifyClientCert checks that the request was made over TLS with a fully
+// verified client certificate whose CN is in the allowlist.
+//
+// The VerifiedChains check is essential: r.TLS.PeerCertificates is populated
+// any time a peer presents a certificate, even when chain verification was
+// skipped or failed. Trusting PeerCertificates without VerifiedChains lets a
+// misconfigured proxy (or a tls.Config that omits ClientCAs) admit
+// unverified certs. Only trust an identity that the TLS layer itself
+// validated against a trusted CA.
 func verifyClientCert(r *http.Request, allowedCNs map[string]struct{}) bool {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 {
 		return false
 	}
 	cn := r.TLS.PeerCertificates[0].Subject.CommonName
