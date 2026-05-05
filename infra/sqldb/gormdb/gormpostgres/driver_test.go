@@ -27,7 +27,10 @@ func TestBuildPostgresDSN_Defaults(t *testing.T) {
 		Name:     "testdb",
 	}
 	got := buildPostgresDSN(cfg, false)
-	want := "host='localhost' port=5432 user='postgres' password='secret' dbname='testdb' sslmode='disable'"
+	// Default sslmode is "prefer" — strictly safer than the previous
+	// "disable" default. Production callers should set DB_SSL_MODE
+	// explicitly (Validate enforces this in non-dev environments).
+	want := "host='localhost' port=5432 user='postgres' password='secret' dbname='testdb' sslmode='prefer'"
 	if got != want {
 		t.Errorf("buildPostgresDSN() =\n  %q\nwant\n  %q", got, want)
 	}
@@ -73,7 +76,7 @@ func TestBuildPostgresDSN_EscapesSpecialChars(t *testing.T) {
 		Name:     "test'db",
 	}
 	got := buildPostgresDSN(cfg, false)
-	want := "host='db.example.com' port=5432 user='user\\'name' password='pass\\\\word' dbname='test\\'db' sslmode='disable'"
+	want := "host='db.example.com' port=5432 user='user\\'name' password='pass\\\\word' dbname='test\\'db' sslmode='prefer'"
 	if got != want {
 		t.Errorf("buildPostgresDSN() =\n  %q\nwant\n  %q", got, want)
 	}

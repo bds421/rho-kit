@@ -27,7 +27,7 @@ func TestBuildMySQLDSN_Defaults(t *testing.T) {
 		Name:     "testdb",
 	}
 	got := buildMySQLDSN(cfg)
-	want := "root:secret@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+	want := "root:secret@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=True&loc=UTC&clientFoundRows=true"
 	if got != want {
 		t.Errorf("buildMySQLDSN() =\n  %q\nwant\n  %q", got, want)
 	}
@@ -43,7 +43,7 @@ func TestBuildMySQLDSN_CustomCharset(t *testing.T) {
 		Options:  map[string]string{"charset": "utf8"},
 	}
 	got := buildMySQLDSN(cfg)
-	want := "app:p%40ss@tcp(db.example.com:3307)/mydb?charset=utf8&parseTime=True&loc=Local&clientFoundRows=true"
+	want := "app:p%40ss@tcp(db.example.com:3307)/mydb?charset=utf8&parseTime=True&loc=UTC&clientFoundRows=true"
 	if got != want {
 		t.Errorf("buildMySQLDSN() =\n  %q\nwant\n  %q", got, want)
 	}
@@ -58,7 +58,7 @@ func TestBuildMySQLDSN_SpecialCharsInCredentials(t *testing.T) {
 		Name:     "db/name",
 	}
 	got := buildMySQLDSN(cfg)
-	want := "user%40host:p%40ss%3Aword%2Ftest@tcp(127.0.0.1:3306)/db%2Fname?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+	want := "user%40host:p%40ss%3Aword%2Ftest@tcp(127.0.0.1:3306)/db%2Fname?charset=utf8mb4&parseTime=True&loc=UTC&clientFoundRows=true"
 	if got != want {
 		t.Errorf("buildMySQLDSN() =\n  %q\nwant\n  %q", got, want)
 	}

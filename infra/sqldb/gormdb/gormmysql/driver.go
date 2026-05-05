@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"time"
 
-	mysqldriver "github.com/go-sql-driver/mysql"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -40,8 +39,8 @@ func (MySQLDriver) Open(
 	dsn := buildMySQLDSN(cfg)
 
 	if clientTLS != nil {
-		tlsKey := fmt.Sprintf("custom-%d", tlsConfigCounter.Add(1))
-		if err := mysqldriver.RegisterTLSConfig(tlsKey, clientTLS); err != nil {
+		tlsKey, err := registerTLSConfigDedup(clientTLS)
+		if err != nil {
 			return nil, fmt.Errorf("register mysql TLS config: %w", err)
 		}
 		dsn += "&tls=" + url.QueryEscape(tlsKey)
@@ -75,16 +74,24 @@ func (MySQLDriver) Open(
 }
 
 // buildMySQLDSN constructs a MySQL DSN from the unified Config.
+//
+// Default loc is UTC (overridable via Config.Options["loc"]). The previous
+// hard-coded loc=Local silently shifted timestamps based on the pod's local
+// timezone — UTC pods read times as UTC; developer laptops read the same
+// rows as local time. Standardising on UTC matches Postgres conventions and
+// makes time-based comparisons across environments deterministic.
 func buildMySQLDSN(cfg sqldb.Config) string {
 	charset := cfg.Option("charset", "utf8mb4")
+	loc := cfg.Option("loc", "UTC")
 	return fmt.Sprintf(
-		"%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=Local&clientFoundRows=true",
+		"%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=%s&clientFoundRows=true",
 		url.QueryEscape(cfg.User),
 		url.QueryEscape(cfg.Password),
 		cfg.Host,
 		cfg.Port,
 		url.QueryEscape(cfg.Name),
 		url.QueryEscape(charset),
+		url.QueryEscape(loc),
 	)
 }
 

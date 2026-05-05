@@ -86,9 +86,19 @@ func (PostgresDriver) Open(
 }
 
 // buildPostgresDSN constructs a PostgreSQL keyword/value DSN from the unified Config.
+//
+// Default sslmode is "prefer" (negotiated TLS where supported, falling back to
+// plaintext on older servers) — strictly safer than the previous "disable"
+// default, which silently shipped credentials on the wire when DB_SSL_MODE
+// was unset. Production deployments must set sslmode=require / verify-ca /
+// verify-full explicitly; sqldb.Fields.Validate enforces this.
 func buildPostgresDSN(cfg sqldb.Config, tlsEnabled bool) string {
-	sslMode := cfg.Option("sslmode", "disable")
-	if sslMode == "disable" && tlsEnabled {
+	sslMode := cfg.Option("sslmode", "prefer")
+	if tlsEnabled && (sslMode == "disable" || sslMode == "prefer") {
+		// When the kit is configured with a client TLS bundle, escalate to
+		// full chain + hostname verification — the operator clearly intends
+		// strict TLS and "prefer" would silently downgrade if the server
+		// rejected TLS for any reason.
 		sslMode = "verify-full"
 	}
 	return fmt.Sprintf(

@@ -265,8 +265,19 @@ func (f Fields) Validate(envPrefix, environment, driver string) error {
 		return fmt.Errorf("%s_DB_NAME is required", envPrefix)
 	}
 	if driver == "postgres" {
-		if err := validatePostgresSSLMode(f.Database.Option("sslmode", "")); err != nil {
+		sslMode := f.Database.Option("sslmode", "")
+		if err := validatePostgresSSLMode(sslMode); err != nil {
 			return err
+		}
+		// In non-development environments, refuse to start with TLS disabled.
+		// Empty defaults to "disable" inside buildPostgresDSN; treat both
+		// as a hard error so a missing DB_SSL_MODE in production fails loud
+		// rather than silently shipping credentials/queries on the wire.
+		if !config.IsDevelopment(environment) {
+			normalized := strings.ToLower(sslMode)
+			if normalized == "" || normalized == "disable" {
+				return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full in non-development environments (got %q)", envPrefix, sslMode)
+			}
 		}
 	}
 	if !config.IsDevelopment(environment) {
