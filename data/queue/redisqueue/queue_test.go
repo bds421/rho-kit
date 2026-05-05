@@ -136,3 +136,75 @@ func TestProcess_PanicsOnEmptyQueue(t *testing.T) {
 		q.Process(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty queue name
 	})
 }
+
+func TestNewQueue_GeneratesUniqueConsumerID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q1 := NewQueue(client)
+	q2 := NewQueue(client)
+	assert.NotEmpty(t, q1.ConsumerID())
+	assert.NotEmpty(t, q2.ConsumerID())
+	assert.NotEqual(t, q1.ConsumerID(), q2.ConsumerID(),
+		"each Queue must have a unique consumer ID so per-consumer processing lists don't collide")
+}
+
+func TestWithConsumerID_OverridesDefault(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithConsumerID("worker-pod-7"))
+	assert.Equal(t, "worker-pod-7", q.ConsumerID())
+}
+
+func TestWithConsumerID_EmptyKeepsGenerated(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithConsumerID(""))
+	assert.NotEmpty(t, q.ConsumerID(), "empty override must not clear the auto-generated ID")
+}
+
+func TestRemoveByID_ScopedToMessageID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	processingQ := "test:processing"
+
+	// Push two messages with identical PAYLOAD bytes but different IDs.
+	// Old LRem-by-data would remove whichever copy Redis's scan finds first;
+	// removeByID must remove only the one with the requested ID.
+	msgA := `{"id":"id-A","type":"x","payload":"same","timestamp":"2026-01-01T00:00:00Z","attempt":1}`
+	msgB := `{"id":"id-B","type":"x","payload":"same","timestamp":"2026-01-01T00:00:00Z","attempt":1}`
+	require.NoError(t, client.LPush(ctx, processingQ, msgA).Err())
+	require.NoError(t, client.LPush(ctx, processingQ, msgB).Err())
+
+	require.NoError(t, q.removeByID(ctx, processingQ, "id-B"))
+
+	remaining, err := client.LRange(ctx, processingQ, 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	assert.Contains(t, remaining[0], `"id":"id-A"`,
+		"removeByID must keep the message whose ID was NOT specified")
+}
+
+func TestRemoveByID_NoMatchIsBenign(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	processingQ := "test:processing"
+
+	// Empty list — must not error.
+	require.NoError(t, q.removeByID(ctx, processingQ, "missing-id"))
+
+	// List with no matching ID — must not error and must not remove anything.
+	require.NoError(t, client.LPush(ctx, processingQ, `{"id":"keep","type":"x","payload":"x","timestamp":"2026-01-01T00:00:00Z","attempt":1}`).Err())
+	require.NoError(t, q.removeByID(ctx, processingQ, "absent"))
+	remaining, err := client.LRange(ctx, processingQ, 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+}

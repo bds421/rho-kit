@@ -12,6 +12,32 @@ import (
 	"github.com/bds421/rho-kit/core/apperror"
 )
 
+// removeByIDScript scans the processing list for an entry whose JSON has the
+// given message ID, then atomically replaces it with a tombstone and LREMs
+// the tombstone. This avoids LREM-by-payload races where two messages with
+// identical bytes (rare but possible — especially on retry of identical
+// user-enqueued payloads) would result in the wrong copy being removed.
+//
+// The scan is O(n) over the per-consumer processing list, which is bounded
+// by the consumer's in-flight count (typically <100). The cost is amortised
+// over a successful handler invocation.
+//
+//	KEYS[1] = processing list
+//	ARGV[1] = message ID to remove
+var removeByIDScript = goredis.NewScript(`
+local items = redis.call('LRANGE', KEYS[1], 0, -1)
+local needle = '"id":"' .. ARGV[1] .. '"'
+for i = 1, #items do
+	if string.find(items[i], needle, 1, true) then
+		local sentinel = '__rho-tombstone__:' .. KEYS[1] .. ':' .. ARGV[1] .. ':' .. tostring(i)
+		redis.call('LSET', KEYS[1], i - 1, sentinel)
+		redis.call('LREM', KEYS[1], 1, sentinel)
+		return 1
+	end
+end
+return 0
+`)
+
 func (q *Queue) updateProcessingDepth(ctx context.Context, queue, processingQ string) {
 	if n, err := q.client.LLen(ctx, processingQ).Result(); err == nil {
 		q.metrics.processingDepth.WithLabelValues(queue).Set(float64(n))
@@ -31,27 +57,38 @@ const (
 	queueHandlerShutdownTimeout = 30 * time.Second
 )
 
+// removeByID runs the Lua tombstone script. Returns nil if the entry was
+// removed or no longer present (both treated as success).
+func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) error {
+	if _, err := removeByIDScript.Run(ctx, q.client, []string{processingQ}, msgID).Result(); err != nil && !errors.Is(err, goredis.Nil) {
+		return err
+	}
+	return nil
+}
+
 // handleMessage processes a single queue message: unmarshal, handle, ack.
-// If alreadyRemoved is true, the message was already removed from the processing
-// queue (e.g., by RPop during crash recovery) and LRem is skipped to avoid
-// removing a different message with identical data.
-func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, queue, deadQ string, handler Handler, alreadyRemoved bool) {
+// The processing-list entry is removed by message ID after the message is
+// either successfully handled or routed to retry/dead-letter. If post-
+// handler routing fails, the entry is left in the processing list and will
+// be retried on the next recovery scan.
+func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, queue, deadQ string, handler Handler) {
 	var msg Message
 	if err := json.Unmarshal([]byte(data), &msg); err != nil {
 		q.logger.Error("failed to unmarshal queue message, discarding",
 			"error", err,
 		)
-		if !alreadyRemoved {
-			// Use a background context — malformed messages must be removed even
-			// during shutdown. The parent ctx may already be cancelled, which would
-			// make LRem fail immediately and leave garbage in the processing queue.
-			ackCtx, ackCancel := context.WithTimeout(context.Background(), queueAckTimeout)
-			defer ackCancel()
-			if remErr := q.client.LRem(ackCtx, processingQ, 1, data).Err(); remErr != nil {
-				q.logger.Error("failed to remove malformed message from processing queue",
-					"error", remErr,
-				)
-			}
+		// Use a background context — malformed messages must be removed even
+		// during shutdown. The parent ctx may already be cancelled, which would
+		// make LRem fail immediately and leave garbage in the processing queue.
+		// We don't have an ID to use removeByID here, so fall back to literal
+		// LRem — for a malformed payload, payload-equality is the only handle
+		// we have.
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), queueAckTimeout)
+		defer ackCancel()
+		if remErr := q.client.LRem(ackCtx, processingQ, 1, data).Err(); remErr != nil {
+			q.logger.Error("failed to remove malformed message from processing queue",
+				"error", remErr,
+			)
 		}
 		q.metrics.messagesFailed.WithLabelValues(queue).Inc()
 		return
@@ -83,7 +120,7 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 	if handlerErr != nil {
 		q.metrics.messagesFailed.WithLabelValues(queue).Inc()
 		if !q.handleFailedMessage(ackCtx, queue, deadQ, data, msg, handlerErr) {
-			return // Message left in processing queue — recover on restart.
+			return // Message left in processing queue — recover on next pass.
 		}
 	} else {
 		q.metrics.messagesProcessed.WithLabelValues(queue).Inc()
@@ -93,17 +130,15 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 	// the next destination (success ACK, retry re-enqueue, or dead-letter).
 	//
 	// Note: there is a small crash window between the dispatch (RPUSH/LPUSH)
-	// and this LRem. If the process crashes in that window, the message will
-	// exist in both queues and be reprocessed on recovery. This is why handlers
-	// MUST be idempotent (see Process godoc and doc.go).
-	if !alreadyRemoved {
-		if remErr := q.client.LRem(ackCtx, processingQ, 1, data).Err(); remErr != nil {
-			q.logger.Error("failed to remove message from processing queue",
-				"queue", queue,
-				"msg_id", msg.ID,
-				"error", remErr,
-			)
-		}
+	// and this removal. If the process crashes in that window, the message
+	// will exist in both queues and be reprocessed on recovery. This is why
+	// handlers MUST be idempotent (see Process godoc and doc.go).
+	if remErr := q.removeByID(ackCtx, processingQ, msg.ID); remErr != nil {
+		q.logger.Error("failed to remove message from processing queue",
+			"queue", queue,
+			"msg_id", msg.ID,
+			"error", remErr,
+		)
 	}
 }
 
@@ -186,34 +221,49 @@ func (q *Queue) deadLetter(ctx context.Context, queue, deadQ, data, msgID string
 	return true
 }
 
-// recoverProcessing moves messages from the processing queue back to the
-// main queue or dead-letters them if max retries exceeded.
+// recoverProcessing replays messages left in THIS consumer's processing list
+// (e.g. from a previous crash of this consumer ID) through the normal
+// handleMessage path.
 //
-// WARNING: During recovery there is a double-processing window where a message
-// may be handled while a previously crashed goroutine's partial processing is
-// still in flight. Handlers MUST be idempotent to handle this correctly.
+// The previous design RPop'd before dispatch, which silently dropped
+// messages whose dispatch failed (handleFailedMessage returned false). The
+// current design snapshots the per-consumer list with LRange and feeds each
+// entry through handleMessage, which removes by message ID after a
+// successful dispatch (or leaves it in place for the next recovery pass on
+// dispatch failure).
+//
+// Bounded by maxRecoveryPerStart so a huge backlog from a previous crash
+// doesn't head-of-line-block normal traffic; remaining items are picked up
+// when RunWithBackoff next restarts processOnce.
+//
+// WARNING: Even with per-consumer scoping, there is a brief double-process
+// window between handler dispatch and removeByID. Handlers MUST be
+// idempotent.
 func (q *Queue) recoverProcessing(ctx context.Context, processingQ, queue, deadQ string, handler Handler) error {
-	recovered := 0
-	for {
+	const maxRecoveryPerStart = 100
+
+	// LRange of the per-consumer list: BLMOVE pushes new claims to the LEFT,
+	// so the oldest claims sit at the tail. Pull up to maxRecoveryPerStart
+	// from the tail and process oldest-first to mirror FIFO ordering.
+	items, err := q.client.LRange(ctx, processingQ, -maxRecoveryPerStart, -1).Result()
+	if err != nil {
+		return fmt.Errorf("lrange processing: %w", err)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	q.logger.Info("recovering processing list",
+		"queue", queue,
+		"consumer_id", q.consumerID,
+		"count", len(items),
+	)
+
+	for _, data := range items {
 		if ctx.Err() != nil {
 			return nil
 		}
-
-		data, err := q.client.RPop(ctx, processingQ).Result()
-		if err != nil {
-			if errors.Is(err, goredis.Nil) {
-				if recovered > 0 {
-					q.logger.Info("queue crash recovery complete",
-						"queue", queue,
-						"recovered", recovered,
-					)
-				}
-				return nil // no more messages to recover
-			}
-			return fmt.Errorf("rpop processing: %w", err)
-		}
-
-		recovered++
-		q.handleMessage(ctx, data, processingQ, queue, deadQ, handler, true)
+		q.handleMessage(ctx, data, processingQ, queue, deadQ, handler)
 	}
+
+	return nil
 }

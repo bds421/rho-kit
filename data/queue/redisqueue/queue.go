@@ -171,9 +171,24 @@ var defaultMetrics = NewMetrics(nil)
 // Queue provides reliable LIST-based FIFO queuing using BLMOVE.
 //
 // Pattern: messages are atomically popped from the main queue and pushed
-// to a processing queue. On success, the message is removed from the
-// processing queue. On failure/crash, messages in the processing queue
-// are recovered by the claim loop.
+// to a per-consumer processing list. On success, the message is removed
+// from the processing list by message-ID (via a Lua script that finds and
+// tombstones the entry — payload-equality LREM has a duplicate-payload
+// race documented in the audit). On failure/crash, messages remaining in
+// THIS consumer's processing list are recovered at next startup.
+//
+// Each Queue instance generates a per-process consumer ID (UUID v7) that
+// scopes its processing list. Rolling deploys and horizontal scale-out are
+// safe because a fresh consumer never recovers messages from a sibling
+// consumer's in-flight list — the previous shared "{queue}:processing"
+// design double-processed every in-flight message on every restart.
+//
+// Limitation: this consumer-scoped recovery model does NOT reclaim
+// messages from a permanently-dead consumer (e.g. a pod that OOM'd and
+// will not return). Operators with that requirement should run a periodic
+// reaper that inspects abandoned per-consumer lists and re-enqueues their
+// contents to the main queue. A built-in reaper based on heartbeat keys
+// is tracked in docs/audit/existing/07-data-lock-and-queue.md (Phase 3).
 //
 // Only one Process goroutine per queue name is allowed. Calling Process
 // concurrently on the same queue will panic — this prevents duplication
@@ -183,12 +198,16 @@ type Queue struct {
 	logger *slog.Logger
 
 	// processingQueue is the temporary holding queue for in-flight messages.
-	// Defaults to "{queue}:processing".
+	// Defaults to "{queue}:processing:{consumerID}".
 	processingQueue string
 
 	// deadLetterQueue stores messages that exceeded max retries.
 	// Defaults to "{queue}:dead".
 	deadLetterQueue string
+
+	// consumerID uniquely identifies this Queue instance for processing-list
+	// scoping. Generated at construction; visible in logs.
+	consumerID string
 
 	blockTimeout   time.Duration
 	maxRetries     int
@@ -285,11 +304,28 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 	}
 }
 
+// WithConsumerID overrides the auto-generated consumer ID. Useful for
+// deterministic tests and for operators that want to give pods stable
+// identities (e.g. derived from the pod name) so abandoned processing
+// lists can be identified after a permanent crash.
+func WithConsumerID(id string) Option {
+	return func(q *Queue) {
+		if id != "" {
+			q.consumerID = id
+		}
+	}
+}
+
 // NewQueue creates a LIST-based queue.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
+	consumerID, err := uuid.NewV7()
+	if err != nil {
+		panic("redis: failed to generate consumer ID: " + err.Error())
+	}
 	q := &Queue{
 		client:         client,
 		logger:         slog.Default(),
+		consumerID:     consumerID.String(),
 		blockTimeout:   5 * time.Second,
 		maxRetries:     5,
 		deadLetterMax:  defaultDeadLetterMaxLen,
@@ -302,6 +338,11 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	}
 	return q
 }
+
+// ConsumerID returns the unique identifier for this Queue instance. Stable
+// for the lifetime of the Queue; included in processing-list naming so
+// crash recovery scopes itself to this consumer's in-flight messages.
+func (q *Queue) ConsumerID() string { return q.consumerID }
 
 // Enqueue adds a message to the queue (LPUSH — left side).
 // Returns an error if the serialized message exceeds the configured max payload size.
@@ -396,11 +437,18 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	// single Queue instance processes multiple queue names. Global overrides
 	// (WithProcessingQueue/WithDeadLetterQueue) replace the suffix only,
 	// keeping the queue name as prefix for consistent key namespacing.
-	processingQ := queue + ":processing"
-	deadQ := queue + ":dead"
+	//
+	// CRITICAL: the processing list is scoped per-consumer (suffix
+	// :{consumerID}) so a fresh consumer never recovers messages claimed by
+	// a sibling consumer that is still alive. The previous shared
+	// "{queue}:processing" design double-processed every in-flight message
+	// on every rolling-deploy restart.
+	processingSuffix := "processing"
 	if q.processingQueue != "" {
-		processingQ = queue + ":" + q.processingQueue
+		processingSuffix = q.processingQueue
 	}
+	processingQ := queue + ":" + processingSuffix + ":" + q.consumerID
+	deadQ := queue + ":dead"
 	if q.deadLetterQueue != "" {
 		deadQ = queue + ":" + q.deadLetterQueue
 	}
@@ -437,7 +485,7 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 			return fmt.Errorf("blmove %s: %w", queue, err)
 		}
 
-		q.handleMessage(ctx, result, processingQ, queue, deadQ, handler, false)
+		q.handleMessage(ctx, result, processingQ, queue, deadQ, handler)
 	}
 }
 
