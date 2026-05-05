@@ -26,6 +26,7 @@ type fakeStore struct {
 	markFailedErr          error
 	incrementAttemptsErr   error
 	deletePublishedErr     error
+	deleteFailedErr        error
 	resetStaleErr          error
 	countPendingErr        error
 }
@@ -93,7 +94,7 @@ func (s *fakeStore) MarkFailed(_ context.Context, id string, lastError string) e
 	return nil
 }
 
-func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError string) error {
+func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError string, nextRetryAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.incrementAttemptsErr != nil {
@@ -105,6 +106,8 @@ func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError st
 			e.Attempts++
 			e.LastError = &lastError
 			e.Status = outbox.StatusPending
+			retry := nextRetryAt
+			e.NextRetryAt = &retry
 			s.entries[i] = e
 			return nil
 		}
@@ -123,6 +126,27 @@ func (s *fakeStore) DeletePublishedBefore(_ context.Context, before time.Time) (
 	var deleted int64
 	for _, e := range s.entries {
 		if e.Status == outbox.StatusPublished && e.PublishedAt != nil && e.PublishedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	s.entries = kept
+	return deleted, nil
+}
+
+func (s *fakeStore) DeleteFailedBefore(_ context.Context, before time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteFailedErr != nil {
+		return 0, s.deleteFailedErr
+	}
+
+	var kept []outbox.Entry
+	var deleted int64
+	for _, e := range s.entries {
+		// fakeStore stores no UpdatedAt; approximate with CreatedAt for the cutoff.
+		if e.Status == outbox.StatusFailed && e.CreatedAt.Before(before) {
 			deleted++
 			continue
 		}

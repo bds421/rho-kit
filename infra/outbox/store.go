@@ -25,12 +25,22 @@ type Store interface {
 	MarkFailed(ctx context.Context, id string, lastError string) error
 
 	// IncrementAttempts increments the attempt counter, records the last error,
-	// and resets the entry status to pending for retry.
-	IncrementAttempts(ctx context.Context, id string, lastError string) error
+	// resets the entry status to pending, and sets next_retry_at to a future
+	// timestamp computed from the new attempt count. The relay's FetchPending
+	// must skip entries whose next_retry_at is still in the future, so a
+	// persistently failing downstream produces exponential backoff rather than
+	// a tight retry loop.
+	IncrementAttempts(ctx context.Context, id string, lastError string, nextRetryAt time.Time) error
 
 	// DeletePublishedBefore removes published entries older than the given time.
 	// Returns the number of deleted rows.
 	DeletePublishedBefore(ctx context.Context, before time.Time) (int64, error)
+
+	// DeleteFailedBefore removes failed entries older than the given time.
+	// Failed entries (those that exhausted max attempts) accumulate forever
+	// without this; a periodic call from the relay's cleanup loop keeps the
+	// table bounded. Returns the number of deleted rows.
+	DeleteFailedBefore(ctx context.Context, before time.Time) (int64, error)
 
 	// ResetStaleProcessing resets entries stuck in "processing" status back to
 	// "pending" if they have been processing for longer than the given duration.

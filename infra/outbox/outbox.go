@@ -38,6 +38,13 @@ const (
 // Entry represents a single outbox row. It is a plain value object with no
 // ORM-specific tags or dependencies. Storage implementations map this struct
 // to their own persistence model.
+//
+// NextRetryAt is set by [Store.IncrementAttempts] to a future timestamp when
+// a publish fails; [Store.FetchPending] must skip entries whose NextRetryAt
+// is still in the future. This implements exponential backoff between retry
+// attempts and prevents the relay from tight-looping on a persistently
+// failing downstream. NextRetryAt being nil means "eligible immediately"
+// (matches legacy rows from before the column existed).
 type Entry struct {
 	ID          uuid.UUID
 	Topic       string
@@ -50,6 +57,7 @@ type Entry struct {
 	Attempts    int
 	CreatedAt   time.Time
 	PublishedAt *time.Time
+	NextRetryAt *time.Time
 	LastError   *string
 }
 

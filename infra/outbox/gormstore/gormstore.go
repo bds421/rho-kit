@@ -57,12 +57,13 @@ type entry struct {
 	MessageType string          `gorm:"not null;column:message_type"`
 	Payload     json.RawMessage `gorm:"type:text;not null"`
 	Headers     json.RawMessage `gorm:"type:text"`
-	Status      outbox.Status   `gorm:"type:varchar(20);not null;default:pending"`
+	Status      outbox.Status   `gorm:"type:varchar(20);not null;default:pending;index:idx_outbox_pending,priority:1,where:status='pending'"`
 	Attempts    int             `gorm:"not null;default:0"`
 	LastError   *string         `gorm:"column:last_error"`
 	CreatedAt   time.Time       `gorm:"not null;autoCreateTime"`
 	UpdatedAt   time.Time       `gorm:"not null;autoUpdateTime"`
 	PublishedAt *time.Time      `gorm:"column:published_at"`
+	NextRetryAt *time.Time      `gorm:"column:next_retry_at"`
 }
 
 // TableName returns the database table name for GORM.
@@ -110,9 +111,10 @@ func (s *Store) Insert(ctx context.Context, e outbox.Entry) error {
 func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, error) {
 	var rows []entry
 
+	now := time.Now().UTC()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.
-			Where("status = ?", outbox.StatusPending).
+			Where("status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", outbox.StatusPending, now).
 			Order("created_at ASC").
 			Limit(limit).
 			Clauses(clause.Locking{
@@ -183,16 +185,19 @@ func (s *Store) MarkFailed(ctx context.Context, id string, lastError string) err
 	return nil
 }
 
-// IncrementAttempts bumps the attempt counter, records the error, and resets
-// the entry status to pending so it will be retried on the next poll cycle.
-func (s *Store) IncrementAttempts(ctx context.Context, id string, lastError string) error {
+// IncrementAttempts bumps the attempt counter, records the error, schedules
+// the next retry attempt at nextRetryAt, and resets the entry status to
+// pending. FetchPending will skip the row until that timestamp passes, giving
+// the relay exponential backoff behavior across consecutive failures.
+func (s *Store) IncrementAttempts(ctx context.Context, id string, lastError string, nextRetryAt time.Time) error {
 	result := s.db.WithContext(ctx).
 		Model(&entry{}).
 		Where("id = ?", id).
 		Updates(map[string]any{
-			"status":     outbox.StatusPending,
-			"attempts":   gorm.Expr("attempts + 1"),
-			"last_error": lastError,
+			"status":        outbox.StatusPending,
+			"attempts":      gorm.Expr("attempts + 1"),
+			"last_error":    lastError,
+			"next_retry_at": nextRetryAt.UTC(),
 		})
 	if result.Error != nil {
 		return fmt.Errorf("gormstore: increment attempts %s: %w", id, result.Error)
@@ -207,6 +212,19 @@ func (s *Store) DeletePublishedBefore(ctx context.Context, before time.Time) (in
 		Delete(&entry{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("gormstore: delete published: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// DeleteFailedBefore removes entries that are stuck in StatusFailed (i.e. the
+// relay exhausted max attempts) older than the cutoff. Without this, failed
+// entries accumulate forever and bloat the table + indexes.
+func (s *Store) DeleteFailedBefore(ctx context.Context, before time.Time) (int64, error) {
+	result := s.db.WithContext(ctx).
+		Where("status = ? AND updated_at < ?", outbox.StatusFailed, before).
+		Delete(&entry{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("gormstore: delete failed: %w", result.Error)
 	}
 	return result.RowsAffected, nil
 }
@@ -252,6 +270,7 @@ func toRow(e outbox.Entry) entry {
 		Attempts:    e.Attempts,
 		CreatedAt:   e.CreatedAt,
 		PublishedAt: e.PublishedAt,
+		NextRetryAt: e.NextRetryAt,
 		LastError:   e.LastError,
 	}
 }
@@ -270,6 +289,7 @@ func toEntry(r entry) outbox.Entry {
 		Attempts:    r.Attempts,
 		CreatedAt:   r.CreatedAt,
 		PublishedAt: r.PublishedAt,
+		NextRetryAt: r.NextRetryAt,
 		LastError:   r.LastError,
 	}
 }

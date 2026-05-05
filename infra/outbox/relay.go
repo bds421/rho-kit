@@ -12,8 +12,16 @@ const (
 	defaultBatchSize        = 100
 	defaultMaxAttempts      = 10
 	defaultRetention        = 7 * 24 * time.Hour // 7 days
+	defaultFailedRetention  = 30 * 24 * time.Hour // 30 days for entries in StatusFailed
 	defaultStaleDuration    = 5 * time.Minute
 	staleRecoveryMultiplier = 10 // recover stale entries every N polls
+
+	// Exponential backoff bounds for IncrementAttempts: delay = baseDelay * 2^attempts,
+	// clamped at maxBackoff. With 10 attempts (default) the schedule is roughly
+	// 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s, 300s — totaling ~17 minutes
+	// of retries before the row is marked permanently failed.
+	defaultBackoffBase = 2 * time.Second
+	defaultBackoffMax  = 5 * time.Minute
 )
 
 // Relay polls the outbox table and publishes pending entries via a Publisher.
@@ -255,7 +263,8 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 		return
 	}
 
-	if incErr := r.store.IncrementAttempts(ctx, entry.ID.String(), errMsg); incErr != nil {
+	nextRetryAt := time.Now().UTC().Add(retryBackoff(nextAttempt))
+	if incErr := r.store.IncrementAttempts(ctx, entry.ID.String(), errMsg, nextRetryAt); incErr != nil {
 		r.logger.Error("outbox relay: increment attempts error",
 			"entry_id", entry.ID, "error", incErr)
 	}
@@ -288,23 +297,51 @@ func (r *Relay) recoverStale(ctx context.Context) {
 	}
 }
 
-// cleanup removes published entries older than the retention period.
+// cleanup removes published entries older than the retention period and
+// failed entries older than the failed-retention period. Without the second
+// step, rows in StatusFailed (those that exhausted max attempts) accumulate
+// forever and pollute the pending-status index.
 func (r *Relay) cleanup(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
 
-	cutoff := time.Now().UTC().Add(-r.retention)
-	deleted, err := r.store.DeletePublishedBefore(ctx, cutoff)
+	now := time.Now().UTC()
+	publishedCutoff := now.Add(-r.retention)
+	deletedPublished, err := r.store.DeletePublishedBefore(ctx, publishedCutoff)
 	if err != nil {
-		r.logger.Error("outbox relay: cleanup failed", "error", err)
-		return
+		r.logger.Error("outbox relay: cleanup published failed", "error", err)
+	} else if deletedPublished > 0 {
+		r.logger.Info("outbox relay: cleaned up published entries",
+			"deleted", deletedPublished, "retention", r.retention)
 	}
 
-	if deleted > 0 {
-		r.logger.Info("outbox relay: cleaned up published entries",
-			"deleted", deleted, "retention", r.retention)
+	failedCutoff := now.Add(-defaultFailedRetention)
+	deletedFailed, err := r.store.DeleteFailedBefore(ctx, failedCutoff)
+	if err != nil {
+		r.logger.Error("outbox relay: cleanup failed entries failed", "error", err)
+	} else if deletedFailed > 0 {
+		r.logger.Info("outbox relay: cleaned up failed entries",
+			"deleted", deletedFailed, "retention", defaultFailedRetention)
 	}
+}
+
+// retryBackoff returns the delay before the next attempt, applying exponential
+// backoff capped at defaultBackoffMax. attempt is 1-indexed (first retry is
+// attempt=1 → defaultBackoffBase; second retry is attempt=2 → 2× base; etc.).
+func retryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	// shift may overflow with very large attempt counts; clamp first.
+	if attempt > 30 {
+		return defaultBackoffMax
+	}
+	d := defaultBackoffBase << (attempt - 1)
+	if d <= 0 || d > defaultBackoffMax {
+		return defaultBackoffMax
+	}
+	return d
 }
 
 // updatePendingGauge refreshes the pending count metric.

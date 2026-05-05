@@ -45,7 +45,8 @@ func testDB(t *testing.T) *gorm.DB {
 		last_error     TEXT,
 		created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		published_at   DATETIME
+		published_at   DATETIME,
+		next_retry_at  DATETIME
 	)`).Error
 	require.NoError(t, err)
 
@@ -200,7 +201,7 @@ func TestStore_IncrementAttempts(t *testing.T) {
 	entry.Status = outbox.StatusProcessing
 	require.NoError(t, store.Insert(ctx, entry))
 
-	err := store.IncrementAttempts(ctx, entry.ID.String(), "timeout")
+	err := store.IncrementAttempts(ctx, entry.ID.String(), "timeout", time.Now().UTC().Add(2*time.Second))
 	require.NoError(t, err)
 
 	// Should be back to pending after increment.
