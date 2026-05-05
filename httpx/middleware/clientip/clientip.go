@@ -1,20 +1,27 @@
 package clientip
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 )
 
-// defaultTrustedProxyCIDRs are private/loopback ranges that typically host reverse proxies.
+// defaultTrustedProxyCIDRs lists ONLY loopback ranges. Internal RFC1918 /
+// ULA ranges are no longer trusted by default — they let any caller reaching
+// the service from inside the VPC, pod network, or Docker network spoof
+// `X-Real-IP` / `X-Forwarded-For` and bypass IP-based rate limits, audit
+// logging, and abuse detection.
+//
+// Production deployments running behind a TLS-terminating ingress MUST
+// supply the ingress's CIDRs via [ParseTrustedProxiesStrict] (or the
+// permissive [ParseTrustedProxies]) and pass the result to
+// [ClientIPWithTrustedProxies]. The same list should drive
+// [ratelimit.WithTrustedProxies] so log/ratelimit attribution agrees.
 var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 	cidrs := []string{
 		"127.0.0.0/8",
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
 		"::1/128",
-		"fc00::/7",
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
@@ -78,19 +85,53 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	return stripPort(r.RemoteAddr)
 }
 
-// ParseTrustedProxies parses a list of CIDR strings or single IP addresses into
-// net.IPNet values. Invalid entries are skipped. If the resulting list is empty,
-// the default trusted proxy ranges are returned.
+// ParseTrustedProxies parses a list of CIDR strings or single IP addresses
+// into net.IPNet values. Invalid entries are silently skipped. If the
+// resulting list is empty, the default (loopback-only) trusted proxy ranges
+// are returned.
+//
+// Prefer [ParseTrustedProxiesStrict] — silently skipping invalid entries
+// hides operator typos, and a typo in the trusted-proxies list directly
+// translates to either client-IP spoofing (entry silently skipped) or
+// dropped trust (entry skipped where it shouldn't be).
 func ParseTrustedProxies(cidrs []string) []*net.IPNet {
 	if len(cidrs) == 0 {
 		return defaultTrustedProxyCIDRs
 	}
+	nets, _ := parseProxies(cidrs, false)
+	if len(nets) == 0 {
+		return defaultTrustedProxyCIDRs
+	}
+	return nets
+}
+
+// ParseTrustedProxiesStrict parses a list of CIDR strings or single IP
+// addresses into net.IPNet values, returning an error on the first invalid
+// entry. Use this in startup paths where a typo should fail-loud rather
+// than silently degrade trust.
+//
+// An empty or nil input returns (nil, nil) — the caller must decide whether
+// to fall back to the default loopback list or trust no proxies at all.
+func ParseTrustedProxiesStrict(cidrs []string) ([]*net.IPNet, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	return parseProxies(cidrs, true)
+}
+
+// parseProxies is the shared implementation. When strict is true, the first
+// unparseable entry returns an error; when false, unparseable entries are
+// dropped.
+func parseProxies(cidrs []string, strict bool) ([]*net.IPNet, error) {
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
 			ip := net.ParseIP(c)
 			if ip == nil {
+				if strict {
+					return nil, fmt.Errorf("clientip: %q is not a valid CIDR or IP", c)
+				}
 				continue
 			}
 			mask := net.CIDRMask(128, 128)
@@ -101,10 +142,7 @@ func ParseTrustedProxies(cidrs []string) []*net.IPNet {
 		}
 		nets = append(nets, n)
 	}
-	if len(nets) == 0 {
-		return defaultTrustedProxyCIDRs
-	}
-	return nets
+	return nets, nil
 }
 
 // stripPort removes the port portion from a host:port address.
