@@ -776,3 +776,99 @@ func TestRequireCSRF_StateChangingMethods(t *testing.T) {
 		})
 	}
 }
+
+// --- WithAllowedOrigins ---
+
+func TestNew_AllowedOrigins_AcceptsListedOrigin(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_AllowedOrigins_RejectsUnlistedOrigin(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "https://evil.attacker.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "untrusted origin")
+}
+
+func TestNew_AllowedOrigins_RejectsMissingOriginAndReferer(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	// no Origin/Referer
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_AllowedOrigins_FallsBackToReferer(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Referer", "https://app.example.com/some/path?q=1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_AllowedOrigins_SafeMethodsAreNotChecked(t *testing.T) {
+	mw := New(WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://evil.attacker.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// GET is exempt — origin allowlist only fires on state-changing methods.
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_AllowedOrigins_CaseInsensitiveHost(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://App.Example.COM"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}

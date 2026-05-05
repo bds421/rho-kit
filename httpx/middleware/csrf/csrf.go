@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/bds421/rho-kit/httpx"
@@ -31,13 +32,14 @@ const (
 type Option func(*config)
 
 type config struct {
-	cookieName string
-	headerName string
-	secure     bool
-	secret     []byte // HMAC key for token signing
-	sameSite   http.SameSite
-	path       string
-	skipCheck  func(*http.Request) bool
+	cookieName     string
+	headerName     string
+	secure         bool
+	secret         []byte // HMAC key for token signing
+	sameSite       http.SameSite
+	path           string
+	skipCheck      func(*http.Request) bool
+	allowedOrigins map[string]struct{}
 }
 
 // WithCookieName sets the CSRF cookie name. Default: "__csrf".
@@ -72,6 +74,40 @@ func WithSameSite(mode http.SameSite) Option {
 // WithPath sets the Path attribute on the CSRF cookie. Default: "/".
 func WithPath(path string) Option {
 	return func(c *config) { c.path = path }
+}
+
+// WithAllowedOrigins enables Origin / Referer header validation against the
+// supplied allowlist on state-changing requests. Each entry must be a full
+// origin: "scheme://host[:port]" (no path, no trailing slash). Comparison
+// is case-insensitive on the host.
+//
+// Origin/Referer validation is the second half of CSRF defense-in-depth
+// alongside the double-submit cookie. It defends against three weaknesses
+// of double-submit alone:
+//
+//   - A subdomain or sibling app on the same eTLD+1 can Set-Cookie
+//     overwrite the CSRF cookie; double-submit then validates because the
+//     attacker controls both halves. Origin allowlisting blocks the
+//     cross-origin POST.
+//   - Browsers that don't honour SameSite (older versions, atypical
+//     embeds) leak cookies cross-origin.
+//   - HMAC validation only proves the token was minted by *some* server
+//     trusting the same secret — for multi-tenant deployments that's not
+//     enough.
+//
+// Recommended for production deployments. Skipped for safe methods
+// (GET/HEAD/OPTIONS) and for requests matched by [WithSkipCheck].
+//
+// When set and a state-changing request has neither Origin nor Referer, or
+// has an origin outside the allowlist, the middleware returns 403 with
+// "untrusted origin".
+func WithAllowedOrigins(origins ...string) Option {
+	return func(c *config) {
+		c.allowedOrigins = make(map[string]struct{}, len(origins))
+		for _, o := range origins {
+			c.allowedOrigins[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
+		}
+	}
 }
 
 // WithSkipCheck registers a predicate that bypasses CSRF validation.
@@ -158,6 +194,17 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Origin/Referer validation (when configured). Belt-and-braces
+			// alongside the double-submit cookie; defends against
+			// cookie-overwriting subdomain attacks and SameSite-leaky
+			// browsers.
+			if len(cfg.allowedOrigins) > 0 {
+				if !originAllowed(r, cfg.allowedOrigins) {
+					httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+					return
+				}
+			}
+
 			// State-changing methods require a valid CSRF token.
 			if cookie == nil {
 				cookie, err = r.Cookie(cfg.cookieName)
@@ -188,6 +235,38 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// originAllowed inspects Origin then Referer (in that order) and reports
+// whether the request's origin appears in the allowlist. A request with
+// neither header is rejected — modern browsers always send Origin on
+// state-changing cross-origin requests, so the absence is itself
+// suspicious in the contexts where Origin checks matter.
+func originAllowed(r *http.Request, allow map[string]struct{}) bool {
+	for _, raw := range []string{r.Header.Get("Origin"), r.Header.Get("Referer")} {
+		if raw == "" || raw == "null" {
+			continue
+		}
+		o := normaliseOrigin(raw)
+		if o == "" {
+			continue
+		}
+		if _, ok := allow[o]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// normaliseOrigin extracts "scheme://host[:port]" from an Origin or Referer
+// header value, lower-casing the host so comparison is case-insensitive.
+// Returns "" if the value is unparseable or missing scheme/host.
+func normaliseOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
 }
 
 // generateSignedToken creates a random token with an HMAC signature.
