@@ -90,16 +90,25 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop halts the scheduler and waits for any running jobs to complete.
-// Implements the lifecycle.Component interface.
-func (s *Scheduler) Stop(_ context.Context) error {
+// Stop halts the scheduler and waits for any running jobs to complete, or
+// until the supplied context expires (whichever comes first). A long-running
+// job that ignores its own context cancellation will not block Stop past the
+// caller's deadline — the scheduler returns ctx.Err and the job continues in
+// the background until it finishes naturally.
+func (s *Scheduler) Stop(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
 	stopCtx := s.cron.Stop()
-	<-stopCtx.Done()
-	s.logger.Info("cron scheduler stopped")
-	return nil
+	select {
+	case <-stopCtx.Done():
+		s.logger.Info("cron scheduler stopped")
+		return nil
+	case <-ctx.Done():
+		s.logger.Warn("cron scheduler shutdown deadline exceeded; running jobs left in background",
+			"error", ctx.Err())
+		return ctx.Err()
+	}
 }
 
 // wrapJob wraps a job function with logging, metrics, and panic recovery.

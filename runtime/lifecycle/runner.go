@@ -102,7 +102,18 @@ func (r *Runner) Run(ctx context.Context) error {
 	runDone := make(chan struct{})
 	defer close(runDone)
 	go func() {
-		<-ctx.Done()
+		// First select: wait for signal (ctx.Done) OR for Run to finish on
+		// its own (runDone). Without this, when a component returns an error
+		// before any signal arrives, ctx never cancels and this goroutine
+		// blocks forever on <-ctx.Done — a goroutine leak per failed Run
+		// call. Selecting on runDone here lets the goroutine exit cleanly
+		// in that path.
+		select {
+		case <-ctx.Done():
+			// Fall through to register the second-signal handler below.
+		case <-runDone:
+			return
+		}
 		signal.Notify(forceQuit, os.Interrupt, syscall.SIGTERM)
 		select {
 		case <-forceQuit:
@@ -154,15 +165,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		})
 	}
 
-	// Wait for context cancellation (signal or component error), then stop
-	// components in reverse order.
+	// Trigger stopAll inside the errgroup so components actually receive
+	// Stop calls (otherwise long-running Start methods block forever even
+	// after ctx is cancelled). Capture its error in stopErr instead of
+	// returning it from the errgroup goroutine: errgroup.Wait returns only
+	// the first non-nil error, which would silently drop start-side errors
+	// when stopAll also errors (or vice versa). Joining both at the end
+	// surfaces the full picture to the operator.
+	var stopErr error
 	eg.Go(func() error {
 		<-gCtx.Done()
 		r.logger.Info("shutting down components")
-		return r.stopAll(forceCtx)
+		stopErr = r.stopAll(forceCtx)
+		return nil
 	})
 
-	return eg.Wait()
+	startErr := eg.Wait()
+	return errors.Join(startErr, stopErr)
 }
 
 // stopAll stops all components sequentially in reverse registration order.

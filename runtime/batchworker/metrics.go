@@ -25,7 +25,9 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Namespace: "batchworker",
 			Name:      "duration_seconds",
 			Help:      "Duration of batch worker executions in seconds.",
-			Buckets:   prometheus.DefBuckets,
+			// Batch workers routinely run for minutes; prometheus.DefBuckets
+			// caps at 10s and would push every realistic batch into +Inf.
+			Buckets: []float64{0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 		}, []string{"name"}),
 	}
 	promutil.RegisterCollector(reg, m.runs)

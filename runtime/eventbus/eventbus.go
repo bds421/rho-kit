@@ -221,13 +221,29 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 		if h.async {
 			b.dispatchAsync(ctx, eventName, h, event)
 		} else {
-			if err := h.fn(ctx, event); err != nil {
+			err := callSync(ctx, h, event)
+			if err != nil {
 				syncErrs = append(syncErrs, fmt.Errorf("handler %q: %w", h.name, err))
 			}
 		}
 	}
 
 	return errors.Join(syncErrs...)
+}
+
+// callSync invokes a sync handler with panic recovery. A buggy subscriber
+// previously took down the publisher's goroutine because Publish called
+// h.fn directly with no recover; the async path already wraps its handler.
+// Recovering here brings sync handlers in line with that behavior — the
+// panic surfaces as a regular error so other subscribers still run and the
+// publisher's goroutine survives.
+func callSync(ctx context.Context, h registeredHandler, event any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in sync handler: %v", r)
+		}
+	}()
+	return h.fn(ctx, event)
 }
 
 // HasHandlers reports whether any handlers are registered for the given event name.

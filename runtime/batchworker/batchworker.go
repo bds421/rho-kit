@@ -34,6 +34,8 @@ type Worker struct {
 	metrics  *metrics
 	done     chan struct{}
 	doneOnce sync.Once
+	mu       sync.Mutex
+	cancel   context.CancelFunc
 }
 
 // Option configures a Worker.
@@ -116,9 +118,16 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 	}
 }
 
-// Start begins the periodic batch loop and blocks until ctx is cancelled.
+// Start begins the periodic batch loop and blocks until ctx is cancelled
+// (either externally or by [Worker.Stop]).
 // Implements the lifecycle.Component interface.
 func (w *Worker) Start(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	w.mu.Lock()
+	w.cancel = cancel
+	w.mu.Unlock()
+	defer cancel()
+
 	w.logger.Info("batch worker started", "name", w.name, "interval", w.interval)
 
 	// Run once immediately on start.
@@ -139,11 +148,19 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
-// Stop signals the worker to stop. The worker finishes its current batch
-// (bounded by the per-batch timeout) before returning.
+// Stop cancels the worker's internal context and waits for the batch loop to
+// finish (bounded by the per-batch timeout) or for the supplied ctx to
+// expire. Calling Stop without first cancelling the parent ctx is now safe —
+// previously Stop would block forever in standalone usage because no internal
+// cancel was registered.
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
-	// Wait for Start() to finish, or give up when the stop context expires.
+	w.mu.Lock()
+	cancel := w.cancel
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	select {
 	case <-w.done:
 	case <-ctx.Done():
@@ -191,6 +208,12 @@ func (w *Worker) nextDelay() time.Duration {
 		return w.interval
 	}
 	maxJitter := time.Duration(float64(w.interval) * w.jitter)
+	// rand.Int64N panics on n <= 0; for sub-nanosecond truncation or when
+	// the user passes interval=1ns with the default jitter, return the
+	// base interval rather than crashing the worker loop.
+	if maxJitter <= 0 {
+		return w.interval
+	}
 	jitterDuration := time.Duration(rand.Int64N(int64(maxJitter)))
 	return w.interval + jitterDuration
 }

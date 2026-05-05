@@ -25,7 +25,10 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Namespace: "cron",
 			Name:      "job_duration_seconds",
 			Help:      "Duration of cron job executions in seconds.",
-			Buckets:   prometheus.DefBuckets,
+			// Wider buckets than prometheus.DefBuckets (which tops out at 10s).
+			// Cron jobs commonly run for minutes; everything beyond 10s
+			// landing in +Inf would make histogram_quantile useless.
+			Buckets: []float64{0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 		}, []string{"name"}),
 	}
 	promutil.RegisterCollector(reg, m.runs)
