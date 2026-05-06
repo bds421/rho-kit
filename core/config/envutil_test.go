@@ -130,7 +130,9 @@ func TestParser_NoErrors(t *testing.T) {
 
 func TestGetSecret_FromEnvVar(t *testing.T) {
 	t.Setenv("MY_SECRET", "inline-value")
-	assert.Equal(t, "inline-value", GetSecret("MY_SECRET", ""))
+	v, err := GetSecret("MY_SECRET", "")
+	require.NoError(t, err)
+	assert.Equal(t, "inline-value", v)
 }
 
 func TestGetSecret_FromFile(t *testing.T) {
@@ -140,7 +142,9 @@ func TestGetSecret_FromFile(t *testing.T) {
 
 	t.Setenv("MY_SECRET_FILE", secretPath)
 	t.Setenv("MY_SECRET", "should-be-ignored")
-	assert.Equal(t, "file-value", GetSecret("MY_SECRET", ""))
+	v, err := GetSecret("MY_SECRET", "")
+	require.NoError(t, err)
+	assert.Equal(t, "file-value", v)
 }
 
 func TestGetSecret_FileTakesPrecedence(t *testing.T) {
@@ -150,17 +154,34 @@ func TestGetSecret_FileTakesPrecedence(t *testing.T) {
 
 	t.Setenv("PRIO_SECRET_FILE", secretPath)
 	t.Setenv("PRIO_SECRET", "from-env")
-	assert.Equal(t, "from-file", GetSecret("PRIO_SECRET", ""))
+	v, err := GetSecret("PRIO_SECRET", "")
+	require.NoError(t, err)
+	assert.Equal(t, "from-file", v)
 }
 
 func TestGetSecret_FallbackWhenBothEmpty(t *testing.T) {
-	assert.Equal(t, "default", GetSecret("MISSING_SECRET", "default"))
+	v, err := GetSecret("MISSING_SECRET", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "default", v)
 }
 
-func TestGetSecret_BadFilePanics(t *testing.T) {
+func TestGetSecret_BadFileReturnsError(t *testing.T) {
 	t.Setenv("BAD_FILE_SECRET_FILE", "/nonexistent/path")
 	t.Setenv("BAD_FILE_SECRET", "env-fallback")
+	_, err := GetSecret("BAD_FILE_SECRET", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unreadable")
+}
+
+func TestMustGetSecret_BadFilePanics(t *testing.T) {
+	t.Setenv("MUST_BAD_SECRET_FILE", "/nonexistent/path")
+	t.Setenv("MUST_BAD_SECRET", "env-fallback")
 	assert.Panics(t, func() {
-		GetSecret("BAD_FILE_SECRET", "")
+		MustGetSecret("MUST_BAD_SECRET", "")
 	})
+}
+
+func TestMustGetSecret_HappyPath(t *testing.T) {
+	t.Setenv("HAPPY_MUST_SECRET", "value")
+	assert.Equal(t, "value", MustGetSecret("HAPPY_MUST_SECRET", ""))
 }

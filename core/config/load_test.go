@@ -70,6 +70,21 @@ func TestLoad_Required(t *testing.T) {
 	assert.Contains(t, err.Error(), "required")
 }
 
+func TestLoad_RequiredRejectsExplicitEmpty(t *testing.T) {
+	// "required" must reject the case where the operator explicitly set the
+	// var to "" (empty file, blank export). Falling back to a default in
+	// that case defeats the whole point of marking it required.
+	type cfg struct {
+		Secret string `env:"TEST_REQUIRED_EXPLICIT_EMPTY,required" default:"fallback"`
+	}
+	t.Setenv("TEST_REQUIRED_EXPLICIT_EMPTY", "")
+
+	_, err := Load[cfg]()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TEST_REQUIRED_EXPLICIT_EMPTY")
+	assert.Contains(t, err.Error(), "set but empty")
+}
+
 func TestLoad_SecretFile(t *testing.T) {
 	type cfg struct {
 		Password string `env:"TEST_PASSWORD" secret:"true"`

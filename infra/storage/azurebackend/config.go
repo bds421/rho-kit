@@ -43,7 +43,7 @@ func (c AzureConfig) LogValue() slog.Value {
 func LoadAzureConfig(envPrefix, environment string) (AzureConfig, error) {
 	cfg := AzureConfig{
 		AccountName:   config.Get("STORAGE_AZURE_ACCOUNT_NAME", ""),
-		AccountKey:    config.GetSecret(envPrefix+"_AZURE_ACCOUNT_KEY", ""),
+		AccountKey:    config.MustGetSecret(envPrefix+"_AZURE_ACCOUNT_KEY", ""),
 		ContainerName: config.Get("STORAGE_AZURE_CONTAINER_NAME", ""),
 		Endpoint:      config.Get("STORAGE_AZURE_ENDPOINT", ""),
 	}

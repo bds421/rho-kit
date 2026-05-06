@@ -52,7 +52,7 @@ func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 		Endpoint:        config.Get("STORAGE_S3_ENDPOINT", ""),
 		ForcePathStyle:  forcePathStyle,
 		AccessKeyID:     config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
-		SecretAccessKey: config.GetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
+		SecretAccessKey: config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
 	}
 
 	if err := cfg.Validate(environment); err != nil {

@@ -17,9 +17,10 @@ const defaultDebounce = 100 * time.Millisecond
 
 // watcherConfig holds shared options for watchers.
 type watcherConfig struct {
-	logger   *slog.Logger
-	debounce time.Duration
-	signalCh chan os.Signal // optional external signal channel for EnvReloader
+	logger         *slog.Logger
+	debounce       time.Duration
+	signalCh       chan os.Signal // optional external signal channel for EnvReloader
+	immediateLoad  bool
 }
 
 // WatcherOption configures a FileWatcher or EnvReloader.
@@ -55,6 +56,17 @@ func WithDebounce(d time.Duration) WatcherOption {
 			c.debounce = d
 		}
 	}
+}
+
+// WithImmediateLoad makes [EnvReloader.Start] perform an initial reload
+// before entering the SIGHUP wait. Without it, the Watchable holds whatever
+// `initial` value was passed to [NewWatchable] until the first SIGHUP — any
+// change to the environment between construction and Start is invisible.
+//
+// Default-on behaviour is the right choice for new code; the option exists
+// so callers that have already wired their own initial-load can opt out.
+func WithImmediateLoad() WatcherOption {
+	return func(c *watcherConfig) { c.immediateLoad = true }
 }
 
 func applyWatcherOpts(opts []WatcherOption) watcherConfig {
@@ -217,12 +229,27 @@ func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[
 
 // Start listens for SIGHUP and reloads config from env vars.
 // It blocks until ctx is cancelled.
+//
+// If [WithImmediateLoad] was passed, an initial Load runs once before the
+// signal loop so the Watchable reflects current environment state instead of
+// the construction-time `initial` value.
 func (r *EnvReloader[T]) Start(ctx context.Context) error {
 	sigCh := r.cfg.signalCh
 	if sigCh == nil {
 		sigCh = make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGHUP)
 		defer signal.Stop(sigCh)
+	}
+
+	if r.cfg.immediateLoad {
+		val, err := Load[T]()
+		if err != nil {
+			r.cfg.logger.Warn("env config initial load failed, keeping construction-time value",
+				"error", err)
+		} else {
+			r.watchable.Set(val)
+			r.cfg.logger.Info("config initial-load from environment")
+		}
 	}
 
 	for {

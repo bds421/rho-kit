@@ -197,7 +197,7 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 	}
 
 	// DATABASE_URL takes precedence when set.
-	if dsnURL := config.GetSecret("DATABASE_URL", ""); dsnURL != "" {
+	if dsnURL := config.MustGetSecret("DATABASE_URL", ""); dsnURL != "" {
 		var cfg Config
 		var parseErr error
 		switch driver {
@@ -232,7 +232,7 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 			Host:     config.Get("DB_HOST", "localhost"),
 			Port:     dbPort,
 			User:     config.Get(envPrefix+"_DB_USER", ""),
-			Password: config.GetSecret(envPrefix+"_DB_PASSWORD", ""),
+			Password: config.MustGetSecret(envPrefix+"_DB_PASSWORD", ""),
 			Name:     config.Get(envPrefix+"_DB_NAME", ""),
 			LogLevel: config.Get("DB_LOG_LEVEL", "warn"),
 			Options:  opts,

@@ -59,7 +59,7 @@ func LoadSFTPConfig(envPrefix, environment string) (SFTPConfig, error) {
 		Host:     config.Get("STORAGE_SFTP_HOST", ""),
 		Port:     port,
 		User:     config.Get("STORAGE_SFTP_USER", ""),
-		Password: config.GetSecret(envPrefix+"_SFTP_PASSWORD", ""),
+		Password: config.MustGetSecret(envPrefix+"_SFTP_PASSWORD", ""),
 		KeyFile:  config.Get("STORAGE_SFTP_KEY_FILE", ""),
 		RootPath: config.Get("STORAGE_SFTP_ROOT_PATH", "/"),
 	}

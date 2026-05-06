@@ -142,6 +142,13 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 		if fromEnv {
 			envRead = true
 		}
+		// "required" means non-empty: if the env var was explicitly set to ""
+		// (empty file, blank export), reject even though a default exists. The
+		// default is for the unset case, not for "operator overrode it with
+		// nothing" — that's the misconfig the required flag is meant to catch.
+		if required && fromEnv && val == "" {
+			return false, fmt.Errorf("config: required environment variable %s is set but empty", envName)
+		}
 		if val == "" {
 			val = defaultVal
 		}

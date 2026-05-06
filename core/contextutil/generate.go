@@ -14,7 +14,13 @@ import (
 var fallbackCounter atomic.Uint64
 
 // NewID produces a UUID v7 string (time-ordered, random).
-// Falls back to a UUID-formatted time+counter string if crypto/rand is unavailable.
+//
+// Falls back to a UUID-formatted time+counter string if crypto/rand is
+// unavailable. The fallback is sufficient for request tracing — uniqueness
+// is preserved by the atomic counter, even though it isn't cryptographically
+// random — but should NOT be relied on for tokens, secrets, or any value
+// where unguessability matters. Use [NewSecureID] when crypto/rand failure
+// must surface as an error rather than silently degrade.
 func NewID() string {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -22,6 +28,20 @@ func NewID() string {
 		return fallbackGenerate()
 	}
 	return id.String()
+}
+
+// NewSecureID produces a UUID v7 string and surfaces the error from
+// crypto/rand instead of falling back to a time+counter ID. Use this when
+// the value will be exposed externally as a token or anywhere the
+// unguessability of the random bits is load-bearing — process-restart
+// collisions on the time+counter fallback are within reach of any peer
+// that can probe both processes' first IDs.
+func NewSecureID() (string, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("contextutil: crypto/rand unavailable: %w", err)
+	}
+	return id.String(), nil
 }
 
 // fallbackGenerate produces a UUID-formatted string from time and an atomic counter.

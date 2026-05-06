@@ -272,6 +272,32 @@ func TestEnvReloader_SIGHUPTriggersReload(t *testing.T) {
 	cancel()
 }
 
+func TestEnvReloader_WithImmediateLoadAppliesEnvBeforeFirstSIGHUP(t *testing.T) {
+	t.Setenv("TEST_ENV_RELOAD_VALUE", "from-env")
+
+	sigCh := make(chan os.Signal, 1)
+	w := NewWatchable(envReloaderCfg{Value: "construction-default"})
+	r := NewEnvReloader[envReloaderCfg](w,
+		WithSignalChannel(sigCh),
+		WithWatchLogger(slog.Default()),
+		WithImmediateLoad(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = r.Start(ctx)
+	}()
+	<-started
+
+	assert.Eventually(t, func() bool {
+		return w.Get().Value == "from-env"
+	}, 2*time.Second, 20*time.Millisecond, "immediate load should override the construction-time default before any SIGHUP fires")
+}
+
 func TestEnvReloader_LoadErrorPreservesOldValue(t *testing.T) {
 	// Use a required env var that is not set so Load fails.
 	type strictCfg struct {

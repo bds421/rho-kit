@@ -95,7 +95,7 @@ type RedisFields struct {
 //   - REDIS_DB (default: 0)
 func LoadRedisFields() (RedisFields, error) {
 	// REDIS_URL takes precedence.
-	if rawURL := config.GetSecret("REDIS_URL", ""); rawURL != "" {
+	if rawURL := config.MustGetSecret("REDIS_URL", ""); rawURL != "" {
 		return RedisFields{
 			Redis: RedisConfig{URL: rawURL},
 		}, nil
@@ -113,7 +113,7 @@ func LoadRedisFields() (RedisFields, error) {
 		Redis: RedisConfig{
 			Host:     config.Get("REDIS_HOST", ""),
 			Port:     port,
-			Password: config.GetSecret("REDIS_PASSWORD", ""),
+			Password: config.MustGetSecret("REDIS_PASSWORD", ""),
 			DB:       db,
 		},
 	}, nil

@@ -19,29 +19,47 @@ func Get(key, fallback string) string {
 }
 
 // GetSecret reads a secret value using the Docker Secrets convention:
-// if <key>_FILE is set, the secret is read from that file path (trimmed of
-// whitespace); otherwise the value of <key> is returned directly.
-// This allows the same code to work in Docker (secrets mounted as files)
-// and in local dev (secrets passed as plain env vars via .env).
-func GetSecret(key, fallback string) string {
+// if <key>_FILE is set, the secret is read from that file path (with
+// trailing line terminators trimmed); otherwise the value of <key> is
+// returned directly. This allows the same code to work in Docker (secrets
+// mounted as files) and in local dev (secrets passed as plain env vars
+// via .env).
+//
+// Returns an error when <key>_FILE is set but unreadable (permissions,
+// missing mount, etc.) — silently falling back to an env var on a
+// configured-but-unreadable secret file is a security risk because the
+// service may start with empty credentials.
+//
+// Use [MustGetSecret] in startup paths where unreadable secrets should
+// crash the process; use this variant when the caller wants to log and
+// degrade gracefully.
+func GetSecret(key, fallback string) (string, error) {
 	if filePath := os.Getenv(key + "_FILE"); filePath != "" {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			// Fail hard: if the file path was explicitly configured but is
-			// unreadable (permissions, missing mount), silently falling back to
-			// an env var is a security risk (may start with empty credentials).
-			slog.Error("secret file configured but unreadable",
-				"key", key+"_FILE", "path", filePath, "error", err)
-			panic(fmt.Sprintf("secret file %s for %s_FILE is unreadable: %v", filePath, key, err))
+			return "", fmt.Errorf("config: secret file %s for %s_FILE is unreadable: %w", filePath, key, err)
 		}
 		// Match the same trim semantics as the struct-tag loader: strip only
 		// trailing line terminators that secret-mounting tools append, never
 		// significant whitespace.
 		if v := strings.TrimRight(string(data), "\r\n"); v != "" {
-			return v
+			return v, nil
 		}
 	}
-	return Get(key, fallback)
+	return Get(key, fallback), nil
+}
+
+// MustGetSecret is the panic-on-error variant of [GetSecret]. Use in startup
+// paths where an unreadable configured secret file means the service should
+// not start at all.
+func MustGetSecret(key, fallback string) string {
+	v, err := GetSecret(key, fallback)
+	if err != nil {
+		slog.Error("secret file configured but unreadable",
+			"key", key+"_FILE", "error", err)
+		panic(err.Error())
+	}
+	return v
 }
 
 // GetInt returns the value of the environment variable named by key

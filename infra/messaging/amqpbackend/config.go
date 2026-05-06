@@ -84,7 +84,7 @@ type RabbitMQFields struct {
 //   - RABBITMQ_VHOST (default: /)
 func LoadRabbitMQFields() (RabbitMQFields, error) {
 	// RABBITMQ_URL takes precedence.
-	if rawURL := config.GetSecret("RABBITMQ_URL", ""); rawURL != "" {
+	if rawURL := config.MustGetSecret("RABBITMQ_URL", ""); rawURL != "" {
 		return RabbitMQFields{
 			RabbitMQ: RabbitMQConfig{URL: rawURL},
 		}, nil
@@ -102,7 +102,7 @@ func LoadRabbitMQFields() (RabbitMQFields, error) {
 			Host:     config.Get("RABBITMQ_HOST", ""),
 			Port:     port,
 			User:     config.Get("RABBITMQ_USER", "guest"),
-			Password: config.GetSecret("RABBITMQ_PASSWORD", "guest"),
+			Password: config.MustGetSecret("RABBITMQ_PASSWORD", "guest"),
 			VHost:    config.Get("RABBITMQ_VHOST", "/"),
 		},
 	}, nil
