@@ -12,6 +12,7 @@ type Option func(*timeoutOptions)
 
 type timeoutOptions struct {
 	maxBuffer int
+	hard      bool
 }
 
 // WithMaxBufferSize overrides the per-request response buffer cap (default
@@ -26,6 +27,27 @@ func WithMaxBufferSize(size int) Option {
 		panic("timeout: WithMaxBufferSize requires a positive size")
 	}
 	return func(o *timeoutOptions) { o.maxBuffer = size }
+}
+
+// WithHard enables hard-timeout mode: when the deadline fires, the
+// middleware writes the 503 response and returns IMMEDIATELY, without
+// waiting for the handler goroutine to exit. The handler's later writes
+// flow into the buffered timeoutWriter — which already returns
+// http.ErrHandlerTimeout — so no double-write reaches the real
+// ResponseWriter, but the goroutine continues running until it returns
+// of its own accord.
+//
+// Use ONLY when you've measured handlers that can ignore ctx.Done() (legacy
+// code, third-party libraries) and accept the goroutine-leak cost. Holding
+// the HTTP goroutine alive is preferable to leaking it indefinitely; the
+// hard mode trades determinism (the connection is freed on deadline) for
+// resource accounting (the handler goroutine outlives the request).
+//
+// Default mode is cooperative: the middleware writes 503 then waits for
+// the handler to exit. Cooperative mode is safer when handlers honor
+// ctx.Done() — which is what the kit assumes by default.
+func WithHard() Option {
+	return func(o *timeoutOptions) { o.hard = true }
 }
 
 // Timeout wraps an http.Handler with a write deadline.
@@ -78,9 +100,19 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				tw.writeToReal()
 			case <-ctx.Done():
 				tw.writeTimeout()
-				// Wait for the handler goroutine to finish. The context is
-				// already cancelled so well-behaved handlers will exit promptly.
-				// This prevents the goroutine from outliving the ResponseWriter.
+				if cfg.hard {
+					// Hard mode: return immediately. The handler goroutine
+					// keeps running until it exits on its own; later writes
+					// go to the buffered timeoutWriter which already returns
+					// ErrHandlerTimeout, so no double-write hits the real
+					// ResponseWriter. Acceptable when handlers can ignore
+					// ctx.Done() and the leak is the lesser evil.
+					return
+				}
+				// Cooperative mode (default): wait for the handler goroutine
+				// to finish. The context is already cancelled so well-behaved
+				// handlers will exit promptly. This prevents the goroutine
+				// from outliving the ResponseWriter.
 				<-done
 			}
 		})

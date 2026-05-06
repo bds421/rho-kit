@@ -136,10 +136,18 @@ func (rl *RateLimiter) allow(ip string) (bool, time.Duration) {
 // cycle to prevent large allocations from Keys() under IP-spray attacks.
 const maxCleanupPerShard = 1000
 
-// cleanup evicts expired visitors from all shards. Keys() is called
-// outside the lock to avoid holding the mutex during the full-slice
-// allocation under DDoS (IP-spray) conditions. The subsequent eviction
-// loop re-checks under the lock.
+// cleanup is a best-effort hint that scans up to [maxCleanupPerShard] keys
+// per shard and evicts those whose window has expired. Real GC under load
+// is the LRU eviction inside `s.visitors`; cleanup just keeps the working
+// set small between bursts.
+//
+// The two-phase Keys/Peek-Remove pattern is intentional: Keys() snapshots
+// outside the lock so the O(n) slice allocation under an IP-spray attack
+// doesn't block concurrent allow() calls; the per-key Peek-Remove under
+// the lock is racy in theory (a visitor could be re-touched between
+// snapshot and Peek), but Peek doesn't trigger LRU promotion so the
+// re-check is benign and a freshly-touched entry stays even if it was
+// stale at snapshot time.
 func (rl *RateLimiter) cleanup() {
 	cutoff := rl.now().Add(-rl.window)
 	for i := range rl.shards {

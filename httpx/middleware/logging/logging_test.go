@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+func TestLogger_WithClientIPResolverHonoursCustomResolver(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := LoggerWithOptions(logger, nil,
+		[]LoggerOption{WithClientIPResolver(func(_ *http.Request) string { return "203.0.113.99" })},
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "127.0.0.1:54321" // resolver should ignore this
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !bytes.Contains(buf.Bytes(), []byte("remote=203.0.113.99")) {
+		t.Errorf("custom resolver value not in log line: %s", buf.String())
+	}
+}
+
 func TestLogger_NormalPath(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

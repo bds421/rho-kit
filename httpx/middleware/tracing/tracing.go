@@ -57,12 +57,22 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			span.SetName(r.Method + " " + pattern)
 		}
 
+		// Hijacked connections (WebSocket, h2 stream takeover) never went
+		// through WriteHeader, so rec.Status() is the recorder default
+		// (200) — misleading on a connection that may run for hours and
+		// has nothing to do with HTTP response semantics. Record 101
+		// (Switching Protocols) instead, which matches the actual wire
+		// status the upgrade emitted.
+		status := rec.Status()
+		if rec.WasHijacked() {
+			status = http.StatusSwitchingProtocols
+		}
 		span.SetAttributes(
-			semconv.HTTPResponseStatusCode(rec.Status()),
+			semconv.HTTPResponseStatusCode(status),
 		)
 
-		if rec.Status() >= 500 {
-			span.SetStatus(codes.Error, http.StatusText(rec.Status()))
+		if status >= 500 {
+			span.SetStatus(codes.Error, http.StatusText(status))
 		}
 	})
 }

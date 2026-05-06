@@ -107,6 +107,68 @@ func TestTimeout_ZeroDuration_Panics(t *testing.T) {
 	Timeout(0)
 }
 
+func TestTimeout_HardModeReturnsImmediatelyOnDeadline(t *testing.T) {
+	// Hard mode must return BEFORE the slow handler exits.
+	handlerExited := make(chan struct{})
+
+	handler := Timeout(20*time.Millisecond, WithHard())(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		// Ignore ctx; sleep past the deadline.
+		time.Sleep(500 * time.Millisecond)
+		close(handlerExited)
+	}))
+
+	start := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "/slow", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("hard timeout took %v; should return on deadline (~20ms), not wait for handler", elapsed)
+	}
+	// Confirm handler is still running after we returned.
+	select {
+	case <-handlerExited:
+		t.Error("handler exited before our return — hard mode behaved cooperatively")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: handler still asleep.
+	}
+	// Wait for the leak so the test doesn't pollute later runs.
+	<-handlerExited
+}
+
+func TestTimeout_CooperativeModeWaitsForHandler(t *testing.T) {
+	handlerExited := make(chan struct{})
+
+	handler := Timeout(20 * time.Millisecond)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			// honour cancellation
+		case <-time.After(2 * time.Second):
+			t.Error("handler ran past timeout without seeing ctx.Done()")
+		}
+		close(handlerExited)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/cooperative", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Handler must have already exited by the time we return.
+	select {
+	case <-handlerExited:
+		// expected
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("cooperative mode returned before handler exited")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
 func TestTimeout_NegativeDuration_Panics(t *testing.T) {
 	defer func() {
 		r := recover()
