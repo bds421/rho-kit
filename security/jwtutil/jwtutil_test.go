@@ -421,12 +421,43 @@ func TestToStringSlice_Other(t *testing.T) {
 }
 
 func TestNewProvider(t *testing.T) {
-	p := NewProvider("https://example.com/.well-known/jwks.json", nil, 5*time.Minute)
+	p := NewProvider("https://example.com/.well-known/jwks.json", nil, 5*time.Minute,
+		WithExpectedIssuer("https://example.com"))
 	if p.url != "https://example.com/.well-known/jwks.json" {
 		t.Errorf("url = %q", p.url)
 	}
 	if p.KeySet() != nil {
 		t.Error("initial keyset should be nil")
+	}
+}
+
+func TestNewProvider_PanicsWithoutIssuerInProduction(t *testing.T) {
+	t.Setenv("KIT_ENV", "production")
+	t.Setenv("APP_ENV", "")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when no expected issuer is configured outside dev")
+		}
+	}()
+	_ = NewProvider("https://example.com/jwks", nil, time.Minute)
+}
+
+func TestNewProvider_AllowsMissingIssuerInDev(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	t.Setenv("APP_ENV", "")
+	p := NewProvider("https://example.com/jwks", nil, time.Minute)
+	if p == nil {
+		t.Fatal("expected provider, got nil")
+	}
+}
+
+func TestNewProvider_AllowAnyIssuerOptOut(t *testing.T) {
+	t.Setenv("KIT_ENV", "production")
+	t.Setenv("APP_ENV", "")
+	p := NewProvider("https://example.com/jwks", nil, time.Minute, WithAllowAnyIssuer())
+	if p == nil {
+		t.Fatal("expected provider, got nil")
 	}
 }
 
@@ -503,7 +534,7 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 	})
 	defer srv.Close()
 
-	p := NewProvider(srv.URL, srv.Client(), time.Hour)
+	p := NewProvider(srv.URL, srv.Client(), time.Hour, WithAllowAnyIssuer())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
