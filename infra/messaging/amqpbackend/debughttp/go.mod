@@ -1,6 +1,8 @@
 module github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp
 
-go 1.26.0
+go 1.26.2
+
+toolchain go1.26.2
 
 require (
 	github.com/bds421/rho-kit/httpx v1.5.0

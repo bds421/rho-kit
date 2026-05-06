@@ -1,6 +1,8 @@
 module github.com/bds421/rho-kit/infra/storage/gcsbackend
 
-go 1.26.0
+go 1.26.2
+
+toolchain go1.26.2
 
 require (
 	cloud.google.com/go/storage v1.60.0
