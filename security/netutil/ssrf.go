@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -206,6 +207,63 @@ func SSRFSafeClient(ctx context.Context, host string, resolver DNSResolver, opts
 			return http.ErrUseLastResponse
 		},
 	}, ip, nil
+}
+
+// SSRFSafeTransportFromURL is the URL-input variant of [SSRFSafeTransport].
+// Most callers receive a full URL from upstream (config, request body, user
+// input) rather than a bare hostname; parsing it themselves to extract the
+// host string before calling [SSRFSafeTransport] is repetitive boilerplate
+// that's easy to get wrong (e.g. Hostname() vs Host, port handling, IDN).
+//
+// Returns the parsed *url.URL so callers can build http.Request from it
+// without re-parsing.
+//
+// Rejects schemes other than "http" and "https" — this constructor is
+// specifically for HTTP transports; data:, file:, gopher: etc. are
+// trivially-bad SSRF vectors that should never reach the dialer.
+func SSRFSafeTransportFromURL(ctx context.Context, rawURL string, resolver DNSResolver, opts ...Option) (*http.Transport, *url.URL, string, error) {
+	u, err := parseSSRFURL(rawURL)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	t, ip, err := SSRFSafeTransport(ctx, u.Hostname(), resolver, opts...)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return t, u, ip, nil
+}
+
+// SSRFSafeClientFromURL is the URL-input variant of [SSRFSafeClient]. See
+// [SSRFSafeTransportFromURL] for the rationale.
+func SSRFSafeClientFromURL(ctx context.Context, rawURL string, resolver DNSResolver, opts ...Option) (*http.Client, *url.URL, string, error) {
+	u, err := parseSSRFURL(rawURL)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	c, ip, err := SSRFSafeClient(ctx, u.Hostname(), resolver, opts...)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return c, u, ip, nil
+}
+
+// parseSSRFURL parses rawURL and rejects unsafe schemes / empty hosts.
+//
+// Empty host is the corner case where url.Parse accepts something like
+// "http://" without complaint: a downstream Resolve on "" silently succeeds
+// and the connection ends up dialing the local machine. Reject up front.
+func parseSSRFURL(rawURL string) (*url.URL, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("ssrf: parse URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("ssrf: scheme %q is not allowed (only http/https)", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("ssrf: URL has empty host: %q", rawURL)
+	}
+	return u, nil
 }
 
 // SSRFSafeDynamicTransport returns an *http.Transport whose DialContext

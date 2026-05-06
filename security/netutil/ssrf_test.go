@@ -222,6 +222,59 @@ func TestSSRFSafeTransport_AllowPrivateIPs(t *testing.T) {
 	assert.NotNil(t, transport)
 }
 
+// --- SSRFSafeClientFromURL / SSRFSafeTransportFromURL ---
+
+func TestSSRFSafeClientFromURL_Happy(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	client, u, ip, err := SSRFSafeClientFromURL(context.Background(),
+		"https://localhost:9443/api/v1?x=y", resolver, WithAllowPrivateIPs())
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+	assert.Equal(t, "localhost", u.Hostname())
+	assert.Equal(t, "/api/v1", u.Path)
+	assert.Equal(t, "127.0.0.1", ip)
+}
+
+func TestSSRFSafeTransportFromURL_Happy(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	tr, u, ip, err := SSRFSafeTransportFromURL(context.Background(),
+		"http://localhost/healthz", resolver, WithAllowPrivateIPs())
+	assert.NoError(t, err)
+	assert.NotNil(t, tr)
+	assert.Equal(t, "localhost", u.Hostname())
+	assert.Equal(t, "127.0.0.1", ip)
+}
+
+func TestSSRFSafeClientFromURL_RejectsBadScheme(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	for _, raw := range []string{
+		"file:///etc/passwd",
+		"data:text/plain,hi",
+		"gopher://internal/",
+		"ftp://example.com/",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, _, _, err := SSRFSafeClientFromURL(context.Background(), raw, resolver, WithAllowPrivateIPs())
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "scheme")
+		})
+	}
+}
+
+func TestSSRFSafeClientFromURL_RejectsEmptyHost(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	_, _, _, err := SSRFSafeClientFromURL(context.Background(), "http://", resolver, WithAllowPrivateIPs())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty host")
+}
+
+func TestSSRFSafeClientFromURL_RejectsMalformedURL(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	// url.Parse is permissive — passing a control character forces a parse error.
+	_, _, _, err := SSRFSafeClientFromURL(context.Background(), "http://example.com/\x00", resolver, WithAllowPrivateIPs())
+	assert.Error(t, err)
+}
+
 // --- SSRFSafeDynamicTransport / SSRFSafeClientFollowRedirects ---
 
 func TestSSRFSafeDynamicTransport_RejectsPrivateOnEachDial(t *testing.T) {
