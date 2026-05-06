@@ -7,8 +7,10 @@ The security primitives are largely correct (GCM with random nonces, HMAC via `s
 - ✅ **`FieldEncryptor.Encrypt` prefix-shortcut bypass removed** — `Encrypt` always encrypts; new `EncryptIfPlain` AEAD-verifies before pass-through (commit `99917ac`).
 - ✅ **`FieldEncryptor` AAD support** — new `EncryptWithContext` / `DecryptWithContext` bind ciphertext to caller-supplied AAD (row pk, tenant ID, etc.) (commit `99917ac`). `SealBytesAAD` / `OpenBytesAAD` added at the byte primitive layer.
 - ✅ **JWT `WithExpectedAudience`** — `KeySet.ExpectedAudience` field + `Provider` option; `jwt.WithAudience()` plumbed into `Verify` (commit `c502dd2`).
+- ✅ **JWT `NewProvider` panics without expected issuer in non-dev** — `WithAllowAnyIssuer` opt-out for federated cases (commit `659babb`).
 - ✅ **SSRF default TLS 1.3** — `SSRFSafeTransport.TLSClientConfig.MinVersion = tls.VersionTLS13` (commit `c502dd2`).
 - ✅ **SSRF safe-redirect mode** — `SSRFSafeDynamicTransport` re-resolves and re-validates on every dial; `SSRFSafeClientFollowRedirects(maxHops)` follows redirects through the dynamic guard (commit `b6a4a9a`).
+- ✅ **SSRF `*FromURL` constructors** — `SSRFSafeClientFromURL` / `SSRFSafeTransportFromURL` parse a raw URL, reject non-http/https schemes, return the parsed `*url.URL` (commit `a649495`).
 
 ## Open
 
@@ -24,12 +26,6 @@ The security primitives are largely correct (GCM with random nonces, HMAC via `s
 **Fix**: Add `NewStaticKeyStoreE(...) (*StaticKeyStore, error)`; keep panic version as `MustNewStaticKeyStore`.
 **Effort**: S
 
-### [HIGH] `SSRFSafeTransport`/`SSRFSafeClient` `host` parameter ambiguity
-**File**: `security/netutil/ssrf.go:165-186`
-**Issue**: `host` is fed both to `LookupIPAddr` (bare hostname) and `TLSClientConfig.ServerName` (bare hostname). Natural caller pattern uses `u.Host` which carries `:port` and breaks both. No validation.
-**Fix**: Add `SSRFSafeTransportFromURL(ctx, *url.URL, ...)` that does the right extraction internally; deprecate the raw-host variant or validate it doesn't contain `:`/`/`.
-**Effort**: S
-
 ### [MEDIUM] `Signer` has no `WithFutureSkew` option
 **File**: `crypto/signing/signing.go:80`
 **Issue**: Hard-coded 30s skew. Some integrations need wider tolerance; some want zero.
@@ -39,7 +35,8 @@ The security primitives are largely correct (GCM with random nonces, HMAC via `s
 
 - [ ] Phase 2: JWT staleness metric + max-stale rejection.
 - [ ] Phase 2: `StaticKeyStore` `New*E`/`Must*` split.
-- [ ] Phase 2: SSRF `*FromURL` constructors.
+- [x] Phase 2: SSRF `*FromURL` constructors. ✅ `a649495`
+- [x] Phase 2: JWT mandatory issuer (jwtutil layer). ✅ `659babb` (Builder integration still TODO)
 - [ ] Phase 2: signing `WithFutureSkew`.
 
 ### Related new packages

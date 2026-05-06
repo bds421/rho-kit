@@ -1,12 +1,12 @@
 # CRITICAL findings (cross-package) — status
 
-Twelve findings flagged in the original audit. As of Wave 1+2+3+4+5, eleven are closed; one remains open. The remaining item depends on a **new** package (recover middleware) and is tracked there. The gRPC recovery default also depends on a new package but is bundled with item #2 in the closing release.
+Twelve findings flagged in the original audit. **All closed** as of Wave 1–6.
 
 | # | Title | Status | Commit / next step |
 |---|---|---|---|
 | 1 | Vulnerable Go runtime + grpc dep | ✅ done | gRPC v1.79.3 (`56bf04e`); Go 1.26.2 toolchain auto-fetched (`5df122f`) |
-| 2 | Default middleware stack has no panic recovery | 🔴 open | depends on [new/01](new/01-httpx-middleware-recover.md) |
-| 3 | `grpcx.NewServer` does not install Recovery interceptors | 🔴 open | depends on [new/02](new/02-grpcx-recovery-default.md) |
+| 2 | Default middleware stack has no panic recovery | ✅ done | `e96ffdf` (httpx/middleware/recover sub-package; prepended in `stack.Default`) |
+| 3 | `grpcx.NewServer` does not install Recovery interceptors | ✅ done | `e96ffdf` (Recovery interceptors prepended by default; `WithoutRecovery` opt-out) |
 | 4 | AMQP publisher silently drops unroutable messages | ✅ done | `068eeb5` (mandatory=true + NotifyReturn) |
 | 5 | `debughttp` Publish/Consume endpoints have no auth | ✅ done | `068eeb5` (Guard middleware + Authenticator) |
 | 6 | Outbox tight retry loop with no backoff | ✅ done | `4b522b3` (next_retry_at + exponential backoff + DeleteFailedBefore) |
@@ -35,13 +35,13 @@ These were called out in the original CRITICAL doc as operational footguns to bu
 - ✅ Nil-dependency constructor cluster — seven sites validated at construction (`6ba1e7d`).
 - ✅ Go 1.26.2 toolchain bump — `5df122f`.
 
-## Remaining critical work
+## Remaining work
 
-Two items left, both blocked on new-package creation:
+All originally-flagged CRITICAL items are closed. The cross-package "operational footgun" cluster (CSRF secret, clientip default, idempotency TTL, ComputeCache race, MemoryCache cap, retry nil error, secheaders XFP, timeout buffer, stack Timeout, gormmysql TLS, nil-deps, Go 1.26.2) all closed as a side-effect of the same waves.
 
-1. **Recover middleware in `stack.Default`** — implement `httpx/middleware/recover` per [new/01](new/01-httpx-middleware-recover.md), then prepend in `stack.Default`.
-2. **Recovery interceptors in `grpcx.NewServer`** — implement `grpcx/interceptor/recovery` defaults per [new/02](new/02-grpcx-recovery-default.md), prepend in `NewServer` and `app.NewGRPCModule`.
+What remains is a small **builder-integration follow-up**:
 
-Both are small once the new packages exist. Bundle with the [new/19-app-production-defaults.md](new/19-app-production-defaults.md) builder switch so consumers get crash-safety by default.
+- `Builder.WithTrustedProxies` so the per-process clientip / ratelimit defaults flow from one config knob.
+- `Builder.WithCSRFSecret` so the shared HMAC secret comes from `core/config` rather than per-instantiation.
 
-The **Builder integration** for the Wave 4 hardening items (`Builder.WithTrustedProxies`, `Builder.WithCSRFSecret`) is a separate small task and naturally pairs with new/19.
+Both naturally pair with [new/19-app-production-defaults.md](new/19-app-production-defaults.md) — a single `app.WithProductionDefaults()` switch that fans out to every per-middleware option the kit now exposes.

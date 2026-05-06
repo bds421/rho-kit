@@ -7,14 +7,9 @@
 - ✅ **Per-consumer Redis queue processing list** — `{queue}:processing:{consumerID}` (UUID v7 per `NewQueue`, override via `WithConsumerID`); recovery only scans this consumer's own list (commit `f4a0a95`). Eliminates rolling-deploy double-processing.
 - ✅ **ID-keyed remove from processing list** — Lua tombstone script finds entry by message ID, LSETs sentinel, LREMs sentinel; payload-equality LREM race is gone (commit `f4a0a95`).
 - ✅ **Recovery silent-drop fix** — `recoverProcessing` now LRanges and feeds entries through the normal `handleMessage` flow (which removes by ID after dispatch). Previous RPop-then-dispatch dropped messages whose dispatch failed (commit `f4a0a95`).
+- ✅ **redislock `tryAcquire` orphan probe** — best-effort GET on transient SET errors detects "SET landed but response failed" and treats it as success when our token is in Redis (commit `432f001`).
 
 ## Open
-
-### [HIGH] redislock `Acquire` regenerates token on transient SET error → orphan window
-**File**: `data/lock/redislock/lock.go:117-157`
-**Issue**: On transient `tryAcquire` error, `l.token = ""` is set and the error bubbles. But if the underlying SET actually reached Redis successfully (network blip on the response), the lock is held in Redis with a token the client has discarded. Next `Acquire` SETNX returns false until TTL.
-**Fix**: On transient errors, optionally probe `GET key` to check ownership before discarding the token. The newly-shipped `lock.ErrLockLost` plumbing already lets callers detect "I lost the lock" — this finding is specifically about the *Acquire* path, where the orphan happens before a Lock handle even exists.
-**Effort**: S
 
 ### [HIGH] Queue `recoverProcessing` runs synchronously before BLMove
 **File**: `data/queue/redisqueue/helpers.go:225` + `queue.go:processOnce`
@@ -24,7 +19,7 @@
 
 ### Migration checklist
 
-- [ ] Phase 2: `Acquire` surfaces transient-SET orphans (probe via `GET` on transient errors).
+- [x] Phase 2: `Acquire` surfaces transient-SET orphans (probe via `GET` on transient errors). ✅ `432f001`
 - [ ] Phase 2: bounded `recoverProcessing` interleaved with new-message reads.
 
 ### Related new packages

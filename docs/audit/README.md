@@ -1,6 +1,6 @@
 # rho-kit Audit & Roadmap (2026-05) — current state
 
-Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total at audit time. As of Wave 1+2+3+4+5, **11 of 12 CRITICAL items closed**, every HIGH item in the Phase 1 release window closed, and most Phase 2 interface-bumps shipped. The remaining CRITICAL item depends on creating a new package (recover middleware); the gRPC recovery default is bundled with it.
+Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total at audit time. As of Wave 1–6, **all 12 CRITICAL items closed** along with every HIGH item in the Phase 1 release window. Most Phase 2 interface-bumps and per-package hardening have shipped; what remains is documented per-area in `existing/*.md` plus the new-package proposals (`new/01-25`).
 
 Each `existing/*.md` file now has two top-level sections:
 

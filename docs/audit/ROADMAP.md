@@ -29,15 +29,13 @@ Done (commits in parens):
 - ✅ http.Server.ErrorLog defaults to slog adapter; client MaxIdleConnsPerHost raised (`36cf34b`).
 - ✅ `clientip` default to loopback only; `ParseTrustedProxiesStrict` (`ab4df5c`).
 - ✅ CSRF require shared secret in non-dev; SkipCheck regen bug fix (`7f0efe3`).
+- ✅ CSRF rejects SameSite=None without Secure (`3784af8`).
 - ✅ Timeout middleware buffer cap default 1 MiB + `WithMaxBufferSize` (`30113f9`).
 - ✅ secheaders honour X-Forwarded-Proto + `WithForceHSTS` (`b324d2e`).
 - ✅ Include `Timeout` in `stack.Default` (`a0b49e8`).
 - ✅ gormmysql TLS registry refcount + `ReleaseTLS` (`af39f9c`).
-
-Still open:
-
-- 🔴 [existing/05] Add `httpx/middleware/recover` and prepend in `stack.Default` → blocked on [new/01].
-- 🔴 [existing/06] Prepend Recovery interceptors in `grpcx.NewServer` → blocked on [new/02].
+- ✅ `stack.Default` panic-recovery middleware (`e96ffdf`). Closes original CRITICAL #2.
+- ✅ `grpcx.NewServer` panic-recovery interceptors by default (`e96ffdf`). Closes original CRITICAL #3.
 
 ## Phase 2 — Tighten the contracts — mostly done
 
@@ -61,19 +59,21 @@ Still open:
 - ✅ [existing/00] Nil-dependency validation sweep across constructors. (`6ba1e7d`)
 - ✅ [existing/08] ComputeCache zero-TTL contract decision. (`6ba1e7d`)
 - ✅ [existing/08] Idempotency backends reject non-positive TTL with `ErrInvalidTTL`. (`a01fad7`)
+- ✅ [existing/03] SSRF `*FromURL` constructors. (`a649495`)
+- ✅ [existing/03] JWT mandatory expected issuer in non-dev. (`659babb`)
+- ✅ [existing/05] Idempotency identity-header strip + mandatory user extractor. (`83da31b`)
+- ✅ [existing/05] CSRF SameSite=None+Secure validation. (`3784af8`)
+- ✅ [existing/07] redislock Acquire surfaces transient-SET orphans (probe via GET). (`432f001`)
+- ✅ [existing/11] Outbox `Writer.WithRequireTransaction()`. (`5cfa5c9`, default off)
 - 🔴 [existing/03] crypto/signing `New*E` / `Must*` split; `WithFutureSkew`.
-- 🔴 [existing/03] JWT staleness metric + max-stale rejection; mandatory issuer in app builder.
-- 🔴 [existing/03] SSRF `*FromURL` constructors.
+- 🔴 [existing/03] JWT staleness metric + max-stale rejection.
 - 🔴 [existing/05] Timeout middleware hard-timeout mode.
-- 🔴 [existing/05] Idempotency identity-header strip + mandatory user extractor.
-- 🔴 [existing/05] CSRF session-bound HMAC + Secure default.
-- 🔴 [existing/07] redislock Acquire surfaces transient-SET orphans (probe via GET).
+- 🔴 [existing/05] CSRF session-bound HMAC (depends on [new/06]).
 - 🔴 [existing/07] Bounded recoverProcessing interleaved with new-message reads.
 - 🔴 [existing/09] Per-stream consumer ID (or panic on multi-stream Consume).
 - 🔴 [existing/10] AMQP consumer ctx semantics on shutdown (`WithoutCancel`).
 - 🔴 [existing/10] Dead-letter publish failure cap.
 - 🔴 [existing/10] BufferedPublisher state-file mandatory in prod; surface persistence errors; restrictive umask.
-- 🔴 [existing/11] Outbox `Writer.WithRequireTransaction()` (default on for new constructions).
 - 🔴 [existing/12] S3 SSE defaults + presigned PUT enforcement; storagehttp MaxMemory + UUIDKeyFunc fallback; encryption Put concurrency cap.
 - 🔴 [new/19] Ship `app.WithProductionDefaults()` after the per-finding fixes above complete.
 
