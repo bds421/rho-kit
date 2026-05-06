@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -61,6 +62,13 @@ type SFTPBackend struct {
 	sshConn    io.Closer
 	connected  bool
 	lazyConn   bool
+
+	// cleanupGen is the latest cleanup generation. Cleanup goroutines hold
+	// the generation they were spawned at; before sleeping for the grace
+	// period they re-check whether a newer cleanup has run, and if so close
+	// the FD pair immediately. Prevents FD accumulation when the SFTP server
+	// flaps every few seconds (each old cleanup holding 2 FDs for 5s).
+	cleanupGen atomic.Uint64
 
 	// cleanupWg tracks pending cleanup goroutines that close replaced connections.
 	// Close() waits for them to finish to prevent file descriptor leaks on shutdown.
@@ -197,10 +205,20 @@ func (b *SFTPBackend) connect() error {
 	oldClient := b.client
 	oldConn := b.sshConn
 	if oldClient != nil || oldConn != nil {
+		gen := b.cleanupGen.Add(1)
 		b.cleanupWg.Add(1)
 		go func() {
 			defer b.cleanupWg.Done()
-			time.Sleep(5 * time.Second)
+			// Generation-aware sleep: poll every 200ms so a newer cleanup
+			// shortcircuits the wait. Bounded total wait remains 5s.
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if b.cleanupGen.Load() != gen {
+					// A newer cleanup has run; close immediately.
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
 			if oldClient != nil {
 				_ = oldClient.Close()
 			}

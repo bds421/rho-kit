@@ -33,6 +33,12 @@ func (b *S3Backend) URL(_ context.Context, key string) (string, error) {
 		return fmt.Sprintf("%s/%s/%s", endpoint, b.cfg.Bucket, encodedKey), nil
 	}
 
+	if tpl := b.cfg.URLTemplate; tpl != "" {
+		host := strings.NewReplacer("{bucket}", b.cfg.Bucket, "{region}", b.cfg.Region).Replace(tpl)
+		host = strings.TrimRight(host, "/")
+		return host + "/" + encodedKey, nil
+	}
+
 	// Standard AWS — use virtual-hosted style.
 	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", b.cfg.Bucket, b.cfg.Region, encodedKey), nil
 }

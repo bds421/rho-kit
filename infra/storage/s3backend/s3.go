@@ -201,6 +201,7 @@ func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, meta stora
 	if meta.Size > 0 {
 		input.ContentLength = aws.Int64(meta.Size)
 	}
+	applySSE(input, b.cfg)
 
 	start := now()
 	_, putErr := b.client.PutObject(ctx, input)
@@ -313,4 +314,22 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, fmt.Errorf("s3backend: exists %q: %w", key, err)
 	}
 	return true, nil
+}
+
+// applySSE sets the ServerSideEncryption (and SSEKMSKeyId when applicable)
+// fields on a PutObjectInput based on the configured SSE policy. The default
+// is "AES256" so buckets without a default-encryption policy still receive
+// encrypted objects; callers can opt out by setting cfg.SSE = "".
+func applySSE(input *s3.PutObjectInput, cfg S3Config) {
+	switch cfg.SSE {
+	case "":
+		// Opt-out: don't set anything, rely on bucket policy.
+	case "AES256":
+		input.ServerSideEncryption = types.ServerSideEncryptionAes256
+	case "aws:kms":
+		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
+		if cfg.SSEKMSKeyID != "" {
+			input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
+		}
+	}
 }

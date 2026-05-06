@@ -16,6 +16,37 @@ type S3Config struct {
 	ForcePathStyle  bool   // required for localstack and minio
 	AccessKeyID     string
 	SecretAccessKey string
+
+	// SSE controls server-side encryption applied to PutObject and signed
+	// into presigned PUT URLs. Empty disables (the bucket may still apply
+	// its default-encryption policy if configured). Recommended values
+	// are "AES256" (S3-managed keys) or "aws:kms" (KMS-managed keys).
+	//
+	// Default: "AES256". The kit deliberately defaults to encryption-at-
+	// rest because buckets without a default-encryption policy would
+	// otherwise persist plaintext on PutObject — unacceptable for
+	// SOC2/PCI workloads. Set to empty string to opt out (e.g. when the
+	// bucket policy is the source of truth).
+	SSE string
+
+	// SSEKMSKeyID is the KMS key ID used when SSE = "aws:kms". Ignored
+	// for SSE = "AES256". Required when SSE = "aws:kms".
+	SSEKMSKeyID string
+
+	// URLTemplate overrides the host portion of [S3Backend.URL] for
+	// non-standard AWS partitions (China, GovCloud) or custom CDN domains.
+	// Two placeholders are recognised: {bucket} and {region}. Both forms
+	// resolve to a virtual-hosted-style URL.
+	//
+	// Examples:
+	//   "https://{bucket}.s3.{region}.amazonaws.com.cn/" — China partition
+	//   "https://{bucket}.s3.{region}.cloud-object-storage.appdomain.cloud/" — IBM
+	//   "https://cdn.example.com/{bucket}/" — fronted by a CDN
+	//
+	// Empty falls back to "https://{bucket}.s3.{region}.amazonaws.com/"
+	// (the global AWS partition default). Ignored when [Endpoint] is set
+	// — custom endpoints already control the host directly.
+	URLTemplate string
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
@@ -53,6 +84,8 @@ func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 		ForcePathStyle:  forcePathStyle,
 		AccessKeyID:     config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
 		SecretAccessKey: config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
+		SSE:             config.Get("STORAGE_S3_SSE", "AES256"),
+		SSEKMSKeyID:     config.Get("STORAGE_S3_SSE_KMS_KEY_ID", ""),
 	}
 
 	if err := cfg.Validate(environment); err != nil {
@@ -82,6 +115,10 @@ func (c S3Config) Validate(environment string) error {
 		if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
 			return err
 		}
+	}
+
+	if c.SSE == "aws:kms" && c.SSEKMSKeyID == "" {
+		return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID is required when STORAGE_S3_SSE=aws:kms")
 	}
 
 	return nil

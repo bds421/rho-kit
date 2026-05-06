@@ -24,9 +24,13 @@ type UploadResult struct {
 
 // UploadOptions configures [ParseAndStore] behavior.
 type UploadOptions struct {
-	// MaxMemory is the multipart memory buffer. Files exceeding this are
-	// spooled to temp files by Go's stdlib. Defaults to 32 KiB — keep low
-	// because we stream to storage rather than buffering.
+	// MaxMemory was previously documented as "the multipart memory buffer"
+	// but [ParseAndStore] uses [http.Request.MultipartReader] which streams
+	// parts directly without honouring this field. Kept for backwards-
+	// compatible doc-references; reads are silently ignored.
+	//
+	// Deprecated: ignored. The streaming reader path makes the field a
+	// misleading no-op. Will be removed in v2.
 	MaxMemory int64
 
 	// FormField is the name of the file field in the multipart form.
@@ -46,14 +50,20 @@ type UploadOptions struct {
 	// Validators are applied to the upload stream before storing.
 	// These run in addition to any validators configured on the backend.
 	Validators []storage.Validator
+
+	// MaxTotalSkippedBytes caps the cumulative size of multipart parts that
+	// don't match FormField. Without it, ParseAndStore could discard up to
+	// maxPartDiscard × maxSkippedParts (~100 MiB) of attacker-supplied
+	// data per request. Default: 16 MiB.
+	MaxTotalSkippedBytes int64
 }
 
 func (o *UploadOptions) applyDefaults() {
-	if o.MaxMemory <= 0 {
-		o.MaxMemory = 32 * 1024
-	}
 	if o.FormField == "" {
 		o.FormField = "file"
+	}
+	if o.MaxTotalSkippedBytes <= 0 {
+		o.MaxTotalSkippedBytes = 16 << 20
 	}
 }
 
@@ -83,6 +93,7 @@ const maxSkippedParts = 10
 
 func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {
 	skipped := 0
+	var totalSkippedBytes int64
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -97,12 +108,27 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			if skipped > maxSkippedParts {
 				return UploadResult{}, fmt.Errorf("storagehttp: too many non-file parts (limit %d)", maxSkippedParts)
 			}
-			// Discard up to 10 MiB. If the part exceeds this limit, reject
-			// the request rather than leaving unread bytes that would corrupt
-			// the multipart parse stream for subsequent parts.
+			// Discard up to 10 MiB per part. If a single part exceeds the
+			// per-part limit OR the cumulative budget across all skipped
+			// parts exceeds opts.MaxTotalSkippedBytes, reject the request.
+			// The cumulative cap defends against an attacker fanning ~10 MiB
+			// across the maxSkippedParts × per-part budget (~100 MiB) of
+			// pure waste per request.
 			const maxPartDiscard = 10 << 20
-			n, _ := io.Copy(io.Discard, io.LimitReader(part, maxPartDiscard+1))
-			if n > maxPartDiscard {
+			remainingBudget := opts.MaxTotalSkippedBytes - totalSkippedBytes
+			if remainingBudget <= 0 {
+				return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit (%d)", opts.MaxTotalSkippedBytes)
+			}
+			limit := int64(maxPartDiscard)
+			if limit > remainingBudget {
+				limit = remainingBudget
+			}
+			n, _ := io.Copy(io.Discard, io.LimitReader(part, limit+1))
+			totalSkippedBytes += n
+			if n > limit {
+				if limit < maxPartDiscard {
+					return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit (%d)", opts.MaxTotalSkippedBytes)
+				}
 				return UploadResult{}, fmt.Errorf("storagehttp: non-file part too large (limit %d bytes)", maxPartDiscard)
 			}
 			continue

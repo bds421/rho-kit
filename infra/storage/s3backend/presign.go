@@ -40,6 +40,13 @@ func (b *S3Backend) PresignGetURL(ctx context.Context, key string, ttl time.Dura
 
 // PresignPutURL generates a pre-signed PUT URL valid for the given TTL.
 // The caller is responsible for sending the correct Content-Type header.
+//
+// The configured server-side encryption policy (S3Config.SSE / SSEKMSKeyID)
+// is signed into the presigned URL so the client must echo the matching
+// x-amz-server-side-encryption (and x-amz-server-side-encryption-aws-kms-
+// key-id where applicable) header on PUT — without that, S3 rejects the
+// upload. This stops clients from bypassing the bucket's encryption
+// policy via direct uploads.
 func (b *S3Backend) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
@@ -56,11 +63,14 @@ func (b *S3Backend) PresignPutURL(ctx context.Context, key string, ttl time.Dura
 		contentType = "application/octet-stream"
 	}
 
-	req, err := b.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+	input := &s3.PutObjectInput{
 		Bucket:      aws.String(b.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
-	}, s3.WithPresignExpires(ttl))
+	}
+	applySSE(input, b.cfg)
+
+	req, err := b.presigner.PresignPutObject(ctx, input, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("s3backend: presign put %q: %w", key, err)
 	}

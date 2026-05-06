@@ -84,23 +84,34 @@ func (m *Manager) SetDefault(name string) *Manager {
 
 // Default returns the default backend.
 // If no default was set explicitly, the first registered backend is used.
-// Panics if no backends are registered.
-//
-// Note: The first-registered fallback relies on the order slice staying in sync
-// with the backends map. This invariant is maintained by Register being the only
-// way to add backends. Do not add an Unregister method without also updating
-// the order tracking.
+// Panics if no backends are registered, or if the order/backends invariant
+// is violated (Default is documented self-checking so a future Unregister
+// path that forgets to splice `order` fails loudly here instead of returning
+// a nil backend at request time).
 func (m *Manager) Default() Storage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if m.defaultName != "" {
-		return m.backends[m.defaultName]
+		s, ok := m.backends[m.defaultName]
+		if !ok {
+			panic(fmt.Sprintf("storage.Manager: defaultName %q has no backend", m.defaultName))
+		}
+		return s
 	}
 	if len(m.order) == 0 {
 		panic("storage.Manager: no backends registered")
 	}
-	return m.backends[m.order[0]]
+	first := m.order[0]
+	s, ok := m.backends[first]
+	if !ok {
+		// Invariant violation: order slice references a backend not in the
+		// map. This previously could happen only via a hypothetical
+		// Unregister; the explicit panic surfaces it loudly so the bug is
+		// caught at Default() time rather than at request time via nil deref.
+		panic(fmt.Sprintf("storage.Manager: order references backend %q absent from map (order/backends invariant violated)", first))
+	}
+	return s
 }
 
 // Names returns all registered disk names in alphabetical order.

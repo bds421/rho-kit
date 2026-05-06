@@ -76,7 +76,7 @@ func TestUUIDKeyFunc(t *testing.T) {
 		assert.True(t, strings.HasSuffix(key, ".png"))
 	})
 
-	t.Run("omits extension for application/octet-stream", func(t *testing.T) {
+	t.Run("falls back to filename ext when content type unrecognised", func(t *testing.T) {
 		t.Parallel()
 		fn := UUIDKeyFunc("uploads")
 		r := httptest.NewRequest("POST", "/upload", nil)
@@ -84,8 +84,34 @@ func TestUUIDKeyFunc(t *testing.T) {
 
 		key, err := fn(r, "data.bin", meta)
 		require.NoError(t, err)
-		// UUID only, no extension.
+		// MIME yields no extension, but filename's ".bin" passes the
+		// alphanumeric allowlist so it's preserved.
+		assert.True(t, strings.HasSuffix(key, ".bin"))
+	})
+
+	t.Run("omits extension when neither content type nor filename helps", func(t *testing.T) {
+		t.Parallel()
+		fn := UUIDKeyFunc("uploads")
+		r := httptest.NewRequest("POST", "/upload", nil)
+		meta := storage.ObjectMeta{ContentType: ""}
+
+		key, err := fn(r, "noext", meta)
+		require.NoError(t, err)
 		assert.Len(t, key, len("uploads/")+36)
+	})
+
+	t.Run("rejects malicious filename ext", func(t *testing.T) {
+		t.Parallel()
+		fn := UUIDKeyFunc("uploads")
+		r := httptest.NewRequest("POST", "/upload", nil)
+		meta := storage.ObjectMeta{ContentType: ""}
+
+		// Path traversal via ext + special chars must not appear in key.
+		key, err := fn(r, "evil/../../etc/passwd", meta)
+		require.NoError(t, err)
+		// path.Ext("evil/../../etc/passwd") returns "" — no extension to leak.
+		assert.False(t, strings.Contains(key, ".."))
+		assert.False(t, strings.Contains(key, "passwd"))
 	})
 }
 

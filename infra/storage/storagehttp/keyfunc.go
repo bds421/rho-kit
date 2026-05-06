@@ -17,15 +17,21 @@ type KeyFunc = func(r *http.Request, filename string, meta storage.ObjectMeta) (
 // UUIDKeyFunc returns a [KeyFunc] that generates unique storage keys.
 // The returned key has the format "<prefix>/<uuid><ext>" where ext is
 // derived from meta.ContentType using the mimetype library. If the content
-// type is empty or unrecognised, the extension is omitted.
+// type is empty, "application/octet-stream", or unrecognised, the
+// extension falls back to a sanitised version of the original filename's
+// extension (alphanumeric + dot only, length-limited to 8 chars). If the
+// fallback yields no usable extension, the key has none.
 //
 // Example:
 //
 //	UUIDKeyFunc("avatars") → "avatars/550e8400-e29b-41d4-a716-446655440000.jpg"
 //	UUIDKeyFunc("")        → "550e8400-e29b-41d4-a716-446655440000.jpg"
 func UUIDKeyFunc(prefix string) KeyFunc {
-	return func(_ *http.Request, _ string, meta storage.ObjectMeta) (string, error) {
+	return func(_ *http.Request, filename string, meta storage.ObjectMeta) (string, error) {
 		ext := extensionFromContentType(meta.ContentType)
+		if ext == "" {
+			ext = extensionFromFilename(filename)
+		}
 		id := uuid.Must(uuid.NewV7()).String()
 		key := id + ext
 		if prefix != "" {
@@ -47,4 +53,38 @@ func extensionFromContentType(contentType string) string {
 		return ""
 	}
 	return m.Extension()
+}
+
+// extensionFromFilename extracts the trailing .ext from a user-supplied
+// filename and rejects anything that isn't a small alphanumeric extension.
+// Defends against:
+//   - path-traversal (".../etc/passwd" → "")
+//   - oversized extensions (".giiiiiiiiiiiiiiiiiiiiiif" → "")
+//   - special characters that break URLs or filesystems
+//
+// Returns "" when the filename has no extension or the extension fails the
+// allowlist; the caller is expected to omit the extension in that case
+// rather than trust client-supplied bytes.
+func extensionFromFilename(filename string) string {
+	ext := path.Ext(filename)
+	if ext == "" || ext == "." {
+		return ""
+	}
+	// Strip leading dot, validate, then re-add.
+	body := ext[1:]
+	if len(body) == 0 || len(body) > 8 {
+		return ""
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9':
+			// allowed
+		default:
+			return ""
+		}
+	}
+	return "." + body
 }

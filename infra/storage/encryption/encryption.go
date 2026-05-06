@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 
 	"github.com/bds421/rho-kit/crypto/encrypt"
 	"github.com/bds421/rho-kit/infra/storage"
@@ -60,14 +61,47 @@ var _ storage.Storage = (*EncryptedStorage)(nil)
 type EncryptedStorage struct {
 	backend storage.Storage
 	keys    KeyProvider
+
+	// putSem caps concurrent Put encryptions to bound peak memory under
+	// load. Each in-flight Put may hold up to MaxEncryptableSize bytes of
+	// plaintext + ciphertext (~512 MiB at the default cap), so an
+	// unbounded fan-out from a public upload endpoint can exhaust memory.
+	// The semaphore is sized to runtime.NumCPU() by default; override
+	// with [WithMaxConcurrentEncryptions].
+	putSem chan struct{}
+}
+
+// Option configures an EncryptedStorage.
+type Option func(*EncryptedStorage)
+
+// WithMaxConcurrentEncryptions caps the number of in-flight Put encryptions.
+// Default: runtime.NumCPU(). Pass <= 0 to disable the cap (unsafe; the
+// audit-flagged DoS path uses ~512 MiB per concurrent Put at the default
+// MaxEncryptableSize).
+func WithMaxConcurrentEncryptions(n int) Option {
+	return func(e *EncryptedStorage) {
+		if n <= 0 {
+			e.putSem = nil
+			return
+		}
+		e.putSem = make(chan struct{}, n)
+	}
 }
 
 // Unwrap returns the underlying storage backend.
 func (e *EncryptedStorage) Unwrap() storage.Storage { return e.backend }
 
 // New wraps backend with client-side AES-256-GCM encryption.
-func New(backend storage.Storage, keys KeyProvider) *EncryptedStorage {
-	return &EncryptedStorage{backend: backend, keys: keys}
+func New(backend storage.Storage, keys KeyProvider, opts ...Option) *EncryptedStorage {
+	e := &EncryptedStorage{
+		backend: backend,
+		keys:    keys,
+		putSem:  make(chan struct{}, runtime.NumCPU()),
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // MaxEncryptableSize is the maximum content size that can be encrypted.
@@ -79,11 +113,27 @@ const MaxEncryptableSize = 256 << 20 // 256 MiB
 // Put encrypts the content and stores the ciphertext.
 // The stored format is: [12-byte nonce][ciphertext+tag].
 // Returns an error if the content exceeds [MaxEncryptableSize].
+//
+// Holds up to ~2 × MaxEncryptableSize of memory while encrypting (plaintext
+// + ciphertext). Concurrent Put calls are bounded by the semaphore set
+// in [New] (default runtime.NumCPU()) — a public upload endpoint without
+// this cap can exhaust memory under modest fan-out. ctx cancellation
+// during the wait returns ctx.Err().
 func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	// Validate key early to fail fast before expensive encryption work.
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
+
+	if e.putSem != nil {
+		select {
+		case e.putSem <- struct{}{}:
+			defer func() { <-e.putSem }()
+		case <-ctx.Done():
+			return fmt.Errorf("encryption: %w", ctx.Err())
+		}
+	}
+
 	keyBytes, err := e.keys.EncryptionKey(ctx)
 	if err != nil {
 		return fmt.Errorf("encryption: get key: %w", err)
