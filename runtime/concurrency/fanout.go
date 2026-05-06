@@ -3,6 +3,7 @@ package concurrency
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"runtime/debug"
 	"sync"
 
@@ -46,16 +47,26 @@ type Result[T any] struct {
 type FanOutOption func(*config)
 
 type config struct {
-	maxGoroutines int
+	maxGoroutines    int
+	maxGoroutinesSet bool
 }
 
-// WithMaxGoroutines limits the number of goroutines that execute concurrently.
-// Values less than 1 are ignored (no limit).
+// WithMaxGoroutines sets the concurrency limit:
+//   - n >= 1: limit to n concurrent goroutines.
+//   - n == 0: explicit opt-out — unbounded concurrency (one goroutine per fn).
+//   - n < 0: ignored.
+//
+// If WithMaxGoroutines is not supplied, [FanOut] and [FanOutSettled] default
+// to runtime.GOMAXPROCS(0) * 2 to prevent goroutine exhaustion when fns is
+// derived from external input. Pass WithMaxGoroutines(0) only when you know
+// fns is bounded and you need every task in flight simultaneously.
 func WithMaxGoroutines(n int) FanOutOption {
 	return func(c *config) {
-		if n >= 1 {
-			c.maxGoroutines = n
+		if n < 0 {
+			return
 		}
+		c.maxGoroutines = n
+		c.maxGoroutinesSet = true
 	}
 }
 
@@ -63,6 +74,9 @@ func buildConfig(opts []FanOutOption) config {
 	var cfg config
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	if !cfg.maxGoroutinesSet {
+		cfg.maxGoroutines = runtime.GOMAXPROCS(0) * 2
 	}
 	return cfg
 }
@@ -74,12 +88,13 @@ func buildConfig(opts []FanOutOption) config {
 // concurrently-running goroutines are discarded. On success the returned
 // slice has the same length and order as fns.
 //
-// When the number of functions is derived from external input, always use
-// [WithMaxGoroutines] to prevent goroutine exhaustion.
+// FanOut defaults to runtime.GOMAXPROCS(0)*2 concurrent goroutines. Pass
+// [WithMaxGoroutines](n) to override; pass [WithMaxGoroutines](0) for
+// unbounded (one goroutine per fn) — only safe when fns is bounded.
 //
-// Note: when [WithMaxGoroutines] is set, FanOut delegates limiting to errgroup
-// which may briefly block after context cancellation until a running goroutine
-// frees a slot. [FanOutSettled] uses a context-aware semaphore that responds
+// Note: when bounded, FanOut delegates limiting to errgroup which may
+// briefly block after context cancellation until a running goroutine frees
+// a slot. [FanOutSettled] uses a context-aware semaphore that responds
 // immediately to cancellation.
 //
 // A nil or empty fns slice returns an empty (non-nil) slice and no error.
@@ -131,8 +146,9 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 // regardless of individual errors. The returned slice has the same length
 // and order as fns. Each [Result] contains either a value or an error.
 //
-// When the number of functions is derived from external input, always use
-// [WithMaxGoroutines] to prevent goroutine exhaustion.
+// Like [FanOut], FanOutSettled defaults to runtime.GOMAXPROCS(0)*2 concurrent
+// goroutines. Override with [WithMaxGoroutines]; pass
+// [WithMaxGoroutines](0) for unbounded.
 //
 // Unlike [FanOut], a failing function does not cancel others — the parent
 // ctx is passed through unmodified. Panics are recovered and converted to

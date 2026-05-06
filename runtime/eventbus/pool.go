@@ -61,12 +61,18 @@ func newWorkerPool(
 	}
 }
 
-// submit enqueues a task for async execution. Returns false if the queue is
-// full or the pool has been stopped, meaning the event was dropped.
+// submit enqueues a task for async execution. The behavior under queue
+// saturation depends on policy:
+//   - [OnFullDrop]: returns (false, nil); the event is dropped and counted.
+//   - [OnFullBlock]: blocks until queue space is available or pubCtx is
+//     cancelled. Returns (false, ctx.Err()) on cancellation.
+//   - [OnFullError]: returns (false, nil) without enqueuing; the caller is
+//     responsible for synthesizing an error. The dropped counter is
+//     incremented so [OnFullError] saturation is still observable.
 //
 // Calling submit after stop is handled gracefully (recovered from channel-close
 // panic). The event is dropped and counted.
-func (p *workerPool) submit(task *asyncTask) (ok bool) {
+func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context.Context) (ok bool, err error) {
 	if !p.started.Load() {
 		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
 			slog.String("event", task.eventName),
@@ -80,7 +86,7 @@ func (p *workerPool) submit(task *asyncTask) (ok bool) {
 		p.logger.Warn("eventbus: submit after stop, event dropped",
 			slog.String("event", task.eventName),
 		)
-		return false
+		return false, nil
 	}
 
 	// Use recover to handle the tiny race window between stopped check and channel close.
@@ -93,6 +99,25 @@ func (p *workerPool) submit(task *asyncTask) (ok bool) {
 		}
 	}()
 
+	if policy == OnFullBlock {
+		select {
+		case p.queue <- task:
+			if p.metrics != nil {
+				p.metrics.queueDepth.Set(float64(len(p.queue)))
+			}
+			return true, nil
+		case <-pubCtx.Done():
+			if p.metrics != nil {
+				p.metrics.dropped.Inc()
+			}
+			p.logger.Warn("eventbus: publisher context cancelled while waiting for queue space",
+				slog.String("event", task.eventName),
+				slog.String("handler", task.handler.name),
+			)
+			return false, pubCtx.Err()
+		}
+	}
+
 	select {
 	case p.queue <- task:
 		// queueDepth is approximate: len(p.queue) is non-atomic relative to the
@@ -100,7 +125,7 @@ func (p *workerPool) submit(task *asyncTask) (ok bool) {
 		if p.metrics != nil {
 			p.metrics.queueDepth.Set(float64(len(p.queue)))
 		}
-		return true
+		return true, nil
 	default:
 		if p.metrics != nil {
 			p.metrics.dropped.Inc()
@@ -109,7 +134,7 @@ func (p *workerPool) submit(task *asyncTask) (ok bool) {
 			slog.String("event", task.eventName),
 			slog.String("handler", task.handler.name),
 		)
-		return false
+		return false, nil
 	}
 }
 

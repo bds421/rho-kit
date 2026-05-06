@@ -8,11 +8,35 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/observability/logattr"
 )
+
+// OnFullPolicy controls what async dispatch does when the worker pool queue
+// is full. Default is [OnFullDrop].
+type OnFullPolicy int
+
+const (
+	// OnFullDrop drops the event and increments events_dropped_total. The
+	// publisher's call to [Publish] sees no error. Use for high-volume
+	// telemetry where loss under saturation is acceptable.
+	OnFullDrop OnFullPolicy = iota
+	// OnFullBlock waits for queue space, observing the publisher's ctx for
+	// cancellation. Use when the publisher can absorb backpressure (offline
+	// batch jobs, ingestion pipelines).
+	OnFullBlock
+	// OnFullError returns [ErrQueueFull] from [Publish] without enqueuing.
+	// Use when the publisher needs to react to saturation (retry, fallback,
+	// circuit-break).
+	OnFullError
+)
+
+// ErrQueueFull is returned by [Publish] when [WithOnFull](OnFullError) is
+// configured and the worker pool queue is full.
+var ErrQueueFull = errors.New("eventbus: worker pool queue full")
 
 // Event is the constraint for publishable domain events.
 // Each concrete event type returns a stable name used as the dispatch key.
@@ -81,6 +105,13 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 	}
 }
 
+// WithOnFull sets the policy applied when async dispatch finds the worker
+// pool queue full. Default: [OnFullDrop]. Has no effect without
+// [WithWorkerPool] (legacy unbounded goroutines never block).
+func WithOnFull(p OnFullPolicy) Option {
+	return func(b *Bus) { b.onFull = p }
+}
+
 // HandlerOption configures a single handler registration.
 type HandlerOption func(*handlerConfig)
 
@@ -108,10 +139,18 @@ func WithName(name string) HandlerOption {
 
 // registeredHandler is the type-erased internal representation.
 type registeredHandler struct {
+	id        uint64
 	name      string
 	async     bool
 	eventType reflect.Type
 	fn        func(ctx context.Context, event any) error
+}
+
+// Subscription is the token returned by [Subscribe]. Pass it to
+// [Bus.Unsubscribe] to remove the handler.
+type Subscription struct {
+	eventName string
+	id        uint64
 }
 
 // poolConfig holds configuration for the optional bounded worker pool.
@@ -130,6 +169,8 @@ type Bus struct {
 	onError  func(ctx context.Context, eventName string, handlerName string, err error)
 	pool     *workerPool
 	poolCfg  *poolConfig // nil = no pool (backward compat)
+	onFull   OnFullPolicy
+	nextID   atomic.Uint64
 }
 
 // New creates a [Bus]. The zero value is not usable; always use New.
@@ -155,10 +196,13 @@ func New(opts ...Option) *Bus {
 	return b
 }
 
-// Subscribe registers a typed handler for events of type E.
-// The event name is derived from E's [Event.EventName] method at registration time.
-// Panics if handler is nil.
-func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error, opts ...HandlerOption) {
+// Subscribe registers a typed handler for events of type E and returns a
+// [Subscription] token that can be passed to [Bus.Unsubscribe]. Callers that
+// never unsubscribe may discard the return value.
+//
+// The event name is derived from E's [Event.EventName] method at registration
+// time. Panics if handler is nil.
+func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error, opts ...HandlerOption) Subscription {
 	if handler == nil {
 		panic("eventbus: handler must not be nil")
 	}
@@ -172,7 +216,9 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	eventName := zero.EventName()
 	expectedType := reflect.TypeOf(zero)
 
+	id := b.nextID.Add(1)
 	rh := registeredHandler{
+		id:        id,
 		name:      cfg.name,
 		async:     cfg.async,
 		eventType: expectedType,
@@ -189,6 +235,37 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	b.mu.Lock()
 	b.handlers[eventName] = append(b.handlers[eventName], rh)
 	b.mu.Unlock()
+
+	return Subscription{eventName: eventName, id: id}
+}
+
+// Unsubscribe removes the handler associated with sub. Returns true if the
+// handler was found and removed, false if it was already removed or sub is
+// the zero value.
+//
+// Safe to call concurrently with [Publish]: in-flight dispatches use a
+// snapshot of the handler slice taken at the start of Publish, so a handler
+// already snapshotted may still receive one final event after Unsubscribe
+// returns. Subsequent Publish calls will not include it.
+func (b *Bus) Unsubscribe(sub Subscription) bool {
+	if sub.eventName == "" || sub.id == 0 {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	hs := b.handlers[sub.eventName]
+	for i, h := range hs {
+		if h.id == sub.id {
+			// Allocate new slice so any in-flight Publish snapshot is
+			// untouched (immutable handoff).
+			next := make([]registeredHandler, 0, len(hs)-1)
+			next = append(next, hs[:i]...)
+			next = append(next, hs[i+1:]...)
+			b.handlers[sub.eventName] = next
+			return true
+		}
+	}
+	return false
 }
 
 // Publish dispatches event to all handlers registered for E's event name.
@@ -196,9 +273,14 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 // Async handlers run in separate goroutines; their errors go to the [WithOnError] callback.
 // Returns nil if no handlers are registered for the event.
 //
-// Async events may be silently dropped if the worker pool queue is full.
-// Dropped events are logged and counted via the eventbus_events_dropped_total
-// metric. Security-critical events should use synchronous handlers (without
+// Async dispatch behavior under saturation depends on [WithOnFull]:
+//   - [OnFullDrop] (default): events are dropped silently and counted via
+//     eventbus_events_dropped_total.
+//   - [OnFullBlock]: Publish blocks until queue space is available or ctx
+//     is cancelled (returns ctx.Err()).
+//   - [OnFullError]: Publish returns [ErrQueueFull] without enqueuing.
+//
+// Security-critical events should use synchronous handlers (without
 // [WithAsync]) to guarantee delivery.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	eventName := event.EventName()
@@ -216,19 +298,20 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	copy(snapshot, src)
 	b.mu.RUnlock()
 
-	var syncErrs []error
+	var dispatchErrs []error
 	for _, h := range snapshot {
 		if h.async {
-			b.dispatchAsync(ctx, eventName, h, event)
+			if err := b.dispatchAsync(ctx, eventName, h, event); err != nil {
+				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler %q: %w", h.name, err))
+			}
 		} else {
-			err := callSync(ctx, h, event)
-			if err != nil {
-				syncErrs = append(syncErrs, fmt.Errorf("handler %q: %w", h.name, err))
+			if err := callSync(ctx, h, event); err != nil {
+				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler %q: %w", h.name, err))
 			}
 		}
 	}
 
-	return errors.Join(syncErrs...)
+	return errors.Join(dispatchErrs...)
 }
 
 // callSync invokes a sync handler with panic recovery. A buggy subscriber
@@ -255,18 +338,31 @@ func (b *Bus) HasHandlers(eventName string) bool {
 
 // dispatchAsync routes an async handler invocation to either the bounded
 // worker pool (if configured) or an unbounded goroutine (legacy behavior).
-func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
-	if b.pool != nil {
-		// submit() logs with full detail on drop; no additional logging needed here.
-		task := taskPool.Get().(*asyncTask)
-		task.ctx = ctx
-		task.eventName = eventName
-		task.handler = h
-		task.event = event
-		b.pool.submit(task)
-		return
+//
+// The returned error is non-nil only when the worker pool queue is full and
+// the configured [OnFullPolicy] surfaces it: [OnFullError] returns
+// [ErrQueueFull], [OnFullBlock] returns ctx.Err() if blocked too long, and
+// [OnFullDrop] returns nil (the event is dropped and metric-counted).
+func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredHandler, event any) error {
+	if b.pool == nil {
+		go b.runAsync(ctx, eventName, h, event)
+		return nil
 	}
-	go b.runAsync(ctx, eventName, h, event)
+
+	task := taskPool.Get().(*asyncTask)
+	task.ctx = ctx
+	task.eventName = eventName
+	task.handler = h
+	task.event = event
+
+	ok, err := b.pool.submit(task, b.onFull, ctx)
+	if err != nil {
+		return err
+	}
+	if !ok && b.onFull == OnFullError {
+		return ErrQueueFull
+	}
+	return nil
 }
 
 // Start starts the worker pool. If no pool is configured, Start blocks until

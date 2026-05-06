@@ -3,6 +3,7 @@ package concurrency
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -567,5 +568,40 @@ func BenchmarkFanOutSettled_Bounded(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		_ = FanOutSettled(context.Background(), fns, WithMaxGoroutines(4))
+	}
+}
+
+func TestBuildConfig_DefaultMaxGoroutines(t *testing.T) {
+	t.Parallel()
+	cfg := buildConfig(nil)
+	want := runtime.GOMAXPROCS(0) * 2
+	if cfg.maxGoroutines != want {
+		t.Fatalf("default maxGoroutines = %d, want %d", cfg.maxGoroutines, want)
+	}
+}
+
+func TestBuildConfig_WithMaxGoroutinesZeroOptsOut(t *testing.T) {
+	t.Parallel()
+	cfg := buildConfig([]FanOutOption{WithMaxGoroutines(0)})
+	if cfg.maxGoroutines != 0 {
+		t.Fatalf("WithMaxGoroutines(0) should opt out of bound; got %d", cfg.maxGoroutines)
+	}
+}
+
+func TestBuildConfig_WithMaxGoroutinesNegativeIgnored(t *testing.T) {
+	t.Parallel()
+	cfg := buildConfig([]FanOutOption{WithMaxGoroutines(-5)})
+	want := runtime.GOMAXPROCS(0) * 2
+	if cfg.maxGoroutines != want {
+		t.Fatalf("negative WithMaxGoroutines should be ignored; got %d, want default %d",
+			cfg.maxGoroutines, want)
+	}
+}
+
+func TestBuildConfig_WithMaxGoroutinesPositiveOverridesDefault(t *testing.T) {
+	t.Parallel()
+	cfg := buildConfig([]FanOutOption{WithMaxGoroutines(7)})
+	if cfg.maxGoroutines != 7 {
+		t.Fatalf("WithMaxGoroutines(7) = %d, want 7", cfg.maxGoroutines)
 	}
 }

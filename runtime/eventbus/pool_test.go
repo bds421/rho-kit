@@ -415,13 +415,14 @@ func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
 
 	// Submit after stop must not panic; it should return false (drop).
 	assert.NotPanics(t, func() {
-		ok := bus.pool.submit(&asyncTask{
+		ok, err := bus.pool.submit(&asyncTask{
 			ctx:       context.Background(),
 			eventName: "test.event",
 			handler:   registeredHandler{name: "late"},
 			event:     testEvent{ID: "late"},
-		})
+		}, OnFullDrop, context.Background())
 		assert.False(t, ok)
+		assert.NoError(t, err)
 	})
 }
 
@@ -502,14 +503,15 @@ func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
 
 	// Submit before start must not panic; event may be buffered.
 	assert.NotPanics(t, func() {
-		ok := bus.pool.submit(&asyncTask{
+		ok, err := bus.pool.submit(&asyncTask{
 			ctx:       context.Background(),
 			eventName: "test.event",
 			handler:   registeredHandler{name: "early"},
 			event:     testEvent{ID: "early"},
-		})
+		}, OnFullDrop, context.Background())
 		// The event should be buffered in the channel since pool is not stopped.
 		assert.True(t, ok)
+		assert.NoError(t, err)
 	})
 
 	// Start and drain.
@@ -518,4 +520,121 @@ func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
 	waitForWorkers(t, bus)
 	cancel()
 	_ = bus.Stop(context.Background())
+}
+
+func TestPublish_OnFullError_ReturnsErrQueueFull(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(1),
+		WithRegisterer(reg),
+		WithOnFull(OnFullError),
+	)
+
+	// Block the single worker so subsequent submits saturate the buffer.
+	release := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		<-release
+		return nil
+	}, WithAsync())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		close(release)
+		cancel()
+		_ = bus.Stop(context.Background())
+	}()
+	go func() { _ = bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+
+	// First fills the worker.
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	// Second fills the buffer.
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
+
+	// Now the queue is full — subsequent publishes must error.
+	var sawErr error
+	for range 50 {
+		err := Publish(bus, context.Background(), testEvent{ID: "x"})
+		if err != nil {
+			sawErr = err
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	require.Error(t, sawErr)
+	assert.ErrorIs(t, sawErr, ErrQueueFull)
+}
+
+func TestPublish_OnFullBlock_RespectsCancellation(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(1),
+		WithRegisterer(reg),
+		WithOnFull(OnFullBlock),
+	)
+
+	release := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		<-release
+		return nil
+	}, WithAsync())
+
+	startCtx, startCancel := context.WithCancel(context.Background())
+	defer func() {
+		close(release)
+		startCancel()
+		_ = bus.Stop(context.Background())
+	}()
+	go func() { _ = bus.Start(startCtx) }()
+	waitForWorkers(t, bus)
+
+	// Saturate worker + buffer.
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
+
+	// Third call must block; cancelling the publisher's ctx unblocks it.
+	pubCtx, pubCancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		pubCancel()
+	}()
+	err := Publish(bus, pubCtx, testEvent{ID: "3"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestPublish_OnFullDrop_DefaultBehavior(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(1),
+		WithRegisterer(reg),
+	)
+
+	release := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		<-release
+		return nil
+	}, WithAsync())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		close(release)
+		cancel()
+		_ = bus.Stop(context.Background())
+	}()
+	go func() { _ = bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
+
+	// Default = OnFullDrop: Publish never returns an error, dropped events
+	// are visible only via the metric.
+	for range 10 {
+		err := Publish(bus, context.Background(), testEvent{ID: "x"})
+		require.NoError(t, err)
+	}
 }

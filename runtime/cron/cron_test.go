@@ -165,3 +165,50 @@ func matchLabels(pairs []*io_prometheus_client.LabelPair, want map[string]string
 	}
 	return true
 }
+
+func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	s := New(nil, WithRegistry(reg))
+
+	// We bypass the cron schedule here — SetJobTimeout configures a value
+	// the wrapJob closure later observes. To test it directly, drive the
+	// wrapped function manually.
+	var seenErr atomic.Value
+	s.Add("timed", "@every 1h", func(ctx context.Context) error {
+		<-ctx.Done()
+		seenErr.Store(ctx.Err())
+		return ctx.Err()
+	})
+	s.SetJobTimeout("timed", 25*time.Millisecond)
+
+	startCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = s.Start(startCtx) }()
+
+	// Synthesise a tick by reaching into the underlying cron registry.
+	entries := s.cron.Entries()
+	require.NotEmpty(t, entries)
+	entries[0].Job.Run()
+
+	require.Eventually(t, func() bool {
+		v := seenErr.Load()
+		return v != nil && errors.Is(v.(error), context.DeadlineExceeded)
+	}, time.Second, 5*time.Millisecond, "job context should hit DeadlineExceeded")
+}
+
+func TestScheduler_SetJobTimeout_NoOpForZero(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	s := New(nil, WithRegistry(reg))
+	s.SetJobTimeout("ignored", 0)
+	s.SetJobTimeout("ignored2", -1*time.Second)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.jobTimeouts["ignored"]; ok {
+		t.Fatal("zero duration should not be stored")
+	}
+	if _, ok := s.jobTimeouts["ignored2"]; ok {
+		t.Fatal("negative duration should not be stored")
+	}
+}

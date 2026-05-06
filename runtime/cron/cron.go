@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,8 +20,12 @@ type Scheduler struct {
 	cron    *robcron.Cron
 	logger  *slog.Logger
 	metrics *metrics
-	ctx     context.Context
-	cancel  context.CancelFunc
+
+	mu     sync.RWMutex // protects ctx and cancel against the Start/Stop/wrapJob race
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	jobTimeouts map[string]time.Duration // per-job timeout; nil/missing = inherit scheduler ctx
 }
 
 // Option configures a Scheduler.
@@ -62,10 +67,28 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 	)
 
 	return &Scheduler{
-		cron:    c,
-		logger:  logger,
-		metrics: newMetrics(cfg.registry),
+		cron:        c,
+		logger:      logger,
+		metrics:     newMetrics(cfg.registry),
+		jobTimeouts: make(map[string]time.Duration),
 	}
+}
+
+// WithJobTimeout configures a per-run timeout for the named job. The job's
+// context is derived from the scheduler ctx with WithTimeout(d), so a
+// long-running job that ignores cancellation will see ctx.Err() == context
+// .DeadlineExceeded after d. Default: no timeout (job runs until done or
+// scheduler stops).
+//
+// Call AFTER Add — the timeout takes effect on the next tick. Repeated
+// calls override the previous timeout.
+func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobTimeouts[name] = d
 }
 
 // Add registers a named job with a cron schedule expression. The job function
@@ -83,10 +106,14 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 // Start begins running scheduled jobs and blocks until ctx is cancelled.
 // Implements the lifecycle.Component interface.
 func (s *Scheduler) Start(ctx context.Context) error {
+	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(ctx)
+	startedCtx := s.ctx
+	s.mu.Unlock()
+
 	s.cron.Start()
 	s.logger.Info("cron scheduler started")
-	<-s.ctx.Done()
+	<-startedCtx.Done()
 	return nil
 }
 
@@ -96,8 +123,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 // caller's deadline — the scheduler returns ctx.Err and the job continues in
 // the background until it finishes naturally.
 func (s *Scheduler) Stop(ctx context.Context) error {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.RLock()
+	cancel := s.cancel
+	s.mu.RUnlock()
+	if cancel != nil {
+		cancel()
 	}
 	stopCtx := s.cron.Stop()
 	select {
@@ -114,9 +144,20 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 // wrapJob wraps a job function with logging, metrics, and panic recovery.
 func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) func() {
 	return func() {
-		ctx := s.ctx
-		if ctx == nil {
-			ctx = context.Background()
+		s.mu.RLock()
+		baseCtx := s.ctx
+		timeout := s.jobTimeouts[name]
+		s.mu.RUnlock()
+
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+
+		ctx := baseCtx
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(baseCtx, timeout)
+			defer cancel()
 		}
 
 		start := time.Now()

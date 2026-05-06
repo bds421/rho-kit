@@ -12,31 +12,16 @@
 
 ## Open
 
-### [MEDIUM] Cron job context shared across runs without per-run cancellation
-**File**: `runtime/cron/cron.go:106-112`
-**Issue**: All job invocations receive `s.ctx` (lifetime-of-scheduler). Long-running jobs have no per-run timeout/deadline; they run until done or scheduler stops. No `WithJobTimeout` option.
-**Fix**: Add per-job timeout option; wrap ctx with `context.WithTimeout` inside `wrapJob`.
+_All previously open items are now landed — see Landed section above and below._
 
-### [MEDIUM] Cron `s.ctx` read without synchronization
-**File**: `runtime/cron/cron.go:86-89,108`
-**Issue**: `Start` writes `s.ctx, s.cancel`; `Stop` reads `s.cancel`; `wrapJob` reads `s.ctx`. None mutex-protected. Happy path works (Start completes before any tick fires) but `go test -race` will flag concurrent Start/Stop/wrapJob reads under load.
-**Fix**: Guard with mutex, or use `atomic.Pointer[context.Context]`.
+## Recently Landed (Phase 3)
 
-### [MEDIUM] EventBus: handlers cannot be unsubscribed
-**File**: `runtime/eventbus/eventbus.go` (no `Unsubscribe`)
-**Issue**: `Subscribe` only appends. Tests, dynamic plugins, or modules re-registering on reload leak handlers and double-fire.
-**Fix**: Add `Unsubscribe(token)` returning a token from Subscribe; ensure removal is safe under concurrent Publish via the existing snapshot pattern.
-
-### [MEDIUM] EventBus async dispatch silently drops events when queue full
-**File**: `runtime/eventbus/pool.go:96-113`
-**Issue**: Full queue → task dropped + `events_dropped_total++`. No backpressure option.
-**Fix**: Add per-bus or per-handler `OnFull` policy: `Drop` (current), `Block` (with ctx), `Error` (return to publisher).
-
-### [LOW] FanOut default is unbounded goroutines
-**File**: `runtime/concurrency/fanout.go:91-96`
-**Issue**: Without `WithMaxGoroutines`, FanOut launches one goroutine per task. Doc warns but the default is permissive.
-**Fix**: Default `maxGoroutines` to `runtime.GOMAXPROCS(0) * 2`. Require `WithMaxGoroutines(0)` to opt out.
+- ✅ **Cron per-job timeout** — `Scheduler.SetJobTimeout(name, d)` configures a per-run deadline; `wrapJob` derives ctx via `context.WithTimeout` so the job sees `context.DeadlineExceeded`.
+- ✅ **Cron ctx synchronization** — `Scheduler` now holds a `sync.RWMutex`; `Start`/`Stop`/`wrapJob` all read/write `ctx`/`cancel`/`jobTimeouts` under the mutex. Passes `go test -race`.
+- ✅ **EventBus Unsubscribe** — `Subscribe[E]` returns a `Subscription` token; `Bus.Unsubscribe(sub)` removes the handler safely (atomic slice replacement preserves in-flight Publish snapshots).
+- ✅ **EventBus OnFull policy** — `WithOnFull(OnFullDrop|OnFullBlock|OnFullError)` selects the saturation policy; `Block` waits on the publisher ctx, `Error` returns `ErrQueueFull` from `Publish`.
+- ✅ **FanOut default cap** — default `maxGoroutines` is `runtime.GOMAXPROCS(0) * 2`. Pass `WithMaxGoroutines(0)` to opt back into unbounded.
 
 ### Migration checklist
 
-- [ ] Phase 3: cron per-job timeout; cron ctx synchronization; eventbus Unsubscribe + OnFull policy; FanOut default cap.
+- [x] Phase 3: cron per-job timeout; cron ctx synchronization; eventbus Unsubscribe + OnFull policy; FanOut default cap.

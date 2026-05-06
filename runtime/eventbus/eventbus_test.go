@@ -340,3 +340,61 @@ func TestBus_ConcurrentPublishSubscribe(t *testing.T) {
 	// Each publish calls all 10 handlers; 100 publishes = 1000 calls.
 	assert.Equal(t, int64(1000), count.Load())
 }
+
+func TestUnsubscribe_RemovesHandler(t *testing.T) {
+	bus := New()
+
+	var calls atomic.Int64
+	sub := Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		calls.Add(1)
+		return nil
+	})
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	assert.Equal(t, int64(1), calls.Load())
+
+	removed := bus.Unsubscribe(sub)
+	assert.True(t, removed)
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
+	assert.Equal(t, int64(1), calls.Load(), "handler must not fire after unsubscribe")
+}
+
+func TestUnsubscribe_OnlyTargetedHandler(t *testing.T) {
+	bus := New()
+
+	var aCalls, bCalls atomic.Int64
+	subA := Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		aCalls.Add(1)
+		return nil
+	})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		bCalls.Add(1)
+		return nil
+	})
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	assert.Equal(t, int64(1), aCalls.Load())
+	assert.Equal(t, int64(1), bCalls.Load())
+
+	bus.Unsubscribe(subA)
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
+	assert.Equal(t, int64(1), aCalls.Load(), "subA must not fire after unsubscribe")
+	assert.Equal(t, int64(2), bCalls.Load(), "subB still fires")
+}
+
+func TestUnsubscribe_ZeroSubscriptionReturnsFalse(t *testing.T) {
+	bus := New()
+	assert.False(t, bus.Unsubscribe(Subscription{}))
+}
+
+func TestUnsubscribe_DoubleUnsubscribeReturnsFalse(t *testing.T) {
+	bus := New()
+	sub := Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	})
+
+	assert.True(t, bus.Unsubscribe(sub))
+	assert.False(t, bus.Unsubscribe(sub))
+}
