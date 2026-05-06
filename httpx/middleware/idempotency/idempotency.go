@@ -77,14 +77,42 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 const maxFingerprintBodySize = 1 << 20 // 1 MiB
 
 type config struct {
-	userExtractor   func(*http.Request) string
-	ttl             time.Duration
-	header          string
-	requiredMethods map[string]bool
-	logger          *slog.Logger
-	metrics         *Metrics
-	fingerprintBody bool
+	userExtractor    func(*http.Request) string
+	ttl              time.Duration
+	header           string
+	requiredMethods  map[string]bool
+	logger           *slog.Logger
+	metrics          *Metrics
+	fingerprintBody  bool
+	allowSharedKeys  bool
+	preserveHeaders  map[string]bool // optional override of identityResponseHeaders
 }
+
+// identityResponseHeaders are stripped from cached responses before replay.
+// Replaying these from one user's response to another user's request is the
+// classic idempotency-leak bug: Set-Cookie hands the original user's session
+// to whoever replays, Authorization echoes the original credential, etc.
+// The stripping is conservative — Cache-Control, ETag, Content-Type, and the
+// usual application-shape headers stay because they're response-bound rather
+// than caller-bound.
+//
+// Keys must be in http.CanonicalHeaderKey form. http.Header normalises on
+// write (Set / Add) but the iteration over rec.Header() returns whatever
+// the handler wrote — so we canonicalise on lookup.
+var identityResponseHeaders = func() map[string]bool {
+	raw := []string{
+		"Set-Cookie",
+		"Authorization",
+		"WWW-Authenticate",
+		"Proxy-Authenticate",
+		"Strict-Transport-Security",
+	}
+	m := make(map[string]bool, len(raw))
+	for _, h := range raw {
+		m[http.CanonicalHeaderKey(h)] = true
+	}
+	return m
+}()
 
 // WithTTL sets the cache TTL for stored responses. Default: 24h.
 //
@@ -159,17 +187,28 @@ func defaultConfig() config {
 // Returns 400 if the header is missing on required methods.
 // Middleware returns HTTP middleware that enforces idempotent request processing.
 //
-// WARNING: In multi-tenant systems, you MUST use [WithUserExtractor] to scope
-// idempotency keys per user. Without it, different users sharing the same
-// idempotency key will receive each other's cached responses.
+// In multi-tenant systems, you MUST use [WithUserExtractor] to scope
+// idempotency keys per user. Otherwise different users sharing the same
+// idempotency key would receive each other's cached responses — a classic
+// account-takeover vector. Single-tenant or unauthenticated services that
+// genuinely intend keys to be global must opt into the shared-key behaviour
+// with [WithAllowSharedKeys]; the middleware panics at construction time
+// when neither is set, matching the kit's fail-fast convention.
+//
+// Identity-bearing response headers (Set-Cookie, Authorization,
+// WWW-Authenticate, Proxy-Authenticate, Strict-Transport-Security) are
+// stripped from the cached response before storage, so a replay never
+// re-emits another caller's session token or credential. Override the
+// strip list with [WithPreserveHeaders] if your service legitimately
+// needs to replay a header on this list.
 func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handler {
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(&cfg)
 	}
 
-	if cfg.userExtractor == nil {
-		cfg.logger.Warn("idempotency middleware created without WithUserExtractor — keys are not user-scoped, which is unsafe in multi-tenant systems")
+	if cfg.userExtractor == nil && !cfg.allowSharedKeys {
+		panic("idempotency: Middleware requires WithUserExtractor (multi-tenant safety) — pass WithAllowSharedKeys to opt out for single-tenant / unauthenticated services")
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -294,6 +333,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 
 			headers := make(map[string][]string, len(rec.Header()))
 			for k, vals := range rec.Header() {
+				if !cfg.preserveHeaders[k] && identityResponseHeaders[http.CanonicalHeaderKey(k)] {
+					continue
+				}
 				cp := make([]string, len(vals))
 				copy(cp, vals)
 				headers[k] = cp
@@ -428,4 +470,34 @@ func (rc *responseCapture) Unwrap() http.ResponseWriter {
 // multi-tenant systems.
 func WithUserExtractor(fn func(*http.Request) string) Option {
 	return func(c *config) { c.userExtractor = fn }
+}
+
+// WithAllowSharedKeys opts a service into the unsafe behaviour of NOT
+// scoping idempotency keys per user. Use only for genuinely single-tenant
+// services or unauthenticated endpoints (webhook receivers from a known
+// counterparty, public RSS, etc.) where one user replaying another's
+// response is impossible by construction.
+func WithAllowSharedKeys() Option {
+	return func(c *config) { c.allowSharedKeys = true }
+}
+
+// WithPreserveHeaders adds headers to the allowlist of response headers that
+// MAY be cached and replayed. The middleware strips identity-bearing
+// headers (Set-Cookie, Authorization, WWW-Authenticate, Proxy-Authenticate,
+// Strict-Transport-Security) by default so a cached response cannot leak
+// another user's session token. Use this option only when the application
+// legitimately replays one of those headers across calls — e.g. a stable
+// HSTS policy that's identical for every response and you want to avoid the
+// browser missing it on a replay (rare).
+//
+// Header names are matched after http.CanonicalHeaderKey normalisation.
+func WithPreserveHeaders(names ...string) Option {
+	return func(c *config) {
+		if c.preserveHeaders == nil {
+			c.preserveHeaders = make(map[string]bool, len(names))
+		}
+		for _, n := range names {
+			c.preserveHeaders[http.CanonicalHeaderKey(n)] = true
+		}
+	}
 }

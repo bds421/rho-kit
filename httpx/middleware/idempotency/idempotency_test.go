@@ -22,9 +22,91 @@ func newTestHandler(body string, status int) http.Handler {
 	})
 }
 
+func TestMiddleware_PanicsWithoutUserExtractorOrSharedKeysOptIn(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when Middleware is constructed without WithUserExtractor and WithAllowSharedKeys")
+		}
+	}()
+	store := idem.NewMemoryStore()
+	Middleware(store) // intentionally missing both — must panic
+}
+
+func TestMiddleware_StripsIdentityHeadersFromCachedResponse(t *testing.T) {
+	store := idem.NewMemoryStore()
+
+	// Handler sets identity-bearing response headers that must NOT be replayed.
+	identityHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Set-Cookie", "session=user-A-secret")
+		w.Header().Set("Authorization", "Bearer user-A-token")
+		w.Header().Set("WWW-Authenticate", "Basic realm=\"x\"")
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Custom", "kept")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	handler := Middleware(store, WithAllowSharedKeys())(identityHandler)
+
+	// First request — populates the cache.
+	req1 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req1.Header.Set("Idempotency-Key", "k")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", rec1.Code)
+	}
+
+	// Second request — replayed from cache. Identity headers must be absent.
+	req2 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req2.Header.Set("Idempotency-Key", "k")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	for _, h := range []string{"Set-Cookie", "Authorization", "WWW-Authenticate", "Strict-Transport-Security"} {
+		if got := rec2.Header().Get(h); got != "" {
+			t.Errorf("%s replayed (would leak cross-user identity); got %q", h, got)
+		}
+	}
+	// Non-identity headers must survive.
+	if got := rec2.Header().Get("X-Custom"); got != "kept" {
+		t.Errorf("X-Custom header lost on replay; got %q", got)
+	}
+	if got := rec2.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type stripped (must not be); got %q", got)
+	}
+}
+
+func TestMiddleware_PreserveHeadersOverridesStripList(t *testing.T) {
+	store := idem.NewMemoryStore()
+
+	identityHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	// Explicit opt-in to replay HSTS — niche but supported.
+	handler := Middleware(store, WithAllowSharedKeys(), WithPreserveHeaders("Strict-Transport-Security"))(identityHandler)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req1.Header.Set("Idempotency-Key", "k-pres")
+	handler.ServeHTTP(httptest.NewRecorder(), req1)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req2.Header.Set("Idempotency-Key", "k-pres")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if got := rec2.Header().Get("Strict-Transport-Security"); got != "max-age=63072000" {
+		t.Errorf("HSTS dropped despite WithPreserveHeaders; got %q", got)
+	}
+}
+
 func TestFirstRequestPassesThroughAndCaches(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store)(newTestHandler(`{"ok":true}`, http.StatusCreated))
+	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler(`{"ok":true}`, http.StatusCreated))
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	req.Header.Set("Idempotency-Key", "key-1")
@@ -61,7 +143,7 @@ func TestSecondRequestReplaysCachedResponse(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"n":1}`))
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	// First request
 	req1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
@@ -93,7 +175,7 @@ func TestDifferentKeysAreIndependent(t *testing.T) {
 		callCount++
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	for _, key := range []string{"a", "b", "c"} {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -113,7 +195,7 @@ func TestGETPassesThroughWithoutHeader(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/items", nil)
 	rec := httptest.NewRecorder()
@@ -129,7 +211,7 @@ func TestGETPassesThroughWithoutHeader(t *testing.T) {
 
 func TestPOSTWithoutHeaderReturns400(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store)(newTestHandler("ok", http.StatusOK))
+	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler("ok", http.StatusOK))
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	rec := httptest.NewRecorder()
@@ -142,7 +224,7 @@ func TestPOSTWithoutHeaderReturns400(t *testing.T) {
 
 func TestCustomHeaderName(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store, WithHeader("X-Request-Token"))(newTestHandler("ok", http.StatusOK))
+	handler := Middleware(store, WithAllowSharedKeys(), WithHeader("X-Request-Token"))(newTestHandler("ok", http.StatusOK))
 
 	// Missing custom header returns 400
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -166,7 +248,7 @@ func TestCustomHeaderName(t *testing.T) {
 
 func TestWithRequiredMethods(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store, WithRequiredMethods(http.MethodDelete))(
+	handler := Middleware(store, WithAllowSharedKeys(), WithRequiredMethods(http.MethodDelete))(
 		newTestHandler("deleted", http.StatusOK),
 	)
 
@@ -191,7 +273,7 @@ func TestWithRequiredMethods(t *testing.T) {
 
 func TestWithTTLOption(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store, WithTTL(5*time.Minute))(newTestHandler("ok", http.StatusOK))
+	handler := Middleware(store, WithAllowSharedKeys(), WithTTL(5*time.Minute))(newTestHandler("ok", http.StatusOK))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("Idempotency-Key", "ttl-key")
@@ -261,7 +343,7 @@ func TestConcurrentRequestsSameKey(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	var wg sync.WaitGroup
 	results := make([]int, 2)
@@ -368,7 +450,7 @@ func TestAllResponseHeadersCached(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id":42}`))
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	// First request
 	req1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
@@ -392,7 +474,7 @@ func TestAllResponseHeadersCached(t *testing.T) {
 
 func TestErrorResponsesAreJSON(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store)(newTestHandler("ok", http.StatusOK))
+	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler("ok", http.StatusOK))
 
 	// POST without idempotency key should return JSON 400.
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -412,7 +494,7 @@ func TestPanicInHandlerReleasesLock(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		panic("handler blew up")
 	})
-	handler := Middleware(store)(inner)
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("Idempotency-Key", "panic-key")
@@ -460,7 +542,7 @@ func TestMemoryStoreReturnsCopy(t *testing.T) {
 
 func TestBodyFingerprint_MismatchReturns422(t *testing.T) {
 	store := idem.NewMemoryStore()
-	handler := Middleware(store, WithBodyFingerprint())(newTestHandler(`{"ok":true}`, http.StatusCreated))
+	handler := Middleware(store, WithAllowSharedKeys(), WithBodyFingerprint())(newTestHandler(`{"ok":true}`, http.StatusCreated))
 
 	// First request with body A.
 	req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
@@ -489,7 +571,7 @@ func TestBodyFingerprint_SameBodyReplaysCache(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("created"))
 	})
-	handler := Middleware(store, WithBodyFingerprint())(inner)
+	handler := Middleware(store, WithAllowSharedKeys(), WithBodyFingerprint())(inner)
 
 	for range 2 {
 		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
@@ -514,7 +596,7 @@ func TestBodyFingerprint_DownstreamHandlerCanReadBody(t *testing.T) {
 		seen = string(body)
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Middleware(store, WithBodyFingerprint())(inner)
+	handler := Middleware(store, WithAllowSharedKeys(), WithBodyFingerprint())(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"hello":"world"}`))
 	req.Header.Set("Idempotency-Key", "fp-passthrough")
