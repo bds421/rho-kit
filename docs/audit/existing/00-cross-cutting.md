@@ -6,18 +6,12 @@ Findings that don't sit inside one package but apply across the whole repo.
 
 - ✅ **gRPC bump to v1.79.3** across all modules (commit `56bf04e`).
 - ✅ **`make lint` sequential** — fixes golangci-lint v2 cache-lock collision (commit `56bf04e`).
+- ✅ **Go runtime bump to 1.26.2** — `go.work` + all 55 module `go.mod` files; toolchain directive auto-fetches via `GOTOOLCHAIN=auto` (commit `5df122f`). Closes the 11 reachable stdlib CVEs from `make vulncheck`.
+- ✅ **Nil-dependency sweep** — seven constructors (`authz.RequirePermission`, `cache.NewTypedCache`, `cache.NewComputeCache`, `pgstore.New`, `outbox.NewWriter`, `outbox.NewRelay`, `messaging.NewBufferedPublisher`) now panic / error at construction instead of deferring the panic to first request. Logger nil falls back to `slog.Default()` since dropping log lines is recoverable (commit `6ba1e7d`).
 
 ## Open
 
-### [HIGH] Constructors accept nil dependencies and fail at first use
-**Files**: `httpx/authz/authz.go:38`; `data/cache/typed_cache.go:25`; `data/cache/compute.go:102`; `data/idempotency/pgstore/store.go:56`; `infra/outbox/outbox.go:88`; `infra/outbox/relay.go:90`; `infra/messaging/buffered_publisher.go:116`
-**Issue**: These constructors accept nil dependencies (or empty critical inputs like nil policy/resource/subject in `authz.RequirePermission`, nil cache backend, nil SQL DB, nil outbox store/publisher/logger, nil buffered-publisher dependencies) and only fail later — by panic or nil-pointer dereference at request time. Violates the kit's own AGENTS.md anti-pattern guidance ("Fail fast: configuration errors panic at startup").
-**Fix**: Add startup-time validation in each constructor + focused tests. Document the convention in CLAUDE.md / AGENTS.md so new code follows it.
-**Effort**: S per constructor; M as a sweep
-**Phase**: 2
-
-### [INFO] Go runtime bump to 1.26.2+ (operator action)
-The 11 reachable stdlib CVEs reported by `make vulncheck` (TLS, x509, URL parsing, html/template, os root handling) require the operator to install Go 1.26.2+ locally. Then bump `go.work` and every `go.mod`'s `go` directive and re-run `make vulncheck`.
+_(Cross-cutting items resolved as of Wave 4 + 5. Remaining cross-package work tracked in the per-area files.)_
 
 ### Verification status (snapshot)
 
@@ -30,11 +24,6 @@ From the parallel sequential audit:
 | `make vet` | Pass |
 | `make build` | Pass |
 | `make lint` (sequential) | Pass |
-| `make vulncheck` | **Fail (Go runtime stale — operator action required)** |
+| `make vulncheck` | **Pass (Go 1.26.2 toolchain auto-fetched)** |
 
 `make test-cover`, `make bench`, and integration tests (with Docker) were not run.
-
-### Migration checklist
-
-- [ ] Phase 1: bump Go workspace + every module to 1.26.2+ once Go toolchain is upgraded; re-run vulncheck.
-- [ ] Phase 2: nil-dependency validation sweep across the listed constructors; document the convention.

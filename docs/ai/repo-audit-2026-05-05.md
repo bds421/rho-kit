@@ -1,0 +1,37 @@
+# Repository audit — 2026-05-05 (snapshot)
+
+Independent audit of `github.com/bds421/rho-kit` (50+ Go modules) focused on
+security defaults, correctness under concurrency, and operational reliability.
+
+## Verification run (snapshot)
+
+| Check | Result | Notes |
+|---|---|---|
+| `make test` | Pass | Full workspace. |
+| `make test-race` | Pass | Full workspace. |
+| `make vet` | Pass | Full workspace. |
+| `make build` | Pass | Full workspace. |
+| `make lint` | Fail | Sequential workaround applied — see [docs/audit/existing/00-cross-cutting.md](../audit/existing/00-cross-cutting.md). |
+| Sequential lint loop | Pass | Same modules, same version, run one module at a time: 0 issues. |
+| `make vulncheck` | Now passing | After Go 1.26.2 toolchain bump (commit `5df122f`). |
+
+## Status
+
+This audit's findings have been **fully reconciled** into the structured
+audit ledger at [`docs/audit/`](../audit/). Per-finding status (closed,
+landed-with-commit-hash, or open) is tracked there:
+
+- [`docs/audit/CRITICAL.md`](../audit/CRITICAL.md) — cross-package CRITICAL
+  ledger plus the operational-footgun HIGH cluster.
+- [`docs/audit/ROADMAP.md`](../audit/ROADMAP.md) — phase-by-phase status.
+- [`docs/audit/existing/*.md`](../audit/existing/) — per-area findings, each
+  split into `## Landed` and `## Open` sections.
+
+All findings from this audit (P0 / P1 / P2 / most P3) closed in Wave 1+2+3+4+5.
+The remaining open work is captured in the structured ledger and is mostly
+new-package proposals (`docs/audit/new/01-25`) plus a few P3 items individually
+called out in the per-area files.
+
+If you re-run this audit, write the new snapshot under a different filename
+(e.g. `repo-audit-YYYY-MM-DD.md`) and reconcile findings into the structured
+ledger rather than maintaining two parallel sources of truth.

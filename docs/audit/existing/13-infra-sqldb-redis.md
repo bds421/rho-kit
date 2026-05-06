@@ -4,16 +4,10 @@
 
 - ✅ **Postgres `sslmode` safer defaults** — default flipped from `disable` to `prefer`; with a TLS bundle present it escalates to `verify-full`; `Validate` rejects empty/`disable` outside dev environments (commit `a8fa6ed`).
 - ✅ **MySQL DSN `loc=UTC` default** — was `Local`, which silently corrupted timestamps when dev fixtures landed in UTC databases (commit `a8fa6ed`).
-- ✅ **gormmysql TLS registry dedup** — content-hash via SHA-256 over RootCAs.Subjects + leaf cert DER + ServerName; equivalent TLS settings reuse a single registry entry (commit `a8fa6ed`). Note: full *deregister-on-close* is still open below.
+- ✅ **gormmysql TLS registry dedup** — content-hash via SHA-256 over RootCAs.Subjects + leaf cert DER + ServerName; equivalent TLS settings reuse a single registry entry (commit `a8fa6ed`).
+- ✅ **gormmysql TLS registry refcounted with `ReleaseTLS`** — registry entries now have refcounts; `ReleaseTLS(*tls.Config)` decrements and deregisters when count hits zero, equivalence by content fingerprint so callers don't have to retain the original `*tls.Config` (commit `af39f9c`). Closes the long-running-service / rotation leak path.
 
 ## Open
-
-### [HIGH] gormmysql TLS registry never deregistered
-**File**: `infra/sqldb/gormdb/gormmysql/driver.go:42-49` + `mysql.go`
-**Issue**: Even with the dedup landed in `a8fa6ed`, the driver's TLS registry is a global map with no `mysqldriver.DeregisterTLSConfig` call when a Connection closes. Long-running services that go through many distinct TLS configs (e.g. rotating client certs) accumulate registry entries indefinitely. Dedup only avoids re-registering *equivalent* configs.
-**Fix**: Track the registered name on the connection; call `mysqldriver.DeregisterTLSConfig(tlsKey)` on connection close. Reference-count if multiple Open calls share a name.
-**Effort**: S
-**Phase**: 1
 
 ### [MEDIUM] `dbtest.StartPostgres` pins `sslmode=disable` → masks production default
 **File**: `infra/sqldb/dbtest/postgres.go:46-53`
@@ -32,7 +26,7 @@
 
 ### Migration checklist
 
-- [ ] Phase 1: gormmysql TLS registry deregister on close.
+- [x] Phase 1: gormmysql TLS registry deregister on close. ✅ `af39f9c`
 - [ ] Phase 3: `infra/redis.Connection` Sentinel/Cluster support.
 - [ ] Phase 3: `redistest` per-test isolation + `FlushDB` helper.
 - [ ] Phase 3: `dbtest` IsTLSEnabled assertion helper.

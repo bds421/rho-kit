@@ -1,6 +1,6 @@
 # rho-kit Audit & Roadmap (2026-05) — current state
 
-Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total at audit time. As of Wave 1+2+3, **10 of 12 CRITICAL items closed**, all but two HIGH items in the Phase 1 release window closed, and most Phase 2 interface-bumps shipped. The remaining two CRITICAL items both depend on creating new packages (recover middleware, gRPC recovery default).
+Five parallel audits across all 50+ Go modules, plus integration of a separate independent audit (`docs/ai/repo-audit-2026-05-05.md`) that ran the build/test tooling. ~125 findings total at audit time. As of Wave 1+2+3+4+5, **11 of 12 CRITICAL items closed**, every HIGH item in the Phase 1 release window closed, and most Phase 2 interface-bumps shipped. The remaining CRITICAL item depends on creating a new package (recover middleware); the gRPC recovery default is bundled with it.
 
 Each `existing/*.md` file now has two top-level sections:
 
@@ -16,7 +16,7 @@ See [CRITICAL.md](CRITICAL.md) for the per-finding ledger and [ROADMAP.md](ROADM
 3. **Constructors accept nil dependencies** — fail at first use (request time), not at startup. Violates the kit's own AGENTS.md fail-fast convention.
 4. **Observability loud-by-default** — 100% trace sample rate, Baggage propagator on, Prometheus default histogram buckets that top out at 10s, default trusted-proxies trusting all RFC1918.
 
-Patterns 1, 2, and 4 are largely closed; pattern 3 (nil-dep sweep) is still open as a Phase 2 task.
+All four patterns are now closed. Pattern 3 (nil-dep sweep) was the last to land — see `existing/00-cross-cutting.md` for the full list.
 
 ## How this directory is organized
 

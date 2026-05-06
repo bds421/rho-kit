@@ -9,15 +9,12 @@
 - ✅ **`Store` interface reshaped with token + fingerprint** — `TryLock(ctx, key, fingerprint, ttl) → (token, fingerprintMismatch, ok, err)`, `Set` requires token, `Get` reports body-mismatch (commit `1f06b5e`).
 - ✅ **redisstore drops in-process `tokens` map** — token round-trips through caller; new Lua compare-then-write script in `Set` requires token+fingerprint match (commit `1f06b5e`).
 - ✅ **MemoryStore body-nil semantics preserved** — defensive copy keeps nil bodies as nil through `Set` → `Get` (commit `1f06b5e`).
+- ✅ **Idempotency backends reject non-positive TTL** — `ErrInvalidTTL` sentinel returned by Memory / Redis / PG `TryLock` and `Set`, closing the direct-caller path that bypassed the middleware's panic guard (commit `a01fad7`).
+- ✅ **`ComputeCache` zero-TTL contract** — `ComputeFunc` returning `ttl <= 0` now errors out; documented divergence from base Cache (which treats 0 as no-expiration) because the stale-while-revalidate layer makes 0 meaningless (commit `6ba1e7d`).
+- ✅ **`NewTypedCache` / `NewComputeCache` reject nil backend** at construction (commit `6ba1e7d`).
+- ✅ **`pgstore.New` panics on nil `*sql.DB`** (commit `6ba1e7d`).
 
 ## Open
-
-### [MEDIUM] `ComputeCache` zero TTL contradicts the base cache interface
-**Files**: `data/cache/cache.go:56` + `data/cache/compute.go:276`
-**Issue**: Base cache interface says zero TTL means *no expiration*. `ComputeCache` stores `ExpiresAt: now + ttl` — with `ttl == 0`, the envelope is immediately stale/expired even if the backend keeps the value. Callers using normal cache semantics see immediate recompute / stale-window behavior instead of a non-expiring computed value.
-**Fix**: Choose one contract. Either reject zero TTL from `ComputeFunc` (preferred — explicit), or encode a no-expiration sentinel in the compute envelope and skip the staleness check.
-**Effort**: S
-**Phase**: 2
 
 ### [MEDIUM] MemoryStore eviction is O(n) under write lock
 **File**: `data/idempotency/idempotency.go:122-141`
@@ -42,7 +39,7 @@
 
 ### Migration checklist
 
-- [ ] Phase 2: ComputeCache zero-TTL contract (reject, or encode no-expire sentinel).
+- [x] Phase 2: ComputeCache zero-TTL contract (reject, or encode no-expire sentinel). ✅ `6ba1e7d`
 - [ ] Phase 3: MemoryStore eviction heap/sweeper.
 - [ ] Phase 3: cache.Cache add MGet/MSet/SetNX.
 - [ ] Phase 3: compute cache surface backend Set errors.

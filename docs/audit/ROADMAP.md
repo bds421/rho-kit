@@ -1,6 +1,6 @@
 # Execution roadmap — current state
 
-The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + most of Phase 2 has landed** (Wave 1+2+3 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
+The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + nearly all Phase 2 has landed** (Wave 1+2+3+4+5 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
 
 The new-package work (Phases 4–6) is unstarted; those proposals live in `new/01-25`.
 
@@ -8,9 +8,9 @@ The new-package work (Phases 4–6) is unstarted; those proposals live in `new/0
 
 - ✅ gRPC bumped to v1.79.3 across all modules (`56bf04e`).
 - ✅ `make lint` switched to sequential to dodge golangci-lint v2 cache lock collisions (`56bf04e`).
-- 🟡 Go runtime → 1.26.2+ requires the operator to install the toolchain locally; the workspace + module `go` directives can be bumped immediately afterwards.
+- ✅ Go runtime → 1.26.2 — `go.work` + 55 module `go.mod` files bumped with `toolchain` directive; `GOTOOLCHAIN=auto` fetches automatically (`5df122f`).
 
-## Phase 1 — Stop the bleeding — mostly done
+## Phase 1 — Stop the bleeding — ✅ done
 
 Done (commits in parens):
 
@@ -27,18 +27,17 @@ Done (commits in parens):
 - ✅ ComputeCache WaitGroup race fixed (`36cf34b`).
 - ✅ MemoryCache default 64 MiB cap (`36cf34b`).
 - ✅ http.Server.ErrorLog defaults to slog adapter; client MaxIdleConnsPerHost raised (`36cf34b`).
+- ✅ `clientip` default to loopback only; `ParseTrustedProxiesStrict` (`ab4df5c`).
+- ✅ CSRF require shared secret in non-dev; SkipCheck regen bug fix (`7f0efe3`).
+- ✅ Timeout middleware buffer cap default 1 MiB + `WithMaxBufferSize` (`30113f9`).
+- ✅ secheaders honour X-Forwarded-Proto + `WithForceHSTS` (`b324d2e`).
+- ✅ Include `Timeout` in `stack.Default` (`a0b49e8`).
+- ✅ gormmysql TLS registry refcount + `ReleaseTLS` (`af39f9c`).
 
 Still open:
 
 - 🔴 [existing/05] Add `httpx/middleware/recover` and prepend in `stack.Default` → blocked on [new/01].
 - 🔴 [existing/06] Prepend Recovery interceptors in `grpcx.NewServer` → blocked on [new/02].
-- 🔴 [existing/05] `clientip` default to no-trusted-proxies; require explicit CIDRs.
-- 🔴 [existing/05] CSRF require shared secret in non-dev (no per-process random fallback).
-- 🔴 [existing/05] Timeout middleware buffer cap default 1 MiB.
-- 🔴 [existing/05] secheaders honor X-Forwarded-Proto from trusted proxies (HSTS behind TLS-terminating LB).
-- 🔴 [existing/05] CSRF SkipCheck regeneration uses tampered cookie.
-- 🔴 [existing/04] Include `Timeout` in `stack.Default` (or validate WriteTimeout sizing).
-- 🔴 [existing/13] gormmysql TLS registry deregister on close.
 
 ## Phase 2 — Tighten the contracts — mostly done
 
@@ -59,7 +58,9 @@ Done (commits in parens):
 
 Still open:
 
-- 🔴 [existing/00] Nil-dependency validation sweep across constructors.
+- ✅ [existing/00] Nil-dependency validation sweep across constructors. (`6ba1e7d`)
+- ✅ [existing/08] ComputeCache zero-TTL contract decision. (`6ba1e7d`)
+- ✅ [existing/08] Idempotency backends reject non-positive TTL with `ErrInvalidTTL`. (`a01fad7`)
 - 🔴 [existing/03] crypto/signing `New*E` / `Must*` split; `WithFutureSkew`.
 - 🔴 [existing/03] JWT staleness metric + max-stale rejection; mandatory issuer in app builder.
 - 🔴 [existing/03] SSRF `*FromURL` constructors.
@@ -68,7 +69,6 @@ Still open:
 - 🔴 [existing/05] CSRF session-bound HMAC + Secure default.
 - 🔴 [existing/07] redislock Acquire surfaces transient-SET orphans (probe via GET).
 - 🔴 [existing/07] Bounded recoverProcessing interleaved with new-message reads.
-- 🔴 [existing/08] ComputeCache zero-TTL contract decision.
 - 🔴 [existing/09] Per-stream consumer ID (or panic on multi-stream Consume).
 - 🔴 [existing/10] AMQP consumer ctx semantics on shutdown (`WithoutCancel`).
 - 🔴 [existing/10] Dead-letter publish failure cap.
