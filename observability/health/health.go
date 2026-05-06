@@ -40,7 +40,6 @@ func ResolveVersion(buildVersion string) string {
 	return buildVersion
 }
 
-
 // DependencyCheck describes a single health dependency.
 type DependencyCheck struct {
 	Name string
@@ -171,7 +170,7 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 			// Panic before result was set — provide a synthetic unhealthy entry
 			// so waiters never nil-dereference hc.cached.
 			hc.cached = &cachedResult{
-				
+
 				response: Response{Status: StatusUnhealthy, Version: hc.Version},
 			}
 			hc.cachedAt = time.Now()

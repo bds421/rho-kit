@@ -80,7 +80,6 @@ func TestQuery_Filters(t *testing.T) {
 	assert.Len(t, result, 2)
 }
 
-
 func TestDeleteBefore(t *testing.T) {
 	s := setupStore(t)
 	ctx := context.Background()
@@ -181,5 +180,5 @@ func splitCursor(t *testing.T, cursor string) [2]string {
 	return [2]string{}
 }
 
-func base64Encode(b []byte) string         { return base64.RawURLEncoding.EncodeToString(b) }
+func base64Encode(b []byte) string          { return base64.RawURLEncoding.EncodeToString(b) }
 func base64Decode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }

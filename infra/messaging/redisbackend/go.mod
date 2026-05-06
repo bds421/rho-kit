@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/infra/messaging/redisbackend
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/data/stream/redisstream v1.1.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0

@@ -166,5 +166,5 @@ func (b *nonListerBackend) Put(context.Context, string, io.Reader, storage.Objec
 func (b *nonListerBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
 	return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
 }
-func (b *nonListerBackend) Delete(context.Context, string) error        { return nil }
+func (b *nonListerBackend) Delete(context.Context, string) error         { return nil }
 func (b *nonListerBackend) Exists(context.Context, string) (bool, error) { return false, nil }

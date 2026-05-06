@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/infra/redis
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/bds421/rho-kit/core/config v1.2.0

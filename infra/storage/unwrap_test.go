@@ -13,11 +13,11 @@ import (
 // stubStorage implements Storage but not Lister/Copier/PresignedStore.
 type stubStorage struct{}
 
-func (s *stubStorage) Put(context.Context, string, io.Reader, ObjectMeta) error     { return nil }
+func (s *stubStorage) Put(context.Context, string, io.Reader, ObjectMeta) error { return nil }
 func (s *stubStorage) Get(context.Context, string) (io.ReadCloser, ObjectMeta, error) {
 	return nil, ObjectMeta{}, nil
 }
-func (s *stubStorage) Delete(context.Context, string) error     { return nil }
+func (s *stubStorage) Delete(context.Context, string) error         { return nil }
 func (s *stubStorage) Exists(context.Context, string) (bool, error) { return false, nil }
 
 // listerStorage implements Storage + Lister.

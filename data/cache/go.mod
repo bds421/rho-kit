@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/data/cache
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/observability/promutil v1.1.0
 	github.com/dgraph-io/ristretto/v2 v2.4.0

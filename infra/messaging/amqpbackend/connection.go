@@ -32,7 +32,7 @@ type Connection struct {
 	lazyConnect          bool          // defer initial connection to background
 	generation           uint64        // incremented on each reconnect; stale watchers self-terminate
 	reconnecting         atomic.Bool   // prevents overlapping reconnect goroutines
-	reconnectSignal      chan struct{}  // buffered(1); queues a reconnect when loop is finishing
+	reconnectSignal      chan struct{} // buffered(1); queues a reconnect when loop is finishing
 
 	// onReconnect is called after a successful reconnect. Typically used
 	// to re-declare topology. Best-effort: failures are logged but do not

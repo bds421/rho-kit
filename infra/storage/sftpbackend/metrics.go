@@ -71,4 +71,3 @@ func (m *SFTPMetrics) observeOp(instance, op string, start time.Time, err error)
 		m.opErrors.WithLabelValues(instance, op).Inc()
 	}
 }
-

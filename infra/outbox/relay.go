@@ -11,7 +11,7 @@ const (
 	defaultPollInterval     = 1 * time.Second
 	defaultBatchSize        = 100
 	defaultMaxAttempts      = 10
-	defaultRetention        = 7 * 24 * time.Hour // 7 days
+	defaultRetention        = 7 * 24 * time.Hour  // 7 days
 	defaultFailedRetention  = 30 * 24 * time.Hour // 30 days for entries in StatusFailed
 	defaultStaleDuration    = 5 * time.Minute
 	staleRecoveryMultiplier = 10 // recover stale entries every N polls
@@ -133,11 +133,11 @@ func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...Rel
 		store:                store,
 		publisher:            publisher,
 		maxConcurrentPublish: 1,
-		logger:       logger,
-		pollInterval: defaultPollInterval,
-		batchSize:    defaultBatchSize,
-		maxAttempts:  defaultMaxAttempts,
-		retention:    defaultRetention,
+		logger:               logger,
+		pollInterval:         defaultPollInterval,
+		batchSize:            defaultBatchSize,
+		maxAttempts:          defaultMaxAttempts,
+		retention:            defaultRetention,
 	}
 	for _, opt := range opts {
 		opt(r)

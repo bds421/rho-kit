@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/observability/tracing
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0

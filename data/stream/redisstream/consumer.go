@@ -12,8 +12,8 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/observability/promutil"
 	"github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/observability/promutil"
 )
 
 const (
@@ -53,11 +53,11 @@ type Handler func(ctx context.Context, msg Message) error
 
 // ConsumerMetrics holds Prometheus collectors for stream consumer monitoring.
 type ConsumerMetrics struct {
-	messagesConsumed    *prometheus.CounterVec
-	messagesFailed      *prometheus.CounterVec
+	messagesConsumed     *prometheus.CounterVec
+	messagesFailed       *prometheus.CounterVec
 	messagesDeadLettered *prometheus.CounterVec
-	processingDuration  *prometheus.HistogramVec
-	pendingMessages     *prometheus.GaugeVec
+	processingDuration   *prometheus.HistogramVec
+	pendingMessages      *prometheus.GaugeVec
 }
 
 // NewConsumerMetrics creates and registers consumer metrics with the given registerer.

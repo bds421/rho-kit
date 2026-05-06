@@ -141,7 +141,7 @@ func (b *alwaysFailBackend) Put(context.Context, string, io.Reader, storage.Obje
 func (b *alwaysFailBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
 	return nil, storage.ObjectMeta{}, b.err
 }
-func (b *alwaysFailBackend) Delete(context.Context, string) error        { return b.err }
+func (b *alwaysFailBackend) Delete(context.Context, string) error         { return b.err }
 func (b *alwaysFailBackend) Exists(context.Context, string) (bool, error) { return false, b.err }
 
 // switchableBackend fails for the first N calls then delegates to the real backend.

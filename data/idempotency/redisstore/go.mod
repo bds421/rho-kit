@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/data/idempotency/redisstore
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/data/idempotency v1.1.0
 	github.com/redis/go-redis/v9 v9.18.0

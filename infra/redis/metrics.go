@@ -14,17 +14,17 @@ import (
 
 // RedisMetrics holds all Prometheus collectors for Redis command and connection monitoring.
 type RedisMetrics struct {
-	commandDuration      *prometheus.HistogramVec
-	commandErrors        *prometheus.CounterVec
-	connectionPoolHits   *prometheus.GaugeVec
-	connectionPoolMisses *prometheus.GaugeVec
+	commandDuration        *prometheus.HistogramVec
+	commandErrors          *prometheus.CounterVec
+	connectionPoolHits     *prometheus.GaugeVec
+	connectionPoolMisses   *prometheus.GaugeVec
 	connectionPoolTimeouts *prometheus.GaugeVec
-	connectionPoolSize   *prometheus.GaugeVec
-	connectionPoolIdle   *prometheus.GaugeVec
-	connectionPoolStale  *prometheus.GaugeVec
-	reconnectAttempts    *prometheus.CounterVec
-	reconnectSuccesses   *prometheus.CounterVec
-	connectionHealthy    *prometheus.GaugeVec
+	connectionPoolSize     *prometheus.GaugeVec
+	connectionPoolIdle     *prometheus.GaugeVec
+	connectionPoolStale    *prometheus.GaugeVec
+	reconnectAttempts      *prometheus.CounterVec
+	reconnectSuccesses     *prometheus.CounterVec
+	connectionHealthy      *prometheus.GaugeVec
 }
 
 // NewRedisMetrics creates and registers Redis metrics with the given registerer.

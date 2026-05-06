@@ -250,4 +250,3 @@ func (b *etagBackend) Get(ctx context.Context, key string) (io.ReadCloser, stora
 	meta.ETag = b.etag
 	return rc, meta, nil
 }
-

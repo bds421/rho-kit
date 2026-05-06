@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/data/idempotency/pgstore
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/data/idempotency v1.1.0
 	github.com/jackc/pgx/v5 v5.8.0

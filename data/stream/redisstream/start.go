@@ -60,4 +60,3 @@ func StartConsumers(
 	}
 	return nil
 }
-

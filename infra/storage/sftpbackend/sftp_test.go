@@ -21,10 +21,10 @@ import (
 
 // mockSFTPClient allows full control over each method for unit tests.
 type mockSFTPClient struct {
-	store    map[string][]byte
-	root     string
-	statFn   func(string) (os.FileInfo, error)
-	closeFn  func() error
+	store   map[string][]byte
+	root    string
+	statFn  func(string) (os.FileInfo, error)
+	closeFn func() error
 }
 
 func newMockSFTPClient(root string) *mockSFTPClient {
@@ -137,9 +137,9 @@ type fakeFileInfo struct {
 	modTime time.Time
 }
 
-func (f fakeFileInfo) Name() string      { return f.name }
-func (f fakeFileInfo) Size() int64       { return f.size }
-func (f fakeFileInfo) IsDir() bool       { return f.dir }
+func (f fakeFileInfo) Name() string       { return f.name }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) IsDir() bool        { return f.dir }
 func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
 func (f fakeFileInfo) Mode() os.FileMode {
 	if f.dir {

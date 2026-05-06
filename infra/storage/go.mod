@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/infra/storage
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/bds421/rho-kit/io/progress v1.1.0

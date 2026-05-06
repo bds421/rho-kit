@@ -2,9 +2,8 @@ module github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
+	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/bds421/rho-kit/httpx v1.5.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0
 	github.com/stretchr/testify v1.11.1
@@ -12,7 +11,6 @@ require (
 
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/contextutil v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/validate v1.1.0 // indirect
 	github.com/bds421/rho-kit/io/atomicfile v1.1.0 // indirect

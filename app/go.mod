@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/app
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/grpcx v0.2.0
 	github.com/bds421/rho-kit/httpx v1.5.0

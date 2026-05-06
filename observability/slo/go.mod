@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/observability/slo
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/observability/health v1.1.0
 	github.com/prometheus/client_golang v1.23.2

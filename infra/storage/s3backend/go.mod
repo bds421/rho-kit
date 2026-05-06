@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/infra/storage/s3backend
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.2
 	github.com/aws/aws-sdk-go-v2/config v1.32.10

@@ -57,11 +57,11 @@ type SFTPBackend struct {
 	logger     *slog.Logger
 	metrics    *SFTPMetrics
 
-	mu         sync.RWMutex
-	client     SFTPClient
-	sshConn    io.Closer
-	connected  bool
-	lazyConn   bool
+	mu        sync.RWMutex
+	client    SFTPClient
+	sshConn   io.Closer
+	connected bool
+	lazyConn  bool
 
 	// cleanupGen is the latest cleanup generation. Cleanup goroutines hold
 	// the generation they were spawned at; before sleeping for the grace

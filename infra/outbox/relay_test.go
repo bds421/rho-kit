@@ -46,8 +46,6 @@ func (f *fakePublisher) setErr(err error) {
 	f.err = err
 }
 
-
-
 func TestNewRelay_PanicsOnNilDeps(t *testing.T) {
 	cases := []struct {
 		name      string

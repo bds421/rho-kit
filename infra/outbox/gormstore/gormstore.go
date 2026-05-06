@@ -81,10 +81,10 @@ var _ outbox.Store = (*Store)(nil)
 // UPDATE SKIP LOCKED with an atomic claim pattern to prevent concurrent
 // relay instances from processing the same entries.
 type Store struct {
-	db        *gorm.DB
-	logger    *slog.Logger
-	isSQLite  bool
-	sqliteMu  sync.Mutex // serialises FetchPending on SQLite (no SKIP LOCKED)
+	db       *gorm.DB
+	logger   *slog.Logger
+	isSQLite bool
+	sqliteMu sync.Mutex // serialises FetchPending on SQLite (no SKIP LOCKED)
 }
 
 // StoreOption configures the Store. None are required for default behaviour.

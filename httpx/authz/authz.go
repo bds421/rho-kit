@@ -141,4 +141,3 @@ func StaticResource(resource string) ResourceFunc {
 		return resource
 	}
 }
-

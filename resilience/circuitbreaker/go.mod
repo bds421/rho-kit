@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/resilience/circuitbreaker
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0
 	github.com/sony/gobreaker/v2 v2.4.0

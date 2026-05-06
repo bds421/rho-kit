@@ -2,10 +2,9 @@ module github.com/bds421/rho-kit/httpx
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0
+	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/bds421/rho-kit/core/contextutil v1.2.0
 	github.com/bds421/rho-kit/core/validate v1.1.0
 	github.com/bds421/rho-kit/crypto v1.2.0
@@ -32,7 +31,6 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
 	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

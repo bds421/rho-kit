@@ -77,15 +77,15 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 const maxFingerprintBodySize = 1 << 20 // 1 MiB
 
 type config struct {
-	userExtractor    func(*http.Request) string
-	ttl              time.Duration
-	header           string
-	requiredMethods  map[string]bool
-	logger           *slog.Logger
-	metrics          *Metrics
-	fingerprintBody  bool
-	allowSharedKeys  bool
-	preserveHeaders  map[string]bool // optional override of identityResponseHeaders
+	userExtractor   func(*http.Request) string
+	ttl             time.Duration
+	header          string
+	requiredMethods map[string]bool
+	logger          *slog.Logger
+	metrics         *Metrics
+	fingerprintBody bool
+	allowSharedKeys bool
+	preserveHeaders map[string]bool // optional override of identityResponseHeaders
 }
 
 // identityResponseHeaders are stripped from cached responses before replay.

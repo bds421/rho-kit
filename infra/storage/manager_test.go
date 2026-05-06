@@ -116,4 +116,3 @@ func TestManager(t *testing.T) {
 		assert.Equal(t, b, mgr.Default())
 	})
 }
-

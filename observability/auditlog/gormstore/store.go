@@ -171,7 +171,6 @@ func New(db *gorm.DB, opts ...Option) *GormStore {
 	return s
 }
 
-
 // Append persists an audit event.
 func (s *GormStore) Append(ctx context.Context, event auditlog.Event) error {
 	row := auditEvent{

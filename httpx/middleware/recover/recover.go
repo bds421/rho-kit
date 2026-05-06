@@ -259,4 +259,3 @@ func (rw *recordingWriter) Flush() {
 		f.Flush()
 	}
 }
-

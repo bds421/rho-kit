@@ -2,8 +2,6 @@ module github.com/bds421/rho-kit/observability/auditlog/gormstore
 
 go 1.26.2
 
-toolchain go1.26.2
-
 require (
 	github.com/bds421/rho-kit/infra/sqldb v1.3.0
 	github.com/bds421/rho-kit/observability/auditlog v1.1.0
