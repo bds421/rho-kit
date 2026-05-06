@@ -11,8 +11,13 @@ import (
 	"github.com/bds421/rho-kit/infra/messaging"
 )
 
+// SubscriptionID identifies a subscription returned by [Broker.Subscribe]
+// so callers can later [Broker.Unsubscribe] without resetting the broker.
+type SubscriptionID uint64
+
 // subscription pairs an exchange+routing key with a handler.
 type subscription struct {
+	id         SubscriptionID
 	exchange   string
 	routingKey string
 	handler    func(ctx context.Context, d messaging.Delivery) error
@@ -24,6 +29,7 @@ type subscription struct {
 type Broker struct {
 	mu            sync.Mutex
 	subscriptions []subscription
+	nextID        SubscriptionID
 	published     []publishedMessage
 }
 
@@ -52,15 +58,36 @@ func (b *Broker) Publish(_ context.Context, exchange, routingKey string, msg mes
 }
 
 // Subscribe registers a handler for messages matching the given exchange
-// and routing key. Use "*" for either to match all.
-func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context.Context, d messaging.Delivery) error) {
+// and routing key. Use "*" for either to match all. Returns a
+// [SubscriptionID] that callers can pass to [Broker.Unsubscribe] for
+// fine-grained teardown without dropping unrelated subscriptions.
+func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context.Context, d messaging.Delivery) error) SubscriptionID {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.nextID++
+	id := b.nextID
 	b.subscriptions = append(b.subscriptions, subscription{
+		id:         id,
 		exchange:   exchange,
 		routingKey: routingKey,
 		handler:    handler,
 	})
+	return id
+}
+
+// Unsubscribe removes the subscription with the given id. Silently ignores
+// unknown ids so callers can call Unsubscribe in deferred test cleanup
+// without checking whether the subscription is still registered. Use this
+// instead of [Reset] when only one of several subscriptions should go.
+func (b *Broker) Unsubscribe(id SubscriptionID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, sub := range b.subscriptions {
+		if sub.id == id {
+			b.subscriptions = append(b.subscriptions[:i], b.subscriptions[i+1:]...)
+			return
+		}
+	}
 }
 
 // Drain processes all pending published messages by dispatching them to

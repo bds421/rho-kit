@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -26,6 +27,23 @@ const (
 	handlerShutdownTimeout   = 30 * time.Second // max time for in-flight handler on ctx cancellation
 	deadLetterPublishTimeout = 10 * time.Second // max time for dead-letter exchange publish
 )
+
+// shutdownSignalKey is the context-value key that the consumer sets when
+// invoking a handler during graceful shutdown. Handlers can check the value
+// via [IsShutdown] to know that the parent context is winding down even
+// though the derived handlerCtx is no longer cancelled (we detach with
+// context.WithoutCancel so the handler keeps its grace deadline).
+type shutdownSignalKey struct{}
+
+// IsShutdown reports whether ctx carries the consumer's shutdown signal.
+// True means "the consumer is in graceful shutdown; finish or fail quickly
+// rather than starting any long-lived work". The handler's ctx is still
+// scoped to a deadline (handlerShutdownTimeout); IsShutdown is the
+// finer-grained signal that the consumer itself is winding down.
+func IsShutdown(ctx context.Context) bool {
+	_, ok := ctx.Value(shutdownSignalKey{}).(struct{})
+	return ok
+}
 
 // ConsumerOption configures a Consumer during construction.
 type ConsumerOption func(*Consumer)
@@ -58,18 +76,39 @@ func WithHooks(h ConsumerHooks) ConsumerOption {
 
 // Consumer reads messages from an AMQP queue and dispatches them to a Handler.
 type Consumer struct {
-	conn      Connector
-	publisher DeadLetterPublisher
-	logger    *slog.Logger
-	prefetch  int
-	hooks     ConsumerHooks
+	conn                  Connector
+	publisher             DeadLetterPublisher
+	logger                *slog.Logger
+	prefetch              int
+	hooks                 ConsumerHooks
+	maxDLQConsecutiveFail int
+	dlqConsecutiveFail    atomic.Uint64
+}
+
+// defaultMaxDLQConsecutiveFailures bounds how many consecutive dead-letter
+// publishes may fail before the consumer flips to force-discard mode. A
+// permanently broken dead exchange (typo, missing binding) would otherwise
+// bounce each message MaxRetries × safetyMaxBounceMultiplier times against
+// the failing exchange — minutes of CPU/network thrash per stuck message.
+const defaultMaxDLQConsecutiveFailures = 10
+
+// WithMaxDLQConsecutiveFailures overrides [defaultMaxDLQConsecutiveFailures].
+// Pass <= 0 to disable the cap (unsafe; only for tests).
+func WithMaxDLQConsecutiveFailures(n int) ConsumerOption {
+	return func(c *Consumer) { c.maxDLQConsecutiveFail = n }
 }
 
 // NewConsumer creates a Consumer bound to the given connection.
 // The publisher is used for confirmed dead-letter publishes when consuming
 // bindings with retry. Pass nil if no retry bindings will be consumed.
 func NewConsumer(conn Connector, publisher DeadLetterPublisher, logger *slog.Logger, opts ...ConsumerOption) *Consumer {
-	c := &Consumer{conn: conn, publisher: publisher, logger: logger, prefetch: defaultPrefetch}
+	c := &Consumer{
+		conn:                  conn,
+		publisher:             publisher,
+		logger:                logger,
+		prefetch:              defaultPrefetch,
+		maxDLQConsecutiveFail: defaultMaxDLQConsecutiveFailures,
+	}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -115,9 +154,21 @@ func resolveFailure(delivery amqp.Delivery, b messaging.Binding) (failureAction,
 // is derived from the binding's RetryPolicy.
 //
 // Requires a non-nil publisher on the Consumer when Retry is set.
+//
+// NOTE: when b.Retry is nil, ANY handler error results in ack-and-discard.
+// That is the historical behaviour and matches "fire-and-forget" use cases
+// (broadcast notifications, idempotent deletes), but it is destructive and
+// rarely what you want for business-critical workloads. The kit logs a
+// loud warning at consumer start when a binding has no retry configured;
+// pass an explicit Retry policy whenever message loss on transient
+// failures is unacceptable.
 func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
 	if b.Retry != nil && c.publisher == nil {
 		return fmt.Errorf("consumeOnce with retry requires a publisher (pass non-nil publisher to NewConsumer)")
+	}
+	if b.Retry == nil {
+		c.logger.Warn("consumer binding has no retry policy — handler errors will ack-and-discard the message; pass Retry on the binding for at-least-once semantics",
+			"queue", b.Queue, "exchange", b.Exchange)
 	}
 
 	ch, err := c.conn.Channel()
@@ -165,19 +216,27 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 			// (handlerShutdownTimeout). Handlers should check ctx.Err() if
 			// they need to know whether the service is shutting down.
 			//
-			// We always apply the grace timeout to prevent the racy
-			// select-both-ready case where ctx cancels between the select
-			// pick and the ctx.Err() check.
-			// Always apply a timeout to handler execution, both during normal
-			// operation and shutdown. This prevents a stuck handler from
-			// permanently stalling the consumer goroutine.
-			var handlerCtx context.Context
-			var handlerCancel context.CancelFunc
-			if ctx.Err() != nil {
-				handlerCtx, handlerCancel = context.WithTimeout(context.Background(), handlerShutdownTimeout)
-			} else {
-				handlerCtx, handlerCancel = context.WithTimeout(ctx, handlerShutdownTimeout)
+			// Always apply a timeout to handler execution, both during
+			// normal operation and shutdown. This prevents a stuck handler
+			// from permanently stalling the consumer goroutine.
+			//
+			// During shutdown (parent ctx already cancelled) we use
+			// context.WithoutCancel as the base so the handler ctx still
+			// has its own deadline (the shutdown grace period) but
+			// inherits values from the parent (request IDs, tracing).
+			// The previous code used context.Background() which dropped
+			// every value carried by the consumer ctx. Handlers that need
+			// to detect shutdown must call IsShutdown(ctx) — a true return
+			// means "the consumer is winding down; finish quickly".
+			base := ctx
+			isShutdown := ctx.Err() != nil
+			if isShutdown {
+				base = context.WithoutCancel(ctx)
 			}
+			if isShutdown {
+				base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
+			}
+			handlerCtx, handlerCancel := context.WithTimeout(base, handlerShutdownTimeout)
 			c.handleDelivery(handlerCtx, delivery, handler, b)
 			handlerCancel()
 		}
@@ -269,19 +328,41 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 
 		// Publish original bytes to dead exchange BEFORE acking. Uses PublishRaw
 		// to avoid re-serialization round-trip — the body is exactly what the
-		// producer sent. If publish fails, nack instead — message re-enters
-		// retry cycle, which is better than silent loss.
+		// producer sent.
+		//
+		// On publish failure we'd normally nack-discard so the message re-enters
+		// the retry cycle, but a PERMANENTLY broken dead exchange (typo, missing
+		// binding) would bounce each message MaxRetries × safetyMaxBounceMultiplier
+		// times against the failing exchange. After defaultMaxDLQConsecutiveFailures
+		// consecutive failures we flip to force-discard with a loud log line so
+		// operators can fix the DLE config rather than thrashing forever. Any
+		// successful publish resets the counter.
 		deadCtx, deadCancel := context.WithTimeout(context.Background(), deadLetterPublishTimeout)
 		pubErr := c.publisher.PublishRaw(deadCtx, b.DeadExchange, b.Queue, delivery.Body, msg.ID)
 		deadCancel()
 		if pubErr != nil {
+			fails := c.dlqConsecutiveFail.Add(1)
+			capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
+			if capped {
+				c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
+					"error", pubErr, "id", msg.ID, "consecutive_failures", fails,
+					"cap", c.maxDLQConsecutiveFail)
+				if ackErr := delivery.Ack(false); ackErr != nil {
+					c.logger.Error("ack failed during DLE-force-discard", "error", ackErr)
+				}
+				if c.hooks.OnDiscard != nil {
+					c.hooks.OnDiscard(msg.ID, msg.Type, b.Queue)
+				}
+				return
+			}
 			c.logger.Error("dead-letter publish failed, nacking to retry",
-				"error", pubErr, "id", msg.ID)
+				"error", pubErr, "id", msg.ID, "consecutive_failures", fails)
 			if nackErr := delivery.Nack(false, false); nackErr != nil {
 				c.logger.Error("nack failed after dead-letter publish failure", "error", nackErr)
 			}
 			return
 		}
+		c.dlqConsecutiveFail.Store(0)
 
 		if ackErr := delivery.Ack(false); ackErr != nil {
 			c.logger.Error("ack failed after dead-letter publish", "error", ackErr, "id", msg.ID)

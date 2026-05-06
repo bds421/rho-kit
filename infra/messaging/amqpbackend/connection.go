@@ -1,6 +1,7 @@
 package amqpbackend
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -143,6 +144,32 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 	}
 
 	return ch, nil
+}
+
+// WaitForConnection blocks until the connection becomes healthy or ctx is
+// cancelled. Returns nil when healthy; ctx.Err() (via wrapping fmt.Errorf)
+// otherwise. Use in callers that would otherwise burn retry budget on
+// transient connection cycles — outbox Relay, polling consumers — by
+// pausing the work loop until the next reconnect completes.
+//
+// Polls at 100ms intervals; the cost of a tighter loop isn't justified in
+// practice (reconnects take seconds, not milliseconds).
+func (c *Connection) WaitForConnection(ctx context.Context) error {
+	const poll = 100 * time.Millisecond
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	for {
+		if c.Healthy() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("amqp: WaitForConnection: %w", ctx.Err())
+		case <-c.closed:
+			return fmt.Errorf("amqp: WaitForConnection: connection closed")
+		case <-t.C:
+		}
+	}
 }
 
 // Close terminates the AMQP connection and stops reconnection attempts.

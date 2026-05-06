@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bds421/rho-kit/io/atomicfile"
@@ -61,6 +62,11 @@ type BufferedPublisher struct {
 
 	// metrics collects operational metrics when set.
 	metrics *BufferedPublisherMetrics
+
+	// lastSaveErr holds the most recent error from saveLocked(). Stored as
+	// atomic.Pointer so [LastSaveError] reads it without contending with
+	// the publish path.
+	lastSaveErr atomic.Pointer[error]
 }
 
 // BufferedPublisherMetrics collects operational metrics for the BufferedPublisher.
@@ -232,9 +238,16 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 	// Reserve one slot when a direct publish is in flight — if it fails,
 	// the message will be appended to pending, so we must not be at capacity.
 	// Skip check when maxSize <= 0 (unlimited buffer).
+	//
+	// Edge case: maxSize=1 + directInFlight=true → effectiveMax=0 would
+	// reject any second message during normal operation, even when the
+	// in-flight publish succeeds and clears the slot moments later. Skip
+	// the reservation in that pathological config — the worst case is
+	// a single buffered message exceeding the cap by 1, which is
+	// strictly better than rejecting valid traffic.
 	if o.maxSize > 0 {
 		effectiveMax := o.maxSize
-		if o.directInFlight {
+		if o.directInFlight && o.maxSize > 1 {
 			effectiveMax--
 		}
 		if len(o.pending) >= effectiveMax {
@@ -394,8 +407,18 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 }
 
 // saveLocked persists the current pending slice to disk. Must be called
-// with o.mu held. Errors are logged but not returned — persistence is
-// best-effort to avoid blocking the publish path.
+// with o.mu held.
+//
+// State file permissions are 0600 (atomicfile.Save default). The file
+// contains full message payloads as JSON — if the buffered publisher
+// handles PII or secrets, restrict the parent directory to the service
+// user and consider wrapping the payloads with crypto/encrypt before
+// they reach Publish.
+//
+// Persistence errors are logged AND surfaced via [LastSaveError] so a
+// monitoring loop can detect stuck disk-full / EROFS / quota conditions
+// rather than discovering them only on shutdown drain. The publish path
+// stays non-blocking.
 func (o *BufferedPublisher) saveLocked() {
 	if o.stateFile == "" {
 		return
@@ -403,7 +426,22 @@ func (o *BufferedPublisher) saveLocked() {
 
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
 		o.logger.Error("failed to save buffered publisher state", "error", err)
+		o.lastSaveErr.Store(&err)
+		return
 	}
+	o.lastSaveErr.Store(nil)
+}
+
+// LastSaveError returns the most recent state-file save error, or nil if
+// the last save succeeded (or no save has been attempted). Useful for
+// health checks and alerting; the buffered publisher does not block the
+// publish path on persistence failures, so an external watcher is the
+// only way to notice a stuck disk.
+func (o *BufferedPublisher) LastSaveError() error {
+	if e := o.lastSaveErr.Load(); e != nil {
+		return *e
+	}
+	return nil
 }
 
 func (o *BufferedPublisher) reportPending() {
