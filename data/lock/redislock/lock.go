@@ -408,10 +408,28 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 
 func (l *Lock) tryAcquire(ctx context.Context) (bool, error) {
 	ok, err := l.client.SetNX(ctx, l.key, l.token, l.opts.ttl).Result()
-	if err != nil {
-		return false, fmt.Errorf("lock: acquire failed: %w", err)
+	if err == nil {
+		return ok, nil
 	}
-	return ok, nil
+
+	// SETNX returned an error. The SET *might* have landed in Redis even
+	// though the client never saw the success reply (TCP RST mid-response,
+	// proxy timeout after server-side commit, etc.). Without a probe, the
+	// caller would discard our token and treat the slot as unavailable
+	// while Redis silently holds the lock until TTL — an "orphan window"
+	// that the audit specifically flagged.
+	//
+	// Best-effort: probe with a short, ctx-scoped GET. If we see OUR token,
+	// the SET landed and we own the lock. Otherwise the original error is
+	// returned so the caller knows the acquire genuinely failed.
+	probeCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	current, getErr := l.client.Get(probeCtx, l.key).Result()
+	if getErr == nil && current == l.token {
+		return true, nil
+	}
+
+	return false, fmt.Errorf("lock: acquire failed: %w", err)
 }
 
 func generateToken() string {
