@@ -190,6 +190,13 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		panic("csrf: HMAC secret must be at least 32 bytes")
 	}
 
+	// SameSite=None requires Secure: every modern browser rejects a cookie
+	// with that combination if Secure is missing, so the middleware would
+	// silently fail to set the cookie at all. Catch the misconfig at startup.
+	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
+		panic("csrf: SameSite=None requires Secure=true (browsers reject the cookie otherwise) — call WithSecure(true)")
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Ensure a CSRF cookie exists on every response.

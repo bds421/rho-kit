@@ -902,6 +902,22 @@ func TestNew_DevSecretExplicitOptIn(t *testing.T) {
 	assert.NotNil(t, mw)
 }
 
+func TestNew_PanicsOnSameSiteNoneWithoutSecure(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for SameSite=None without Secure")
+		}
+		assert.Contains(t, r.(string), "SameSite=None requires Secure=true")
+	}()
+	_ = New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode))
+}
+
+func TestNew_SameSiteNoneWithSecureIsAllowed(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithSecure(true))
+	assert.NotNil(t, mw)
+}
+
 // --- SkipCheck regen bug ---
 
 func TestNew_RegeneratedCookieRejectsRequest(t *testing.T) {
