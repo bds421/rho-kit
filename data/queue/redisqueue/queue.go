@@ -460,14 +460,29 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 
 func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ string, handler Handler) error {
 	// First, recover any messages left in the processing queue (crash recovery).
-	if err := q.recoverProcessing(ctx, processingQ, queue, deadQ, handler); err != nil {
+	if _, err := q.recoverProcessing(ctx, processingQ, queue, deadQ, handler); err != nil {
 		return err
 	}
 
 	// Initial depth snapshot before entering the processing loop.
 	q.updateProcessingDepth(ctx, queue, processingQ)
 
+	// recoveryInterval interleaves recovery passes with new-message reads so
+	// a permanent processing-list backlog doesn't head-of-line-block normal
+	// traffic. Every recoveryInterval BLMove iterations we run another
+	// bounded recoverProcessing pass; the per-pass batch (10) and the
+	// interval (10) together amortise an N-entry backlog over N normal
+	// messages. This mirrors the data/stream consumer's claimMinIdle cadence.
+	const recoveryInterval = 10
+	iter := 0
+
 	for {
+		if iter > 0 && iter%recoveryInterval == 0 {
+			if _, err := q.recoverProcessing(ctx, processingQ, queue, deadQ, handler); err != nil {
+				return err
+			}
+		}
+
 		// BLMOVE atomically pops from queue (right) and pushes to processingQ (left).
 		// This ensures messages survive consumer crashes.
 		result, err := q.client.BLMove(ctx, queue, processingQ, "RIGHT", "LEFT", q.blockTimeout).Result()
@@ -486,6 +501,7 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 		}
 
 		q.handleMessage(ctx, result, processingQ, queue, deadQ, handler)
+		iter++
 	}
 }
 

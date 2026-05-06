@@ -221,9 +221,16 @@ func (q *Queue) deadLetter(ctx context.Context, queue, deadQ, data, msgID string
 	return true
 }
 
-// recoverProcessing replays messages left in THIS consumer's processing list
-// (e.g. from a previous crash of this consumer ID) through the normal
-// handleMessage path.
+// recoverProcessingBatchSize bounds how many entries one recoverProcessing
+// pass scans. Kept small so the interleaved recovery loop in processOnce
+// can stay fair to new-message traffic — a permanent N-entry backlog gets
+// cleared in N/recoverProcessingBatchSize passes amortised across normal
+// reads, instead of head-of-line-blocking the queue at every restart.
+const recoverProcessingBatchSize = 10
+
+// recoverProcessing replays up to [recoverProcessingBatchSize] messages
+// left in THIS consumer's processing list (e.g. from a previous crash of
+// this consumer ID) through the normal handleMessage path.
 //
 // The previous design RPop'd before dispatch, which silently dropped
 // messages whose dispatch failed (handleFailedMessage returned false). The
@@ -232,25 +239,22 @@ func (q *Queue) deadLetter(ctx context.Context, queue, deadQ, data, msgID string
 // successful dispatch (or leaves it in place for the next recovery pass on
 // dispatch failure).
 //
-// Bounded by maxRecoveryPerStart so a huge backlog from a previous crash
-// doesn't head-of-line-block normal traffic; remaining items are picked up
-// when RunWithBackoff next restarts processOnce.
+// Returns the number of recovery items processed (so processOnce can
+// decide whether to keep interleaving or fall through to the BLMove loop).
 //
 // WARNING: Even with per-consumer scoping, there is a brief double-process
 // window between handler dispatch and removeByID. Handlers MUST be
 // idempotent.
-func (q *Queue) recoverProcessing(ctx context.Context, processingQ, queue, deadQ string, handler Handler) error {
-	const maxRecoveryPerStart = 100
-
+func (q *Queue) recoverProcessing(ctx context.Context, processingQ, queue, deadQ string, handler Handler) (int, error) {
 	// LRange of the per-consumer list: BLMOVE pushes new claims to the LEFT,
-	// so the oldest claims sit at the tail. Pull up to maxRecoveryPerStart
+	// so the oldest claims sit at the tail. Pull up to recoverProcessingBatchSize
 	// from the tail and process oldest-first to mirror FIFO ordering.
-	items, err := q.client.LRange(ctx, processingQ, -maxRecoveryPerStart, -1).Result()
+	items, err := q.client.LRange(ctx, processingQ, -recoverProcessingBatchSize, -1).Result()
 	if err != nil {
-		return fmt.Errorf("lrange processing: %w", err)
+		return 0, fmt.Errorf("lrange processing: %w", err)
 	}
 	if len(items) == 0 {
-		return nil
+		return 0, nil
 	}
 	q.logger.Info("recovering processing list",
 		"queue", queue,
@@ -260,10 +264,10 @@ func (q *Queue) recoverProcessing(ctx context.Context, processingQ, queue, deadQ
 
 	for _, data := range items {
 		if ctx.Err() != nil {
-			return nil
+			return 0, nil
 		}
 		q.handleMessage(ctx, data, processingQ, queue, deadQ, handler)
 	}
 
-	return nil
+	return len(items), nil
 }
