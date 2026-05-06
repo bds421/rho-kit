@@ -79,21 +79,22 @@ Still open:
 
 ## Phase 3 — Polish — small items, mostly Phase 3 quality
 
-Most Phase 3 items in the original plan have either landed (auditlog cursor + LIKE escape, http server defaults) or are open as listed inline in each existing-package file. The remaining work is small:
+All Phase 3 polish items across `existing/02`–`existing/17` have landed. Each per-package audit file now includes a "Recently Landed (Phase 3)" section recording what shipped and a closed migration checklist. Highlights:
 
-- 🔴 [existing/02] core/config: `GetSecret` (string, error) split; `EnvReloader.WithImmediateLoad()`; `apperror.HTTPStatus` decision.
-- 🔴 [existing/04] httpxtest `DoRealServer` variant; expose client `IdleConnTimeout`; cursor signing for `httpx/pagination` (mirror auditlog pattern).
-- 🔴 [existing/05] Shared client-IP resolver across logging+ratelimit; tracing hijack handling.
-- 🔴 [existing/08] MemoryStore eviction heap/sweeper; cache.Cache add MGet/MSet/SetNX; compute cache surface backend Set errors.
-- 🔴 [existing/09] Drop dead `errors.Is(err, goredis.Nil)` branch.
-- 🔴 [existing/10] Connection.WaitForConnection; default-Retry; xDeath validation; membroker Unsubscribe.
-- 🔴 [existing/11] Outbox MaxConcurrentPublishes; SQLite multi-instance guard.
-- 🔴 [existing/12] sftp generation-based cleanup; Manager.Default invariant; URL templating.
-- 🔴 [existing/13] redis Connection Sentinel/Cluster support; redistest per-test isolation.
-- 🔴 [existing/14] cron per-job timeout + ctx sync; eventbus Unsubscribe + OnFull policy; FanOut default cap.
-- 🔴 [existing/15] CircuitBreaker.ExecuteCtx; nil-receiver semantics.
-- 🔴 [existing/16] Health Liveness/Readiness handlers; logattr Secret/Email; tracing Init timeout; auditlog memory IPAddress; promutil register semantics; SLO label filter.
-- 🔴 [existing/17] progressReader concurrency doc + throttle option.
+- ✅ [existing/02] core/config: `GetSecret(string, error)` split; `EnvReloader.WithImmediateLoad`; required-env rejects explicit-empty; `NewSecureID`.
+- ✅ [existing/03] crypto+security: JWKS staleness budget; static keystore error API; signing future-skew option.
+- ✅ [existing/04] httpx server+client: signed cursors; `IdleConnTimeout`; `httpxtest.DoRealServer`.
+- ✅ [existing/05] httpx middleware: timeout `WithHard`; logging client-IP resolver; tracing hijack 101.
+- ✅ [existing/07] data lock+queue: bounded `recoverProcessing` interleaved with BLMove.
+- ✅ [existing/08] data cache+idem: `BulkCache` (MGet/MSet/SetNX); compute cache surfaces backend errors; bounded sweeper.
+- ✅ [existing/10] infra messaging: `WithoutCancel` shutdown ctx; DLQ failure cap; `Connection.WaitForConnection`; membroker `Unsubscribe`.
+- ✅ [existing/11] infra outbox: `WithMaxConcurrentPublishes` worker pool; SQLite multi-relay process-local guard.
+- ✅ [existing/12] infra storage: SSE defaults; safer key extension; encryption concurrency cap; sftp generation cleanup; URL templating.
+- ✅ [existing/13] infra sqldb+redis: `IsTLSEnabled` covers Postgres/MySQL; `ConnectUniversal` for Sentinel/Cluster; redistest `FlushDB`.
+- ✅ [existing/14] runtime: cron per-job timeout + ctx sync; eventbus `Unsubscribe` + `OnFull` policy; FanOut default cap.
+- ✅ [existing/15] resilience: `CircuitBreaker.ExecuteCtx`; nil-receiver semantics documented.
+- ✅ [existing/16] observability: Health Liveness/Readiness handlers; logattr Secret/Email; tracing Init timeout + fallback; auditlog memory IPAddress; promutil `Register` API; SLO `LatencyLabelFilter`.
+- ✅ [existing/17] io: progressReader concurrency doc + `WithThrottle` / `WithMinDelta`.
 
 ## Phase 4 — Tier‑1 missing primitives (unstarted)
 
