@@ -35,6 +35,33 @@ func (c Config) Option(key, fallback string) string {
 	return fallback
 }
 
+// IsTLSEnabled reports whether the configured driver options request a TLS
+// connection. Recognised values:
+//
+//   - PostgreSQL: sslmode in {require, verify-ca, verify-full}
+//   - MySQL/MariaDB: tls in {true, skip-verify, preferred, custom-*}
+//
+// The check is conservative: it returns true only for explicit TLS-on
+// modes. "prefer" / "allow" return false because they degrade silently to
+// plaintext on a TLS-handshake failure. Callers in production-validation
+// paths should use this helper rather than parsing Options themselves so
+// the kit stays the single source of truth on what counts as TLS-enabled.
+func (c Config) IsTLSEnabled() bool {
+	switch strings.ToLower(c.Option("sslmode", "")) {
+	case "require", "verify-ca", "verify-full":
+		return true
+	}
+	switch strings.ToLower(c.Option("tls", "")) {
+	case "true", "skip-verify", "preferred":
+		return true
+	}
+	// MySQL "custom-*" registered TLS configs always enable TLS.
+	if v := c.Option("tls", ""); strings.HasPrefix(v, "custom-") {
+		return true
+	}
+	return false
+}
+
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials.
 func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(

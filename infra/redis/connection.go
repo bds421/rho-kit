@@ -121,11 +121,27 @@ func WithRegisterer(reg prometheus.Registerer) ConnOption {
 // By default, it performs an eager ping to verify connectivity before returning.
 // Use WithLazyConnect to defer the initial ping to the background.
 //
+// Single-node Redis only. For Sentinel or Cluster topologies use
+// [ConnectUniversal], which accepts redis.UniversalOptions.
+//
 // WARNING: If Close() is called very quickly after Connect (before the health
 // loop goroutine starts), a brief spurious reconnect attempt may be logged.
 // This is harmless but can cause confusing log output in tests. Use
 // WithLazyConnect if rapid connect/close cycles are expected.
 func Connect(opts *redis.Options, connOpts ...ConnOption) (*Connection, error) {
+	return connectInternal(redis.NewClient(opts), connOpts...)
+}
+
+// ConnectUniversal is the Sentinel/Cluster-aware constructor. opts is the
+// goredis UniversalOptions struct: when MasterName is set it picks
+// Sentinel; when len(Addrs) > 1 it picks Cluster; otherwise single-node.
+// The returned Connection is otherwise identical to one returned by
+// [Connect] — Client() returns the same UniversalClient interface.
+func ConnectUniversal(opts *redis.UniversalOptions, connOpts ...ConnOption) (*Connection, error) {
+	return connectInternal(redis.NewUniversalClient(opts), connOpts...)
+}
+
+func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Connection, error) {
 	c := &Connection{
 		closed:         make(chan struct{}),
 		dead:           make(chan struct{}),
@@ -139,7 +155,6 @@ func Connect(opts *redis.Options, connOpts ...ConnOption) (*Connection, error) {
 		o(c)
 	}
 
-	client := redis.NewClient(opts)
 	client.AddHook(&metricsHook{instance: c.instance, metrics: c.metrics})
 	c.client = client
 
