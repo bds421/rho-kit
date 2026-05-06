@@ -1,5 +1,7 @@
 package signing
 
+import "fmt"
+
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
 const minKeyLen = 32
 
@@ -37,25 +39,27 @@ type StaticKeyStore struct {
 	currentID string
 }
 
-// NewStaticKeyStore creates a StaticKeyStore with the given keys and current key ID.
+// NewStaticKeyStoreE creates a StaticKeyStore with the given keys and
+// current key ID, returning a descriptive error on misconfiguration. Use
+// this variant when keys come from runtime sources (env, KMS, config
+// reload) where one bad rotation should not crash the process.
 //
-// Panics if currentID is not present in keys, if keys is empty, or if any key
-// is shorter than 32 bytes. This follows the fail-fast convention: configuration
-// errors surface at startup, not at request time.
-func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
+// Returns errors for: empty keys map, currentID not present, any key
+// shorter than [minKeyLen]. The store keeps a defensive copy of the keys
+// map so callers may mutate or zero their copy after construction.
+func NewStaticKeyStoreE(keys map[string][]byte, currentID string) (*StaticKeyStore, error) {
 	if len(keys) == 0 {
-		panic("signing: keys map must not be empty")
+		return nil, fmt.Errorf("signing: keys map must not be empty")
 	}
 	if _, ok := keys[currentID]; !ok {
-		panic("signing: currentID " + currentID + " not found in keys map")
+		return nil, fmt.Errorf("signing: currentID %q not found in keys map", currentID)
 	}
 	for id, k := range keys {
 		if len(k) < minKeyLen {
-			panic("signing: key " + id + " must be at least 32 bytes")
+			return nil, fmt.Errorf("signing: key %q must be at least %d bytes (got %d)", id, minKeyLen, len(k))
 		}
 	}
 
-	// Defensive copy to prevent mutation of the caller's map.
 	copied := make(map[string][]byte, len(keys))
 	for id, k := range keys {
 		dst := make([]byte, len(k))
@@ -66,7 +70,21 @@ func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore
 	return &StaticKeyStore{
 		keys:      copied,
 		currentID: currentID,
+	}, nil
+}
+
+// NewStaticKeyStore is the panic-on-error variant of [NewStaticKeyStoreE].
+// Prefer the error-returning version for runtime config; reserve this one
+// for tests and contexts where the keys are compile-time constants.
+//
+// Panics if currentID is not present in keys, if keys is empty, or if any
+// key is shorter than [minKeyLen].
+func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
+	s, err := NewStaticKeyStoreE(keys, currentID)
+	if err != nil {
+		panic(err.Error())
 	}
+	return s
 }
 
 // Key returns the secret for the given key ID. Returns nil, false if not found.

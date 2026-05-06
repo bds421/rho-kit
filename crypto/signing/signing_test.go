@@ -202,6 +202,47 @@ func TestSigner_Verify_FutureWithClock(t *testing.T) {
 	assert.False(t, ok, "future timestamp beyond skew should fail")
 }
 
+func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
+	verifierClock := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	signerClock := verifierClock.Add(2 * time.Minute)
+
+	signer := NewSigner(WithClock(func() time.Time { return signerClock }))
+	verifier := NewSigner(
+		WithClock(func() time.Time { return verifierClock }),
+		WithFutureSkew(1*time.Minute),
+	)
+
+	secret := []byte("secret-secret-secret-secret-32by")
+	sig, ts, err := signer.Sign([]byte("body"), secret)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	_, err = verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
+	assert.ErrorIs(t, err, ErrExpiredSignature)
+}
+
+func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
+	verifierClock := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	signerClock := verifierClock.Add(45 * time.Second)
+
+	signer := NewSigner(WithClock(func() time.Time { return signerClock }))
+	verifier := NewSigner(
+		WithClock(func() time.Time { return verifierClock }),
+		WithFutureSkew(1*time.Minute),
+	)
+
+	secret := []byte("secret-secret-secret-secret-32by")
+	sig, ts, err := signer.Sign([]byte("body"), secret)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	ok, err := verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
+	assert.NoError(t, err)
+	assert.True(t, ok)
+}
+
 func TestSigner_Sign_EmptySecret(t *testing.T) {
 	s := NewSigner()
 	_, _, err := s.Sign([]byte("body"), nil)

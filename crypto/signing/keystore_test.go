@@ -100,6 +100,37 @@ func TestNewStaticKeyStore_PanicsShortKey(t *testing.T) {
 	}, "k1")
 }
 
+func TestNewStaticKeyStoreE_HappyPath(t *testing.T) {
+	s, err := NewStaticKeyStoreE(map[string][]byte{"k1": testKey(32, 1)}, "k1")
+	if err != nil {
+		t.Fatalf("NewStaticKeyStoreE: %v", err)
+	}
+	if id, _ := s.CurrentKeyID(); id != "k1" {
+		t.Errorf("currentID = %q, want k1", id)
+	}
+}
+
+func TestNewStaticKeyStoreE_ErrorOnEmptyKeys(t *testing.T) {
+	_, err := NewStaticKeyStoreE(map[string][]byte{}, "k1")
+	if err == nil {
+		t.Fatal("expected error for empty keys map")
+	}
+}
+
+func TestNewStaticKeyStoreE_ErrorOnMissingCurrentID(t *testing.T) {
+	_, err := NewStaticKeyStoreE(map[string][]byte{"k1": testKey(32, 1)}, "k2")
+	if err == nil {
+		t.Fatal("expected error for missing currentID")
+	}
+}
+
+func TestNewStaticKeyStoreE_ErrorOnShortKey(t *testing.T) {
+	_, err := NewStaticKeyStoreE(map[string][]byte{"k1": testKey(16, 1)}, "k1")
+	if err == nil {
+		t.Fatal("expected error for short key")
+	}
+}
+
 func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
 	store := NewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 	var wg sync.WaitGroup

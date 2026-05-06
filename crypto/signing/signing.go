@@ -21,7 +21,8 @@ var ErrExpiredSignature = errors.New("signing: signature expired or clock skew t
 
 // Signer holds configuration for computing and verifying HMAC-SHA256 signatures.
 type Signer struct {
-	clock func() time.Time
+	clock      func() time.Time
+	futureSkew time.Duration
 }
 
 // SignerOption configures a Signer.
@@ -32,9 +33,28 @@ func WithClock(fn func() time.Time) SignerOption {
 	return func(s *Signer) { s.clock = fn }
 }
 
+// WithFutureSkew sets how far the sender's clock may be ahead of the
+// verifier's without rejecting the signature. Default: 30s.
+//
+// Set to 0 for strict mode (any future-dated signature is rejected; useful
+// when both ends share a clock, e.g. service mesh with NTP discipline).
+// Use higher values for integrations against clients with poor clock
+// hygiene (mobile, browser timestamps, embedded devices).
+func WithFutureSkew(d time.Duration) SignerOption {
+	return func(s *Signer) {
+		if d < 0 {
+			d = 0
+		}
+		s.futureSkew = d
+	}
+}
+
 // NewSigner creates a Signer with the given options.
 func NewSigner(opts ...SignerOption) *Signer {
-	s := &Signer{clock: time.Now}
+	s := &Signer{
+		clock:      time.Now,
+		futureSkew: defaultFutureSkew,
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -74,10 +94,11 @@ func Sign(body []byte, secret []byte) (signature string, timestamp int64, err er
 // DefaultSignatureMaxAge is the default maximum age for webhook signatures.
 const DefaultSignatureMaxAge = 5 * time.Minute
 
-// allowedFutureSkew tolerates small clock differences where the sender's
+// defaultFutureSkew tolerates small clock differences where the sender's
 // clock is slightly ahead of the receiver's. Without this, NTP jitter
-// causes spurious signature verification failures.
-const allowedFutureSkew = 30 * time.Second
+// causes spurious signature verification failures. Override with
+// [WithFutureSkew].
+const defaultFutureSkew = 30 * time.Second
 
 // fallbackMAC is a pre-allocated zero buffer matching SHA-256 output size.
 // Used as the comparison operand when the signature has a format error (missing
@@ -100,7 +121,7 @@ func (s *Signer) Verify(secret []byte, body []byte, timestamp int64, signature s
 		return false, ErrEmptySecret
 	}
 	age := s.clock().Sub(time.Unix(timestamp, 0))
-	if age < -allowedFutureSkew || age > maxAge {
+	if age < -s.futureSkew || age > maxAge {
 		return false, ErrExpiredSignature
 	}
 

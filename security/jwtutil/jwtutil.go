@@ -29,6 +29,7 @@ const (
 	clockSkew              = 30 * time.Second
 	defaultRefreshInterval = 10 * time.Minute
 	defaultHTTPTimeout     = 5 * time.Second
+	defaultMaxStale        = 1 * time.Hour
 )
 
 // Claims represents the verified JWT payload from an Oathkeeper id_token.
@@ -170,9 +171,12 @@ type Provider struct {
 	expectedIssuer   string
 	expectedAudience string
 	allowAnyIssuer   bool
+	maxStale         time.Duration
+	clock            func() time.Time
 
-	mu     sync.RWMutex
-	keyset *KeySet
+	mu                  sync.RWMutex
+	keyset              *KeySet
+	lastSuccessfulFetch time.Time
 }
 
 // ProviderOption configures optional Provider behaviour.
@@ -202,6 +206,27 @@ func WithAllowAnyIssuer() ProviderOption {
 	return func(p *Provider) { p.allowAnyIssuer = true }
 }
 
+// WithMaxStale sets how long [Provider.KeySet] continues to serve a
+// previously-fetched key set after a JWKS refresh failure. Once exceeded,
+// KeySet returns nil and downstream verifiers fail the request closed
+// rather than verifying with stale (possibly compromised) keys.
+//
+// The natural failure mode without this knob is "JWKS endpoint goes down,
+// rotation happens, kit keeps verifying with old keys forever AND rejects
+// every new token". A 1-hour default keeps short blips invisible while
+// surfacing a permanent outage long before key rotation completes.
+//
+// Pass d <= 0 to disable max-stale (cached keys served indefinitely; the
+// pre-Wave-7 behaviour). Default: 1 hour.
+func WithMaxStale(d time.Duration) ProviderOption {
+	return func(p *Provider) { p.maxStale = d }
+}
+
+// withClock overrides the time source. Test-only.
+func withClock(fn func() time.Time) ProviderOption {
+	return func(p *Provider) { p.clock = fn }
+}
+
 // NewProvider creates a JWKS provider that fetches public keys from the given URL.
 // The refresh interval controls how often keys are re-fetched in the background.
 // If httpClient is nil, a default client with a 5s timeout is used.
@@ -225,9 +250,14 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 		url:        url,
 		httpClient: httpClient,
 		refresh:    refresh,
+		maxStale:   defaultMaxStale,
+		clock:      time.Now,
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	if p.clock == nil {
+		p.clock = time.Now
 	}
 	if p.expectedIssuer == "" && !p.allowAnyIssuer {
 		env := os.Getenv("KIT_ENV")
@@ -243,8 +273,12 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 
 // NewProviderWithKeySet creates a Provider pre-loaded with a key set.
 // This is intended for testing — the provider will not fetch or refresh keys.
+//
+// max-stale is implicitly disabled because there is no fetch loop to
+// refresh the lastSuccessfulFetch timestamp; staleness is meaningless when
+// the keys are pinned by hand.
 func NewProviderWithKeySet(ks *KeySet) *Provider {
-	return &Provider{keyset: ks}
+	return &Provider{keyset: ks, clock: time.Now}
 }
 
 // Run starts the background JWKS refresh loop. It blocks until ctx is cancelled.
@@ -293,11 +327,46 @@ func defaultHTTPClient() *http.Client {
 }
 
 // KeySet returns the current cached key set. Returns nil if keys haven't
-// been fetched yet (provider not started or still retrying).
+// been fetched yet (provider not started or still retrying), OR if the
+// last successful fetch is older than the max-stale window (default 1h;
+// override with [WithMaxStale]).
+//
+// Returning nil when stale is what makes max-stale load-bearing: every
+// downstream verifier (httpx auth middleware, grpcx auth interceptor)
+// already treats nil-keyset as "fail the request closed", so the
+// staleness check participates in that contract automatically.
 func (p *Provider) KeySet() *KeySet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	if p.keyset == nil {
+		return nil
+	}
+	if p.maxStale > 0 && !p.lastSuccessfulFetch.IsZero() {
+		if p.clock().Sub(p.lastSuccessfulFetch) > p.maxStale {
+			return nil
+		}
+	}
 	return p.keyset
+}
+
+// LastSuccessfulFetch returns the timestamp of the most recent successful
+// JWKS fetch, or the zero time if no fetch has succeeded yet. Use for
+// staleness alerting / health checks.
+func (p *Provider) LastSuccessfulFetch() time.Time {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.lastSuccessfulFetch
+}
+
+// Staleness returns how long ago the last successful JWKS fetch was, or
+// 0 if no fetch has succeeded. A value greater than the configured
+// max-stale window means [KeySet] now returns nil.
+func (p *Provider) Staleness() time.Duration {
+	last := p.LastSuccessfulFetch()
+	if last.IsZero() {
+		return 0
+	}
+	return p.clock().Sub(last)
 }
 
 func (p *Provider) fetch(ctx context.Context) error {
@@ -330,6 +399,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 
 	p.mu.Lock()
 	p.keyset = ks
+	p.lastSuccessfulFetch = p.clock()
 	p.mu.Unlock()
 	return nil
 }

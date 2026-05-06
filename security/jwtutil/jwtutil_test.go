@@ -452,6 +452,80 @@ func TestNewProvider_AllowsMissingIssuerInDev(t *testing.T) {
 	}
 }
 
+func TestProvider_KeySetReturnsNilWhenStale(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	t.Setenv("APP_ENV", "")
+
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithMaxStale(30*time.Minute),
+		withClock(clock),
+	)
+
+	// Simulate a successful fetch 31 minutes ago.
+	p.mu.Lock()
+	p.keyset = &KeySet{}
+	p.lastSuccessfulFetch = now.Add(-31 * time.Minute)
+	p.mu.Unlock()
+
+	if got := p.KeySet(); got != nil {
+		t.Fatal("KeySet should return nil when last fetch is older than max-stale")
+	}
+
+	// And not nil when within the window.
+	p.mu.Lock()
+	p.lastSuccessfulFetch = now.Add(-15 * time.Minute)
+	p.mu.Unlock()
+
+	if got := p.KeySet(); got == nil {
+		t.Fatal("KeySet should not be nil when last fetch is within max-stale")
+	}
+}
+
+func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	t.Setenv("APP_ENV", "")
+
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithMaxStale(0), // disabled
+		withClock(clock),
+	)
+	p.mu.Lock()
+	p.keyset = &KeySet{}
+	p.lastSuccessfulFetch = now.Add(-365 * 24 * time.Hour) // a year ago
+	p.mu.Unlock()
+
+	if got := p.KeySet(); got == nil {
+		t.Fatal("KeySet must not return nil when max-stale is disabled")
+	}
+}
+
+func TestProvider_StalenessAccessor(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	t.Setenv("APP_ENV", "")
+
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		withClock(clock),
+	)
+	if got := p.Staleness(); got != 0 {
+		t.Errorf("Staleness should be 0 before any fetch; got %v", got)
+	}
+	p.mu.Lock()
+	p.lastSuccessfulFetch = now.Add(-10 * time.Minute)
+	p.mu.Unlock()
+	if got := p.Staleness(); got != 10*time.Minute {
+		t.Errorf("Staleness = %v, want 10m", got)
+	}
+}
+
 func TestNewProvider_AllowAnyIssuerOptOut(t *testing.T) {
 	t.Setenv("KIT_ENV", "production")
 	t.Setenv("APP_ENV", "")
