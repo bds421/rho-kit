@@ -106,7 +106,13 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 // Set replaces the lock row with the cached response. Returns
 // [idempotency.ErrLockLost] if the caller's token no longer matches the
 // current row's owner_token (TTL expired and another caller acquired).
+// Returns [idempotency.ErrInvalidTTL] when ttl <= 0 — the interval cast
+// would otherwise round sub-second values to "0 seconds" and create a
+// row that's already expired before any consumer can read it.
 func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	if ttl <= 0 {
+		return idempotency.ErrInvalidTTL
+	}
 	headersJSON, err := json.Marshal(resp.Headers)
 	if err != nil {
 		return fmt.Errorf("pgstore: marshal headers: %w", err)
@@ -140,8 +146,12 @@ func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.C
 // TryLock implements the contract from [idempotency.Store.TryLock]. The
 // fingerprint is stored alongside the owner_token so subsequent TryLock
 // calls with a *different* fingerprint can be rejected with
-// fingerprintMismatch=true.
+// fingerprintMismatch=true. Returns [idempotency.ErrInvalidTTL] when
+// ttl <= 0.
 func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if ttl <= 0 {
+		return "", false, false, idempotency.ErrInvalidTTL
+	}
 	token := idempotency.GenerateToken()
 
 	query := fmt.Sprintf(

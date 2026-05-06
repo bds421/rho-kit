@@ -20,6 +20,15 @@ import (
 // middleware can avoid clobbering a fresher response.
 var ErrLockLost = errors.New("idempotency: caller no longer holds the lock")
 
+// ErrInvalidTTL is returned by [Store.TryLock] and [Store.Set] when the TTL
+// is non-positive. The three backends previously disagreed dangerously about
+// TTL=0: Redis SET NX with EX 0 creates a permanent lock, MemoryStore treats
+// it as immediately expired, and pgstore rounds sub-second durations to 0.
+// Returning a typed error from every backend means direct callers (bypassing
+// the middleware) get a deterministic failure instead of one of three silent
+// failure modes.
+var ErrInvalidTTL = errors.New("idempotency: ttl must be positive")
+
 // Store persists and retrieves cached responses keyed by idempotency key.
 //
 // All methods accept a request fingerprint (typically SHA-256 of the request
@@ -57,13 +66,18 @@ type Store interface {
 	//                                  a *different* fingerprint. Caller MUST
 	//                                  treat this as 422 Unprocessable Entity.
 	//   - ("",    false, false, err) — backend error
+	//
+	// ttl MUST be positive; backends return [ErrInvalidTTL] for ttl <= 0
+	// instead of silently disagreeing about the meaning of zero (Redis would
+	// otherwise create a permanent lock, MemoryStore would treat it as
+	// instantly expired, pgstore would round to zero seconds).
 	TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (token string, fingerprintMismatch bool, ok bool, err error)
 
 	// Set stores the response, atomically replacing the lock row. The token
 	// must be the one returned from the TryLock that started this critical
 	// section. Returns [ErrLockLost] if the caller's token no longer matches
 	// the current lock owner — a sign the TTL expired mid-handler and another
-	// caller has already taken the slot.
+	// caller has already taken the slot. Returns [ErrInvalidTTL] for ttl <= 0.
 	Set(ctx context.Context, key, token string, resp CachedResponse, ttl time.Duration) error
 
 	// Unlock releases the processing lock for the caller's token. No-ops
@@ -172,7 +186,11 @@ const evictInterval = 100
 
 // Set stores the response under the caller's token. Returns ErrLockLost if
 // the lock for the key has been taken by another caller (or has expired).
+// Returns [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedResponse, ttl time.Duration) error {
+	if ttl <= 0 {
+		return ErrInvalidTTL
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -212,8 +230,12 @@ func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedRespo
 	return nil
 }
 
-// TryLock implements the contract from [Store.TryLock].
+// TryLock implements the contract from [Store.TryLock]. Returns
+// [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if ttl <= 0 {
+		return "", false, false, ErrInvalidTTL
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

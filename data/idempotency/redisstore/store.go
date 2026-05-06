@@ -167,8 +167,13 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 	return &resp, false, nil
 }
 
-// TryLock implements the contract from [idempotency.Store.TryLock].
+// TryLock implements the contract from [idempotency.Store.TryLock]. Returns
+// [idempotency.ErrInvalidTTL] when ttl <= 0 — Redis SET NX with EX 0 would
+// otherwise create a permanent lock.
 func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if ttl <= 0 {
+		return "", false, false, idempotency.ErrInvalidTTL
+	}
 	token := idempotency.GenerateToken()
 	value := encodeLockValue(token, fingerprint)
 
@@ -216,8 +221,12 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 }
 
 // Set replaces the lock value with the response envelope, atomically
-// requiring that the caller still holds the lock.
+// requiring that the caller still holds the lock. Returns
+// [idempotency.ErrInvalidTTL] when ttl <= 0.
 func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	if ttl <= 0 {
+		return idempotency.ErrInvalidTTL
+	}
 	// We need the same fingerprint that was passed at TryLock time so the
 	// envelope embeds it. Recover it by reading the lock value back.
 	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
