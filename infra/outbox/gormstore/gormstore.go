@@ -37,6 +37,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,16 +81,49 @@ var _ outbox.Store = (*Store)(nil)
 // UPDATE SKIP LOCKED with an atomic claim pattern to prevent concurrent
 // relay instances from processing the same entries.
 type Store struct {
-	db *gorm.DB
+	db        *gorm.DB
+	logger    *slog.Logger
+	isSQLite  bool
+	sqliteMu  sync.Mutex // serialises FetchPending on SQLite (no SKIP LOCKED)
+}
+
+// StoreOption configures the Store. None are required for default behaviour.
+type StoreOption func(*Store)
+
+// WithLogger sets the logger used for one-off warnings (e.g. SQLite
+// dialect detection). Defaults to slog.Default().
+func WithLogger(l *slog.Logger) StoreOption {
+	return func(s *Store) {
+		if l != nil {
+			s.logger = l
+		}
+	}
 }
 
 // New creates a Store backed by the given GORM database.
 // Panics if db is nil.
-func New(db *gorm.DB) *Store {
+//
+// Auto-detects SQLite to enable a process-local FetchPending mutex —
+// SQLite ignores SELECT FOR UPDATE SKIP LOCKED so two relay instances
+// against the same SQLite file would each fetch the full pending set
+// and double-publish. The mutex is in-process; SQLite is fundamentally
+// unsuitable for cross-process relays anyway, so the kit emits a loud
+// warning when SQLite is detected.
+func New(db *gorm.DB, opts ...StoreOption) *Store {
 	if db == nil {
 		panic("gormstore: New requires a non-nil *gorm.DB")
 	}
-	return &Store{db: db}
+	s := &Store{db: db, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if name := db.Dialector.Name(); name == "sqlite" || name == "sqlite3" {
+		s.isSQLite = true
+		s.logger.Warn("outbox/gormstore: SQLite detected — SKIP LOCKED is a no-op on SQLite. " +
+			"FetchPending is serialised by an in-process mutex; multiple OS processes against the " +
+			"same SQLite file WILL double-publish. Use Postgres or MySQL 8.0+ for multi-relay deployments.")
+	}
+	return s
 }
 
 // Insert creates a new outbox entry. If the context carries a GORM
@@ -108,7 +143,17 @@ func (s *Store) Insert(ctx context.Context, e outbox.Entry) error {
 // status to "processing" within a single transaction. It uses SELECT FOR UPDATE
 // SKIP LOCKED to allow multiple relay instances to poll concurrently without
 // processing the same entries.
+//
+// On SQLite the SKIP LOCKED clause is silently ignored, so the kit
+// serialises FetchPending with a process-local mutex (see [New]). The
+// guard prevents two in-process relays from colliding; cross-process
+// SQLite relays will still double-process and should not be used.
 func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, error) {
+	if s.isSQLite {
+		s.sqliteMu.Lock()
+		defer s.sqliteMu.Unlock()
+	}
+
 	var rows []entry
 
 	now := time.Now().UTC()

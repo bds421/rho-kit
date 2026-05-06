@@ -33,10 +33,11 @@ type Relay struct {
 	logger    *slog.Logger
 	metrics   *Metrics
 
-	pollInterval time.Duration
-	batchSize    int
-	maxAttempts  int
-	retention    time.Duration
+	pollInterval         time.Duration
+	batchSize            int
+	maxAttempts          int
+	maxConcurrentPublish int
+	retention            time.Duration
 
 	cancel    context.CancelFunc
 	mu        sync.Mutex
@@ -93,6 +94,25 @@ func WithMetrics(m *Metrics) RelayOption {
 	}
 }
 
+// WithMaxConcurrentPublishes caps the number of in-flight Publisher calls
+// per poll batch. Default: 1 (serial — preserves the historical
+// FIFO-on-the-wire behaviour). Increase for high-throughput workloads
+// where Publisher latency dominates poll cycle time.
+//
+// Setting this above 1 means MarkPublished/MarkFailed run out of FIFO
+// order; downstream consumers that rely on strict ordering should keep
+// the default. Most messaging backends (AMQP, Kafka with single
+// partition, NATS) preserve order in flight only for serial publish from
+// the same connection — concurrent publish doesn't, and the kit cannot
+// fix that at the relay layer.
+func WithMaxConcurrentPublishes(n int) RelayOption {
+	return func(r *Relay) {
+		if n > 0 {
+			r.maxConcurrentPublish = n
+		}
+	}
+}
+
 // NewRelay creates a Relay that polls the outbox store and publishes entries
 // via the given Publisher. Configure with RelayOption functions.
 //
@@ -110,8 +130,9 @@ func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...Rel
 		logger = slog.Default()
 	}
 	r := &Relay{
-		store:        store,
-		publisher:    publisher,
+		store:                store,
+		publisher:            publisher,
+		maxConcurrentPublish: 1,
 		logger:       logger,
 		pollInterval: defaultPollInterval,
 		batchSize:    defaultBatchSize,
@@ -216,12 +237,38 @@ func (r *Relay) poll(ctx context.Context) {
 		return
 	}
 
+	concurrency := r.maxConcurrentPublish
+	if concurrency <= 1 {
+		// Serial fast path. Preserves FIFO ordering across the batch.
+		for i := range entries {
+			if ctx.Err() != nil {
+				return
+			}
+			r.publishEntry(ctx, entries[i])
+		}
+		r.updatePendingGauge(ctx)
+		return
+	}
+
+	// Bounded worker pool. Order across in-flight publishes is no longer
+	// preserved; callers that need strict ordering must keep the default
+	// concurrency=1.
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
 	for i := range entries {
 		if ctx.Err() != nil {
-			return
+			break
 		}
-		r.publishEntry(ctx, entries[i])
+		entry := entries[i]
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r.publishEntry(ctx, entry)
+		}()
 	}
+	wg.Wait()
 
 	r.updatePendingGauge(ctx)
 }
