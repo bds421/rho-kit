@@ -89,22 +89,75 @@ type WriteParams struct {
 // Writer writes outbox entries via a Store implementation.
 // Safe for concurrent use.
 type Writer struct {
-	store Store
+	store           Store
+	txCheck         func(context.Context) error
+	requireTxPolicy bool
+}
+
+// WriterOption configures the Writer.
+type WriterOption func(*Writer)
+
+// WithRequireTransaction makes Write fail when ctx does not carry an active
+// transaction handle. The check is performed by the supplied predicate so
+// outbox stays decoupled from any specific tx backend (gormdb, pgx, raw
+// database/sql). The predicate should return nil when ctx carries a tx, and
+// a descriptive error otherwise.
+//
+// Typical wiring with the gorm-based store:
+//
+//	import "github.com/bds421/rho-kit/infra/sqldb/gormdb"
+//	w := outbox.NewWriter(store, outbox.WithRequireTransaction(func(ctx context.Context) error {
+//	    if _, ok := gormdb.TxFromContext(ctx); !ok {
+//	        return errors.New("outbox: write outside transaction not allowed")
+//	    }
+//	    return nil
+//	}))
+//
+// The whole point of the transactional-outbox pattern is atomicity between
+// the business write and the outbox-entry insert; without this option, a
+// caller can accidentally write to the outbox outside the tx that produced
+// the side effect, recreating the very split-brain the pattern exists to
+// prevent. Make this the default for any new service: the kit ships it
+// disabled only because tightening it on existing callers is a behaviour
+// change.
+func WithRequireTransaction(check func(context.Context) error) WriterOption {
+	if check == nil {
+		panic("outbox: WithRequireTransaction requires a non-nil check function")
+	}
+	return func(w *Writer) {
+		w.txCheck = check
+		w.requireTxPolicy = true
+	}
 }
 
 // NewWriter creates a Writer backed by the given store. Panics if store is
 // nil — the misconfiguration would otherwise surface as a nil-deref on the
 // first Write call.
-func NewWriter(store Store) *Writer {
+func NewWriter(store Store, opts ...WriterOption) *Writer {
 	if store == nil {
 		panic("outbox: NewWriter requires a non-nil Store")
 	}
-	return &Writer{store: store}
+	w := &Writer{store: store}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 // Write inserts a new outbox entry via the configured store.
 // The entry will be picked up by the Relay for publishing.
+//
+// When the Writer was constructed with [WithRequireTransaction], the
+// configured predicate runs before any work happens; if it returns an error
+// the entry is rejected before reaching the store. This guards against the
+// "wrote to the outbox without a transaction" mistake that defeats the
+// outbox pattern's atomicity guarantee.
 func (w *Writer) Write(ctx context.Context, params WriteParams) error {
+	if w.requireTxPolicy {
+		if err := w.txCheck(ctx); err != nil {
+			return fmt.Errorf("outbox: %w", err)
+		}
+	}
 	if params.Topic == "" {
 		return fmt.Errorf("outbox: topic must not be empty")
 	}

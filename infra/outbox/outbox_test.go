@@ -3,6 +3,8 @@ package outbox_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,12 @@ import (
 
 	"github.com/bds421/rho-kit/infra/outbox"
 )
+
+// testTxKey + assertedTxError mirror the way real callers wire a tx check
+// without pulling a SQL backend into the outbox module's tests.
+type testTxKey struct{}
+
+var assertedTxError = errors.New("tx required")
 
 // fakeStore is an in-memory Store implementation for unit testing.
 // Safe for concurrent use.
@@ -220,6 +228,64 @@ func TestNewWriter_PanicsOnNilStore(t *testing.T) {
 		}
 	}()
 	outbox.NewWriter(nil)
+}
+
+func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
+	store := &fakeStore{}
+	check := func(ctx context.Context) error {
+		if ctx.Value(testTxKey{}) == nil {
+			return assertedTxError
+		}
+		return nil
+	}
+	writer := outbox.NewWriter(store, outbox.WithRequireTransaction(check))
+
+	err := writer.Write(context.Background(), outbox.WriteParams{
+		Topic:      "t",
+		RoutingKey: "rk",
+		Payload:    json.RawMessage(`{}`),
+	})
+	if err == nil {
+		t.Fatal("expected error when ctx has no tx")
+	}
+	if !strings.Contains(err.Error(), "tx required") {
+		t.Errorf("error %q does not mention tx requirement", err.Error())
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.entries) != 0 {
+		t.Errorf("Write must not insert when tx-check fails; entries=%d", len(store.entries))
+	}
+}
+
+func TestWriter_RequireTransaction_AcceptsWithTx(t *testing.T) {
+	store := &fakeStore{}
+	check := func(ctx context.Context) error {
+		if ctx.Value(testTxKey{}) == nil {
+			return assertedTxError
+		}
+		return nil
+	}
+	writer := outbox.NewWriter(store, outbox.WithRequireTransaction(check))
+
+	ctx := context.WithValue(context.Background(), testTxKey{}, "fake-tx")
+	err := writer.Write(ctx, outbox.WriteParams{
+		Topic:      "t",
+		RoutingKey: "rk",
+		Payload:    json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Write with tx in ctx failed: %v", err)
+	}
+}
+
+func TestWithRequireTransaction_PanicsOnNilCheck(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil check func")
+		}
+	}()
+	outbox.WithRequireTransaction(nil)
 }
 
 func TestWriter_Write(t *testing.T) {
