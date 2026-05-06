@@ -126,6 +126,12 @@ func TestTypedCache_EmptyPrefix(t *testing.T) {
 	assert.Contains(t, string(raw), "value")
 }
 
+func TestNewTypedCache_NilBackend(t *testing.T) {
+	_, err := NewTypedCache[string](nil, "prefix:")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil backend")
+}
+
 func TestNewTypedCache_InvalidPrefix_NullByte(t *testing.T) {
 	_, err := NewTypedCache[string](MustNewMemoryCache(), "bad\x00prefix")
 	assert.Error(t, err)

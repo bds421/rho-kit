@@ -86,6 +86,37 @@ func testBufferedPublisherWithHealthPtr(fp *fakePublisher, healthy *atomic.Bool,
 	return newTestBufferedPublisher(fp.publish, func() bool { return healthy.Load() }, opts...)
 }
 
+// fakeConnector / fakeMessagePublisher are the minimum implementations needed
+// to exercise NewBufferedPublisher's nil-dependency guards.
+type fakeConnector struct{ healthy bool }
+
+func (f *fakeConnector) Healthy() bool { return f.healthy }
+func (f *fakeConnector) Close() error  { return nil }
+
+type fakeMessagePublisher struct{}
+
+func (fakeMessagePublisher) Publish(_ context.Context, _, _ string, _ Message) error {
+	return nil
+}
+
+func TestNewBufferedPublisher_PanicsOnNilInner(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	NewBufferedPublisher(nil, &fakeConnector{}, slog.Default())
+}
+
+func TestNewBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	NewBufferedPublisher(fakeMessagePublisher{}, nil, slog.Default())
+}
+
 func TestBufferedPublisher_HealthyDirectPublish(t *testing.T) {
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, true)

@@ -18,11 +18,15 @@ type TypedCache[T any] struct {
 // NewTypedCache creates a TypedCache that serializes T to/from JSON.
 // The prefix is prepended to all keys to avoid collisions.
 //
-// Returns an error if the prefix contains invalid characters or is too long.
-// The combined prefix+key must fit within MaxKeyLen (checked per-operation
-// in fullKey). A prefix longer than MaxKeyLen/2 is rejected upfront to
-// guarantee at least MaxKeyLen/2 bytes remain for keys.
+// Returns an error if backend is nil, or if the prefix contains invalid
+// characters or is too long. The combined prefix+key must fit within
+// MaxKeyLen (checked per-operation in fullKey). A prefix longer than
+// MaxKeyLen/2 is rejected upfront to guarantee at least MaxKeyLen/2 bytes
+// remain for keys.
 func NewTypedCache[T any](backend Cache, prefix string) (*TypedCache[T], error) {
+	if backend == nil {
+		return nil, fmt.Errorf("cache: NewTypedCache requires a non-nil backend")
+	}
 	if strings.ContainsAny(prefix, "\x00\n\r") {
 		return nil, fmt.Errorf("cache prefix contains invalid characters (null byte, newline, or carriage return)")
 	}

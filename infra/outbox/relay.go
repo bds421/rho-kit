@@ -95,7 +95,20 @@ func WithMetrics(m *Metrics) RelayOption {
 
 // NewRelay creates a Relay that polls the outbox store and publishes entries
 // via the given Publisher. Configure with RelayOption functions.
+//
+// Panics if store or publisher is nil — both are programming errors that
+// would otherwise crash the first poll cycle. Logger nil is accepted and
+// defaults to slog.Default() since dropping logs is recoverable.
 func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...RelayOption) *Relay {
+	if store == nil {
+		panic("outbox: NewRelay requires a non-nil Store")
+	}
+	if publisher == nil {
+		panic("outbox: NewRelay requires a non-nil Publisher")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	r := &Relay{
 		store:        store,
 		publisher:    publisher,

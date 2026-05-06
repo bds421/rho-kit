@@ -16,6 +16,29 @@ func okHandler() http.Handler {
 	})
 }
 
+func TestRequirePermission_PanicsOnNilDeps(t *testing.T) {
+	cases := []struct {
+		name     string
+		policy   Policy
+		resource ResourceFunc
+		subject  SubjectFunc
+	}{
+		{"nil policy", nil, StaticResource("r"), SubjectFromHeader("X-User-ID")},
+		{"nil resource", AllowAll(), nil, SubjectFromHeader("X-User-ID")},
+		{"nil subject", AllowAll(), StaticResource("r"), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic, got none")
+				}
+			}()
+			RequirePermission(tc.policy, "read", tc.resource, tc.subject)
+		})
+	}
+}
+
 func TestRequirePermission_Allowed(t *testing.T) {
 	mw := RequirePermission(
 		AllowAll(), "read",

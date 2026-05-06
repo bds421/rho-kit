@@ -48,6 +48,35 @@ func (f *fakePublisher) setErr(err error) {
 
 
 
+func TestNewRelay_PanicsOnNilDeps(t *testing.T) {
+	cases := []struct {
+		name      string
+		store     outbox.Store
+		publisher outbox.Publisher
+	}{
+		{"nil store", nil, &fakePublisher{}},
+		{"nil publisher", &fakeStore{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic, got none")
+				}
+			}()
+			outbox.NewRelay(tc.store, tc.publisher, nil)
+		})
+	}
+}
+
+func TestNewRelay_NilLoggerDefaults(t *testing.T) {
+	// Logger nil should not panic — slog.Default() takes over.
+	r := outbox.NewRelay(&fakeStore{}, &fakePublisher{}, nil)
+	if r == nil {
+		t.Fatal("expected relay, got nil")
+	}
+}
+
 func TestRelay_PublishesPendingEntries(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriter(store)

@@ -213,6 +213,15 @@ func withStatus(e outbox.Entry, status outbox.Status) outbox.Entry {
 	return e
 }
 
+func TestNewWriter_PanicsOnNilStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	outbox.NewWriter(nil)
+}
+
 func TestWriter_Write(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriter(store)

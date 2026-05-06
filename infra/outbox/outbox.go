@@ -92,8 +92,13 @@ type Writer struct {
 	store Store
 }
 
-// NewWriter creates a Writer backed by the given store.
+// NewWriter creates a Writer backed by the given store. Panics if store is
+// nil — the misconfiguration would otherwise surface as a nil-deref on the
+// first Write call.
 func NewWriter(store Store) *Writer {
+	if store == nil {
+		panic("outbox: NewWriter requires a non-nil Store")
+	}
 	return &Writer{store: store}
 }
 

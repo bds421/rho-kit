@@ -48,6 +48,15 @@ func testDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func TestNew_PanicsOnNilDB(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	New(nil)
+}
+
 func TestPgStore_GetMiss(t *testing.T) {
 	db := testDB(t)
 	store := New(db)

@@ -50,8 +50,13 @@ func intervalSeconds(d time.Duration) string {
 }
 
 // New creates a PgStore backed by the given database connection.
-// Panics if the table name is not a valid SQL identifier.
+// Panics if db is nil or the table name is not a valid SQL identifier —
+// both are programming errors that would otherwise defer the failure to
+// the first request after startup.
 func New(db *sql.DB, opts ...Option) *PgStore {
+	if db == nil {
+		panic("pgstore: New requires a non-nil *sql.DB")
+	}
 	s := &PgStore{
 		db:    db,
 		table: "idempotency_keys",

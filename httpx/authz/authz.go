@@ -35,7 +35,20 @@ type ResourceFunc func(r *http.Request) string
 
 // RequirePermission returns middleware that checks the policy before calling
 // the next handler. Returns 403 on denial, 500 on policy error.
+//
+// Panics if policy, resource, or subject is nil — these are programming
+// errors that would otherwise surface as a nil-deref on the first request,
+// long after the misconfigured route has been mounted.
 func RequirePermission(policy Policy, action string, resource ResourceFunc, subject SubjectFunc, opts ...MiddlewareOption) func(http.Handler) http.Handler {
+	if policy == nil {
+		panic("authz: RequirePermission requires a non-nil Policy")
+	}
+	if resource == nil {
+		panic("authz: RequirePermission requires a non-nil ResourceFunc")
+	}
+	if subject == nil {
+		panic("authz: RequirePermission requires a non-nil SubjectFunc")
+	}
 	cfg := middlewareConfig{
 		logger: slog.Default(),
 	}

@@ -103,8 +103,12 @@ type ComputeCache[T any] struct {
 // NewComputeCache creates a ComputeCache that wraps the given backend.
 // The prefix is prepended to all keys to avoid collisions.
 //
-// Returns an error if the prefix contains invalid characters or is too long.
+// Returns an error if backend is nil, or if the prefix contains invalid
+// characters or is too long.
 func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption) (*ComputeCache[T], error) {
+	if backend == nil {
+		return nil, fmt.Errorf("cache: NewComputeCache requires a non-nil backend")
+	}
 	if strings.ContainsAny(prefix, "\x00\n\r") {
 		return nil, fmt.Errorf("cache prefix contains invalid characters (null byte, newline, or carriage return)")
 	}
@@ -283,8 +287,15 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 		return zero, err
 	}
 
-	if ttl < 0 {
-		ttl = 0
+	// The base Cache interface treats ttl=0 as "no expiration", but ComputeCache
+	// layers stale-while-revalidate on top of an ExpiresAt timestamp: with
+	// ttl<=0 the envelope's ExpiresAt would equal now() and every subsequent
+	// Get would immediately enter the stale window or recompute. Rather than
+	// inherit silently-broken behaviour, ComputeFunc must return a positive
+	// TTL — callers wanting a non-expiring computed value should set a long
+	// concrete TTL (24h, 7d) appropriate to their refresh budget.
+	if ttl <= 0 {
+		return zero, fmt.Errorf("cache compute: ComputeFunc returned non-positive ttl (%s); ComputeCache requires a positive TTL because it adds stale-while-revalidate semantics on top", ttl)
 	}
 
 	valBytes, marshalErr := cc.codec.Marshal(val)

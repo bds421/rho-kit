@@ -113,7 +113,20 @@ func WithBufferedFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
 //
 // If a state file is configured via WithBufferedStateFile, pending messages from
 // a previous run are loaded on creation.
+//
+// Panics if inner or conn is nil — both are dereferenced immediately to wire
+// up publishFn / healthyFn closures, so passing nil here is a programming
+// error. Logger nil is accepted and defaults to slog.Default().
 func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
+	if inner == nil {
+		panic("messaging: NewBufferedPublisher requires a non-nil MessagePublisher")
+	}
+	if conn == nil {
+		panic("messaging: NewBufferedPublisher requires a non-nil Connector")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	o := &BufferedPublisher{
 		logger:            logger,
 		maxSize:           defaultBufferedMaxSize,

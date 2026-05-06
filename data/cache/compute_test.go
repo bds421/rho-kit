@@ -312,7 +312,13 @@ func TestComputeCache_Metrics(t *testing.T) {
 	assertCounterValue(t, metrics.hits, "test_cache", 1)
 }
 
-func TestComputeCache_ZeroTTL(t *testing.T) {
+func TestComputeCache_ZeroTTL_Rejected(t *testing.T) {
+	// ComputeCache layers stale-while-revalidate on top of an ExpiresAt
+	// timestamp. ttl=0 is meaningless in that layer (the entry would be
+	// instantly stale), so ComputeFunc must return a positive TTL. This
+	// diverges from the base Cache contract where ttl=0 = no expiration —
+	// the divergence is documented; rejecting at the boundary prevents the
+	// silent stale-on-write bug the prior behaviour produced.
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "z:")
 	require.NoError(t, err)
@@ -322,9 +328,30 @@ func TestComputeCache_ZeroTTL(t *testing.T) {
 		return "no-expire", 0, nil
 	}
 
-	val, err := cc.GetOrCompute(context.Background(), "k", fn)
+	_, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-positive ttl")
+}
+
+func TestComputeCache_NegativeTTL_Rejected(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "neg:")
 	require.NoError(t, err)
-	assert.Equal(t, "no-expire", val)
+	defer func() { _ = cc.Close() }()
+
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		return "x", -1 * time.Second, nil
+	}
+
+	_, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-positive ttl")
+}
+
+func TestNewComputeCache_NilBackend(t *testing.T) {
+	_, err := NewComputeCache[string](nil, "prefix:")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil backend")
 }
 
 func TestComputeCache_PrefixValidation(t *testing.T) {
