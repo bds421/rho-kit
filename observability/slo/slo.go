@@ -61,6 +61,14 @@ type SLO struct {
 	// responses. Only used for ErrorRate and SuccessRate types.
 	// Defaults to code=~"5.." if empty.
 	ErrorLabelFilter LabelFilter
+
+	// LatencyLabelFilter restricts which histogram label combinations
+	// contribute to the latency percentile. Used only for [TypeLatency].
+	// Empty (Name == "") aggregates across all label combinations — the
+	// legacy behaviour, which mixes p99 across e.g. all routes and
+	// methods. Set Name+Pattern (or LabelMatcher) to scope the SLO to a
+	// single endpoint or status class.
+	LatencyLabelFilter LabelFilter
 }
 
 // LabelFilter defines a label name and a pattern for filtering metrics.
@@ -246,7 +254,35 @@ func evaluateLatency(s SLO, families map[string]*dto.MetricFamily) float64 {
 		return math.NaN()
 	}
 
+	if s.LatencyLabelFilter.Name != "" {
+		mf = filterHistogramByLabel(mf, s.LatencyLabelFilter)
+		if mf == nil {
+			return math.NaN()
+		}
+	}
+
 	return histogramPercentile(mf, s.Percentile)
+}
+
+// filterHistogramByLabel returns a shallow-copy [dto.MetricFamily]
+// containing only the metrics whose labels match filter. Returns nil if no
+// metrics match. The returned family is safe to pass to histogramPercentile,
+// which aggregates across all metrics — restricting the input restricts the
+// aggregation.
+func filterHistogramByLabel(mf *dto.MetricFamily, filter LabelFilter) *dto.MetricFamily {
+	src := mf.GetMetric()
+	matched := make([]*dto.Metric, 0, len(src))
+	for _, m := range src {
+		if matchesLabel(m.GetLabel(), filter) {
+			matched = append(matched, m)
+		}
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	clone := *mf
+	clone.Metric = matched
+	return &clone
 }
 
 // evaluateErrorRate computes the error ratio from a counter metric.

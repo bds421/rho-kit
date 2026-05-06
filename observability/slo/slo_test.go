@@ -406,3 +406,63 @@ func TestIsSLOBreached(t *testing.T) {
 			"isSLOBreached(%s, thresh=%f, cur=%f)", tt.sloType, tt.thresh, tt.current)
 	}
 }
+
+func TestEvaluateLatency_LabelFilter(t *testing.T) {
+	stringPtr := func(s string) *string { return &s }
+	uint64Ptr := func(u uint64) *uint64 { return &u }
+	float64Ptr := func(f float64) *float64 { return &f }
+
+	mkHist := func(bucket float64, count uint64, sampleCount uint64) *dto.Metric {
+		return &dto.Metric{
+			Histogram: &dto.Histogram{
+				SampleCount: uint64Ptr(sampleCount),
+				Bucket: []*dto.Bucket{
+					{
+						UpperBound:      float64Ptr(bucket),
+						CumulativeCount: uint64Ptr(count),
+					},
+				},
+			},
+		}
+	}
+
+	// Two label sets for the same metric family. Without filtering, the
+	// percentile would be aggregated. With filtering, only "fast" is used.
+	fast := mkHist(0.1, 100, 100)
+	fast.Label = []*dto.LabelPair{{Name: stringPtr("route"), Value: stringPtr("fast")}}
+	slow := mkHist(10.0, 100, 100)
+	slow.Label = []*dto.LabelPair{{Name: stringPtr("route"), Value: stringPtr("slow")}}
+
+	mf := &dto.MetricFamily{
+		Name:   stringPtr("http_request_duration_seconds"),
+		Type:   dto.MetricType_HISTOGRAM.Enum(),
+		Metric: []*dto.Metric{fast, slow},
+	}
+	families := map[string]*dto.MetricFamily{
+		"http_request_duration_seconds": mf,
+	}
+
+	// Without filter — aggregates across both routes.
+	unfiltered := evaluateLatency(SLO{
+		Type:       TypeLatency,
+		Percentile: 0.99,
+	}, families)
+	assert.False(t, math.IsNaN(unfiltered))
+
+	// With filter on route=fast — only 0.1s buckets contribute.
+	filtered := evaluateLatency(SLO{
+		Type:               TypeLatency,
+		Percentile:         0.99,
+		LatencyLabelFilter: LabelFilter{Name: "route", Pattern: "fast"},
+	}, families)
+	assert.False(t, math.IsNaN(filtered))
+	assert.Less(t, filtered, unfiltered, "fast-only percentile must be lower than aggregated")
+
+	// Filter that matches nothing returns NaN.
+	none := evaluateLatency(SLO{
+		Type:               TypeLatency,
+		Percentile:         0.99,
+		LatencyLabelFilter: LabelFilter{Name: "route", Pattern: "no-such-route"},
+	}, families)
+	assert.True(t, math.IsNaN(none))
+}

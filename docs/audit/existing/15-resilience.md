@@ -6,11 +6,12 @@
 
 ## Open
 
-### [MEDIUM] CircuitBreaker has no context support; nil receiver silently passes through
-**File**: `resilience/circuitbreaker/circuitbreaker.go:101-112`
-**Issue**: `Execute(fn func() error)` takes no `context.Context`. Breaker can't be cancelled when caller's ctx is done. When `cb == nil`, helper invokes `fn()` directly — silent passthrough surprising for a defensive helper.
-**Fix**: Add `ExecuteCtx(ctx, fn func(ctx) error) error`; short-circuit on `ctx.Err()` before calling fn. Document the `cb == nil` passthrough or panic instead.
+_Closed — see Recently Landed below._
+
+## Recently Landed (Phase 3)
+
+- ✅ **CircuitBreaker.ExecuteCtx** — new method `ExecuteCtx(ctx, fn func(ctx) error) error` short-circuits on `ctx.Err()` before invoking fn; `Execute` continues to work for context-free callers. Nil-receiver passthrough is now explicitly documented for both Execute and ExecuteCtx.
 
 ### Migration checklist
 
-- [ ] Phase 3: `CircuitBreaker.ExecuteCtx`; document or change nil-receiver semantics.
+- [x] Phase 3: `CircuitBreaker.ExecuteCtx`; document or change nil-receiver semantics.

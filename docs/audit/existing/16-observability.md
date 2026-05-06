@@ -10,43 +10,23 @@
 
 ## Open
 
-### [MEDIUM] `observability/health` provides no `/live`/`/ready` HTTP handlers
-**File**: `observability/health/doc.go:1` + `healthcheck_cli.go:20`
-**Issue**: doc.go advertises "readiness and liveness handlers"; the package only exposes `Checker.Evaluate`. Liveness vs readiness distinction (k8s pattern) is left to consumers.
-**Fix**: Provide `Liveness()` and `Readiness(*Checker)` `http.Handler` constructors. Liveness returns 200 unconditionally; Readiness returns 503 when any critical dependency is unhealthy.
-**Effort**: S
-**Phase**: 3
+_Closed — see Recently Landed below._
 
-### [MEDIUM] `logattr` has no PII/secret-redaction helpers
-**File**: `observability/logattr/logattr.go`
-**Issue**: Constructors for `UserID`, `Path`, `URL`, `RequestID` but nothing for "redact-this-string" or secret value. Logging `Authorization` headers, JWTs, password fields goes through `slog.String`/`slog.Any` with no protection.
-**Fix**: Add `Secret(key, value string) slog.Attr` that emits `<redacted-N-bytes-hash:abc12>` instead of raw. Add `Email(addr)` that masks the local part.
-**Effort**: S
+## Recently Landed (Phase 3)
 
-### [MEDIUM] Tracing `Init` blocks on OTLP dial without timeout
-**File**: `observability/tracing/tracing.go:85-87`
-**Issue**: `otlptracegrpc.New(ctx, opts...)` performs an initial dial. If the collector is unreachable at startup and the caller passes a long-lived ctx, the service hangs during boot.
-**Fix**: Wrap with `context.WithTimeout(ctx, 5*time.Second)` (or accept a Config field). On timeout fall back to noop provider with a logged warning.
-
-### [MEDIUM] `MemoryStore.matchesFilter` ignores `Filter.IPAddress`
-**File**: `observability/auditlog/memory.go:87-104`
-**Issue**: Filter has `IPAddress` field that the SQL store filters on; in-memory store silently ignores it. Tests using MemoryStore pass with filters that fail in production.
-**Fix**: Add the `IPAddress` check.
-
-### [LOW] `promutil.RegisterCollector` panics on conflict; swallows AlreadyRegistered silently
-**File**: `observability/promutil/register.go:16-23`
-**Fix**: Return `(reused bool, err error)` so callers can decide. Or at least log a debug line on `AlreadyRegisteredError`.
-
-### [LOW] SLO `evaluateLatency` aggregates buckets across all label combinations
-**File**: `observability/slo/slo.go:296-319`
-**Fix**: Add a `LabelFilter` to `SLO` for latency type; skip metrics whose labels don't match.
+- ✅ **health.Liveness / health.Readiness handlers** — `Liveness(version)` always returns 200; `Readiness(*Checker)` returns 503 on `StatusUnhealthy` and 200 on Healthy/Degraded (degraded keeps the pod in rotation).
+- ✅ **logattr.Secret / logattr.Email** — `Secret(key, val)` emits `<redacted N bytes sha256:abc12345>` (length-preserving + correlatable); `Email(addr)` masks the local part while keeping the domain visible.
+- ✅ **Tracing init bound + fallback** — `Config.InitTimeout` (default 5s) wraps the OTLP exporter handshake. On dial failure Init falls back to a noop provider; `Config.OnInitFallback` reports the error. `InitTimeout < 0` disables the bound for callers that prefer the parent ctx.
+- ✅ **auditlog MemoryStore IPAddress filter** — `matchesFilter` now honours `Filter.IPAddress`, matching the SQL store.
+- ✅ **promutil.Register** — new `(prometheus.Collector, error)` API exposes the "already-registered, reusing existing" path; `RegisterCollector` keeps panic-on-conflict but now logs at debug on the AlreadyRegistered branch via `Register` internally.
+- ✅ **SLO LatencyLabelFilter** — `SLO.LatencyLabelFilter` (LabelFilter) restricts which histogram label combinations contribute to the percentile, so a per-route p99 SLO no longer mixes routes.
 
 ### Migration checklist
 
-- [ ] Phase 3: `observability/health` ship Liveness/Readiness handlers.
-- [ ] Phase 3: `logattr.Secret` + `Email` helpers.
-- [ ] Phase 3: tracing `Init` timeout + noop fallback.
-- [ ] Phase 3: auditlog memory IPAddress filter; promutil register semantics; SLO label filter.
+- [x] Phase 3: `observability/health` ship Liveness/Readiness handlers.
+- [x] Phase 3: `logattr.Secret` + `Email` helpers.
+- [x] Phase 3: tracing `Init` timeout + noop fallback.
+- [x] Phase 3: auditlog memory IPAddress filter; promutil register semantics; SLO label filter.
 
 ### Related new packages
 

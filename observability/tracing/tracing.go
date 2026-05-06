@@ -7,6 +7,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -17,6 +18,12 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// defaultInitTimeout bounds the OTLP exporter handshake during [Init] when
+// Config.InitTimeout is zero. Five seconds is enough to ride out a
+// transient collector restart but short enough that an unreachable
+// collector does not block service startup.
+const defaultInitTimeout = 5 * time.Second
 
 // Config configures the tracing subsystem.
 type Config struct {
@@ -48,6 +55,21 @@ type Config struct {
 	// every outgoing request — easy vector for accidental PII propagation
 	// if any handler logs the baggage map.
 	EnableBaggage bool
+
+	// InitTimeout bounds the OTLP exporter handshake during [Init].
+	// Default: 5 seconds. Init falls back to a noop provider with a logged
+	// warning if the timeout fires, so an unreachable collector at boot
+	// does not hang the service.
+	//
+	// Set to a negative value to disable the bound (use the caller-supplied
+	// ctx as-is).
+	InitTimeout time.Duration
+
+	// OnInitFallback is invoked when Init fails to reach the collector and
+	// falls back to the noop provider. If nil, the failure is logged via
+	// slog.Default (level=Warn). Useful for surfacing the fallback to
+	// custom telemetry (e.g. an audit log entry).
+	OnInitFallback func(err error)
 }
 
 // Provider wraps a TracerProvider and its shutdown function.
@@ -69,6 +91,12 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 // Init initializes OpenTelemetry tracing with an OTLP gRPC exporter.
 // If cfg.Endpoint is empty, a noop provider is configured (zero overhead).
 // Sets the global TracerProvider and TextMapPropagator.
+//
+// The OTLP exporter handshake is bounded by cfg.InitTimeout (default
+// 5 seconds). If the collector is unreachable within that window, Init
+// falls back to a noop provider with a logged warning rather than
+// blocking service startup. Set Config.InitTimeout < 0 to disable the
+// bound and use the caller's ctx as-is.
 func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.Endpoint == "" {
 		return initNoop()
@@ -90,9 +118,34 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		opts = append(opts, otlptracegrpc.WithInsecure())
 	}
 
-	exporter, err := otlptracegrpc.New(ctx, opts...)
+	dialCtx := ctx
+	var dialCancel context.CancelFunc
+	switch {
+	case cfg.InitTimeout < 0:
+		// Disabled: use caller ctx unchanged.
+	case cfg.InitTimeout == 0:
+		dialCtx, dialCancel = context.WithTimeout(ctx, defaultInitTimeout)
+	default:
+		dialCtx, dialCancel = context.WithTimeout(ctx, cfg.InitTimeout)
+	}
+	if dialCancel != nil {
+		defer dialCancel()
+	}
+
+	exporter, err := otlptracegrpc.New(dialCtx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("create OTLP exporter: %w", err)
+		// Don't block service startup on an unreachable collector.
+		// Surface the failure and degrade to noop so the rest of the
+		// stack still gets the standard propagator wired.
+		if cfg.OnInitFallback != nil {
+			cfg.OnInitFallback(err)
+		} else {
+			slog.Default().Warn("tracing: OTLP exporter dial failed; falling back to noop provider",
+				"endpoint", cfg.Endpoint,
+				"error", err.Error(),
+			)
+		}
+		return initNoop()
 	}
 
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))

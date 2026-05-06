@@ -1,6 +1,7 @@
 package circuitbreaker
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -86,4 +87,62 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	if transitions[len(transitions)-1] != StateClosed {
 		t.Fatalf("expected last transition to closed, got %v", transitions)
 	}
+}
+
+func TestExecuteCtx_AlreadyCancelledShortCircuits(t *testing.T) {
+	cb := NewCircuitBreaker(2, time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	err := cb.ExecuteCtx(ctx, func(_ context.Context) error {
+		called = true
+		return nil
+	})
+
+	assert.False(t, called, "fn must not be invoked when ctx already cancelled")
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestExecuteCtx_PassesCtxToFn(t *testing.T) {
+	cb := NewCircuitBreaker(2, time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var got context.Context
+	err := cb.ExecuteCtx(ctx, func(c context.Context) error {
+		got = c
+		return nil
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctx, got)
+}
+
+func TestExecuteCtx_NilReceiverPassesThrough(t *testing.T) {
+	var cb *CircuitBreaker
+	called := false
+	err := cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
+		called = true
+		return nil
+	})
+	assert.True(t, called)
+	assert.NoError(t, err)
+}
+
+func TestExecuteCtx_OpenCircuitReturnsErrCircuitOpen(t *testing.T) {
+	cb := NewCircuitBreaker(1, time.Minute)
+	// Trip the circuit.
+	_ = cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
+		return errors.New("fail")
+	})
+
+	called := false
+	err := cb.ExecuteCtx(context.Background(), func(_ context.Context) error {
+		called = true
+		return nil
+	})
+	assert.False(t, called)
+	assert.ErrorIs(t, err, ErrCircuitOpen)
 }

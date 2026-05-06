@@ -160,3 +160,22 @@ func TestMemoryStore_Reset(t *testing.T) {
 func TestNew_PanicsOnNilStore(t *testing.T) {
 	assert.Panics(t, func() { New(nil) })
 }
+
+func TestMemoryStore_QueryFiltersByIPAddress(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+
+	require.NoError(t, store.Append(ctx, Event{
+		ID: "1", Actor: "alice", Action: "login",
+		IPAddress: "10.0.0.1", Timestamp: time.Now(),
+	}))
+	require.NoError(t, store.Append(ctx, Event{
+		ID: "2", Actor: "alice", Action: "login",
+		IPAddress: "10.0.0.2", Timestamp: time.Now(),
+	}))
+
+	got, _, err := store.Query(ctx, Filter{IPAddress: "10.0.0.1"}, "", 100)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "1", got[0].ID)
+}

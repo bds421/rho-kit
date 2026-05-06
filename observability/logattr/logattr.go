@@ -4,7 +4,11 @@
 package logattr
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -106,4 +110,63 @@ func Stream(name string) slog.Attr {
 // URL returns a "url" attribute for HTTP client logging.
 func URL(u string) slog.Attr {
 	return slog.String("url", u)
+}
+
+// Secret returns a redaction-safe attribute for sensitive values
+// (Authorization headers, JWTs, API keys, password fields, etc.).
+//
+// The value is replaced by "<redacted N bytes sha256:abc12345>", where:
+//   - N is the original byte length (so log volume changes are still
+//     visible);
+//   - sha256:... is the first 8 hex chars of the SHA-256 digest, allowing
+//     correlation across log lines without revealing the value.
+//
+// An empty value emits "<redacted empty>".
+//
+// Use Secret instead of slog.String for any field that must never appear
+// verbatim in logs — slog.String has no awareness of secrecy.
+func Secret(key, value string) slog.Attr {
+	return slog.String(key, redactedValue(value))
+}
+
+// Email returns a redacted "email" attribute that masks the local part
+// while keeping the domain visible for triage.
+//
+// Examples:
+//
+//	Email("alice@example.com")  -> email="a***@example.com"
+//	Email("a@example.com")      -> email="*@example.com"
+//	Email("malformed")          -> email="<redacted>"
+//	Email("")                   -> email="<redacted empty>"
+//
+// Domain is preserved because operators commonly need to know whether a
+// production incident hit gmail vs. a corporate domain. The local part
+// is the identifying portion and is masked.
+func Email(addr string) slog.Attr {
+	return slog.String("email", maskEmail(addr))
+}
+
+func redactedValue(value string) string {
+	if value == "" {
+		return "<redacted empty>"
+	}
+	sum := sha256.Sum256([]byte(value))
+	digest := hex.EncodeToString(sum[:])[:8]
+	return fmt.Sprintf("<redacted %d bytes sha256:%s>", len(value), digest)
+}
+
+func maskEmail(addr string) string {
+	if addr == "" {
+		return "<redacted empty>"
+	}
+	at := strings.LastIndex(addr, "@")
+	if at <= 0 || at == len(addr)-1 {
+		return "<redacted>"
+	}
+	local := addr[:at]
+	domain := addr[at:]
+	if len(local) == 1 {
+		return "*" + domain
+	}
+	return string(local[0]) + "***" + domain
 }

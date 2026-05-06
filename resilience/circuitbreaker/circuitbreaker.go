@@ -1,6 +1,7 @@
 package circuitbreaker
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -98,12 +99,47 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 
 // Execute runs fn through the circuit breaker. If the circuit is open,
 // it returns ErrCircuitOpen without calling fn.
+//
+// A nil receiver is treated as a no-op: fn is invoked directly with no
+// breaker semantics. This makes it safe to compose with optional
+// dependencies (e.g. wrapping an outbound call when a breaker may or may
+// not have been wired up).
 func (cb *CircuitBreaker) Execute(fn func() error) error {
 	if cb == nil {
 		return fn()
 	}
 	_, err := cb.cb.Execute(func() (any, error) {
 		return nil, fn()
+	})
+	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		return ErrCircuitOpen
+	}
+	return err
+}
+
+// ExecuteCtx runs fn through the circuit breaker, observing ctx for early
+// cancellation. If ctx is already cancelled when ExecuteCtx is called, fn
+// is not invoked and ctx.Err() is returned. If the circuit is open,
+// ErrCircuitOpen is returned without calling fn.
+//
+// fn receives ctx so it can stop work on cancellation. The breaker's
+// failure-counting predicate (see [WithIsSuccessful]) decides whether
+// ctx.Err() returned by fn counts as a failure — by default ctx.Canceled
+// and ctx.DeadlineExceeded count as failures. Use [WithIsSuccessful] to
+// exclude them when callers may cancel for reasons unrelated to the
+// downstream's health (e.g. shedding load on a slow client).
+//
+// A nil receiver is treated as a no-op: fn is invoked directly with no
+// breaker semantics, after the ctx pre-check.
+func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if cb == nil {
+		return fn(ctx)
+	}
+	_, err := cb.cb.Execute(func() (any, error) {
+		return nil, fn(ctx)
 	})
 	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
 		return ErrCircuitOpen

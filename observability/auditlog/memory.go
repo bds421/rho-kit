@@ -94,6 +94,9 @@ func matchesFilter(e Event, f Filter) bool {
 	if f.Resource != "" && !strings.HasPrefix(e.Resource, f.Resource) {
 		return false
 	}
+	if f.IPAddress != "" && e.IPAddress != f.IPAddress {
+		return false
+	}
 	if !f.Since.IsZero() && e.Timestamp.Before(f.Since) {
 		return false
 	}

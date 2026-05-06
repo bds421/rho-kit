@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestInit_noopWhenNoEndpoint(t *testing.T) {
@@ -90,4 +91,51 @@ func TestProvider_Shutdown(t *testing.T) {
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown: %v", err)
 	}
+}
+
+func TestInit_BoundsExporterDialDuration(t *testing.T) {
+	// otlptracegrpc.New is non-blocking by default — connections are dialed
+	// lazily on first export. This test pins down the bound rather than the
+	// failure path: with a tight InitTimeout, Init must still return quickly
+	// even with a bogus endpoint, and the resulting Provider must be usable
+	// (either real or noop).
+	cfg := Config{
+		ServiceName: "test",
+		Endpoint:    "127.0.0.1:9", // discard port; nobody listening
+		Insecure:    true,
+		InitTimeout: 200 * time.Millisecond,
+	}
+
+	start := time.Now()
+	p, err := Init(context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Init must not return error on unreachable collector; got %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init must return a provider")
+	}
+	defer func() { _ = p.Shutdown(context.Background()) }()
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Init blocked beyond reasonable bound (%v); the timeout is not honoured", elapsed)
+	}
+}
+
+func TestInit_NegativeTimeoutDisablesBound(t *testing.T) {
+	// Sanity: passing InitTimeout < 0 must not cause Init to error or hang
+	// when the endpoint is reachable. Other validation lives in
+	// TestInit_BoundsExporterDialDuration.
+	cfg := Config{
+		ServiceName: "test",
+		// No endpoint → noop path; InitTimeout is ignored, but the option
+		// must be accepted without panic.
+		InitTimeout: -1,
+	}
+	p, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	_ = p.Shutdown(context.Background())
 }

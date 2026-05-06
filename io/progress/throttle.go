@@ -59,6 +59,10 @@ func NewThrottledReaderContext(ctx context.Context, r io.Reader, bytesPerSecond 
 	}
 }
 
+// throttledReader is NOT safe for concurrent Read calls — bytesSent and
+// lastTime are mutated without synchronization. This matches the
+// conventional io.Reader contract; if multiple goroutines must share a
+// single reader, wrap it in your own lock.
 type throttledReader struct {
 	r              io.Reader
 	bytesPerSecond int64
