@@ -21,14 +21,34 @@ import (
 // being so large that misbehaving downstreams hog file descriptors.
 const defaultMaxIdleConnsPerHost = 100
 
-// newKitTransport clones http.DefaultTransport and applies kit-wide overrides:
-// raises MaxIdleConnsPerHost above the stdlib default of 2 (which causes
-// connection churn under load) and sets the TLS config when supplied.
-func newKitTransport(tlsConfig *tls.Config) *http.Transport {
+// ClientOption configures the kit-wide HTTP client transport.
+type ClientOption func(*clientConfig)
+
+type clientConfig struct {
+	idleConnTimeout time.Duration
+}
+
+// WithIdleConnTimeout sets the maximum amount of time an idle (keep-alive)
+// connection will remain idle before closing itself. The stdlib default
+// (90s) outlives many production load balancers' idle-connection cap (often
+// 60s on AWS ALB, 30s on Cloudflare), so the LB closes the conn first and
+// the client retries against a half-closed socket.
+//
+// Default 0 keeps the stdlib's 90s. Set to under your LB's cap (typically
+// 30s–60s) so the client closes first.
+func WithIdleConnTimeout(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.idleConnTimeout = d }
+}
+
+// newKitTransport clones http.DefaultTransport and applies kit-wide overrides.
+func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 	if tlsConfig != nil {
 		transport.TLSClientConfig = tlsConfig
+	}
+	if cfg.idleConnTimeout > 0 {
+		transport.IdleConnTimeout = cfg.idleConnTimeout
 	}
 	return transport
 }
@@ -42,19 +62,43 @@ func newKitTransport(tlsConfig *tls.Config) *http.Transport {
 //
 // The transport is cloned from http.DefaultTransport to inherit production
 // defaults (idle connection management, TLS handshake timeout, proxy support).
-func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config) *http.Client {
+// Use [WithIdleConnTimeout] to override the stdlib 90s idle-connection cap
+// when fronting a load balancer with a tighter idle timeout.
+func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientOption) *http.Client {
+	var cfg clientConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: newKitTransport(tlsConfig),
+		Transport: newKitTransport(tlsConfig, cfg),
 	}
 }
 
 // NewTracingHTTPClient returns an *http.Client instrumented with OpenTelemetry
 // spans for outbound requests. It uses the same TLS setup as NewHTTPClient.
+//
+// otelhttp.Option values are passed through to the OTel transport wrapper;
+// kit-level ClientOption values must be applied via the variadic ClientOption
+// returned by [WithClientOptions].
 func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig), opts...),
+		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig, clientConfig{}), opts...),
+	}
+}
+
+// NewTracingHTTPClientWithOptions is the variant of [NewTracingHTTPClient]
+// that accepts kit-level [ClientOption] values (e.g. [WithIdleConnTimeout])
+// alongside the OTel transport options.
+func NewTracingHTTPClientWithOptions(timeout time.Duration, tlsConfig *tls.Config, kitOpts []ClientOption, otelOpts ...otelhttp.Option) *http.Client {
+	var cfg clientConfig
+	for _, opt := range kitOpts {
+		opt(&cfg)
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig, cfg), otelOpts...),
 	}
 }
 
@@ -63,6 +107,12 @@ type ServerOption func(*http.Server)
 
 // WithWriteTimeout overrides the default write timeout.
 // Use 0 for WebSocket servers where pumps manage their own deadlines.
+//
+// CONSTRAINT: WriteTimeout must exceed any per-request middleware timeout
+// (typically `stack.WithTimeout`) by enough margin to let the middleware
+// write its 503 timeout response. The kit's `Default` stack uses 30s
+// for the middleware and the server defaults to 35s, leaving 5s of
+// margin. If you raise the middleware timeout, raise this in lockstep.
 func WithWriteTimeout(d time.Duration) ServerOption {
 	return func(s *http.Server) { s.WriteTimeout = d }
 }

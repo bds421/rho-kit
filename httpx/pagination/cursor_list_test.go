@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,160 @@ func TestHandleCursorList_withCursor(t *testing.T) {
 	}
 	if gotCursor != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Errorf("cursor = %q, want UUID", gotCursor)
+	}
+}
+
+func TestHandleCursorList_SignedCursor_RoundTrip(t *testing.T) {
+	signer := MustNewCursorSigner([]byte("test-secret-32-bytes-aaaaaaaaaaaa"))
+
+	type item struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	pageOne := []item{{ID: "id-1", Name: "a"}, {ID: "id-2", Name: "b"}}
+	pageTwo := []item{{ID: "id-3", Name: "c"}}
+
+	var gotCursor string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[item]{
+			DefaultLimit: 2,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, cursor string, _ int) ([]item, error) {
+				gotCursor = cursor
+				if cursor == "" {
+					return append(pageOne, item{ID: "extra", Name: "x"}), nil
+				}
+				return pageTwo, nil
+			},
+			IDFn:   func(i item) string { return i.ID },
+			Signer: signer,
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("first page status = %d", w.Code)
+	}
+
+	var result CursorResult[item]
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// next_cursor must NOT be the raw id.
+	if result.NextCursor == "" {
+		t.Fatal("expected non-empty next_cursor")
+	}
+	if result.NextCursor == "id-2" {
+		t.Fatal("next_cursor leaked the raw id; signing did not take effect")
+	}
+
+	// Round-trip: pass it back to handler, ListFn must see the raw id.
+	w2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodGet, "/items?cursor="+result.NextCursor, nil)
+	handler.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second page status = %d", w2.Code)
+	}
+	if gotCursor != "id-2" {
+		t.Errorf("ListFn cursor = %q, want raw 'id-2' after signer.Decode", gotCursor)
+	}
+}
+
+func TestHandleCursorList_SignedCursor_TamperedReturns400(t *testing.T) {
+	signer := MustNewCursorSigner([]byte("test-secret-32-bytes-aaaaaaaaaaaa"))
+
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, _ string, _ int) ([]testItem, error) {
+				listFnCalled = true
+				return nil, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Signer: signer,
+			Logger: slog.Default(),
+		})
+	})
+
+	// Build a valid cursor for "id-x" with the SAME secret, then mutate the
+	// signature aggressively. Single-char mutations could randomly hit the
+	// same base64 char; flipping multiple chars guarantees a mismatch.
+	good := signer.Encode("id-x")
+	dot := strings.IndexByte(good, '.')
+	if dot < 0 {
+		t.Fatalf("malformed signer output: %q", good)
+	}
+	// Replace the entire signature with zeros (encoded as 'A's).
+	tampered := good[:dot+1] + strings.Repeat("A", len(good)-dot-1)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor="+tampered, nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("tampered cursor status = %d, want 400", w.Code)
+	}
+	if listFnCalled {
+		t.Error("ListFn must not run on tampered cursor")
+	}
+}
+
+func TestHandleCursorList_SignedCursor_DifferentSecretRejected(t *testing.T) {
+	signerA := MustNewCursorSigner([]byte("aaaa-aaaa-aaaa-aaaa-aaaa-aaaa-aaaa"))
+	signerB := MustNewCursorSigner([]byte("bbbb-bbbb-bbbb-bbbb-bbbb-bbbb-bbbb"))
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, _ string, _ int) ([]testItem, error) {
+				return nil, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Signer: signerA, // server signs with A
+			Logger: slog.Default(),
+		})
+	})
+
+	cursor := signerB.Encode("id-x") // attacker forges with B
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor="+cursor, nil)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("foreign-secret cursor status = %d, want 400", w.Code)
+	}
+}
+
+func TestNewCursorSigner_RejectsShortSecret(t *testing.T) {
+	_, err := NewCursorSigner([]byte("short"))
+	if err == nil {
+		t.Fatal("expected error for <32-byte secret")
+	}
+}
+
+func TestCursorSigner_EncodeEmptyReturnsEmpty(t *testing.T) {
+	s := MustNewCursorSigner([]byte("test-secret-32-bytes-aaaaaaaaaaaa"))
+	if got := s.Encode(""); got != "" {
+		t.Errorf("Encode('') = %q, want empty", got)
+	}
+}
+
+func TestCursorSigner_DecodeEmptyReturnsEmpty(t *testing.T) {
+	s := MustNewCursorSigner([]byte("test-secret-32-bytes-aaaaaaaaaaaa"))
+	got, err := s.Decode("")
+	if err != nil {
+		t.Fatalf("Decode('') err = %v", err)
+	}
+	if got != "" {
+		t.Errorf("Decode('') = %q, want empty", got)
 	}
 }
 

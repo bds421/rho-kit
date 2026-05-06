@@ -1,9 +1,15 @@
 package pagination
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -75,4 +81,88 @@ func ValidateCursorUUID(cursor string) error {
 		return fmt.Errorf("invalid cursor format: must be a valid UUID: %w", err)
 	}
 	return nil
+}
+
+// ErrCursorInvalid is returned by [CursorSigner.Decode] when a cursor is
+// malformed, has been tampered with, or was signed by a different secret.
+var ErrCursorInvalid = errors.New("pagination: invalid or tampered cursor")
+
+// CursorSigner HMAC-signs cursors so clients cannot forge them or enumerate
+// IDs by guessing. The on-the-wire format is
+// base64url(payload).base64url(hmac-sha256(secret, payload)).
+//
+// Without signing, the previous default returned raw last-PK as the
+// next_cursor — letting any client pass an arbitrary ID (a foreign user's,
+// a guessed one, an SQL fragment) to the next page. Signing closes the
+// forgery path; combine with a real authorization check in ListFn for the
+// "is this user allowed to see this row" check the cursor cannot replace.
+//
+// Wire across processes: every replica that issues or accepts cursors
+// must share the same secret. Use [config.MustGetSecret] or your KMS of
+// choice; never let each pod mint its own random secret.
+type CursorSigner struct {
+	secret []byte
+}
+
+// NewCursorSigner creates a CursorSigner. The secret must be at least 32
+// bytes; shorter inputs are rejected.
+func NewCursorSigner(secret []byte) (*CursorSigner, error) {
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("pagination: cursor signer secret must be at least 32 bytes (got %d)", len(secret))
+	}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	return &CursorSigner{secret: cp}, nil
+}
+
+// MustNewCursorSigner panics on construction error. Use in startup paths.
+func MustNewCursorSigner(secret []byte) *CursorSigner {
+	s, err := NewCursorSigner(secret)
+	if err != nil {
+		panic(err.Error())
+	}
+	return s
+}
+
+// Encode signs the raw cursor payload (typically a UUID or other PK string).
+// Returns "" when payload is empty (first page).
+func (s *CursorSigner) Encode(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, s.secret)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
+		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// Decode verifies and decodes a signed cursor produced by [CursorSigner.Encode].
+// Returns "" with nil error for the empty (first page) cursor.
+// Returns [ErrCursorInvalid] for any malformed or tampered input — the kit's
+// HandleCursorList maps that to 400 Bad Request.
+//
+// The HMAC comparison is constant-time so attackers can't probe the verify
+// path with timing oracles.
+func (s *CursorSigner) Decode(cursor string) (string, error) {
+	if cursor == "" {
+		return "", nil
+	}
+	idx := strings.IndexByte(cursor, '.')
+	if idx < 0 {
+		return "", ErrCursorInvalid
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(cursor[:idx])
+	if err != nil {
+		return "", ErrCursorInvalid
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(cursor[idx+1:])
+	if err != nil {
+		return "", ErrCursorInvalid
+	}
+	expected := hmac.New(sha256.New, s.secret)
+	expected.Write(payload)
+	if subtle.ConstantTimeCompare(sig, expected.Sum(nil)) != 1 {
+		return "", ErrCursorInvalid
+	}
+	return string(payload), nil
 }
