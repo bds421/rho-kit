@@ -1,10 +1,13 @@
 package grpcx
 
 import (
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+
+	"github.com/bds421/rho-kit/grpcx/interceptor"
 )
 
 // ServerOption configures the gRPC server returned by NewServer.
@@ -18,6 +21,8 @@ type serverConfig struct {
 	maxSendMsgSize     int
 	keepaliveParams    *keepalive.ServerParameters
 	keepalivePolicy    *keepalive.EnforcementPolicy
+	disableRecovery    bool
+	recoveryLogger     *slog.Logger
 }
 
 const (
@@ -99,8 +104,30 @@ func WithGRPCServerOptions(opts ...grpc.ServerOption) ServerOption {
 	}
 }
 
+// WithoutRecovery disables the panic-recovery interceptors that NewServer
+// installs by default. Strongly discouraged in production: a handler panic
+// will tear down the gRPC connection without a structured log entry. Use
+// only for tests that intentionally observe panic propagation.
+func WithoutRecovery() ServerOption {
+	return func(c *serverConfig) { c.disableRecovery = true }
+}
+
+// WithRecoveryLogger overrides the logger passed to the recovery
+// interceptors. Defaults to slog.Default().
+func WithRecoveryLogger(l *slog.Logger) ServerOption {
+	return func(c *serverConfig) { c.recoveryLogger = l }
+}
+
 // NewServer returns a *grpc.Server with production defaults: keepalive,
-// message size limits, and the provided interceptors.
+// message size limits, panic-recovery interceptors, and the user-supplied
+// interceptors.
+//
+// Recovery interceptors are PREPENDED so they wrap every other interceptor
+// and the handler itself: a panic anywhere in the chain converts to
+// codes.Internal with a structured log entry rather than tearing down the
+// connection silently. Disable with [WithoutRecovery] only when tests need
+// to assert raw panic propagation.
+//
 // Options are applied in order; later options override earlier ones.
 func NewServer(opts ...ServerOption) *grpc.Server {
 	cfg := serverConfig{
@@ -128,11 +155,22 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		grpc.KeepaliveEnforcementPolicy(ep),
 	}
 
-	if len(cfg.unaryInterceptors) > 0 {
-		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(cfg.unaryInterceptors...))
+	unary := cfg.unaryInterceptors
+	stream := cfg.streamInterceptors
+	if !cfg.disableRecovery {
+		recLogger := cfg.recoveryLogger
+		if recLogger == nil {
+			recLogger = slog.Default()
+		}
+		unary = append([]grpc.UnaryServerInterceptor{interceptor.RecoveryUnary(recLogger)}, unary...)
+		stream = append([]grpc.StreamServerInterceptor{interceptor.RecoveryStream(recLogger)}, stream...)
 	}
-	if len(cfg.streamInterceptors) > 0 {
-		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(cfg.streamInterceptors...))
+
+	if len(unary) > 0 {
+		grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(unary...))
+	}
+	if len(stream) > 0 {
+		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(stream...))
 	}
 
 	grpcOpts = append(grpcOpts, cfg.grpcOpts...)

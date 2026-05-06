@@ -51,6 +51,96 @@ func TestDefault_OrderWithOuterInner(t *testing.T) {
 	}
 }
 
+func TestDefault_PanicReturns500(t *testing.T) {
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom in handler")
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 from recover middleware", rec.Code)
+	}
+}
+
+func TestDefault_RecoverIsOutermost(t *testing.T) {
+	// A panic injected into the *outer* slot must still be caught — recover
+	// is OUTSIDE all kit middleware, but USER-supplied Outer wraps recover.
+	// The Outer slot is therefore not catchable by Default's recover, which
+	// is the documented contract; verify the panic in an inner middleware
+	// IS caught.
+	innerPanic := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic("inner middleware exploded")
+		})
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+		WithInner(innerPanic),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (panic in Inner caught by recover)", rec.Code)
+	}
+}
+
+func TestDefault_WithoutRecoverPropagatesPanic(t *testing.T) {
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("uncaught")
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+		WithoutRecover(),
+	)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic to propagate when recover is disabled")
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+}
+
 func TestDefault_TimeoutFiresOnSlowHandler(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

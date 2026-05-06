@@ -9,6 +9,7 @@ import (
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
+	mwrecover "github.com/bds421/rho-kit/httpx/middleware/recover"
 	mwrequestid "github.com/bds421/rho-kit/httpx/middleware/requestid"
 	"github.com/bds421/rho-kit/httpx/middleware/secheaders"
 	mwtimeout "github.com/bds421/rho-kit/httpx/middleware/timeout"
@@ -20,6 +21,7 @@ import (
 type Config struct {
 	Logger              *slog.Logger
 	QuietPaths          []string
+	EnableRecover       bool
 	EnableSecHeaders    bool
 	EnableMetrics       bool
 	EnableRequestID     bool
@@ -30,6 +32,7 @@ type Config struct {
 	EnableReqLogger     bool
 	Timeout             time.Duration
 	FrameOption         secheaders.FrameOption
+	RecoverMetrics      *mwrecover.Metrics
 	Outer               []func(http.Handler) http.Handler
 	Inner               []func(http.Handler) http.Handler
 }
@@ -38,17 +41,23 @@ type Config struct {
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler
+// recover -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler
 // Additional outer middleware wraps the entire chain.
 //
 // The request logger is injected so that httpx.Logger(ctx, fallback) returns
-// a request-scoped logger in handler code. Timeout sits inside logging so 503
-// timeout responses still appear in access logs, and outside the request
-// logger so the handler running under the deadline still has the scoped logger.
+// a request-scoped logger in handler code. Recover is the OUTERMOST kit
+// middleware so that panics in any subsequent middleware (including secheaders
+// and metrics) are caught; secheaders is still applied to the recovery
+// response because the recovery writer flows back through the wrapped chain
+// from the inside out — the panic is caught before secheaders sealed headers.
+// Timeout sits inside logging so 503 timeout responses still appear in access
+// logs, and outside the request logger so the handler running under the
+// deadline still has the scoped logger.
 func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Handler {
 	cfg := Config{
 		Logger:              logger,
 		QuietPaths:          []string{"/ready"},
+		EnableRecover:       true,
 		EnableSecHeaders:    true,
 		EnableMetrics:       true,
 		EnableRequestID:     true,
@@ -124,6 +133,13 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		}
 		h = secheaders.New(shOpts...)(h)
 	}
+	if cfg.EnableRecover {
+		recOpts := []mwrecover.Option{mwrecover.WithLogger(cfg.Logger)}
+		if cfg.RecoverMetrics != nil {
+			recOpts = append(recOpts, mwrecover.WithMetrics(cfg.RecoverMetrics))
+		}
+		h = mwrecover.Middleware(recOpts...)(h)
+	}
 
 	for i := len(cfg.Outer) - 1; i >= 0; i-- {
 		h = cfg.Outer[i](h)
@@ -193,6 +209,23 @@ func WithoutRequestLogger() Option {
 // WithoutSecHeaders disables security response headers.
 func WithoutSecHeaders() Option {
 	return func(cfg *Config) { cfg.EnableSecHeaders = false }
+}
+
+// WithoutRecover disables the panic-recovery middleware. Strongly discouraged
+// in production: without it, a handler panic relies on Go's stdlib recovery,
+// which logs to ErrorLog (often unset) with no JSON body, no request_id
+// correlation, no metric. Use only for tests that intentionally observe
+// stdlib's behaviour.
+func WithoutRecover() Option {
+	return func(cfg *Config) { cfg.EnableRecover = false }
+}
+
+// WithRecoverMetrics enables the http_panics_total counter on the recover
+// middleware. Pass the same prometheus.Registerer used elsewhere in the
+// service (typically the one registered in the metrics middleware) so the
+// counter shows up alongside http_requests_total.
+func WithRecoverMetrics(m *mwrecover.Metrics) Option {
+	return func(cfg *Config) { cfg.RecoverMetrics = m }
 }
 
 // WithFrameOption sets the X-Frame-Options value. Default: DENY.
