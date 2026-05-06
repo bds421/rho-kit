@@ -169,3 +169,86 @@ func (rc *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 	return n > 0, nil
 }
 
+// MGet retrieves multiple values in a single Redis MGET round-trip.
+// Missing keys are silently absent from the returned map.
+func (rc *RedisCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if len(keys) == 0 {
+		return map[string][]byte{}, nil
+	}
+	for _, k := range keys {
+		if err := sharedcache.ValidateKey(k); err != nil {
+			return nil, err
+		}
+	}
+	vals, err := rc.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis cache mget: %w", err)
+	}
+	out := make(map[string][]byte, len(keys))
+	for i, v := range vals {
+		if v == nil {
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
+			continue
+		}
+		// goredis returns string for MGet results.
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		rc.metrics.hits.WithLabelValues(rc.name).Inc()
+		out[keys[i]] = []byte(s)
+	}
+	return out, nil
+}
+
+// MSet stores multiple keys with a shared TTL. Implemented as a pipelined
+// SET-with-EX rather than MSET because Redis MSET does not accept a TTL —
+// the alternatives are MSET + per-key EXPIRE round-trips (slower, two
+// network round-trips per batch) or pipelined SET (atomic from the client's
+// perspective; the server still applies them in order).
+func (rc *RedisCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if ttl < 0 {
+		return fmt.Errorf("cache mset: TTL must not be negative (got %v)", ttl)
+	}
+	for k, v := range items {
+		if err := sharedcache.ValidateKey(k); err != nil {
+			return err
+		}
+		if rc.maxValueSize > 0 && len(v) > rc.maxValueSize {
+			return fmt.Errorf("cache mset: value for %q size %d exceeds max %d", k, len(v), rc.maxValueSize)
+		}
+	}
+	pipe := rc.client.Pipeline()
+	for k, v := range items {
+		pipe.Set(ctx, k, v, ttl)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("redis cache mset: %w", err)
+	}
+	return nil
+}
+
+// SetNX stores a value only if the key does not already exist (Redis SET NX).
+// Returns true when the value was stored, false when the key already had
+// a value. Atomic across replicas — use this instead of Exists+Set for
+// cross-process compute-once semantics.
+func (rc *RedisCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if err := sharedcache.ValidateKey(key); err != nil {
+		return false, err
+	}
+	if ttl < 0 {
+		return false, fmt.Errorf("cache setnx: TTL must not be negative (got %v)", ttl)
+	}
+	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
+		return false, fmt.Errorf("cache setnx: value size %d exceeds max %d", len(value), rc.maxValueSize)
+	}
+	ok, err := rc.client.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis cache setnx: %w", err)
+	}
+	return ok, nil
+}
+

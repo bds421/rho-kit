@@ -94,6 +94,15 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 		return nil, true, nil
 	}
 
+	// Headers JSON corruption policy: fail closed.
+	//
+	// If headers JSON is malformed, we surface the error rather than partially
+	// recover (e.g. with empty headers). The middleware treats any backend
+	// error as 500, which means the client retries — re-running the handler
+	// and re-populating the row with fresh headers. Better than serving a
+	// cached response with the wrong headers (which could leak Set-Cookie /
+	// Authorization across requests if those ever slipped past the
+	// identity-header strip in the middleware).
 	var headers map[string][]string
 	if len(headersJSON) > 0 {
 		if err := json.Unmarshal(headersJSON, &headers); err != nil {

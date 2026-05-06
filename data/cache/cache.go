@@ -63,3 +63,88 @@ type Cache interface {
 	// Exists checks whether a key exists without retrieving its value.
 	Exists(ctx context.Context, key string) (bool, error)
 }
+
+// BulkCache extends [Cache] with batch-friendly and CAS operations.
+// Backends that can implement these efficiently (Redis MGET/MSET/SET NX,
+// in-memory single-lock fan-out) should satisfy this interface; others
+// can use the [MGet], [MSet], [SetNX] free functions, which fall back to
+// individual Cache method calls.
+//
+// SetNX is the "set-if-not-exists" primitive needed for cross-process
+// compute-once at the cache layer (without it, two replicas can compute
+// the same expensive value in parallel even though one of them just
+// pushed it).
+type BulkCache interface {
+	Cache
+
+	// MGet retrieves values for multiple keys. The returned map only
+	// includes keys that were present; missing keys are silently absent.
+	// Errors are returned as-is from the backend.
+	MGet(ctx context.Context, keys []string) (map[string][]byte, error)
+
+	// MSet stores all items atomically when the backend supports it
+	// (Redis MSET, in-memory single-lock); ttl applies to every entry.
+	// Backends that cannot do an atomic MSET fall back to per-key Set,
+	// which means a partial failure may leave some keys written.
+	MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error
+
+	// SetNX stores value only if key does not exist. Returns true when
+	// the value was stored, false when the key already had a value.
+	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
+}
+
+// MGet returns a map of values for keys, falling back to per-key Get when
+// the backend does not implement [BulkCache]. Missing keys are silently
+// absent from the result.
+func MGet(ctx context.Context, c Cache, keys []string) (map[string][]byte, error) {
+	if bc, ok := c.(BulkCache); ok {
+		return bc.MGet(ctx, keys)
+	}
+	out := make(map[string][]byte, len(keys))
+	for _, k := range keys {
+		v, err := c.Get(ctx, k)
+		if err != nil {
+			if errors.Is(err, ErrCacheMiss) {
+				continue
+			}
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// MSet stores multiple items, falling back to per-key Set when the backend
+// does not implement [BulkCache]. Stops at the first error.
+func MSet(ctx context.Context, c Cache, items map[string][]byte, ttl time.Duration) error {
+	if bc, ok := c.(BulkCache); ok {
+		return bc.MSet(ctx, items, ttl)
+	}
+	for k, v := range items {
+		if err := c.Set(ctx, k, v, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetNX stores value only if key does not exist. Falls back to a racy
+// Exists+Set sequence when the backend does not implement [BulkCache] —
+// note that the fallback is NOT atomic across replicas; only the
+// BulkCache-native implementation provides cross-process compute-once.
+func SetNX(ctx context.Context, c Cache, key string, value []byte, ttl time.Duration) (bool, error) {
+	if bc, ok := c.(BulkCache); ok {
+		return bc.SetNX(ctx, key, value, ttl)
+	}
+	exists, err := c.Exists(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if err := c.Set(ctx, key, value, ttl); err != nil {
+		return false, err
+	}
+	return true, nil
+}

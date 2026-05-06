@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ type computeConfig struct {
 	refreshTimeout time.Duration
 	metrics        *ComputeMetrics
 	name           string
+	logger         *slog.Logger
 }
 
 // defaultRefreshTimeout is used when no WithRefreshTimeout option is provided.
@@ -65,6 +67,16 @@ func WithComputeMetricsRegisterer(m *ComputeMetrics) ComputeOption {
 func WithComputeName(name string) ComputeOption {
 	return func(cfg *computeConfig) {
 		cfg.name = name
+	}
+}
+
+// WithComputeLogger sets the logger used for backend-error notifications.
+// Default: slog.Default(). Pass io.Discard-backed slog.Handler to mute.
+func WithComputeLogger(l *slog.Logger) ComputeOption {
+	return func(cfg *computeConfig) {
+		if l != nil {
+			cfg.logger = l
+		}
 	}
 }
 
@@ -119,6 +131,7 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 	cfg := computeConfig{
 		name:           "default",
 		refreshTimeout: defaultRefreshTimeout,
+		logger:         slog.Default(),
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -316,7 +329,13 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 	// Backend TTL = primary TTL + stale window.
 	backendTTL := ttl + cc.cfg.staleTTL
 	if storeErr := cc.backend.Set(ctx, full, envData, backendTTL); storeErr != nil {
-		// Store failure is non-fatal; return the computed value.
+		// Store failure is non-fatal — the caller still gets the
+		// computed value — but it must be visible: silently swallowing
+		// would let a Redis OOM / OOR / network partition stop the
+		// cache from persisting and operators would have no signal.
+		cc.recordError()
+		cc.cfg.logger.Warn("cache compute: backend Set failed; serving computed value uncached",
+			"key", full, "error", storeErr)
 		return val, nil
 	}
 

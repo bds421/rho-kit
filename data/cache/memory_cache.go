@@ -2,8 +2,10 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/ristretto/v2"
@@ -21,6 +23,12 @@ type MemoryCache struct {
 	costFunc        func(value []byte) int64
 	ignoreIntCost   bool
 	cleanupInterval time.Duration
+
+	// setNXMu serialises SetNX operations for atomicity within this
+	// process. Ristretto's underlying SetWithTTL is not test-and-set, so
+	// without this two concurrent SetNX calls could both observe "key
+	// missing" and both write — defeating the whole point of NX.
+	setNXMu sync.Mutex
 }
 
 // MemoryCacheOption configures a MemoryCache.
@@ -218,6 +226,52 @@ func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time
 // This is primarily useful in tests to ensure deterministic read-after-write.
 func (mc *MemoryCache) Sync() {
 	mc.cache.Wait()
+}
+
+// MGet implements [BulkCache] by fanning out per-key Get calls. The Ristretto
+// backend doesn't expose a true multi-get, but the fan-out runs lock-free.
+// Missing keys are silently absent from the result.
+func (mc *MemoryCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(keys))
+	for _, k := range keys {
+		v, err := mc.Get(ctx, k)
+		if err != nil {
+			if errors.Is(err, ErrCacheMiss) {
+				continue
+			}
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// MSet implements [BulkCache] by fanning out per-key Set calls. Stops at the
+// first error; partial writes may be visible.
+func (mc *MemoryCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	for k, v := range items {
+		if err := mc.Set(ctx, k, v, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetNX implements [BulkCache]. Atomic only within a single process; for
+// cross-process compute-once, use the Redis-backed BulkCache.
+func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
+	mc.setNXMu.Lock()
+	defer mc.setNXMu.Unlock()
+	if _, ok := mc.cache.Get(key); ok {
+		return false, nil
+	}
+	if err := mc.Set(ctx, key, value, ttl); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Delete removes a key.

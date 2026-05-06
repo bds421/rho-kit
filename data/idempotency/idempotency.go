@@ -184,6 +184,20 @@ func (m *MemoryStore) Get(_ context.Context, key string, fingerprint []byte) (*C
 // evictInterval controls how often Set() scans for expired entries.
 const evictInterval = 100
 
+// evictBudget caps the number of entries one Set-time eviction pass scans
+// under the write lock. With 10k items this previously walked the whole
+// map, blocking concurrent reads/writes for the duration. Bounding the
+// scan keeps Set's worst-case latency proportional to evictBudget rather
+// than the map size; entries missed in one pass are picked up by the
+// next pass or by [MemoryStore.Run]'s background sweeper.
+const evictBudget = 256
+
+// sweepInterval is the default cadence for [MemoryStore.Run]'s background
+// sweeper. Operators that don't run Run() still get the bounded eviction
+// inside Set(); Run is the path that keeps the working set clean during
+// quiet periods between writes.
+const sweepInterval = 30 * time.Second
+
 // Set stores the response under the caller's token. Returns ErrLockLost if
 // the lock for the key has been taken by another caller (or has expired).
 // Returns [ErrInvalidTTL] when ttl <= 0.
@@ -208,17 +222,7 @@ func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedRespo
 
 	m.setCount++
 	if len(m.items) >= memoryStoreMaxEntries || m.setCount%evictInterval == 0 {
-		now := m.now()
-		for k, entry := range m.items {
-			if now.After(entry.expiresAt) {
-				delete(m.items, k)
-			}
-		}
-		for k, l := range m.locks {
-			if now.After(l.expiresAt) {
-				delete(m.locks, k)
-			}
-		}
+		m.sweepExpiredLocked(evictBudget)
 	}
 
 	m.items[key] = memEntry{
@@ -278,6 +282,56 @@ func (m *MemoryStore) Unlock(_ context.Context, key, token string) error {
 		delete(m.locks, key)
 	}
 	return nil
+}
+
+// sweepExpiredLocked deletes up to budget expired entries (items + locks).
+// Caller MUST hold m.mu.Lock(). budget <= 0 means unbounded — used only by
+// tests; production callers should pass [evictBudget].
+func (m *MemoryStore) sweepExpiredLocked(budget int) {
+	now := m.now()
+	scanned := 0
+	for k, entry := range m.items {
+		if budget > 0 && scanned >= budget {
+			return
+		}
+		scanned++
+		if now.After(entry.expiresAt) {
+			delete(m.items, k)
+		}
+	}
+	for k, l := range m.locks {
+		if budget > 0 && scanned >= budget {
+			return
+		}
+		scanned++
+		if now.After(l.expiresAt) {
+			delete(m.locks, k)
+		}
+	}
+}
+
+// Run sweeps expired entries periodically until ctx is cancelled. Bounded
+// per-pass scan budget (evictBudget) so a long-running service with large
+// idempotency-key cardinality stays responsive even under contention.
+//
+// Optional — Set() also evicts opportunistically — but recommended for
+// any service that holds a MemoryStore across more than a few thousand
+// keys. Wire into the lifecycle runner like other background goroutines:
+//
+//	mc.Lifecycle.AddFunc("idem-sweeper", store.Run)
+func (m *MemoryStore) Run(ctx context.Context) error {
+	t := time.NewTicker(sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			m.mu.Lock()
+			m.sweepExpiredLocked(evictBudget)
+			m.mu.Unlock()
+		}
+	}
 }
 
 func cloneResponse(resp CachedResponse) *CachedResponse {

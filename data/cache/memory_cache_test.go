@@ -13,6 +13,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMemoryCache_MGet_MSet_SetNX(t *testing.T) {
+	mc := MustNewMemoryCache()
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	items := map[string][]byte{
+		"a": []byte("alpha"),
+		"b": []byte("bravo"),
+		"c": []byte("charlie"),
+	}
+	if err := mc.MSet(ctx, items, 5*time.Minute); err != nil {
+		t.Fatalf("MSet: %v", err)
+	}
+	mc.Sync()
+
+	got, err := mc.MGet(ctx, []string{"a", "b", "c", "missing"})
+	if err != nil {
+		t.Fatalf("MGet: %v", err)
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		if string(got[k]) != string(items[k]) {
+			t.Errorf("MGet[%q] = %q, want %q", k, got[k], items[k])
+		}
+	}
+	if _, ok := got["missing"]; ok {
+		t.Errorf("MGet returned missing key %q", "missing")
+	}
+
+	ok, err := mc.SetNX(ctx, "new-key", []byte("v"), time.Minute)
+	if err != nil {
+		t.Fatalf("SetNX new: %v", err)
+	}
+	if !ok {
+		t.Fatal("SetNX on missing key should return true")
+	}
+	mc.Sync()
+
+	ok, err = mc.SetNX(ctx, "new-key", []byte("v2"), time.Minute)
+	if err != nil {
+		t.Fatalf("SetNX existing: %v", err)
+	}
+	if ok {
+		t.Fatal("SetNX on existing key should return false")
+	}
+}
+
 func TestMemoryCache_SetAndGet(t *testing.T) {
 	cache := MustNewMemoryCache()
 	ctx := context.Background()
