@@ -78,7 +78,9 @@ func TestRequireLoopbackHost_AcceptsLoopback(t *testing.T) {
 // lands on ConnConfig.Host; additional hosts become ConnConfig.Fallbacks
 // entries. The previous version of the loopback gate only checked the
 // primary, letting a DSN like
-//   host=localhost,evil.example.com sslmode=disable
+//
+//	host=localhost,evil.example.com sslmode=disable
+//
 // pass while pgx silently failed over to evil.example.com sending
 // plaintext credentials. The fix walks every Host across the parsed
 // config + every fallback.

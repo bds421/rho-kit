@@ -17,10 +17,10 @@ const defaultDebounce = 100 * time.Millisecond
 
 // watcherConfig holds shared options for watchers.
 type watcherConfig struct {
-	logger         *slog.Logger
-	debounce       time.Duration
-	signalCh       chan os.Signal // optional external signal channel for EnvReloader
-	immediateLoad  bool
+	logger        *slog.Logger
+	debounce      time.Duration
+	signalCh      chan os.Signal // optional external signal channel for EnvReloader
+	immediateLoad bool
 }
 
 // WatcherOption configures a FileWatcher or EnvReloader.

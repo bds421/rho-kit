@@ -107,9 +107,9 @@ type Builder struct {
 	natsCfg *natsbackend.Config
 
 	// JWT
-	jwksURL          string
-	jwtIssuer        string
-	jwtAudience      string
+	jwksURL           string
+	jwtIssuer         string
+	jwtAudience       string
 	jwtAllowAnyIssuer bool
 
 	// PASETO (alternative to JWT). Caller-constructed Provider, so the
