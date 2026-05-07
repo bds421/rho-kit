@@ -772,6 +772,97 @@ func TestBodyFingerprint_OversizedRejectedWith413(t *testing.T) {
 	}
 }
 
+// TestBodyFingerprint_DefaultOn_RejectsMutatedRetry verifies that body
+// fingerprinting is enabled by default for unsafe methods so a client that
+// reuses an Idempotency-Key with a mutated body gets 422 instead of
+// silently colliding with the previous slot. This is the main corruption
+// case the middleware exists to prevent; off-by-default would let a retry
+// with a different amount silently hit the original response.
+func TestBodyFingerprint_DefaultOn_RejectsMutatedRetry(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handler := Middleware(store, WithAllowSharedKeys())(
+		newTestHandler(`{"ok":true}`, http.StatusCreated),
+	)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
+	req1.Header.Set("Idempotency-Key", "default-fp-key")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first request status = %d, want 201", rec1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":999}`))
+	req2.Header.Set("Idempotency-Key", "default-fp-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnprocessableEntity {
+		t.Errorf("mutated retry status = %d, want 422 (default-on body fingerprint)", rec2.Code)
+	}
+}
+
+// TestBodyFingerprint_DefaultOn_SameBodyReplaysCache verifies that the
+// happy path still works under the new default: a same-key, same-body
+// retry hits the cached response and skips the handler.
+func TestBodyFingerprint_DefaultOn_SameBodyReplaysCache(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("ok"))
+	})
+	handler := Middleware(store, WithAllowSharedKeys())(inner)
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
+		req.Header.Set("Idempotency-Key", "default-fp-same")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", rec.Code)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("inner called %d times, want 1 (second request must replay cache)", calls)
+	}
+}
+
+// TestWithoutBodyFingerprint_OptsOut verifies the explicit opt-out: with
+// fingerprinting disabled, a same-key, mutated-body retry hits the cached
+// response (the historical pre-fix behaviour) instead of returning 422.
+// Use only on large-body routes that have an out-of-band guarantee callers
+// will not reuse a key with a different body.
+func TestWithoutBodyFingerprint_OptsOut(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("ok"))
+	})
+	handler := Middleware(store, WithAllowSharedKeys(), WithoutBodyFingerprint())(inner)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":100}`))
+	req1.Header.Set("Idempotency-Key", "no-fp-key")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first request status = %d, want 201", rec1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"amount":999}`))
+	req2.Header.Set("Idempotency-Key", "no-fp-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Errorf("mutated retry status = %d, want 201 (opt-out replays cache)", rec2.Code)
+	}
+	if calls != 1 {
+		t.Errorf("inner called %d times, want 1 (replay must skip handler)", calls)
+	}
+}
+
 // TestBodyFingerprint_AtCapBoundaryAccepted ensures the boundary case
 // (body == maxFingerprintBodySize) still works — only strictly larger
 // bodies should be rejected.

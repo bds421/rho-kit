@@ -177,26 +177,39 @@ func WithRequiredMethods(methods ...string) Option {
 	}
 }
 
-// WithBodyFingerprint enables request-body fingerprinting. When enabled, the
-// middleware buffers the request body (up to maxFingerprintBodySize), hashes
-// it with SHA-256, and passes the digest to the Store. If a subsequent
-// request reuses the same Idempotency-Key with a *different* body, the Store
-// reports a mismatch and the middleware returns 422 Unprocessable Entity —
-// the standard Stripe-style mitigation against "client retried with mutated
-// body" silently corrupting state.
+// WithBodyFingerprint enables request-body fingerprinting. Body
+// fingerprinting is ON by default, so this option is a no-op kept for
+// backward compatibility with callers that pass it explicitly. Use
+// [WithoutBodyFingerprint] to opt out.
+//
+// When enabled, the middleware buffers the request body (up to
+// [maxFingerprintBodySize]), hashes it with SHA-256, and passes the digest
+// to the Store. If a subsequent request reuses the same Idempotency-Key
+// with a *different* body, the Store reports a mismatch and the middleware
+// returns 422 Unprocessable Entity — the standard Stripe-style mitigation
+// against "client retried with mutated body" silently corrupting state.
 //
 // Requests whose body exceeds [maxFingerprintBodySize] are rejected with
 // 413 Payload Too Large: silently truncating would forward a partial body
 // to the handler while still appearing to succeed, and any constant
 // "too-large" sentinel would collapse every oversized body to the same
 // fingerprint and defeat body-mismatch protection. Services that legitimately
-// accept multi-megabyte writes should not enable fingerprinting on those
-// routes.
-//
-// Off by default for backward compatibility. Enable in any new deployment;
-// it costs one SHA-256 hash + a buffered body per write request.
+// accept multi-megabyte writes should pass [WithoutBodyFingerprint] on
+// those routes.
 func WithBodyFingerprint() Option {
 	return func(c *config) { c.fingerprintBody = true }
+}
+
+// WithoutBodyFingerprint disables request-body fingerprinting. Body
+// fingerprinting is ON by default because the same idempotency key reused
+// with a different body is the main corruption case the middleware exists
+// to prevent: without fingerprinting the second request would silently hit
+// the previous response (or share its lock) even though the caller's intent
+// changed. Opt out only on routes that knowingly accept multi-megabyte
+// bodies (the buffer cap rejects those with 413) and that have an
+// out-of-band guarantee no caller will reuse a key with a mutated body.
+func WithoutBodyFingerprint() Option {
+	return func(c *config) { c.fingerprintBody = false }
 }
 
 // WithPostHandlerTimeout sets the deadline for the Set/Unlock store calls
@@ -213,13 +226,19 @@ func WithPostHandlerTimeout(d time.Duration) Option {
 	return func(c *config) { c.postHandlerTimeout = d }
 }
 
-// defaultConfig returns the default middleware configuration.
+// defaultConfig returns the default middleware configuration. Body
+// fingerprinting defaults to ON: the "same key, different body" corruption
+// case is what the middleware exists to prevent, and silently falling back
+// to the previous response on a mutated retry is the failure mode opt-in
+// defaults consistently produced. Routes that legitimately accept
+// multi-megabyte bodies should pass [WithoutBodyFingerprint].
 func defaultConfig() config {
 	return config{
 		ttl:                24 * time.Hour,
 		header:             "Idempotency-Key",
 		logger:             slog.Default(),
 		postHandlerTimeout: defaultPostHandlerTimeout,
+		fingerprintBody:    true,
 		requiredMethods: map[string]bool{
 			http.MethodPost:  true,
 			http.MethodPut:   true,

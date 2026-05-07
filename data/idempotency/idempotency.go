@@ -39,7 +39,8 @@ var ErrInvalidTTL = errors.New("idempotency: ttl must be positive")
 // (Stripe-style 422 on body mismatch).
 //
 // Pass nil for fingerprint to disable the comparison. The HTTP middleware
-// always passes a fingerprint; direct callers must opt in to the safety.
+// passes a fingerprint by default for unsafe methods (POST/PUT/PATCH);
+// direct callers must opt in to the safety.
 type Store interface {
 	// Get returns the cached response for the key.
 	//
