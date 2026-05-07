@@ -19,6 +19,10 @@
 package redmetrics
 
 import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -79,7 +83,12 @@ func WithHTTPSubsystem(s string) HTTPOption {
 }
 
 // WithHTTPBuckets overrides the default duration histogram buckets.
+//
+// Buckets must be non-empty, strictly increasing, and all positive.
+// Prometheus would otherwise panic at registration with a less actionable
+// message; we validate up front so misconfiguration surfaces at boot.
 func WithHTTPBuckets(buckets []float64) HTTPOption {
+	validateBuckets("WithHTTPBuckets", buckets)
 	return func(c *httpConfig) { c.buckets = buckets }
 }
 
@@ -217,6 +226,58 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Unwrap exposes the underlying ResponseWriter for [http.ResponseController].
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+// Flush forwards to the underlying writer when it implements [http.Flusher].
+// SSE / chunked-transfer handlers depend on Flush reaching the wire; without
+// this delegation the wrapper would silently swallow the call.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards to the underlying writer when it implements [http.Hijacker]
+// (WebSocket upgrades). The recorder loses meaning after hijack; we leave the
+// captured status as-is so middleware metrics still record the pre-hijack
+// status code.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("redmetrics: underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Push forwards to the underlying writer when it implements [http.Pusher]
+// (HTTP/2 server push). Returns [http.ErrNotSupported] when not supported,
+// matching the standard library convention.
+func (s *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := s.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// ReadFrom lets handlers using [io.Copy] take the optimised sendfile path
+// when the underlying writer is an [io.ReaderFrom]. Without this delegation
+// the wrapper would force the generic copy loop, hurting large-file throughput.
+func (s *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if !s.wrote {
+		s.wrote = true
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(writerOnly{s.ResponseWriter}, src)
+}
+
+// writerOnly hides ReadFrom from io.Copy so the fallback in
+// [statusRecorder.ReadFrom] uses the generic copy loop and does not re-enter.
+type writerOnly struct{ io.Writer }
+
 // BatchMetrics holds the standard collectors for batch / cron jobs.
 type BatchMetrics struct {
 	Runs     *prometheus.CounterVec   // labels: name, status
@@ -245,8 +306,31 @@ func WithBatchSubsystem(s string) BatchOption {
 }
 
 // WithBatchBuckets overrides the default duration buckets.
+//
+// Buckets must be non-empty, strictly increasing, and all positive. See
+// [WithHTTPBuckets] for rationale.
 func WithBatchBuckets(buckets []float64) BatchOption {
+	validateBuckets("WithBatchBuckets", buckets)
 	return func(c *batchConfig) { c.buckets = buckets }
+}
+
+// validateBuckets enforces the invariants Prometheus assumes for histogram
+// buckets — non-empty, strictly increasing, all positive. Panics with a
+// clear, attributable message so the caller can fix the option site.
+func validateBuckets(option string, buckets []float64) {
+	if len(buckets) == 0 {
+		panic(fmt.Sprintf("redmetrics: %s: buckets must not be empty", option))
+	}
+	prev := 0.0
+	for i, b := range buckets {
+		if b <= 0 {
+			panic(fmt.Sprintf("redmetrics: %s: buckets[%d]=%v must be positive", option, i, b))
+		}
+		if i > 0 && b <= prev {
+			panic(fmt.Sprintf("redmetrics: %s: buckets must be strictly increasing (buckets[%d]=%v <= buckets[%d]=%v)", option, i, b, i-1, prev))
+		}
+		prev = b
+	}
 }
 
 // NewBatch constructs RED metrics for batch / cron workloads. The name

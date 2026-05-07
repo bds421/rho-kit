@@ -73,6 +73,10 @@ func EnableMutexBlockProfiling(mutexFraction int, blockRateNs int) {
 // IsPprofPath reports whether p falls under the /debug/pprof/ tree.
 // Useful in middleware that wants to skip auth for these paths on
 // internal-only mounts.
+//
+// The match is exact ("/debug/pprof") or prefixed by "/debug/pprof/" so
+// look-alike paths such as "/debug/pprofevil" cannot piggy-back on a
+// pprof-bypass rule.
 func IsPprofPath(p string) bool {
-	return strings.HasPrefix(p, "/debug/pprof")
+	return p == "/debug/pprof" || strings.HasPrefix(p, "/debug/pprof/")
 }

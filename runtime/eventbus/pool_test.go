@@ -605,6 +605,42 @@ func TestPublish_OnFullBlock_RespectsCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+func TestBus_StartContextCancellation_StopsWorkers(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+	)
+
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithAsync(), WithName("noop"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startDone := make(chan struct{})
+	go func() {
+		_ = bus.Start(ctx)
+		close(startDone)
+	}()
+	waitForWorkers(t, bus)
+
+	baseGoroutines := runtime.NumGoroutine()
+
+	cancel()
+
+	select {
+	case <-startDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after ctx cancellation")
+	}
+
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= baseGoroutines
+	}, 2*time.Second, 10*time.Millisecond,
+		"workers should be torn down when Start's ctx is cancelled, even without an explicit Stop call")
+}
+
 func TestPublish_OnFullDrop_DefaultBehavior(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	bus := New(

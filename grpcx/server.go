@@ -182,8 +182,14 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 
 	unary := cfg.unaryInterceptors
 	stream := cfg.streamInterceptors
-	// Deadline goes BEFORE recovery so a panic'd handler's deferred
-	// cancel still runs before the recovery interceptor unwinds.
+	// Final chain order (outermost first):
+	//   recovery -> deadline -> caller-supplied interceptors -> handler.
+	// Recovery is prepended last, so it wraps the deadline interceptor
+	// and every caller interceptor: a panic anywhere in the chain
+	// converts to codes.Internal with a structured log entry rather than
+	// tearing down the connection. The deadline interceptor sits inside
+	// recovery, applying its bounded ctx to caller interceptors and the
+	// handler.
 	if cfg.defaultDeadline > 0 {
 		unary = append([]grpc.UnaryServerInterceptor{interceptor.DeadlineUnary(cfg.defaultDeadline)}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(cfg.defaultDeadline)}, stream...)

@@ -573,31 +573,34 @@ func TestIsTrustedS2S_NotSetByJWTAuth(t *testing.T) {
 // TestMTLSAuthUnary_PanicsOnNilProvider mirrors HTTP RequireS2SAuth.
 func TestMTLSAuthUnary_PanicsOnNilProvider(t *testing.T) {
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(nil, []string{"svc"})
+		interceptor.MTLSAuthUnary(nil, interceptor.WithAllowedCNs([]string{"svc"}))
 	})
 }
 
-// TestMTLSAuthUnary_PanicsOnEmptyCNs mirrors HTTP RequireS2SAuth.
-func TestMTLSAuthUnary_PanicsOnEmptyCNs(t *testing.T) {
+// TestMTLSAuthUnary_PanicsOnEmptyIdentities mirrors HTTP RequireS2SAuth.
+func TestMTLSAuthUnary_PanicsOnEmptyIdentities(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(provider, nil)
+		interceptor.MTLSAuthUnary(provider)
 	})
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(provider, []string{})
+		interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs(nil))
+	})
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedSANs([]string{}))
 	})
 }
 
 func TestMTLSAuthStream_PanicsOnNilProvider(t *testing.T) {
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthStream(nil, []string{"svc"})
+		interceptor.MTLSAuthStream(nil, interceptor.WithAllowedCNs([]string{"svc"}))
 	})
 }
 
-func TestMTLSAuthStream_PanicsOnEmptyCNs(t *testing.T) {
+func TestMTLSAuthStream_PanicsOnEmptyIdentities(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthStream(provider, nil)
+		interceptor.MTLSAuthStream(provider)
 	})
 }
 
@@ -607,7 +610,7 @@ func TestMTLSAuthStream_PanicsOnEmptyCNs(t *testing.T) {
 func TestMTLSAuthUnary_NoCertNoToken_Unauthenticated(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
-	ic := interceptor.MTLSAuthUnary(provider, []string{"svc-a"})
+	ic := interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs([]string{"svc-a"}))
 
 	called := false
 	_, err := ic(
@@ -634,7 +637,7 @@ func TestMTLSAuthUnary_JWTPath_NoTrustedMarker(t *testing.T) {
 	provider, privKey := testKeyAndProvider(t)
 	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
 
-	ic := interceptor.MTLSAuthUnary(provider, []string{"svc-a"})
+	ic := interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs([]string{"svc-a"}))
 
 	var observedTrusted bool
 	_, err := ic(

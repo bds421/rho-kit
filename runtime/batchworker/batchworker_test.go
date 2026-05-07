@@ -153,6 +153,35 @@ func TestWorker_Timeout(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+func TestWorker_StopReturnsCtxErrOnDeadline(t *testing.T) {
+	// When the batch fn ignores cancellation (or runs longer than Stop's
+	// deadline), Stop must surface ctx.Err() so callers know the worker
+	// did not drain in time.
+	release := make(chan struct{})
+	running := make(chan struct{})
+	w := New("test-stop-deadline", time.Hour, func(ctx context.Context) error {
+		close(running)
+		<-release
+		return nil
+	}, WithJitter(0), WithTimeout(time.Hour))
+
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	startDone := make(chan error, 1)
+	go func() { startDone <- w.Start(startCtx) }()
+	defer func() {
+		close(release)
+		cancelStart()
+		<-startDone
+	}()
+
+	<-running
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelStop()
+	err := w.Stop(stopCtx)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestNew_PanicsOnInvalidArgs(t *testing.T) {
 	assert.Panics(t, func() { New("", time.Second, func(ctx context.Context) error { return nil }) })
 	assert.Panics(t, func() { New("x", 0, func(ctx context.Context) error { return nil }) })

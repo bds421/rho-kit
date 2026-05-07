@@ -217,6 +217,43 @@ func TestSubscribe_PanicsOnNilHandler(t *testing.T) {
 	})
 }
 
+// pointerEvent's EventName reads the receiver — this would panic on a
+// typed-nil pointer. Subscribe[*pointerEvent] must instantiate a fresh
+// value via reflect rather than calling EventName on the zero pointer.
+type pointerEvent struct {
+	Name string
+}
+
+func (p *pointerEvent) EventName() string {
+	// Read a field so a nil receiver would panic; the bus must give us a
+	// non-nil receiver when probing for the name.
+	_ = p.Name
+	return "pointer.event"
+}
+
+func TestSubscribe_PointerEventDoesNotPanic(t *testing.T) {
+	bus := New()
+	var received string
+	require.NotPanics(t, func() {
+		Subscribe(bus, func(_ context.Context, e *pointerEvent) error {
+			received = e.Name
+			return nil
+		})
+	})
+
+	require.NoError(t, Publish(bus, context.Background(), &pointerEvent{Name: "ok"}))
+	assert.Equal(t, "ok", received)
+}
+
+func TestWithOnFull_PanicsOnUnknownPolicy(t *testing.T) {
+	assert.Panics(t, func() {
+		New(WithWorkerPool(1), WithOnFull(OnFullPolicy(99)))
+	})
+	assert.Panics(t, func() {
+		New(WithOnFull(OnFullPolicy(-1)))
+	})
+}
+
 func TestSubscribe_WithName(t *testing.T) {
 	bus := New()
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {

@@ -153,6 +153,10 @@ func (w *Worker) Start(ctx context.Context) error {
 // expire. Calling Stop without first cancelling the parent ctx is now safe —
 // previously Stop would block forever in standalone usage because no internal
 // cancel was registered.
+//
+// If the supplied ctx fires before the batch loop drains, Stop returns
+// ctx.Err() so callers see the missed shutdown deadline; the loop and any
+// in-flight batch may still be running until the per-batch timeout completes.
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
 	w.mu.Lock()
@@ -163,9 +167,10 @@ func (w *Worker) Stop(ctx context.Context) error {
 	}
 	select {
 	case <-w.done:
+		return nil
 	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nil
 }
 
 func (w *Worker) runBatch(parentCtx context.Context) {

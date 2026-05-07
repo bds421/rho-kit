@@ -108,7 +108,15 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // WithOnFull sets the policy applied when async dispatch finds the worker
 // pool queue full. Default: [OnFullDrop]. Has no effect without
 // [WithWorkerPool] (legacy unbounded goroutines never block).
+//
+// Panics if p is not one of [OnFullDrop], [OnFullBlock], or [OnFullError].
+// Silently treating unknown values as drop would mask configuration bugs.
 func WithOnFull(p OnFullPolicy) Option {
+	switch p {
+	case OnFullDrop, OnFullBlock, OnFullError:
+	default:
+		panic(fmt.Sprintf("eventbus: WithOnFull: unknown policy %d", int(p)))
+	}
 	return func(b *Bus) { b.onFull = p }
 }
 
@@ -214,8 +222,16 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	}
 
 	var zero E
-	eventName := zero.EventName()
-	expectedType := reflect.TypeOf(zero)
+	expectedType := reflect.TypeOf((*E)(nil)).Elem()
+	// For pointer event types (e.g. *FooEvent), the zero value of E is a
+	// typed-nil pointer; calling EventName on it would panic if the impl
+	// reads receiver fields. Instantiate a fresh value of the pointee so
+	// EventName runs against a non-nil receiver.
+	probe := Event(zero)
+	if expectedType.Kind() == reflect.Ptr {
+		probe = reflect.New(expectedType.Elem()).Interface().(Event)
+	}
+	eventName := probe.EventName()
 
 	id := b.nextID.Add(1)
 	rh := registeredHandler{
@@ -424,6 +440,11 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 
 // Start starts the worker pool. If no pool is configured, Start blocks until
 // ctx is cancelled (for lifecycle.Component compatibility).
+//
+// When ctx is cancelled, Start stops the pool before returning so callers
+// that drive Start directly (without a separate Stop call) do not leak
+// worker goroutines. Stop remains safe to call afterwards (it is idempotent).
+//
 // Implements lifecycle.Component.
 func (b *Bus) Start(ctx context.Context) error {
 	if b.pool == nil {
@@ -436,6 +457,7 @@ func (b *Bus) Start(ctx context.Context) error {
 		slog.Int("buffer_size", cap(b.pool.queue)),
 	)
 	b.pool.start(ctx)
+	b.pool.stop()
 	return nil
 }
 

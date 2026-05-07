@@ -190,10 +190,11 @@ func UserScopes(ctx context.Context) string {
 
 // IsTrustedS2S reports whether ctx carries the trusted service-to-service
 // marker. The marker is set only by MTLSAuthUnary/MTLSAuthStream's mTLS
-// branch after a fully verified client certificate with an allow-listed CN.
-// Handlers and authorization interceptors can use this to grant trust to
-// verified internal callers without conflating it with the absence of a
-// permissions claim. Mirrors the semantics of httpx/middleware/auth.IsTrustedS2S.
+// branch after a fully verified client certificate with an allow-listed
+// SAN URI/DNS or (legacy) CN identity. Handlers and authorization
+// interceptors can use this to grant trust to verified internal callers
+// without conflating it with the absence of a permissions claim. Mirrors
+// the semantics of httpx/middleware/auth.IsTrustedS2S.
 func IsTrustedS2S(ctx context.Context) bool {
 	_, ok := trustedS2SKey.Get(ctx)
 	return ok
@@ -215,8 +216,9 @@ func WithTrustedS2S(ctx context.Context) context.Context {
 // httpx/middleware/auth.RequirePermission:
 //
 //   - If [IsTrustedS2S] returns true, the check is bypassed — internal
-//     services authenticated via verified mTLS + CN allowlist are trusted
-//     explicitly, not by virtue of "happened to have no permissions claim".
+//     services authenticated via verified mTLS + SAN/CN allowlist are
+//     trusted explicitly, not by virtue of "happened to have no permissions
+//     claim".
 //   - Otherwise the request must carry permissions on context AND that set
 //     must contain perm. Anything else returns codes.PermissionDenied.
 //
@@ -302,41 +304,113 @@ func RequireScopeStream(scope string) grpc.StreamServerInterceptor {
 	}
 }
 
+// MTLSIdentityOption configures the mTLS identity allowlist for
+// [MTLSAuthUnary] / [MTLSAuthStream]. At least one of [WithAllowedSANs]
+// or [WithAllowedCNs] must be supplied.
+type MTLSIdentityOption func(*mtlsIdentityConfig)
+
+type mtlsIdentityConfig struct {
+	allowedCNs     map[string]struct{}
+	allowedSANDNS  map[string]struct{}
+	allowedSANURIs map[string]struct{}
+}
+
+// WithAllowedSANs authorises peers whose verified client certificate carries
+// at least one DNS SAN or URI SAN matching the provided list. SAN-based
+// identities are the modern replacement for CN — SPIFFE IDs and DNS-style
+// service names live there — and should be preferred for new deployments.
+//
+// DNS values (e.g. "svc-a.internal") are matched against [x509.Certificate.DNSNames].
+// URI values (e.g. "spiffe://example.org/svc-a") are matched against
+// [x509.Certificate.URIs] using exact string equality after URL parsing.
+func WithAllowedSANs(sans []string) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) {
+		for _, s := range sans {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if strings.Contains(s, "://") {
+				if c.allowedSANURIs == nil {
+					c.allowedSANURIs = map[string]struct{}{}
+				}
+				c.allowedSANURIs[s] = struct{}{}
+			} else {
+				if c.allowedSANDNS == nil {
+					c.allowedSANDNS = map[string]struct{}{}
+				}
+				c.allowedSANDNS[s] = struct{}{}
+			}
+		}
+	}
+}
+
+// WithAllowedCNs authorises peers whose verified client certificate has a
+// Subject Common Name matching the provided list.
+//
+// CN-based identity is a legacy concept; CABs deprecate CN as an identity
+// source and modern certificate tooling (cert-manager, SPIFFE) emits
+// identities as SANs. This option remains for fleets whose internal CA still
+// issues CN-only certs. New code should pair it with [WithAllowedSANs] or
+// migrate to SANs entirely — a runtime warning is logged at startup when CN
+// is the sole identity source.
+func WithAllowedCNs(cns []string) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) {
+		for _, cn := range cns {
+			cn = strings.TrimSpace(cn)
+			if cn == "" {
+				continue
+			}
+			if c.allowedCNs == nil {
+				c.allowedCNs = map[string]struct{}{}
+			}
+			c.allowedCNs[cn] = struct{}{}
+		}
+	}
+}
+
+func buildMTLSIdentityConfig(opts []MTLSIdentityOption) mtlsIdentityConfig {
+	cfg := mtlsIdentityConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg
+}
+
 // MTLSAuthUnary returns a unary server interceptor that accepts two
 // authentication modes:
 //
 //  1. Bearer JWT (same as AuthUnary).
 //  2. mTLS client certificate + x-user-id metadata (service-to-service).
 //
-// For mode 2, the caller's TLS client certificate CN must be in allowedCNs
-// and the certificate chain must have been verified by the gRPC TLS layer.
-// The middleware reads x-user-id from incoming metadata, validates it as a
+// For mode 2, the caller's verified client certificate must satisfy at
+// least one allow-listed identity (SAN DNS, SAN URI, or CN). The
+// certificate chain must have been verified by the gRPC TLS layer. The
+// middleware reads x-user-id from incoming metadata, validates it as a
 // UUID, and stamps a trusted-S2S marker on the context so downstream
 // RequirePermissionUnary / RequireScopeUnary interceptors permit the call
 // without a permissions claim.
 //
-// Both provider and allowedCNs are required — the function panics at
-// startup if either is nil/empty, matching the HTTP RequireS2SAuth.
+// Both provider and at least one identity option are required — the function
+// panics at startup if either is missing, matching the HTTP RequireS2SAuth.
 //
 // An auditor can grep for "MTLSAuthUnary" to find all S2S entry points.
-func MTLSAuthUnary(provider *jwtutil.Provider, allowedCNs []string) grpc.UnaryServerInterceptor {
+func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.UnaryServerInterceptor {
 	if provider == nil {
 		panic("interceptor: MTLSAuthUnary requires a non-nil JWT provider")
 	}
-	if len(allowedCNs) == 0 {
-		panic("interceptor: MTLSAuthUnary requires at least one allowed CN")
+	cfg := buildMTLSIdentityConfig(opts)
+	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
+		panic("interceptor: MTLSAuthUnary requires at least one allowed SAN or CN")
 	}
-	cnSet := make(map[string]struct{}, len(allowedCNs))
-	for _, cn := range allowedCNs {
-		cnSet[cn] = struct{}{}
-	}
+	warnIfCNOnly("MTLSAuthUnary", cfg)
 	return func(
 		ctx context.Context,
 		req any,
 		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		newCtx, err := authenticateMTLSOrJWT(ctx, provider, cnSet)
+		newCtx, err := authenticateMTLSOrJWT(ctx, provider, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -346,24 +420,22 @@ func MTLSAuthUnary(provider *jwtutil.Provider, allowedCNs []string) grpc.UnarySe
 
 // MTLSAuthStream returns a stream server interceptor that accepts JWT or
 // mTLS+metadata authentication. See [MTLSAuthUnary] for semantics.
-func MTLSAuthStream(provider *jwtutil.Provider, allowedCNs []string) grpc.StreamServerInterceptor {
+func MTLSAuthStream(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.StreamServerInterceptor {
 	if provider == nil {
 		panic("interceptor: MTLSAuthStream requires a non-nil JWT provider")
 	}
-	if len(allowedCNs) == 0 {
-		panic("interceptor: MTLSAuthStream requires at least one allowed CN")
+	cfg := buildMTLSIdentityConfig(opts)
+	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
+		panic("interceptor: MTLSAuthStream requires at least one allowed SAN or CN")
 	}
-	cnSet := make(map[string]struct{}, len(allowedCNs))
-	for _, cn := range allowedCNs {
-		cnSet[cn] = struct{}{}
-	}
+	warnIfCNOnly("MTLSAuthStream", cfg)
 	return func(
 		srv any,
 		ss grpc.ServerStream,
 		_ *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		newCtx, err := authenticateMTLSOrJWT(ss.Context(), provider, cnSet)
+		newCtx, err := authenticateMTLSOrJWT(ss.Context(), provider, cfg)
 		if err != nil {
 			return err
 		}
@@ -371,21 +443,33 @@ func MTLSAuthStream(provider *jwtutil.Provider, allowedCNs []string) grpc.Stream
 	}
 }
 
+// warnIfCNOnly logs a startup warning when CN is the only configured
+// identity source. CN is deprecated as an identity carrier; operators
+// should migrate to SAN DNS/URI before EOLing the CN allowlist.
+func warnIfCNOnly(component string, cfg mtlsIdentityConfig) {
+	if len(cfg.allowedCNs) > 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
+		slog.Warn("grpcx interceptor: CN-only mTLS allowlist is legacy; prefer WithAllowedSANs",
+			slog.String("component", component),
+		)
+	}
+}
+
 // authenticateMTLSOrJWT tries JWT bearer auth first; on absence, falls
-// back to verified-mTLS + CN allowlist + x-user-id metadata. The marker is
-// stamped only on the mTLS branch, never on the JWT branch.
+// back to verified-mTLS + identity allowlist + x-user-id metadata. The
+// marker is stamped only on the mTLS branch, never on the JWT branch.
 func authenticateMTLSOrJWT(
 	ctx context.Context,
 	provider *jwtutil.Provider,
-	allowedCNs map[string]struct{},
+	cfg mtlsIdentityConfig,
 ) (context.Context, error) {
 	// Try JWT first.
 	if extractBearerToken(ctx) != "" {
 		return authenticate(ctx, provider)
 	}
 
-	// mTLS branch: require a verified client cert with an allow-listed CN.
-	if !verifyClientCertGRPC(ctx, allowedCNs) {
+	// mTLS branch: require a verified client cert with an allow-listed identity.
+	matched, identity := verifyClientCertGRPC(ctx, cfg)
+	if !matched {
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
@@ -394,17 +478,9 @@ func authenticateMTLSOrJWT(
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
-	cn := ""
-	if p, ok := peer.FromContext(ctx); ok {
-		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok {
-			if len(tlsInfo.State.PeerCertificates) > 0 {
-				cn = tlsInfo.State.PeerCertificates[0].Subject.CommonName
-			}
-		}
-	}
 	slog.InfoContext(ctx, "grpc s2s user impersonation",
 		slog.String("user_id", userID),
-		slog.String("client_cn", cn),
+		slog.String("client_identity", identity),
 	)
 
 	ctx = userIDKey.Set(ctx, grpcUserID(userID))
@@ -413,7 +489,7 @@ func authenticateMTLSOrJWT(
 }
 
 // verifyClientCertGRPC checks that the gRPC peer presented a fully verified
-// client certificate whose CN is in the allowlist.
+// client certificate whose SAN DNS / SAN URI / CN is in the allowlist.
 //
 // The VerifiedChains check is essential: PeerCertificates is populated any
 // time a peer presents a certificate, even when chain verification was
@@ -421,21 +497,44 @@ func authenticateMTLSOrJWT(
 // a misconfigured server (ClientAuth=RequestClientCert without ClientCAs)
 // admit unverified certs. Only trust an identity that the TLS layer itself
 // validated against a trusted CA. Mirrors the HTTP verifyClientCert.
-func verifyClientCertGRPC(ctx context.Context, allowedCNs map[string]struct{}) bool {
+//
+// Match order: SAN URI, SAN DNS, then CN. The first match wins; the
+// returned identity string is the matched value (logged for audit). When
+// no identity matches, returns ("", "").
+func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, string) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return false
+		return false, ""
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
-		return false
+		return false, ""
 	}
 	if len(tlsInfo.State.PeerCertificates) == 0 || len(tlsInfo.State.VerifiedChains) == 0 {
-		return false
+		return false, ""
 	}
-	cn := tlsInfo.State.PeerCertificates[0].Subject.CommonName
-	_, ok = allowedCNs[cn]
-	return ok
+	cert := tlsInfo.State.PeerCertificates[0]
+
+	for _, u := range cert.URIs {
+		if u == nil {
+			continue
+		}
+		s := u.String()
+		if _, ok := cfg.allowedSANURIs[s]; ok {
+			return true, "uri:" + s
+		}
+	}
+	for _, dns := range cert.DNSNames {
+		if _, ok := cfg.allowedSANDNS[dns]; ok {
+			return true, "dns:" + dns
+		}
+	}
+	if cn := cert.Subject.CommonName; cn != "" {
+		if _, ok := cfg.allowedCNs[cn]; ok {
+			return true, "cn:" + cn
+		}
+	}
+	return false, ""
 }
 
 // extractXUserID reads the x-user-id metadata value from the incoming

@@ -43,11 +43,15 @@ func TestMount_AttachesRoutesToCallerMux(t *testing.T) {
 }
 
 func TestIsPprofPath(t *testing.T) {
+	assert.True(t, IsPprofPath("/debug/pprof"))
 	assert.True(t, IsPprofPath("/debug/pprof/"))
 	assert.True(t, IsPprofPath("/debug/pprof/heap"))
 	assert.True(t, IsPprofPath("/debug/pprof/goroutine?debug=1"))
 	assert.False(t, IsPprofPath("/debug/metrics"))
 	assert.False(t, IsPprofPath("/api/users"))
+	// Look-alike paths must NOT match — a stricter check than HasPrefix.
+	assert.False(t, IsPprofPath("/debug/pprofevil"))
+	assert.False(t, IsPprofPath("/debug/pprof_secret"))
 }
 
 func TestEnableMutexBlockProfiling_DoesNotPanic(t *testing.T) {

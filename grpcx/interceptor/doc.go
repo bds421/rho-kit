@@ -10,7 +10,7 @@
 //   - Metrics: records grpc_server_handled_total and grpc_server_handling_seconds
 //   - Logging: structured request logging with correlation ID
 //   - Auth: JWT extraction from gRPC metadata (AuthUnary, AuthStream)
-//   - mTLS S2S: JWT or verified mTLS + CN allowlist (MTLSAuthUnary, MTLSAuthStream)
+//   - mTLS S2S: JWT or verified mTLS + SAN/CN allowlist (MTLSAuthUnary, MTLSAuthStream)
 //   - RBAC: per-method permission and scope checks (RequirePermissionUnary,
 //     RequirePermissionStream, RequireScopeUnary, RequireScopeStream)
 //
