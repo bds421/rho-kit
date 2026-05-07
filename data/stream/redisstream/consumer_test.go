@@ -101,3 +101,39 @@ func TestConsume_PanicsOnEmptyStream(t *testing.T) {
 		c.Consume(context.TODO(), "", nil) //nolint:staticcheck // intentionally testing panic with empty stream name
 	})
 }
+
+func TestConsumer_PanicsOnSecondConsume(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	c, err := NewConsumer(client, "test-group")
+	require.NoError(t, err)
+
+	// First call: prime the consumed flag without actually blocking on
+	// Redis. We use an immediately-cancelled ctx so consumeOnce returns
+	// quickly. (RunWithBackoff observes ctx.Err() and exits.)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Consume(ctx, "stream-a", func(_ context.Context, _ Message) error { return nil })
+
+	// Second call: must panic, even with a different stream.
+	assert.PanicsWithValue(t,
+		"redisstream: Consumer.Consume called for a second stream — create a separate Consumer per stream (see StartConsumers)",
+		func() {
+			c.Consume(ctx, "stream-b", func(_ context.Context, _ Message) error { return nil })
+		},
+	)
+}
+
+func TestConsumer_CloneForStreamHasFreshID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	c, err := NewConsumer(client, "test-group")
+	require.NoError(t, err)
+
+	cp, err := c.cloneForStream()
+	require.NoError(t, err)
+	assert.NotEqual(t, c.consumer, cp.consumer, "clone must have a fresh consumer ID")
+	assert.False(t, cp.consumed.Load(), "clone must be reusable")
+}

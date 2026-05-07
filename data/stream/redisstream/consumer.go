@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -130,6 +131,13 @@ var defaultConsumerMetrics = NewConsumerMetrics(nil)
 // Consumer reads from a Redis stream using consumer groups.
 // It handles automatic consumer group creation, pending message claim,
 // dead-letter routing, and graceful shutdown.
+//
+// A Consumer is bound to exactly one stream — call [Consumer.Consume]
+// once per Consumer instance. Calling Consume for a second stream from
+// the same Consumer panics, because all calls share a single consumer
+// name and that name is what XGROUP DELCONSUMER targets at shutdown
+// (cross-stream interactions get tangled fast). Use [StartConsumers] for
+// multi-stream services — it clones one Consumer per binding internally.
 type Consumer struct {
 	client goredis.UniversalClient
 	logger *slog.Logger
@@ -152,6 +160,10 @@ type Consumer struct {
 	deadLetterMaxLen int64
 
 	metrics *ConsumerMetrics
+
+	// consumed records whether Consume has been called. A Consumer is
+	// single-use to keep the consumer-name → stream mapping unambiguous.
+	consumed atomic.Bool
 }
 
 // ConsumerOption configures a Consumer.
@@ -288,14 +300,34 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 // It automatically restarts with exponential backoff on errors.
 // Blocks until ctx is cancelled.
 //
-// Panics if stream name is empty (programming error — fail fast).
+// A single Consumer instance must be used for exactly one stream — see
+// the [Consumer] doc. Panics if stream name is empty (programming error)
+// or if Consume has already been called for this Consumer (multi-stream
+// usage). Use [StartConsumers] for multi-stream services.
 func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) {
 	if err := redis.ValidateName(stream, "stream"); err != nil {
 		panic("redis: " + err.Error())
 	}
+	if !c.consumed.CompareAndSwap(false, true) {
+		panic("redisstream: Consumer.Consume called for a second stream — create a separate Consumer per stream (see StartConsumers)")
+	}
 	redis.RunWithBackoff(ctx, c.logger, "stream consumer", func(ctx context.Context) error {
 		return c.consumeOnce(ctx, stream, handler)
 	})
+}
+
+// cloneForStream returns a copy of c with a freshly-generated consumer ID,
+// for use binding to a different stream. Used by [StartConsumers] so each
+// goroutine owns a distinct consumer name in its stream's group.
+func (c *Consumer) cloneForStream() (*Consumer, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate consumer ID: %w", err)
+	}
+	cp := *c
+	cp.consumer = id.String()
+	cp.consumed = atomic.Bool{}
+	return &cp, nil
 }
 
 // consumeOnce runs a single consumer session. Returns on error or context cancellation.
@@ -389,9 +421,10 @@ func (c *Consumer) processPending(ctx context.Context, stream, dlStream string, 
 		}).Result()
 
 		if err != nil {
-			if errors.Is(err, goredis.Nil) {
-				return nil // no more pending
-			}
+			// With Block:-1 the server returns an empty result rather than
+			// goredis.Nil when no pending messages exist (handled by the
+			// len() check below). Any error here is a real protocol/network
+			// failure that must propagate.
 			return fmt.Errorf("xreadgroup pending: %w", err)
 		}
 

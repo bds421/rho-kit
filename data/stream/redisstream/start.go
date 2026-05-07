@@ -16,12 +16,18 @@ type Binding struct {
 }
 
 // StartConsumers launches a consumer goroutine for each stream binding.
-// Each consumer runs in its own goroutine tracked by wg. If a consumer panics,
-// the panic is logged with a stack trace and shutdownFn (if non-nil) is called
-// to trigger graceful shutdown.
+// Each binding gets its own [*Consumer] instance — cloned from the
+// supplied prototype with a freshly-generated consumer ID — so the
+// consumer-name → stream mapping in Redis stays unambiguous. The
+// prototype itself is not used for consumption; it only carries shared
+// configuration (group, claim interval, dead-letter settings, ...).
 //
-// Returns an error if any binding has an empty stream name — this catches
-// configuration errors at startup rather than at runtime.
+// Each consumer runs in its own goroutine tracked by wg. If a consumer
+// panics, the panic is logged with a stack trace and shutdownFn (if
+// non-nil) is called to trigger graceful shutdown.
+//
+// Returns an error if any binding is malformed or if cloning the
+// prototype fails (UUID generation error).
 func StartConsumers(
 	ctx context.Context,
 	consumer *Consumer,
@@ -39,7 +45,11 @@ func StartConsumers(
 		}
 	}
 
-	for _, binding := range bindings {
+	for i, binding := range bindings {
+		bound, err := consumer.cloneForStream()
+		if err != nil {
+			return &redis.BindingError{Index: i, Reason: "clone consumer for stream: " + err.Error()}
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -55,7 +65,7 @@ func StartConsumers(
 					}
 				}
 			}()
-			consumer.Consume(ctx, binding.Stream, binding.Handler)
+			bound.Consume(ctx, binding.Stream, binding.Handler)
 		}()
 	}
 	return nil
