@@ -148,6 +148,26 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
 }
 
+// TestBuilder_Validates_RejectsIPv6Wildcard pins the M-A audit fix:
+// the C-1 check used to compare the literal string "0.0.0.0", missing
+// the IPv6 wildcard [::] (and other unspecified-address forms).
+// Operators setting INTERNAL_HOST=[::] would have bypassed the check
+// and bound /metrics to all IPv6 interfaces.
+func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
+	for _, host := range []string{"::", "[::]", "0:0:0:0:0:0:0:0"} {
+		t.Run(host, func(t *testing.T) {
+			cfg := BaseConfig{
+				Internal: InternalConfig{Host: host, Port: 9090},
+				TLS:      validTLSForTest(),
+			}
+			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			err := b.Validate()
+			require.Error(t, err, "IPv6 wildcard %q must fail validation", host)
+			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
+		})
+	}
+}
+
 // --- C-2: validator requires TLS ---
 
 func TestBuilder_Validates_RequiresTLS(t *testing.T) {

@@ -88,15 +88,14 @@ func (c SFTPConfig) Validate(environment string) error {
 	if c.Password != "" && c.KeyFile != "" {
 		return fmt.Errorf("SFTP_PASSWORD and STORAGE_SFTP_KEY_FILE are mutually exclusive")
 	}
-	if !config.IsDevelopment(environment) {
-		if c.Password != "" {
-			if err := config.RejectWeakCredential("SFTP_PASSWORD", c.Password); err != nil {
-				return err
-			}
-		}
-		if c.InsecureSkipHostKeyVerify {
-			return fmt.Errorf("InsecureSkipHostKeyVerify must not be true in %s environment", environment)
+	if c.Password != "" {
+		if err := config.RejectWeakCredential("SFTP_PASSWORD", c.Password); err != nil {
+			return err
 		}
 	}
+	if c.InsecureSkipHostKeyVerify {
+		return fmt.Errorf("InsecureSkipHostKeyVerify must not be true (host-key verification protects against MITM)")
+	}
+	_ = environment // accepted for API compatibility; no longer consulted
 	return nil
 }

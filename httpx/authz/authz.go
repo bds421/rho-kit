@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sync"
 
 	"github.com/bds421/rho-kit/httpx"
 )
@@ -132,24 +131,23 @@ func SubjectFromUntrustedHeader(header string) SubjectFunc {
 	}
 }
 
-// subjectFromHeaderWarnOnce gates the deprecation warning for
-// [SubjectFromHeader] so that misconfigured services log the warning at
-// most once per process instead of on every constructed middleware.
-var subjectFromHeaderWarnOnce sync.Once
-
 // SubjectFromHeader returns a SubjectFunc that reads a header value.
 //
 // Deprecated: SubjectFromHeader trusts a request header that any client can
 // spoof. Use [SubjectFromTrustedHeader] (with a trusted-proxy CIDR list) or
 // [SubjectFromContext] (with an auth-middleware extractor) instead. This
 // function is kept as a thin alias of [SubjectFromUntrustedHeader] and emits
-// a one-shot WARN log when first called.
+// a WARN log on every construction so the misuse is visible in operator
+// log streams (not just once per process — the previous sync.Once gate was
+// too quiet, since operators reading logs would only ever see one entry
+// regardless of how many spoof-able subject extractors the service had
+// wired). Construct this function from a one-off init() and the warning
+// fires once; construct it from a per-request hot path and the warning
+// fires per-request.
 func SubjectFromHeader(header string) SubjectFunc {
-	subjectFromHeaderWarnOnce.Do(func() {
-		slog.Warn("authz: SubjectFromHeader is deprecated; use SubjectFromTrustedHeader or SubjectFromContext",
-			"header", header,
-		)
-	})
+	slog.Warn("authz: SubjectFromHeader is deprecated and trusts a spoofable header; use SubjectFromTrustedHeader or SubjectFromContext",
+		"header", header,
+	)
 	return SubjectFromUntrustedHeader(header)
 }
 

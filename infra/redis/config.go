@@ -120,15 +120,20 @@ func LoadRedisFields() (RedisFields, error) {
 }
 
 // ValidateRedis checks the Redis configuration and credential strength.
+//
+// The environment parameter is preserved for backward compatibility but
+// no longer gates any check — the kit no longer has a development mode
+// (see docs/RELEASE_NOTES_v2.md). Production-safe defaults are
+// unconditional. Tests against fixture instances should provide
+// password-bearing URLs via REDIS_URL or set REDIS_PASSWORD.
 func (f RedisFields) ValidateRedis(environment string) error {
+	_ = environment // accepted for API compatibility; not consulted
 	resolved := f.Redis.RedisURL()
 	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {
 		return err
 	}
-	if !config.IsDevelopment(environment) {
-		if f.Redis.Password == "" && f.Redis.URL == "" {
-			return fmt.Errorf("REDIS_PASSWORD is required in %s", environment)
-		}
+	if f.Redis.Password == "" && f.Redis.URL == "" {
+		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")
 	}
 	return nil
 }

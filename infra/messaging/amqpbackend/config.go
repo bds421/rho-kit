@@ -109,15 +109,18 @@ func LoadRabbitMQFields() (RabbitMQFields, error) {
 }
 
 // ValidateRabbitMQ checks the AMQP URL format and credential strength.
+//
+// The environment parameter is preserved for API compatibility but is
+// no longer consulted — the kit's "no development mode" policy means
+// credential-strength checks fire unconditionally.
 func (f RabbitMQFields) ValidateRabbitMQ(environment string) error {
+	_ = environment // accepted for API compatibility; no longer consulted
 	resolved := f.RabbitMQ.AMQPURL()
 	if err := ValidateAMQPURL("RABBITMQ_URL", resolved); err != nil {
 		return err
 	}
-	if !config.IsDevelopment(environment) {
-		if err := config.RejectWeakCredential("RABBITMQ_PASSWORD", resolved); err != nil {
-			return fmt.Errorf("%w (environment: %s)", err, environment)
-		}
+	if err := config.RejectWeakCredential("RABBITMQ_PASSWORD", resolved); err != nil {
+		return err
 	}
 	return nil
 }

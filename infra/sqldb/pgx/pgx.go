@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -37,12 +39,21 @@ type Config struct {
 	// inspected at Connect time and must be require/verify-ca/verify-full.
 	DSN string
 
-	// AllowPlaintext opts out of the unconditional sslmode check. Use
-	// only for tests against a local fixture (testcontainers, embedded
-	// postgres) where TLS is impractical and the connection never
-	// crosses a network boundary. Production deployments must leave
-	// this false.
-	AllowPlaintext bool
+	// AllowPlaintextLoopbackForTests opts out of the unconditional
+	// sslmode check, but ONLY when the DSN's host resolves to a
+	// loopback address (127.0.0.0/8 or ::1) — the connection literally
+	// cannot leave the host. The loopback gate makes this safe to
+	// expose on Config without a build tag: an operator who copy-pastes
+	// the integration_test.go pattern into production gets an error
+	// at Connect time the moment the DSN points at a non-loopback
+	// host, instead of silently sending plaintext credentials over
+	// the wire.
+	//
+	// Tests against testcontainers / embedded postgres land squarely
+	// in the loopback case. Production deployments must leave this
+	// false; the field's name is deliberately verbose so a code
+	// reviewer cannot miss it.
+	AllowPlaintextLoopbackForTests bool
 
 	// MaxConns caps the pool. Default: 25 (mirrors gormpostgres).
 	MaxConns int32
@@ -70,7 +81,15 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("pgx: DSN must not be empty")
 	}
-	if !cfg.AllowPlaintext {
+	if cfg.AllowPlaintextLoopbackForTests {
+		// Defense-in-depth: an operator may have flipped the bool by
+		// accident or copy-pasted a test config. Refuse to honour the
+		// opt-out unless the DSN points at a loopback host — at that
+		// point the network risk is mechanically zero.
+		if err := requireLoopbackDSN(cfg.DSN); err != nil {
+			return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN is not loopback: %w", err)
+		}
+	} else {
 		if err := requireTLS(cfg.DSN); err != nil {
 			return nil, err
 		}
@@ -234,6 +253,49 @@ func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
 	} else {
 		pcfg.HealthCheckPeriod = cfg.HealthCheckPeriod
 	}
+}
+
+// requireLoopbackDSN parses the DSN's host and rejects anything that
+// isn't a loopback address (127.0.0.0/8, ::1, or the literal string
+// "localhost"). This is the gate behind Config.AllowPlaintextLoopbackForTests:
+// the opt-out is honoured ONLY when the network risk is mechanically
+// zero. An operator who flips the bool but points the DSN at a real
+// host gets a hard error at Connect time instead of silently sending
+// plaintext credentials over the wire.
+func requireLoopbackDSN(dsn string) error {
+	host := extractDSNHost(dsn)
+	if host == "" {
+		return fmt.Errorf("DSN does not specify a host")
+	}
+	low := strings.ToLower(host)
+	if low == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("DSN host %q is not a loopback address", host)
+	}
+	if !ip.IsLoopback() {
+		return fmt.Errorf("DSN host %q is not a loopback address", host)
+	}
+	return nil
+}
+
+// extractDSNHost finds the host in either URL form or libpq key=value
+// form. Returns "" when absent.
+func extractDSNHost(dsn string) string {
+	// URL form: postgres://user:pw@host:port/db?... — read between
+	// the @ and the first / or ?.
+	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
+		return u.Hostname()
+	}
+	// Key=value form: host=... port=... ...
+	for _, tok := range strings.Fields(dsn) {
+		if eq := strings.Index(tok, "="); eq > 0 && strings.EqualFold(tok[:eq], "host") {
+			return tok[eq+1:]
+		}
+	}
+	return ""
 }
 
 // requireTLS inspects the DSN's sslmode parameter and rejects unsafe

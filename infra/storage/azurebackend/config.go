@@ -67,11 +67,10 @@ func (c AzureConfig) Validate(environment string) error {
 		return fmt.Errorf("STORAGE_AZURE_CONTAINER_NAME is required")
 	}
 
-	if !config.IsDevelopment(environment) {
-		if err := config.RejectWeakCredential("AZURE_ACCOUNT_KEY", c.AccountKey); err != nil {
-			return err
-		}
+	if err := config.RejectWeakCredential("AZURE_ACCOUNT_KEY", c.AccountKey); err != nil {
+		return err
 	}
+	_ = environment // accepted for API compatibility; no longer consulted
 
 	return nil
 }

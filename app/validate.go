@@ -2,8 +2,30 @@ package app
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
+
+// isUnspecifiedHost reports whether host names an "all-interfaces"
+// bind explicitly. Catches IPv4 (0.0.0.0) and IPv6 ([::], ::, etc.)
+// in raw or bracket-wrapped form.
+//
+// Empty host is NOT flagged here because [InternalConfig.Addr] defaults
+// empty to "127.0.0.1" — i.e. an unset INTERNAL_HOST resolves to
+// loopback at listen time. The audit's concern (M-A) is the operator
+// who actively sets the config to a wildcard; an unset config is
+// already safe.
+func isUnspecifiedHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	// Strip square brackets that might wrap an IPv6 literal.
+	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	if ip := net.ParseIP(stripped); ip != nil && ip.IsUnspecified() {
+		return true
+	}
+	return false
+}
 
 // Validate checks for common configuration mistakes before startup.
 // Callers may use this directly, but Run calls it automatically.
@@ -91,11 +113,12 @@ func (b *Builder) validateProductionSafety() error {
 	}
 
 	// C-1: the internal ops port exposes /metrics without authentication.
-	// Binding to 0.0.0.0 leaks Prometheus labels (route patterns, tenant
-	// IDs) to anyone on the network. Operators with strict network
-	// isolation must opt in explicitly via WithInternalNonLoopback.
-	if b.cfg.Internal.Host == "0.0.0.0" && !b.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host=\"0.0.0.0\" exposes unauthenticated /metrics; bind to a loopback or internal interface, or call WithInternalNonLoopback when network isolation is enforced")
+	// Binding to any unspecified address (0.0.0.0, [::], "") leaks
+	// Prometheus labels (route patterns, tenant IDs) to anyone on the
+	// network. Operators with strict network isolation must opt in
+	// explicitly via WithInternalNonLoopback.
+	if isUnspecifiedHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
+		return fmt.Errorf("Internal.Host=%q exposes unauthenticated /metrics on all interfaces; bind to a loopback or internal interface, or call WithInternalNonLoopback when network isolation is enforced", b.cfg.Internal.Host)
 	}
 
 	// Postgres: sslmode must be a TLS-enforcing mode.

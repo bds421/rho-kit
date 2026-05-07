@@ -320,22 +320,19 @@ func (f Fields) Validate(envPrefix, environment, driver string) error {
 		if err := validatePostgresSSLMode(sslMode); err != nil {
 			return err
 		}
-		// In non-development environments, refuse to start with TLS disabled.
-		// Empty defaults to "disable" inside buildPostgresDSN; treat both
-		// as a hard error so a missing DB_SSL_MODE in production fails loud
-		// rather than silently shipping credentials/queries on the wire.
-		if !config.IsDevelopment(environment) {
-			normalized := strings.ToLower(sslMode)
-			if normalized == "" || normalized == "disable" {
-				return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full in non-development environments (got %q)", envPrefix, sslMode)
-			}
+		// TLS is unconditional. Empty defaults to "disable" inside
+		// buildPostgresDSN; both empty and "disable" are rejected so a
+		// missing DB_SSL_MODE fails loud rather than silently shipping
+		// credentials/queries on the wire.
+		normalized := strings.ToLower(sslMode)
+		if normalized == "" || normalized == "disable" {
+			return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full (got %q)", envPrefix, sslMode)
 		}
 	}
-	if !config.IsDevelopment(environment) {
-		if err := config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password); err != nil {
-			return fmt.Errorf("%w (environment: %s)", err, environment)
-		}
+	if err := config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password); err != nil {
+		return err
 	}
+	_ = environment // accepted for API compatibility; no longer consulted
 	return nil
 }
 

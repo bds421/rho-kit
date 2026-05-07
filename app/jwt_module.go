@@ -60,13 +60,15 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	case m.cfg.expectedIssuer != "":
 		opts = append(opts, jwtutil.WithExpectedIssuer(m.cfg.expectedIssuer))
 	default:
-		// Should be unreachable: Builder.Validate rejects WithJWT
-		// without WithJWTIssuer or WithoutJWTIssuer. Keep a defensive
-		// allow-any path so a hand-constructed module without the
-		// Builder still produces a working provider — but log loudly
-		// so the misconfiguration is visible in service logs.
+		// This branch is unreachable when the module is constructed
+		// via app.Builder — Builder.Validate rejects WithJWT without
+		// either WithJWTIssuer or WithoutJWTIssuer. The defensive
+		// allow-any path is here for hand-constructed modules; emit
+		// an Error-level log so the misconfiguration cannot hide in
+		// log volume. Operators monitoring Error-level logs will see
+		// it on the first request the provider validates.
 		opts = append(opts, jwtutil.WithAllowAnyIssuer())
-		mc.Logger.Warn("jwt provider built without issuer pin and without explicit opt-out — verifying tokens from any authority; use Builder.WithJWTIssuer or Builder.WithoutJWTIssuer to make this explicit",
+		mc.Logger.Error("jwt provider built without issuer pin and without explicit opt-out — verifying tokens from any authority. Confused-deputy hazard: a token issued for service A is silently valid at service B. Use Builder.WithJWTIssuer (preferred) or Builder.WithoutJWTIssuer (explicit acknowledgement) to remove this log line.",
 			"jwks_url", m.cfg.jwksURL,
 		)
 	}

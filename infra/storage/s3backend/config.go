@@ -111,11 +111,12 @@ func (c S3Config) Validate(environment string) error {
 		return fmt.Errorf("S3_SECRET_ACCESS_KEY is required")
 	}
 
-	if !config.IsDevelopment(environment) {
-		if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
-			return err
-		}
+	// Credential-strength check is unconditional — production-safe
+	// defaults are the only mode (see docs/RELEASE_NOTES_v2.md).
+	if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
+		return err
 	}
+	_ = environment // accepted for API compatibility; no longer consulted
 
 	if c.SSE == "aws:kms" && c.SSEKMSKeyID == "" {
 		return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID is required when STORAGE_S3_SSE=aws:kms")
