@@ -41,6 +41,7 @@ use (
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
+	./infra/messaging/natsbackend
 	./infra/messaging/redisbackend
 	./infra/outbox
 	./infra/outbox/gormstore

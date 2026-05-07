@@ -46,8 +46,8 @@ func (b *Builder) WithNATS(cfg natsbackend.Config) *Builder
 
 ## Definition of done
 
-- [ ] Publisher + Consumer + topology declaration.
-- [ ] Retry / DLQ pattern documented and tested.
-- [ ] Tests against a NATS JetStream container (testcontainers-go).
-- [ ] Builder method.
-- [ ] Recipe in `docs/ai/messaging.md`.
+- [x] Publisher + Consumer + topology (`Connection.EnsureStream`). ✅ this PR
+- [x] Retry / DLQ pattern: handler errors nack so JetStream redelivers after AckWait; malformed messages are Term'd to prevent poison-message loops; integration test asserts `Delivery.Redelivered=true` on second attempt.
+- [x] Integration tests behind `//go:build integration` covering round trip + nack-redeliver via testcontainers nats:2.11-alpine.
+- [ ] Builder method `WithNATS` (deferred — primitive ships first).
+- [ ] Recipe in `docs/ai/messaging.md` (deferred to docs sweep).
