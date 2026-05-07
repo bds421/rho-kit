@@ -2,6 +2,8 @@ package actionlog
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,17 +16,40 @@ import (
 // import it here; this private double keeps the unit tests
 // self-contained.
 type memStore struct {
+	mu      sync.Mutex
 	entries map[string]Entry
+	order   []string
+	latest  map[string]Entry
+	seq     map[string]int64
 }
 
-func newMemStore() *memStore { return &memStore{entries: make(map[string]Entry)} }
+func newMemStore() *memStore {
+	return &memStore{
+		entries: make(map[string]Entry),
+		latest:  make(map[string]Entry),
+		seq:     make(map[string]int64),
+	}
+}
 
-func (s *memStore) Append(_ context.Context, e Entry) error {
-	s.entries[e.ID] = e
-	return nil
+func (s *memStore) AppendChained(_ context.Context, tenantID string, build func(prev Entry, prevSeq int64) (Entry, error)) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := s.latest[tenantID]
+	prevSeq := s.seq[tenantID]
+	entry, err := build(prev, prevSeq)
+	if err != nil {
+		return Entry{}, err
+	}
+	s.entries[entry.ID] = entry
+	s.order = append(s.order, entry.ID)
+	s.latest[tenantID] = entry
+	s.seq[tenantID] = entry.Seq
+	return entry, nil
 }
 
 func (s *memStore) Get(_ context.Context, id string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	e, ok := s.entries[id]
 	if !ok {
 		return Entry{}, ErrNotFound
@@ -32,11 +57,31 @@ func (s *memStore) Get(_ context.Context, id string) (Entry, error) {
 	return e, nil
 }
 
-func (s *memStore) List(_ context.Context, _ Query) ([]Entry, error) {
+func (s *memStore) List(_ context.Context, q Query) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make([]Entry, 0, len(s.entries))
-	for _, e := range s.entries {
+	for _, id := range s.order {
+		e := s.entries[id]
+		if q.TenantID != "" && e.TenantID != q.TenantID {
+			continue
+		}
 		out = append(out, e)
 	}
+	return out, nil
+}
+
+func (s *memStore) ListByTenantSeq(_ context.Context, tenantID string) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Entry, 0)
+	for _, id := range s.order {
+		e := s.entries[id]
+		if e.TenantID == tenantID {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out, nil
 }
 
@@ -121,9 +166,11 @@ func TestGet_DetectsTamper(t *testing.T) {
 	// Mutate the stored entry directly. This is the attacker model: a
 	// DBA who edits a row, or a forged entry inserted by some path
 	// that bypassed the Logger.
+	store.mu.Lock()
 	tampered := store.entries[e.ID]
 	tampered.Actor = "rogue"
 	store.entries[e.ID] = tampered
+	store.mu.Unlock()
 
 	_, err = logger.Get(context.Background(), e.ID)
 	assert.ErrorIs(t, err, ErrSignatureInvalid)
@@ -139,9 +186,11 @@ func TestVerify_RejectsUnknownKeyID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mutate the row to point at a key id the source doesn't know.
+	store.mu.Lock()
 	tampered := store.entries[e.ID]
 	tampered.SignatureKeyID = "rotated-out-key"
 	store.entries[e.ID] = tampered
+	store.mu.Unlock()
 
 	_, err = logger.Get(context.Background(), e.ID)
 	assert.ErrorIs(t, err, ErrUnknownKeyID)
@@ -160,13 +209,124 @@ func TestList_FailsClosedOnTamperedEntry(t *testing.T) {
 		TenantID: "t", Actor: "b", Action: "y", Outcome: OutcomeSuccess,
 	})
 	require.NoError(t, err)
+	store.mu.Lock()
 	tampered := store.entries[bad.ID]
 	tampered.Reason = "rewritten after the fact"
 	store.entries[bad.ID] = tampered
+	store.mu.Unlock()
 
-	_, err = logger.List(context.Background(), Query{})
+	_, err = logger.List(context.Background(), Query{TenantID: "t"})
 	assert.ErrorIs(t, err, ErrSignatureInvalid)
 	_ = good
+}
+
+func TestList_RejectsZeroQuery(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+	_, err := logger.List(context.Background(), Query{})
+	assert.ErrorIs(t, err, ErrQueryTenantRequired)
+}
+
+func TestList_AllTenantsOptIn(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+	_, err := logger.Append(context.Background(), Entry{
+		TenantID: "t1", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+	_, err = logger.Append(context.Background(), Entry{
+		TenantID: "t2", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+	got, err := logger.List(context.Background(), Query{AllTenants: true})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+}
+
+func TestVerifyChain_DetectsDeletion(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	for i := 0; i < 3; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+	require.NoError(t, logger.VerifyChain(context.Background(), "t"))
+
+	// Delete the middle entry.
+	store.mu.Lock()
+	middleID := store.order[1]
+	delete(store.entries, middleID)
+	store.order = append(store.order[:1], store.order[2:]...)
+	store.mu.Unlock()
+
+	err := logger.VerifyChain(context.Background(), "t")
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestVerifyChain_DetectsReorder(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	for i := 0; i < 3; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	// Swap Seq values on two entries — this is what a malicious DBA
+	// would do to make a later action appear to have come first.
+	// Without the chain we'd only catch this if signatures broke; with
+	// the chain, the prev_hash of subsequent entries becomes wrong.
+	store.mu.Lock()
+	a := store.entries[store.order[0]]
+	b := store.entries[store.order[1]]
+	a.Seq, b.Seq = b.Seq, a.Seq
+	store.entries[a.ID] = a
+	store.entries[b.ID] = b
+	store.mu.Unlock()
+
+	err := logger.VerifyChain(context.Background(), "t")
+	// Either ErrSignatureInvalid (Seq is part of the canonical form)
+	// or ErrChainBroken (prev_hash mismatch) is acceptable — both
+	// signal tamper to the caller.
+	assert.True(t, err != nil)
+}
+
+func TestAppend_ConcurrentMonotonicSeq(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	const n = 32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := logger.Append(context.Background(), Entry{
+				TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+			})
+			require.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	require.NoError(t, logger.VerifyChain(context.Background(), "t"))
+}
+
+func TestStaticSecrets_ResolveReturnsCopy(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	ss := NewStaticSecrets("k1", map[string][]byte{"k1": key})
+	got, ok := ss.Resolve("k1")
+	require.True(t, ok)
+	got[0] ^= 0xff
+
+	again, ok := ss.Resolve("k1")
+	require.True(t, ok)
+	assert.Equal(t, byte('0'), again[0], "Resolve must return a defensive copy")
 }
 
 // TestSign_NewlineInjectionDoesNotCollide is the regression test for

@@ -46,10 +46,10 @@ func New(opts ...Option) *Store {
 	return s
 }
 
-// Create persists a new request in StatePending. ExpiresAt is taken
-// verbatim from r — the middleware applies the policy.
+// Create persists a new request in StatePending. Rejects requests
+// without a future ExpiresAt — see validateForCreate.
 func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request, error) {
-	if err := validateForCreate(r); err != nil {
+	if err := validateForCreate(r, s.clock()); err != nil {
 		return approval.Request{}, err
 	}
 
@@ -114,6 +114,9 @@ func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, e
 // Decide records an approver's decision. See [approval.Store] for the
 // full contract.
 func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+	if decidedBy == "" {
+		return approval.Request{}, approval.ErrInvalidApprover
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -189,12 +192,20 @@ func (s *Store) MarkExecuted(_ context.Context, id string) (approval.Request, er
 }
 
 // validateForCreate is a thin wrapper that maps to the package-level
-// validation contract.
-func validateForCreate(r approval.Request) error {
+// validation contract. Requires non-zero, future ExpiresAt — direct
+// store callers must opt into a deadline because permanent pending
+// approvals defeat the kit's bounded-decision-window invariant.
+func validateForCreate(r approval.Request, now time.Time) error {
 	if r.ID == "" || r.TenantID == "" || r.Actor == "" || r.Action == "" {
 		return approval.ErrInvalidRequest
 	}
 	if r.State != "" && r.State != approval.StatePending {
+		return approval.ErrInvalidRequest
+	}
+	if r.ExpiresAt.IsZero() {
+		return approval.ErrInvalidRequest
+	}
+	if !r.ExpiresAt.After(now) {
 		return approval.ErrInvalidRequest
 	}
 	return nil

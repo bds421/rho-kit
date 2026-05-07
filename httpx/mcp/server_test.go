@@ -333,7 +333,7 @@ func TestServer_ActionLog_StrictMode_NoTenant_RefusesDispatch(t *testing.T) {
 
 	assert.Equal(t, 0, calls, "tool MUST NOT execute when strict-mode audit cannot be attributed")
 
-	entries, err := logger.List(context.Background(), actionlog.Query{})
+	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no audit entry should be written when tool was refused")
 }
@@ -363,7 +363,7 @@ func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T)
 	assert.Equal(t, "hi", result["echoed"])
 	assert.Equal(t, 1, calls, "tool must execute in loose mode")
 
-	entries, err := logger.List(context.Background(), actionlog.Query{})
+	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Empty(t, entries, "loose mode skips the audit entry when tenant absent")
 
@@ -420,6 +420,10 @@ func (l *asyncBlockingLogger) Sign(e actionlog.Entry) (string, string, error) {
 
 func (l *asyncBlockingLogger) Verify(e actionlog.Entry) error {
 	return l.inner.Verify(e)
+}
+
+func (l *asyncBlockingLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	return l.inner.VerifyChain(ctx, tenantID)
 }
 
 func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
@@ -584,7 +588,7 @@ func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{})
+	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "fixed-actor", entries[0].Actor)

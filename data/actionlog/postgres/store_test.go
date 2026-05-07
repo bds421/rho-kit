@@ -73,17 +73,18 @@ func TestList_Filters(t *testing.T) {
 	assert.Len(t, t1, 3)
 
 	createsByA, err := logger.List(context.Background(), actionlog.Query{
-		Actor:  "a",
-		Action: "user.create",
+		AllTenants: true,
+		Actor:      "a",
+		Action:     "user.create",
 	})
 	require.NoError(t, err)
 	assert.Len(t, createsByA, 3)
 
-	recent, err := logger.List(context.Background(), actionlog.Query{Since: now.Add(-90 * time.Minute)})
+	recent, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Since: now.Add(-90 * time.Minute)})
 	require.NoError(t, err)
 	assert.Len(t, recent, 2)
 
-	limited, err := logger.List(context.Background(), actionlog.Query{Limit: 1})
+	limited, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Limit: 1})
 	require.NoError(t, err)
 	assert.Len(t, limited, 1)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/bds421/rho-kit/data/actionlog"
 )
@@ -21,7 +22,7 @@ const defaultLimit = 100
 // signing form is the Logger's responsibility, not the store's.
 type row struct {
 	ID             string          `gorm:"primaryKey;size:36"`
-	TenantID       string          `gorm:"size:255;not null;index:idx_action_log_entries_tenant_occurred,priority:1"`
+	TenantID       string          `gorm:"size:255;not null;index:idx_action_log_entries_tenant_occurred,priority:1;uniqueIndex:idx_action_log_entries_tenant_seq,priority:1"`
 	Actor          string          `gorm:"size:255;not null;index"`
 	Action         string          `gorm:"size:255;not null;index"`
 	Resource       string          `gorm:"size:500;not null;default:''"`
@@ -30,6 +31,8 @@ type row struct {
 	Metadata       json.RawMessage `gorm:"type:jsonb"`
 	OccurredAt     time.Time       `gorm:"not null;index:idx_action_log_entries_tenant_occurred,priority:2,sort:desc"`
 	SignatureKeyID string          `gorm:"size:64;not null;column:signature_key_id"`
+	Seq            int64           `gorm:"not null;default:0;uniqueIndex:idx_action_log_entries_tenant_seq,priority:2"`
+	PrevHash       string          `gorm:"size:64;not null;default:'';column:prev_hash"`
 	Signature      string          `gorm:"size:128;not null"`
 }
 
@@ -49,16 +52,58 @@ func New(db *gorm.DB) *Store {
 	return &Store{db: db}
 }
 
-// Append persists a fully-populated entry.
-func (s *Store) Append(ctx context.Context, e actionlog.Entry) error {
-	r, err := toRow(e)
+// AppendChained runs build inside a transaction that holds SELECT FOR
+// UPDATE on the latest row for tenantID, persisting the resulting
+// entry under the same lock so concurrent appends serialise.
+func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
+	if tenantID == "" {
+		return actionlog.Entry{}, actionlog.ErrInvalidEntry
+	}
+	var out actionlog.Entry
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var latest row
+		// SELECT FOR UPDATE the highest-Seq row for this tenant. On
+		// dialects that elide row locking (sqlite via memdb), the
+		// per-tenant unique index on (tenant_id, seq) still prevents
+		// duplicate Seq values — the second concurrent insert fails
+		// the unique constraint and the caller can retry.
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("tenant_id = ?", tenantID).
+			Order("seq DESC").
+			Limit(1).
+			Take(&latest).Error
+		var (
+			prev    actionlog.Entry
+			prevSeq int64
+		)
+		if err == nil {
+			prev, err = fromRow(latest)
+			if err != nil {
+				return err
+			}
+			prevSeq = latest.Seq
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		entry, err := build(prev, prevSeq)
+		if err != nil {
+			return err
+		}
+		r, err := toRow(entry)
+		if err != nil {
+			return err
+		}
+		if err := tx.Create(&r).Error; err != nil {
+			return fmt.Errorf("actionlog/postgres: append: %w", err)
+		}
+		out = entry
+		return nil
+	})
 	if err != nil {
-		return err
+		return actionlog.Entry{}, err
 	}
-	if err := s.db.WithContext(ctx).Create(&r).Error; err != nil {
-		return fmt.Errorf("actionlog/postgres: append: %w", err)
-	}
-	return nil
+	return out, nil
 }
 
 // Get returns the entry by id. Returns [actionlog.ErrNotFound] when
@@ -115,6 +160,28 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 	return out, nil
 }
 
+// ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
+// No limit is applied — VerifyChain needs the full chain.
+func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
+	var rows []row
+	err := s.db.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("seq ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("actionlog/postgres: list by tenant seq: %w", err)
+	}
+	out := make([]actionlog.Entry, 0, len(rows))
+	for _, r := range rows {
+		e, err := fromRow(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 func toRow(e actionlog.Entry) (row, error) {
 	var meta json.RawMessage
 	if len(e.Metadata) > 0 {
@@ -135,6 +202,8 @@ func toRow(e actionlog.Entry) (row, error) {
 		Metadata:       meta,
 		OccurredAt:     e.OccurredAt.UTC(),
 		SignatureKeyID: e.SignatureKeyID,
+		Seq:            e.Seq,
+		PrevHash:       e.PrevHash,
 		Signature:      e.Signature,
 	}, nil
 }
@@ -159,6 +228,8 @@ func fromRow(r row) (actionlog.Entry, error) {
 		Metadata:       meta,
 		OccurredAt:     r.OccurredAt.UTC(),
 		SignatureKeyID: r.SignatureKeyID,
+		Seq:            r.Seq,
+		PrevHash:       r.PrevHash,
 		Signature:      r.Signature,
 	}, nil
 }

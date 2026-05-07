@@ -32,11 +32,18 @@
 //     authentication/authorisation problem the service is better
 //     placed to solve than the kit.
 //
-//   - Optional executor: callers may pass [WithExecutor] to wire a
-//     callback the middleware will invoke after a request transitions
-//     out of pending into approved. The middleware doesn't poll on
-//     the request hot path — wire a worker (or the approver endpoint
-//     itself, post-Decide) to call into the executor.
+//   - The kit does NOT execute approved requests. Services replay the
+//     stashed [approval.Request.Payload] through their own handler in
+//     the approver endpoint (or a worker that polls
+//     [approval.Store.List] for [approval.StateApproved]) and call
+//     [approval.Store.MarkExecuted] on success.
+//
+// # Required configuration
+//
+// [Middleware] panics at construction if no [WithActorExtractor] is
+// supplied. The kit will not default actors to "anonymous" on
+// destructive operations; missing or empty actor at request time
+// produces 401 Unauthorized.
 //
 // # Body size cap
 //

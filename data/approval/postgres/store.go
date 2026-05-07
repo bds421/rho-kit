@@ -61,9 +61,10 @@ func New(db *gorm.DB, opts ...Option) *Store {
 	return s
 }
 
-// Create persists a new request in StatePending.
+// Create persists a new request in StatePending. Rejects requests
+// without a future ExpiresAt — see validateForCreate.
 func (s *Store) Create(ctx context.Context, r approval.Request) (approval.Request, error) {
-	if err := validateForCreate(r); err != nil {
+	if err := validateForCreate(r, s.clock()); err != nil {
 		return approval.Request{}, err
 	}
 	r.State = approval.StatePending
@@ -136,6 +137,9 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 // to move out of a terminal state, auto-expires past-deadline pending
 // requests.
 func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+	if decidedBy == "" {
+		return approval.Request{}, approval.ErrInvalidApprover
+	}
 	target := approval.StateApproved
 	if !approve {
 		target = approval.StateRejected
@@ -302,11 +306,17 @@ func fromRow(r row) approval.Request {
 	}
 }
 
-func validateForCreate(r approval.Request) error {
+func validateForCreate(r approval.Request, now time.Time) error {
 	if r.ID == "" || r.TenantID == "" || r.Actor == "" || r.Action == "" {
 		return approval.ErrInvalidRequest
 	}
 	if r.State != "" && r.State != approval.StatePending {
+		return approval.ErrInvalidRequest
+	}
+	if r.ExpiresAt.IsZero() {
+		return approval.ErrInvalidRequest
+	}
+	if !r.ExpiresAt.After(now) {
 		return approval.ErrInvalidRequest
 	}
 	return nil

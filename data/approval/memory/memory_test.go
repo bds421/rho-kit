@@ -43,6 +43,30 @@ func TestCreate_RejectsMissingFields(t *testing.T) {
 	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
 }
 
+func TestCreate_RejectsZeroExpiresAt(t *testing.T) {
+	store := New()
+	r := newReq("r-zero")
+	r.ExpiresAt = time.Time{}
+	_, err := store.Create(context.Background(), r)
+	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
+}
+
+func TestCreate_RejectsPastExpiresAt(t *testing.T) {
+	store := New()
+	r := newReq("r-past")
+	r.ExpiresAt = time.Now().Add(-time.Hour)
+	_, err := store.Create(context.Background(), r)
+	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
+}
+
+func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
+	store := New()
+	_, err := store.Create(context.Background(), newReq("r1"))
+	require.NoError(t, err)
+	_, err = store.Decide(context.Background(), "r1", "", "ok", true)
+	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
+}
+
 func TestDecide_ApprovesPending(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))

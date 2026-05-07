@@ -32,8 +32,14 @@ var (
 	ErrInvalidTransition = errors.New("approval: invalid state transition")
 
 	// ErrInvalidRequest is returned by [Store.Create] when required
-	// fields are missing.
+	// fields are missing or invalid (e.g. zero/past ExpiresAt).
 	ErrInvalidRequest = errors.New("approval: request is missing required fields")
+
+	// ErrInvalidApprover is returned by [Store.Decide] when decidedBy
+	// is empty. A blank approver makes the audit record useless and
+	// hides the responsible operator behind state transitions on
+	// destructive operations.
+	ErrInvalidApprover = errors.New("approval: decidedBy must not be empty")
 )
 
 // Request represents a destructive operation pending human approval.
@@ -126,11 +132,21 @@ type Store interface {
 }
 
 // validate enforces required-field invariants for new requests.
-func validate(r Request) error {
+//
+// ExpiresAt MUST be set and in the future. Direct store callers can
+// otherwise create permanent pending approvals that never auto-expire,
+// which defeats the kit's bounded-decision-window invariant.
+func validate(r Request, now time.Time) error {
 	if r.ID == "" || r.TenantID == "" || r.Actor == "" || r.Action == "" {
 		return ErrInvalidRequest
 	}
 	if r.State != "" && r.State != StatePending {
+		return ErrInvalidRequest
+	}
+	if r.ExpiresAt.IsZero() {
+		return ErrInvalidRequest
+	}
+	if !r.ExpiresAt.After(now) {
 		return ErrInvalidRequest
 	}
 	return nil

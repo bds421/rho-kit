@@ -15,6 +15,17 @@ CREATE TABLE IF NOT EXISTS action_log_entries (
     -- a round trip on drivers that interpret the column literally.
     occurred_at       TIMESTAMPTZ NOT NULL,
     signature_key_id  VARCHAR(64) NOT NULL,
+    -- seq is the per-tenant monotonic sequence number assigned by
+    -- Logger.Append. The unique index on (tenant_id, seq) is the
+    -- backstop that keeps two concurrent appends from producing the
+    -- same Seq on dialects that elide SELECT FOR UPDATE.
+    seq               BIGINT NOT NULL DEFAULT 0,
+    -- prev_hash is the hex-encoded HMAC-SHA256 of the previous entry's
+    -- canonical form for this tenant; the first entry stores 64 zero
+    -- hex chars. Together with seq, this turns the table into a
+    -- tamper-evident append-only log: deletion / reordering /
+    -- truncation breaks the chain on the next VerifyChain call.
+    prev_hash         VARCHAR(64) NOT NULL DEFAULT '',
     signature         VARCHAR(128) NOT NULL
 );
 
@@ -24,6 +35,8 @@ CREATE INDEX IF NOT EXISTS idx_action_log_entries_actor
     ON action_log_entries (actor);
 CREATE INDEX IF NOT EXISTS idx_action_log_entries_action
     ON action_log_entries (action);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_entries_tenant_seq
+    ON action_log_entries (tenant_id, seq);
 
 -- +goose Down
 DROP TABLE IF EXISTS action_log_entries;

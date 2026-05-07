@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +26,8 @@ import (
 //	<len(reason)>:reason\n
 //	<len(occurred_at)>:occurred_at\n   – RFC3339Nano UTC
 //	<len(metadata)>:metadata\n         – canonical JSON (see canonicalJSON)
+//	<len(seq)>:seq\n                   – decimal int64
+//	<len(prev_hash)>:prev_hash\n       – hex SHA-256 of the previous entry
 //
 // The length prefix is essential: a field value containing a literal
 // newline could otherwise shift the field boundary in the canonical
@@ -34,6 +37,10 @@ import (
 // length prefix the parse is unambiguous — the next field always
 // starts at exactly the byte boundary the previous field's length
 // dictates.
+//
+// Seq and PrevHash are part of the signed payload so a deletion or
+// reorder in durable storage cannot go undetected: the next entry's
+// PrevHash will fail to match, and VerifyChain reports ErrChainBroken.
 //
 // SignatureKeyID is intentionally not part of the signed form. Including
 // it would make it impossible to detect "same content signed by a
@@ -58,6 +65,8 @@ func canonicalForm(e Entry) ([]byte, error) {
 		e.Reason,
 		e.OccurredAt.UTC().Format(time.RFC3339Nano),
 		string(metaJSON),
+		strconv.FormatInt(e.Seq, 10),
+		e.PrevHash,
 	}
 	var buf strings.Builder
 	buf.Grow(canonicalEstimate(parts))

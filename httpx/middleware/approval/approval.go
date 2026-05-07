@@ -2,7 +2,6 @@ package approval
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,16 +28,6 @@ const DefaultExpiry = 24 * time.Hour
 // instead.
 const DefaultTenantHeader = "X-Tenant-ID"
 
-// Executor is the optional callback invoked when a request transitions
-// from pending to approved. The middleware itself does not poll for
-// state changes — services wire this from their approver endpoint
-// (after [approval.Store.Decide] returns approved=true).
-//
-// Implementations should:
-//   - Replay the original action using r.Payload as the body.
-//   - Call [approval.Store.MarkExecuted] on success.
-type Executor func(ctx context.Context, r approval.Request) error
-
 // Option configures the middleware.
 type Option func(*config)
 
@@ -46,12 +35,11 @@ type config struct {
 	maxBodyBytes      int64
 	expiry            time.Duration
 	tenantSource      func(*http.Request) (string, bool)
-	actorExtractor    func(*http.Request) string
+	actorExtractor    func(*http.Request) (string, bool)
 	actionExtractor   func(*http.Request) string
 	resourceExtractor func(*http.Request) string
 	idFunc            func() string
 	logger            *slog.Logger
-	executor          Executor
 }
 
 // WithMaxBodyBytes overrides the body size cap. Panics on non-positive
@@ -84,24 +72,16 @@ func WithTenantSource(fn func(*http.Request) (string, bool)) Option {
 	return func(c *config) { c.tenantSource = fn }
 }
 
-// WithActorExtractor sets a function that returns the principal id for
-// a request. The default returns "anonymous" — that is forensically
-// useless, but failing 400 on every unauthenticated request would
-// surprise callers who haven't yet wired auth. Most deployments wire
-// this from JWT claims or a gRPC peer cert.
+// WithActorExtractor sets a function that resolves the principal id
+// for a request. REQUIRED — [Middleware] panics at construction if no
+// extractor is configured. Returning ok=false (or an empty actor)
+// causes the middleware to respond 401 Unauthorized: the kit will not
+// record an "anonymous" actor on a destructive operation, since that
+// strips forensics value at the moment it matters most.
 //
-// Returning empty is treated as "anonymous"; the middleware never
-// stores an empty actor because the data/approval store rejects it.
-func WithActorExtractor(fn func(*http.Request) string) Option {
-	return func(c *config) {
-		c.actorExtractor = func(r *http.Request) string {
-			v := fn(r)
-			if v == "" {
-				return "anonymous"
-			}
-			return v
-		}
-	}
+// Most deployments wire this from JWT claims or a gRPC peer cert.
+func WithActorExtractor(fn func(*http.Request) (string, bool)) Option {
+	return func(c *config) { c.actorExtractor = fn }
 }
 
 // WithActionExtractor sets a function that returns the action verb for
@@ -131,16 +111,6 @@ func WithLogger(l *slog.Logger) Option {
 	return func(c *config) { c.logger = l }
 }
 
-// WithExecutor wires a callback to run when a request transitions to
-// approved. See [Executor] for the contract — the middleware itself
-// does not invoke this; it's stored on the config so the approver
-// endpoint can fetch it via [Middleware]'s closure if needed. Services
-// typically wire the executor directly to their approver handler
-// instead, but the option is here for symmetry with the spec.
-func WithExecutor(fn Executor) Option {
-	return func(c *config) { c.executor = fn }
-}
-
 func defaultConfig() config {
 	return config{
 		maxBodyBytes: DefaultMaxBodyBytes,
@@ -149,7 +119,6 @@ func defaultConfig() config {
 			v := r.Header.Get(DefaultTenantHeader)
 			return v, v != ""
 		},
-		actorExtractor:    func(_ *http.Request) string { return "anonymous" },
 		actionExtractor:   func(r *http.Request) string { return r.Method + " " + r.URL.Path },
 		resourceExtractor: func(r *http.Request) string { return r.URL.Path },
 		idFunc:            func() string { return uuid.Must(uuid.NewV7()).String() },
@@ -165,7 +134,10 @@ type Response struct {
 }
 
 // Middleware returns http middleware that records the request as a
-// pending approval and responds 202 Accepted. Panics if store is nil.
+// pending approval and responds 202 Accepted. Panics if store is nil
+// or if no [WithActorExtractor] is configured — a missing extractor
+// would otherwise silently record "anonymous" against destructive
+// operations, which the kit refuses to do.
 func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Handler {
 	if store == nil {
 		panic("approval: Middleware requires a non-nil approval.Store")
@@ -174,12 +146,21 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if cfg.actorExtractor == nil {
+		panic("approval: Middleware requires WithActorExtractor; the kit will not default actors to anonymous on destructive operations")
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tenantID, ok := cfg.tenantSource(r)
 			if !ok || tenantID == "" {
 				writeError(w, http.StatusBadRequest, "tenant id missing")
+				return
+			}
+
+			actor, ok := cfg.actorExtractor(r)
+			if !ok || actor == "" {
+				writeError(w, http.StatusUnauthorized, "actor not resolved")
 				return
 			}
 
@@ -198,7 +179,7 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 			req := approval.Request{
 				ID:        cfg.idFunc(),
 				TenantID:  tenantID,
-				Actor:     cfg.actorExtractor(r),
+				Actor:     actor,
 				Action:    cfg.actionExtractor(r),
 				Resource:  cfg.resourceExtractor(r),
 				Payload:   body,

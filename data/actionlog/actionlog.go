@@ -59,6 +59,20 @@ var (
 	// distinct from a value mismatch so operators can tell rotation lag
 	// from forgery.
 	ErrUnknownKeyID = errors.New("actionlog: signature key id is not known to the secret source")
+
+	// ErrChainBroken is returned by [Logger.VerifyChain] when the
+	// per-tenant hash chain shows a deletion, reordering, or
+	// truncation. Distinct from [ErrSignatureInvalid] (which catches
+	// per-row tampering) because the remediation differs: a chain
+	// break implies missing or out-of-order rows in durable storage.
+	ErrChainBroken = errors.New("actionlog: per-tenant hash chain is broken")
+
+	// ErrQueryTenantRequired is returned by [Logger.List] when the
+	// caller passes a [Query] with no [Query.TenantID] and has not
+	// opted into [Query.AllTenants]. Cross-tenant listings are valid
+	// but dangerous (admin tooling can inadvertently leak audit data
+	// across customers); the API requires an explicit opt-in.
+	ErrQueryTenantRequired = errors.New("actionlog: query requires TenantID or AllTenants=true")
 )
 
 // Entry records one agent-attributed action.
@@ -117,19 +131,47 @@ type Entry struct {
 	// verified after the next rotation.
 	SignatureKeyID string `json:"signature_key_id"`
 
+	// Seq is the per-tenant monotonic sequence number assigned by
+	// [Logger.Append]. The first entry for a tenant gets Seq=1; each
+	// subsequent Append increments. Combined with [Entry.PrevHash], Seq
+	// makes the log a hash chain that detects deletion, reordering, and
+	// truncation (per-row tampering is already caught by [Entry.Signature]).
+	Seq int64 `json:"seq"`
+
+	// PrevHash is the hex-encoded HMAC-SHA256 of the previous entry's
+	// canonical form for this tenant; the first entry uses 64 zero
+	// hex chars. The signed payload includes PrevHash and Seq, so a
+	// row whose predecessor was deleted will fail verification because
+	// its recomputed signature mismatches the stored value.
+	PrevHash string `json:"prev_hash"`
+
 	// Signature is HMAC-SHA256 over the canonical form of all other
-	// fields, hex-encoded. Set by [Logger.Append]; read via
-	// [Logger.Verify] or implicitly by [Logger.Get] / [Logger.List].
+	// fields (including [Entry.Seq] and [Entry.PrevHash]), hex-encoded.
+	// Set by [Logger.Append]; read via [Logger.Verify] or implicitly by
+	// [Logger.Get] / [Logger.List].
 	Signature string `json:"signature"`
 }
 
-// Query controls which entries [Logger.List] returns. The zero value
-// returns every entry (subject to the [Query.Limit] default). Filters
-// compose with AND semantics; an empty filter field is unconstrained.
+// zeroPrevHash is the placeholder used as PrevHash for the first entry
+// in a tenant's chain. 64 hex chars (32 bytes) so it is structurally
+// indistinguishable from a real SHA-256 hash.
+const zeroPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// Query controls which entries [Logger.List] returns. Filters compose
+// with AND semantics; an empty filter field is unconstrained. The
+// caller MUST set either [Query.TenantID] (single-tenant query) or
+// [Query.AllTenants]=true (explicit cross-tenant query); a zero query
+// is rejected with [ErrQueryTenantRequired].
 type Query struct {
-	// TenantID restricts to a single tenant. Strongly recommended — a
-	// cross-tenant List leaks audit data across customers.
+	// TenantID restricts to a single tenant. Required unless
+	// AllTenants is true.
 	TenantID string
+
+	// AllTenants opts into a cross-tenant listing. Set this only on
+	// admin / forensics tooling that genuinely needs to see audit
+	// data across customers — it bypasses the tenant scoping that
+	// the rest of the kit enforces. Ignored when TenantID is set.
+	AllTenants bool
 
 	// Actor restricts to a single principal.
 	Actor string
@@ -151,7 +193,8 @@ type Query struct {
 // read.
 type Logger interface {
 	// Append persists the entry. Fills in ID, OccurredAt, Signature,
-	// and SignatureKeyID if unset; returns the populated entry. Errors:
+	// SignatureKeyID, Seq, and PrevHash; returns the populated entry.
+	// Errors:
 	//   - [ErrInvalidEntry]   – missing required field
 	//   - [ErrInvalidOutcome] – Outcome not in the recognised set
 	//   - any store-level error wrapping the cause
@@ -178,16 +221,33 @@ type Logger interface {
 	// recomputed canonical signature. Returns nil on match;
 	// [ErrSignatureInvalid] / [ErrUnknownKeyID] otherwise.
 	Verify(e Entry) error
+
+	// VerifyChain walks every entry for tenantID in chronological
+	// order (Seq ascending) and verifies that:
+	//   - each entry's Signature is valid (catches per-row tampering),
+	//   - each entry's PrevHash equals the previous entry's hash
+	//     (catches deletion / reordering),
+	//   - Seq starts at 1 and increases by 1 each step (catches
+	//     truncation and inserted rows).
+	// Returns nil on success, [ErrChainBroken] / [ErrSignatureInvalid]
+	// / [ErrUnknownKeyID] on detection.
+	VerifyChain(ctx context.Context, tenantID string) error
 }
 
 // Store is the persistence interface implemented by backends in
 // data/actionlog/memory and data/actionlog/postgres. The store does
 // not concern itself with signing — [Logger] computes the signature
-// before calling [Store.Append] and verifies on the read path.
+// before calling [Store.AppendChained] and verifies on the read path.
 type Store interface {
-	// Append persists a fully-populated entry (signature already
-	// computed). Implementations must reject duplicate IDs.
-	Append(ctx context.Context, e Entry) error
+	// AppendChained persists a fully-populated entry under a
+	// per-tenant lock (memory: per-tenant mutex; postgres: SELECT
+	// FOR UPDATE on the latest row). The supplied build callback
+	// receives the previous entry (or zero Entry + Seq=0 if this is
+	// the tenant's first entry) and must return a fully-signed entry
+	// to persist. Implementations MUST hold the tenant lock across
+	// build + persist so that concurrent Appends produce monotonic
+	// Seq and an unbroken hash chain.
+	AppendChained(ctx context.Context, tenantID string, build func(prev Entry, prevSeq int64) (Entry, error)) (Entry, error)
 
 	// Get returns the entry by id, or [ErrNotFound] if absent.
 	Get(ctx context.Context, id string) (Entry, error)
@@ -196,6 +256,11 @@ type Store interface {
 	// descending, then ID descending for stable ordering when
 	// timestamps tie.
 	List(ctx context.Context, q Query) ([]Entry, error)
+
+	// ListByTenantSeq returns every entry for tenantID in Seq ASC
+	// order. Used by [Logger.VerifyChain]; not subject to the default
+	// limit because the verification needs to walk the full chain.
+	ListByTenantSeq(ctx context.Context, tenantID string) ([]Entry, error)
 }
 
 // SecretSource resolves HMAC secrets by key id. Implementations
@@ -244,10 +309,18 @@ func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecret
 // CurrentKeyID returns the configured current key id.
 func (s *StaticSecrets) CurrentKeyID() string { return s.current }
 
-// Resolve returns the secret for keyID.
+// Resolve returns a defensive copy of the secret for keyID. Returning
+// the underlying slice would let a caller mutate the stored key (and
+// thereby break or forge subsequent verification/signing) — the copy
+// keeps the in-memory map immutable from the outside.
 func (s *StaticSecrets) Resolve(keyID string) ([]byte, bool) {
 	k, ok := s.keys[keyID]
-	return k, ok
+	if !ok {
+		return nil, false
+	}
+	out := make([]byte, len(k))
+	copy(out, k)
+	return out, true
 }
 
 // signedLogger is the default [Logger] implementation: a [Store] plus a
@@ -295,19 +368,19 @@ func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 	return l
 }
 
-// Append validates, signs, and persists the entry.
+// Append validates, signs, and persists the entry. The signature
+// covers Seq and PrevHash so deletion / reordering / truncation of
+// rows in the durable store breaks the chain on the next
+// VerifyChain. Concurrent Appends for the same tenant serialise
+// inside the store's per-tenant lock.
 func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
-	if e.ID == "" {
-		e.ID = l.newID()
+	if e.TenantID == "" {
+		return Entry{}, ErrInvalidEntry
 	}
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = l.clock()
 	}
 	e.OccurredAt = e.OccurredAt.UTC()
-
-	if err := validate(e); err != nil {
-		return Entry{}, err
-	}
 
 	keyID := l.secrets.CurrentKeyID()
 	secret, ok := l.secrets.Resolve(keyID)
@@ -315,17 +388,32 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		return Entry{}, fmt.Errorf("actionlog: current key id %q not resolvable: %w", keyID, ErrUnknownKeyID)
 	}
 
-	e.SignatureKeyID = keyID
-	sig, err := computeSignature(e, secret)
-	if err != nil {
-		return Entry{}, fmt.Errorf("actionlog: compute signature: %w", err)
-	}
-	e.Signature = sig
-
-	if err := l.store.Append(ctx, e); err != nil {
-		return Entry{}, err
-	}
-	return e, nil
+	return l.store.AppendChained(ctx, e.TenantID, func(prev Entry, prevSeq int64) (Entry, error) {
+		entry := e
+		if entry.ID == "" {
+			entry.ID = l.newID()
+		}
+		entry.SignatureKeyID = keyID
+		entry.Seq = prevSeq + 1
+		if prevSeq == 0 {
+			entry.PrevHash = zeroPrevHash
+		} else {
+			h, err := entryHash(prev, secret)
+			if err != nil {
+				return Entry{}, fmt.Errorf("actionlog: prev hash: %w", err)
+			}
+			entry.PrevHash = h
+		}
+		if err := validate(entry); err != nil {
+			return Entry{}, err
+		}
+		sig, err := computeSignature(entry, secret)
+		if err != nil {
+			return Entry{}, fmt.Errorf("actionlog: compute signature: %w", err)
+		}
+		entry.Signature = sig
+		return entry, nil
+	})
 }
 
 // Get reads and verifies an entry.
@@ -340,9 +428,14 @@ func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
 	return e, nil
 }
 
-// List reads and verifies a batch of entries. The first verification
-// failure aborts the call so callers don't get a half-truthful page.
+// List reads and verifies a batch of entries. Rejects queries that
+// lack a TenantID and have not opted into AllTenants — see [Query].
+// The first verification failure aborts the call so callers don't
+// get a half-truthful page.
 func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, error) {
+	if q.TenantID == "" && !q.AllTenants {
+		return nil, ErrQueryTenantRequired
+	}
 	entries, err := l.store.List(ctx, q)
 	if err != nil {
 		return nil, err
@@ -353,6 +446,46 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// VerifyChain walks the entire per-tenant chain and reports any
+// deletion, reordering, truncation, or row tampering.
+func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return ErrQueryTenantRequired
+	}
+	entries, err := l.store.ListByTenantSeq(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	var prev Entry
+	for i, e := range entries {
+		if err := l.Verify(e); err != nil {
+			return fmt.Errorf("actionlog: entry %q: %w", e.ID, err)
+		}
+		if e.Seq != int64(i+1) {
+			return fmt.Errorf("%w: tenant %q expected seq %d, got %d at id %q", ErrChainBroken, tenantID, i+1, e.Seq, e.ID)
+		}
+		if i == 0 {
+			if e.PrevHash != zeroPrevHash {
+				return fmt.Errorf("%w: tenant %q first entry must have zero prev_hash", ErrChainBroken, tenantID)
+			}
+		} else {
+			secret, ok := l.secrets.Resolve(prev.SignatureKeyID)
+			if !ok {
+				return ErrUnknownKeyID
+			}
+			expected, err := entryHash(prev, secret)
+			if err != nil {
+				return err
+			}
+			if e.PrevHash != expected {
+				return fmt.Errorf("%w: tenant %q seq %d prev_hash mismatch", ErrChainBroken, tenantID, e.Seq)
+			}
+		}
+		prev = e
+	}
+	return nil
 }
 
 // Sign computes and returns the canonical signature for an entry
@@ -420,4 +553,13 @@ func computeSignature(e Entry, secret []byte) (string, error) {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write(canonical)
 	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// entryHash returns the hex-encoded HMAC-SHA256 of the entry's
+// canonical form. Used to compute the next entry's PrevHash and to
+// verify the chain. Distinct from the entry's own [Entry.Signature]
+// only conceptually — the algorithm and key are identical, so a
+// chained verifier and a row verifier see the same bytes.
+func entryHash(e Entry, secret []byte) (string, error) {
+	return computeSignature(e, secret)
 }

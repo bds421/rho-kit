@@ -67,7 +67,9 @@ func TestTamper_DetectedByLogger(t *testing.T) {
 	// rewritten in place produces ErrSignatureInvalid on Get.
 	store.mu.Lock()
 	idx := store.byID[written.ID]
-	store.entries[idx].Resource = "users/forged"
+	tampered := store.entries[idx]
+	tampered.Resource = "users/forged"
+	store.entries[idx] = tampered
 	store.mu.Unlock()
 
 	_, err = logger.Get(context.Background(), written.ID)
@@ -99,23 +101,23 @@ func TestList_FiltersAndOrders(t *testing.T) {
 		assert.True(t, t1[i-1].OccurredAt.After(t1[i].OccurredAt) || t1[i-1].OccurredAt.Equal(t1[i].OccurredAt))
 	}
 
-	// Actor filter.
-	actorA, err := logger.List(context.Background(), actionlog.Query{Actor: "a"})
+	// Actor filter (cross-tenant, so opt in).
+	actorA, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Actor: "a"})
 	require.NoError(t, err)
 	assert.Len(t, actorA, 3)
 
-	// Action filter.
-	creates, err := logger.List(context.Background(), actionlog.Query{Action: "user.create"})
+	// Action filter (cross-tenant, so opt in).
+	creates, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Action: "user.create"})
 	require.NoError(t, err)
 	assert.Len(t, creates, 3)
 
-	// Time filter.
-	recent, err := logger.List(context.Background(), actionlog.Query{Since: now.Add(-90 * time.Minute)})
+	// Time filter (cross-tenant, so opt in).
+	recent, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Since: now.Add(-90 * time.Minute)})
 	require.NoError(t, err)
 	assert.Len(t, recent, 2)
 
 	// Limit.
-	limited, err := logger.List(context.Background(), actionlog.Query{Limit: 1})
+	limited, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Limit: 1})
 	require.NoError(t, err)
 	assert.Len(t, limited, 1)
 }
@@ -131,7 +133,7 @@ func TestList_DefaultLimitApplied(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	all, err := logger.List(context.Background(), actionlog.Query{})
+	all, err := logger.List(context.Background(), actionlog.Query{TenantID: "t"})
 	require.NoError(t, err)
 	assert.Len(t, all, defaultLimit)
 }
