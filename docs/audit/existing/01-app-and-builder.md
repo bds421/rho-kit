@@ -8,7 +8,7 @@ _Closed — see Recently Landed below._
 
 ## Recently Landed (Phase 3, commit `4d04fe1`)
 
-- ✅ **`Builder.WithJWTIssuer` / `WithJWTAudience` / `WithJWTAllowAnyIssuer`** — issuer enforcement is now first-class. In `KIT_ENV=production`, `WithJWT` panics unless paired with one of `WithJWTIssuer` or the explicit opt-out `WithJWTAllowAnyIssuer`. Non-prod still falls back to the legacy `https://oathkeeper` default but with a logged warning so operators get a signal.
+- ✅ **`Builder.WithJWTIssuer` / `WithJWTAudience` / `WithoutJWTIssuer` / `WithoutJWTAudience`** — issuer/audience enforcement is now first-class. The Builder validator panics on `Build()` unless `WithJWT` is paired with `WithJWTIssuer` or the explicit opt-out `WithoutJWTIssuer` (similarly for audience). The check is unconditional — there is no `KIT_ENV` escape hatch — and the opt-outs are the only supported relaxation, requiring the operator to declare consciously. The pre-v2.0.0 names `WithJWTAllowAnyIssuer` / `WithJWTAllowAnyAudience` were renamed to the `Without*` form in `c113451`.
 - ✅ **Builder failure semantics documented** — Builder is a composition root, not a reusable factory. `Build()` failures must be treated as fatal; explicitly recorded in the Builder type doc.
 - ✅ **`runner.AddFunc` panic behaviour documented** — `WithIPRateLimit` doc now warns that the limiter's background sweeper runs via `runner.AddFunc` and a panic kills the service via the lifecycle Runner; operators should monitor the `goroutine_panicked` log event.
 

@@ -144,8 +144,8 @@ assumed beyond it.
 - Capability: introduce new code, change config, downgrade
   defaults.
 - Primary defences: branch protection + required reviews
-  (deployment-side), `app.WithProductionDefaults` startup checks,
-  refuse-to-misconfigure invariants (§5), audit trail
+  (deployment-side), the always-on `app.Builder` production-safety
+  validator, refuse-to-misconfigure invariants (§5), audit trail
   (`observability/auditlog`).
 
 ### A6. Leaked HMAC / JWT secret
@@ -303,7 +303,7 @@ and `Consumer` interfaces.
 | M-04 | DLQ poison-pill exhausts consumer retry budget | A1 | DLQ topology + retry-with-backoff handler in [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/) (`Retry`, `RetryIfNotPermanent`) |
 | M-05 | Producer outage drops events that should reach the broker | A1 (DoS) | `messaging.BufferedPublisher` with an optional state file persists pending messages across restarts; **state file path validated against directory traversal** | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 | M-06 | Internal `debughttp` Publish/Consume HTTP endpoints expose broker to attacker | A1 | `debughttp` requires a `Guard` middleware + Authenticator — refuses to mount otherwise | [infra/messaging/amqpbackend/debughttp/guard.go](../../infra/messaging/amqpbackend/debughttp/guard.go) |
-| M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme outside dev; pure `amqp://` panics under `app.WithProductionDefaults` | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
+| M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme; pure `amqp://` is rejected by the always-on `app.Builder` production-safety validator | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
 
 **Note:** `BufferedPublisher` is **not** a transactional outbox.
 Where strict at-most-once / exactly-once is required, services use
@@ -314,7 +314,7 @@ patterns.
 
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
-| D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; `WithProductionDefaults` rejects `disable` and requires one of `require`/`verify-ca`/`verify-full`; `Validate` returns an error in non-dev for `sslmode=disable` | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go) |
+| D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; the always-on `app.Builder` validator rejects `disable`/`prefer`/`allow` and requires one of `require`/`verify-ca`/`verify-full`. The `pgx.Config.AllowPlaintextLoopbackForTests` field is the only relaxation, gated on every host (and every multi-host fallback) resolving to loopback | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go) |
 | D-02 | SQL injection via string concatenation | A1, A2 | Kit uses GORM (parameterised) and pgx (parameterised); no string-concat helper in the kit's surface area |
 | D-03 | DB credential leakage via process logs | A6 | `sqldb.Config.Password` is a `*core/secret.String` — refuses to render via slog/JSON | [core/secret/secret.go](../../core/secret/secret.go), [infra/sqldb/config.go](../../infra/sqldb/config.go) |
 | D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpen` is required (no zero default); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
@@ -358,7 +358,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
 | T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
-| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` or explicit `WithJWTAllowAnyIssuer`; the legacy `https://oathkeeper` default is rejected under `WithProductionDefaults` | [app/jwt_module.go](../../app/jwt_module.go) |
+| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` or the explicit opt-out `WithoutJWTIssuer`; the legacy `https://oathkeeper` default is rejected by the always-on `app.Builder` validator. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | [app/jwt_module.go](../../app/jwt_module.go) |
 | T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval |
 | T-04 | JWT replay after logout (no revocation) | A1 | The kit does **not** ship a JWT revocation store; services that need it implement against `data/cache`. Out of scope unless service opts in. |
 | T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
@@ -436,7 +436,7 @@ following hold:
 
 - `WithMariaDB` and `WithPostgres` together — mutually exclusive.
 - `WithPgx` and `WithPostgres` together — both target Postgres.
-- `WithJWT` without `WithJWTIssuer` (under `WithProductionDefaults`).
+- `WithJWT` without `WithJWTIssuer` (or the explicit `WithoutJWTIssuer` opt-out). Audience has the same shape.
 - Postgres `sslmode=disable` outside development.
 - AMQP scheme `amqp://` (cleartext) outside development.
 - `idempotency.WithTTL(0)`.
@@ -454,10 +454,12 @@ following hold:
 - Negative or zero values to `NewRateLimiter`, `NewKeyedRateLimiter`,
   `Timeout`, `MaxBodySize`.
 
-The single switch [`app.WithProductionDefaults`](../../app/builder.go)
-adds further startup checks suitable for `KIT_ENV=production`. It
-does not itself reconfigure options — it tightens the validation
-loop.
+The [`app.Builder`](../../app/builder.go) production-safety validator
+runs unconditionally inside `Build()` — every service the kit builds
+gets the same posture. There is no `KIT_ENV` (or `APP_ENV`) escape
+hatch in any kit code path. Per-feature relaxations are explicit
+opt-outs the operator declares consciously: `WithoutTLS`,
+`WithInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`.
 
 ### 5.2 Refuse-to-print secrets
 
@@ -542,10 +544,9 @@ The canonical "user submits a payment" flow. Wired via:
 
 ```go
 app.New("payments", version, cfg.BaseConfig).
-    WithProductionDefaults().
     WithPostgres(cfg.DB, cfg.DBPool).
     WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
-    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).
+    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
     WithIPRateLimit(100, time.Minute).
     Router(func(infra app.Infrastructure) http.Handler {
         h := payments.NewHandler(infra.DB, infra.Cache, audit)
@@ -556,6 +557,12 @@ app.New("payments", version, cfg.BaseConfig).
     }).Run()
 ```
 
+The Builder's production-safety validator runs in `Build()` — the
+service refuses to start unless TLS, JWT issuer, JWT audience, internal-
+host loopback, Postgres `sslmode`, and tracing sample rate are all set
+to the secure defaults (or the operator declared an explicit
+`Without*()` opt-out).
+
 Request lifecycle and threat coverage:
 
 | Step | Component | Threats defused |
@@ -565,7 +572,7 @@ Request lifecycle and threat coverage:
 | 3 | `recover` middleware | H-01 |
 | 4 | `metrics` middleware | (counts even if downstream panics — see H-01 interaction) |
 | 5 | `requestID` middleware | (correlates audit log entry with request) |
-| 6 | `tracing` middleware | (sample rate ≤ 0.1 under WithProductionDefaults — D-04 cardinality) |
+| 6 | `tracing` middleware | (Builder validator caps sample rate ≤ 0.1 by default — D-04 cardinality) |
 | 7 | `logging` middleware (with `secret.String`-aware logger) | H-13 |
 | 8 | `csrf.RequireCSRF` (outer wedge — runs before auth so CSRF failures are not gated by auth) | H-04 |
 | 9 | `csrf.RequireJSONContentType` | H-04 (defence-in-depth) |

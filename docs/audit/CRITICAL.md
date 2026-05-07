@@ -39,9 +39,4 @@ These were called out in the original CRITICAL doc as operational footguns to bu
 
 All originally-flagged CRITICAL items are closed. The cross-package "operational footgun" cluster (CSRF secret, clientip default, idempotency TTL, ComputeCache race, MemoryCache cap, retry nil error, secheaders XFP, timeout buffer, stack Timeout, gormmysql TLS, nil-deps, Go 1.26.2) all closed as a side-effect of the same waves.
 
-What remains is a small **builder-integration follow-up**:
-
-- `Builder.WithTrustedProxies` so the per-process clientip / ratelimit defaults flow from one config knob.
-- `Builder.WithCSRFSecret` so the shared HMAC secret comes from `core/config` rather than per-instantiation.
-
-Both naturally pair with [new/19-app-production-defaults.md](new/19-app-production-defaults.md) — a single `app.WithProductionDefaults()` switch that fans out to every per-middleware option the kit now exposes.
+The `WithProductionDefaults()` follow-up (see [new/19-app-production-defaults.md](new/19-app-production-defaults.md)) was superseded in v2.0.0: production-safe defaults now run unconditionally inside `Builder.Build()`, with explicit `Without*()` opt-outs (`WithoutTLS`, `WithInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`) for the relaxations operators must acknowledge consciously. There is no longer a per-feature meta switch to call.

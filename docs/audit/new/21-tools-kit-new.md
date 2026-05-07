@@ -16,7 +16,7 @@ Agents benefit most: instead of reasoning about which `With*` calls to wire, the
 
 ```
 my-service/
-├── cmd/my-service/main.go           # golden-path bootstrap, calls app.WithProductionDefaults
+├── cmd/my-service/main.go           # golden-path bootstrap; kit's always-on production-safe validator runs in Build()
 ├── internal/app/config.go           # typed env config with validation
 ├── internal/app/wire.go             # builder wiring with required options
 ├── internal/handlers/               # one example HTTP handler with typed JSON
@@ -67,5 +67,5 @@ Templates live in `cmd/kit-new/templates/` as Go `text/template` files. Each `--
 ## Related
 
 - [new/18-tools-kit-doctor.md](18-tools-kit-doctor.md) — sibling tool.
-- [new/19-app-production-defaults.md](19-app-production-defaults.md) — generated `wire.go` calls this.
+- [new/19-app-production-defaults.md](19-app-production-defaults.md) — production-safe defaults are unconditional; generated `wire.go` only declares per-feature `Without*()` opt-outs when needed.
 - [new/22-observability-dashboards.md](22-observability-dashboards.md) — generated `deploy/grafana/` content.

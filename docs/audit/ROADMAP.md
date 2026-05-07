@@ -97,7 +97,7 @@ Still open:
 - 🔴 [existing/10] Dead-letter publish failure cap.
 - 🔴 [existing/10] BufferedPublisher state-file mandatory in prod; surface persistence errors; restrictive umask.
 - 🔴 [existing/12] S3 SSE defaults + presigned PUT enforcement; storagehttp MaxMemory + UUIDKeyFunc fallback; encryption Put concurrency cap.
-- 🔴 [new/19] Ship `app.WithProductionDefaults()` after the per-finding fixes above complete.
+- ✅ [new/19] Production-safe defaults — superseded by the unconditional Builder validator (see Phase 6 entry below).
 
 ## Phase 3 — Polish — small items, mostly Phase 3 quality
 
@@ -156,7 +156,7 @@ Done:
 - ✅ [new/16] `observability/redmetrics` — `HTTPMetrics` (Requests/Errors/Duration/InFlight) + `BatchMetrics` (`06386f1`).
 - ✅ [new/17] `httpx/problemdetails` — RFC 7807 writer with `Extensions` inlined via custom MarshalJSON (`06386f1`).
 - ✅ [new/18] `cmd/kit-doctor` — CLI with rule scaffold + 4 initial rules (jwt-missing-claims, idempotency-user-extractor, default-http-client, http-server-error-log); `-strict` floor + JSON output.
-- ✅ [new/19] `app.WithProductionDefaults()` — JWT issuer pin, Postgres TLS-required, tracing SampleRate capped (`35aad31`, `4d04fe1`).
+- ✅ [new/19] Production-safe defaults — JWT issuer/audience pin, Postgres TLS-required, tracing SampleRate capped, internal-host loopback. Originally landed as `app.WithProductionDefaults()` (`35aad31`, `4d04fe1`); subsequently made unconditional by removing development mode (`c113451`). Per-relaxation `Without*()` opt-outs (`WithoutTLS`, `WithInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`) replace the meta switch.
 - ✅ [new/21] `cmd/kit-new` — scaffold generator with embedded templates; generated tree builds + vets clean (verified by self-test in CI).
 - ✅ [new/22] `observability/dashboards` — HTTP RED + Go runtime + service overview Grafana JSON; recording rules + availability/latency alerts; SLO multi-burn-rate templates.
 - ✅ [new/23] `cmd/kit-bench-gate` — `go test -bench` text parser + diff/regression engine; GOMAXPROCS-suffix stripping for cross-runner stability; `-fail-on` ratchet.
