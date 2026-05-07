@@ -113,16 +113,38 @@ func LoadRabbitMQFields() (RabbitMQFields, error) {
 // The environment parameter is preserved for API compatibility but is
 // no longer consulted — the kit's "no development mode" policy means
 // credential-strength checks fire unconditionally.
+//
+// The password is extracted from the resolved AMQP URL (URL.User) and
+// passed to RejectWeakCredential. The previous version passed the
+// entire URL string, which silently accepted "amqp://guest:guest@..."
+// because the URL is longer than the weak-credential length cap and
+// does not contain "changeme" — defeating the check (audit finding
+// N-5).
 func (f RabbitMQFields) ValidateRabbitMQ(environment string) error {
 	_ = environment // accepted for API compatibility; no longer consulted
 	resolved := f.RabbitMQ.AMQPURL()
 	if err := ValidateAMQPURL("RABBITMQ_URL", resolved); err != nil {
 		return err
 	}
-	if err := config.RejectWeakCredential("RABBITMQ_PASSWORD", resolved); err != nil {
+	password := extractAMQPPassword(resolved)
+	if err := config.RejectWeakCredential("RABBITMQ_PASSWORD", password); err != nil {
 		return err
 	}
 	return nil
+}
+
+// extractAMQPPassword returns the password component of an AMQP URL,
+// or the empty string if the URL has no userinfo or cannot be parsed.
+// An empty result causes RejectWeakCredential to fire its
+// "must not be empty" branch — desirable, since an AMQP URL without a
+// password is itself a misconfiguration in production.
+func extractAMQPPassword(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.User == nil {
+		return ""
+	}
+	pw, _ := u.User.Password()
+	return pw
 }
 
 // ValidateAMQPURL checks that rawURL is a non-empty, parseable URL with an

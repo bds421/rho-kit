@@ -355,9 +355,21 @@ func validatePostgresSSLMode(mode string) error {
 		return nil
 	}
 	switch strings.ToLower(mode) {
-	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	case "require", "verify-ca", "verify-full":
 		return nil
+	case "disable":
+		// "disable" is also a recognised libpq mode; the caller's
+		// Validate() rejects it separately so this function only
+		// reports recognition. Returning nil here lets the upstream
+		// "must be require/verify-ca/verify-full" message fire with
+		// the right context.
+		return nil
+	case "allow", "prefer":
+		// Both modes silently degrade to plaintext on TLS handshake
+		// error. They must not be accepted in the standalone
+		// validation path either — N-4 audit finding.
+		return fmt.Errorf("DB_SSL_MODE=%q admits a plaintext fallback on TLS handshake error; use require, verify-ca, or verify-full", mode)
 	default:
-		return fmt.Errorf("DB_SSL_MODE must be one of disable, allow, prefer, require, verify-ca, verify-full")
+		return fmt.Errorf("DB_SSL_MODE must be require, verify-ca, or verify-full (got %q)", mode)
 	}
 }

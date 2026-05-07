@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"strings"
 	"time"
 
@@ -77,27 +76,38 @@ type Pool struct {
 // Connect parses cfg, enforces TLS, and constructs a pool. Validation
 // errors include the offending knob so misconfigurations surface at
 // boot rather than at first query.
+//
+// DSN parsing is delegated to pgxpool.ParseConfig — the authoritative
+// parse the runtime will actually use. The previous hand-rolled
+// extractors disagreed with pgxpool on `last-wins` for repeated keys
+// in libpq form and on `?host=` query-string in URL form, so a
+// crafted DSN could pass the kit's checks while pgxpool used different
+// values. Parsing first, enforcing on the parsed config, eliminates
+// that class of bug.
 func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("pgx: DSN must not be empty")
-	}
-	if cfg.AllowPlaintextLoopbackForTests {
-		// Defense-in-depth: an operator may have flipped the bool by
-		// accident or copy-pasted a test config. Refuse to honour the
-		// opt-out unless the DSN points at a loopback host — at that
-		// point the network risk is mechanically zero.
-		if err := requireLoopbackDSN(cfg.DSN); err != nil {
-			return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN is not loopback: %w", err)
-		}
-	} else {
-		if err := requireTLS(cfg.DSN); err != nil {
-			return nil, err
-		}
 	}
 
 	pcfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("pgx: parse DSN: %w", err)
+	}
+
+	if cfg.AllowPlaintextLoopbackForTests {
+		// Defence-in-depth: an operator may have flipped the bool by
+		// accident or copy-pasted a test config. Refuse to honour the
+		// opt-out unless the parsed host is a loopback — at that point
+		// the network risk is mechanically zero. Use pcfg.ConnConfig.Host
+		// (pgxpool's authoritative host) so the check sees what
+		// pgxpool will actually dial.
+		if err := requireLoopbackHost(pcfg.ConnConfig.Host); err != nil {
+			return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN host is not loopback: %w", err)
+		}
+	} else {
+		if err := requireTLSOnParsedConfig(pcfg); err != nil {
+			return nil, err
+		}
 	}
 	applyPoolDefaults(pcfg, cfg)
 
@@ -255,15 +265,15 @@ func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
 	}
 }
 
-// requireLoopbackDSN parses the DSN's host and rejects anything that
-// isn't a loopback address (127.0.0.0/8, ::1, or the literal string
-// "localhost"). This is the gate behind Config.AllowPlaintextLoopbackForTests:
-// the opt-out is honoured ONLY when the network risk is mechanically
-// zero. An operator who flips the bool but points the DSN at a real
-// host gets a hard error at Connect time instead of silently sending
-// plaintext credentials over the wire.
-func requireLoopbackDSN(dsn string) error {
-	host := extractDSNHost(dsn)
+// requireLoopbackHost rejects any host that isn't a loopback address
+// (127.0.0.0/8, ::1, or the literal "localhost"). Used to gate
+// Config.AllowPlaintextLoopbackForTests: the opt-out is honoured ONLY
+// when the network risk is mechanically zero.
+//
+// Operates on the host AFTER pgxpool.ParseConfig has resolved the DSN,
+// so a crafted DSN cannot trick this check by exploiting first/last-wins
+// disagreements between the kit and pgxpool.
+func requireLoopbackHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("DSN does not specify a host")
 	}
@@ -281,57 +291,31 @@ func requireLoopbackDSN(dsn string) error {
 	return nil
 }
 
-// extractDSNHost finds the host in either URL form or libpq key=value
-// form. Returns "" when absent.
-func extractDSNHost(dsn string) string {
-	// URL form: postgres://user:pw@host:port/db?... — read between
-	// the @ and the first / or ?.
-	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
-		return u.Hostname()
+// requireTLSOnParsedConfig inspects the pgxpool-parsed config for TLS
+// posture and rejects anything that admits a plaintext connection.
+// Production-safe TLS settings are the kit's only mode.
+//
+// Detection rules — all derived from pgx's own behaviour:
+//
+//   - sslmode=disable: pgx sets ConnConfig.TLSConfig to nil. Reject.
+//   - sslmode=require/verify-ca/verify-full: TLSConfig is non-nil and
+//     ConnConfig.Fallbacks is empty. Accept.
+//   - sslmode=prefer / sslmode=allow: pgx populates Fallbacks with a
+//     plaintext (TLSConfig=nil) entry — the connection silently
+//     downgrades on handshake error. Reject any fallback whose
+//     TLSConfig is nil; in practice this rejects prefer + allow.
+//
+// The check operates on pcfg.ConnConfig (not the raw DSN) so it sees
+// the same posture pgxpool will actually use at dial time.
+func requireTLSOnParsedConfig(pcfg *pgxpool.Config) error {
+	cc := pcfg.ConnConfig
+	if cc.TLSConfig == nil {
+		return errors.New("pgx: DSN does not enable TLS (sslmode=disable or unset); set sslmode=require/verify-ca/verify-full")
 	}
-	// Key=value form: host=... port=... ...
-	for _, tok := range strings.Fields(dsn) {
-		if eq := strings.Index(tok, "="); eq > 0 && strings.EqualFold(tok[:eq], "host") {
-			return tok[eq+1:]
+	for _, fb := range cc.Fallbacks {
+		if fb.TLSConfig == nil {
+			return errors.New("pgx: DSN admits a plaintext fallback (sslmode=prefer/allow); use require/verify-ca/verify-full to enforce TLS unconditionally")
 		}
 	}
-	return ""
-}
-
-// requireTLS inspects the DSN's sslmode parameter and rejects unsafe
-// values unconditionally — production-safe TLS settings are the kit's
-// only mode. Mirrors infra/sqldb's IsTLSEnabled tightening.
-func requireTLS(dsn string) error {
-	mode := extractSSLMode(dsn)
-	switch strings.ToLower(mode) {
-	case "require", "verify-ca", "verify-full":
-		return nil
-	case "":
-		return fmt.Errorf("pgx: DSN must set sslmode (require/verify-ca/verify-full)")
-	case "allow", "prefer", "disable":
-		return fmt.Errorf("pgx: sslmode=%q falls back to plaintext on TLS handshake error; use require/verify-ca/verify-full", mode)
-	default:
-		return fmt.Errorf("pgx: sslmode=%q is unrecognized", mode)
-	}
-}
-
-// extractSSLMode finds sslmode= in either URL form or libpq key=value
-// form. Returns "" when absent.
-func extractSSLMode(dsn string) string {
-	// URL form: postgres://user:pw@host/db?sslmode=require
-	if i := strings.Index(dsn, "?"); i >= 0 {
-		q := dsn[i+1:]
-		for _, kv := range strings.Split(q, "&") {
-			if eq := strings.Index(kv, "="); eq > 0 && strings.EqualFold(kv[:eq], "sslmode") {
-				return kv[eq+1:]
-			}
-		}
-	}
-	// Key=value form: host=... sslmode=require ...
-	for _, tok := range strings.Fields(dsn) {
-		if eq := strings.Index(tok, "="); eq > 0 && strings.EqualFold(tok[:eq], "sslmode") {
-			return tok[eq+1:]
-		}
-	}
-	return ""
+	return nil
 }

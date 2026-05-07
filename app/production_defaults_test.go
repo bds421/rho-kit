@@ -168,6 +168,26 @@ func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
 	}
 }
 
+// TestBuilder_Validates_RejectsIPv4ZeroForms pins the N-1 audit fix:
+// the previous net.ParseIP-only check rejected the canonical "0.0.0.0"
+// but accepted leading-zero or short-form variants like "00.00.00.00",
+// "0", "0.0" — all of which net.Listen interprets as the IPv4 wildcard
+// even though net.ParseIP rejects them as malformed.
+func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
+	for _, host := range []string{"00.00.00.00", "000.000.000.000", "0", "0.0", "0.0.0", "0.00.00.00"} {
+		t.Run(host, func(t *testing.T) {
+			cfg := BaseConfig{
+				Internal: InternalConfig{Host: host, Port: 9090},
+				TLS:      validTLSForTest(),
+			}
+			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			err := b.Validate()
+			require.Error(t, err, "IPv4 zero form %q must fail validation", host)
+			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
+		})
+	}
+}
+
 // --- C-2: validator requires TLS ---
 
 func TestBuilder_Validates_RequiresTLS(t *testing.T) {

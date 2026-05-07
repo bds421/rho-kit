@@ -136,19 +136,33 @@ func TestLoadRabbitMQFields_Defaults(t *testing.T) {
 }
 
 func TestRabbitMQFields_ValidateRabbitMQ(t *testing.T) {
-	t.Run("valid URL", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{URL: "amqps://user:strongpass@rabbitmq:5671/"}}
-		assert.NoError(t, f.ValidateRabbitMQ("development"))
+	// strong password — at least 12 chars, no obvious weak markers.
+	const strongPW = "S3cur3-P4ssw0rd!9KJZ"
+
+	t.Run("valid URL with strong password", func(t *testing.T) {
+		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{URL: "amqps://user:" + strongPW + "@rabbitmq:5671/"}}
+		assert.NoError(t, f.ValidateRabbitMQ(""))
 	})
 
-	t.Run("valid fields", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{Host: "rabbit", User: "u", Password: "p"}}
-		assert.NoError(t, f.ValidateRabbitMQ("development"))
+	t.Run("valid fields with strong password", func(t *testing.T) {
+		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{Host: "rabbit", User: "u", Password: strongPW}}
+		assert.NoError(t, f.ValidateRabbitMQ(""))
 	})
 
 	t.Run("empty", func(t *testing.T) {
 		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{}}
-		assert.Error(t, f.ValidateRabbitMQ("development"))
+		assert.Error(t, f.ValidateRabbitMQ(""))
+	})
+
+	// Regression test for audit finding N-5: the previous version
+	// passed the entire URL string to RejectWeakCredential, so
+	// "amqp://guest:guest@..." passed because the URL is longer than
+	// the 12-char threshold. After the fix, the password component is
+	// extracted and checked.
+	t.Run("default guest password rejected", func(t *testing.T) {
+		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{URL: "amqp://guest:guest@host:5672/"}}
+		err := f.ValidateRabbitMQ("")
+		assert.Error(t, err, "default guest:guest credentials must be rejected")
 	})
 }
 

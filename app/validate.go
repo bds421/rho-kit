@@ -7,14 +7,27 @@ import (
 )
 
 // isUnspecifiedHost reports whether host names an "all-interfaces"
-// bind explicitly. Catches IPv4 (0.0.0.0) and IPv6 ([::], ::, etc.)
-// in raw or bracket-wrapped form.
+// bind explicitly. Catches:
+//
+//   - IPv4 0.0.0.0 in canonical form
+//   - IPv4 short / leading-zero forms that net.Listen accepts but
+//     net.ParseIP rejects: "0", "0.0", "0.0.0", "00.00.00.00",
+//     "000.000.000.000", "0.00.00.00", etc.
+//   - IPv6 [::], ::, 0:0:0:0:0:0:0:0 in canonical and bracket-wrapped form
+//   - IPv6-mapped IPv4 wildcard ::ffff:0.0.0.0
 //
 // Empty host is NOT flagged here because [InternalConfig.Addr] defaults
 // empty to "127.0.0.1" — i.e. an unset INTERNAL_HOST resolves to
-// loopback at listen time. The audit's concern (M-A) is the operator
-// who actively sets the config to a wildcard; an unset config is
-// already safe.
+// loopback at listen time. The audit's concern is the operator who
+// actively sets the config to a wildcard; an unset config is already
+// safe.
+//
+// The all-zero-dotted-decimal check is required because net.Listen
+// uses a more lenient address parser than net.ParseIP — strings like
+// "00.00.00.00" pass through net.Listen as 0.0.0.0 even though
+// net.ParseIP rejects them as malformed. The previous version used
+// only net.ParseIP and would have admitted those forms (audit
+// finding N-1).
 func isUnspecifiedHost(host string) bool {
 	if host == "" {
 		return false
@@ -24,7 +37,35 @@ func isUnspecifiedHost(host string) bool {
 	if ip := net.ParseIP(stripped); ip != nil && ip.IsUnspecified() {
 		return true
 	}
+	if isAllZeroDottedDecimal(stripped) {
+		return true
+	}
 	return false
+}
+
+// isAllZeroDottedDecimal reports whether s is one of the IPv4-style
+// all-zero forms net.Listen accepts but net.ParseIP rejects:
+// "0", "0.0", "0.0.0", "0.0.0.0", "00", "000", "00.00", ..., up to
+// four dotted segments each consisting only of zero digits.
+func isAllZeroDottedDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, c := range p {
+			if c != '0' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Validate checks for common configuration mistakes before startup.
