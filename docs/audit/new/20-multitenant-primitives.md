@@ -96,9 +96,9 @@ Activates the tenant middleware on the public mux, wraps the default cache and i
 
 - [x] `core/tenant` package with type-distinct `ID`, ctx helpers, `Required` (ErrMissing). ✅ this PR
 - [x] `httpx/middleware/tenant` with default header extractor + custom-extractor option (JWT extraction stays in caller code so httpx doesn't pull a JWT dep). ✅ this PR
-- [ ] Cache + idempotency wrappers (deferred — depends on rolling out tenant ID into existing call sites; track as separate audit items).
-- [ ] Per-tenant rate-limit middleware (deferred — wraps existing ratelimit.Limiter once tenant ID is on the request ctx, which this PR enables).
-- [ ] `promutil/labelguard` for cardinality protection (deferred — separate observability sweep).
-- [ ] Builder `WithMultiTenant` (deferred — Builder integration after wrappers land).
+- [x] Cache + idempotency wrappers — `data/cache/tenant` (aea8d61), `data/idempotency/tenant` (370441f). Both prefix the storage key with `tenant:<id>:` so the same raw key under two tenants resolves to disjoint slots. Idempotency design choice: namespace the *key* (not the body fingerprint) so backend-layer isolation holds even if a backend bug ignores fingerprint, and so a fresh request from tenant B that happens to share tenant A's cached body does not falsely report 422.
+- [x] Per-tenant rate-limit middleware — `httpx/middleware/ratelimit/tenant` (5ea90d6). Composes on top of the IP middleware (both must pass); 429 responses set `X-RateLimit-Scope: tenant` so on-call can disambiguate the firing budget. Missing tenant returns 400.
+- [x] `promutil/labelguard` for cardinality protection — `observability/promutil/labelguard` (8c46c50). `AllowedLabels` wrapping CounterVec/HistogramVec; rejected observations silently drop (user-input-derived labels must not panic) and increment `labelguard_rejected_total{vec, label}`.
+- [ ] Builder `WithMultiTenant` (deferred — Builder integration sweep, not in this wave's primitives).
 - [x] Tests: zero-ID never appears as present; nil ctx tolerated; Required surfaces ErrMissing; middleware rejects 400 on missing tenant for state-changing methods; safe methods pass through; custom extractor honoured.
 - [ ] Recipe in `docs/ai/utilities.md` (deferred to docs sweep).
