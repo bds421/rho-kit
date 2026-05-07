@@ -272,6 +272,49 @@ func TestHasAPIKey_PanicsOnEmptyHeader(t *testing.T) {
 	})
 }
 
+func TestCSRF_OriginCheckBeforeSkipCheck(t *testing.T) {
+	// M-9 fix: when both WithSkipCheck and WithAllowedOrigins are
+	// configured, the Origin allowlist check MUST run BEFORE the skip
+	// predicate. Otherwise a bearer-token POST from an unfamiliar origin
+	// would slip through, defeating the allowlist for the very class of
+	// caller most likely to be impersonated by a phished credential.
+	mw := New(
+		WithSecret(testSecret()),
+		WithSkipCheck(HasBearerToken),
+		WithAllowedOrigins("https://app.example.com"),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer phished-token")
+	req.Header.Set("Origin", "https://attacker.example") // NOT in allowlist
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"Origin allowlist must reject before SkipCheck — phished bearer from attacker origin must NOT bypass CSRF")
+}
+
+func TestCSRF_OriginCheckBeforeSkipCheck_AllowedOriginPasses(t *testing.T) {
+	// Sanity: a bearer-token POST from an allow-listed origin still
+	// short-circuits via SkipCheck (origin passes, skip predicate
+	// passes, no token required).
+	mw := New(
+		WithSecret(testSecret()),
+		WithSkipCheck(HasBearerToken),
+		WithAllowedOrigins("https://app.example.com"),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer good-token")
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestNew_POSTWithBearerTokenNoSkipCheck_RequiresCSRF(t *testing.T) {
 	mw := New(WithSecret(testSecret()))
 	handler := mw(okHandler())
