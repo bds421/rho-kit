@@ -32,6 +32,62 @@ func TestMiddleware_PanicsWithoutUserExtractorOrSharedKeysOptIn(t *testing.T) {
 	Middleware(store) // intentionally missing both — must panic
 }
 
+// TestIdempotency_EmptyUserReturns400_NotShared verifies that when an extractor
+// is configured but returns "" at runtime (anonymous request, missing auth ctx,
+// JWT minted without sub), the middleware fails closed with 400 rather than
+// collapsing the cache key to (method, path, rawKey). The cache slot must NOT
+// be poisoned: a subsequent request with a real user must execute fresh.
+func TestIdempotency_EmptyUserReturns400_NotShared(t *testing.T) {
+	store := idem.NewMemoryStore()
+
+	extractor := func(r *http.Request) string {
+		// Realistic mis-wiring: extractor reads a header populated by an
+		// earlier auth middleware. Anonymous request → "".
+		return r.Header.Get("X-User")
+	}
+
+	callCount := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"served":true}`))
+	})
+	handler := Middleware(store, WithUserExtractor(extractor))(inner)
+
+	// Request 1: anonymous — extractor returns "". Must be rejected with 400
+	// and must not touch the cache slot.
+	req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"v":1}`))
+	req1.Header.Set("Idempotency-Key", "shared-key")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusBadRequest {
+		t.Fatalf("anonymous request status = %d, want %d", rec1.Code, http.StatusBadRequest)
+	}
+	if callCount != 0 {
+		t.Fatalf("inner handler called %d times for anonymous request, want 0", callCount)
+	}
+
+	// Request 2: authenticated — same Idempotency-Key. Must execute fresh
+	// (the anonymous request must NOT have poisoned the cache slot).
+	req2 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"v":2}`))
+	req2.Header.Set("Idempotency-Key", "shared-key")
+	req2.Header.Set("X-User", "alice-uuid")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("authenticated request status = %d, want %d", rec2.Code, http.StatusOK)
+	}
+	if callCount != 1 {
+		t.Fatalf("inner handler called %d times after authenticated request, want 1", callCount)
+	}
+	if rec2.Body.String() != `{"served":true}` {
+		t.Fatalf("authenticated body = %q, want fresh response", rec2.Body.String())
+	}
+}
+
 func TestMiddleware_StripsIdentityHeadersFromCachedResponse(t *testing.T) {
 	store := idem.NewMemoryStore()
 

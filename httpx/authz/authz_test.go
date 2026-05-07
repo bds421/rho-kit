@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -143,6 +144,45 @@ func TestResourceFromPath(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "42", captured)
+}
+
+func mustCIDR(t *testing.T, s string) *net.IPNet {
+	t.Helper()
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		t.Fatalf("invalid CIDR %q: %v", s, err)
+	}
+	return n
+}
+
+func TestSubjectFromTrustedHeader_RejectsUntrustedRemote(t *testing.T) {
+	loopback := []*net.IPNet{mustCIDR(t, "127.0.0.0/8")}
+	fn := SubjectFromTrustedHeader("X-User-ID", loopback)
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "203.0.113.10:54321" // public IP, not in trusted list
+	r.Header.Set("X-User-ID", "alice")
+
+	assert.Equal(t, "", fn(r), "header from untrusted remote must be ignored")
+}
+
+func TestSubjectFromTrustedHeader_AcceptsTrustedProxy(t *testing.T) {
+	loopback := []*net.IPNet{mustCIDR(t, "127.0.0.0/8")}
+	fn := SubjectFromTrustedHeader("X-User-ID", loopback)
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	r.Header.Set("X-User-ID", "alice")
+
+	assert.Equal(t, "alice", fn(r))
+}
+
+func TestSubjectFromTrustedHeader_EmptyTrustedListRejectsAll(t *testing.T) {
+	fn := SubjectFromTrustedHeader("X-User-ID", nil)
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	r.Header.Set("X-User-ID", "alice")
+	assert.Equal(t, "", fn(r))
 }
 
 func TestSubjectFromContext(t *testing.T) {

@@ -195,6 +195,18 @@ func defaultConfig() config {
 // with [WithAllowSharedKeys]; the middleware panics at construction time
 // when neither is set, matching the kit's fail-fast convention.
 //
+// Extractor contract: when [WithUserExtractor] is set, the extractor MUST
+// return a non-empty user identifier for every request that reaches this
+// middleware. If the extractor returns "" the request is rejected with
+// HTTP 400 ("idempotency requires authenticated request") and no cache
+// slot is touched — collapsing to a (method, path, rawKey)-only key would
+// silently let an anonymous request share a slot with another anonymous
+// (or worse, a logged-in but extractor-failed) caller, exposing the
+// previous response body via Idempotency-Key replay. Route any
+// anonymous-eligible requests around this middleware (or behind a path
+// that does NOT require an Idempotency-Key) instead of relying on a
+// "sometimes returns user, sometimes returns empty" extractor.
+//
 // Identity-bearing response headers (Set-Cookie, Authorization,
 // WWW-Authenticate, Proxy-Authenticate, Strict-Transport-Security) are
 // stripped from the cached response before storage, so a replay never
@@ -231,6 +243,15 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			userID := ""
 			if cfg.userExtractor != nil {
 				userID = cfg.userExtractor(r)
+				if userID == "" {
+					// Fail closed: collapsing to (method, path, rawKey) here
+					// would let an anonymous request share a cache slot with
+					// another anonymous (or extractor-failed) caller and
+					// replay the previous response body via the same key.
+					httpx.WriteError(w, http.StatusBadRequest,
+						"idempotency requires authenticated request")
+					return
+				}
 			}
 			key := fingerprintKey(r.Method, r.URL.Path, rawKey, userID)
 

@@ -15,7 +15,9 @@ package authz
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
+	"sync"
 
 	"github.com/bds421/rho-kit/httpx"
 )
@@ -112,11 +114,89 @@ func ResourceFromPath(param string) ResourceFunc {
 	}
 }
 
-// SubjectFromHeader returns a SubjectFunc that reads a header value.
-func SubjectFromHeader(header string) SubjectFunc {
+// SubjectFromUntrustedHeader returns a SubjectFunc that reads a header value
+// directly from the request without verifying that the request originated
+// from a trusted reverse-proxy. Any caller able to reach the service can set
+// the header to an arbitrary value, which makes this extractor unsafe for
+// authorization decisions in production.
+//
+// Prefer [SubjectFromTrustedHeader] (which verifies r.RemoteAddr against a
+// trusted-proxy CIDR list) or [SubjectFromContext] (which reads from
+// authenticated middleware-populated context values).
+//
+// Use this only in tests and non-production fixtures where the only caller
+// is the test harness itself.
+func SubjectFromUntrustedHeader(header string) SubjectFunc {
 	return func(r *http.Request) string {
 		return r.Header.Get(header)
 	}
+}
+
+// subjectFromHeaderWarnOnce gates the deprecation warning for
+// [SubjectFromHeader] so that misconfigured services log the warning at
+// most once per process instead of on every constructed middleware.
+var subjectFromHeaderWarnOnce sync.Once
+
+// SubjectFromHeader returns a SubjectFunc that reads a header value.
+//
+// Deprecated: SubjectFromHeader trusts a request header that any client can
+// spoof. Use [SubjectFromTrustedHeader] (with a trusted-proxy CIDR list) or
+// [SubjectFromContext] (with an auth-middleware extractor) instead. This
+// function is kept as a thin alias of [SubjectFromUntrustedHeader] and emits
+// a one-shot WARN log when first called.
+func SubjectFromHeader(header string) SubjectFunc {
+	subjectFromHeaderWarnOnce.Do(func() {
+		slog.Warn("authz: SubjectFromHeader is deprecated; use SubjectFromTrustedHeader or SubjectFromContext",
+			"header", header,
+		)
+	})
+	return SubjectFromUntrustedHeader(header)
+}
+
+// SubjectFromTrustedHeader returns a SubjectFunc that reads a header value
+// only when r.RemoteAddr falls within the supplied trustedProxies CIDR list.
+// When the request did not arrive via a trusted proxy, the extractor returns
+// "" — which causes [RequirePermission] to reject the request with 401
+// ("missing subject identity") via its existing fail-closed path.
+//
+// This prevents subject spoofing: a caller who connects directly (not through
+// the configured ingress) can still set the header, but the middleware will
+// ignore the value because the connection's source IP is outside the trusted
+// proxy range.
+//
+// trustedProxies must list the CIDRs (or single-IP /32 / /128 entries) of
+// the reverse proxies that legitimately set the header. A nil or empty list
+// rejects every request because no remote can be trusted; use
+// [SubjectFromContext] in deployments without a header-stamping proxy.
+func SubjectFromTrustedHeader(header string, trustedProxies []*net.IPNet) SubjectFunc {
+	return func(r *http.Request) string {
+		if !remoteAddrInTrustedProxies(r.RemoteAddr, trustedProxies) {
+			return ""
+		}
+		return r.Header.Get(header)
+	}
+}
+
+// remoteAddrInTrustedProxies reports whether the host portion of remoteAddr
+// (host:port) is contained in any of the supplied CIDRs.
+func remoteAddrInTrustedProxies(remoteAddr string, trusted []*net.IPNet) bool {
+	if len(trusted) == 0 {
+		return false
+	}
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trusted {
+		if cidr != nil && cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // SubjectFromContext returns a SubjectFunc that extracts the subject from the
