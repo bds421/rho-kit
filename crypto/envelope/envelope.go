@@ -83,13 +83,21 @@ var (
 // typically backed by a cloud KMS (AWS KMS, GCP KMS, Vault transit) or
 // — for tests — an in-memory key.
 type KEK interface {
-	// KeyID returns the identifier of the active key version. Issuers
-	// should bump this on rotation; readers should embed it so future
-	// Unwrap calls know which KEK version to invoke.
+	// KeyID returns the identifier of the active key version. This is
+	// for telemetry/debug only; it MUST NOT be used to decide which
+	// keyID to embed in an envelope, because rotation between this
+	// call and a subsequent Wrap can produce undecryptable blobs. Use
+	// the keyID returned by Wrap for envelope writes.
 	KeyID() string
 
-	// Wrap encrypts dek with the active KEK version.
-	Wrap(ctx context.Context, dek []byte) (wrapped []byte, err error)
+	// Wrap encrypts dek with the active KEK version and returns both
+	// the wrapped bytes and the keyID under which they were
+	// authenticated. Implementations MUST select keyID and seal under
+	// the same lock/snapshot so the returned (keyID, wrapped) pair is
+	// internally consistent even if rotation happens concurrently.
+	// Callers must use the returned keyID for the envelope header,
+	// never KeyID(), to avoid a TOCTOU rotation race.
+	Wrap(ctx context.Context, dek []byte) (keyID string, wrapped []byte, err error)
 
 	// Unwrap decrypts wrapped under the named keyID. Implementations
 	// must reject unknown key IDs rather than silently falling back.
@@ -122,11 +130,13 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 	}
 	defer zeroBytes(dek)
 
-	wrapped, err := e.kek.Wrap(ctx, dek)
+	// Wrap returns (keyID, wrapped) atomically: a separate KeyID() call
+	// could observe a different active key after rotation, leaving the
+	// header and the AAD-bound wrap inconsistent.
+	keyID, wrapped, err := e.kek.Wrap(ctx, dek)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: wrap DEK: %w", err)
 	}
-	keyID := e.kek.KeyID()
 	if len(keyID) > 255 {
 		return nil, fmt.Errorf("envelope: KEK keyID exceeds 255 bytes")
 	}
@@ -224,11 +234,12 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 		return nil, fmt.Errorf("envelope: DEK length %d != %d", len(dek), dekLen)
 	}
 
-	newWrapped, err := e.kek.Wrap(ctx, dek)
+	// Wrap returns (keyID, wrapped) atomically: see Encrypt for the
+	// rotation race that motivates this contract.
+	newKeyID, newWrapped, err := e.kek.Wrap(ctx, dek)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: re-wrap DEK: %w", err)
 	}
-	newKeyID := e.kek.KeyID()
 	if len(newKeyID) > 255 {
 		return nil, fmt.Errorf("envelope: KEK keyID exceeds 255 bytes")
 	}

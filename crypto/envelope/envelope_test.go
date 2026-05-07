@@ -3,6 +3,8 @@ package envelope_test
 import (
 	"context"
 	"crypto/rand"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -268,4 +270,110 @@ func TestKEKStatic_KeyIDBoundAsAAD(t *testing.T) {
 
 	_, err = enc.Decrypt(context.Background(), blob, nil)
 	assert.Error(t, err, "swapped keyID must fail to unwrap because keyID is bound as AAD")
+}
+
+// TestKEKStatic_WrapReturnsActiveKeyID verifies that the keyID returned
+// by Wrap matches the active key at the moment of the seal. Decrypting
+// under the returned keyID succeeds, which proves the keyID and the
+// AAD-bound wrap are mutually consistent.
+func TestKEKStatic_WrapReturnsActiveKeyID(t *testing.T) {
+	mk := make([]byte, 32)
+	_, err := rand.Read(mk)
+	require.NoError(t, err)
+
+	k, err := kekstatic.New("v1", mk)
+	require.NoError(t, err)
+
+	dek := make([]byte, 32)
+	_, err = rand.Read(dek)
+	require.NoError(t, err)
+
+	keyID, wrapped, err := k.Wrap(context.Background(), dek)
+	require.NoError(t, err)
+	assert.Equal(t, "v1", keyID, "Wrap must return the active key ID")
+
+	got, err := k.Unwrap(context.Background(), keyID, wrapped)
+	require.NoError(t, err)
+	assert.Equal(t, dek, got)
+}
+
+// TestEncrypt_ConsistentUnderConcurrentRotation exercises the rotation
+// race that motivated the Wrap interface change. Many goroutines
+// Encrypt while a separate goroutine flips Rotate between two keys.
+// Every produced blob must decrypt — this would fail if envelope.go
+// read keyID separately from the wrap.
+func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
+	mk1 := make([]byte, 32)
+	_, _ = rand.Read(mk1)
+	mk2 := make([]byte, 32)
+	_, _ = rand.Read(mk2)
+
+	k, err := kekstatic.New("v1", mk1)
+	require.NoError(t, err)
+	require.NoError(t, k.AddKey("v2", mk2))
+
+	enc := envelope.New(k)
+
+	const writers = 8
+	const perWriter = 200
+
+	var stop atomic.Bool
+	var rotWG sync.WaitGroup
+	rotWG.Add(1)
+	go func() {
+		defer rotWG.Done()
+		toggle := false
+		for !stop.Load() {
+			toggle = !toggle
+			if toggle {
+				_ = k.Rotate("v2")
+			} else {
+				_ = k.Rotate("v1")
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	errs := make(chan error, writers*perWriter)
+	for w := 0; w < writers; w++ {
+		go func() {
+			defer wg.Done()
+			pt := []byte("rotation-race-payload")
+			for i := 0; i < perWriter; i++ {
+				blob, err := enc.Encrypt(context.Background(), pt, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				got, err := enc.Decrypt(context.Background(), blob, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if string(got) != string(pt) {
+					errs <- assertEqualErr(pt, got)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	stop.Store(true)
+	rotWG.Wait()
+	close(errs)
+
+	for e := range errs {
+		t.Fatalf("concurrent encrypt/decrypt failed: %v", e)
+	}
+}
+
+func assertEqualErr(want, got []byte) error {
+	return &mismatchError{want: string(want), got: string(got)}
+}
+
+type mismatchError struct{ want, got string }
+
+func (e *mismatchError) Error() string {
+	return "plaintext mismatch: want=" + e.want + " got=" + e.got
 }

@@ -108,29 +108,37 @@ func (k *KEK) KeyID() string {
 // exact keyID it was wrapped with — even if the same master bytes are
 // registered under multiple ids, swapping the envelope's keyID header
 // to an alternate id fails to authenticate.
-func (k *KEK) Wrap(_ context.Context, dek []byte) ([]byte, error) {
+//
+// keyID and master are snapshotted under the same RLock so the
+// returned (keyID, wrapped) pair is internally consistent even if a
+// concurrent Rotate happens between the snapshot and the seal. The
+// caller (envelope.Encrypt / envelope.Rewrap) must use the returned
+// keyID for the envelope header — never KEK.KeyID() — to avoid a
+// rotation race that would record a header keyID different from the
+// one bound as AAD.
+func (k *KEK) Wrap(_ context.Context, dek []byte) (string, []byte, error) {
 	k.mu.RLock()
-	master := k.keys[k.current]
 	keyID := k.current
+	master := k.keys[keyID]
 	k.mu.RUnlock()
 	if master == nil {
-		return nil, errors.New("kekstatic: no active key")
+		return "", nil, errors.New("kekstatic: no active key")
 	}
 
 	gcm, err := newGCM(master)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("kekstatic: read nonce: %w", err)
+		return "", nil, fmt.Errorf("kekstatic: read nonce: %w", err)
 	}
 	ct := gcm.Seal(nil, nonce, dek, []byte(keyID))
 
 	out := make([]byte, 0, gcm.NonceSize()+len(ct))
 	out = append(out, nonce...)
 	out = append(out, ct...)
-	return out, nil
+	return keyID, out, nil
 }
 
 // Unwrap decrypts wrapped under the named keyID. Returns an error if
