@@ -19,6 +19,9 @@ use (
 	./crypto/envelope/kekstatic
 	./crypto/paseto
 	./crypto/passhash
+	./data/budget
+	./data/budget/memory
+	./data/budget/redis
 	./data/cache
 	./data/cache/rediscache
 	./data/cache/tenant
@@ -39,6 +42,8 @@ use (
 	./data/stream/redisstream
 	./grpcx
 	./httpx
+	./httpx/budget
+	./httpx/middleware/budget
 	./httpx/middleware/ratelimit/tenant
 	./httpx/middleware/signedrequest
 	./httpx/sign
