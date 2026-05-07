@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"io/fs"
+	"sync"
 	"testing"
 
 	"github.com/pressly/goose/v3"
@@ -99,4 +100,51 @@ func TestPostgres_Live_TamperDetected(t *testing.T) {
 
 	_, err = log.Get(context.Background(), written.ID)
 	assert.ErrorIs(t, err, actionlog.ErrSignatureInvalid)
+}
+
+// TestPostgres_Live_ConcurrentFirstAppend is the regression test for
+// the R2 first-append-not-serialised finding: with SELECT FOR UPDATE
+// only, two concurrent first-appends for a tenant with no rows yet
+// would both build seq=1 and one would fail the unique constraint.
+// The pg_advisory_xact_lock(hashtext(tenant_id)) added in
+// AppendChained makes the build+persist atomic from the first row on.
+func TestPostgres_Live_ConcurrentFirstAppend(t *testing.T) {
+	dsn := startPostgres(t)
+	db := openAndMigrate(t, dsn)
+	store := New(db)
+	log := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
+		"k1": []byte("0123456789abcdef0123456789abcdef"),
+	}))
+
+	const n = 50
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := log.Append(context.Background(), actionlog.Entry{
+				TenantID: "tenant-first",
+				Actor:    "agent",
+				Action:   "x",
+				Outcome:  actionlog.OutcomeSuccess,
+			})
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	require.Empty(t, errs, "no concurrent first-append should fail")
+
+	require.NoError(t, log.VerifyChain(context.Background(), "tenant-first"))
+
+	got, err := log.List(context.Background(), actionlog.Query{TenantID: "tenant-first", Limit: n + 1})
+	require.NoError(t, err)
+	assert.Len(t, got, n)
 }

@@ -52,15 +52,32 @@ func New(db *gorm.DB) *Store {
 	return &Store{db: db}
 }
 
-// AppendChained runs build inside a transaction that holds SELECT FOR
-// UPDATE on the latest row for tenantID, persisting the resulting
-// entry under the same lock so concurrent appends serialise.
+// AppendChained runs build inside a transaction that holds a
+// per-tenant advisory lock plus SELECT FOR UPDATE on the latest row
+// for tenantID, persisting the resulting entry under the same lock
+// so concurrent appends serialise — including the tenant's first
+// append, where there is no row yet for SELECT FOR UPDATE to lock.
 func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
 	if tenantID == "" {
 		return actionlog.Entry{}, actionlog.ErrInvalidEntry
 	}
+	isPostgres := s.db.Dialector.Name() == "postgres"
 	var out actionlog.Entry
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// pg_advisory_xact_lock serialises concurrent first-appends for
+		// the same tenant: SELECT FOR UPDATE has nothing to lock when
+		// the tenant has zero rows, so two concurrent first-append calls
+		// would otherwise both build seq=1 and one would fail the
+		// (tenant_id, seq) unique constraint. The lock is released at
+		// commit/rollback, so it never escapes this transaction.
+		// Skipped on non-Postgres dialects (sqlite memdb tests); on
+		// SQLite the connection-level serialisation plus the unique
+		// index keep correctness.
+		if isPostgres {
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", tenantID).Error; err != nil {
+				return fmt.Errorf("actionlog/postgres: advisory lock: %w", err)
+			}
+		}
 		var latest row
 		// SELECT FOR UPDATE the highest-Seq row for this tenant. On
 		// dialects that elide row locking (sqlite via memdb), the

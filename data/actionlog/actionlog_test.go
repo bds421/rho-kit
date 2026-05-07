@@ -452,6 +452,52 @@ func TestNew_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { New(newMemStore(), nil) })
 }
 
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestWithIDFunc_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithIDFunc(nil) })
+}
+
+// TestVerifyChain_SpansKeyRotation is the regression test for the
+// R2 hash-chain key-rotation finding: appending under one key, then
+// rotating and appending under a different key, must still pass
+// VerifyChain. Pre-fix, prev_hash was an HMAC under the current key;
+// VerifyChain recomputed it under the previous entry's key, so any
+// rotation between two entries produced a false ErrChainBroken.
+func TestVerifyChain_SpansKeyRotation(t *testing.T) {
+	old := []byte("old-key-old-key-old-key-old-key-")
+	require.Len(t, old, 32)
+	newKey := []byte("new-key-new-key-new-key-new-key-")
+	require.Len(t, newKey, 32)
+
+	store := newMemStore()
+
+	v1 := NewStaticSecrets("v1", map[string][]byte{"v1": old})
+	logger1 := New(store, v1)
+	for i := 0; i < 2; i++ {
+		_, err := logger1.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	v2 := NewStaticSecrets("v2", map[string][]byte{
+		"v1": old,
+		"v2": newKey,
+	})
+	logger2 := New(store, v2)
+	for i := 0; i < 2; i++ {
+		_, err := logger2.Append(context.Background(), Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, logger2.VerifyChain(context.Background(), "t"))
+}
+
 func TestNewStaticSecrets_PanicsOnUnknownCurrent(t *testing.T) {
 	assert.Panics(t, func() {
 		NewStaticSecrets("missing", map[string][]byte{"v1": make([]byte, 32)})

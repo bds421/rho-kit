@@ -138,11 +138,14 @@ type Entry struct {
 	// truncation (per-row tampering is already caught by [Entry.Signature]).
 	Seq int64 `json:"seq"`
 
-	// PrevHash is the hex-encoded HMAC-SHA256 of the previous entry's
+	// PrevHash is the hex-encoded SHA-256 of the previous entry's
 	// canonical form for this tenant; the first entry uses 64 zero
-	// hex chars. The signed payload includes PrevHash and Seq, so a
-	// row whose predecessor was deleted will fail verification because
-	// its recomputed signature mismatches the stored value.
+	// hex chars. The hash is intentionally key-independent (plain
+	// SHA-256, not HMAC) so the chain remains verifiable across
+	// signing-key rotation: the signed payload includes PrevHash and
+	// Seq, so a row whose predecessor was deleted or rewritten still
+	// fails verification because its current signature mismatches
+	// once the prev entry's canonical bytes change.
 	PrevHash string `json:"prev_hash"`
 
 	// Signature is HMAC-SHA256 over the canonical form of all other
@@ -336,13 +339,22 @@ type signedLogger struct {
 type LoggerOption func(*signedLogger)
 
 // WithClock overrides the wall-clock used for [Entry.OccurredAt]. Used
-// by tests to make signed payloads deterministic.
+// by tests to make signed payloads deterministic. Panics on nil so a
+// misconfigured test option does not turn into a production panic on
+// the first Append.
 func WithClock(fn func() time.Time) LoggerOption {
+	if fn == nil {
+		panic("actionlog: WithClock: fn must not be nil")
+	}
 	return func(l *signedLogger) { l.clock = fn }
 }
 
 // WithIDFunc overrides the id generator. Default: UUIDv7 string.
+// Panics on nil — see [WithClock].
 func WithIDFunc(fn func() string) LoggerOption {
+	if fn == nil {
+		panic("actionlog: WithIDFunc: fn must not be nil")
+	}
 	return func(l *signedLogger) { l.newID = fn }
 }
 
@@ -398,7 +410,7 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		if prevSeq == 0 {
 			entry.PrevHash = zeroPrevHash
 		} else {
-			h, err := entryHash(prev, secret)
+			h, err := entryHash(prev)
 			if err != nil {
 				return Entry{}, fmt.Errorf("actionlog: prev hash: %w", err)
 			}
@@ -471,11 +483,7 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 				return fmt.Errorf("%w: tenant %q first entry must have zero prev_hash", ErrChainBroken, tenantID)
 			}
 		} else {
-			secret, ok := l.secrets.Resolve(prev.SignatureKeyID)
-			if !ok {
-				return ErrUnknownKeyID
-			}
-			expected, err := entryHash(prev, secret)
+			expected, err := entryHash(prev)
 			if err != nil {
 				return err
 			}
@@ -555,11 +563,25 @@ func computeSignature(e Entry, secret []byte) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// entryHash returns the hex-encoded HMAC-SHA256 of the entry's
-// canonical form. Used to compute the next entry's PrevHash and to
-// verify the chain. Distinct from the entry's own [Entry.Signature]
-// only conceptually — the algorithm and key are identical, so a
-// chained verifier and a row verifier see the same bytes.
-func entryHash(e Entry, secret []byte) (string, error) {
-	return computeSignature(e, secret)
+// entryHash returns the hex-encoded SHA-256 of the entry's canonical
+// form. Used to compute the next entry's PrevHash and to verify the
+// chain.
+//
+// Why plain SHA-256 (not HMAC) and key-independent: the prev_hash
+// participates in the next entry's signed canonical form, so any
+// change to a previous entry's bytes (including its own prev_hash)
+// invalidates the next entry's signature. The chain's tamper evidence
+// rides on the per-row HMAC signatures — making prev_hash itself
+// key-free means a key rotation between two entries does not break
+// VerifyChain. With an HMAC-keyed prev_hash, the signed prev_hash on
+// entry N (computed under the new key) would not match the
+// re-derived hash of entry N-1 (recomputed under entry N-1's older
+// key), causing a false ErrChainBroken on a perfectly valid log.
+func entryHash(e Entry) (string, error) {
+	canonical, err := canonicalForm(e)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
 }
