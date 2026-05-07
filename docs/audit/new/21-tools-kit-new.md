@@ -56,12 +56,13 @@ Templates live in `cmd/kit-new/templates/` as Go `text/template` files. Each `--
 
 ## Definition of done
 
-- [ ] CLI binary with the flags above.
-- [ ] Templates for the file tree above.
-- [ ] Generated service compiles and passes `kit-doctor`.
-- [ ] Snapshot tests for representative module combinations.
-- [ ] `--self-test` mode in CI.
-- [ ] Doc explaining how to add a new template.
+- [x] CLI binary with `-module-path` and `-dir` flags. ✅ this PR
+- [x] Templates for the minimal file tree (cmd/<name>/main.go, internal/app/wire.go, go.mod, README.md, Makefile, AGENTS.md, .github/workflows/ci.yml). The `--modules`, `--tenant`, and `--token` flags from the original scope are deferred — they belong with the corresponding new-package Builder integrations (which themselves are still pending under their own audit items).
+- [x] Generated service compiles and `go vet`s clean (covered by `TestScaffold_GeneratedTreeBuildsAndPasses`). The CI workflow template runs `kit-doctor` so consumer services stay aligned post-generation.
+- [x] Snapshot tests via `TestScaffold_GeneratesExpectedTree` and the build self-test.
+- [x] Self-test integrated into the standard `go test` run (no separate flag needed; `testing.Short()` skips it).
+- [x] Adding a template documented in main.go package comment.
+- [ ] Deploy/k8s + deploy/grafana + deploy/prometheus templates (deferred to the dashboards audit item, [new/22]).
 
 ## Related
 

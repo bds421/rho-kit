@@ -1,0 +1,21 @@
+# Agent guide for {{.ServiceName}}
+
+This file is the canonical instruction sheet for AI agents working in
+this repository. Mirror the rho-kit AGENTS.md conventions.
+
+## Where to wire
+
+- HTTP routes and middleware: `internal/app/wire.go`.
+- Domain logic: `internal/<feature>/`.
+- Persistence: `internal/repo/`.
+- Background workers: register via the kit's lifecycle in
+  `internal/app/wire.go`.
+
+## Run kit-doctor before commit
+
+```sh
+make doctor
+```
+
+`kit-doctor` flags any drift from the rho-kit secure defaults
+(JWT pinning, idempotency user scoping, default http client, etc.).

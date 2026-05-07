@@ -1,0 +1,31 @@
+// Package app wires the {{.ServiceName}} service. Add new dependencies
+// here so kit-doctor can scan a single, predictable file.
+package app
+
+import (
+	"context"
+	"net/http"
+)
+
+// Run blocks until ctx cancels or the service errors.
+//
+// This skeleton is intentionally minimal — wire your routes and
+// dependencies here. The kit's app.Builder is the recommended
+// starting point; kit-new keeps this file simple so the generated
+// service compiles before the kit modules are added.
+func Run(ctx context.Context) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Shutdown(context.Background())
+	}()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
