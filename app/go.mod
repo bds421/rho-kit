@@ -8,6 +8,7 @@ require (
 	github.com/bds421/rho-kit/httpx v1.5.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.2.0
+	github.com/bds421/rho-kit/infra/messaging/natsbackend v0.0.0
 	github.com/bds421/rho-kit/infra/redis v1.2.0
 	github.com/bds421/rho-kit/infra/sqldb v1.3.0
 	github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql v1.3.0
@@ -40,7 +41,11 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/nats-io/nats.go v1.51.0 // indirect
+	github.com/nats-io/nkeys v0.4.15 // indirect
+	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
@@ -120,4 +125,7 @@ require (
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
 
-replace github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto
+replace (
+	github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto
+	github.com/bds421/rho-kit/infra/messaging/natsbackend => ../infra/messaging/natsbackend
+)

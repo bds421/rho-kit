@@ -17,6 +17,7 @@ import (
 	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/httpx/slohttp"
+	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
@@ -88,6 +89,9 @@ type Builder struct {
 	// RabbitMQ
 	mqURL          string
 	criticalBroker bool
+
+	// NATS JetStream — independent of RabbitMQ; both may coexist.
+	natsCfg *natsbackend.Config
 
 	// JWT
 	jwksURL          string
@@ -256,6 +260,25 @@ func (b *Builder) WithRabbitMQ(url string) *Builder {
 // WithCriticalBroker makes the RabbitMQ health check critical (503 on failure).
 func (b *Builder) WithCriticalBroker() *Builder {
 	b.criticalBroker = true
+	return b
+}
+
+// WithNATS registers a NATS JetStream broker. The kit exposes the
+// connection plus a default Publisher via Infrastructure.NATS and
+// Infrastructure.NATSPublisher; stream/consumer declarations are
+// caller-driven so the Builder doesn't impose a specific topology.
+//
+// WithNATS is independent of [Builder.WithRabbitMQ] — both can be
+// configured simultaneously when a service publishes to one broker
+// and consumes from another. Each is exposed via dedicated
+// Infrastructure fields.
+//
+// Panics if cfg.URL is empty.
+func (b *Builder) WithNATS(cfg natsbackend.Config) *Builder {
+	if cfg.URL == "" {
+		panic("app: WithNATS requires a non-empty URL")
+	}
+	b.natsCfg = &cfg
 	return b
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/bds421/rho-kit/crypto/paseto"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
@@ -51,6 +52,9 @@ type Infrastructure struct {
 	Broker    messaging.Connector        // nil if no WithRabbitMQ
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
 	Consumer  messaging.MessageConsumer  // nil if no WithRabbitMQ
+
+	NATS          *natsbackend.Connection // nil if no WithNATS
+	NATSPublisher *natsbackend.Publisher  // nil if no WithNATS
 
 	JWT    *jwtutil.Provider // nil if no WithJWT
 	PASETO *paseto.Provider  // nil if no WithPASETO

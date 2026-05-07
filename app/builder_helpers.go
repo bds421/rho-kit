@@ -86,6 +86,10 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, m)
 	}
 
+	if b.natsCfg != nil {
+		modules = append(modules, newNatsModule(*b.natsCfg))
+	}
+
 	return modules, dbMod
 }
 
