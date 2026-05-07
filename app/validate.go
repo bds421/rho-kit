@@ -3,82 +3,51 @@ package app
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 )
 
 // isUnspecifiedHost reports whether host names an "all-interfaces"
-// bind. Catches every form net.Listen accepts as the IPv4 wildcard:
+// bind. Catches every form net.Listen accepts as the IPv4 / IPv6
+// wildcard, by going through the same address parser net.Listen uses
+// internally — net.ResolveTCPAddr.
 //
-//   - IPv4 0.0.0.0 in canonical form
-//   - IPv4 short / leading-zero forms: "0", "0.0", "0.0.0", "00.00.00.00",
+// Forms confirmed to be flagged:
+//
+//   - Canonical IPv4 0.0.0.0
+//   - Short / leading-zero IPv4: "0", "0.0", "0.0.0", "00.00.00.00",
 //     "000.000.000.000", "0.00.00.00"
-//   - IPv4 hex / octal forms: "0x0", "0X00000000", "0x0.0x0.0x0.0x0",
-//     "00", "000" (octal interpretation)
+//   - Hex / octal IPv4: "0x0", "0X00000000", "0x0.0x0.0x0.0x0",
+//     "00", "000"
+//   - Single-segment numeric overflow that cgo's getaddrinfo truncates
+//     to zero: "4294967296" (2^32), "0x100000000", "040000000000"
+//     (audit finding N-9 — the previous implementation walked numeric
+//     segments with strconv.ParseUint and missed this class because
+//     the value before truncation is non-zero)
 //   - IPv6 [::], ::, 0:0:0:0:0:0:0:0 in canonical and bracket-wrapped form
 //   - IPv6-mapped IPv4 wildcard ::ffff:0.0.0.0
 //
-// Empty host is NOT flagged here because [InternalConfig.Addr] defaults
+// Empty host is NOT flagged because [InternalConfig.Addr] defaults
 // empty to "127.0.0.1" — an unset INTERNAL_HOST resolves to loopback
 // at listen time.
 //
-// The fix walks numeric segments with strconv.ParseUint base-0, which
-// auto-detects decimal / octal / hex per Go's standard rules. This
-// catches the hex-encoded zero forms net.Listen accepts but
-// net.ParseIP rejects (audit finding N-7). The audit's recommended
-// alternative (net.ResolveTCPAddr) would also work but does DNS
-// lookup as a side effect — the numeric-only walk has no I/O.
+// net.ResolveTCPAddr does NOT do DNS lookup for numeric host strings;
+// it only invokes the resolver when the input is a hostname, in which
+// case the validator (run once at boot) is the right place to do it
+// anyway — a hostname that happens to resolve to 0.0.0.0 IS exposing
+// /metrics on all interfaces and should be flagged.
 func isUnspecifiedHost(host string) bool {
 	if host == "" {
 		return false
 	}
-	// Strip square brackets that might wrap an IPv6 literal.
+	// Strip square brackets that may wrap an IPv6 literal — net.JoinHostPort
+	// docs explicitly say "host does not contain square brackets", and
+	// passing "[::]" produces "[[::]]:0" which fails to parse.
 	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-	if ip := net.ParseIP(stripped); ip != nil && ip.IsUnspecified() {
-		return true
-	}
-	if isAllZeroIPv4Numeric(stripped) {
-		return true
-	}
-	return false
-}
-
-// isAllZeroIPv4Numeric reports whether s is an IPv4-style numeric form
-// that resolves to all-zero (and thus binds to 0.0.0.0 under
-// net.Listen). Each dotted segment must parse as a non-negative integer
-// with value zero. Accepts decimal, octal (leading 0), and hex
-// (0x/0X prefix) per strconv.ParseUint base 0 conventions:
-//
-//	"0", "00", "000"          → all decimal/octal zeros
-//	"0x0", "0X00", "0x000000" → hex zeros
-//	"0.0", "0.0.0", "0.0.0.0" → up to 4 segments
-//	"0x0.0", "0X0.0x0.0x0.0x0", mixed forms
-//
-// 5+ segments are rejected (net.Listen routes those through DNS lookup
-// rather than IPv4 parsing — audit finding N-7's "5+ segment" branch).
-func isAllZeroIPv4Numeric(s string) bool {
-	if s == "" {
+	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(stripped, "0"))
+	if err != nil {
 		return false
 	}
-	parts := strings.Split(s, ".")
-	if len(parts) > 4 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" {
-			return false
-		}
-		// strconv.ParseUint with base 0 auto-detects:
-		//   "0x" / "0X" prefix → base 16
-		//   "0" prefix          → base 8
-		//   otherwise           → base 10
-		// Accept any encoding whose value is zero.
-		v, err := strconv.ParseUint(p, 0, 64)
-		if err != nil || v != 0 {
-			return false
-		}
-	}
-	return true
+	return addr.IP != nil && addr.IP.IsUnspecified()
 }
 
 // Validate checks for common configuration mistakes before startup.

@@ -195,6 +195,17 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 		"0x00.0x00.0x00.0x00",
 		"0x0.0",
 		"0.0X0",
+		// N-9: single-segment numeric overflow that cgo's getaddrinfo
+		// truncates to zero (4294967296 = 2^32, etc.). The previous
+		// strconv.ParseUint walk accepted these because the value
+		// before truncation is non-zero. The ResolveTCPAddr-based check
+		// catches them because Go's address parser delegates to the
+		// same code net.Listen uses.
+		"4294967296",
+		"0x100000000",
+		"0X100000000",
+		"040000000000",
+		"8589934592",
 	}
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
