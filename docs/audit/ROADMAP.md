@@ -2,7 +2,29 @@
 
 The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + nearly all Phase 2 has landed** (Wave 1+2+3+4+5 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
 
-The new-package work (Phases 4–6) is **landed**; see per-phase status below. Remaining items are the genuine SDK-bound spikes (cloud-KMS subpackages, k8slease/etcd leader-election backends, Kafka backend) and surface-area expansions (additional dashboards, per-package benchmarks, multi-tenant cache/idempotency wrappers) that ship per-area as their respective primitives stabilise.
+The new-package work (Phases 4–6) is **landed**; see per-phase status below. The v2.0.0 agentic-AI push (Phases 7–9) is also landed — tenant wrappers, cost budgets, action audit + approval, MCP helpers, trust signals (SBOM + vuln scans + threat model + supply-chain policy), and the dashboard expansion. Remaining items are the genuine SDK-bound spikes (cloud-KMS subpackages, k8slease/etcd leader-election backends, Kafka backend) plus the GAP-01..10 follow-ups identified by the threat model.
+
+## v2.0.0 themes — ✅ landed
+
+This wave was orchestrated as 5 parallel agents producing 7 themes:
+
+- ✅ **Theme 1 — tenant-aware everything**: `data/cache/tenant`, `data/idempotency/tenant`, `httpx/middleware/ratelimit/tenant`, `observability/promutil/labelguard`. Builder integration via `WithMultiTenant(extractor, required)`.
+- ✅ **Theme 2 — per-tenant cost budgets**: `data/budget` (interface + `Refunder` capability), `data/budget/memory`, `data/budget/redis` (atomic Lua), `httpx/middleware/budget` (inbound), `httpx/budget` (outbound `RoundTripper` with reconciliation). Builder integration via `WithTenantBudget(b, opts...)`.
+- ✅ **Theme 3 — agent action audit + approval**: `data/actionlog` (HMAC-signed entries with rotation via `SignatureKeyID`), `data/actionlog/{memory,postgres}`, `data/approval` (pending → approved/rejected → executed), `data/approval/{memory,postgres}`, `httpx/middleware/approval`. Builder integration via `WithActionLogger(l)` + `WithApprovalStore(s)`.
+- ✅ **Theme 4 — MCP helpers**: `httpx/mcp` exposes typed handlers as MCP tools over JSON-RPC. Schema generation from struct tags (`json` + `validate:"required"` + `desc:"..."`). Reuses the kit's middleware stack (auth, tenant, rate limit, budget, approval, action log). `cmd/kit-new --mcp` flag scaffolds a sample tool registration.
+- ✅ **Theme 5 — trust signals**: SBOM (CycloneDX via Anchore) on tag push; `govulncheck` + `osv-scanner` on PR/push/weekly; `docs/audit/THREAT_MODEL.md` (827 lines, identifies 10 GAP-01..10 follow-ups); `docs/audit/SUPPLY_CHAIN.md` (609 lines, pinning + signing + vuln SLO).
+- ✅ **Theme 6 — Builder integrations** (Phase A from the prior session): `WithPASETO`, `WithNATS`, `WithPgx` + mutex check, `WithLeaderElection` + cron leader gate, `WithSignedRequests`, `WriteServiceProblem`. Plus Wave 2 above.
+- ✅ **Theme 7 — dashboards expansion + runbooks**: gRPC RED, DB pool, Redis, Outbox, Storage Grafana dashboards; per-area recording rules; saturation + messaging alerts; 7 runbooks under `docs/ai/runbooks/`; `promtool` validation in CI.
+
+### v2.0.0 design choices worth knowing
+
+- **Idempotency tenant wrapper namespaces the storage key**, not the body fingerprint — backend-layer isolation holds even if the backend bug ignores fingerprints, and a fresh request from tenant B never falsely 422s on tenant A's body.
+- **Budget windows are fixed, not sliding** — LLM-cost reporting maps directly to vendor invoice lines; for adversarial smoothing, callers use `data/ratelimit/gcra`.
+- **Action-log entries are HMAC-signed with rotation** — `SignatureKeyID` rides on every entry so old entries verify after rotation; `Sign`/`Verify` exposed for off-band tools.
+- **Approval state machine refuses flip transitions** — approved→rejected (or vice-versa) needs a fresh request so the audit trail records the reconsideration.
+- **MCP server doesn't implement JSON-RPC batch** — single-call semantics keep the action-log entry per-call rather than per-batch (forensics is cleaner).
+- **MCP unauthenticated callers see "method not found", not "forbidden"** — deliberately to avoid revealing the tool catalog to the unauthenticated.
+- **Builder methods refuse nil** for budget/actionlog/approval stores — silent no-op would defeat the kit's "refuse to misconfigure" stance.
 
 ## Phase 0 — Unblock — ✅ done
 
