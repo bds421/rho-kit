@@ -15,6 +15,11 @@ import (
 // with safe, generic messages that avoid leaking internal details to clients.
 // Includes request ID and request details in logs for error correlation.
 func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	if r != nil {
+		logger = Logger(r.Context(), logger)
+	} else if logger == nil {
+		logger = slog.Default()
+	}
 	switch {
 	case apperror.IsValidation(err):
 		WriteValidationError(w, logger, err)

@@ -280,6 +280,25 @@ func TestWithRequestLogger_OmitsEmptyKeyAttr(t *testing.T) {
 	}
 }
 
+func TestWithRequestLogger_NilBaseNormalized(t *testing.T) {
+	// nil base must not panic; per-request handler must still be served.
+	handler := WithRequestLogger(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// httpx.Logger should always return a non-nil logger.
+		if l := httpx.Logger(r.Context(), nil); l == nil {
+			t.Error("expected non-nil logger from context after nil base")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestWithRequestLogger_FallbackUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

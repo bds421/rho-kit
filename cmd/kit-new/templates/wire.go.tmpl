@@ -4,7 +4,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
+
+	"github.com/bds421/rho-kit/httpx"
 {{- if .MCP}}
 
 	"github.com/bds421/rho-kit/httpx/mcp"
@@ -70,12 +73,12 @@ func Run(ctx context.Context) error {
 	mux.Handle("/mcp", newMCPServer().HTTP())
 {{- end}}
 
-	srv := &http.Server{Addr: ":8080", Handler: mux}
+	srv := httpx.NewServer(":8080", mux)
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	}()
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

@@ -206,6 +206,91 @@ func wire() {
 		"file without generated header must be scanned, got %+v", findings)
 }
 
+func TestScan_FlagsHTTPServerDirectConstruction_Pointer(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package svc
+
+import "net/http"
+
+func wire() {
+	srv := &http.Server{Addr: ":8080"}
+	_ = srv
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-direct-construction"),
+		"&http.Server{...} must be flagged, got %+v", findings)
+}
+
+func TestScan_FlagsHTTPServerDirectConstruction_Value(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package svc
+
+import "net/http"
+
+func wire() {
+	srv := http.Server{Addr: ":8080"}
+	_ = srv
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-direct-construction"),
+		"http.Server{...} composite literal must be flagged, got %+v", findings)
+}
+
+func TestScan_FlagsHTTPServerDirectConstruction_New(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package svc
+
+import "net/http"
+
+func wire() {
+	srv := new(http.Server)
+	_ = srv
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-direct-construction"),
+		"new(http.Server) must be flagged, got %+v", findings)
+}
+
+func TestScan_AcceptsHTTPxNewServer(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package svc
+
+import "github.com/bds421/rho-kit/httpx"
+
+func wire() {
+	srv := httpx.NewServer(":8080", handler, httpx.WithErrorLog(l))
+	_ = srv
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "http-server-direct-construction"),
+		"httpx.NewServer must not be flagged, got %+v", findings)
+}
+
+func TestScan_SkipsHTTPServerInTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server_test.go", `package svc
+
+import "net/http"
+
+func wire() {
+	srv := &http.Server{Addr: ":8080"}
+	_ = srv
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "http-server-direct-construction"),
+		"raw http.Server in _test.go must not be flagged, got %+v", findings)
+}
+
 func TestScan_FlagsHTTPServerMissingErrorLog(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "server.go", `package svc

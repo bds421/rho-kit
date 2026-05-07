@@ -153,6 +153,12 @@ func DoWith(ctx context.Context, base Policy, fn func(ctx context.Context) error
 // errors between restarts. Blocks until ctx is cancelled.
 // Uses WorkerPolicy as default; options override individual fields.
 func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ctx context.Context) error, opts ...Option) {
+	if fn == nil {
+		panic("retry: Loop requires a non-nil fn")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	p := WorkerPolicy
 	for _, o := range opts {
 		o(&p)

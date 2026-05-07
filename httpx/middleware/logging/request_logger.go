@@ -22,6 +22,9 @@ import (
 // The extraAttrs functions are called per request to add service-specific
 // attributes (e.g., user_id from JWT claims).
 func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) slog.Attr) func(http.Handler) http.Handler {
+	if base == nil {
+		base = slog.Default()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attrs := make([]slog.Attr, 0, 4+len(extraAttrs))

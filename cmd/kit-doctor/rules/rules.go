@@ -68,5 +68,6 @@ func Registered() []Rule {
 		idempotencyMissingUserExtractorRule{},
 		defaultHTTPClientRule{},
 		httpServerMissingErrorLogRule{},
+		httpServerDirectConstructionRule{},
 	}
 }

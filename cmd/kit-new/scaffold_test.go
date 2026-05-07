@@ -41,6 +41,29 @@ func TestScaffold_GeneratesExpectedTree(t *testing.T) {
 	assert.NotContains(t, string(body), "{{.ModulePath}}", "templates must be fully rendered")
 }
 
+func TestScaffold_GeneratedWireUsesKitHTTPServer(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	}))
+
+	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
+	require.NoError(t, err)
+	wire := string(wireBody)
+	assert.NotContains(t, wire, "&http.Server{",
+		"generated wire.go must not construct net/http.Server directly — use httpx.NewServer for slowloris timeouts and structured error log")
+	assert.Contains(t, wire, "httpx.NewServer(",
+		"generated wire.go must call httpx.NewServer so the service inherits the kit's HTTP defaults")
+	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx"`,
+		"generated wire.go must import the kit's httpx package")
+
+	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx",
+		"generated go.mod must declare the httpx dependency so go mod tidy can resolve it")
+}
+
 func TestScaffold_RejectsEmptyServiceName(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ModulePath: "example.com/demo"}))
 }
@@ -86,6 +109,31 @@ func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
 		ModulePath:  "example.com/demo",
 	}))
 
+	// The scaffold pins kit modules at v0.0.0 (real versions land via
+	// `go mod tidy` once the consumer wires the kit). For the in-test
+	// build we replace the kit module with the local checkout so the
+	// build does not depend on the public proxy resolving v0.0.0.
+	repoRoot, err := filepath.Abs("../..")
+	require.NoError(t, err)
+	httpxDir := filepath.Join(repoRoot, "httpx")
+	if _, statErr := os.Stat(httpxDir); statErr != nil {
+		t.Skipf("httpx local checkout not found at %s: %v", httpxDir, statErr)
+	}
+	replaceCmd := exec.Command("go", "mod", "edit",
+		"-replace=github.com/bds421/rho-kit/httpx="+httpxDir,
+	)
+	replaceCmd.Dir = out
+	replaceCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	if buf, err := replaceCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod edit -replace failed:\n%s", buf)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = out
+	tidyCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	if buf, err := tidyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed:\n%s", buf)
+	}
+
 	// Each `go` invocation runs in the generated dir; failures
 	// surface the toolchain output so a regression in a template is
 	// immediately diagnosable.
@@ -95,7 +143,7 @@ func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
 	} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = out
-		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 		buf, err := cmd.CombinedOutput()
 		require.NoErrorf(t, err, "go %s failed:\n%s", strings.Join(args, " "), buf)
 	}

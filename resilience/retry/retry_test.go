@@ -314,6 +314,34 @@ func TestLoop_stopsOnNonRetryable(t *testing.T) {
 	}
 }
 
+func TestLoop_NilLoggerNormalized(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var calls atomic.Int32
+	// nil logger must be normalized to slog.Default(); first failure must
+	// not panic.
+	Loop(ctx, nil, "test", func(_ context.Context) error {
+		calls.Add(1)
+		return errors.New("fail")
+	}, WithBaseDelay(5*time.Millisecond), WithMaxDelay(10*time.Millisecond))
+
+	if calls.Load() == 0 {
+		t.Error("expected at least 1 call")
+	}
+}
+
+func TestLoop_PanicsOnNilFn(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when Loop called with nil fn")
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Loop(ctx, slog.Default(), "test", nil)
+}
+
 func TestPolicy_Delay(t *testing.T) {
 	p := Policy{
 		BaseDelay: 100 * time.Millisecond,

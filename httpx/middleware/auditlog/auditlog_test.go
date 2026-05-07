@@ -75,6 +75,57 @@ func TestAuditlog_HonorsTrustedProxyXFF(t *testing.T) {
 	}
 }
 
+func TestAuditlog_PanicsOnNilLogger(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when Middleware called with nil logger")
+		}
+	}()
+	_ = Middleware(nil)
+}
+
+func TestAuditlog_NilOptionsPreserveDefaults(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l,
+		WithActorExtractor(nil),
+		WithPathFilter(nil),
+		WithStatusFilter(nil),
+		WithClientIPFunc(nil),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected 1 event with nil-option defaults preserved, got %d", len(store.events))
+	}
+	if got := store.events[0].Actor; got != "anonymous" {
+		t.Errorf("Actor = %q, want %q (default preserved)", got, "anonymous")
+	}
+}
+
+func TestAuditlog_NilPathFilter_HealthStillSkipped(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l, WithPathFilter(nil))
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 0 {
+		t.Errorf("expected /health to be skipped by default filter, got %d events", len(store.events))
+	}
+}
+
 func TestAuditlog_RecordsOnPanic(t *testing.T) {
 	store, l := newLogger()
 	mw := Middleware(l)

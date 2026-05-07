@@ -170,6 +170,44 @@ for (( level=0; level<=max_level; level++ )); do
     git add "$dir/go.mod" "$dir/go.sum" "$dir/CHANGES.md" 2>/dev/null || true
   done
 
+  # Downstream-consumer validation:
+  # `replace` directives in a published go.mod are ignored by Go consumers
+  # (they only apply to the main module). Local replaces in this monorepo
+  # mask broken require versions during workspace tidy. Verify each module
+  # at this level resolves its dependency graph with local replace directives
+  # temporarily removed — the same view a downstream consumer sees.
+  for dir in "${level_modules[@]}"; do
+    has_local_replace=$(awk '
+      /^replace[[:space:]]*\(/ { in_block=1; next }
+      in_block && /^\)/ { in_block=0; next }
+      in_block && /=>[[:space:]]*\.\.?\// { print "y"; exit }
+      /^replace[[:space:]].*=>[[:space:]]*\.\.?\// { print "y"; exit }
+    ' "$dir/go.mod")
+    if [[ -z "$has_local_replace" ]]; then
+      continue
+    fi
+    echo "  validating downstream resolution: $dir (replaces stripped)"
+    cp "$dir/go.mod" "$dir/go.mod.release-bak"
+    cp "$dir/go.sum" "$dir/go.sum.release-bak"
+    awk '
+      BEGIN { skip=0 }
+      /^replace[[:space:]]*\(/ { skip=1; next }
+      skip && /^\)/ { skip=0; next }
+      skip { next }
+      /^replace[[:space:]].*=>[[:space:]]*\.\.?\// { next }
+      { print }
+    ' "$dir/go.mod.release-bak" > "$dir/go.mod"
+    if ! (cd "$dir" && GOWORK=off go list -mod=mod ./... > /dev/null); then
+      echo "  ERROR: $dir cannot resolve dependencies without local replaces."
+      echo "  This module would be broken for downstream consumers when published."
+      mv "$dir/go.mod.release-bak" "$dir/go.mod"
+      mv "$dir/go.sum.release-bak" "$dir/go.sum"
+      exit 1
+    fi
+    mv "$dir/go.mod.release-bak" "$dir/go.mod"
+    mv "$dir/go.sum.release-bak" "$dir/go.sum"
+  done
+
   # Build commit message and tag list
   tags=()
   commit_parts=()

@@ -116,6 +116,36 @@ func TestLogger_OmitsEmptyKeyAttr(t *testing.T) {
 	}
 }
 
+func TestLogger_NilLoggerNormalized(t *testing.T) {
+	// Constructing with nil must not panic, and nil must be normalized so
+	// each request can be served without panicking either.
+	handler := Logger(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestLoggerWithOptions_NilLoggerNormalized(t *testing.T) {
+	handler := LoggerWithOptions(nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestLogger_CapturesStatus(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

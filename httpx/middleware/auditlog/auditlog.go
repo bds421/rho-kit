@@ -26,20 +26,35 @@ type config struct {
 
 // WithActorExtractor sets a function that extracts the actor identity from the
 // request (e.g., from JWT claims). Default: returns "anonymous".
+// A nil fn is ignored so the default actor extractor is preserved.
 func WithActorExtractor(fn func(*http.Request) string) Option {
-	return func(c *config) { c.actorExtractor = fn }
+	return func(c *config) {
+		if fn != nil {
+			c.actorExtractor = fn
+		}
+	}
 }
 
 // WithPathFilter sets a function that decides whether a path should be audited.
 // Return true to audit, false to skip. Default: skips /health, /ready, /metrics.
+// A nil fn is ignored so the default path filter is preserved.
 func WithPathFilter(fn func(string) bool) Option {
-	return func(c *config) { c.pathFilter = fn }
+	return func(c *config) {
+		if fn != nil {
+			c.pathFilter = fn
+		}
+	}
 }
 
 // WithStatusFilter sets a function that decides whether a response status should
 // be audited. Return true to audit. Default: audits all statuses.
+// A nil fn is ignored so the default status filter is preserved.
 func WithStatusFilter(fn func(int) bool) Option {
-	return func(c *config) { c.statusFilter = fn }
+	return func(c *config) {
+		if fn != nil {
+			c.statusFilter = fn
+		}
+	}
 }
 
 // WithTrustedProxies configures which CIDRs are trusted to set
@@ -56,8 +71,13 @@ func WithTrustedProxies(nets []*net.IPNet) Option {
 // platforms whose proxy chain doesn't follow the standard
 // X-Forwarded-For shape. The default is
 // clientip.ClientIPWithTrustedProxies(r, trustedProxies).
+// A nil fn is ignored so the default client-IP resolver is preserved.
 func WithClientIPFunc(fn func(*http.Request) string) Option {
-	return func(c *config) { c.clientIPFunc = fn }
+	return func(c *config) {
+		if fn != nil {
+			c.clientIPFunc = fn
+		}
+	}
 }
 
 func defaultPathFilter(path string) bool {
@@ -76,6 +96,9 @@ func defaultPathFilter(path string) bool {
 // would be unable to correlate 500s in the access log with their
 // audit-trail entries.
 func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Handler {
+	if l == nil {
+		panic("auditlog: Middleware requires a non-nil *auditlog.Logger")
+	}
 	cfg := config{
 		actorExtractor: func(_ *http.Request) string { return "anonymous" },
 		pathFilter:     defaultPathFilter,

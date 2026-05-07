@@ -20,6 +20,9 @@ import (
 //   - StatusUnhealthy → 503 Service Unavailable
 //   - everything else → 200 OK
 func Handler(checker *health.Checker) http.Handler {
+	if checker == nil {
+		panic("healthhttp: Handler requires a non-nil *health.Checker")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := checker.Evaluate(r.Context())
 

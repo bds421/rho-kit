@@ -31,6 +31,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -43,6 +44,7 @@ import (
 	approvalmem "github.com/bds421/rho-kit/data/approval/memory"
 	"github.com/bds421/rho-kit/data/budget"
 	budgetmem "github.com/bds421/rho-kit/data/budget/memory"
+	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/mcp"
 	"github.com/bds421/rho-kit/httpx/middleware/tenant"
 )
@@ -87,28 +89,19 @@ func Run(ctx context.Context) error {
 	mux.HandleFunc("/admin/dangerous-action", dangerousAction(astore))
 	mux.HandleFunc("/admin/budget", budgetStatus(bud))
 
-	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
-		// Slowloris protection: cap every phase of the request
-		// lifecycle. Without these, a single attacker can hold all
-		// inbound goroutines on slow reads/writes. The kit's
-		// app.Builder wires equivalent defaults via httpx.WithTimeouts;
-		// the example sets them by hand because it does not use the
-		// Builder.
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MiB
-	}
+	// httpx.NewServer wires the kit's slowloris defaults
+	// (ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout,
+	// MaxHeaderBytes) and a slog-backed ErrorLog. The Builder uses
+	// the same helper internally; the example calls it directly so it
+	// stays dependency-light without forking those defaults by hand.
+	srv := httpx.NewServer(":8080", mux)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

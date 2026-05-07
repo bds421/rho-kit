@@ -73,6 +73,9 @@ func Logger(logger *slog.Logger, quietPaths []string, extraAttrs ...func(r *http
 // distinct so the existing simple signature stays compatible with the
 // hundreds of callers that don't need a resolver.
 func LoggerWithOptions(logger *slog.Logger, quietPaths []string, opts []LoggerOption, extraAttrs ...func(r *http.Request) slog.Attr) func(http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	cfg := loggerConfig{clientIPResolver: clientip.ClientIP}
 	for _, o := range opts {
 		o(&cfg)
