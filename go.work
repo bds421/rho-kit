@@ -11,6 +11,8 @@ use (
 	./data/actionlog
 	./data/actionlog/memory
 	./data/actionlog/postgres
+	./data/approval
+	./data/approval/memory
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
