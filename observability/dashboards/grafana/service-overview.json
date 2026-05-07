@@ -1,0 +1,73 @@
+{
+  "title": "rho-kit / Service overview",
+  "uid": "rhokit-service-overview",
+  "tags": ["rho-kit", "overview"],
+  "schemaVersion": 38,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_requests_total, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_requests_total{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Service health (1=up)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "max(up{namespace=\"$namespace\", service=\"$service\"})", "legendFormat": "up" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Request rate (req/s)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{namespace=\"$namespace\", service=\"$service\"}[5m]))" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "title": "Error rate (4xx + 5xx, req/s)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(http_errors_total{namespace=\"$namespace\", service=\"$service\"}[5m]))" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Latency p99 (s)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}[5m])))" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "title": "Linked dashboards",
+      "type": "text",
+      "options": {
+        "mode": "markdown",
+        "content": "- [HTTP RED](/d/rhokit-http-red)\n- [Go runtime](/d/rhokit-runtime-go)\n\nMore dashboards (DB, Redis, messaging, storage, outbox, ratelimit) are tracked under [docs/audit/new/22](https://github.com/bds421/rho-kit/blob/main/docs/audit/new/22-observability-dashboards.md)."
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 }
+    }
+  ]
+}

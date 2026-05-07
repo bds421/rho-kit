@@ -1,0 +1,69 @@
+# Multi-window multi-burn-rate SLO templates per Google's "Implementing
+# Service Level Objectives" book (section 5: Alerting on SLOs).
+#
+# Two windows + two burn rates produce a fast-and-precise pair: the
+# 1h@14.4× window catches sudden burns (a deploy that's eating budget
+# fast), the 6h@6× window catches slow burns (gradual degradation).
+# An alert fires only when BOTH windows are burning, dramatically
+# reducing false positives compared to single-window alerts.
+#
+# Replace `<service>` and `<namespace>` at install time, or leave the
+# label-matching open and the alert applies per (namespace, service)
+# pair automatically.
+#
+# Default budget: 99.9% over 30d (43.2 minutes of allowed badness).
+# To target a different SLO, scale the multipliers proportionally:
+#   99% (4h32m budget):  multipliers stay the same (the budget is
+#                        what changes, not the burn rates)
+#   99.99% (4m32s):      tighten the windows or accept fewer alerts.
+
+groups:
+  - name: rho-kit-slo-availability
+    rules:
+      # 1h burn at 14.4× consumes 2% of monthly budget per hour.
+      # Combined with 6h@6× (3% per 6h) the alert fires fast on hard
+      # incidents and ignores statistically-quiet noise.
+      - alert: RhoKitSLOFastBurn
+        expr: |
+          (
+            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[1h]))
+              /
+            sum by (namespace, service) (rate(http_requests_total[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[5m]))
+              /
+            sum by (namespace, service) (rate(http_requests_total[5m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          source: rho-kit-slo
+          burn: fast
+        annotations:
+          summary: "Fast burn: {{ $labels.namespace }}/{{ $labels.service }} consuming SLO budget at 14.4×"
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/slo.md"
+
+      # 6h burn at 6× consumes 6% of monthly budget per 6h.
+      - alert: RhoKitSLOSlowBurn
+        expr: |
+          (
+            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[6h]))
+              /
+            sum by (namespace, service) (rate(http_requests_total[6h]))
+          ) > (6 * 0.001)
+          and
+          (
+            sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[30m]))
+              /
+            sum by (namespace, service) (rate(http_requests_total[30m]))
+          ) > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit-slo
+          burn: slow
+        annotations:
+          summary: "Slow burn: {{ $labels.namespace }}/{{ $labels.service }} eroding SLO over 6h"
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/slo.md"

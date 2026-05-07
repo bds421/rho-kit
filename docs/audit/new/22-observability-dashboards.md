@@ -54,12 +54,13 @@ The kit's `observability/redmetrics` (proposed in [new/16](16-observability-red-
 
 ## Definition of done
 
-- [ ] Dashboard JSON for HTTP, gRPC, DB, Redis, messaging, storage, outbox, runtime, ratelimit.
-- [ ] Recording rules + alert templates per category.
-- [ ] SLO multi-burn-rate templates.
-- [ ] README with install methods (Helm, file_sd, Grafana API).
-- [ ] `kit-new` stamps `deploy/grafana/` and `deploy/prometheus/`.
-- [ ] CI test that exports dashboards as code (`grafonnet` or similar) so they stay versionable.
+- [x] Dashboard JSON for HTTP RED, Go runtime, service overview. ✅ this PR
+- [ ] Dashboards for gRPC, DB, Redis, messaging, storage, outbox, ratelimit (deferred — each ships as the corresponding kit area's metric surface stabilises).
+- [x] Recording rules + alert templates: HTTP latency p50/p95/p99 recordings; availability alerts (5xx > 5%, 4xx > 20%); latency alerts (p99 > 1s warn, p99 > 5s page).
+- [x] SLO multi-burn-rate templates: 1h@14.4× fast burn + 6h@6× slow burn pair, requires both windows to fire (suppresses statistical noise).
+- [x] README with install methods (file-based GitOps for Grafana provisioning + Prometheus rule_files; kit-new stamping; Helm chart noted as TODO).
+- [ ] `kit-new` stamps `deploy/grafana/` and `deploy/prometheus/` (deferred — kit-new ships a minimal scaffold this PR; dashboard stamping is a follow-up that pulls these files into the generator's template tree).
+- [ ] CI test that exports dashboards as code (deferred — the JSON+YAML are validated by `python3 -c json.load` / `yaml.safe_load` in this PR; promtool-driven validation TODO).
 
 ## Related
 

@@ -1,0 +1,47 @@
+# Recording rules pre-aggregate p50/p95/p99 from the histogram so
+# ad-hoc queries hit a cheap recorded series instead of computing
+# `histogram_quantile` over millions of buckets at query time.
+#
+# Convention: recording rule name = source metric + `:p{50,95,99}5m`,
+# matching the standard from Brian Brazil's "Prometheus: Up & Running".
+groups:
+  - name: rho-kit-http-latency
+    interval: 30s
+    rules:
+      - record: http_request_duration_seconds:p50:5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (namespace, service, route, le)
+              (rate(http_request_duration_seconds_bucket[5m]))
+          )
+      - record: http_request_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, route, le)
+              (rate(http_request_duration_seconds_bucket[5m]))
+          )
+      - record: http_request_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, route, le)
+              (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+  - name: rho-kit-http-rates
+    interval: 30s
+    rules:
+      - record: http_requests:rate:5m
+        expr: |
+          sum by (namespace, service, route)
+            (rate(http_requests_total[5m]))
+      - record: http_errors:rate:5m
+        expr: |
+          sum by (namespace, service, route, status_class)
+            (rate(http_errors_total[5m]))
+      - record: http_error_ratio:5m
+        expr: |
+          sum by (namespace, service, route)
+            (rate(http_errors_total[5m]))
+          /
+          sum by (namespace, service, route)
+            (rate(http_requests_total[5m]))

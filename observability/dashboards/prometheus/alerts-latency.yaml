@@ -1,0 +1,30 @@
+groups:
+  - name: rho-kit-latency
+    rules:
+      - alert: RhoKitLatencyP99High
+        expr: |
+          http_request_duration_seconds:p99:5m > 1
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "p99 latency > 1s for {{ $labels.namespace }}/{{ $labels.service }} {{ $labels.route }}"
+          description: |
+            p99 has been above 1s for the last 15 minutes. Check upstream
+            dependency latency (DB pool, external HTTP) before assuming a
+            code regression — most p99 spikes originate downstream.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/latency.md"
+
+      - alert: RhoKitLatencyP99Critical
+        expr: |
+          http_request_duration_seconds:p99:5m > 5
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "p99 latency > 5s for {{ $labels.namespace }}/{{ $labels.service }} {{ $labels.route }}"
+          description: |
+            Sustained 5s+ p99 — request timeouts likely affecting users.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/latency.md"

@@ -1,0 +1,106 @@
+{
+  "title": "rho-kit / HTTP RED",
+  "uid": "rhokit-http-red",
+  "tags": ["rho-kit", "http", "red"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_requests_total, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_requests_total{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "route",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_requests_total{namespace=\"$namespace\", service=\"$service\"}, route)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Request rate (req/s) by route",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(http_requests_total{namespace=\"$namespace\", service=\"$service\", route=~\"$route\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Error rate (4xx + 5xx) by route",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(http_errors_total{namespace=\"$namespace\", service=\"$service\", route=~\"$route\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Latency p50 / p95 / p99 (s) — route aggregate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", route=~\"$route\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", route=~\"$route\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", route=~\"$route\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "In-flight requests",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(http_requests_in_flight{namespace=\"$namespace\", service=\"$service\"})",
+          "legendFormat": "in-flight"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Status class distribution (last 5m)",
+      "type": "barchart",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (status_class) (increase(http_errors_total{namespace=\"$namespace\", service=\"$service\"}[5m]))",
+          "legendFormat": "{{status_class}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
+    }
+  ]
+}

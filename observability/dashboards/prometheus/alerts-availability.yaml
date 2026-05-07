@@ -1,0 +1,36 @@
+groups:
+  - name: rho-kit-availability
+    rules:
+      - alert: RhoKitHighErrorRate
+        expr: |
+          sum by (namespace, service) (rate(http_errors_total{status_class=~"5.."}[5m]))
+            /
+          sum by (namespace, service) (rate(http_requests_total[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "5xx ratio > 5% for {{ $labels.namespace }}/{{ $labels.service }} (10m)"
+          description: |
+            Service {{ $labels.namespace }}/{{ $labels.service }} is returning 5xx
+            for more than 5% of requests over the last 10 minutes.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/availability.md"
+
+      - alert: RhoKitElevated4xxRate
+        expr: |
+          sum by (namespace, service) (rate(http_errors_total{status_class=~"4.."}[5m]))
+            /
+          sum by (namespace, service) (rate(http_requests_total[5m]))
+            > 0.20
+        for: 30m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "4xx ratio > 20% for {{ $labels.namespace }}/{{ $labels.service }} (30m)"
+          description: |
+            High 4xx rate sustained for 30 minutes. Often indicates a client misuse or
+            schema mismatch rather than a server bug — but worth investigating.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/availability.md"

@@ -1,0 +1,91 @@
+{
+  "title": "rho-kit / Go runtime",
+  "uid": "rhokit-runtime-go",
+  "tags": ["rho-kit", "runtime", "go"],
+  "schemaVersion": 38,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(go_goroutines, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(go_goroutines{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Goroutines",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "go_goroutines{namespace=\"$namespace\", service=\"$service\"}", "legendFormat": "goroutines" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "OS threads",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "go_threads{namespace=\"$namespace\", service=\"$service\"}", "legendFormat": "threads" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Heap (alloc / sys)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "go_heap_alloc_bytes{namespace=\"$namespace\", service=\"$service\"}", "legendFormat": "alloc" },
+        { "expr": "go_heap_sys_bytes{namespace=\"$namespace\", service=\"$service\"}", "legendFormat": "sys" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Max RSS (Linux/Darwin only)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "go_max_rss_bytes{namespace=\"$namespace\", service=\"$service\"}", "legendFormat": "max RSS" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "GC pause rate (s/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(go_gc_pause_seconds_sum{namespace=\"$namespace\", service=\"$service\"}[5m])",
+          "legendFormat": "pause/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "title": "GC count (per minute)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(go_gc_count_total{namespace=\"$namespace\", service=\"$service\"}[1m]) * 60",
+          "legendFormat": "gc/min"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+    }
+  ]
+}
