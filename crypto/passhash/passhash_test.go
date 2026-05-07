@@ -115,6 +115,54 @@ func TestVerify_NeedsRehashOnlyWhenMatched(t *testing.T) {
 	assert.False(t, needsRehash)
 }
 
+func TestVerify_RejectsExcessiveMemory(t *testing.T) {
+	// Hand-craft a PHC string with memory above the default 1 GiB cap.
+	// We don't actually run argon2 — Verify must reject before invoking it.
+	encoded := "$argon2id$v=19$m=4294967295,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
+	matched, _, err := Verify("hunter2", encoded, fastParams())
+	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.False(t, matched)
+}
+
+func TestVerify_RejectsExcessiveIterations(t *testing.T) {
+	encoded := "$argon2id$v=19$m=8192,t=999999,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
+	matched, _, err := Verify("hunter2", encoded, fastParams())
+	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.False(t, matched)
+}
+
+func TestVerify_RejectsExcessiveParallelism(t *testing.T) {
+	encoded := "$argon2id$v=19$m=8192,t=1,p=255$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
+	matched, _, err := Verify("hunter2", encoded, fastParams())
+	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.False(t, matched)
+}
+
+func TestVerify_WithVerifyLimits_OverridesDefault(t *testing.T) {
+	// A hash with 100 MiB memory exceeds a tight 64 MiB caller cap but
+	// is fine under the default 1 GiB cap. Confirm the option wires
+	// through.
+	encoded := "$argon2id$v=19$m=102400,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
+	tight := VerifyLimits{MaxMemory: 64 * 1024}
+	_, _, err := Verify("hunter2", encoded, fastParams(), WithVerifyLimits(tight))
+	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+}
+
+func TestVerify_NormalHashStillVerifies(t *testing.T) {
+	// Sanity: bounds enforcement must not break the round-trip case.
+	enc, err := Hash("hunter2", fastParams())
+	require.NoError(t, err)
+	matched, _, err := Verify("hunter2", enc, fastParams())
+	require.NoError(t, err)
+	assert.True(t, matched)
+}
+
+func TestVerify_RejectsOversizedEncodedString(t *testing.T) {
+	huge := "$argon2id$v=19$m=8192,t=1,p=1$" + strings.Repeat("A", 8192) + "$YQ"
+	_, _, err := Verify("hunter2", huge, fastParams())
+	assert.ErrorIs(t, err, ErrMalformed)
+}
+
 func TestVerify_MalformedRejected(t *testing.T) {
 	cases := []string{
 		"",

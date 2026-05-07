@@ -57,6 +57,30 @@ func TestNew_PanicsOnNilDB(t *testing.T) {
 	New(nil)
 }
 
+// TestIntervalSeconds_RoundsSubSecondUp guards the TTL precision fix:
+// PostgreSQL intervals here use second precision, but truncating sub-second
+// durations with int(d.Seconds()) used to round 500ms to "0 seconds" — the
+// row would expire before any caller could observe it.
+func TestIntervalSeconds_RoundsSubSecondUp(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{1 * time.Nanosecond, "1 seconds"},
+		{500 * time.Millisecond, "1 seconds"},
+		{999 * time.Millisecond, "1 seconds"},
+		{1 * time.Second, "1 seconds"},
+		{1500 * time.Millisecond, "2 seconds"},
+		{60 * time.Second, "60 seconds"},
+		{24 * time.Hour, "86400 seconds"},
+	}
+	for _, c := range cases {
+		if got := intervalSeconds(c.in); got != c.want {
+			t.Errorf("intervalSeconds(%s) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestPgStore_GetMiss(t *testing.T) {
 	db := testDB(t)
 	store := New(db)

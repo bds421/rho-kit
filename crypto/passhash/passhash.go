@@ -33,7 +33,82 @@ var (
 	ErrEmptyPassword     = errors.New("passhash: password must not be empty")
 	ErrMalformed         = errors.New("passhash: malformed encoded hash")
 	ErrUnsupportedFormat = errors.New("passhash: unsupported encoded format (only argon2id v=19)")
+	ErrParamsOutOfBounds = errors.New("passhash: stored argon2 params exceed the verifier's accepted bounds")
 )
+
+// VerifyLimits caps the cost parameters Verify is willing to accept
+// from a stored hash before invoking argon2. A corrupted database row
+// or maliciously crafted PHC string can otherwise request multi-GiB
+// memory or thousands of iterations and DoS login workers.
+//
+// All fields are upper bounds, inclusive. A zero value means "use the
+// default bound" (see [DefaultVerifyLimits]). Apply with
+// [WithVerifyLimits] when calling [Verify].
+type VerifyLimits struct {
+	MaxMemory      uint32 // KiB; default 1 GiB
+	MaxIterations  uint32 // default 100
+	MaxParallelism uint8  // default 16
+	MaxSaltLen     uint32 // bytes; default 64
+	MaxKeyLen      uint32 // bytes; default 64
+}
+
+// DefaultVerifyLimits returns the bounds Verify uses when no
+// [WithVerifyLimits] option is supplied. They are deliberately
+// generous compared to [DefaultParams] so legitimate parameter
+// upgrades still verify, but small enough that a malicious row cannot
+// pin a CPU or allocate gigabytes.
+func DefaultVerifyLimits() VerifyLimits {
+	return VerifyLimits{
+		MaxMemory:      1 * 1024 * 1024,
+		MaxIterations:  100,
+		MaxParallelism: 16,
+		MaxSaltLen:     64,
+		MaxKeyLen:      64,
+	}
+}
+
+func (l VerifyLimits) withDefaults() VerifyLimits {
+	d := DefaultVerifyLimits()
+	if l.MaxMemory == 0 {
+		l.MaxMemory = d.MaxMemory
+	}
+	if l.MaxIterations == 0 {
+		l.MaxIterations = d.MaxIterations
+	}
+	if l.MaxParallelism == 0 {
+		l.MaxParallelism = d.MaxParallelism
+	}
+	if l.MaxSaltLen == 0 {
+		l.MaxSaltLen = d.MaxSaltLen
+	}
+	if l.MaxKeyLen == 0 {
+		l.MaxKeyLen = d.MaxKeyLen
+	}
+	return l
+}
+
+func (l VerifyLimits) accepts(p Params) bool {
+	return p.Memory <= l.MaxMemory &&
+		p.Iterations <= l.MaxIterations &&
+		p.Parallelism <= l.MaxParallelism &&
+		p.SaltLen <= l.MaxSaltLen &&
+		p.KeyLen <= l.MaxKeyLen
+}
+
+// VerifyOption configures [Verify] behaviour.
+type VerifyOption func(*verifyConfig)
+
+type verifyConfig struct {
+	limits VerifyLimits
+}
+
+// WithVerifyLimits overrides the per-dimension caps Verify enforces
+// before calling argon2. Use this if you know your deployment's
+// upgrade ceiling differs from [DefaultVerifyLimits]. Zero fields in
+// the supplied limits inherit the default bound.
+func WithVerifyLimits(l VerifyLimits) VerifyOption {
+	return func(c *verifyConfig) { c.limits = l }
+}
 
 // Params controls the cost of an argon2id hash. Defaults are calibrated
 // for ~100ms on a 2025-era server core; re-benchmark on production
@@ -111,19 +186,38 @@ func Hash(password string, p Params) (string, error) {
 //   - matched=true when the password matches.
 //   - needsRehash=true when the stored parameters are weaker than
 //     target along any dimension (caller should re-hash and persist).
-//   - err non-nil for malformed input.
+//   - err non-nil for malformed input or when the stored parameters
+//     exceed the verifier's accepted bounds (see [VerifyLimits]).
 //
 // matched is computed in constant time against the stored hash.
 // Callers MUST use matched to gate authentication; needsRehash is a
 // hint, not a security boundary.
-func Verify(password, encoded string, target Params) (matched bool, needsRehash bool, err error) {
+//
+// Verify caps the cost parameters it is willing to feed argon2 with
+// [DefaultVerifyLimits], or with caller-supplied limits via
+// [WithVerifyLimits]. A stored hash that requests more memory,
+// iterations, parallelism, salt length, or key length than the cap
+// is rejected with [ErrParamsOutOfBounds] before any argon2 work
+// runs. This prevents a corrupted row or attacker-controlled hash
+// string from pinning login workers or exhausting memory.
+func Verify(password, encoded string, target Params, opts ...VerifyOption) (matched bool, needsRehash bool, err error) {
 	if password == "" {
 		return false, false, ErrEmptyPassword
 	}
 
+	cfg := verifyConfig{limits: DefaultVerifyLimits()}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	cfg.limits = cfg.limits.withDefaults()
+
 	stored, salt, hash, err := parsePHC(encoded)
 	if err != nil {
 		return false, false, err
+	}
+	if !cfg.limits.accepts(stored) {
+		return false, false, fmt.Errorf("%w: m=%d t=%d p=%d saltLen=%d keyLen=%d",
+			ErrParamsOutOfBounds, stored.Memory, stored.Iterations, stored.Parallelism, stored.SaltLen, stored.KeyLen)
 	}
 
 	candidate := argon2.IDKey([]byte(password), salt, stored.Iterations, stored.Memory, stored.Parallelism, uint32(len(hash)))
@@ -135,10 +229,20 @@ func Verify(password, encoded string, target Params) (matched bool, needsRehash 
 	return matched, needsRehash, nil
 }
 
+// maxEncodedLen caps the size of a PHC string Verify is willing to
+// parse. The longest legitimate encoded form is well under 1 KiB
+// (DefaultParams produces ~96 bytes); anything larger is malformed or
+// hostile. Capping the input before base64-decoding prevents a
+// crafted row from causing megabyte allocations during parse.
+const maxEncodedLen = 4096
+
 // parsePHC parses the kit's `$argon2id$v=19$m=…,t=…,p=…$salt$hash`
 // format. Tolerates whitespace around the input.
 func parsePHC(s string) (Params, []byte, []byte, error) {
 	s = strings.TrimSpace(s)
+	if len(s) > maxEncodedLen {
+		return Params{}, nil, nil, ErrMalformed
+	}
 	if !strings.HasPrefix(s, "$") {
 		return Params{}, nil, nil, ErrMalformed
 	}

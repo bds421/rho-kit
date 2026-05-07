@@ -1,8 +1,11 @@
 package idempotency
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -661,5 +664,189 @@ func TestBodyFingerprint_DownstreamHandlerCanReadBody(t *testing.T) {
 
 	if seen != `{"hello":"world"}` {
 		t.Errorf("inner saw body %q, want %q — middleware must restore body after fingerprinting", seen, `{"hello":"world"}`)
+	}
+}
+
+// TestBodyFingerprint_OversizedRejectedWith413 covers Codex finding #1 + #2.
+// A request body larger than maxFingerprintBodySize must NOT reach the
+// handler truncated, and must NOT collapse to a constant fingerprint that
+// would let two distinct oversized bodies share an idempotency slot.
+// The middleware rejects with 413 before any handler or store work runs.
+func TestBodyFingerprint_OversizedRejectedWith413(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handlerCalled := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Middleware(store, WithAllowSharedKeys(), WithBodyFingerprint())(inner)
+
+	tooBig := bytes.Repeat([]byte("x"), maxFingerprintBodySize+1)
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(tooBig))
+	req.Header.Set("Idempotency-Key", "big-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if handlerCalled {
+		t.Error("handler must not run for oversized fingerprinted body")
+	}
+	// The cache slot must not have been touched — a follow-up under-cap
+	// request with the same key proceeds normally.
+	req2 := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("ok"))
+	req2.Header.Set("Idempotency-Key", "big-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Errorf("subsequent under-cap request status = %d, want 200", rec2.Code)
+	}
+	if !handlerCalled {
+		t.Error("handler must run for under-cap request with the same key")
+	}
+}
+
+// TestBodyFingerprint_AtCapBoundaryAccepted ensures the boundary case
+// (body == maxFingerprintBodySize) still works — only strictly larger
+// bodies should be rejected.
+func TestBodyFingerprint_AtCapBoundaryAccepted(t *testing.T) {
+	store := idem.NewMemoryStore()
+	handler := Middleware(store, WithAllowSharedKeys(), WithBodyFingerprint())(
+		newTestHandler(`{"ok":true}`, http.StatusOK),
+	)
+
+	atCap := bytes.Repeat([]byte("y"), maxFingerprintBodySize)
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(atCap))
+	req.Header.Set("Idempotency-Key", "boundary-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (body == cap should pass)", rec.Code, http.StatusOK)
+	}
+}
+
+// hangingStore implements idem.Store but blocks Set/Unlock until ctx is
+// cancelled. The middleware must bound the post-handler context so a hung
+// store cannot pin the request goroutine indefinitely.
+type hangingStore struct{}
+
+func (hangingStore) Get(_ context.Context, _ string, _ []byte) (*idem.CachedResponse, bool, error) {
+	return nil, false, nil
+}
+
+func (hangingStore) TryLock(_ context.Context, _ string, _ []byte, _ time.Duration) (string, bool, bool, error) {
+	return "tok", false, true, nil
+}
+
+func (hangingStore) Set(ctx context.Context, _, _ string, _ idem.CachedResponse, _ time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (hangingStore) Unlock(ctx context.Context, _, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestPostHandlerTimeout_HungStoreDoesNotPinGoroutine covers Codex
+// finding #4. With a short post-handler timeout the middleware must
+// return promptly even when Set hangs, instead of waiting forever on
+// context.Background().
+func TestPostHandlerTimeout_HungStoreDoesNotPinGoroutine(t *testing.T) {
+	handler := Middleware(hangingStore{},
+		WithAllowSharedKeys(),
+		WithPostHandlerTimeout(50*time.Millisecond),
+	)(newTestHandler("ok", http.StatusOK))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Idempotency-Key", "hang-key")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected — middleware returned despite the hung Set
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("middleware did not return; post-handler context was not bounded")
+	}
+}
+
+func TestWithPostHandlerTimeout_PanicsOnNonPositive(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for non-positive timeout")
+		}
+	}()
+	WithPostHandlerTimeout(0)
+}
+
+// flushTrackingWriter records whether Flush was forwarded. It also
+// implements http.Hijacker / http.Pusher so the wrapper exposes them
+// transitively.
+type flushTrackingWriter struct {
+	http.ResponseWriter
+	flushed atomic.Bool
+}
+
+func (f *flushTrackingWriter) Flush() { f.flushed.Store(true) }
+
+// TestResponseCapture_ForwardsFlush covers Codex finding #5. The
+// responseCapture wrapper must forward Flush() to the underlying writer
+// so streaming handlers (SSE, chunked transfer) keep working behind the
+// middleware.
+func TestResponseCapture_ForwardsFlush(t *testing.T) {
+	tracked := &flushTrackingWriter{ResponseWriter: httptest.NewRecorder()}
+	rc := &responseCapture{
+		ResponseWriter:  tracked,
+		capturedHeaders: make(http.Header),
+		statusCode:      http.StatusOK,
+		body:            &bytes.Buffer{},
+	}
+	// http.Flusher must be reachable from the wrapper.
+	flusher, ok := http.ResponseWriter(rc).(http.Flusher)
+	if !ok {
+		t.Fatal("responseCapture does not satisfy http.Flusher")
+	}
+	flusher.Flush()
+	if !tracked.flushed.Load() {
+		t.Error("Flush was not forwarded to the underlying ResponseWriter")
+	}
+}
+
+// hijackTrackingWriter implements http.Hijacker for the wrapper test.
+type hijackTrackingWriter struct {
+	http.ResponseWriter
+	called atomic.Bool
+}
+
+func (h *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.called.Store(true)
+	return nil, nil, nil
+}
+
+func TestResponseCapture_ForwardsHijack(t *testing.T) {
+	tracked := &hijackTrackingWriter{ResponseWriter: httptest.NewRecorder()}
+	rc := &responseCapture{
+		ResponseWriter:  tracked,
+		capturedHeaders: make(http.Header),
+		statusCode:      http.StatusOK,
+		body:            &bytes.Buffer{},
+	}
+	hijacker, ok := http.ResponseWriter(rc).(http.Hijacker)
+	if !ok {
+		t.Fatal("responseCapture does not satisfy http.Hijacker")
+	}
+	if _, _, err := hijacker.Hijack(); err != nil {
+		t.Fatalf("Hijack returned err: %v", err)
+	}
+	if !tracked.called.Load() {
+		t.Error("Hijack was not forwarded to the underlying ResponseWriter")
 	}
 }

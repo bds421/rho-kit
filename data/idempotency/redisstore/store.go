@@ -93,6 +93,28 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 
 func (s *RedisStore) k(key string) string { return s.prefix + key }
 
+// ttlMillisRoundUp converts a duration to milliseconds, rounding sub-ms
+// values up to 1ms. Redis PX accepts integer milliseconds; without rounding,
+// a 500µs TTL would arrive as 0 and Redis would reject the SET.
+func ttlMillisRoundUp(d time.Duration) int64 {
+	ms := d / time.Millisecond
+	if d%time.Millisecond != 0 {
+		ms++
+	}
+	if ms < 1 {
+		ms = 1
+	}
+	return int64(ms)
+}
+
+// ttlRoundUp returns a duration whose millisecond representation is at
+// least 1ms. The redis client's SET path multiplies its ttl argument back
+// to milliseconds, so the same rounding rule applies here as in
+// [ttlMillisRoundUp].
+func ttlRoundUp(d time.Duration) time.Duration {
+	return time.Duration(ttlMillisRoundUp(d)) * time.Millisecond
+}
+
 // envelope is the JSON payload stored under a key once a response has been
 // cached. The leading lock value (token:fingerprint) is overwritten with
 // this envelope by setIfLockedScript.
@@ -177,7 +199,7 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 	token := idempotency.GenerateToken()
 	value := encodeLockValue(token, fingerprint)
 
-	ok, err := s.client.SetNX(ctx, s.k(key), value, ttl).Result()
+	ok, err := s.client.SetNX(ctx, s.k(key), value, ttlRoundUp(ttl)).Result()
 	if err != nil {
 		return "", false, false, fmt.Errorf("idempotencystore: lock %q: %w", key, err)
 	}
@@ -255,7 +277,7 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 		[]string{s.k(key)},
 		expectedLockValue,
 		payload,
-		ttl.Milliseconds(),
+		ttlMillisRoundUp(ttl),
 	).Text()
 	if err != nil {
 		return fmt.Errorf("idempotencystore: set %q: %w", key, err)

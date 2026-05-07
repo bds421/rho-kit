@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -69,23 +71,31 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-// maxFingerprintBodySize is the largest request body we'll buffer to compute
-// a fingerprint. Bodies larger than this are not fingerprinted — the
-// middleware degrades to "no body comparison" rather than blocking the
-// request, on the assumption that very large payloads are the wrong shape
-// for idempotent retry semantics anyway.
+// maxFingerprintBodySize is the largest request body the middleware will
+// buffer when fingerprinting is enabled. Requests with larger bodies are
+// rejected with 413 Payload Too Large rather than truncated — silently
+// truncating would let a downstream handler observe a partial body while
+// returning success, and hashing a constant "too-large" sentinel would
+// collapse every oversized body to the same fingerprint and defeat the
+// body-mismatch protection the option exists to provide.
 const maxFingerprintBodySize = 1 << 20 // 1 MiB
 
+// defaultPostHandlerTimeout bounds the post-handler Set/Unlock store calls
+// so a hung backend cannot pin request goroutines indefinitely after the
+// handler has already returned. Tunable via [WithPostHandlerTimeout].
+const defaultPostHandlerTimeout = 5 * time.Second
+
 type config struct {
-	userExtractor   func(*http.Request) string
-	ttl             time.Duration
-	header          string
-	requiredMethods map[string]bool
-	logger          *slog.Logger
-	metrics         *Metrics
-	fingerprintBody bool
-	allowSharedKeys bool
-	preserveHeaders map[string]bool // optional override of identityResponseHeaders
+	userExtractor      func(*http.Request) string
+	ttl                time.Duration
+	header             string
+	requiredMethods    map[string]bool
+	logger             *slog.Logger
+	metrics            *Metrics
+	fingerprintBody    bool
+	allowSharedKeys    bool
+	preserveHeaders    map[string]bool // optional override of identityResponseHeaders
+	postHandlerTimeout time.Duration
 }
 
 // identityResponseHeaders are stripped from cached responses before replay.
@@ -116,11 +126,12 @@ var identityResponseHeaders = func() map[string]bool {
 
 // WithTTL sets the cache TTL for stored responses. Default: 24h.
 //
-// Panics on non-positive durations. The three idempotency stores disagree
-// dangerously about TTL=0: Redis SET NX with EX 0 creates a permanent lock
-// (no expiry), MemoryStore treats it as immediately expired, and pgstore
-// rounds sub-second durations to 0. Rejecting at construction prevents the
-// "works in tests, breaks Redis in prod" surprise.
+// Panics on non-positive durations. Backend precision varies — pgstore
+// rounds sub-second durations up to 1 second (PostgreSQL interval column
+// precision), redisstore rounds sub-millisecond durations up to 1ms (Redis
+// PX precision), MemoryStore is nanosecond-precise. The middleware rejects
+// non-positive TTLs at construction so callers cannot construct a
+// "permanent lock" (Redis SET NX with EX 0) by mistake.
 func WithTTL(d time.Duration) Option {
 	if d <= 0 {
 		panic(fmt.Sprintf("idempotency: WithTTL requires a positive duration (got %s); zero/negative TTLs create permanent locks in Redis", d))
@@ -162,18 +173,41 @@ func WithRequiredMethods(methods ...string) Option {
 // the standard Stripe-style mitigation against "client retried with mutated
 // body" silently corrupting state.
 //
+// Requests whose body exceeds [maxFingerprintBodySize] are rejected with
+// 413 Payload Too Large: silently truncating would forward a partial body
+// to the handler while still appearing to succeed, and any constant
+// "too-large" sentinel would collapse every oversized body to the same
+// fingerprint and defeat body-mismatch protection. Services that legitimately
+// accept multi-megabyte writes should not enable fingerprinting on those
+// routes.
+//
 // Off by default for backward compatibility. Enable in any new deployment;
 // it costs one SHA-256 hash + a buffered body per write request.
 func WithBodyFingerprint() Option {
 	return func(c *config) { c.fingerprintBody = true }
 }
 
+// WithPostHandlerTimeout sets the deadline for the Set/Unlock store calls
+// the middleware makes after the handler has returned. Default: 5s.
+//
+// These calls run with a fresh background context (the request context is
+// already cancelled by the time the handler returns), so a hung Redis or
+// Postgres backend without this bound would pin a goroutine until the TCP
+// timeout fires. Panics on non-positive durations.
+func WithPostHandlerTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic(fmt.Sprintf("idempotency: WithPostHandlerTimeout requires a positive duration (got %s)", d))
+	}
+	return func(c *config) { c.postHandlerTimeout = d }
+}
+
 // defaultConfig returns the default middleware configuration.
 func defaultConfig() config {
 	return config{
-		ttl:    24 * time.Hour,
-		header: "Idempotency-Key",
-		logger: slog.Default(),
+		ttl:                24 * time.Hour,
+		header:             "Idempotency-Key",
+		logger:             slog.Default(),
+		postHandlerTimeout: defaultPostHandlerTimeout,
 		requiredMethods: map[string]bool{
 			http.MethodPost:  true,
 			http.MethodPut:   true,
@@ -259,6 +293,11 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			if cfg.fingerprintBody {
 				fp, body, fpErr := readAndFingerprintBody(r)
 				if fpErr != nil {
+					if errors.Is(fpErr, errBodyTooLarge) {
+						httpx.WriteError(w, http.StatusRequestEntityTooLarge,
+							fmt.Sprintf("request body exceeds idempotency fingerprint limit (%d bytes)", maxFingerprintBodySize))
+						return
+					}
 					if cfg.metrics != nil {
 						cfg.metrics.errors.Inc()
 					}
@@ -332,7 +371,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			panicked := true
 			defer func() {
 				if panicked {
-					if unlockErr := store.Unlock(context.Background(), key, token); unlockErr != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+					defer cancel()
+					if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
 						cfg.logger.Error("idempotency: failed to unlock after panic",
 							"error", unlockErr, "key", rawKey)
 					}
@@ -345,7 +386,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			if rec.bodyOverflow {
 				cfg.logger.Warn("idempotency: response too large to cache, skipping",
 					"key", rawKey)
-				if unlockErr := store.Unlock(context.Background(), key, token); unlockErr != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+				defer cancel()
+				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
 					cfg.logger.Error("idempotency: failed to unlock after overflow",
 						"error", unlockErr, "key", rawKey)
 				}
@@ -366,7 +409,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				Headers:    headers,
 				Body:       append([]byte(nil), rec.body.Bytes()...),
 			}
-			if setErr := store.Set(context.Background(), key, token, resp, cfg.ttl); setErr != nil {
+			setCtx, setCancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+			defer setCancel()
+			if setErr := store.Set(setCtx, key, token, resp, cfg.ttl); setErr != nil {
 				if errors.Is(setErr, idem.ErrLockLost) {
 					// TTL expired and another caller has taken the slot —
 					// don't fight them. Their response will be the one
@@ -386,9 +431,17 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 	}
 }
 
+// errBodyTooLarge signals that the request body exceeded
+// [maxFingerprintBodySize] when fingerprinting is enabled. The middleware
+// translates this into 413 Payload Too Large rather than silently truncating
+// the body or hashing a constant sentinel — both alternatives would let
+// different oversized bodies share an idempotency slot.
+var errBodyTooLarge = errors.New("idempotency: request body exceeds fingerprint limit")
+
 // readAndFingerprintBody buffers the request body up to maxFingerprintBodySize,
 // computes a SHA-256 digest, and returns both the digest and the buffered
-// body so the caller can install a fresh reader before forwarding.
+// body so the caller can install a fresh reader before forwarding. Returns
+// [errBodyTooLarge] when the body exceeds the cap.
 func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
 	if r.Body == nil {
 		// Empty body still gets a stable fingerprint so empty-body retries
@@ -405,11 +458,7 @@ func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 	if len(body) > maxFingerprintBodySize {
-		// Body too big to fingerprint; fall back to length-prefixed sentinel
-		// so length-mismatch alone is still detectable.
-		h := sha256.New()
-		_, _ = io.WriteString(h, "rho-kit:idempotency:body-too-large")
-		return h.Sum(nil), body, nil
+		return nil, nil, errBodyTooLarge
 	}
 	digest := sha256.Sum256(body)
 	return digest[:], body, nil
@@ -483,6 +532,81 @@ func (rc *responseCapture) Write(b []byte) (int, error) {
 
 func (rc *responseCapture) Unwrap() http.ResponseWriter {
 	return rc.ResponseWriter
+}
+
+// Flush forwards to the underlying ResponseWriter when it implements
+// http.Flusher. Streaming handlers (SSE, chunked transfer) rely on Flush
+// reaching the wire; without this delegation the wrapper would silently
+// swallow the call.
+func (rc *responseCapture) Flush() {
+	if !rc.wroteHeader {
+		rc.WriteHeader(http.StatusOK)
+	}
+	if f, ok := rc.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards to the underlying ResponseWriter when it implements
+// http.Hijacker. After hijack the response capture is meaningless, so we
+// flag bodyOverflow to suppress caching of whatever bytes we already
+// captured — the caller has taken control of the connection.
+func (rc *responseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rc.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("idempotency: underlying ResponseWriter does not implement http.Hijacker")
+	}
+	rc.bodyOverflow = true
+	return h.Hijack()
+}
+
+// Push forwards to the underlying ResponseWriter when it implements
+// http.Pusher (HTTP/2 server push). Returns http.ErrNotSupported when the
+// inner writer cannot push, matching the standard library behaviour.
+func (rc *responseCapture) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rc.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// ReadFrom lets handlers using io.Copy take the optimised sendfile path
+// when the underlying writer is an io.ReaderFrom (e.g. *http.response).
+// We still tee bytes into the capture buffer so the cached replay is
+// faithful, falling back to the generic path once the body cap is hit.
+func (rc *responseCapture) ReadFrom(src io.Reader) (int64, error) {
+	rf, ok := rc.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(writerOnly{rc}, src)
+	}
+	if !rc.wroteHeader {
+		rc.WriteHeader(http.StatusOK)
+	}
+	if rc.bodyOverflow {
+		return rf.ReadFrom(src)
+	}
+	return rf.ReadFrom(io.TeeReader(src, &captureSink{rc: rc}))
+}
+
+// writerOnly hides ReadFrom from io.Copy so the fallback in [responseCapture.ReadFrom]
+// uses the generic copy loop and does not re-enter ReadFrom.
+type writerOnly struct{ io.Writer }
+
+// captureSink mirrors bytes written through ReadFrom into the capture buffer
+// while honouring the same overflow rule as Write.
+type captureSink struct{ rc *responseCapture }
+
+func (s *captureSink) Write(b []byte) (int, error) {
+	if s.rc.bodyOverflow {
+		return len(b), nil
+	}
+	if s.rc.body.Len()+len(b) > maxCapturedBodySize {
+		s.rc.bodyOverflow = true
+		s.rc.body.Reset()
+		return len(b), nil
+	}
+	s.rc.body.Write(b)
+	return len(b), nil
 }
 
 // WithUserExtractor sets a function that extracts the user identity from the

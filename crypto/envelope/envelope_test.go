@@ -166,6 +166,65 @@ func TestRewrap_RewrapsUnderActiveKey(t *testing.T) {
 	assert.Equal(t, []byte("payload"), got)
 }
 
+func TestRewrap_PreservesAADBinding(t *testing.T) {
+	mk1 := make([]byte, 32)
+	_, _ = rand.Read(mk1)
+	mk2 := make([]byte, 32)
+	_, _ = rand.Read(mk2)
+
+	k, _ := kekstatic.New("v1", mk1)
+	enc := envelope.New(k)
+
+	aad := []byte("tenant=acme,row=42")
+	blob, err := enc.Encrypt(context.Background(), []byte("secret"), aad)
+	require.NoError(t, err)
+
+	require.NoError(t, k.AddKey("v2", mk2))
+	require.NoError(t, k.Rotate("v2"))
+
+	rewrapped, err := enc.Rewrap(context.Background(), blob)
+	require.NoError(t, err)
+
+	// Body ciphertext bytes must be unchanged — Rewrap rewrites only
+	// the wrap header.
+	_, _, _, oldBody := splitForTest(t, blob)
+	_, _, _, newBody := splitForTest(t, rewrapped)
+	assert.Equal(t, oldBody, newBody, "Rewrap must not touch nonce+ciphertext")
+
+	// Same AAD still decrypts under the new wrap key.
+	k.RemoveKey("v1")
+	got, err := enc.Decrypt(context.Background(), rewrapped, aad)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("secret"), got)
+
+	// Wrong/missing AAD still fails closed after rewrap.
+	_, err = enc.Decrypt(context.Background(), rewrapped, []byte("tenant=evil"))
+	assert.ErrorIs(t, err, envelope.ErrAuthFailed)
+	_, err = enc.Decrypt(context.Background(), rewrapped, nil)
+	assert.ErrorIs(t, err, envelope.ErrAuthFailed)
+}
+
+func TestRewrap_RejectsMalformedBlob(t *testing.T) {
+	k := newKEK(t, "v1")
+	enc := envelope.New(k)
+	_, err := enc.Rewrap(context.Background(), []byte("not-an-envelope"))
+	assert.Error(t, err)
+}
+
+// splitForTest mirrors the wire format and returns the body suffix
+// (nonce || ciphertext+tag) so tests can compare it across rewraps.
+func splitForTest(t *testing.T, blob []byte) (magic byte, version byte, header []byte, body []byte) {
+	t.Helper()
+	require.GreaterOrEqual(t, len(blob), 5)
+	kL := int(blob[4])
+	off := 5 + kL
+	require.GreaterOrEqual(t, len(blob), off+2)
+	wL := int(blob[off])<<8 | int(blob[off+1])
+	off += 2 + wL
+	require.GreaterOrEqual(t, len(blob), off)
+	return blob[0], blob[3], blob[:off], blob[off:]
+}
+
 func TestKEKStatic_RemoveActiveKeyPanics(t *testing.T) {
 	k := newKEK(t, "v1")
 	assert.Panics(t, func() { k.RemoveKey("v1") })

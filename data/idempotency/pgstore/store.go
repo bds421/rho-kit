@@ -44,9 +44,20 @@ type PgStore struct {
 	table string
 }
 
-// intervalSeconds formats a duration as a PostgreSQL-compatible interval literal.
+// intervalSeconds formats a duration as a PostgreSQL-compatible interval
+// literal, rounding sub-second values up to 1 second. PostgreSQL intervals
+// in this code path are addressed at second precision; truncating with
+// int(d.Seconds()) used to round 500ms down to "0 seconds" and create a
+// row that was already expired before the lock could be observed.
 func intervalSeconds(d time.Duration) string {
-	return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	secs := d / time.Second
+	if d%time.Second != 0 {
+		secs++
+	}
+	if secs < 1 {
+		secs = 1
+	}
+	return fmt.Sprintf("%d seconds", secs)
 }
 
 // New creates a PgStore backed by the given database connection.
