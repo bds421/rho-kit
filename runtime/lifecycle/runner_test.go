@@ -232,6 +232,27 @@ func (p *panicComponent) Start(_ context.Context) error {
 
 func (p *panicComponent) Stop(_ context.Context) error { return nil }
 
+func TestRunner_AddPanicsOnInvalidArgs(t *testing.T) {
+	r := NewRunner(slog.Default())
+	c := newTestComponent()
+	assert.PanicsWithValue(t, "lifecycle: Runner.Add requires a non-empty name", func() {
+		r.Add("", c)
+	})
+	assert.PanicsWithValue(t, "lifecycle: Runner.Add requires a non-nil component", func() {
+		r.Add("name", nil)
+	})
+}
+
+func TestRunner_AddFuncPanicsOnNilFn(t *testing.T) {
+	r := NewRunner(slog.Default())
+	assert.PanicsWithValue(t, "lifecycle: Runner.AddFunc requires a non-nil function", func() {
+		r.AddFunc("name", nil)
+	})
+	assert.PanicsWithValue(t, "lifecycle: Runner.Add requires a non-empty name", func() {
+		r.AddFunc("", func(ctx context.Context) error { return nil })
+	})
+}
+
 func TestRunner_PanicRecovery(t *testing.T) {
 	logger := slog.Default()
 	r := NewRunner(logger)

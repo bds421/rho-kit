@@ -15,6 +15,7 @@ import (
 	"math/rand/v2"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -34,6 +35,7 @@ type Worker struct {
 	metrics  *metrics
 	done     chan struct{}
 	doneOnce sync.Once
+	started  atomic.Bool
 	mu       sync.Mutex
 	cancel   context.CancelFunc
 }
@@ -70,9 +72,16 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-// WithLogger sets the structured logger. Default: slog.Default().
+// WithLogger sets the structured logger. A nil logger is normalized to
+// slog.Default() so test hooks that pass nil cannot create latent panics on
+// start or panic-recovery paths. Default: slog.Default().
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) { c.logger = l }
+	return func(c *config) {
+		if l == nil {
+			l = slog.Default()
+		}
+		c.logger = l
+	}
 }
 
 // WithRegistry sets the Prometheus registerer for worker metrics.
@@ -126,6 +135,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.mu.Lock()
 	w.cancel = cancel
 	w.mu.Unlock()
+	w.started.Store(true)
 	defer cancel()
 
 	w.logger.Info("batch worker started", "name", w.name, "interval", w.interval)
@@ -154,11 +164,19 @@ func (w *Worker) Start(ctx context.Context) error {
 // previously Stop would block forever in standalone usage because no internal
 // cancel was registered.
 //
+// Stop is also safe to call before Start: if the worker never started, Stop
+// closes `done` itself and returns immediately rather than waiting forever
+// on a channel that Start would have closed.
+//
 // If the supplied ctx fires before the batch loop drains, Stop returns
 // ctx.Err() so callers see the missed shutdown deadline; the loop and any
 // in-flight batch may still be running until the per-batch timeout completes.
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
+	if !w.started.Load() {
+		w.doneOnce.Do(func() { close(w.done) })
+		return nil
+	}
 	w.mu.Lock()
 	cancel := w.cancel
 	w.mu.Unlock()

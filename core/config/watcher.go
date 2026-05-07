@@ -102,12 +102,22 @@ type FileWatcher[T any] struct {
 // NewFileWatcher creates a FileWatcher that calls loadFn whenever path
 // changes, updating the Watchable on success.
 // The path is resolved to an absolute path at construction time.
+//
+// Panics if loadFn or w is nil — config wiring errors must fail fast at
+// startup rather than panicking inside a reload goroutine after a file
+// change.
 func NewFileWatcher[T any](
 	path string,
 	loadFn func(string) (T, error),
 	w *Watchable[T],
 	opts ...WatcherOption,
 ) *FileWatcher[T] {
+	if loadFn == nil {
+		panic("config: NewFileWatcher requires a non-nil loadFn")
+	}
+	if w == nil {
+		panic("config: NewFileWatcher requires a non-nil Watchable")
+	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -220,7 +230,13 @@ type EnvReloader[T any] struct {
 
 // NewEnvReloader creates an EnvReloader that reloads config from
 // environment variables via config.Load[T]() on each SIGHUP.
+//
+// Panics if w is nil — config wiring errors must fail fast at startup
+// rather than panicking inside the SIGHUP loop on the first reload.
 func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[T] {
+	if w == nil {
+		panic("config: NewEnvReloader requires a non-nil Watchable")
+	}
 	return &EnvReloader[T]{
 		watchable: w,
 		cfg:       applyWatcherOpts(opts),

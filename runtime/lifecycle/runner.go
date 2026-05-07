@@ -66,14 +66,28 @@ func NewRunner(logger *slog.Logger, opts ...RunnerOption) *Runner {
 
 // Add registers a named component. Components are started in registration
 // order but run concurrently.
+//
+// Panics if name is empty or component is nil — invalid lifecycle wiring
+// should fail at registration, not inside a goroutine after Run starts.
 func (r *Runner) Add(name string, c Component) *Runner {
+	if name == "" {
+		panic("lifecycle: Runner.Add requires a non-empty name")
+	}
+	if c == nil {
+		panic("lifecycle: Runner.Add requires a non-nil component")
+	}
 	r.components = append(r.components, namedComponent{name: name, component: c})
 	return r
 }
 
 // AddFunc registers a function as a component. The function should block
 // until ctx is cancelled.
+//
+// Panics if name is empty or fn is nil.
 func (r *Runner) AddFunc(name string, fn func(ctx context.Context) error) *Runner {
+	if fn == nil {
+		panic("lifecycle: Runner.AddFunc requires a non-nil function")
+	}
 	return r.Add(name, &FuncComponent{StartFn: fn})
 }
 

@@ -3,6 +3,7 @@ package batchworker
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -180,6 +181,34 @@ func TestWorker_StopReturnsCtxErrOnDeadline(t *testing.T) {
 	defer cancelStop()
 	err := w.Stop(stopCtx)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestWorker_StopBeforeStartReturnsImmediately(t *testing.T) {
+	w := New("test-stop-before-start", time.Second, func(ctx context.Context) error {
+		return nil
+	}, WithJitter(0))
+
+	// Stop before Start must not block: previously w.done was only closed
+	// from Start, so this used to hang forever.
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- w.Stop(context.Background()) }()
+	select {
+	case err := <-stopDone:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Stop before Start did not return immediately")
+	}
+}
+
+func TestWorker_WithLoggerNilNormalizesToDefault(t *testing.T) {
+	// WithLogger(nil) must not nil out the worker's logger; otherwise the
+	// run path would panic on its first log call. The logger is normalized
+	// back to slog.Default().
+	w := New("test-nil-logger", 50*time.Millisecond, func(ctx context.Context) error {
+		return nil
+	}, WithLogger(nil), WithJitter(0))
+	assert.NotNil(t, w.logger)
+	assert.Same(t, slog.Default(), w.logger)
 }
 
 func TestNew_PanicsOnInvalidArgs(t *testing.T) {

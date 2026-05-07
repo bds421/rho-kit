@@ -333,6 +333,26 @@ func TestEnvReloader_LoadErrorPreservesOldValue(t *testing.T) {
 	cancel()
 }
 
+func TestNewFileWatcher_PanicsOnNilLoadFn(t *testing.T) {
+	w := NewWatchable("v")
+	assert.PanicsWithValue(t, "config: NewFileWatcher requires a non-nil loadFn", func() {
+		NewFileWatcher[string]("p", nil, w)
+	})
+}
+
+func TestNewFileWatcher_PanicsOnNilWatchable(t *testing.T) {
+	loadFn := func(string) (string, error) { return "", nil }
+	assert.PanicsWithValue(t, "config: NewFileWatcher requires a non-nil Watchable", func() {
+		NewFileWatcher[string]("p", loadFn, nil)
+	})
+}
+
+func TestNewEnvReloader_PanicsOnNilWatchable(t *testing.T) {
+	assert.PanicsWithValue(t, "config: NewEnvReloader requires a non-nil Watchable", func() {
+		NewEnvReloader[envReloaderCfg](nil)
+	})
+}
+
 func TestEnvReloader_WithSignalChannel(t *testing.T) {
 	t.Setenv("TEST_ENV_RELOAD_VALUE", "via-channel")
 

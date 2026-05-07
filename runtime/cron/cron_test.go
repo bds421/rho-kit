@@ -108,6 +108,20 @@ func TestScheduler_InvalidSchedulePanics(t *testing.T) {
 	})
 }
 
+func TestScheduler_AddPanicsOnNilFn(t *testing.T) {
+	s := New(nil)
+	assert.PanicsWithValue(t, "cron: Scheduler.Add requires a non-nil job function", func() {
+		s.Add("name", "@every 1m", nil)
+	})
+}
+
+func TestScheduler_AddPanicsOnEmptyName(t *testing.T) {
+	s := New(nil)
+	assert.PanicsWithValue(t, "cron: Scheduler.Add requires a non-empty name", func() {
+		s.Add("", "@every 1m", func(_ context.Context) error { return nil })
+	})
+}
+
 func TestScheduler_DurationMetric(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	s := New(nil, WithRegistry(reg))

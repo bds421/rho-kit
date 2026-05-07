@@ -113,8 +113,16 @@ func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 // Add registers a named job with a cron schedule expression. The job function
 // receives a context that is cancelled when the scheduler shuts down.
 //
-// Panics if the schedule expression is invalid.
+// Panics if the schedule expression is invalid, the name is empty, or fn
+// is nil — invalid wiring should fail at registration, not the first time
+// the schedule fires.
 func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) error) {
+	if name == "" {
+		panic("cron: Scheduler.Add requires a non-empty name")
+	}
+	if fn == nil {
+		panic("cron: Scheduler.Add requires a non-nil job function")
+	}
 	wrapped := s.wrapJob(name, fn)
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {
 		panic(fmt.Sprintf("cron: invalid schedule %q for job %q: %v", schedule, name, err))
