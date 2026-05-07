@@ -60,6 +60,13 @@ import (
 // If a service needs only a subset (e.g., Redis + HTTP without DB/MQ),
 // simply omit the With*() calls — unused infrastructure has zero cost
 // at runtime. The Builder only initializes what is configured.
+//
+// Failure semantics: [Builder.Build] (and the panicking With*() helpers)
+// must be treated as fatal. Builder does not roll back partially-acquired
+// resources on failure — if WithPostgres opens a pool and WithRedis then
+// panics, the pool is leaked. Callers must let the process exit; do NOT
+// catch the panic and retry. The Builder is a composition root, not a
+// reusable factory.
 type Builder struct {
 	name    string
 	version string
@@ -82,7 +89,10 @@ type Builder struct {
 	criticalBroker bool
 
 	// JWT
-	jwksURL string
+	jwksURL          string
+	jwtIssuer        string
+	jwtAudience      string
+	jwtAllowAnyIssue bool
 
 	// Rate limiters
 	ipRateRequests int
@@ -215,6 +225,12 @@ func (b *Builder) WithCriticalBroker() *Builder {
 
 // WithJWT configures a JWKS provider for JWT verification.
 // Panics if jwksURL is empty — use environment variables to conditionally skip.
+//
+// IMPORTANT: pair with [Builder.WithJWTIssuer] and (when applicable)
+// [Builder.WithJWTAudience]. In KIT_ENV=production, [Builder.Build] panics
+// if jwksURL is set but neither WithJWTIssuer nor [Builder.WithJWTAllowAnyIssuer]
+// has been called — silently disabling issuer enforcement was a known
+// foot-gun in earlier versions.
 func (b *Builder) WithJWT(jwksURL string) *Builder {
 	if jwksURL == "" {
 		panic("app: WithJWT requires a non-empty JWKS URL")
@@ -223,7 +239,43 @@ func (b *Builder) WithJWT(jwksURL string) *Builder {
 	return b
 }
 
+// WithJWTIssuer sets the expected `iss` claim. Tokens with a different
+// issuer (or no issuer) are rejected at verification time.
+//
+// Mutually exclusive with [Builder.WithJWTAllowAnyIssuer]; the last call wins.
+func (b *Builder) WithJWTIssuer(iss string) *Builder {
+	if iss == "" {
+		panic("app: WithJWTIssuer requires a non-empty issuer (use WithJWTAllowAnyIssuer to opt out)")
+	}
+	b.jwtIssuer = iss
+	b.jwtAllowAnyIssue = false
+	return b
+}
+
+// WithJWTAudience sets the expected `aud` claim. Tokens whose audience
+// does not match are rejected. Empty audience accepts any.
+func (b *Builder) WithJWTAudience(aud string) *Builder {
+	b.jwtAudience = aud
+	return b
+}
+
+// WithJWTAllowAnyIssuer opts out of issuer enforcement explicitly. Use
+// only for first-party tokens issued by a trusted internal service where
+// the JWKS endpoint is itself authenticated. In KIT_ENV=production this
+// is required to satisfy [Builder.Build]'s guardrail when WithJWTIssuer is
+// not used.
+func (b *Builder) WithJWTAllowAnyIssuer() *Builder {
+	b.jwtAllowAnyIssue = true
+	b.jwtIssuer = ""
+	return b
+}
+
 // WithIPRateLimit configures a per-IP rate limiter.
+//
+// Lifecycle note: the limiter's background sweeper runs via
+// runner.AddFunc. A panic inside that goroutine kills the entire service
+// via the lifecycle Runner — there is no per-component supervision.
+// Monitor the "goroutine_panicked" log event if you need an early signal.
 func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
 	b.ipRateRequests = requests
 	b.ipRateWindow = window

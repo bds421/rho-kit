@@ -70,6 +70,10 @@ func newWorkerPool(
 //     responsible for synthesizing an error. The dropped counter is
 //     incremented so [OnFullError] saturation is still observable.
 //
+// On any non-enqueue return path, the task is cleared and returned to the
+// taskPool so the sync.Pool stays effective under saturation (the precise
+// scenario the OnFull policy was added for).
+//
 // Calling submit after stop is handled gracefully (recovered from channel-close
 // panic). The event is dropped and counted.
 func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context.Context) (ok bool, err error) {
@@ -86,6 +90,7 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 		p.logger.Warn("eventbus: submit after stop, event dropped",
 			slog.String("event", task.eventName),
 		)
+		releaseTask(task)
 		return false, nil
 	}
 
@@ -96,6 +101,7 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 			if p.metrics != nil {
 				p.metrics.dropped.Inc()
 			}
+			releaseTask(task)
 		}
 	}()
 
@@ -114,6 +120,7 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 				slog.String("event", task.eventName),
 				slog.String("handler", task.handler.name),
 			)
+			releaseTask(task)
 			return false, pubCtx.Err()
 		}
 	}
@@ -134,8 +141,20 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 			slog.String("event", task.eventName),
 			slog.String("handler", task.handler.name),
 		)
+		releaseTask(task)
 		return false, nil
 	}
+}
+
+// releaseTask clears the asyncTask's strong references and returns it to
+// the pool. Call this on every non-enqueue path so the sync.Pool remains
+// effective and the dropped event's payload is not pinned in memory.
+func releaseTask(task *asyncTask) {
+	task.ctx = nil
+	task.eventName = ""
+	task.handler = registeredHandler{}
+	task.event = nil
+	taskPool.Put(task)
 }
 
 // start launches worker goroutines and blocks until ctx is cancelled.
@@ -186,11 +205,7 @@ func (p *workerPool) worker(id int) {
 			p.metrics.processed.WithLabelValues(task.eventName).Inc()
 		}
 		// Clear fields to avoid retaining references, then return to pool.
-		task.ctx = nil
-		task.eventName = ""
-		task.handler = registeredHandler{}
-		task.event = nil
-		taskPool.Put(task)
+		releaseTask(task)
 	}
 
 	p.logger.Debug("worker stopped", slog.Int("worker_id", id))

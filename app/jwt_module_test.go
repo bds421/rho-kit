@@ -11,7 +11,10 @@ import (
 )
 
 func TestJWTModule_Name(t *testing.T) {
-	m := newJWTModule("https://example.com/.well-known/jwks.json")
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL:        "https://example.com/.well-known/jwks.json",
+		expectedIssuer: "https://issuer.example.com",
+	})
 	assert.Equal(t, "jwt", m.Name())
 }
 
@@ -21,11 +24,36 @@ func TestNewJWTModule_PanicsOnEmptyURL(t *testing.T) {
 		require.NotNil(t, r, "expected panic for empty JWKS URL")
 		assert.Contains(t, fmt.Sprint(r), "non-empty JWKS URL")
 	}()
-	newJWTModule("")
+	newJWTModule(jwtModuleConfig{})
+}
+
+func TestNewJWTModule_PanicsInProductionWithoutIssuer(t *testing.T) {
+	t.Setenv("KIT_ENV", "production")
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic in production without issuer")
+		assert.Contains(t, fmt.Sprint(r), "WithJWTIssuer")
+	}()
+	newJWTModule(jwtModuleConfig{
+		jwksURL: "https://example.com/.well-known/jwks.json",
+		// neither expectedIssuer nor allowAnyIssuer set
+	})
+}
+
+func TestNewJWTModule_AllowsProductionWithExplicitAnyIssuer(t *testing.T) {
+	t.Setenv("KIT_ENV", "production")
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL:        "https://example.com/.well-known/jwks.json",
+		allowAnyIssuer: true,
+	})
+	assert.NotNil(t, m)
 }
 
 func TestJWTModule_PopulateBeforeInit(t *testing.T) {
-	m := newJWTModule("https://example.com/.well-known/jwks.json")
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL:        "https://example.com/.well-known/jwks.json",
+		expectedIssuer: "https://issuer.example.com",
+	})
 	infra := &Infrastructure{}
 	m.Populate(infra)
 	assert.Nil(t, infra.JWT, "JWT should be nil before Init")
@@ -33,7 +61,8 @@ func TestJWTModule_PopulateBeforeInit(t *testing.T) {
 
 func TestBuildIntegrationModules_JWT(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithJWT("https://example.com/.well-known/jwks.json")
+		WithJWT("https://example.com/.well-known/jwks.json").
+		WithJWTIssuer("https://issuer.example.com")
 
 	modules, _ := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "jwt"), "jwt module should be present")
@@ -49,7 +78,8 @@ func TestBuildIntegrationModules_NoJWT(t *testing.T) {
 func TestBuildIntegrationModules_FullChain(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithTracing(tracing.Config{ServiceName: "test"}).
-		WithJWT("https://example.com/.well-known/jwks.json")
+		WithJWT("https://example.com/.well-known/jwks.json").
+		WithJWTIssuer("https://issuer.example.com")
 
 	modules, _ := b.buildIntegrationModules()
 	names := moduleNames(modules)

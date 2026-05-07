@@ -49,7 +49,12 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 
 	// JWT depends on httpClientModule for the HTTP client.
 	if b.jwksURL != "" {
-		modules = append(modules, newJWTModule(b.jwksURL))
+		modules = append(modules, newJWTModule(jwtModuleConfig{
+			jwksURL:        b.jwksURL,
+			expectedIssuer: b.jwtIssuer,
+			allowAnyIssuer: b.jwtAllowAnyIssue,
+			audience:       b.jwtAudience,
+		}))
 	}
 
 	if b.dbDriver != nil {

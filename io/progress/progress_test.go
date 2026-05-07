@@ -96,3 +96,45 @@ func TestProgressReader_WithThrottle_FinalCallbackOnEOF(t *testing.T) {
 	// Final callback (on EOF) must report the full byte count.
 	assert.Equal(t, int64(64), lastN)
 }
+
+// fakeReader yields zero-byte (0, io.EOF) on the terminal call to mimic
+// the readers that signal EOF without producing data.
+type zeroEOFReader struct {
+	emitted bool
+}
+
+func (r *zeroEOFReader) Read(p []byte) (int, error) {
+	if !r.emitted {
+		// Yield 8 bytes, no err. Caller should fire once.
+		r.emitted = true
+		copy(p, []byte("ABCDEFGH"))
+		return 8, nil
+	}
+	return 0, io.EOF
+}
+
+func TestProgressReader_FinalCallbackOnZeroEOF(t *testing.T) {
+	// Previously-suspected bug: a reader that returns (0, io.EOF) on the
+	// terminal Read should still fire the EOF callback. Trace through the
+	// fire logic to confirm.
+	var fires []int64
+	pr := NewProgressReader(&zeroEOFReader{}, 8, func(n, _ int64) {
+		fires = append(fires, n)
+	})
+
+	buf := make([]byte, 16)
+	n, err := pr.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, 8, n)
+
+	// Terminal call: (0, io.EOF).
+	n2, err := pr.Read(buf)
+	require.Equal(t, 0, n2)
+	require.ErrorIs(t, err, io.EOF)
+
+	// Without throttle, both reads fire — the (0, EOF) call must fire because
+	// err != nil triggers the fire path even when n == 0.
+	require.Len(t, fires, 2)
+	assert.Equal(t, int64(8), fires[0])
+	assert.Equal(t, int64(8), fires[1], "EOF callback must report final byte count")
+}

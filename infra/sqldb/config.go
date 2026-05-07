@@ -35,28 +35,52 @@ func (c Config) Option(key, fallback string) string {
 	return fallback
 }
 
-// IsTLSEnabled reports whether the configured driver options request a TLS
-// connection. Recognised values:
+// IsTLSEnabled reports whether the configured driver options *require* a
+// TLS connection that fails closed on handshake error. Recognised values:
 //
 //   - PostgreSQL: sslmode in {require, verify-ca, verify-full}
-//   - MySQL/MariaDB: tls in {true, skip-verify, preferred, custom-*}
+//   - MySQL/MariaDB: tls in {true, custom-*}
 //
-// The check is conservative: it returns true only for explicit TLS-on
-// modes. "prefer" / "allow" return false because they degrade silently to
-// plaintext on a TLS-handshake failure. Callers in production-validation
-// paths should use this helper rather than parsing Options themselves so
-// the kit stays the single source of truth on what counts as TLS-enabled.
+// "tls=preferred" and "tls=skip-verify" are treated as NOT enabled:
+//   - "preferred" silently degrades to plaintext on handshake failure;
+//   - "skip-verify" accepts any certificate (vulnerable to MITM).
+//
+// Callers in production-validation paths should use this helper rather
+// than parsing Options themselves so the kit stays the single source of
+// truth on what counts as a hardened TLS setup. If you need a softer
+// "TLS attempted" check (e.g. for telemetry), use [Config.IsTLSAttempted]
+// instead.
 func (c Config) IsTLSEnabled() bool {
 	switch strings.ToLower(c.Option("sslmode", "")) {
 	case "require", "verify-ca", "verify-full":
 		return true
 	}
-	switch strings.ToLower(c.Option("tls", "")) {
-	case "true", "skip-verify", "preferred":
+	if strings.ToLower(c.Option("tls", "")) == "true" {
 		return true
 	}
-	// MySQL "custom-*" registered TLS configs always enable TLS.
+	// MySQL "custom-*" registered TLS configs always enable TLS with
+	// caller-supplied verification.
 	if v := c.Option("tls", ""); strings.HasPrefix(v, "custom-") {
+		return true
+	}
+	return false
+}
+
+// IsTLSAttempted is a softer companion to [Config.IsTLSEnabled] that
+// also returns true for modes which *attempt* TLS but do not fail closed
+// (Postgres "prefer"/"allow", MySQL "preferred"/"skip-verify"). Use this
+// only for telemetry — never for production gating, because the connection
+// can still end up in plaintext or accept a forged peer.
+func (c Config) IsTLSAttempted() bool {
+	if c.IsTLSEnabled() {
+		return true
+	}
+	switch strings.ToLower(c.Option("sslmode", "")) {
+	case "allow", "prefer":
+		return true
+	}
+	switch strings.ToLower(c.Option("tls", "")) {
+	case "preferred", "skip-verify":
 		return true
 	}
 	return false

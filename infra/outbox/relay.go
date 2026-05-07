@@ -260,8 +260,18 @@ func (r *Relay) poll(ctx context.Context) {
 			break
 		}
 		entry := entries[i]
+		// Wait for a free slot OR ctx cancellation. An unguarded
+		// `sem <- struct{}{}` would stall poll() (and Stop) until an
+		// in-flight Publish finished — small but observable
+		// shutdown-latency hit on a slow Publisher.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
