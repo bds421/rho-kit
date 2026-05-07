@@ -1,0 +1,408 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"reflect"
+	"sort"
+	"sync"
+
+	"github.com/bds421/rho-kit/data/actionlog"
+)
+
+// DefaultActorHeader is the request header read for the actor id
+// when no [WithActorExtractor] override is configured. Services that
+// already place the actor on context via JWT/auth middleware should
+// pass [WithActorExtractor] to read from there instead.
+const DefaultActorHeader = "X-Actor-Id"
+
+// MaxReasonLength caps the length of [actionlog.Entry.Reason] when
+// recording a failed tool call. A verbose error (e.g. a wrapped
+// stack trace) shouldn't bloat an audit row — operators reading the
+// log want a sentence, not a transcript.
+const MaxReasonLength = 1024
+
+// Tool describes one MCP tool. Every handler registered via
+// [Register] becomes one Tool. The fields are the public surface of
+// the MCP `tools/list` response — clients read them to render the
+// tool catalog and validate inputs.
+type Tool struct {
+	// Name uniquely identifies the tool. Convention: dotted lowercase
+	// scope (e.g. "user.delete"). Names may not contain whitespace.
+	Name string `json:"name"`
+
+	// Description is human-readable. Default: derived from the input
+	// type's name; override via [WithToolDescription].
+	Description string `json:"description,omitempty"`
+
+	// InputSchema is a JSON-Schema describing the tool's input
+	// struct. Auto-generated from the Go type via [GenerateSchema];
+	// override via [WithInputSchema].
+	InputSchema json.RawMessage `json:"inputSchema"`
+
+	// OutputSchema describes the tool's response. Optional in MCP;
+	// some clients use it for typed deserialisation. Auto-generated
+	// from the Go type unless overridden via [WithOutputSchema].
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+}
+
+// Handler is the kit-canonical typed handler shape for MCP tools.
+// The In type is the input struct; Out is the response. Both must
+// marshal/unmarshal cleanly via encoding/json. Validation tags from
+// [core/validate] are honoured by the [Server] before the handler
+// runs.
+type Handler[In any, Out any] func(ctx context.Context, in In) (Out, error)
+
+// ToolOption configures a tool at registration time.
+type ToolOption func(*toolConfig)
+
+type toolConfig struct {
+	description  string
+	inputSchema  json.RawMessage
+	outputSchema json.RawMessage
+	destructive  bool
+}
+
+// WithToolDescription sets the human-readable description shown in
+// the tool catalog. Pass an empty string to fall back to the
+// auto-derived description.
+func WithToolDescription(s string) ToolOption {
+	return func(c *toolConfig) { c.description = s }
+}
+
+// WithInputSchema overrides the auto-generated input JSON-Schema.
+// Use sparingly — drift between the schema and the Go struct
+// produces validation failures that look like bugs.
+func WithInputSchema(schema json.RawMessage) ToolOption {
+	return func(c *toolConfig) { c.inputSchema = schema }
+}
+
+// WithOutputSchema overrides the auto-generated output JSON-Schema.
+func WithOutputSchema(schema json.RawMessage) ToolOption {
+	return func(c *toolConfig) { c.outputSchema = schema }
+}
+
+// WithDestructive flags the tool as destructive. The Server records
+// this in the tool catalog and emits a top-level `destructive: true`
+// JSON-Schema vendor-extension so clients can prompt for
+// confirmation. Wire the [httpx/middleware/approval] middleware
+// around the Server to gate destructive calls; the flag here is
+// metadata only.
+func WithDestructive(b bool) ToolOption {
+	return func(c *toolConfig) { c.destructive = b }
+}
+
+// ServerOption configures the [Server].
+type ServerOption func(*serverConfig)
+
+type serverConfig struct {
+	logger          *slog.Logger
+	actionLogger    actionlog.Logger
+	actorExtractor  func(*http.Request) string
+	tenantExtractor func(ctx context.Context) (string, bool)
+	maxRequestBytes int64
+}
+
+// WithLogger sets the [slog.Logger] used for server-side errors.
+// Default: [slog.Default].
+func WithLogger(l *slog.Logger) ServerOption {
+	if l == nil {
+		panic("mcp: WithLogger: logger must not be nil")
+	}
+	return func(c *serverConfig) { c.logger = l }
+}
+
+// WithActionLogger wires an [actionlog.Logger]. When set, the Server
+// appends one entry per tool call (Outcome=success on a clean
+// return, Outcome=failure on any error).
+//
+// Without an action logger the Server still serves tools — the
+// audit trail simply moves to whatever transport-layer logging the
+// caller already runs. Production deployments are strongly
+// encouraged to wire this so "what did the agent do this hour
+// against tenant X" is a SQL query.
+func WithActionLogger(l actionlog.Logger) ServerOption {
+	if l == nil {
+		panic("mcp: WithActionLogger: logger must not be nil")
+	}
+	return func(c *serverConfig) { c.actionLogger = l }
+}
+
+// WithActorExtractor sets the function that resolves an actor id
+// from a request. The default reads [DefaultActorHeader]; services
+// that put actor on context via auth middleware should override.
+//
+// An empty return value is recorded as "anonymous" — same convention
+// as [httpx/middleware/approval] — so the action log never carries
+// an empty Actor field that the store would reject.
+func WithActorExtractor(fn func(*http.Request) string) ServerOption {
+	if fn == nil {
+		panic("mcp: WithActorExtractor: function must not be nil")
+	}
+	return func(c *serverConfig) {
+		c.actorExtractor = func(r *http.Request) string {
+			v := fn(r)
+			if v == "" {
+				return "anonymous"
+			}
+			return v
+		}
+	}
+}
+
+// WithTenantExtractor sets the function that resolves a tenant id
+// from a context. The default uses [tenant.FromContext]. Override
+// only when the kit's tenant package is not the source of truth for
+// your service.
+func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOption {
+	if fn == nil {
+		panic("mcp: WithTenantExtractor: function must not be nil")
+	}
+	return func(c *serverConfig) { c.tenantExtractor = fn }
+}
+
+// WithMaxRequestBytes caps the request body the Server will read.
+// Default: 1 MiB. A JSON-RPC client that sends a malformed gigabyte
+// of garbage shouldn't be able to OOM the process. Panics on
+// non-positive values.
+func WithMaxRequestBytes(n int64) ServerOption {
+	if n <= 0 {
+		panic("mcp: WithMaxRequestBytes requires a positive value")
+	}
+	return func(c *serverConfig) { c.maxRequestBytes = n }
+}
+
+// Server collects registered tools and serves the JSON-RPC surface.
+// Reuses the kit's HTTP middleware stack — auth, tenant,
+// idempotency, rate limit, audit — applied externally to the
+// JSON-RPC endpoint.
+//
+// Construct via [NewServer]. Register tools with [Register]. Mount
+// the [Server.HTTP] handler on the same mux as the REST API.
+type Server struct {
+	cfg serverConfig
+
+	mu    sync.RWMutex
+	tools map[string]*toolEntry
+}
+
+// toolEntry is the internal registration record for a Tool. The
+// dispatch closure boxes the typed Handler so the Server doesn't
+// need to track In/Out generic parameters at runtime.
+type toolEntry struct {
+	tool     Tool
+	dispatch dispatchFunc
+}
+
+// dispatchFunc is the type-erased dispatch shape. It accepts the raw
+// JSON params bytes, decodes them, validates, calls the handler, and
+// returns the encoded response.
+type dispatchFunc func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error)
+
+// NewServer creates a Server with the given options.
+func NewServer(opts ...ServerOption) *Server {
+	cfg := defaultServerConfig()
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return &Server{cfg: cfg, tools: make(map[string]*toolEntry)}
+}
+
+func defaultServerConfig() serverConfig {
+	return serverConfig{
+		logger: slog.Default(),
+		actorExtractor: func(r *http.Request) string {
+			v := r.Header.Get(DefaultActorHeader)
+			if v == "" {
+				return "anonymous"
+			}
+			return v
+		},
+		tenantExtractor: defaultTenantExtractor,
+		maxRequestBytes: 1 << 20,
+	}
+}
+
+// Tools returns a copy of the registered tool catalog, sorted by
+// name for deterministic ordering. Used by `tools/list`. The
+// returned slice is safe to mutate.
+func (s *Server) Tools() []Tool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Tool, 0, len(s.tools))
+	for _, e := range s.tools {
+		out = append(out, e.tool)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// register installs a [toolEntry] under the given name. Returns an
+// error on a duplicate name or invalid tool name.
+func (s *Server) register(name string, entry *toolEntry) error {
+	if name == "" {
+		return errors.New("mcp: Register: tool name must not be empty")
+	}
+	if !validToolName(name) {
+		return fmt.Errorf("mcp: Register: invalid tool name %q (must not contain whitespace)", name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, dup := s.tools[name]; dup {
+		return fmt.Errorf("mcp: Register: tool %q already registered", name)
+	}
+	s.tools[name] = entry
+	return nil
+}
+
+// lookup returns the dispatch entry for the named tool.
+func (s *Server) lookup(name string) (*toolEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.tools[name]
+	return e, ok
+}
+
+// validToolName allows non-whitespace printable ASCII plus '/'.
+// JSON-RPC method names with whitespace would round-trip oddly
+// through some clients, and the spec doesn't require us to support
+// them.
+func validToolName(name string) bool {
+	for _, r := range name {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return false
+		}
+	}
+	return true
+}
+
+// Register adds a [Handler] as an MCP tool with the given name. The
+// input/output schemas are auto-generated from the In/Out types via
+// reflection unless overridden by [WithInputSchema] /
+// [WithOutputSchema].
+//
+// Registration is idempotent only across distinct names — calling
+// Register twice with the same name returns an error rather than
+// silently replacing the previous handler. A double registration
+// almost always means a typo or a duplicate wire-up; surfacing it
+// at startup is cheaper than chasing a phantom dispatch in prod.
+//
+// Register returns an error when:
+//   - the input or output type contains a cycle (self-reference)
+//     that would produce a non-terminating schema;
+//   - the input or output type cannot be reflected into a schema
+//     (e.g. unsupported type kinds);
+//   - the name is empty or contains whitespace;
+//   - the name has already been registered.
+func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts ...ToolOption) error {
+	if s == nil {
+		return errors.New("mcp: Register: server must not be nil")
+	}
+	if h == nil {
+		return errors.New("mcp: Register: handler must not be nil")
+	}
+
+	cfg := toolConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	var inZero In
+	var outZero Out
+
+	inSchema := cfg.inputSchema
+	if len(inSchema) == 0 {
+		schema, err := GenerateSchema(reflect.TypeOf(inZero))
+		if err != nil {
+			return fmt.Errorf("mcp: Register %q: input schema: %w", name, err)
+		}
+		inSchema = schema
+	}
+
+	outSchema := cfg.outputSchema
+	if len(outSchema) == 0 {
+		schema, err := GenerateSchema(reflect.TypeOf(outZero))
+		if err != nil {
+			return fmt.Errorf("mcp: Register %q: output schema: %w", name, err)
+		}
+		outSchema = schema
+	}
+
+	desc := cfg.description
+	if desc == "" {
+		desc = defaultDescription(reflect.TypeOf(inZero), name)
+	}
+
+	if cfg.destructive {
+		// Vendor-extension: clients that understand the kit's MCP
+		// dialect see `x-destructive: true` and can prompt for
+		// confirmation. The flag is metadata; the kit's
+		// httpx/middleware/approval is the actual gate.
+		schema, err := withVendorExtension(inSchema, "x-destructive", true)
+		if err != nil {
+			return fmt.Errorf("mcp: Register %q: annotate input schema: %w", name, err)
+		}
+		inSchema = schema
+	}
+
+	tool := Tool{
+		Name:         name,
+		Description:  desc,
+		InputSchema:  inSchema,
+		OutputSchema: outSchema,
+	}
+
+	dispatch := buildDispatch[In, Out](h)
+	return s.register(name, &toolEntry{tool: tool, dispatch: dispatch})
+}
+
+// defaultDescription derives a description from the input type's
+// name. The result is intentionally bland — callers should override
+// via [WithToolDescription] for anything user-facing.
+func defaultDescription(in reflect.Type, name string) string {
+	if in == nil || in.Name() == "" {
+		return "Tool: " + name
+	}
+	return "Tool " + name + " (input: " + in.Name() + ")"
+}
+
+// withVendorExtension parses an existing schema, sets a top-level
+// extension key, and re-emits it. Vendor extensions outside the
+// JSON-Schema spec are passed through verbatim to clients that
+// understand them.
+func withVendorExtension(schema json.RawMessage, key string, value any) (json.RawMessage, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		return nil, fmt.Errorf("parse schema: %w", err)
+	}
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	obj[key] = value
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	return out, nil
+}
+
+// truncateReason caps an error message at MaxReasonLength bytes to
+// keep audit rows compact. UTF-8 boundary safety: we trim at the
+// last valid rune boundary rather than potentially splitting a
+// multi-byte sequence.
+func truncateReason(s string) string {
+	if len(s) <= MaxReasonLength {
+		return s
+	}
+	// Walk back from MaxReasonLength to a rune boundary.
+	for i := MaxReasonLength; i > 0; i-- {
+		if s[i-1]&0x80 == 0 || s[i-1]&0xC0 == 0xC0 {
+			return s[:i] + "..."
+		}
+	}
+	return s[:MaxReasonLength] + "..."
+}

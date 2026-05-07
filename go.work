@@ -49,6 +49,7 @@ use (
 	./grpcx
 	./httpx
 	./httpx/budget
+	./httpx/mcp
 	./httpx/middleware/approval
 	./httpx/middleware/budget
 	./httpx/middleware/ratelimit/tenant
