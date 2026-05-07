@@ -63,8 +63,14 @@ func WithResetTimeout(d time.Duration) Option {
 }
 
 // WithShouldTrip sets a custom predicate for trippable errors.
+// A nil fn is a no-op that preserves the default predicate.
 func WithShouldTrip(fn func(error) bool) Option {
-	return func(c *Config) { c.ShouldTrip = fn }
+	return func(c *Config) {
+		if fn == nil {
+			return
+		}
+		c.ShouldTrip = fn
+	}
 }
 
 // WithOnStateChange sets a callback for state transitions.
@@ -83,7 +89,13 @@ type CircuitBreaker struct {
 func (cb *CircuitBreaker) Unwrap() storage.Storage { return cb.backend }
 
 // New wraps backend with a circuit breaker.
+//
+// Panics if backend is nil. A nil backend would otherwise only surface as a
+// confusing nil-pointer panic on the first storage operation.
 func New(backend storage.Storage, opts ...Option) *CircuitBreaker {
+	if backend == nil {
+		panic("storage/circuitbreaker: backend must not be nil")
+	}
 	cfg := Config{
 		Threshold:    5,
 		ResetTimeout: 30 * time.Second,
@@ -93,6 +105,9 @@ func New(backend storage.Storage, opts ...Option) *CircuitBreaker {
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.ShouldTrip == nil {
+		panic("storage/circuitbreaker: ShouldTrip must not be nil")
 	}
 
 	// Map storage ShouldTrip (failure predicate) to kit's IsSuccessful (success predicate).

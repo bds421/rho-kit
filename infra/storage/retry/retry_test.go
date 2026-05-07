@@ -114,6 +114,33 @@ func TestRetryStorage_Exists(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestRetryStorage_New_NilBackendPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: backend must not be nil", func() {
+		_ = New(nil)
+	})
+}
+
+func TestRetryStorage_New_NilShouldRetryPanics(t *testing.T) {
+	t.Parallel()
+	backend := membackend.New()
+	clear := func(c *Config) { c.ShouldRetry = nil }
+	assert.PanicsWithValue(t, "storage/retry: ShouldRetry must not be nil", func() {
+		_ = New(backend, clear)
+	})
+}
+
+func TestRetryStorage_WithShouldRetryNil_PreservesDefault(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := membackend.New()
+	r := New(backend, WithShouldRetry(nil))
+
+	ok, err := r.Exists(ctx, "missing.txt")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
 // failingBackend wraps MemBackend but can inject errors per-operation.
 type failingBackend struct {
 	underlying *membackend.MemBackend

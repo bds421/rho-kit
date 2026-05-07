@@ -59,8 +59,14 @@ func WithMaxDelay(d time.Duration) Option {
 }
 
 // WithShouldRetry sets a custom retry predicate.
+// A nil fn is a no-op that preserves the default predicate.
 func WithShouldRetry(fn ShouldRetryFunc) Option {
-	return func(c *Config) { c.ShouldRetry = fn }
+	return func(c *Config) {
+		if fn == nil {
+			return
+		}
+		c.ShouldRetry = fn
+	}
 }
 
 // RetryStorage wraps a [storage.Storage] with retry logic backed by
@@ -74,7 +80,13 @@ type RetryStorage struct {
 func (r *RetryStorage) Unwrap() storage.Storage { return r.backend }
 
 // New wraps backend with retry logic using exponential backoff + jitter.
+//
+// Panics if backend is nil. A nil backend would otherwise only surface as a
+// confusing nil-pointer panic on the first storage operation.
 func New(backend storage.Storage, opts ...Option) *RetryStorage {
+	if backend == nil {
+		panic("storage/retry: backend must not be nil")
+	}
 	cfg := Config{
 		MaxAttempts: 3,
 		BaseDelay:   100 * time.Millisecond,
@@ -83,6 +95,9 @@ func New(backend storage.Storage, opts ...Option) *RetryStorage {
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.ShouldRetry == nil {
+		panic("storage/retry: ShouldRetry must not be nil")
 	}
 	return &RetryStorage{backend: backend, cfg: cfg}
 }

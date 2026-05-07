@@ -227,6 +227,9 @@ type Lock struct {
 // the previous Redis lock until TTL expiry. The Locker form returns a fresh
 // handle per Acquire and removes the footgun.
 func New(client redis.UniversalClient, key string, opts ...Option) *Lock {
+	if client == nil {
+		panic("redislock: New requires a non-nil Redis client")
+	}
 	o := options{ttl: 30 * time.Second}
 	for _, fn := range opts {
 		fn(&o)

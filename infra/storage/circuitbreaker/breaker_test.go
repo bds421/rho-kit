@@ -130,6 +130,37 @@ func TestCircuitBreaker_Delete(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestCircuitBreaker_New_NilBackendPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/circuitbreaker: backend must not be nil", func() {
+		_ = New(nil)
+	})
+}
+
+func TestCircuitBreaker_New_NilShouldTripPanics(t *testing.T) {
+	t.Parallel()
+	backend := membackend.New()
+	// Direct config mutation via an Option that nilly assigns ShouldTrip
+	// (rather than via WithShouldTrip(nil), which is a no-op).
+	clear := func(c *Config) { c.ShouldTrip = nil }
+	assert.PanicsWithValue(t, "storage/circuitbreaker: ShouldTrip must not be nil", func() {
+		_ = New(backend, clear)
+	})
+}
+
+func TestCircuitBreaker_WithShouldTripNil_PreservesDefault(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := membackend.New()
+	cb := New(backend, WithShouldTrip(nil))
+
+	// The default predicate must still work — a missing key is not transient
+	// and must not contribute to tripping.
+	_, err := cb.Exists(ctx, "missing")
+	assert.NoError(t, err)
+	assert.Equal(t, StateClosed, cb.State())
+}
+
 // alwaysFailBackend returns the same error for all operations.
 type alwaysFailBackend struct {
 	err error

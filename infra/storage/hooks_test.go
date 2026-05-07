@@ -152,4 +152,11 @@ func TestWithHooks(t *testing.T) {
 		_, ok := hooked.(storage.Copier)
 		assert.True(t, ok, "wrapped backend should implement Copier")
 	})
+
+	t.Run("nil backend panics at construction", func(t *testing.T) {
+		t.Parallel()
+		assert.PanicsWithValue(t, "storage: WithHooks requires a non-nil backend", func() {
+			_ = storage.WithHooks(nil, storage.Hooks{})
+		})
+	})
 }

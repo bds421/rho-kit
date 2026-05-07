@@ -43,7 +43,13 @@ type Hooks struct {
 //
 // The wrapper forwards [Lister], [Copier], [PresignedStore], and
 // [PublicURLer] capabilities if the underlying backend implements them.
+//
+// Panics if backend is nil — a nil backend would only surface as a confusing
+// nil-pointer panic on the first storage operation.
 func WithHooks(backend Storage, hooks Hooks) Storage {
+	if backend == nil {
+		panic("storage: WithHooks requires a non-nil backend")
+	}
 	h := &hookedStorage{
 		backend: backend,
 		hooks:   hooks,

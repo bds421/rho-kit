@@ -406,3 +406,17 @@ func TestLock_ReleaseAfterTTLExpiryReturnsErrLockLost(t *testing.T) {
 	relErr := l.Release(ctx)
 	assert.ErrorIs(t, relErr, lock.ErrLockLost)
 }
+
+func TestNew_NilClientPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "redislock: New requires a non-nil Redis client", func() {
+		_ = redislock.New(nil, "test:lock")
+	})
+}
+
+func TestNewLocker_NilClientPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "redislock: NewLocker requires a non-nil Redis client", func() {
+		_ = redislock.NewLocker(nil)
+	})
+}
