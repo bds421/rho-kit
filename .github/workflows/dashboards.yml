@@ -1,0 +1,69 @@
+name: Dashboards
+
+# Validates the Prometheus rule and alert YAML files under
+# observability/dashboards/prometheus/ with promtool, and the
+# Grafana dashboard JSON files with python's json module so a
+# typo in an expression or a malformed JSON cannot ship.
+#
+# This workflow consumes only repository content (checked-out
+# files) and pinned release artifacts -- no untrusted user input
+# is interpolated into run: scripts.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "observability/dashboards/**"
+      - ".github/workflows/dashboards.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "observability/dashboards/**"
+      - ".github/workflows/dashboards.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate dashboards and rules
+    runs-on: ubuntu-latest
+    env:
+      PROM_VERSION: "2.55.1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install promtool
+        # promtool ships in the Prometheus tarball. We pull a
+        # pinned release rather than rely on apt's older version.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/prometheus.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          sudo mv "/tmp/prometheus-${PROM_VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
+          promtool --version
+
+      - name: Validate Prometheus rule files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(observability/dashboards/prometheus/*.yaml)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no rule files to validate"
+            exit 0
+          fi
+          promtool check rules "${files[@]}"
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(observability/dashboards/grafana/*.json)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no dashboard JSON files to validate"
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+            echo "ok: $f"
+          done
