@@ -65,6 +65,13 @@ curl -i -X POST http://localhost:8080/admin/dangerous-action \
   clarity. Real services use `app.Builder.WithMultiTenant /
   .WithTenantBudget / .WithActionLogger / .WithApprovalStore` and
   let the Builder install the middleware chain in the right order.
+- **Real HMAC secret**: the action log secret in `internal/app/app.go`
+  is a hard-coded **demo placeholder** (`"at-least-32-bytes-of-secret-bytes!"`).
+  It only exists so the example runs out of the box. Production must
+  load the secret from a KMS, env var, or secret manager — copying
+  this file without rotating the secret is a critical
+  misconfiguration. The audit log's signing guarantee is only as
+  strong as the secret it uses.
 
 ## Where the smoke test lives
 

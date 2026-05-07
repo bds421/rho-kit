@@ -36,6 +36,12 @@ func Run(ctx context.Context) error {
 	bud := budgetmem.New(1000 /* cap per period */, time.Minute)
 
 	alogStore := actionlogmem.New()
+	// SECURITY: this HMAC secret is a DEMO PLACEHOLDER. It satisfies the
+	// >= 32-byte length check in NewStaticSecrets but has zero entropy
+	// and is published in this repo. Production deployments MUST load
+	// the secret from a KMS, env var, or secret manager (e.g. via
+	// security/keysprovider) — never hard-code. Copying this file
+	// without rotating the secret is a critical misconfiguration.
 	alogger := actionlog.New(alogStore, actionlog.NewStaticSecrets("v1", map[string][]byte{
 		"v1": []byte("at-least-32-bytes-of-secret-bytes!"),
 	}))
