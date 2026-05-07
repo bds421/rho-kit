@@ -20,15 +20,24 @@ func (c ServerConfig) Addr() string {
 
 // InternalConfig holds settings for the internal ops HTTP server (health, ready, metrics).
 type InternalConfig struct {
-	Host string // bind address; defaults to "0.0.0.0" for Docker healthcheck access
+	Host string // bind address; defaults to "127.0.0.1" — set to "0.0.0.0" only when the network is strictly isolated.
 	Port int
 }
 
 // Addr returns the listen address for the internal server.
+//
+// The default (empty Host) resolves to loopback. The internal server
+// exposes /metrics without authentication, so binding to 0.0.0.0 by
+// default would leak Prometheus metrics (route patterns, tenant labels,
+// process fingerprinting) to anyone on the network. Operators who genuinely
+// need 0.0.0.0 (Docker healthcheck through host networking) must opt in
+// explicitly by setting Host to "0.0.0.0" — and must pair that with
+// [Builder.WithProductionInternalExposed] when using
+// [Builder.WithProductionDefaults].
 func (c InternalConfig) Addr() string {
 	host := c.Host
 	if host == "" {
-		host = "0.0.0.0"
+		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("%s:%d", host, c.Port)
 }
@@ -60,6 +69,7 @@ func LoadBaseConfig(defaultServerPort int) (BaseConfig, error) {
 			Port: serverPort,
 		},
 		Internal: InternalConfig{
+			Host: config.Get("INTERNAL_HOST", ""),
 			Port: internalPort,
 		},
 		Environment: config.Get("ENVIRONMENT", "production"),

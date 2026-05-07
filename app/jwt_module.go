@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	kitcfg "github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
@@ -37,8 +38,8 @@ func newJWTModule(cfg jwtModuleConfig) *jwtModule {
 	if cfg.jwksURL == "" {
 		panic("app: jwt module requires a non-empty JWKS URL")
 	}
-	if cfg.expectedIssuer == "" && !cfg.allowAnyIssuer && os.Getenv("KIT_ENV") == "production" {
-		panic("app: WithJWT in KIT_ENV=production requires WithJWTIssuer or WithJWTAllowAnyIssuer (silent issuer-skip is forbidden)")
+	if cfg.expectedIssuer == "" && !cfg.allowAnyIssuer && !kitcfg.IsDevelopment(os.Getenv("KIT_ENV")) {
+		panic("app: WithJWT outside KIT_ENV=development requires WithJWTIssuer or WithJWTAllowAnyIssuer (silent issuer-skip is forbidden)")
 	}
 	return &jwtModule{
 		BaseModule: NewBaseModule("jwt"),

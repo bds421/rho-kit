@@ -48,6 +48,15 @@ func (b *Builder) Validate() error {
 		}
 	}
 
+	// H-4: WithTenantBudget without WithMultiTenant fails open silently —
+	// the default TenantKeyFunc returns no key, the budget middleware
+	// short-circuits, and no enforcement happens. Reject the combination
+	// regardless of WithProductionDefaults so dev environments surface
+	// the misconfiguration too.
+	if b.budgetSpec != nil && b.tenantSpec == nil {
+		return fmt.Errorf("WithTenantBudget requires WithMultiTenant — without it the default TenantKeyFunc returns no key and budget enforcement is silently skipped")
+	}
+
 	if b.productionDefaults {
 		if err := b.validateProductionDefaults(); err != nil {
 			return err
@@ -62,6 +71,28 @@ func (b *Builder) validateProductionDefaults() error {
 	// JWT: must specify issuer or explicitly opt-out.
 	if b.jwksURL != "" && b.jwtIssuer == "" && !b.jwtAllowAnyIssue {
 		return fmt.Errorf("production: WithJWT requires WithJWTIssuer or the explicit WithJWTAllowAnyIssuer opt-out")
+	}
+
+	// H-5: JWT audience pinning is the standard confused-deputy mitigation
+	// (RFC 7519 §4.1.3). Without it, a token minted for a sibling service
+	// that trusts the same JWKS is silently accepted.
+	if b.jwksURL != "" && b.jwtAudience == "" && !b.jwtAllowAnyAudience {
+		return fmt.Errorf("production: WithJWT requires WithJWTAudience or the explicit WithJWTAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
+	}
+
+	// C-2: TLS must be configured. Partial TLSConfig silently falls back
+	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who
+	// terminate TLS at an external proxy must opt in explicitly.
+	if !b.cfg.TLS.Enabled() && !b.allowProdPlaintext {
+		return fmt.Errorf("production: TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithProductionAllowPlaintext for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
+	}
+
+	// C-1: the internal ops port exposes /metrics without authentication.
+	// Binding to 0.0.0.0 leaks Prometheus labels (route patterns, tenant
+	// IDs) to anyone on the network. Operators with strict network
+	// isolation must opt in explicitly.
+	if b.cfg.Internal.Host == "0.0.0.0" && !b.allowProdInternalExposed {
+		return fmt.Errorf("production: Internal.Host=\"0.0.0.0\" exposes unauthenticated /metrics; bind to a loopback or internal interface, or call WithProductionInternalExposed when network isolation is enforced")
 	}
 
 	// Postgres: sslmode must be a TLS-enforcing mode.

@@ -40,6 +40,46 @@ func TestNewJWTModule_PanicsInProductionWithoutIssuer(t *testing.T) {
 	})
 }
 
+// H-8: KIT_ENV=prod (and any non-development value) must trigger the
+// issuer-enforcement panic, not just the literal string "production".
+// This aligns the app layer with security/jwtutil's kitcfg.IsDevelopment
+// check so the two layers agree on what "production" means.
+func TestJWTModule_KitEnvProd_TriggersIssuerCheck(t *testing.T) {
+	t.Setenv("KIT_ENV", "prod")
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for KIT_ENV=prod without issuer")
+		assert.Contains(t, fmt.Sprint(r), "WithJWTIssuer")
+	}()
+	newJWTModule(jwtModuleConfig{
+		jwksURL: "https://example.com/.well-known/jwks.json",
+	})
+}
+
+// Mirror of the above for KIT_ENV=staging — any non-development value
+// must enforce issuer.
+func TestJWTModule_KitEnvStaging_TriggersIssuerCheck(t *testing.T) {
+	t.Setenv("KIT_ENV", "staging")
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "expected panic for KIT_ENV=staging without issuer")
+		assert.Contains(t, fmt.Sprint(r), "WithJWTIssuer")
+	}()
+	newJWTModule(jwtModuleConfig{
+		jwksURL: "https://example.com/.well-known/jwks.json",
+	})
+}
+
+// KIT_ENV=development is the only escape hatch: issuer enforcement
+// is skipped to keep dev ergonomics intact.
+func TestJWTModule_KitEnvDevelopment_SkipsIssuerCheck(t *testing.T) {
+	t.Setenv("KIT_ENV", "development")
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL: "https://example.com/.well-known/jwks.json",
+	})
+	require.NotNil(t, m)
+}
+
 func TestNewJWTModule_AllowsProductionWithExplicitAnyIssuer(t *testing.T) {
 	t.Setenv("KIT_ENV", "production")
 	m := newJWTModule(jwtModuleConfig{

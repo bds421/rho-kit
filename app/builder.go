@@ -143,6 +143,14 @@ type Builder struct {
 	// Production-defaults switch — see Builder.WithProductionDefaults.
 	productionDefaults bool
 
+	// Production-defaults opt-outs. Each one is a deliberate, documented
+	// escape hatch from a specific tightening. Keep them isolated from
+	// productionDefaults itself so the validator can require an explicit
+	// acknowledgement per relaxation rather than a blanket "trust me".
+	allowProdInternalExposed bool // C-1: lets Internal.Host == "0.0.0.0" pass.
+	allowProdPlaintext       bool // C-2: lets TLS-disabled deployments pass.
+	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
+
 	// Rate limiters
 	ipRateRequests int
 	ipRateWindow   time.Duration
@@ -229,6 +237,49 @@ func New(name, version string, cfg BaseConfig) *Builder {
 // that aspires to a boring production stance.
 func (b *Builder) WithProductionDefaults() *Builder {
 	b.productionDefaults = true
+	return b
+}
+
+// WithProductionInternalExposed acknowledges that the internal ops port
+// (health, ready, metrics) is intentionally bound to a non-loopback
+// interface (e.g. 0.0.0.0). Without this opt-in, [Builder.WithProductionDefaults]
+// rejects any configuration where Internal.Host resolves to "0.0.0.0",
+// because /metrics is unauthenticated and exposing it on a routable
+// interface leaks Prometheus labels (route patterns, tenant IDs, process
+// fingerprinting) to anyone on the network.
+//
+// Use this only when the operator has confirmed network isolation
+// (NetworkPolicy, security group, host-only Docker network) for the
+// internal port.
+func (b *Builder) WithProductionInternalExposed() *Builder {
+	b.allowProdInternalExposed = true
+	return b
+}
+
+// WithProductionAllowPlaintext acknowledges that the public HTTP server
+// will run without TLS in production. Without this opt-in,
+// [Builder.WithProductionDefaults] rejects any configuration where
+// [netutil.TLSConfig.Enabled] is false, because partial TLS configuration
+// (one missing env var) silently downgrades to plaintext HTTP.
+//
+// Use this only for services explicitly fronted by an external TLS
+// terminator (Oathkeeper, ALB, ingress controller) that re-encrypts
+// to the cluster.
+func (b *Builder) WithProductionAllowPlaintext() *Builder {
+	b.allowProdPlaintext = true
+	return b
+}
+
+// WithJWTAllowAnyAudience opts out of audience enforcement explicitly.
+// Without this opt-in, [Builder.WithProductionDefaults] rejects
+// configurations that call [Builder.WithJWT] without also calling
+// [Builder.WithJWTAudience], because absent audience pinning a token
+// minted for a sibling service that trusts the same JWKS is silently
+// valid — the standard JWT confused-deputy mitigation (RFC 7519 §4.1.3).
+//
+// Use this only for genuinely multi-audience deployments.
+func (b *Builder) WithJWTAllowAnyAudience() *Builder {
+	b.jwtAllowAnyAudience = true
 	return b
 }
 
