@@ -10,6 +10,9 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/data/actionlog"
 )
@@ -110,13 +113,16 @@ func WithDestructive(b bool) ToolOption {
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	logger          *slog.Logger
-	actionLogger    actionlog.Logger
-	actorExtractor  func(*http.Request) string
-	tenantExtractor func(ctx context.Context) (string, bool)
-	maxRequestBytes int64
-	strictAudit     bool
-	asyncAudit      bool
+	logger            *slog.Logger
+	actionLogger      actionlog.Logger
+	actorExtractor    func(*http.Request) string
+	tenantExtractor   func(ctx context.Context) (string, bool)
+	maxRequestBytes   int64
+	strictAudit       bool
+	asyncAudit        bool
+	asyncAuditWorkers int
+	asyncAuditQueue   int
+	asyncAuditTimeout time.Duration
 }
 
 // WithLogger sets the [slog.Logger] used for server-side errors.
@@ -259,24 +265,58 @@ func WithStrictAudit(strict bool) ServerOption {
 }
 
 // WithAsyncAudit controls whether the action-log append runs on the
-// request hot path or in a background goroutine.
+// request hot path or in a background goroutine pool.
 //
 // Default: false. The append runs synchronously between dispatch and
 // response-write — a slow audit store extends MCP latency, but a
 // crash between the two cannot lose the entry.
 //
-// WithAsyncAudit(true) spawns a goroutine that performs the append
-// using context.WithoutCancel of the request context. The response
-// is written immediately, latency is unaffected by audit-store
-// pressure, but a process crash between response-write and the
-// background append loses that entry. Use when MCP latency
-// dominates over single-request durability — e.g. high-RPS
-// read-only tools where the client retries on its own and a missed
-// entry is acceptable.
+// WithAsyncAudit(true) hands appends to a bounded worker pool that
+// performs the append using context.WithoutCancel of the request
+// context plus a per-task timeout (see [WithAsyncAuditTimeout]). The
+// pool is sized by [WithAsyncAuditWorkers]. When the queue saturates,
+// the oldest-fitting append is recorded as DROPPED via a counter
+// surfaced through [Server.AsyncAuditDropped] and the request still
+// returns success — async mode is best-effort by definition.
+//
+// Use async mode when MCP latency dominates over single-request
+// durability — e.g. high-RPS read-only tools where the client
+// retries on its own and a missed entry is acceptable. Pair with
+// [Server.Stop] so workers drain on graceful shutdown.
 //
 // Has no effect when no action logger is configured.
 func WithAsyncAudit(async bool) ServerOption {
 	return func(c *serverConfig) { c.asyncAudit = async }
+}
+
+// WithAsyncAuditWorkers sets the number of background workers
+// performing async audit appends. Default: 4. Must be > 0.
+func WithAsyncAuditWorkers(n int) ServerOption {
+	if n <= 0 {
+		panic("mcp: WithAsyncAuditWorkers requires a positive value")
+	}
+	return func(c *serverConfig) { c.asyncAuditWorkers = n }
+}
+
+// WithAsyncAuditQueue sets the bounded queue depth for async audit
+// appends. When the queue is full, new appends are dropped (counter
+// increment) rather than spawning unbounded goroutines. Default: 256.
+// Must be > 0.
+func WithAsyncAuditQueue(n int) ServerOption {
+	if n <= 0 {
+		panic("mcp: WithAsyncAuditQueue requires a positive value")
+	}
+	return func(c *serverConfig) { c.asyncAuditQueue = n }
+}
+
+// WithAsyncAuditTimeout caps how long a single async audit append may
+// run before its context deadline trips. Default: 5s. Prevents a hung
+// audit store from pinning workers indefinitely. Must be > 0.
+func WithAsyncAuditTimeout(d time.Duration) ServerOption {
+	if d <= 0 {
+		panic("mcp: WithAsyncAuditTimeout requires a positive value")
+	}
+	return func(c *serverConfig) { c.asyncAuditTimeout = d }
 }
 
 // Server collects registered tools and serves the JSON-RPC surface.
@@ -291,6 +331,18 @@ type Server struct {
 
 	mu    sync.RWMutex
 	tools map[string]*toolEntry
+
+	auditQueue   chan auditJob
+	auditWG      sync.WaitGroup
+	auditStop    chan struct{}
+	auditStopped int32
+	auditDropped int64
+}
+
+type auditJob struct {
+	entry    actionlog.Entry
+	tool     string
+	tenantID string
 }
 
 // toolEntry is the internal registration record for a Tool. The
@@ -312,7 +364,11 @@ func NewServer(opts ...ServerOption) *Server {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &Server{cfg: cfg, tools: make(map[string]*toolEntry)}
+	s := &Server{cfg: cfg, tools: make(map[string]*toolEntry)}
+	if cfg.asyncAudit {
+		s.startAuditWorkers()
+	}
+	return s
 }
 
 func defaultServerConfig() serverConfig {
@@ -325,11 +381,80 @@ func defaultServerConfig() serverConfig {
 		actorExtractor: func(_ *http.Request) string {
 			return AnonymousActor
 		},
-		tenantExtractor: defaultTenantExtractor,
-		maxRequestBytes: 1 << 20,
-		strictAudit:     true,
-		asyncAudit:      false,
+		tenantExtractor:   defaultTenantExtractor,
+		maxRequestBytes:   1 << 20,
+		strictAudit:       true,
+		asyncAudit:        false,
+		asyncAuditWorkers: 4,
+		asyncAuditQueue:   256,
+		asyncAuditTimeout: 5 * time.Second,
 	}
+}
+
+// startAuditWorkers spins up a bounded worker pool for async audit
+// appends. Workers drain when [Server.Stop] is called.
+func (s *Server) startAuditWorkers() {
+	s.auditQueue = make(chan auditJob, s.cfg.asyncAuditQueue)
+	s.auditStop = make(chan struct{})
+	for i := 0; i < s.cfg.asyncAuditWorkers; i++ {
+		s.auditWG.Add(1)
+		go s.auditWorker()
+	}
+}
+
+func (s *Server) auditWorker() {
+	defer s.auditWG.Done()
+	for job := range s.auditQueue {
+		s.runAuditJob(job)
+	}
+}
+
+func (s *Server) runAuditJob(job auditJob) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.cfg.logger.Error("mcp: async audit append panicked",
+				"tool", job.tool,
+				"tenant_id", job.tenantID,
+				"panic", rec,
+			)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.asyncAuditTimeout)
+	defer cancel()
+	s.appendActionLog(ctx, job.entry, job.tool, job.tenantID)
+}
+
+// Stop drains in-flight async audit appends and shuts down the worker
+// pool. Safe to call multiple times. No-op when async audit is not in
+// use. Returns when ctx expires or the workers have drained, whichever
+// comes first; remaining queued jobs after ctx expires are abandoned.
+func (s *Server) Stop(ctx context.Context) error {
+	if !s.cfg.asyncAudit {
+		return nil
+	}
+	if !atomic.CompareAndSwapInt32(&s.auditStopped, 0, 1) {
+		return nil
+	}
+	close(s.auditQueue)
+	done := make(chan struct{})
+	go func() {
+		s.auditWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// AsyncAuditDropped returns the cumulative number of async audit
+// appends that were dropped because the bounded queue was saturated
+// when the request handler tried to enqueue. Surfaces as a counter
+// for operators to alert on saturation.
+func (s *Server) AsyncAuditDropped() int64 {
+	return atomic.LoadInt64(&s.auditDropped)
 }
 
 // Tools returns a copy of the registered tool catalog, sorted by
@@ -503,11 +628,17 @@ func truncateReason(s string) string {
 	if len(s) <= MaxReasonLength {
 		return s
 	}
-	// Walk back from MaxReasonLength to a rune boundary.
-	for i := MaxReasonLength; i > 0; i-- {
-		if s[i-1]&0x80 == 0 || s[i-1]&0xC0 == 0xC0 {
-			return s[:i] + "..."
+	// Walk back from MaxReasonLength via DecodeLastRuneInString until
+	// we land on a valid rune boundary. RuneError with size <= 1 means
+	// the prefix ends mid-multibyte sequence; trim that byte and retry.
+	cut := s[:MaxReasonLength]
+	for len(cut) > 0 {
+		r, size := utf8.DecodeLastRuneInString(cut)
+		if r == utf8.RuneError && size <= 1 {
+			cut = cut[:len(cut)-1]
+			continue
 		}
+		break
 	}
-	return s[:MaxReasonLength] + "..."
+	return cut + "..."
 }

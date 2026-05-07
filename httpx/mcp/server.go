@@ -130,7 +130,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCReq
 				rpcErrMethodNotFound, fmt.Sprintf("method %q not found", req.Method))
 			return
 		}
-		s.invoke(w, r, req, req.Method, entry, req.Params)
+		s.invoke(w, r, req, req.Method, entry, req.Params, false)
 	}
 }
 
@@ -188,7 +188,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req jso
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	s.invoke(w, r, req, params.Name, entry, args)
+	s.invoke(w, r, req, params.Name, entry, args, true)
 }
 
 // invoke dispatches a single tool call, runs the action log, and
@@ -200,7 +200,22 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req jso
 // resolution must succeed before dispatch; the call returns a
 // -32603 internal error to the caller and no tool side effects
 // occur otherwise. See [WithStrictAudit] for the loose alternative.
-func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCRequest, name string, entry *toolEntry, args json.RawMessage) {
+//
+// Audit ordering: in strict + sync mode, recordActionLog runs BEFORE
+// the response is written and a non-nil append error fails the
+// JSON-RPC response with -32603. The tool may have run, but the
+// caller never observes a "success" without a durable audit entry.
+// In async mode appends are enqueued and the response is written
+// immediately — async mode is best-effort by contract.
+//
+// Response shape: tools/call results are wrapped in the MCP-standard
+// `{content: [{type: "json", data: ...}]}` envelope so generic MCP
+// clients see a spec-compliant body. Direct shorthand calls (method
+// = tool name, not "tools/call") still receive the raw tool output
+// for kit consumers using the typed Out struct directly. NOTE:
+// tools/call shape is breaking against pre-fix releases; clients
+// reading `result.content[0].data` instead of `result` directly.
+func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCRequest, name string, entry *toolEntry, args json.RawMessage, mcpShape bool) {
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
@@ -219,9 +234,18 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 
 	result, dispatchErr := entry.dispatch(ctx, args)
 
-	// Action-log integration. We log every call with the resolved
-	// outcome; failures carry a truncated reason.
-	s.recordActionLog(ctx, r, name, dispatchErr)
+	// Strict + sync audit: the append must succeed before we admit
+	// the tool's result back to the caller. An audit-store outage
+	// fails the response with -32603 even though the tool ran — the
+	// audit invariant ("every executed tool call returned to the
+	// caller produced a signed entry") trumps the side effect.
+	if auditErr := s.recordActionLog(ctx, r, name, dispatchErr); auditErr != nil {
+		if s.cfg.strictAudit && !s.cfg.asyncAudit {
+			writeJSONRPCError(w, http.StatusOK, req.ID,
+				rpcErrInternalError, "internal error")
+			return
+		}
+	}
 
 	if dispatchErr != nil {
 		code, msg := s.mapErrorToRPC(ctx, dispatchErr)
@@ -229,12 +253,10 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 		return
 	}
 
-	// MCP `tools/call` wraps the tool's result in `{content: [...]}`
-	// for compatibility with prompt clients. We emit the result
-	// directly under `result` for both shorthand and `tools/call`
-	// so SDK consumers who already typed-out the tool's Out struct
-	// get it untouched. Clients that want the MCP-flavoured wrapper
-	// can opt in via WithMCPContentWrapping (deferred).
+	if mcpShape {
+		writeMCPToolResult(w, req.ID, result)
+		return
+	}
 	writeJSONRPCRaw(w, req.ID, result)
 }
 
@@ -267,6 +289,13 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 				}
 				return nil, apperror.NewValidation("invalid arguments: " + err.Error())
 			}
+			// Trailing JSON guard: `{"x":1} {"y":2}` is not valid
+			// JSON-RPC params even though dec.Decode happily reads
+			// the first object. Probe for a second token; only EOF
+			// is acceptable.
+			if _, err := dec.Token(); err != io.EOF {
+				return nil, apperror.NewValidation("invalid arguments: trailing data after JSON value")
+			}
 		}
 		if err := validate.Struct(in); err != nil {
 			return nil, err
@@ -281,6 +310,23 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 		}
 		return buf, nil
 	}
+}
+
+// writeMCPToolResult emits a tools/call response in the MCP-standard
+// shape: `{content: [{type: "json", data: ...}]}`. The tool's raw
+// JSON output becomes the `data` field. Generic MCP clients expect
+// this envelope so they can render mixed content (text/json/image)
+// uniformly.
+func writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, raw json.RawMessage) {
+	wrapped := map[string]any{
+		"content": []map[string]any{
+			{
+				"type": "json",
+				"data": json.RawMessage(raw),
+			},
+		},
+	}
+	writeJSONRPCResult(w, id, wrapped)
 }
 
 // mapErrorToRPC converts an error from a tool's handler into a

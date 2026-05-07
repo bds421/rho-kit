@@ -141,6 +141,35 @@ func TestGenerateSchema_DescTagPropagates(t *testing.T) {
 	assert.Equal(t, "The unique identifier.", id["description"])
 }
 
+type Embedded struct {
+	Hello string `json:"hello" validate:"required"`
+}
+
+type pointerEmbedWrapper struct {
+	*Embedded
+	Extra string `json:"extra"`
+}
+
+func TestGenerateSchema_AnonymousPointerEmbed(t *testing.T) {
+	raw, err := mcp.GenerateSchema(reflect.TypeOf(pointerEmbedWrapper{}))
+	require.NoError(t, err, "anonymous pointer embed must not panic schema generation")
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(raw, &got))
+	props := got["properties"].(map[string]any)
+	assert.Contains(t, props, "hello", "embedded field must be flattened into parent")
+	assert.Contains(t, props, "extra")
+	required, _ := got["required"].([]any)
+	hasHello := false
+	for _, r := range required {
+		if r == "hello" {
+			hasHello = true
+			break
+		}
+	}
+	assert.True(t, hasHello, "embedded required field must propagate to parent's required list")
+}
+
 func TestGenerateSchema_HonorsJSONTagSkip(t *testing.T) {
 	type input struct {
 		Visible string `json:"visible"`

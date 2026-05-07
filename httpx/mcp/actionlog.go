@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/bds421/rho-kit/core/tenant"
 	"github.com/bds421/rho-kit/data/actionlog"
@@ -64,13 +65,23 @@ func (s *Server) auditPrecheck(ctx context.Context, tool string) (ok bool) {
 
 // recordActionLog writes one [actionlog.Entry] for a tool call.
 //
-// The log is best-effort once we get past the strict-mode tenant
-// gate (see [auditPrecheck]): if the configured logger errors
-// (store down, secret rotation lag), we log the error and continue.
-// The tool call has already happened — refusing to return its
-// result to the agent because the audit append failed would be the
-// wrong trade-off, and it's the same posture
-// httpx/middleware/auditlog uses today.
+// Ordering & failure semantics:
+//
+//   - Sync mode + strict audit (default): caller is expected to
+//     invoke recordActionLog BEFORE returning the tool result and
+//     to surface a non-nil return as a JSON-RPC error. This
+//     preserves the audit invariant that every successfully-returned
+//     tool call produced a signed entry.
+//   - Sync mode + loose audit: a non-nil return is logged and ignored
+//     by the caller — operators have explicitly opted out of the
+//     invariant.
+//   - Async mode: the append is enqueued onto the bounded worker
+//     pool and recordActionLog returns nil immediately. Async mode
+//     is best-effort; operators expect that an audit-store outage
+//     trades durability for latency rather than failing requests.
+//     Queue saturation drops the entry (counter increment) rather
+//     than blocking the request hot path or spawning unbounded
+//     goroutines.
 //
 // When no [actionlog.Logger] is configured, this is a no-op.
 //
@@ -79,28 +90,16 @@ func (s *Server) auditPrecheck(ctx context.Context, tool string) (ok bool) {
 // written with an empty TenantID, which the signed-store contract
 // rejects). Strict mode would have refused dispatch in
 // [auditPrecheck] before any tool ran.
-//
-// When [WithAsyncAudit] is true, the append spawns a goroutine
-// using context.WithoutCancel(ctx) and returns immediately. The
-// caller must NOT rely on the entry being durable before the next
-// statement runs — see [WithAsyncAudit] for the trade-off.
-func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool string, callErr error) {
+func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool string, callErr error) error {
 	if s.cfg.actionLogger == nil {
-		return
+		return nil
 	}
 
 	tenantID, ok := s.cfg.tenantExtractor(ctx)
 	if !ok || tenantID == "" {
-		// Loose mode: strict mode would have refused dispatch
-		// before the tool ran. We already emitted a warn at
-		// auditPrecheck, so the skip is silent here.
-		return
+		return nil
 	}
 
-	// actorExtractor's contract (enforced by WithActorExtractor and the
-	// default constructor in defaultServerConfig) is that it never
-	// returns "". The empty-to-AnonymousActor substitution is the
-	// responsibility of the option-wrapper, not of this call site.
 	actor := s.cfg.actorExtractor(r)
 
 	outcome := actionlog.OutcomeSuccess
@@ -122,44 +121,53 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		},
 	}
 
-	// We deliberately use a fresh background-derived context so the
-	// audit append survives a request-context cancel that fired
-	// after the tool returned. ctx.Value lookups won't find tenant
-	// here, but we already resolved it above and persist as a field.
-	appendCtx := context.WithoutCancel(ctx)
-
 	if s.cfg.asyncAudit {
-		// Recover from a panic in the audit-append goroutine so a buggy
-		// custom Logger.Append (a nil-deref in the underlying store, a
-		// panic from a secret source, a misbehaving driver) cannot
-		// crash the process. The sync path inherits the request-handler's
-		// recover middleware; the async path has no such umbrella, so
-		// the recover lives here.
-		go func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					s.cfg.logger.Error("mcp: async audit append panicked",
-						"tool", tool,
-						"tenant_id", tenantID,
-						"panic", rec,
-					)
-				}
-			}()
-			s.appendActionLog(appendCtx, entry, tool, tenantID)
-		}()
-		return
+		s.enqueueAuditJob(auditJob{entry: entry, tool: tool, tenantID: tenantID})
+		return nil
 	}
-	s.appendActionLog(appendCtx, entry, tool, tenantID)
+
+	// Sync path: detach cancellation from the request context so the
+	// append survives a client disconnect after the tool returned,
+	// but the caller still observes the error so strict mode can
+	// fail-closed.
+	appendCtx := context.WithoutCancel(ctx)
+	return s.appendActionLog(appendCtx, entry, tool, tenantID)
 }
 
-// appendActionLog performs the actual write. Extracted so the sync
-// and async paths share error-logging behaviour.
-func (s *Server) appendActionLog(ctx context.Context, entry actionlog.Entry, tool, tenantID string) {
+// enqueueAuditJob hands an audit append to the worker pool. If the
+// queue is saturated the entry is dropped and a counter incremented:
+// async mode is best-effort by definition, and a hung audit store
+// must not be allowed to accumulate goroutines without bound.
+func (s *Server) enqueueAuditJob(job auditJob) {
+	if atomic.LoadInt32(&s.auditStopped) == 1 {
+		atomic.AddInt64(&s.auditDropped, 1)
+		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
+			"tool", job.tool,
+			"tenant_id", job.tenantID,
+		)
+		return
+	}
+	select {
+	case s.auditQueue <- job:
+	default:
+		atomic.AddInt64(&s.auditDropped, 1)
+		s.cfg.logger.Warn("mcp: async audit queue full; dropping entry",
+			"tool", job.tool,
+			"tenant_id", job.tenantID,
+		)
+	}
+}
+
+// appendActionLog performs the actual write. Returns the underlying
+// store error so the caller can decide whether to surface it.
+func (s *Server) appendActionLog(ctx context.Context, entry actionlog.Entry, tool, tenantID string) error {
 	if _, err := s.cfg.actionLogger.Append(ctx, entry); err != nil {
 		s.cfg.logger.Error("mcp: action log append failed",
 			"tool", tool,
 			"tenant_id", tenantID,
 			"error", err,
 		)
+		return err
 	}
+	return nil
 }

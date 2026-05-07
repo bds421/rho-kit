@@ -177,9 +177,18 @@ func structSchema(t reflect.Type, visiting map[reflect.Type]bool) (map[string]an
 			continue
 		}
 		// Embedded structs flatten into the parent — same as
-		// encoding/json.
+		// encoding/json. For `struct { *Embedded }` the field type is
+		// a pointer; unwrap before recursing so structSchema sees the
+		// underlying struct (calling NumField on a pointer panics).
 		if f.Anonymous && f.Tag.Get("json") == "" {
-			embedded, err := structSchema(f.Type, visiting)
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() != reflect.Struct {
+				continue
+			}
+			embedded, err := structSchema(ft, visiting)
 			if err != nil {
 				return nil, err
 			}

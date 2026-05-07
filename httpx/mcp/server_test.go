@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,12 +67,20 @@ func TestServer_RoundTrip_Echo(t *testing.T) {
 }
 
 func TestServer_RoundTrip_ToolsCall(t *testing.T) {
+	// tools/call returns the MCP-standard envelope:
+	// {result: {content: [{type: "json", data: <tool output>}]}}.
 	s := newTestServer(t)
 	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}},"id":2}`
 	resp := doRPC(t, s.HTTP(), body)
 	require.Nil(t, resp["error"], "unexpected error: %v", resp["error"])
 	result := resp["result"].(map[string]any)
-	assert.Equal(t, "hi", result["echoed"])
+	content, ok := result["content"].([]any)
+	require.True(t, ok, "tools/call result must carry an MCP content array, got %v", result)
+	require.Len(t, content, 1)
+	first := content[0].(map[string]any)
+	assert.Equal(t, "json", first["type"])
+	data := first["data"].(map[string]any)
+	assert.Equal(t, "hi", data["echoed"])
 }
 
 func TestServer_ToolsList_Sorted(t *testing.T) {
@@ -493,6 +503,20 @@ func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
 	require.Len(t, entries, 1, "sync mode writes the entry before returning the response")
 }
 
+func TestServer_RejectsTrailingJSONInBody(t *testing.T) {
+	// `{...} {...}` at the top of the request body is two JSON
+	// values back to back. json.Unmarshal flags this as
+	// "invalid character after top-level value" — the handler must
+	// reject the call rather than accept the first object and
+	// ignore the trailing data.
+	s := newTestServer(t)
+	body := `{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1} {"y":2}`
+	resp := doRPC(t, s.HTTP(), body)
+	require.NotNil(t, resp["error"], "trailing JSON must be rejected")
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32700, rpcErr["code"])
+}
+
 func TestServer_DisallowUnknownFields_ReturnsGenericMessage(t *testing.T) {
 	// L-4 fix: an extra field in the params payload must be
 	// rejected as -32602 with a generic "invalid request" message.
@@ -592,4 +616,286 @@ func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "fixed-actor", entries[0].Actor)
+}
+
+// failingLogger always returns an error from Append. Used to prove
+// strict-mode fail-closed behaviour when the audit store is down.
+type failingLogger struct {
+	inner   actionlog.Logger
+	appends int64
+}
+
+func (l *failingLogger) Append(_ context.Context, _ actionlog.Entry) (actionlog.Entry, error) {
+	atomic.AddInt64(&l.appends, 1)
+	return actionlog.Entry{}, errors.New("audit store unavailable")
+}
+
+func (l *failingLogger) Get(ctx context.Context, id string) (actionlog.Entry, error) {
+	return l.inner.Get(ctx, id)
+}
+
+func (l *failingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	return l.inner.List(ctx, q)
+}
+
+func (l *failingLogger) Sign(e actionlog.Entry) (string, string, error) {
+	return l.inner.Sign(e)
+}
+
+func (l *failingLogger) Verify(e actionlog.Entry) error { return l.inner.Verify(e) }
+
+func (l *failingLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	return l.inner.VerifyChain(ctx, tenantID)
+}
+
+func TestServer_ActionLog_StrictMode_AppendFailure_FailsResponse(t *testing.T) {
+	// Strict + sync mode must fail-closed when the audit store
+	// rejects the append. The tool may have run, but the JSON-RPC
+	// response is -32603 internal error so the caller never sees
+	// "success" without a durable signed entry.
+	inner, _ := newTestActionLogger(t)
+	logger := &failingLogger{inner: inner}
+	s := mcp.NewServer(mcp.WithActionLogger(logger))
+
+	calls := 0
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", invokeCounterHandler(&calls)))
+
+	h := withTenantHandler(s.HTTP(), "tenant-fail")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.NotNil(t, resp["error"], "strict-mode append failure must surface as JSON-RPC error")
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32603, rpcErr["code"])
+
+	assert.EqualValues(t, 1, atomic.LoadInt64(&logger.appends), "append must have been attempted exactly once")
+	assert.Equal(t, 1, calls, "tool ran before the audit append failed (documented ordering)")
+}
+
+func TestServer_ActionLog_LooseMode_AppendFailure_StillReturnsResult(t *testing.T) {
+	// Loose mode preserves the legacy fail-open behaviour: append
+	// failures are logged but the result is returned. Operators have
+	// explicitly opted out of the audit invariant.
+	var logBuf bytes.Buffer
+	slogger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	inner, _ := newTestActionLogger(t)
+	logger := &failingLogger{inner: inner}
+	s := mcp.NewServer(
+		mcp.WithLogger(slogger),
+		mcp.WithActionLogger(logger),
+		mcp.WithStrictAudit(false),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-loose-fail")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Nil(t, resp["error"], "loose mode must still return success on append failure: %v", resp["error"])
+	result := resp["result"].(map[string]any)
+	assert.Equal(t, "hi", result["echoed"])
+	assert.Contains(t, logBuf.String(), "action log append failed")
+}
+
+// blockingForeverLogger never returns from Append. Used to prove the
+// async worker pool is bounded: more concurrent calls than the queue
+// can hold must drop entries (counter increment) rather than spawn
+// unbounded goroutines.
+type blockingForeverLogger struct {
+	inner   actionlog.Logger
+	release chan struct{}
+	calls   int64
+}
+
+func (l *blockingForeverLogger) Append(ctx context.Context, e actionlog.Entry) (actionlog.Entry, error) {
+	atomic.AddInt64(&l.calls, 1)
+	select {
+	case <-l.release:
+	case <-ctx.Done():
+		return actionlog.Entry{}, ctx.Err()
+	}
+	return l.inner.Append(ctx, e)
+}
+
+func (l *blockingForeverLogger) Get(ctx context.Context, id string) (actionlog.Entry, error) {
+	return l.inner.Get(ctx, id)
+}
+
+func (l *blockingForeverLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	return l.inner.List(ctx, q)
+}
+
+func (l *blockingForeverLogger) Sign(e actionlog.Entry) (string, string, error) {
+	return l.inner.Sign(e)
+}
+
+func (l *blockingForeverLogger) Verify(e actionlog.Entry) error {
+	return l.inner.Verify(e)
+}
+
+func (l *blockingForeverLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	return l.inner.VerifyChain(ctx, tenantID)
+}
+
+func TestServer_AsyncAudit_QueueSaturation_DropsRatherThanLeaks(t *testing.T) {
+	// Tight bound: 1 worker + queue depth 1 = at most 2 in-flight
+	// appends. Anything beyond that is dropped, surfaced via
+	// Server.AsyncAuditDropped().
+	inner, _ := newTestActionLogger(t)
+	blocking := &blockingForeverLogger{
+		inner:   inner,
+		release: make(chan struct{}),
+	}
+	s := mcp.NewServer(
+		mcp.WithActionLogger(blocking),
+		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditWorkers(1),
+		mcp.WithAsyncAuditQueue(1),
+		mcp.WithAsyncAuditTimeout(2*time.Second),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-sat")
+
+	const N = 20
+	for i := 0; i < N; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		require.Equal(t, http.StatusOK, w.Code, "async mode must keep responding while queue saturates")
+	}
+
+	dropped := s.AsyncAuditDropped()
+	assert.Greater(t, dropped, int64(0), "saturated queue must drop entries rather than leak goroutines")
+	assert.Less(t, dropped, int64(N), "not every request should drop; the worker + queue should absorb some")
+
+	close(blocking.release)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, s.Stop(stopCtx))
+}
+
+func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditWorkers(2),
+		mcp.WithAsyncAuditQueue(8),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-drain")
+	for i := 0; i < 4; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, s.Stop(stopCtx), "Stop must drain within timeout")
+
+	// All 4 entries should now be visible.
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-drain"})
+	require.NoError(t, err)
+	assert.Len(t, entries, 4)
+}
+
+func TestServer_ToolsCall_ReturnsMCPContentShape(t *testing.T) {
+	// MCP-spec compliant: tools/call result must be
+	// {content: [{type: "json", data: ...}]}.
+	s := newTestServer(t)
+	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"world"}},"id":1}`
+	resp := doRPC(t, s.HTTP(), body)
+	require.Nil(t, resp["error"])
+	result := resp["result"].(map[string]any)
+	content, ok := result["content"].([]any)
+	require.True(t, ok, "tools/call must wrap the tool output in a content array")
+	require.Len(t, content, 1)
+	first := content[0].(map[string]any)
+	assert.Equal(t, "json", first["type"])
+	data := first["data"].(map[string]any)
+	assert.Equal(t, "world", data["echoed"])
+}
+
+func TestServer_ShorthandCall_ReturnsRawResult(t *testing.T) {
+	// Shorthand (method = tool name) keeps the raw output for kit
+	// consumers using the typed Out struct directly.
+	s := newTestServer(t)
+	body := `{"jsonrpc":"2.0","method":"echo","params":{"message":"world"},"id":1}`
+	resp := doRPC(t, s.HTTP(), body)
+	require.Nil(t, resp["error"])
+	result := resp["result"].(map[string]any)
+	_, hasContent := result["content"]
+	assert.False(t, hasContent, "shorthand calls must NOT wrap in content array")
+	assert.Equal(t, "world", result["echoed"])
+}
+
+func TestTruncateReason_PreservesUTF8Boundaries(t *testing.T) {
+	// Test the unexported truncateReason indirectly via a failure
+	// audit reason. Build an error string longer than MaxReasonLength
+	// (1024 bytes) using 3-byte UTF-8 runes positioned so the cap
+	// would land mid-rune. The recorded Reason must remain valid
+	// UTF-8 (no unicode replacement glyph, decodable round-trip).
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(mcp.WithActionLogger(logger))
+
+	// Each '★' is 3 bytes; 400 of them = 1200 bytes > 1024.
+	long := strings.Repeat("★", 400)
+	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
+		return echoOut{}, errors.New(long)
+	}
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "boom", boom))
+
+	h := withTenantHandler(s.HTTP(), "tenant-utf8")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"boom","params":{"message":"x"},"id":1}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-utf8"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	reason := entries[0].Reason
+	// LessOrEqual since the truncation walks back to a rune boundary.
+	assert.LessOrEqual(t, len(reason), 1024+3, "truncated reason must fit within cap + ellipsis")
+	assert.True(t, strings.HasSuffix(reason, "..."), "truncated reason must end with ellipsis")
+	core := strings.TrimSuffix(reason, "...")
+	for i, r := range core {
+		_ = i
+		// Ranging produces RuneError on invalid bytes.
+		assert.NotEqual(t, '�', r, "truncated reason must contain no replacement runes (invalid UTF-8)")
+	}
+}
+
+type embedHello struct {
+	Hello string `json:"hello"`
+}
+
+type embedWrapper struct {
+	*embedHello
+	Extra string `json:"extra"`
+}
+
+func TestRegister_AnonymousPointerEmbedDoesNotPanic(t *testing.T) {
+	s := mcp.NewServer()
+	require.NotPanics(t, func() {
+		err := mcp.Register[embedWrapper, echoOut](s, "embed",
+			func(_ context.Context, _ embedWrapper) (echoOut, error) { return echoOut{}, nil })
+		require.NoError(t, err, "registration with anonymous *Embedded must succeed")
+	})
 }
