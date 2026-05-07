@@ -4,6 +4,7 @@ toolchain go1.26.2
 
 use (
 	./app
+	./cmd/kit-bench-gate
 	./cmd/kit-doctor
 	./cmd/kit-migrate
 	./core/apperror

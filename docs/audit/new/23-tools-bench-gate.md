@@ -66,11 +66,11 @@ A regression is *information*, not necessarily a blocker. The gate posts a comme
 
 ## Definition of done
 
-- [ ] Per-package benchmarks for the surface above.
-- [ ] `kit-bench-gate` CLI.
-- [ ] Baselines committed in `bench/baselines/`.
-- [ ] GitHub Actions workflow.
-- [ ] Doc explaining how to update baselines.
+- [ ] Per-package benchmarks for the surface above (deferred — large surface area; ship per-package as audit identifies hot paths).
+- [x] `kit-bench-gate` CLI: parses `go test -bench` text, strips GOMAXPROCS suffix so 8-core baseline matches 16-core CI, ranks metrics in a markdown diff table, exits 1 on regression past `-threshold` for any metric in `-fail-on`, exits 2 on tool error. ✅ this PR
+- [ ] Baselines committed in `bench/baselines/` (deferred — pending the per-package benchmark surface).
+- [ ] GitHub Actions workflow (deferred — sample wiring is in main.go's package comment).
+- [x] Doc explaining how to update baselines: `-fail-on` flag is the ratchet (start with `ns/op`, add `allocs/op` once codebase is clean); see main.go package comment.
 
 ## Related
 
