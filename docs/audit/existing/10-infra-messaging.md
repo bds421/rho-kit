@@ -16,6 +16,7 @@ _Closed — see Recently Landed below._
 - ✅ **DLQ failure cap** — `WithMaxDLQConsecutiveFailures(n)` (default 10) force-discards after N consecutive dead-publish failures, breaking the bounce-loop. Operators get a clear error log + counter rather than ~15 min of CPU thrash.
 - ✅ **`Connection.WaitForConnection(ctx)`** — 100ms-poll helper; outbox Relay can pause poll on reconnect rather than burning retry budget.
 - ✅ **BufferedPublisher fixes** — `directInFlight` reservation skipped when `maxSize=1`; `LastSaveError()` (atomic.Pointer[error]) surfaces save failures to callers; documented 0o600 + JSON state-file format on disk.
+- ✅ **BufferedPublisher state-file mandatory in non-dev** — `NewBufferedPublisher` panics when `KIT_ENV` (or `APP_ENV`) names a non-dev environment and no state file is configured; `WithEphemeralBuffer()` is the explicit opt-out for callers backed by an upstream outbox. Mirrors the `csrf.New` startup check so silent message loss after restart fails loudly at boot rather than under load.
 - ✅ **membroker `SubscriptionID` + `Unsubscribe`** — Subscribe returns an ID; tests no longer accumulate stale handlers.
 
 xDeath / actionDiscard items remain on the longer-term list (deferred — they touch the retry-queue naming contract; not a regression).

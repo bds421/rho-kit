@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	kitcfg "github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/io/atomicfile"
 )
 
@@ -63,6 +65,10 @@ type BufferedPublisher struct {
 	// metrics collects operational metrics when set.
 	metrics *BufferedPublisherMetrics
 
+	// allowEphemeralBuffer opts out of the production-environment panic
+	// when no state file is configured. Pattern matches csrf.WithDevSecret.
+	allowEphemeralBuffer bool
+
 	// lastSaveErr holds the most recent error from saveLocked(). Stored as
 	// atomic.Pointer so [LastSaveError] reads it without contending with
 	// the publish path.
@@ -104,6 +110,21 @@ func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.metrics = m }
 }
 
+// WithEphemeralBuffer opts in to memory-only buffering in non-development
+// environments. By default, [NewBufferedPublisher] panics when no state
+// file is configured and `KIT_ENV` (or the deprecated `APP_ENV`) names a
+// non-dev environment — a process restart would silently drop every
+// buffered message, which is exactly the scenario buffering exists to
+// prevent. Set this option only when the surrounding system has its own
+// at-least-once guarantee (e.g. an upstream outbox), or for tests.
+//
+// In development environments the option is implicit; constructing a
+// BufferedPublisher without a state file logs a warning rather than
+// panicking, so local workflows are not interrupted.
+func WithEphemeralBuffer() BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.allowEphemeralBuffer = true }
+}
+
 // WithBufferedFinalDrainTimeout sets how long the buffered publisher waits to
 // drain remaining messages during shutdown. Default: 15 seconds.
 func WithBufferedFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
@@ -142,6 +163,17 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 	}
 	for _, opt := range opts {
 		opt(o)
+	}
+
+	if o.stateFile == "" && !o.allowEphemeralBuffer {
+		env := os.Getenv("KIT_ENV")
+		if env == "" {
+			env = os.Getenv("APP_ENV")
+		}
+		if !kitcfg.IsDevelopment(env) {
+			panic("messaging: BufferedPublisher requires WithBufferedStateFile in non-dev environments — without persistence, buffered messages are silently lost on restart (call WithEphemeralBuffer() to opt out explicitly when an upstream outbox provides durability)")
+		}
+		logger.Warn("buffered publisher running without state file — buffered messages will be lost on restart")
 	}
 
 	if o.stateFile != "" {
