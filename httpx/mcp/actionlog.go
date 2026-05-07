@@ -97,10 +97,11 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		return
 	}
 
+	// actorExtractor's contract (enforced by WithActorExtractor and the
+	// default constructor in defaultServerConfig) is that it never
+	// returns "". The empty-to-AnonymousActor substitution is the
+	// responsibility of the option-wrapper, not of this call site.
 	actor := s.cfg.actorExtractor(r)
-	if actor == "" {
-		actor = AnonymousActor
-	}
 
 	outcome := actionlog.OutcomeSuccess
 	reason := ""
@@ -128,7 +129,24 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 	appendCtx := context.WithoutCancel(ctx)
 
 	if s.cfg.asyncAudit {
-		go s.appendActionLog(appendCtx, entry, tool, tenantID)
+		// Recover from a panic in the audit-append goroutine so a buggy
+		// custom Logger.Append (a nil-deref in the underlying store, a
+		// panic from a secret source, a misbehaving driver) cannot
+		// crash the process. The sync path inherits the request-handler's
+		// recover middleware; the async path has no such umbrella, so
+		// the recover lives here.
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					s.cfg.logger.Error("mcp: async audit append panicked",
+						"tool", tool,
+						"tenant_id", tenantID,
+						"panic", rec,
+					)
+				}
+			}()
+			s.appendActionLog(appendCtx, entry, tool, tenantID)
+		}()
 		return
 	}
 	s.appendActionLog(appendCtx, entry, tool, tenantID)

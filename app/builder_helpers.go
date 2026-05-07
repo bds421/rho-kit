@@ -52,7 +52,7 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, newJWTModule(jwtModuleConfig{
 			jwksURL:        b.jwksURL,
 			expectedIssuer: b.jwtIssuer,
-			allowAnyIssuer: b.jwtAllowAnyIssue,
+			allowAnyIssuer: b.jwtAllowAnyIssuer,
 			audience:       b.jwtAudience,
 		}))
 	}

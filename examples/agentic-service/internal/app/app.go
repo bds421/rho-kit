@@ -35,6 +35,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/bds421/rho-kit/data/actionlog"
 	actionlogmem "github.com/bds421/rho-kit/data/actionlog/memory"
 	"github.com/bds421/rho-kit/data/approval"
@@ -178,14 +180,16 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 			http.Error(w, "missing X-Tenant-Id", http.StatusBadRequest)
 			return
 		}
+		now := time.Now()
 		req, err := s.Create(r.Context(), approval.Request{
+			ID:        uuid.Must(uuid.NewV7()).String(),
 			TenantID:  tenantID,
 			Actor:     "demo-actor",
 			Action:    "admin.dangerous-action",
 			Resource:  "example",
 			State:     approval.StatePending,
-			CreatedAt: time.Now(),
-			ExpiresAt: time.Now().Add(24 * time.Hour),
+			CreatedAt: now,
+			ExpiresAt: now.Add(24 * time.Hour),
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

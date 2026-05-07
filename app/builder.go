@@ -110,7 +110,7 @@ type Builder struct {
 	jwksURL          string
 	jwtIssuer        string
 	jwtAudience      string
-	jwtAllowAnyIssue bool
+	jwtAllowAnyIssuer bool
 
 	// PASETO (alternative to JWT). Caller-constructed Provider, so the
 	// kit does not impose a particular key source.
@@ -388,7 +388,7 @@ func (b *Builder) WithJWTIssuer(iss string) *Builder {
 		panic("app: WithJWTIssuer requires a non-empty issuer (use WithoutJWTIssuer to opt out)")
 	}
 	b.jwtIssuer = iss
-	b.jwtAllowAnyIssue = false
+	b.jwtAllowAnyIssuer = false
 	return b
 }
 
@@ -406,7 +406,7 @@ func (b *Builder) WithJWTAudience(aud string) *Builder {
 // not used. The check is unconditional — there is no KIT_ENV escape
 // hatch.
 func (b *Builder) WithoutJWTIssuer() *Builder {
-	b.jwtAllowAnyIssue = true
+	b.jwtAllowAnyIssuer = true
 	b.jwtIssuer = ""
 	return b
 }

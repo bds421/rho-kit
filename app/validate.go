@@ -127,7 +127,7 @@ func (b *Builder) Validate() error {
 // individually relaxable via an explicit Without*() opt-out.
 func (b *Builder) validateProductionSafety() error {
 	// JWT: must specify issuer or explicitly opt out via WithoutJWTIssuer.
-	if b.jwksURL != "" && b.jwtIssuer == "" && !b.jwtAllowAnyIssue {
+	if b.jwksURL != "" && b.jwtIssuer == "" && !b.jwtAllowAnyIssuer {
 		return fmt.Errorf("WithJWT requires WithJWTIssuer or the explicit WithoutJWTIssuer opt-out")
 	}
 
@@ -161,11 +161,11 @@ func (b *Builder) validateProductionSafety() error {
 		case "require", "verify-ca", "verify-full":
 			// ok
 		case "":
-			return fmt.Errorf("Postgres sslmode must be set (require/verify-ca/verify-full); none configured")
+			return fmt.Errorf("postgres sslmode must be set (require/verify-ca/verify-full); none configured")
 		case "allow", "prefer", "disable":
-			return fmt.Errorf("Postgres sslmode=%q does not fail closed on TLS handshake error; use require/verify-ca/verify-full", mode)
+			return fmt.Errorf("postgres sslmode=%q does not fail closed on TLS handshake error; use require/verify-ca/verify-full", mode)
 		default:
-			return fmt.Errorf("Postgres sslmode=%q is unrecognized", mode)
+			return fmt.Errorf("postgres sslmode=%q is unrecognized", mode)
 		}
 	}
 

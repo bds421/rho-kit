@@ -179,7 +179,7 @@ import (
     actionlogpg "github.com/bds421/rho-kit/data/actionlog/postgres"
     "github.com/bds421/rho-kit/data/approval"
     approvalpg "github.com/bds421/rho-kit/data/approval/postgres"
-    "github.com/bds421/rho-kit/httpx/middleware/budget"
+    httpxbudget "github.com/bds421/rho-kit/httpx/middleware/budget"
     httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
     leaderpg "github.com/bds421/rho-kit/infra/leaderelection/pgadvisory"
     natsbackend "github.com/bds421/rho-kit/infra/messaging/natsbackend"

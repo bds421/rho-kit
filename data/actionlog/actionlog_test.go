@@ -169,6 +169,46 @@ func TestList_FailsClosedOnTamperedEntry(t *testing.T) {
 	_ = good
 }
 
+// TestSign_NewlineInjectionDoesNotCollide is the regression test for
+// the L-1 audit fix: the canonical form is length-prefixed so a
+// field value containing a literal newline cannot shift the field
+// boundary in the canonical bytes. Two distinct entries with
+// different field assignments must produce different signatures.
+//
+// Pre-fix (newline-joined), an entry with Reason="x\nfoo" and
+// Action="bar" would canonicalise the same as Reason="x" and
+// Action="foo\nbar" — both renderings concatenate to the same byte
+// sequence after the join. Post-fix the length prefix on each field
+// makes the parse unambiguous.
+func TestSign_NewlineInjectionDoesNotCollide(t *testing.T) {
+	logger := New(newMemStore(), newTestSecrets(t))
+	now := time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	a := Entry{
+		ID: "e", TenantID: "t", Actor: "a",
+		Action:     "do",
+		Resource:   "r",
+		Outcome:    OutcomeSuccess,
+		Reason:     "x\nfoo",
+		OccurredAt: now,
+	}
+	b := Entry{
+		ID: "e", TenantID: "t", Actor: "a",
+		Action:     "do\nfoo",
+		Resource:   "r",
+		Outcome:    OutcomeSuccess,
+		Reason:     "x",
+		OccurredAt: now,
+	}
+
+	sigA, _, err := logger.Sign(a)
+	require.NoError(t, err)
+	sigB, _, err := logger.Sign(b)
+	require.NoError(t, err)
+	assert.NotEqual(t, sigA, sigB,
+		"length-prefix canonical form must distinguish entries that differ only in newline placement")
+}
+
 func TestSign_DeterministicAcrossInvocations(t *testing.T) {
 	logger := New(newMemStore(), newTestSecrets(t))
 	e := Entry{

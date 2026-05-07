@@ -78,7 +78,15 @@ func LoadBaseConfig(defaultServerPort int) (BaseConfig, error) {
 	}, nil
 }
 
-// IsDevelopment reports whether the service is running in development mode.
+// IsDevelopment reports whether the service is running in development
+// mode (per [config.IsDevelopment]'s string check on c.Environment).
+//
+// The kit's runtime no longer consults this — production-safe defaults
+// are unconditional, and per-relaxation Without*() opt-outs are the
+// supported escape hatches. The method is preserved for downstream
+// consumers' own logic (feature flags, log verbosity, debug routes
+// they choose to mount in their own code) so they can branch on the
+// same string the kit used to read.
 func (c BaseConfig) IsDevelopment() bool {
 	return config.IsDevelopment(c.Environment)
 }

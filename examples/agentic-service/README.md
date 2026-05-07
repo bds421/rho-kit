@@ -2,14 +2,16 @@
 
 > **SECURITY**: this is an EXAMPLE for learning the kit. The binary
 > mounts every handler with no authentication, no rate limiting, no
-> CSRF protection, and a hard-coded HMAC secret. **It refuses to boot
-> if `KIT_ENV` is anything but `dev` / `development` / `test` /
-> `local`** so a copy-paste-into-prod misadventure crashes loud rather
-> than quietly serving an unauthenticated agent surface. Production
-> services use `app.Builder` end-to-end — see
+> CSRF protection, and a hard-coded HMAC secret. **Do NOT deploy it
+> as-is to any shared environment.** Production services use
+> `app.Builder` end-to-end — see
 > `app.Builder.WithJWT / .WithSignedRequests / .WithMultiTenant /
 > .WithTenantBudget / .WithActionLogger / .WithApprovalStore` and
-> the per-package docs.
+> the per-package docs. The Builder runs an always-on validator at
+> startup that rejects empty TLS, missing JWT issuer/audience,
+> exposed internal-host, weak postgres sslmode, and excessive
+> tracing sample rates — exactly the gaps this example deliberately
+> leaves open.
 
 A reference rho-kit v2.0.0 service that demonstrates the full
 agentic-AI stack composed in one binary:
