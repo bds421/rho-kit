@@ -10,6 +10,7 @@ use (
 	./crypto
 	./data/actionlog
 	./data/actionlog/memory
+	./data/actionlog/postgres
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
