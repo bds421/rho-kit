@@ -57,6 +57,7 @@ use (
 	./runtime/cron
 	./runtime/eventbus
 	./runtime/lifecycle
+	./security/csrf
 	./security/jwtutil
 	./security/netutil
 )
