@@ -16,9 +16,12 @@ type Authenticator func(r *http.Request) bool
 // Guard wraps a debug handler with two safety checks that MUST both pass for
 // the handler to run:
 //
-//  1. The environment string must not be a production identifier
-//     (uses [config.IsDevelopment] semantics — anything outside "development",
-//     "dev", "test", "local" is treated as non-dev and rejected).
+//  1. The environment string must equal the literal "development" (per
+//     [config.IsDevelopment]). Any other value — "dev", "staging", "test",
+//     "local", "" — is treated as non-dev and rejected. The strict
+//     equality is intentional: the kit ships fail-closed on this gate so
+//     a typo'd env value cannot accidentally expose a debug surface in
+//     production.
 //  2. The Authenticator must approve the request.
 //
 // Either failure returns 404 Not Found (intentionally indistinguishable from
