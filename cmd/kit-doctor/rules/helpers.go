@@ -2,7 +2,37 @@ package rules
 
 import (
 	"go/ast"
+	"path"
+	"strconv"
 )
+
+// importAliasesFor returns the set of identifiers that resolve to the
+// given import path inside file. Handles named aliases, dot imports
+// (which contribute no alias), blank imports (skipped), and the
+// default last-path-segment alias.
+func importAliasesFor(file *ast.File, importPath string) map[string]struct{} {
+	out := make(map[string]struct{})
+	if file == nil {
+		return out
+	}
+	for _, imp := range file.Imports {
+		raw, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || raw != importPath {
+			continue
+		}
+		if imp.Name == nil {
+			out[path.Base(raw)] = struct{}{}
+			continue
+		}
+		switch imp.Name.Name {
+		case "_", ".":
+			continue
+		default:
+			out[imp.Name.Name] = struct{}{}
+		}
+	}
+	return out
+}
 
 func isMethodCall(call *ast.CallExpr, name string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)

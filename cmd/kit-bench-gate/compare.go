@@ -15,6 +15,20 @@ const (
 	MetricAllocs Metric = "allocs/op"
 )
 
+// SupportedMetrics enumerates every Metric the tool understands.
+// parseFailOn validates user input against this list.
+var SupportedMetrics = []Metric{MetricNs, MetricBytes, MetricAllocs}
+
+// IsValidMetric reports whether m is one of SupportedMetrics.
+func IsValidMetric(m Metric) bool {
+	for _, s := range SupportedMetrics {
+		if s == m {
+			return true
+		}
+	}
+	return false
+}
+
 // Diff is one benchmark's regression report for a single metric.
 type Diff struct {
 	Name             string
@@ -38,8 +52,8 @@ func Compare(baseline, current []Result, metrics []Metric, failOn map[Metric]str
 	curByName := indexByName(current)
 
 	var out []Diff
-	seen := make(map[string]bool, len(baseByName))
 	for _, m := range metrics {
+		seen := make(map[string]bool, len(baseByName))
 		for name, b := range baseByName {
 			seen[name] = true
 			c, ok := curByName[name]

@@ -14,6 +14,13 @@ type defaultHTTPClientRule struct{}
 func (defaultHTTPClientRule) Name() string { return "default-http-client" }
 
 func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Finding {
+	// Resolve which local identifiers actually refer to net/http so an
+	// alias (`nethttp "net/http"`) is flagged and a local variable
+	// named http is not.
+	httpAliases := importAliasesFor(file, "net/http")
+	if len(httpAliases) == 0 {
+		return nil
+	}
 	var findings []Finding
 	ast.Inspect(file, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
@@ -21,7 +28,15 @@ func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Findin
 			return true
 		}
 		ident, ok := sel.X.(*ast.Ident)
-		if !ok || ident.Name != "http" {
+		if !ok {
+			return true
+		}
+		if _, ok := httpAliases[ident.Name]; !ok {
+			return true
+		}
+		// Reject locally-shadowed identifiers: if this Ident resolves to
+		// a non-package object in the file (a local var or param), skip.
+		if ident.Obj != nil && ident.Obj.Kind != ast.Pkg {
 			return true
 		}
 		switch sel.Sel.Name {

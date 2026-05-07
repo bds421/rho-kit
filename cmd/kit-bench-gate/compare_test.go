@@ -54,6 +54,30 @@ func TestCompare_NewBenchFlaggedNew(t *testing.T) {
 	assert.True(t, found, "new benchmarks present in current but not baseline must be flagged")
 }
 
+func TestCompare_NewBenchEmittedForEveryMetric(t *testing.T) {
+	base := []Result{{Name: "Existing", NsPerOp: 100, BPerOp: 64, AllocsOp: 1}}
+	cur := []Result{
+		{Name: "Existing", NsPerOp: 100, BPerOp: 64, AllocsOp: 1},
+		{Name: "Brand-New", NsPerOp: 50, BPerOp: 32, AllocsOp: 2},
+	}
+	diffs := Compare(base, cur,
+		[]Metric{MetricNs, MetricBytes, MetricAllocs},
+		map[Metric]struct{}{MetricNs: {}}, 10)
+
+	gotByMetric := make(map[Metric]Diff)
+	for _, d := range diffs {
+		if d.Name == "Brand-New" && d.NewBench {
+			gotByMetric[d.Metric] = d
+		}
+	}
+	assert.Contains(t, gotByMetric, MetricNs, "Brand-New must appear for ns/op")
+	assert.Contains(t, gotByMetric, MetricBytes, "Brand-New must appear for B/op")
+	assert.Contains(t, gotByMetric, MetricAllocs, "Brand-New must appear for allocs/op")
+	assert.Equal(t, 50.0, gotByMetric[MetricNs].Current)
+	assert.Equal(t, 32.0, gotByMetric[MetricBytes].Current)
+	assert.Equal(t, 2.0, gotByMetric[MetricAllocs].Current)
+}
+
 func TestCompare_MissingBenchFlaggedMissing(t *testing.T) {
 	base := []Result{{Name: "Gone", NsPerOp: 200}}
 	cur := []Result{}

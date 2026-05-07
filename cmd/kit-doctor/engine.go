@@ -1,19 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/bds421/rho-kit/cmd/kit-doctor/rules"
 )
 
+// generatedHeaderRE matches the canonical generated-code header
+// described in https://golang.org/s/generatedcode. We also accept the
+// missing-space variant some tools emit (`//Code generated`).
+var generatedHeaderRE = regexp.MustCompile(`^//\s?Code generated .* DO NOT EDIT\.$`)
+
 // scan walks root, parses every .go file (skipping vendor and
-// generated suffixes), and returns the union of all rule findings.
+// generated files), and returns the union of all rule findings.
 func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 	var findings []rules.Finding
 	fset := token.NewFileSet()
@@ -31,13 +39,22 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		// Skip generated files heuristically. A real implementation
-		// would inspect the // Code generated header.
-		if strings.HasSuffix(path, "_gen.go") || strings.HasSuffix(path, ".pb.go") {
+		gen, genErr := isGeneratedFile(path)
+		if genErr != nil {
+			findings = append(findings, rules.Finding{
+				Rule:     "io-error",
+				Severity: rules.Warning,
+				File:     path,
+				Line:     0,
+				Message:  fmt.Sprintf("read failed: %v", genErr),
+			})
+			return nil
+		}
+		if gen {
 			return nil
 		}
 
-		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			// Don't fail the whole scan on one unparseable file; surface
 			// it as a finding so the operator notices.
@@ -67,6 +84,39 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 		return findings[i].Line < findings[j].Line
 	})
 	return findings, nil
+}
+
+// isGeneratedFile reports whether path begins with the canonical
+// `// Code generated ... DO NOT EDIT.` header within the first 20
+// lines. Returns false if no header is found before the first non-
+// comment, non-blank line.
+func isGeneratedFile(path string) (gen bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for i := 0; i < 20 && scanner.Scan(); i++ {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "//") {
+			return false, nil
+		}
+		if generatedHeaderRE.MatchString(line) {
+			return true, nil
+		}
+	}
+	return false, scanner.Err()
 }
 
 // formatFindings renders the findings as the audit-style checklist.
