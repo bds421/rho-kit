@@ -206,6 +206,12 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 		"0X100000000",
 		"040000000000",
 		"8589934592",
+		// N-10: bracket-only forms strip to empty; net.Listen treats
+		// "[]:port" as the IPv6 wildcard and binds [::]:port. The
+		// validator must catch all three bracket-only inputs.
+		"[]",
+		"[",
+		"]",
 	}
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {

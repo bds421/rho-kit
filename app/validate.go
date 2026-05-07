@@ -43,6 +43,16 @@ func isUnspecifiedHost(host string) bool {
 	// docs explicitly say "host does not contain square brackets", and
 	// passing "[::]" produces "[[::]]:0" which fails to parse.
 	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	// Bracket-only forms ("[]", "[", "]") strip down to an empty
+	// string. net.Listen accepts "[]:port" as the IPv6 wildcard and
+	// binds [::]:port — exposing /metrics on every interface (audit
+	// finding N-10). The original empty-host branch above does NOT
+	// catch this because the operator DID set the field, just to
+	// brackets-only. Treat post-strip empty as wildcard so the
+	// validator rejects it.
+	if stripped == "" {
+		return true
+	}
 	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(stripped, "0"))
 	if err != nil {
 		return false
