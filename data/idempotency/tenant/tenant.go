@@ -35,6 +35,7 @@ package tenant
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	coretenant "github.com/bds421/rho-kit/core/tenant"
@@ -64,14 +65,21 @@ func Wrap(inner idempotency.Store) idempotency.Store {
 	return &scoped{inner: inner}
 }
 
-// scopedKey rewrites raw to "tenant:<id>:<raw>". Panics if ctx carries
-// no tenant ID.
+// scopedKey rewrites raw to "tenant:<len(id)>:<id>:<raw>". Panics if
+// ctx carries no tenant ID.
+//
+// The length prefix prevents `tenant:"a:b" + key:"c"` from colliding
+// with `tenant:"a" + key:"b:c"` when an ID happens to contain the ':'
+// separator. [coretenant.NewID] rejects ':' as defence-in-depth, but
+// callers can still construct `coretenant.ID` directly or via
+// [coretenant.NewIDUnchecked]; the length prefix stays sound either way.
 func scopedKey(ctx context.Context, raw string) string {
 	id, err := coretenant.Required(ctx)
 	if err != nil {
 		panic("idempotency/tenant: " + err.Error())
 	}
-	return keyPrefix + string(id) + ":" + raw
+	s := string(id)
+	return keyPrefix + strconv.Itoa(len(s)) + ":" + s + ":" + raw
 }
 
 // Get rewrites the key and delegates.

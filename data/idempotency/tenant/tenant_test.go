@@ -101,6 +101,49 @@ func TestWrap_NilInnerPanics(t *testing.T) {
 	Wrap(nil)
 }
 
+// TestScopedKey_ColonInTenantIDNoCollision is the audit's exact test
+// case for C-3. With a naive `tenant:<id>:<key>` scheme, tenant `"a:b"`
+// taking key `"c"` would share a storage slot with tenant `"a"` taking
+// key `"b:c"` — opening the door to cross-tenant idempotency replay.
+//
+// NewIDUnchecked simulates the worst case where validation is bypassed
+// (e.g. legacy data). The length prefix in scopedKey must keep the
+// namespaces disjoint regardless.
+func TestScopedKey_ColonInTenantIDNoCollision(t *testing.T) {
+	inner := idempotency.NewMemoryStore()
+	w := Wrap(inner)
+
+	idAB := coretenant.NewIDUnchecked("a:b")
+	idA := coretenant.NewIDUnchecked("a")
+
+	ctxAB := coretenant.WithID(context.Background(), idAB)
+	ctxA := coretenant.WithID(context.Background(), idA)
+
+	// Tenant "a:b" locks key "c".
+	tokAB, _, ok, err := w.TryLock(ctxAB, "c", []byte("body"), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok, "tenant a:b should acquire its lock")
+
+	// Tenant "a" locks key "b:c". Naive scoping would treat this as a
+	// re-lock of the same slot and contend; with the length prefix the
+	// two namespaces are distinct so tenant "a" must succeed.
+	tokA, _, ok, err := w.TryLock(ctxA, "b:c", []byte("body"), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok, "tenant a should acquire its lock independently of tenant a:b")
+
+	// Cross-namespace reads must miss.
+	require.NoError(t, w.Set(ctxAB, "c", tokAB, idempotency.CachedResponse{
+		StatusCode: 200,
+		Body:       []byte("ab-response"),
+	}, time.Minute))
+	resp, mismatch, err := w.Get(ctxA, "b:c", []byte("body"))
+	require.NoError(t, err)
+	assert.False(t, mismatch)
+	assert.Nil(t, resp, "tenant a must not see tenant a:b's response")
+
+	_ = tokA
+}
+
 func TestWrap_UnlockReleasesOnlyOwnTenantLock(t *testing.T) {
 	inner := idempotency.NewMemoryStore()
 	w := Wrap(inner)

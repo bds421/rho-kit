@@ -22,6 +22,82 @@ func TestNewID_AcceptsNonEmpty(t *testing.T) {
 	assert.Equal(t, "acme", id.String())
 }
 
+func TestNewID_RejectsColon(t *testing.T) {
+	// The cache / idempotency wrappers use ':' as a field separator.
+	// Allowing it inside a tenant ID is the C-3 cross-tenant collision.
+	_, err := NewID("a:b")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalid)
+}
+
+func TestNewID_RejectsControlChars(t *testing.T) {
+	cases := map[string]string{
+		"newline":         "tenant\nid",
+		"carriage return": "tenant\rid",
+		"tab":             "tenant\tid",
+		"null":            "tenant\x00id",
+		"slash":           "tenant/id",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewID(input)
+			require.Error(t, err, "expected %q to be rejected", input)
+			assert.ErrorIs(t, err, ErrInvalid)
+		})
+	}
+}
+
+func TestNewID_AcceptsAlphanum(t *testing.T) {
+	cases := []string{
+		"acme",
+		"acme-prod",
+		"acme_prod",
+		"acme.prod",
+		"ACME123",
+		"550e8400-e29b-41d4-a716-446655440000", // UUID v4
+	}
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			id, err := NewID(input)
+			require.NoError(t, err)
+			assert.Equal(t, ID(input), id)
+		})
+	}
+}
+
+func TestValidateID_ReportsAllRejections(t *testing.T) {
+	// Hits every documented rejection class so the contract stays
+	// machine-checked, not just docstring-asserted.
+	cases := map[string]string{
+		"empty":           "",
+		"colon":           "a:b",
+		"slash":           "a/b",
+		"newline":         "a\nb",
+		"carriage return": "a\rb",
+		"tab":             "a\tb",
+		"null byte":       "a\x00b",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateID(input)
+			require.Error(t, err, "expected %q to fail validation", input)
+			assert.ErrorIs(t, err, ErrInvalid)
+		})
+	}
+
+	// Sanity: a valid ID passes.
+	assert.NoError(t, ValidateID("acme"))
+}
+
+func TestNewIDUnchecked_BypassesValidation(t *testing.T) {
+	// The escape hatch must accept inputs NewID rejects — that's its
+	// whole purpose. Documented use case: reading from a trusted DB
+	// column populated before C-3 was fixed.
+	id := NewIDUnchecked("a:b")
+	assert.Equal(t, ID("a:b"), id)
+	assert.Equal(t, "a:b", id.String())
+}
+
 func TestFromContext_AbsentReturnsFalse(t *testing.T) {
 	_, ok := FromContext(context.Background())
 	assert.False(t, ok)

@@ -21,6 +21,7 @@ package tenant
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	coretenant "github.com/bds421/rho-kit/core/tenant"
@@ -52,15 +53,28 @@ func Wrap(inner cache.Cache) cache.Cache {
 	return &scoped{inner: inner}
 }
 
-// scopedKey rewrites raw to "tenant:<id>:<raw>". Panics if ctx carries
-// no tenant ID. The empty-key case is left to the inner backend's own
-// validation so we don't double-validate or skew error semantics.
+// scopedKey rewrites raw to "tenant:<len(id)>:<id>:<raw>". Panics if
+// ctx carries no tenant ID. The empty-key case is left to the inner
+// backend's own validation so we don't double-validate or skew error
+// semantics.
+//
+// The length prefix is the load-bearing element here. Without it,
+// tenant `"a:b"` with key `"c"` would produce the same scoped key as
+// tenant `"a"` with key `"b:c"` — a silent cross-tenant leak. Encoding
+// the tenant length first makes the parse unambiguous regardless of
+// which bytes appear in the tenant ID.
+//
+// Defence-in-depth: [coretenant.NewID] also rejects ':' in tenant IDs,
+// but the length prefix means we stay safe even if a caller routes a
+// malformed ID through [coretenant.NewIDUnchecked] or constructs
+// `coretenant.ID(s)` directly.
 func scopedKey(ctx context.Context, raw string) string {
 	id, err := coretenant.Required(ctx)
 	if err != nil {
 		panic("cache/tenant: " + err.Error())
 	}
-	return keyPrefix + string(id) + ":" + raw
+	s := string(id)
+	return keyPrefix + strconv.Itoa(len(s)) + ":" + s + ":" + raw
 }
 
 // Get rewrites the key and delegates.

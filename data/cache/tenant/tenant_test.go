@@ -66,10 +66,12 @@ func TestWrap_IsolatesTenants(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("w-value"), got)
 
-	// Inner store must contain both fully-qualified keys.
-	_, ok := inner.store["tenant:acme:session"]
+	// Inner store must contain both fully-qualified keys. The length
+	// prefix (`<len(id)>:`) sits between "tenant:" and the ID itself —
+	// see scopedKey for the rationale.
+	_, ok := inner.store["tenant:4:acme:session"]
 	assert.True(t, ok, "expected acme key to exist in inner store")
-	_, ok = inner.store["tenant:widgets:session"]
+	_, ok = inner.store["tenant:7:widgets:session"]
 	assert.True(t, ok, "expected widgets key to exist in inner store")
 }
 
@@ -122,4 +124,38 @@ func TestWrap_MissReachesCaller(t *testing.T) {
 	w := Wrap(newFakeCache())
 	_, err := w.Get(ctxWith("acme"), "missing")
 	assert.True(t, errors.Is(err, cache.ErrCacheMiss), "expected ErrCacheMiss, got %v", err)
+}
+
+// TestScopedKey_ColonInTenantIDNoCollision is the audit's exact test
+// case for C-3. With a naive `tenant:<id>:<key>` scheme, tenant `"a:b"`
+// with key `"c"` collides with tenant `"a"` with key `"b:c"` — both
+// stringify to `tenant:a:b:c` and tenant B can read tenant A's data.
+//
+// We use NewIDUnchecked to simulate the worst case where validation is
+// bypassed (e.g. legacy data, direct ID conversion). The length prefix
+// in scopedKey must keep the namespaces disjoint regardless.
+func TestScopedKey_ColonInTenantIDNoCollision(t *testing.T) {
+	inner := newFakeCache()
+	w := Wrap(inner)
+
+	idAB := coretenant.NewIDUnchecked("a:b")
+	idA := coretenant.NewIDUnchecked("a")
+
+	ctxAB := coretenant.WithID(context.Background(), idAB)
+	ctxA := coretenant.WithID(context.Background(), idA)
+
+	require.NoError(t, w.Set(ctxAB, "c", []byte("ab-tenant"), time.Minute))
+	require.NoError(t, w.Set(ctxA, "b:c", []byte("a-tenant"), time.Minute))
+
+	// Each tenant must read back its own value.
+	got, err := w.Get(ctxAB, "c")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("ab-tenant"), got, "tenant a:b read leaked from tenant a")
+
+	got, err = w.Get(ctxA, "b:c")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("a-tenant"), got, "tenant a read leaked from tenant a:b")
+
+	// Inner store should hold two distinct keys, not one.
+	assert.Len(t, inner.store, 2, "expected two distinct scoped keys")
 }

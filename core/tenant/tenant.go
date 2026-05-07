@@ -19,10 +19,28 @@ package tenant
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 )
 
-// ID identifies a tenant. Construct via [NewID] (validates non-empty)
-// or accept the zero-validation responsibility by string-converting.
+// ID identifies a tenant. Construct via [NewID] (validates the input)
+// or, for a value already validated upstream (e.g. read from a trusted
+// DB column), [NewIDUnchecked].
+//
+// Allowed characters in a tenant ID: any byte *except* the separators
+// and control codes used by the rest of the kit. Specifically rejected:
+//
+//   - ':' — reserved as the field separator in cache / idempotency
+//     scoped keys. Allowing ':' would let `tenant:"a:b" + key:"c"`
+//     collide with `tenant:"a" + key:"b:c"` (silent cross-tenant leak).
+//   - '/' — reserved for path-like keying schemes and operator URLs.
+//   - '\n', '\r', '\t', '\x00' — control codes that corrupt log lines,
+//     header values, and Redis MONITOR traces.
+//
+// All other bytes (alphanumerics, '-', '_', '.', UUIDs) are accepted.
+// Length is *not* bounded here — caller-supplied limits should sit at
+// the application boundary (e.g. middleware extracting the tenant from
+// a request).
 type ID string
 
 // String returns the tenant ID's underlying string form. Implemented
@@ -36,17 +54,51 @@ func (id ID) IsZero() bool { return id == "" }
 // tenant ID. Callers may compare with `errors.Is`.
 var ErrMissing = errors.New("tenant: required tenant ID is missing from context")
 
-// ErrInvalid is returned by [NewID] when the supplied string would
-// produce a zero-value tenant ID.
-var ErrInvalid = errors.New("tenant: ID must not be empty")
+// ErrInvalid is returned by [NewID] when the supplied string fails
+// validation (empty or contains a forbidden byte). Callers may compare
+// with `errors.Is`.
+var ErrInvalid = errors.New("tenant: ID is invalid")
 
-// NewID validates and returns an ID. Empty input returns [ErrInvalid].
-func NewID(s string) (ID, error) {
+// forbiddenBytes lists every byte that [ValidateID] rejects. The
+// separator ':' is the load-bearing one — see the package doc for the
+// full rationale.
+const forbiddenBytes = ":/\n\r\t\x00"
+
+// ValidateID reports whether s is a well-formed tenant ID. Returns nil
+// on success, an error wrapping [ErrInvalid] otherwise. Callers that
+// need the validated ID should use [NewID]; ValidateID is exposed for
+// callers that want to validate input before passing it through other
+// layers (e.g. an HTTP middleware that wants a 400 response, not a
+// panic, on bad input).
+func ValidateID(s string) error {
 	if s == "" {
-		return "", ErrInvalid
+		return fmt.Errorf("%w: must not be empty", ErrInvalid)
+	}
+	if i := strings.IndexAny(s, forbiddenBytes); i >= 0 {
+		return fmt.Errorf("%w: contains forbidden byte %q at offset %d", ErrInvalid, s[i], i)
+	}
+	return nil
+}
+
+// NewID validates s with [ValidateID] and returns the corresponding ID
+// on success. The returned error wraps [ErrInvalid] so callers can use
+// `errors.Is(err, ErrInvalid)`.
+func NewID(s string) (ID, error) {
+	if err := ValidateID(s); err != nil {
+		return "", err
 	}
 	return ID(s), nil
 }
+
+// NewIDUnchecked converts s into an ID without validation. Use only
+// when s has been validated upstream — typical case is reading from a
+// trusted database column populated via [NewID]. The empty string is
+// still allowed; callers that want non-empty must check [ID.IsZero].
+//
+// This is the documented escape hatch for backwards compatibility with
+// stored data that pre-dates the [ValidateID] tightening. New code
+// paths should prefer [NewID].
+func NewIDUnchecked(s string) ID { return ID(s) }
 
 // ctxKey is unexported so consumers cannot bypass the typed helpers.
 type ctxKey struct{}
