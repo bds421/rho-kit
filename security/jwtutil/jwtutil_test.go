@@ -1,6 +1,7 @@
 package jwtutil
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -650,5 +653,70 @@ func TestVerify_NoPermissions(t *testing.T) {
 
 	if claims.Permissions != nil {
 		t.Errorf("permissions = %v, want nil", claims.Permissions)
+	}
+}
+
+// withCapturedSlog swaps the process default slog handler for a buffer-backed
+// one for the duration of fn and returns the captured output. The handler is
+// restored on exit so concurrent tests inherit a clean default.
+func withCapturedSlog(t *testing.T, level slog.Level, fn func()) string {
+	t.Helper()
+	var (
+		mu  sync.Mutex
+		buf bytes.Buffer
+	)
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(syncWriter{w: &buf, mu: &mu}, &slog.HandlerOptions{Level: level})))
+	fn()
+	mu.Lock()
+	defer mu.Unlock()
+	return buf.String()
+}
+
+type syncWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (s syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+func TestPermissionsClaim_MalformedLogsWarning(t *testing.T) {
+	// M-3 fix: a malformed permissions claim (e.g. a string where an
+	// array is expected) used to log only at Debug — operators with the
+	// default Info threshold never saw the issuer misconfiguration. The
+	// claim now warns so the issue surfaces in production.
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub":         "user-1",
+		"permissions": "not-an-array",
+		"exp":         now.Add(5 * time.Minute).Unix(),
+	})
+
+	captured := withCapturedSlog(t, slog.LevelWarn, func() {
+		claims, err := ks.Verify(token, now)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if claims.Permissions != nil {
+			t.Errorf("malformed permissions claim must produce nil slice, got %v", claims.Permissions)
+		}
+	})
+
+	if !strings.Contains(captured, "level=WARN") {
+		t.Errorf("expected WARN-level log entry, got: %s", captured)
+	}
+	if !strings.Contains(captured, "permissions claim absent or invalid") {
+		t.Errorf("expected permissions-claim warning, got: %s", captured)
+	}
+	if !strings.Contains(captured, `claim=permissions`) {
+		t.Errorf("expected claim=permissions key, got: %s", captured)
 	}
 }

@@ -128,13 +128,25 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	if err := tok.Get("permissions", &perms); err == nil {
 		claims.Permissions = toStringSlice(perms)
 	} else {
-		slog.Debug("jwt: permissions claim absent or invalid", "error", err)
+		// A missing claim is normal (older issuers, role-less tokens).
+		// A *malformed* claim — e.g. a string where an array is
+		// expected — silently downgrades to an empty permission set,
+		// which then makes every RBAC check fail-closed without telling
+		// operators that the issuer is producing wrongly-typed tokens.
+		// Warn so the misconfiguration is visible.
+		slog.Warn("jwt: permissions claim absent or invalid; treating as empty",
+			"claim", "permissions",
+			"err", err,
+		)
 	}
 	var scopes string
 	if err := tok.Get("scopes", &scopes); err == nil {
 		claims.Scopes = scopes
 	} else {
-		slog.Debug("jwt: scopes claim absent or invalid", "error", err)
+		slog.Warn("jwt: scopes claim absent or invalid; treating as empty",
+			"claim", "scopes",
+			"err", err,
+		)
 	}
 
 	return claims, nil
