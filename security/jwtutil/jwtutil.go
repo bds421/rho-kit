@@ -100,19 +100,34 @@ func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 // It validates the signature, expiration, and not-before claims. Tokens
 // without an `exp` claim are rejected — non-expiring bearer tokens are
 // indistinguishable from a stolen credential and have no place in this kit.
+//
+// Issuer and audience are validated against [KeySet.ExpectedIssuer] and
+// [KeySet.ExpectedAudience]. Prefer calling [Provider.Verify] when verifying
+// through a Provider — Provider.Verify uses the Provider's policy without
+// touching these shared fields, which is the safe path when one parsed
+// KeySet is reused across multiple providers.
 func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
+	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience)
+}
+
+// verifyToken is the lower-level verification primitive. It does not read
+// any mutable policy state — issuer and audience are passed in by the
+// caller. Provider.Verify calls this with its own stored policy so two
+// providers can share one *KeySet without racing on or overwriting each
+// other's iss/aud fields (R4 fix).
+func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (*Claims, error) {
 	parseOpts := []jwt.ParseOption{
-		jwt.WithKeySet(ks.set, jws.WithInferAlgorithmFromKey(true)),
+		jwt.WithKeySet(set, jws.WithInferAlgorithmFromKey(true)),
 		jwt.WithValidate(true),
 		jwt.WithAcceptableSkew(clockSkew),
 		jwt.WithClock(jwt.ClockFunc(func() time.Time { return now })),
 		jwt.WithRequiredClaim(jwt.ExpirationKey),
 	}
-	if ks.ExpectedIssuer != "" {
-		parseOpts = append(parseOpts, jwt.WithIssuer(ks.ExpectedIssuer))
+	if expectedIssuer != "" {
+		parseOpts = append(parseOpts, jwt.WithIssuer(expectedIssuer))
 	}
-	if ks.ExpectedAudience != "" {
-		parseOpts = append(parseOpts, jwt.WithAudience(ks.ExpectedAudience))
+	if expectedAudience != "" {
+		parseOpts = append(parseOpts, jwt.WithAudience(expectedAudience))
 	}
 	tok, err := jwt.Parse([]byte(tokenString), parseOpts...)
 	if err != nil {
@@ -359,9 +374,13 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 // regardless of issuer/audience and reopen the confused-deputy hazard
 // (RFC 7519 §4.1.3) the [NewProvider] guardrail closes.
 //
-// The supplied options also overwrite [KeySet.ExpectedIssuer] and
-// [KeySet.ExpectedAudience] so the provider's policy is the source of
-// truth, regardless of what was set on the keyset literal.
+// The provider stores issuer/audience policy on itself (via [Provider.Verify])
+// and does NOT mutate [KeySet.ExpectedIssuer] or [KeySet.ExpectedAudience].
+// That makes it safe for two providers to share one parsed *KeySet with
+// independent issuer/audience policies — earlier revisions overwrote those
+// shared fields on every construction, which leaked the last provider's
+// policy into every other provider that aliased the same keyset and could
+// race under concurrent construction or verification (R4 fix).
 func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
 	p := &Provider{keyset: ks, clock: time.Now}
 	for _, opt := range opts {
@@ -375,10 +394,6 @@ func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
 	}
 	if p.expectedAudience == "" && !p.allowAnyAudience {
 		panic("jwtutil: NewProviderWithKeySet requires WithExpectedAudience or the explicit WithAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
-	}
-	if ks != nil {
-		ks.ExpectedIssuer = p.expectedIssuer
-		ks.ExpectedAudience = p.expectedAudience
 	}
 	return p
 }
@@ -508,6 +523,28 @@ func (p *Provider) Staleness() time.Duration {
 	return p.clock().Sub(last)
 }
 
+// Verify validates a token against the Provider's current key set using
+// THIS provider's expected issuer and audience policy. Returns
+// [ErrKeySetUnavailable] when the key set has not been fetched yet or has
+// gone stale past [WithMaxStale]; callers should fail the request closed in
+// that case.
+//
+// Provider.Verify is the safe entry point when a single parsed *KeySet is
+// shared by multiple providers with different iss/aud policies — each
+// provider passes its own policy into the verifier without touching the
+// shared keyset (R4 fix for cross-provider policy bleed).
+func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
+	ks := p.KeySet()
+	if ks == nil {
+		return nil, ErrKeySetUnavailable
+	}
+	return verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience)
+}
+
+// ErrKeySetUnavailable is returned by [Provider.Verify] when the JWKS has
+// not been fetched yet or has gone stale past the max-stale window.
+var ErrKeySetUnavailable = errors.New("jwtutil: key set unavailable")
+
 func (p *Provider) fetch(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
@@ -533,8 +570,6 @@ func (p *Provider) fetch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ks.ExpectedIssuer = p.expectedIssuer
-	ks.ExpectedAudience = p.expectedAudience
 
 	p.mu.Lock()
 	p.keyset = ks

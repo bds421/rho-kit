@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -128,14 +129,15 @@ func verifyClientCert(r *http.Request, allowedCNs map[string]struct{}) bool {
 // use jwtutil.NewProviderWithKeySet with pre-built key sets and tokens whose
 // expiry window covers the test execution time.
 func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provider, token string, next http.Handler) {
-	ks := provider.KeySet()
-	if ks == nil {
-		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	claims, err := ks.Verify(token, time.Now())
+	claims, err := provider.Verify(token, time.Now())
 	if err != nil {
+		// ErrKeySetUnavailable means the JWKS hasn't been fetched yet or has
+		// gone stale; surface the same "unauthorized" response as before but
+		// keep the cause distinguishable for logging callers via errors.Is.
+		if errors.Is(err, jwtutil.ErrKeySetUnavailable) {
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}

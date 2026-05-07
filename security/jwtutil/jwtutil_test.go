@@ -702,11 +702,19 @@ func TestNewProviderWithKeySet_AcceptsExplicitOptIns(t *testing.T) {
 	if p.KeySet() != ks {
 		t.Fatal("expected keyset to be set")
 	}
-	if got := ks.ExpectedIssuer; got != "https://issuer" {
-		t.Errorf("ExpectedIssuer = %q, want https://issuer", got)
+	// R4: provider must NOT mutate the caller's KeySet — provider policy is
+	// stored on the Provider and consulted by Provider.Verify directly.
+	if got := ks.ExpectedIssuer; got != "" {
+		t.Errorf("ks.ExpectedIssuer = %q, must remain unchanged by provider construction", got)
 	}
-	if got := ks.ExpectedAudience; got != "svc" {
-		t.Errorf("ExpectedAudience = %q, want svc", got)
+	if got := ks.ExpectedAudience; got != "" {
+		t.Errorf("ks.ExpectedAudience = %q, must remain unchanged by provider construction", got)
+	}
+	if p.expectedIssuer != "https://issuer" {
+		t.Errorf("p.expectedIssuer = %q, want https://issuer", p.expectedIssuer)
+	}
+	if p.expectedAudience != "svc" {
+		t.Errorf("p.expectedAudience = %q, want svc", p.expectedAudience)
 	}
 }
 
@@ -758,8 +766,15 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 	if ks == nil {
 		t.Fatal("expected keyset after Run")
 	}
-	if ks.ExpectedIssuer != "test" {
-		t.Errorf("expectedIssuer = %q, want test", ks.ExpectedIssuer)
+	// R4: fetch() must not mutate the parsed keyset's policy fields —
+	// Provider.Verify carries the policy. Verifying via the provider applies
+	// the configured "test" issuer; tokens issued by the wrong issuer would
+	// be rejected by Provider.Verify, not by ks.ExpectedIssuer.
+	if got := ks.ExpectedIssuer; got != "" {
+		t.Errorf("freshly-parsed keyset must not carry provider policy; got ExpectedIssuer=%q", got)
+	}
+	if p.expectedIssuer != "test" {
+		t.Errorf("provider expectedIssuer = %q, want test", p.expectedIssuer)
 	}
 
 	cancel()
@@ -1022,3 +1037,146 @@ func TestDefaultHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestNewProviderWithKeySet_DoesNotMutateSharedKeySet exercises the R4 bug:
+// when two providers share one parsed *KeySet, constructing the second
+// must not stomp the first provider's iss/aud policy. Earlier revisions
+// stored Provider options as fields on the shared *KeySet, so building p2
+// silently changed how p1 verified tokens.
+func TestNewProviderWithKeySet_DoesNotMutateSharedKeySet(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	p1 := NewProviderWithKeySet(ks,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("aud-A"),
+	)
+	// Constructing p2 against the same *ks must not bleed into p1's policy.
+	p2 := NewProviderWithKeySet(ks,
+		WithExpectedIssuer("svc-B"),
+		WithExpectedAudience("aud-B"),
+	)
+
+	if got := ks.ExpectedIssuer; got != "" {
+		t.Fatalf("provider construction must not mutate ks.ExpectedIssuer; got %q", got)
+	}
+	if got := ks.ExpectedAudience; got != "" {
+		t.Fatalf("provider construction must not mutate ks.ExpectedAudience; got %q", got)
+	}
+
+	tokenA := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "svc-A",
+		"aud": "aud-A",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	tokenB := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "svc-B",
+		"aud": "aud-B",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	if _, err := p1.Verify(tokenA, now); err != nil {
+		t.Fatalf("p1 must verify svc-A/aud-A token after p2 was constructed: %v", err)
+	}
+	if _, err := p2.Verify(tokenB, now); err != nil {
+		t.Fatalf("p2 must verify svc-B/aud-B token: %v", err)
+	}
+	if _, err := p1.Verify(tokenB, now); err == nil {
+		t.Fatal("p1 must reject svc-B/aud-B token (cross-provider policy bleed)")
+	}
+	if _, err := p2.Verify(tokenA, now); err == nil {
+		t.Fatal("p2 must reject svc-A/aud-A token (cross-provider policy bleed)")
+	}
+}
+
+// TestProvider_Verify_ConcurrentSharedKeySet runs concurrent verifications
+// across two providers that share one *KeySet. With -race, this fails if
+// either Provider.Verify or any path it touches writes to a shared mutable
+// field. It is the regression guard for the R4 race-on-shared-policy bug.
+func TestProvider_Verify_ConcurrentSharedKeySet(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	p1 := NewProviderWithKeySet(ks,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("aud-A"),
+	)
+	p2 := NewProviderWithKeySet(ks,
+		WithExpectedIssuer("svc-B"),
+		WithExpectedAudience("aud-B"),
+	)
+
+	tokenA := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "svc-A",
+		"aud": "aud-A",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	tokenB := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"iss": "svc-B",
+		"aud": "aud-B",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	const workers = 16
+	const iters = 200
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+	errs := make(chan error, workers*2*iters)
+
+	verifyLoop := func(p *Provider, token string) {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if _, err := p.Verify(token, now); err != nil {
+				errs <- fmt.Errorf("verify failed mid-loop: %w", err)
+				return
+			}
+		}
+	}
+
+	for i := 0; i < workers; i++ {
+		go verifyLoop(p1, tokenA)
+		go verifyLoop(p2, tokenB)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
+// TestProvider_Verify_KeySetUnavailable confirms Provider.Verify surfaces
+// the unavailable-keyset case as a distinguishable sentinel error so HTTP
+// and gRPC middleware can keep separating "JWKS not loaded" from "bad token"
+// after the R4 refactor moved verification onto the Provider.
+func TestProvider_Verify_KeySetUnavailable(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithMaxStale(30*time.Minute),
+		withClock(clock),
+	)
+	// No fetch yet — keyset is nil.
+	_, err := p.Verify("any.token.here", now)
+	if !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("expected ErrKeySetUnavailable when no fetch happened; got %v", err)
+	}
+
+	// Stale fetch: still unavailable.
+	p.mu.Lock()
+	p.keyset = &KeySet{}
+	p.lastSuccessfulFetch = now.Add(-2 * time.Hour)
+	p.mu.Unlock()
+	_, err = p.Verify("any.token.here", now)
+	if !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("expected ErrKeySetUnavailable when keyset is stale; got %v", err)
+	}
+}

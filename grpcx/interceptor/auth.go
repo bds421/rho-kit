@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -129,14 +130,14 @@ func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Cont
 		return ctx, status.Error(codes.Unauthenticated, "missing authorization token")
 	}
 
-	ks := provider.KeySet()
-	if ks == nil {
-		slog.WarnContext(ctx, "grpc auth: JWKS not yet loaded")
-		return ctx, status.Error(codes.Unauthenticated, "authorization unavailable")
-	}
-
-	claims, err := ks.Verify(token, time.Now())
+	claims, err := provider.Verify(token, time.Now())
 	if err != nil {
+		// ErrKeySetUnavailable is the JWKS-not-loaded / stale case; emit a
+		// warning so it is distinguishable in logs from a malformed token.
+		if errors.Is(err, jwtutil.ErrKeySetUnavailable) {
+			slog.WarnContext(ctx, "grpc auth: JWKS not yet loaded")
+			return ctx, status.Error(codes.Unauthenticated, "authorization unavailable")
+		}
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
