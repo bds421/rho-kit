@@ -218,6 +218,13 @@ type ConsumerConfig struct {
 	FilterSubject string        // optional — restrict to a subject within the stream
 	MaxAckPending int           // default: 256
 	AckWait       time.Duration // default: 30s
+	// MaxDeliver caps how many times JetStream will redeliver a single
+	// message before giving up. Without a cap (the JetStream default of
+	// -1 meaning unlimited), a message that reliably triggers a panic
+	// in the handler — or any other non-Term failure — Naks forever and
+	// blocks the consumer's progress. Default: 5. Set negative to
+	// explicitly opt into unlimited redelivery.
+	MaxDeliver int
 }
 
 // Consumer pulls messages from a JetStream durable consumer and
@@ -245,6 +252,9 @@ func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger) *Con
 	if cfg.AckWait <= 0 {
 		cfg.AckWait = 30 * time.Second
 	}
+	if cfg.MaxDeliver == 0 {
+		cfg.MaxDeliver = 5
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -265,6 +275,7 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		MaxAckPending: c.cfg.MaxAckPending,
 		AckWait:       c.cfg.AckWait,
+		MaxDeliver:    c.cfg.MaxDeliver,
 	})
 	if err != nil {
 		return fmt.Errorf("natsbackend: ensure consumer: %w", err)
@@ -289,8 +300,12 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 
 // dispatch routes one delivery to the handler and ack/nacks based on
 // the result. A handler panic counts as an error — the message is
-// nacked so it redelivers; the panic is re-raised so process-level
-// recovery can react.
+// nacked so it redelivers up to ConsumerConfig.MaxDeliver times, after
+// which JetStream gives up (sends to the configured DLQ if any, else
+// drops). The panic is recovered here and not re-raised; the consumer
+// must keep running so other deliveries continue to be processed.
+// Process-level reaction to handler panics should subscribe to the
+// "natsbackend: handler panicked" log line, not rely on a re-throw.
 func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messaging.Handler) {
 	defer func() {
 		if r := recover(); r != nil {
