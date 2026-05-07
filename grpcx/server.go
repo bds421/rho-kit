@@ -23,6 +23,7 @@ type serverConfig struct {
 	keepalivePolicy    *keepalive.EnforcementPolicy
 	disableRecovery    bool
 	recoveryLogger     *slog.Logger
+	defaultDeadline    time.Duration
 }
 
 const (
@@ -118,6 +119,30 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 	return func(c *serverConfig) { c.recoveryLogger = l }
 }
 
+// WithDefaultDeadline installs a per-RPC default deadline interceptor
+// (both unary and streaming). The interceptor sets the handler ctx
+// deadline to `now + d` when the inbound RPC has no deadline OR has
+// a deadline further out than `now + d`. Closer deadlines from the
+// caller are preserved.
+//
+// Without a server-side cap, a streaming RPC (or a unary RPC from a
+// crashed client) can hold a handler open indefinitely. Goroutines
+// piling up against a slow downstream cascade to liveness failure
+// — exactly the streaming-RPC exhaustion gap GAP-03 in
+// docs/audit/THREAT_MODEL.md.
+//
+// The interceptor is prepended after recovery so panics still
+// convert to codes.Internal but every request lands with a bounded
+// ctx.
+//
+// Panics if d is not positive.
+func WithDefaultDeadline(d time.Duration) ServerOption {
+	if d <= 0 {
+		panic("grpcx: WithDefaultDeadline requires a positive duration")
+	}
+	return func(c *serverConfig) { c.defaultDeadline = d }
+}
+
 // NewServer returns a *grpc.Server with production defaults: keepalive,
 // message size limits, panic-recovery interceptors, and the user-supplied
 // interceptors.
@@ -157,6 +182,12 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 
 	unary := cfg.unaryInterceptors
 	stream := cfg.streamInterceptors
+	// Deadline goes BEFORE recovery so a panic'd handler's deferred
+	// cancel still runs before the recovery interceptor unwinds.
+	if cfg.defaultDeadline > 0 {
+		unary = append([]grpc.UnaryServerInterceptor{interceptor.DeadlineUnary(cfg.defaultDeadline)}, unary...)
+		stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(cfg.defaultDeadline)}, stream...)
+	}
 	if !cfg.disableRecovery {
 		recLogger := cfg.recoveryLogger
 		if recLogger == nil {
