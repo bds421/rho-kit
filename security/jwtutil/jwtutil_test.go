@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -438,24 +440,40 @@ func TestVerify_ExpectedIssuer_Mismatch(t *testing.T) {
 
 func TestToStringSlice_StringSlice(t *testing.T) {
 	in := []string{"a", "b", "c"}
-	out := toStringSlice(in)
+	out, err := toStringSlice(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(out) != 3 || out[0] != "a" || out[1] != "b" || out[2] != "c" {
 		t.Errorf("toStringSlice([]string) = %v", out)
 	}
 }
 
 func TestToStringSlice_AnySlice(t *testing.T) {
-	in := []any{"x", "y", 42}
-	out := toStringSlice(in)
-	if len(out) != 2 || out[0] != "x" || out[1] != "y" {
-		t.Errorf("toStringSlice([]any) = %v, want [x y]", out)
+	in := []any{"x", "y", "z"}
+	out, err := toStringSlice(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 3 || out[0] != "x" || out[1] != "y" || out[2] != "z" {
+		t.Errorf("toStringSlice([]any) = %v", out)
+	}
+}
+
+func TestToStringSlice_AnySliceWithNonString(t *testing.T) {
+	// A misshaped element must surface as an error so the caller can
+	// reject the token instead of silently truncating to []string{"x"}.
+	in := []any{"x", 42}
+	_, err := toStringSlice(in)
+	if err == nil {
+		t.Fatal("expected error for non-string element in []any")
 	}
 }
 
 func TestToStringSlice_Other(t *testing.T) {
-	out := toStringSlice("not-a-slice")
-	if out != nil {
-		t.Errorf("toStringSlice(string) = %v, want nil", out)
+	_, err := toStringSlice("not-a-slice")
+	if err == nil {
+		t.Fatal("expected error for non-slice value")
 	}
 }
 
@@ -493,7 +511,8 @@ func TestDefaultHTTPClient_RetainsTransportDefaults(t *testing.T) {
 
 func TestNewProvider(t *testing.T) {
 	p := NewProvider("https://example.com/.well-known/jwks.json", nil, 5*time.Minute,
-		WithExpectedIssuer("https://example.com"))
+		WithExpectedIssuer("https://example.com"),
+		WithExpectedAudience("svc"))
 	if p.url != "https://example.com/.well-known/jwks.json" {
 		t.Errorf("url = %q", p.url)
 	}
@@ -502,16 +521,54 @@ func TestNewProvider(t *testing.T) {
 	}
 }
 
-// jwtutil's NewProvider no longer reads KIT_ENV — issuer enforcement is
-// the kit's [app.Builder] validator's job. NewProvider accepts any
-// configuration the caller hands it, including a missing issuer (which
-// the verifier then treats as "accept any authority"). Standalone callers
-// should pair WithExpectedIssuer or WithAllowAnyIssuer just like the
-// Builder does.
-func TestNewProvider_AcceptsMissingIssuerWithoutPanic(t *testing.T) {
-	p := NewProvider("https://example.com/jwks", nil, time.Minute)
+// NewProvider must reject any configuration that leaves issuer or audience
+// unspecified without an explicit opt-out — the kit-level confused-deputy
+// guardrail (RFC 7519 §4.1.3). Standalone callers must pair WithExpectedIssuer
+// or WithAllowAnyIssuer (and likewise for audience) just like the Builder.
+func TestNewProvider_PanicsWithoutIssuerConfig(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when neither WithExpectedIssuer nor WithAllowAnyIssuer is supplied")
+		}
+		if !strings.Contains(fmt.Sprint(r), "WithExpectedIssuer") {
+			t.Fatalf("panic must mention required option; got: %v", r)
+		}
+	}()
+	_ = NewProvider("https://example.com/jwks", nil, time.Minute, WithAllowAnyAudience())
+}
+
+func TestNewProvider_PanicsWithoutAudienceConfig(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when neither WithExpectedAudience nor WithAllowAnyAudience is supplied")
+		}
+		if !strings.Contains(fmt.Sprint(r), "WithExpectedAudience") {
+			t.Fatalf("panic must mention required option; got: %v", r)
+		}
+	}()
+	_ = NewProvider("https://example.com/jwks", nil, time.Minute, WithAllowAnyIssuer())
+}
+
+func TestNewProvider_AcceptsExplicitOptOuts(t *testing.T) {
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience())
 	if p == nil {
-		t.Fatal("expected provider, got nil")
+		t.Fatal("expected provider with explicit opt-outs")
+	}
+}
+
+func TestNewProvider_AcceptsConfiguredIssuerAndAudience(t *testing.T) {
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithExpectedIssuer("https://issuer.example.com"),
+		WithExpectedAudience("svc"))
+	if p.expectedIssuer != "https://issuer.example.com" {
+		t.Errorf("expectedIssuer = %q", p.expectedIssuer)
+	}
+	if p.expectedAudience != "svc" {
+		t.Errorf("expectedAudience = %q", p.expectedAudience)
 	}
 }
 
@@ -520,6 +577,8 @@ func TestProvider_KeySetReturnsNilWhenStale(t *testing.T) {
 	clock := func() time.Time { return now }
 
 	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
 		WithMaxStale(30*time.Minute),
 		withClock(clock),
 	)
@@ -549,6 +608,8 @@ func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
 	clock := func() time.Time { return now }
 
 	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
 		WithMaxStale(0), // disabled
 		withClock(clock),
 	)
@@ -567,6 +628,8 @@ func TestProvider_StalenessAccessor(t *testing.T) {
 	clock := func() time.Time { return now }
 
 	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
 		withClock(clock),
 	)
 	if got := p.Staleness(); got != 0 {
@@ -581,14 +644,18 @@ func TestProvider_StalenessAccessor(t *testing.T) {
 }
 
 func TestNewProvider_AllowAnyIssuerOptOut(t *testing.T) {
-	p := NewProvider("https://example.com/jwks", nil, time.Minute, WithAllowAnyIssuer())
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience())
 	if p == nil {
 		t.Fatal("expected provider, got nil")
 	}
 }
 
 func TestNewProvider_WithExpectedIssuer(t *testing.T) {
-	p := NewProvider("https://example.com/jwks", nil, time.Minute, WithExpectedIssuer("https://issuer"))
+	p := NewProvider("https://example.com/jwks", nil, time.Minute,
+		WithExpectedIssuer("https://issuer"),
+		WithAllowAnyAudience())
 	if p.expectedIssuer != "https://issuer" {
 		t.Errorf("expectedIssuer = %q", p.expectedIssuer)
 	}
@@ -610,7 +677,9 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 	srv := newTestJWKSServer(t, jwksData)
 	defer srv.Close()
 
-	p := NewProvider(srv.URL, srv.Client(), 100*time.Millisecond, WithExpectedIssuer("test"))
+	p := NewProvider(srv.URL, srv.Client(), 100*time.Millisecond,
+		WithExpectedIssuer("test"),
+		WithAllowAnyAudience())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -660,7 +729,9 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 	})
 	defer srv.Close()
 
-	p := NewProvider(srv.URL, srv.Client(), time.Hour, WithAllowAnyIssuer())
+	p := NewProvider(srv.URL, srv.Client(), time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -734,11 +805,12 @@ func (s syncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
-func TestPermissionsClaim_MalformedLogsWarning(t *testing.T) {
-	// M-3 fix: a malformed permissions claim (e.g. a string where an
-	// array is expected) used to log only at Debug — operators with the
-	// default Info threshold never saw the issuer misconfiguration. The
-	// claim now warns so the issue surfaces in production.
+func TestPermissionsClaim_MalformedRejectsToken(t *testing.T) {
+	// R2 fix: a malformed permissions claim (e.g. a string where an
+	// array is expected, or an array element that is not a string) used
+	// to silently downgrade to an empty permission set, hiding issuer
+	// drift behind fail-closed RBAC. The verifier now rejects the token
+	// outright with an authentication error.
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	now := time.Now()
@@ -750,22 +822,150 @@ func TestPermissionsClaim_MalformedLogsWarning(t *testing.T) {
 	})
 
 	captured := withCapturedSlog(t, slog.LevelWarn, func() {
-		claims, err := ks.Verify(token, now)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		_, err := ks.Verify(token, now)
+		if err == nil {
+			t.Fatal("expected verification to fail on malformed permissions claim")
 		}
-		if claims.Permissions != nil {
-			t.Errorf("malformed permissions claim must produce nil slice, got %v", claims.Permissions)
+		if !strings.Contains(err.Error(), "malformed permissions claim") {
+			t.Errorf("error must identify the malformed claim; got: %v", err)
 		}
 	})
 
 	if !strings.Contains(captured, "level=WARN") {
 		t.Errorf("expected WARN-level log entry, got: %s", captured)
 	}
-	if !strings.Contains(captured, "permissions claim absent or invalid") {
+	if !strings.Contains(captured, "permissions claim malformed") {
 		t.Errorf("expected permissions-claim warning, got: %s", captured)
 	}
-	if !strings.Contains(captured, `claim=permissions`) {
-		t.Errorf("expected claim=permissions key, got: %s", captured)
+}
+
+func TestPermissionsClaim_NumericArrayElementRejectsToken(t *testing.T) {
+	// `permissions: [123]` decodes to []any{int} — under the old
+	// behaviour every element was filtered, leaving an empty []string.
+	// The token is now rejected so downstream RBAC sees the failure
+	// instead of silently dropping privileges.
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub":         "user-1",
+		"permissions": []any{123},
+		"exp":         now.Add(5 * time.Minute).Unix(),
+	})
+
+	_, err := ks.Verify(token, now)
+	if err == nil {
+		t.Fatal("expected verification to fail on numeric permissions element")
 	}
 }
+
+func TestPermissionsClaim_WellFormedSucceeds(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub":         "user-1",
+		"permissions": []string{"read"},
+		"exp":         now.Add(5 * time.Minute).Unix(),
+	})
+
+	claims, err := ks.Verify(token, now)
+	if err != nil {
+		t.Fatalf("well-formed permissions must verify: %v", err)
+	}
+	if len(claims.Permissions) != 1 || claims.Permissions[0] != "read" {
+		t.Errorf("permissions = %v, want [read]", claims.Permissions)
+	}
+}
+
+func TestScopesClaim_MalformedRejectsToken(t *testing.T) {
+	// Same downgrade hazard as permissions: a numeric scopes claim used
+	// to log-and-continue with empty scopes. Now rejected.
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub":    "user-1",
+		"scopes": 42,
+		"exp":    now.Add(5 * time.Minute).Unix(),
+	})
+
+	_, err := ks.Verify(token, now)
+	if err == nil {
+		t.Fatal("expected verification to fail on numeric scopes claim")
+	}
+}
+
+func TestVerify_ConfiguredAudienceMatch(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	ks.ExpectedAudience = "svc-A"
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"aud": "svc-A",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("matching audience must verify: %v", err)
+	}
+}
+
+func TestVerify_ConfiguredAudienceMismatch(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	ks.ExpectedAudience = "svc-A"
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"aud": "svc-B",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	if _, err := ks.Verify(token, now); err == nil {
+		t.Fatal("audience mismatch must be rejected (RFC 7519 §4.1.3)")
+	}
+}
+
+func TestDefaultHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
+	// R2 fix: defaultHTTPClient previously did
+	//   transport, _ := http.DefaultTransport.(*http.Transport)
+	//   clone := transport.Clone()
+	// which panics with nil-pointer-deref when the process replaces
+	// http.DefaultTransport with a custom RoundTripper (otelhttp,
+	// test doubles, instrumentation packages). The fallback now
+	// constructs a fresh *http.Transport with stdlib defaults.
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("not used")
+	})
+
+	c := defaultHTTPClient()
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport (fresh fallback)", c.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Error("fallback Proxy must be set (env-aware)")
+	}
+	if tr.DialContext == nil {
+		t.Error("fallback DialContext must be set")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Error("fallback TLSHandshakeTimeout must be set")
+	}
+	if tr.MaxResponseHeaderBytes != 64*1024 {
+		t.Errorf("MaxResponseHeaderBytes = %d, want 65536 (kit override)", tr.MaxResponseHeaderBytes)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

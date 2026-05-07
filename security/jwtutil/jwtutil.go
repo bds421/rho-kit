@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -132,48 +133,63 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	}
 
 	var perms []any
-	if err := tok.Get("permissions", &perms); err == nil {
-		claims.Permissions = toStringSlice(perms)
-	} else {
-		// A missing claim is normal (older issuers, role-less tokens).
-		// A *malformed* claim — e.g. a string where an array is
-		// expected — silently downgrades to an empty permission set,
-		// which then makes every RBAC check fail-closed without telling
-		// operators that the issuer is producing wrongly-typed tokens.
-		// Warn so the misconfiguration is visible.
-		slog.Warn("jwt: permissions claim absent or invalid; treating as empty",
+	switch err := tok.Get("permissions", &perms); {
+	case err == nil:
+		converted, convErr := toStringSlice(perms)
+		if convErr != nil {
+			return nil, fmt.Errorf("malformed permissions claim: %w", convErr)
+		}
+		claims.Permissions = converted
+	case errors.Is(err, jwt.ClaimNotFoundError()):
+		// Older issuers and role-less tokens omit permissions entirely.
+		// That is a valid token; downstream RBAC fails closed on the empty set.
+	default:
+		// Claim is present but not assignable to []any — e.g. a bare string
+		// or number. Treating that as "no permissions" lets a buggy issuer
+		// silently downgrade an authenticated request to no privileges; the
+		// confused-deputy variant of the empty-set problem. Reject instead.
+		slog.Warn("jwt: permissions claim malformed; rejecting token",
 			"claim", "permissions",
 			"err", err,
 		)
+		return nil, fmt.Errorf("malformed permissions claim: %w", err)
 	}
 	var scopes string
-	if err := tok.Get("scopes", &scopes); err == nil {
+	switch err := tok.Get("scopes", &scopes); {
+	case err == nil:
 		claims.Scopes = scopes
-	} else {
-		slog.Warn("jwt: scopes claim absent or invalid; treating as empty",
+	case errors.Is(err, jwt.ClaimNotFoundError()):
+		// Optional claim; empty string is the correct zero value.
+	default:
+		slog.Warn("jwt: scopes claim malformed; rejecting token",
 			"claim", "scopes",
 			"err", err,
 		)
+		return nil, fmt.Errorf("malformed scopes claim: %w", err)
 	}
 
 	return claims, nil
 }
 
-// toStringSlice converts a JSON-decoded value to []string.
-func toStringSlice(v any) []string {
+// toStringSlice converts a JSON-decoded value to []string. Returns an error
+// when v is the wrong shape (e.g. []any{123}) so callers can distinguish a
+// misshaped claim from an empty-but-well-formed one.
+func toStringSlice(v any) ([]string, error) {
 	switch val := v.(type) {
 	case []string:
-		return val
+		return val, nil
 	case []any:
 		out := make([]string, 0, len(val))
-		for _, item := range val {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
+		for i, item := range val {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("element %d is %T, want string", i, item)
 			}
+			out = append(out, s)
 		}
-		return out
+		return out, nil
 	default:
-		return nil
+		return nil, fmt.Errorf("value is %T, want []string", v)
 	}
 }
 
@@ -190,6 +206,7 @@ type Provider struct {
 	expectedIssuer   string
 	expectedAudience string
 	allowAnyIssuer   bool
+	allowAnyAudience bool
 	maxStale         time.Duration
 	clock            func() time.Time
 
@@ -202,17 +219,25 @@ type Provider struct {
 type ProviderOption func(*Provider)
 
 // WithExpectedIssuer sets the JWT issuer claim that Verify will validate.
+// An empty string is rejected — call [WithAllowAnyIssuer] to opt out.
 func WithExpectedIssuer(issuer string) ProviderOption {
-	return func(p *Provider) { p.expectedIssuer = issuer }
+	return func(p *Provider) {
+		p.expectedIssuer = issuer
+		p.allowAnyIssuer = false
+	}
 }
 
 // WithExpectedAudience sets the JWT audience claim that Verify will validate.
 // This is the standard mitigation against the confused-deputy attack: without
 // it, any service that trusts the same JWKS will accept tokens issued for any
 // other service. Set this to the canonical URL or identifier of the service
-// processing the token.
+// processing the token. An empty string is rejected — call
+// [WithAllowAnyAudience] to opt out.
 func WithExpectedAudience(audience string) ProviderOption {
-	return func(p *Provider) { p.expectedAudience = audience }
+	return func(p *Provider) {
+		p.expectedAudience = audience
+		p.allowAnyAudience = false
+	}
 }
 
 // WithAllowAnyIssuer opts into the unsafe behaviour of accepting tokens
@@ -226,7 +251,21 @@ func WithExpectedAudience(audience string) ProviderOption {
 // or the explicit [app.Builder.WithoutJWTIssuer]; this option lets a
 // hand-constructed Provider mirror that explicit opt-out.
 func WithAllowAnyIssuer() ProviderOption {
-	return func(p *Provider) { p.allowAnyIssuer = true }
+	return func(p *Provider) {
+		p.allowAnyIssuer = true
+		p.expectedIssuer = ""
+	}
+}
+
+// WithAllowAnyAudience opts into the unsafe behaviour of accepting tokens
+// issued for any audience. Use ONLY when a service genuinely accepts tokens
+// minted for sibling services — that is the confused-deputy hazard the
+// audience claim exists to prevent (RFC 7519 §4.1.3).
+func WithAllowAnyAudience() ProviderOption {
+	return func(p *Provider) {
+		p.allowAnyAudience = true
+		p.expectedAudience = ""
+	}
 }
 
 // WithMaxStale sets how long [Provider.KeySet] continues to serve a
@@ -255,12 +294,15 @@ func withClock(fn func() time.Time) ProviderOption {
 // If httpClient is nil, a default client with a 5s timeout is used.
 // If refresh <= 0, it defaults to 10 minutes.
 //
-// Issuer enforcement is the caller's responsibility — pass
-// [WithExpectedIssuer] for the standard case, or [WithAllowAnyIssuer]
-// to declare explicitly that the verifier accepts any authority. The
-// kit's [app.Builder] enforces this pairing at startup via the
-// always-on production-safety validator; standalone callers should
-// follow the same pattern.
+// Issuer and audience enforcement are required by default: NewProvider panics
+// unless either [WithExpectedIssuer] or [WithAllowAnyIssuer] is supplied, and
+// likewise for the audience pair. Without those guardrails any correctly-signed
+// token from the JWKS authority verifies for any issuer or audience — the
+// classic confused-deputy hazard (RFC 7519 §4.1.3).
+//
+// The kit's [app.Builder] enforces the same pairing at startup via the
+// always-on production-safety validator; standalone callers must opt in
+// explicitly when federation across issuers/audiences is the intended design.
 func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opts ...ProviderOption) *Provider {
 	if httpClient == nil {
 		httpClient = defaultHTTPClient()
@@ -280,6 +322,12 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 	}
 	if p.clock == nil {
 		p.clock = time.Now
+	}
+	if p.expectedIssuer == "" && !p.allowAnyIssuer {
+		panic("jwtutil: NewProvider requires WithExpectedIssuer or the explicit WithAllowAnyIssuer opt-out")
+	}
+	if p.expectedAudience == "" && !p.allowAnyAudience {
+		panic("jwtutil: NewProvider requires WithExpectedAudience or the explicit WithAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
 	}
 	return p
 }
@@ -347,8 +395,28 @@ func defaultHTTPClient() *http.Client {
 	// headers (e.g., a SET-COOKIE flood) that bloats memory under
 	// attacker influence. The body cap is enforced separately at fetch
 	// time (1 MB via io.LimitReader).
-	transport, _ := http.DefaultTransport.(*http.Transport)
-	clone := transport.Clone()
+	//
+	// Processes can replace http.DefaultTransport with a custom RoundTripper
+	// (otelhttp wrappers, test doubles); falling back to a hand-rolled
+	// http.Transport with the standard-library defaults keeps construction
+	// panic-free in those processes.
+	var clone *http.Transport
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		clone = tr.Clone()
+	} else {
+		clone = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
 	clone.MaxResponseHeaderBytes = 64 * 1024
 	return &http.Client{
 		Timeout:   defaultHTTPTimeout,

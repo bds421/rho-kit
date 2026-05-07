@@ -23,8 +23,8 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 		if !isMethodCall(call, "WithJWT") {
 			return true
 		}
-		hasIssuer := chainHas(call, "WithExpectedIssuer", "WithJWTIssuer", "WithoutJWTIssuer")
-		hasAud := chainHas(call, "WithExpectedAudience", "WithJWTAudience", "WithoutJWTAudience")
+		hasIssuer := chainHas(call, "WithExpectedIssuer", "WithJWTIssuer", "WithoutJWTIssuer", "WithAllowAnyIssuer")
+		hasAud := chainHas(call, "WithExpectedAudience", "WithJWTAudience", "WithoutJWTAudience", "WithAllowAnyAudience")
 
 		pos := fset.Position(call.Pos())
 		if !hasIssuer {

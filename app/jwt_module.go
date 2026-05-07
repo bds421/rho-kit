@@ -74,6 +74,12 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	if m.cfg.audience != "" {
 		opts = append(opts, jwtutil.WithExpectedAudience(m.cfg.audience))
+	} else {
+		// Builder.Validate already requires WithJWTAudience or the explicit
+		// WithoutJWTAudience opt-out; mirror that into the provider so
+		// jwtutil.NewProvider's audience guardrail does not panic on
+		// validator-approved configs.
+		opts = append(opts, jwtutil.WithAllowAnyAudience())
 	}
 
 	m.provider = jwtutil.NewProvider(
