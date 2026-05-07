@@ -1,0 +1,120 @@
+{
+  "title": "rho-kit / gRPC RED",
+  "uid": "rhokit-grpc-red",
+  "tags": ["rho-kit", "grpc", "red"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(grpc_server_handled_total, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(grpc_server_handled_total{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "method",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\"}, grpc_method)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Request rate (req/s) by method",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (grpc_method) (rate(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m]))",
+          "legendFormat": "{{grpc_method}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Error rate (non-OK codes, req/s) by method",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (grpc_method) (rate(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\", grpc_code!=\"OK\"}[5m]))",
+          "legendFormat": "{{grpc_method}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Status code distribution (last 5m)",
+      "type": "barchart",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (grpc_code) (increase(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m]))",
+          "legendFormat": "{{grpc_code}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Latency p50 / p95 / p99 (s) — method aggregate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(grpc_server_handling_seconds_bucket{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(grpc_server_handling_seconds_bucket{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(grpc_server_handling_seconds_bucket{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Latency p99 (s) per method",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (grpc_method, le) (rate(grpc_server_handling_seconds_bucket{namespace=\"$namespace\", service=\"$service\", grpc_method=~\"$method\"}[5m])))",
+          "legendFormat": "{{grpc_method}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "title": "Error ratio (non-OK / total)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\", grpc_code!=\"OK\"}[5m])) / clamp_min(sum(rate(grpc_server_handled_total{namespace=\"$namespace\", service=\"$service\"}[5m])), 0.001)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 24 }
+    }
+  ]
+}

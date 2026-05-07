@@ -1,0 +1,112 @@
+# Saturation alerts: when a queue, pool, or buffer fills up faster
+# than it drains. These are leading indicators of latency / error
+# alerts — paging on saturation gives the on-call time to react
+# before users see failures.
+groups:
+  - name: rho-kit-saturation
+    rules:
+      - alert: RhoKitDBPoolWaiting
+        # If the connection pool is making queries wait for a free
+        # connection more than ~once per second on average, the pool
+        # is undersized for the current load. Symptom upstream: p99
+        # latency climbs because every query pays a wait penalty.
+        expr: |
+          sum by (namespace, service)
+            (rate({__name__=~".+_db_wait_count_total"}[5m]))
+            > 1
+        for: 10m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "DB pool waits > 1/s for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Connections are queueing for the pool more than once per second
+            over a 10-minute window. Either the pool size is too small,
+            queries are too slow, or both. Check db-pool dashboard for
+            in-use vs open ratio.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/db-saturation.md"
+
+      - alert: RhoKitDBPoolNearExhaustion
+        # When in_use is within 10% of open for a sustained window,
+        # the pool is effectively saturated. New queries will wait.
+        expr: |
+          (
+            sum by (namespace, service) ({__name__=~".+_db_open_connections"})
+            -
+            sum by (namespace, service) ({__name__=~".+_db_idle_connections"})
+          )
+          /
+          clamp_min(sum by (namespace, service) ({__name__=~".+_db_open_connections"}), 1)
+            > 0.9
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "DB pool >90% in-use for {{ $labels.namespace }}/{{ $labels.service }} (5m)"
+          description: |
+            More than 90% of open connections are in-use for the past 5
+            minutes. New queries are likely queueing or about to. Increase
+            MaxOpenConns, kill long-running queries, or shed load.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/db-saturation.md"
+
+      - alert: RhoKitOutboxBacklogGrowing
+        # The outbox queue grows when the relay can't drain entries
+        # as fast as the application produces them. A sustained growth
+        # rate over an hour means the broker, network, or relay loop
+        # is the bottleneck.
+        expr: |
+          deriv(outbox_pending_count[15m]) > 0
+          and
+          outbox_pending_count > 100
+        for: 30m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Outbox backlog growing for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            outbox_pending_count is increasing and already > 100 entries
+            for 30+ minutes. Relay isn't keeping up with the workload —
+            check broker latency, transactional write volume, or relay
+            loop errors.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-backlog.md"
+
+      - alert: RhoKitOutboxBacklogCritical
+        # Hard backlog threshold — if pending crosses 10k entries,
+        # the database table is going to grow unboundedly. Page.
+        expr: |
+          outbox_pending_count > 10000
+        for: 10m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Outbox backlog > 10k for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            outbox_pending_count exceeded 10,000 entries for 10+ minutes.
+            The relay is critically behind. Investigate immediately —
+            broker outage, a code bug in the relay loop, or a flood of
+            transactional writes.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-backlog.md"
+
+      - alert: RhoKitRedisPoolTimeouts
+        # The redis pool exposes a snapshot timeout counter as a gauge.
+        # An increase in the gauge value over 5 minutes means new
+        # timeouts happened in that window — the pool is undersized
+        # or the server is slow.
+        expr: |
+          increase(redis_pool_timeouts[5m]) > 5
+        for: 10m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Redis pool timeouts for {{ $labels.namespace }}/{{ $labels.service }}/{{ $labels.instance }}"
+          description: |
+            More than 5 connection-pool timeouts in a 5-minute window for
+            10+ minutes. Either PoolSize is too small, the Redis server is
+            slow, or commands are taking longer than the pool's wait
+            timeout.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/redis-pool.md"

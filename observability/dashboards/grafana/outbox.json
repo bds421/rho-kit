@@ -1,0 +1,130 @@
+{
+  "title": "rho-kit / Outbox relay",
+  "uid": "rhokit-outbox",
+  "tags": ["rho-kit", "outbox", "messaging"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(outbox_pending_count, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(outbox_pending_count{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Pending entries (queue depth)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "outbox_pending_count{namespace=\"$namespace\", service=\"$service\"}",
+          "legendFormat": "pending"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Publish rate (msg/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(outbox_published_total{namespace=\"$namespace\", service=\"$service\"}[5m])",
+          "legendFormat": "published/s"
+        },
+        {
+          "expr": "rate(outbox_errors_total{namespace=\"$namespace\", service=\"$service\"}[5m])",
+          "legendFormat": "errors/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Relay latency p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(outbox_relay_latency_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(outbox_relay_latency_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(outbox_relay_latency_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Error ratio (errors / (published + errors))",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(outbox_errors_total{namespace=\"$namespace\", service=\"$service\"}[5m]) / clamp_min((rate(outbox_published_total{namespace=\"$namespace\", service=\"$service\"}[5m]) + rate(outbox_errors_total{namespace=\"$namespace\", service=\"$service\"}[5m])), 0.0001)",
+          "legendFormat": "error ratio"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Pending (current)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "outbox_pending_count{namespace=\"$namespace\", service=\"$service\"}" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 }
+    },
+    {
+      "title": "Total published",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "outbox_published_total{namespace=\"$namespace\", service=\"$service\"}" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 }
+    },
+    {
+      "title": "Total errors",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "outbox_errors_total{namespace=\"$namespace\", service=\"$service\"}" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 }
+    },
+    {
+      "title": "Relay p99 (last 5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(outbox_relay_latency_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}[5m])))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 16 }
+    }
+  ]
+}

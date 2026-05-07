@@ -45,3 +45,115 @@ groups:
           /
           sum by (namespace, service, route)
             (rate(http_requests_total[5m]))
+
+  - name: rho-kit-grpc-latency
+    interval: 30s
+    rules:
+      - record: grpc_server_handling_seconds:p50:5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (namespace, service, grpc_method, le)
+              (rate(grpc_server_handling_seconds_bucket[5m]))
+          )
+      - record: grpc_server_handling_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, grpc_method, le)
+              (rate(grpc_server_handling_seconds_bucket[5m]))
+          )
+      - record: grpc_server_handling_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, grpc_method, le)
+              (rate(grpc_server_handling_seconds_bucket[5m]))
+          )
+
+  - name: rho-kit-grpc-rates
+    interval: 30s
+    rules:
+      - record: grpc_server_handled:rate:5m
+        expr: |
+          sum by (namespace, service, grpc_method, grpc_code)
+            (rate(grpc_server_handled_total[5m]))
+      - record: grpc_server_error_ratio:5m
+        expr: |
+          sum by (namespace, service, grpc_method)
+            (rate(grpc_server_handled_total{grpc_code!="OK"}[5m]))
+          /
+          sum by (namespace, service, grpc_method)
+            (rate(grpc_server_handled_total[5m]))
+
+  - name: rho-kit-redis-latency
+    interval: 30s
+    rules:
+      - record: redis_command_duration_seconds:p50:5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (namespace, service, instance, le)
+              (rate(redis_command_duration_seconds_bucket[5m]))
+          )
+      - record: redis_command_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, instance, le)
+              (rate(redis_command_duration_seconds_bucket[5m]))
+          )
+      - record: redis_command_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, instance, le)
+              (rate(redis_command_duration_seconds_bucket[5m]))
+          )
+
+  - name: rho-kit-storage-latency
+    interval: 30s
+    rules:
+      - record: storage_s3_operation_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_s3_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_s3_operation_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_s3_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_sftp_operation_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_sftp_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_sftp_operation_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_sftp_operation_duration_seconds_bucket[5m]))
+          )
+
+  - name: rho-kit-outbox-latency
+    interval: 30s
+    rules:
+      - record: outbox_relay_latency_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, le)
+              (rate(outbox_relay_latency_seconds_bucket[5m]))
+          )
+      - record: outbox_relay_latency_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, le)
+              (rate(outbox_relay_latency_seconds_bucket[5m]))
+          )
+      - record: outbox_error_ratio:5m
+        expr: |
+          rate(outbox_errors_total[5m])
+          /
+          clamp_min(
+            rate(outbox_published_total[5m])
+              + rate(outbox_errors_total[5m]),
+            0.0001
+          )

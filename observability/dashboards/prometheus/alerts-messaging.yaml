@@ -1,0 +1,72 @@
+# Messaging alerts — currently scoped to the outbox relay since the
+# AMQP, NATS, and Redis-stream messaging backends do not yet emit
+# Prometheus metrics directly (they use callback hooks via
+# infra/messaging.BufferedPublisherMetrics). When those backends gain
+# Prometheus collectors, add redelivery / DLQ / consumer-lag alerts
+# here.
+groups:
+  - name: rho-kit-messaging
+    rules:
+      - alert: RhoKitOutboxErrorRateHigh
+        # If publish errors exceed 5% of (published + errors) for a
+        # sustained window, the broker is unhealthy or there's a
+        # serialization bug. Distinct from backlog growth — errors can
+        # spike with a stable backlog if the relay is failing fast.
+        expr: |
+          rate(outbox_errors_total[5m])
+          /
+          clamp_min(
+            rate(outbox_published_total[5m])
+              + rate(outbox_errors_total[5m]),
+            0.0001
+          )
+            > 0.05
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Outbox publish errors > 5% for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            More than 5% of outbox publish attempts are failing over 15
+            minutes. Common causes: broker outage, broker auth/topology
+            change, or a payload that the broker rejects. Check the
+            outbox dashboard's error ratio panel and broker connectivity.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-errors.md"
+
+      - alert: RhoKitOutboxNoProgress
+        # The relay should publish *something* during business hours.
+        # If published_total is flat but pending is non-zero, the relay
+        # is stuck — page early, before backlog grows.
+        expr: |
+          rate(outbox_published_total[10m]) == 0
+          and
+          outbox_pending_count > 0
+        for: 10m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Outbox relay stuck for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            outbox_pending_count > 0 but no entries have been published in
+            the last 10 minutes. The relay loop is wedged. Check logs for
+            broker connection errors or a panic in the publish callback.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-errors.md"
+
+      - alert: RhoKitOutboxRelayLatencyHigh
+        # If p99 of a single publish exceeds 5s, individual broker
+        # round-trips are slow — likely network or broker side issues.
+        expr: |
+          outbox_relay_latency_seconds:p99:5m > 5
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Outbox relay p99 > 5s for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            p99 of outbox_relay_latency_seconds has been > 5s for 15
+            minutes. The broker is slow or the network has degraded.
+            Backlog growth is probably imminent.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-errors.md"
