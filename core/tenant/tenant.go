@@ -38,10 +38,18 @@ import (
 //     header values, and Redis MONITOR traces.
 //
 // All other bytes (alphanumerics, '-', '_', '.', UUIDs) are accepted.
-// Length is *not* bounded here — caller-supplied limits should sit at
-// the application boundary (e.g. middleware extracting the tenant from
-// a request).
+// Length is bounded to [MaxIDLen] bytes — long enough to fit any
+// reasonable opaque identifier (UUIDs, ULIDs, KSUIDs, hashed slugs)
+// while keeping log lines, header values, and cache keys bounded so a
+// malicious header cannot drive cache-key, log, or metric blow-up.
 type ID string
+
+// MaxIDLen is the maximum length, in bytes, of a tenant ID accepted by
+// [ValidateID]. The cap is intentionally generous (256 bytes) so it
+// doesn't reject UUIDs, hierarchical org/tenant slugs, or hashed
+// composite keys, while still bounding the size of cache prefixes,
+// log lines, and metric labels that incorporate the tenant ID.
+const MaxIDLen = 256
 
 // String returns the tenant ID's underlying string form. Implemented
 // so [ID] satisfies fmt.Stringer for log lines.
@@ -73,6 +81,9 @@ const forbiddenBytes = ":/\n\r\t\x00"
 func ValidateID(s string) error {
 	if s == "" {
 		return fmt.Errorf("%w: must not be empty", ErrInvalid)
+	}
+	if len(s) > MaxIDLen {
+		return fmt.Errorf("%w: length %d exceeds maximum %d bytes", ErrInvalid, len(s), MaxIDLen)
 	}
 	if i := strings.IndexAny(s, forbiddenBytes); i >= 0 {
 		return fmt.Errorf("%w: contains forbidden byte %q at offset %d", ErrInvalid, s[i], i)

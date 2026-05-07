@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -87,6 +88,25 @@ func TestValidateID_ReportsAllRejections(t *testing.T) {
 
 	// Sanity: a valid ID passes.
 	assert.NoError(t, ValidateID("acme"))
+}
+
+func TestValidateID_RejectsOverlongIDs(t *testing.T) {
+	// Bound length so a malicious header can't drive cache-key, log,
+	// or metric blow-up.
+	atMax := strings.Repeat("a", MaxIDLen)
+	require.NoError(t, ValidateID(atMax))
+
+	overMax := strings.Repeat("a", MaxIDLen+1)
+	err := ValidateID(overMax)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalid)
+}
+
+func TestNewID_RejectsOverlongIDs(t *testing.T) {
+	overMax := strings.Repeat("a", MaxIDLen+1)
+	_, err := NewID(overMax)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalid)
 }
 
 func TestNewIDUnchecked_BypassesValidation(t *testing.T) {

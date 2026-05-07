@@ -3,6 +3,7 @@ package tenant
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,12 +71,13 @@ func TestNew_NonRequiredPassesWithoutTenant(t *testing.T) {
 }
 
 func TestNew_CustomExtractor(t *testing.T) {
-	mw := New(WithExtractor(func(r *http.Request) (coretenant.ID, bool) {
+	mw := New(WithExtractor(func(r *http.Request) (coretenant.ID, error) {
 		// Pretend we read it from a JWT claim.
-		if r.URL.Query().Get("tenant") == "" {
-			return "", false
+		v := r.URL.Query().Get("tenant")
+		if v == "" {
+			return "", nil
 		}
-		return coretenant.ID(r.URL.Query().Get("tenant")), true
+		return coretenant.NewID(v)
 	}))
 	handler := mw(okHandler(t, coretenant.ID("widgets")))
 
@@ -83,6 +85,67 @@ func TestNew_CustomExtractor(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
+	mw := New()
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler should not run for invalid tenant ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cases := map[string]string{
+		"colon":    "a:b",
+		"slash":    "a/b",
+		"newline":  "a\nb",
+		"tab":      "a\tb",
+		"null":     "a\x00b",
+		"too-long": strings.Repeat("a", coretenant.MaxIDLen+1),
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.Header.Set("X-Tenant-Id", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+func TestNew_RejectsInvalidEvenOnSafeMethod(t *testing.T) {
+	mw := New()
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler should not run for invalid tenant ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/", nil)
+			req.Header.Set("X-Tenant-Id", "a:b")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusBadRequest, rec.Code,
+				"invalid tenant ID must be rejected even on safe methods — "+
+					"it would otherwise reach handler context unvalidated")
+		})
+	}
+}
+
+func TestNew_RejectsInvalidEvenWithRequiredFalse(t *testing.T) {
+	mw := New(WithRequired(false))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler should not run for invalid tenant ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Tenant-Id", "a:b")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"WithRequired(false) only relaxes missing tenants — invalid IDs must still 400")
 }
 
 func TestHeaderExtractor_PanicsOnEmpty(t *testing.T) {

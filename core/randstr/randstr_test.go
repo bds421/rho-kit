@@ -22,7 +22,7 @@ func TestRuneSequence_lengthMatchesRequest(t *testing.T) {
 func TestRuneSequence_runesOnlyFromCharset(t *testing.T) {
 	cases := []struct {
 		name    string
-		charset []rune
+		charset string
 	}{
 		{"AlphaNum", AlphaNum},
 		{"AlphaLowerNum", AlphaLowerNum},
@@ -63,10 +63,7 @@ func TestRuneSequence_invalidArgs(t *testing.T) {
 	if _, err := RuneSequence(-1, AlphaNum); err == nil {
 		t.Error("expected error for negative length")
 	}
-	if _, err := RuneSequence(8, nil); err == nil {
-		t.Error("expected error for nil charset")
-	}
-	if _, err := RuneSequence(8, []rune{}); err == nil {
+	if _, err := RuneSequence(8, ""); err == nil {
 		t.Error("expected error for empty charset")
 	}
 }
@@ -77,7 +74,7 @@ func TestMustString_panicsOnInvalidArgs(t *testing.T) {
 			t.Error("expected panic for empty charset")
 		}
 	}()
-	_ = MustString(8, []rune{})
+	_ = MustString(8, "")
 }
 
 func TestMustString_returnsString(t *testing.T) {
@@ -118,7 +115,7 @@ func TestRuneSequence_distributionSanity(t *testing.T) {
 func TestRuneSequence_unicodeCharset(t *testing.T) {
 	// Confirm the function handles multi-byte runes correctly (each output
 	// position is a single rune drawn from the set, regardless of byte width).
-	charset := []rune("αβγδε")
+	charset := "αβγδε"
 	got, err := RuneSequence(64, charset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -126,10 +123,33 @@ func TestRuneSequence_unicodeCharset(t *testing.T) {
 	if utf8.RuneCountInString(got) != 64 {
 		t.Errorf("rune count = %d, want 64", utf8.RuneCountInString(got))
 	}
-	allowed := string(charset)
 	for _, r := range got {
-		if !strings.ContainsRune(allowed, r) {
+		if !strings.ContainsRune(charset, r) {
 			t.Errorf("rune %q not in charset", r)
 		}
+	}
+}
+
+// TestExportedCharsets_AreImmutable verifies the predefined charsets are
+// compile-time string constants — they cannot be reassigned and they share
+// no backing storage with mutable data, so an importer cannot corrupt token
+// generation by mutating them.
+func TestExportedCharsets_AreImmutable(t *testing.T) {
+	// Snapshot the charset, run a generation, snapshot again. Any mutation
+	// would change the constant's value (which is a compile-time guarantee
+	// that this can't happen, but the test documents the contract).
+	before := AlphaNum
+	if _, err := RuneSequence(64, AlphaNum); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if AlphaNum != before {
+		t.Fatal("AlphaNum changed during generation")
+	}
+
+	// Defensive copy via []byte must not affect the constant.
+	b := []byte(AlphaNum)
+	b[0] = 'X'
+	if AlphaNum[0] != 'a' {
+		t.Fatal("mutating a []byte copy affected the AlphaNum constant")
 	}
 }

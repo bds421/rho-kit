@@ -14,30 +14,47 @@
 package tenant
 
 import (
+	"errors"
 	"net/http"
 
 	coretenant "github.com/bds421/rho-kit/core/tenant"
 	"github.com/bds421/rho-kit/httpx"
 )
 
-// Extractor pulls a tenant ID from a request. The bool reports
-// presence so an extractor that found "" can distinguish between
-// "header missing" and "header explicitly empty" (both treated as
-// absent at the middleware boundary).
-type Extractor func(*http.Request) (coretenant.ID, bool)
+// Extractor pulls a tenant ID from a request.
+//
+// Return semantics:
+//   - (zero ID, nil)        — no tenant present (header missing / empty);
+//     middleware applies the [WithRequired] rules.
+//   - (validated ID, nil)   — tenant present and well-formed.
+//   - (zero ID, non-nil err) — tenant present but invalid; middleware
+//     responds with 400 and never invokes the next handler.
+//
+// Custom extractors (JWT claim, mTLS cert, query string, etc.) MUST
+// validate via [coretenant.NewID] (or run [coretenant.ValidateID]
+// themselves) before returning a non-nil ID. Returning an unvalidated
+// raw value would let malformed tenant material reach downstream
+// cache/idempotency/log/metric keys.
+type Extractor func(*http.Request) (coretenant.ID, error)
 
 // HeaderExtractor returns an Extractor that reads `header` from the
-// request and treats the value as a tenant ID.
+// request and validates the value through [coretenant.NewID]. Invalid
+// values cause the middleware to respond with 400; missing/empty
+// values are reported as absent and handled per [WithRequired].
 func HeaderExtractor(header string) Extractor {
 	if header == "" {
 		panic("tenant: HeaderExtractor header must not be empty")
 	}
-	return func(r *http.Request) (coretenant.ID, bool) {
+	return func(r *http.Request) (coretenant.ID, error) {
 		v := r.Header.Get(header)
 		if v == "" {
-			return "", false
+			return "", nil
 		}
-		return coretenant.ID(v), true
+		id, err := coretenant.NewID(v)
+		if err != nil {
+			return "", err
+		}
+		return id, nil
 	}
 }
 
@@ -99,8 +116,20 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, ok := cfg.extractor(r)
-			if ok {
+			id, err := cfg.extractor(r)
+			if err != nil {
+				// Present-but-invalid tenant ID. Reject with 400 so
+				// downstream cache/idempotency/log/metric keys never
+				// see malformed tenant material. Surface ErrInvalid
+				// detail so operators get an actionable message.
+				if errors.Is(err, coretenant.ErrInvalid) {
+					httpx.WriteError(w, http.StatusBadRequest, "tenant: "+err.Error())
+				} else {
+					httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
+				}
+				return
+			}
+			if !id.IsZero() {
 				r = r.WithContext(coretenant.WithID(r.Context(), id))
 				next.ServeHTTP(w, r)
 				return
