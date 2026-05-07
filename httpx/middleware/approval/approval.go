@@ -67,8 +67,11 @@ func WithExpiry(d time.Duration) Option {
 // tenant on context via an upstream middleware should override.
 //
 // Returning ok=false produces 400 Bad Request — the kit cannot record
-// an approval without a tenant.
+// an approval without a tenant. Panics on a nil fn.
 func WithTenantSource(fn func(*http.Request) (string, bool)) Option {
+	if fn == nil {
+		panic("approval: WithTenantSource requires a non-nil function")
+	}
 	return func(c *config) { c.tenantSource = fn }
 }
 
@@ -80,7 +83,11 @@ func WithTenantSource(fn func(*http.Request) (string, bool)) Option {
 // strips forensics value at the moment it matters most.
 //
 // Most deployments wire this from JWT claims or a gRPC peer cert.
+// Panics on a nil fn.
 func WithActorExtractor(fn func(*http.Request) (string, bool)) Option {
+	if fn == nil {
+		panic("approval: WithActorExtractor requires a non-nil function")
+	}
 	return func(c *config) { c.actorExtractor = fn }
 }
 
@@ -88,27 +95,45 @@ func WithActorExtractor(fn func(*http.Request) (string, bool)) Option {
 // a request. Default: METHOD + " " + URL.Path, which is fine for
 // administrative routes but coarse — services with verb-named routes
 // (POST /v1/users/{id}/disable) should override to record "user.disable".
+// Panics on a nil fn.
 func WithActionExtractor(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("approval: WithActionExtractor requires a non-nil function")
+	}
 	return func(c *config) { c.actionExtractor = fn }
 }
 
 // WithResourceExtractor sets a function that returns the resource id
 // for a request. Default: URL.Path. Override when the resource is a
-// path parameter that needs lifting out (e.g. {id}).
+// path parameter that needs lifting out (e.g. {id}). Panics on a nil
+// fn.
 func WithResourceExtractor(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("approval: WithResourceExtractor requires a non-nil function")
+	}
 	return func(c *config) { c.resourceExtractor = fn }
 }
 
 // WithIDFunc overrides the approval id generator. Default: UUIDv7
-// string.
+// string. Panics on a nil fn.
 func WithIDFunc(fn func() string) Option {
+	if fn == nil {
+		panic("approval: WithIDFunc requires a non-nil function")
+	}
 	return func(c *config) { c.idFunc = fn }
 }
 
-// WithLogger sets the slog.Logger for store-error reporting. Default:
-// slog.Default().
+// WithLogger sets the slog.Logger for store-error reporting. A nil
+// logger is normalized back to [slog.Default] so test wiring stays
+// ergonomic; the middleware never holds a nil logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) { c.logger = l }
+	return func(c *config) {
+		if l == nil {
+			c.logger = slog.Default()
+			return
+		}
+		c.logger = l
+	}
 }
 
 func defaultConfig() config {

@@ -212,6 +212,36 @@ func TestWithExpiry_PanicsOnZero(t *testing.T) {
 	assert.Panics(t, func() { WithExpiry(0) })
 }
 
+func TestWithTenantSource_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithTenantSource(nil) })
+}
+
+func TestWithActorExtractor_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithActorExtractor(nil) })
+}
+
+func TestWithActionExtractor_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithActionExtractor(nil) })
+}
+
+func TestWithResourceExtractor_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithResourceExtractor(nil) })
+}
+
+func TestWithIDFunc_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithIDFunc(nil) })
+}
+
+func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
+	store := memory.New()
+	mw := Middleware(store, headerActor(), WithLogger(nil))
+	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newRequest(http.MethodPost, "/v1/x", "{}"))
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+}
+
 func TestEnsureBodyBuffered_Replayable(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/x", nil)
 	r2 := EnsureBodyBuffered(r, []byte(`{"replayed":true}`))

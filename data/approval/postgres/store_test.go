@@ -157,3 +157,30 @@ func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
 	_, err = store.Decide(context.Background(), "r1", "", "ok", true)
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
 }
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestDecide_ExpiresAtTheInstant(t *testing.T) {
+	now := time.Now().UTC()
+	clock := now
+	sub, err := fs.Sub(Migrations, "migrations")
+	require.NoError(t, err)
+	db := memdb.New(t, sub)
+	store := New(db, WithClock(func() time.Time { return clock }))
+
+	r := newReq("r-instant")
+	r.ExpiresAt = now.Add(time.Minute)
+	_, err = store.Create(context.Background(), r)
+	require.NoError(t, err)
+
+	clock = r.ExpiresAt
+
+	_, err = store.Decide(context.Background(), "r-instant", "approver-1", "right at expiry", true)
+	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
+
+	got, err := store.Get(context.Background(), "r-instant")
+	require.NoError(t, err)
+	assert.Equal(t, approval.StateExpired, got.State)
+}

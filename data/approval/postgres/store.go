@@ -44,8 +44,11 @@ type Option func(*Store)
 
 // WithClock overrides the wall-clock used for the auto-expire branch
 // inside Decide. Tests use this to make the late-approval branch
-// deterministic.
+// deterministic. Panics on a nil fn.
 func WithClock(fn func() time.Time) Option {
+	if fn == nil {
+		panic("approval/postgres: WithClock requires a non-nil function")
+	}
 	return func(s *Store) { s.clock = fn }
 }
 
@@ -172,7 +175,7 @@ func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approv
 		// we returned the error from inside, GORM would roll back
 		// the expired-row write and the next Decide would re-flip
 		// it, which would defeat the implicit-expiry contract.
-		if approval.State(r.State) == approval.StatePending && !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+		if approval.State(r.State) == approval.StatePending && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
 			r.State = string(approval.StateExpired)
 			r.DecidedAt = &now
 			if err := tx.Save(&r).Error; err != nil {

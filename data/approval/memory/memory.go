@@ -29,8 +29,11 @@ type Option func(*Store)
 
 // WithClock overrides the wall-clock used to detect expiry inside
 // Decide. Tests use this to make the "approve an expired request"
-// branch hermetic.
+// branch hermetic. Panics on a nil fn.
 func WithClock(fn func() time.Time) Option {
+	if fn == nil {
+		panic("approval/memory: WithClock requires a non-nil function")
+	}
 	return func(s *Store) { s.clock = fn }
 }
 
@@ -128,10 +131,13 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 	// Auto-expire on read-then-decide. The expiry check happens before
 	// the idempotency / terminal-state checks because an expired
 	// pending request should never become approved, even if the
-	// approver thinks they're idempotently re-approving.
-	if r.State == approval.StatePending && !r.ExpiresAt.IsZero() && s.clock().After(r.ExpiresAt) {
+	// approver thinks they're idempotently re-approving. The boundary
+	// is exclusive: a request whose ExpiresAt equals now is already
+	// expired (i.e. expire when now >= ExpiresAt).
+	now := s.clock()
+	if r.State == approval.StatePending && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
 		r.State = approval.StateExpired
-		r.DecidedAt = s.clock().UTC()
+		r.DecidedAt = now.UTC()
 		s.requests[id] = r
 		return approval.Request{}, fmt.Errorf("%w: request expired at %s", approval.ErrInvalidTransition, r.ExpiresAt.UTC().Format(time.RFC3339))
 	}

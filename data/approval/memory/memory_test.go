@@ -212,3 +212,27 @@ func TestGet_NotFound(t *testing.T) {
 	_, err := store.Get(context.Background(), "missing")
 	assert.ErrorIs(t, err, approval.ErrNotFound)
 }
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestDecide_ExpiresAtTheInstant(t *testing.T) {
+	now := time.Now().UTC()
+	clock := now
+	store := New(WithClock(func() time.Time { return clock }))
+
+	r := newReq("r-instant")
+	r.ExpiresAt = now.Add(time.Minute)
+	_, err := store.Create(context.Background(), r)
+	require.NoError(t, err)
+
+	clock = r.ExpiresAt
+
+	_, err = store.Decide(context.Background(), "r-instant", "approver-1", "right at expiry", true)
+	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
+
+	got, err := store.Get(context.Background(), "r-instant")
+	require.NoError(t, err)
+	assert.Equal(t, approval.StateExpired, got.State)
+}
