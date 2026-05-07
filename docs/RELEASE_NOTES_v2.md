@@ -24,14 +24,42 @@ v2 stack in one file.
 
 ## Breaking changes
 
-**None significant.** v2.0.0 is additive over v1.x — every new
-primitive is opt-in. The `app.Builder` methods that landed are new
-(`WithPASETO`, `WithNATS`, `WithPgx`, `WithLeaderElection`,
-`WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
-`WithActionLogger`, `WithApprovalStore`); none change existing
-method signatures.
+**One runtime behaviour change in `httpx/middleware/auth`** —
+read the next section. Everything else in v2.0.0 is additive over
+v1.x; new `app.Builder` methods (`WithPASETO`, `WithNATS`,
+`WithPgx`, `WithLeaderElection`, `WithSignedRequests`,
+`WithMultiTenant`, `WithTenantBudget`, `WithActionLogger`,
+`WithApprovalStore`) don't change existing signatures.
 
-The two soft incompatibilities consumers should know about:
+### Auth middleware now fails closed (security fix)
+
+`auth.RequirePermission`, `auth.PermissionByMethod`, and
+`auth.RequireScope` previously fell through to the next handler when
+the request carried no permissions/scopes claim — the rationale being
+that mTLS-authenticated internal services don't carry one. The
+implementation hooked that bypass to *absence of the claim* rather
+than to the verified-mTLS path, so a route mounted without any auth
+middleware in front silently granted full access, and a JWT issued
+without the permissions claim implicitly bypassed RBAC.
+
+**v2.0.0**: `RequireS2SAuth`'s mTLS branch now stamps a trusted-S2S
+marker onto the context; the three middlewares bypass ONLY when that
+marker is present. Any other condition (no claim, no marker, no auth
+middleware) returns 403.
+
+Migration for downstream services that relied on the implicit bypass:
+
+1. Wire `RequireS2SAuth` properly so verified-mTLS callers get the
+   marker (preferred — preserves the original intent).
+2. Issue JWTs with explicit permissions claims for the routes that
+   need them.
+3. Use `httpx/authz.RequirePermission` with a `Policy` if the bypass
+   condition is more nuanced than "verified internal cert".
+
+`RequireScopeStrict` is unchanged — it intentionally does NOT honor
+the marker.
+
+### Other soft incompatibilities
 
 1. **`BufferedPublisher` requires a state file in non-dev**
    environments. Set `WithBufferedStateFile(path)` or pass
