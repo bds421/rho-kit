@@ -18,6 +18,8 @@ func mustEd25519Pair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
+func futureExp() time.Time { return time.Now().Add(time.Hour) }
+
 func TestV4Public_RoundTrip(t *testing.T) {
 	pub, priv := mustEd25519Pair(t)
 
@@ -80,6 +82,7 @@ func TestV4Public_RejectsNotYetValid(t *testing.T) {
 		Issuer:    "svc-A",
 		Audience:  []string{"svc-B"},
 		NotBefore: now.Add(time.Minute),
+		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
 
@@ -97,8 +100,9 @@ func TestV4Public_RejectsIssuerMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	tok, err := v.Sign(Claims{
-		Issuer:   "wrong",
-		Audience: []string{"svc-B"},
+		Issuer:    "wrong",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
 
@@ -116,8 +120,9 @@ func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	tok, err := v.Sign(Claims{
-		Issuer:   "svc-A",
-		Audience: []string{"svc-Z"},
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-Z"},
+		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
 
@@ -134,7 +139,11 @@ func TestV4Public_RejectsTamperedToken(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	tok, err := v.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, priv)
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, priv)
 	require.NoError(t, err)
 
 	tampered := tok[:len(tok)-1] + "X"
@@ -154,8 +163,11 @@ func TestV4Public_RejectsKeyMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Sign with a private key that doesn't match the verifier.
-	tok, err := v.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, privB)
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, privB)
 	require.NoError(t, err)
 
 	_, err = v.Verify(tok, time.Now())
@@ -171,7 +183,11 @@ func TestV4Public_AllowAnyIssuer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	tok, err := v.Sign(Claims{Issuer: "any-issuer", Audience: []string{"svc-B"}}, priv)
+	tok, err := v.Sign(Claims{
+		Issuer:    "any-issuer",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, priv)
 	require.NoError(t, err)
 
 	c, err := v.Verify(tok, time.Now())
@@ -216,7 +232,11 @@ func TestV4Local_RejectsKeyMismatch(t *testing.T) {
 	vB, err := NewV4Local(keyB, issuer, audience)
 	require.NoError(t, err)
 
-	tok, err := vA.Seal(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}})
+	tok, err := vA.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	})
 	require.NoError(t, err)
 
 	_, err = vB.Verify(tok, time.Now())
@@ -227,7 +247,6 @@ func TestNewV4Public_RequiresIssuerOrAllowAny(t *testing.T) {
 	pub, _ := mustEd25519Pair(t)
 	_, err := NewV4Public(
 		[]ed25519.PublicKey{pub},
-		// no issuer / allow-any
 		WithExpectedAudience("svc-B"),
 	)
 	assert.Error(t, err)
@@ -238,7 +257,6 @@ func TestNewV4Public_RequiresAudienceOrAllowAny(t *testing.T) {
 	_, err := NewV4Public(
 		[]ed25519.PublicKey{pub},
 		WithExpectedIssuer("svc-A"),
-		// no audience / allow-any
 	)
 	assert.Error(t, err)
 }
@@ -269,11 +287,215 @@ func TestClockSkew_WithinTolerance(t *testing.T) {
 	}, priv)
 	require.NoError(t, err)
 
-	// 10s past expiry — within the 30s skew budget.
 	_, err = v.Verify(tok, now)
 	require.NoError(t, err)
 
-	// Beyond the skew budget — rejected.
 	_, err = v.Verify(tok, now.Add(time.Minute))
 	assert.ErrorIs(t, err, ErrTokenExpired)
+}
+
+func TestSign_RejectsMissingExpByDefault(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, priv)
+	assert.ErrorIs(t, err, ErrNoExpiration)
+}
+
+func TestSeal_RejectsMissingExpByDefault(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Seal(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}})
+	assert.ErrorIs(t, err, ErrNoExpiration)
+}
+
+func TestSign_DefaultLifetimeApplied(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+		WithDefaultLifetime(15*time.Minute),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, priv)
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.False(t, claims.ExpiresAt.IsZero())
+	assert.WithinDuration(t, time.Now().Add(15*time.Minute), claims.ExpiresAt, 5*time.Second)
+}
+
+func TestVerify_RejectsTokenWithoutExp(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	signer, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+		WithoutExpiration(),
+	)
+	require.NoError(t, err)
+
+	tok, err := signer.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, priv)
+	require.NoError(t, err)
+
+	verifier, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = verifier.Verify(tok, time.Now())
+	assert.ErrorIs(t, err, ErrTokenNoExp)
+}
+
+func TestVerify_AcceptsTokenWithoutExpWhenOptedOut(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+		WithoutExpiration(),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{Issuer: "svc-A", Audience: []string{"svc-B"}}, priv)
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.True(t, claims.ExpiresAt.IsZero())
+}
+
+func TestVerify_AcceptsFutureExp(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, priv)
+	require.NoError(t, err)
+
+	_, err = v.Verify(tok, time.Now())
+	assert.NoError(t, err)
+}
+
+func TestSign_RejectsMultipleAudiences(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B", "svc-C"},
+		ExpiresAt: futureExp(),
+	}, priv)
+	assert.ErrorIs(t, err, ErrMultiAudience)
+}
+
+func TestVerify_AudIsSingleSourceOfTruth(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, priv)
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"svc-B"}, claims.Audience)
+}
+
+func TestSign_RejectsReservedClaimInCustom(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	for _, name := range []string{"iss", "aud", "exp", "nbf", "iat", "sub", "jti", "kid", "aud_alt"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := v.Sign(Claims{
+				Issuer:    "svc-A",
+				Audience:  []string{"svc-B"},
+				ExpiresAt: futureExp(),
+				Custom:    map[string]any{name: "x"},
+			}, priv)
+			assert.ErrorIs(t, err, ErrReservedClaim)
+		})
+	}
+}
+
+func TestSeal_RejectsReservedClaimInCustom(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"exp": "tomorrow"},
+	})
+	assert.ErrorIs(t, err, ErrReservedClaim)
+}
+
+func TestSign_AllowsCustomClaimsThatAreNotReserved(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"role": "admin", "tenant": "t1"},
+	}, priv)
+	require.NoError(t, err)
+
+	_, err = v.Verify(tok, time.Now())
+	assert.NoError(t, err)
 }

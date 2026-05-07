@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -34,9 +35,10 @@ type Provider struct {
 	verifyOpts   []Option
 	onRefreshErr func(error)
 
-	current atomic.Pointer[V4Public]
-	stop    chan struct{}
-	done    chan struct{}
+	current  atomic.Pointer[V4Public]
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // ProviderOption configures a [Provider].
@@ -108,13 +110,10 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 // that need stricter shutdown semantics should drop the Provider
 // reference.
 func (p *Provider) Stop() {
-	select {
-	case <-p.stop:
-		// Already stopped.
-	default:
+	p.stopOnce.Do(func() {
 		close(p.stop)
-		<-p.done
-	}
+	})
+	<-p.done
 }
 
 func (p *Provider) loop() {

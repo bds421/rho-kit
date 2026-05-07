@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,4 +203,28 @@ func TestProvider_StopIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	p.Stop()
 	p.Stop() // must not panic
+}
+
+func TestProvider_StopConcurrentSafe(t *testing.T) {
+	pub, _ := mustGenKey(t)
+	p, err := NewProvider(context.Background(),
+		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
+		time.Hour,
+		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+	)
+	require.NoError(t, err)
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			p.Stop()
+		}()
+	}
+	close(start)
+	wg.Wait()
 }

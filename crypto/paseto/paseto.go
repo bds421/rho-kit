@@ -34,12 +34,35 @@ var (
 	ErrTokenInvalid    = errors.New("paseto: invalid token")
 	ErrTokenExpired    = errors.New("paseto: token expired")
 	ErrTokenNotYet     = errors.New("paseto: token not yet valid")
+	ErrTokenNoExp      = errors.New("paseto: token missing required exp claim")
 	ErrIssuerMismatch  = errors.New("paseto: issuer mismatch")
 	ErrAudienceUnknown = errors.New("paseto: audience mismatch")
+	ErrReservedClaim   = errors.New("paseto: reserved claim name in Custom")
+	ErrNoExpiration    = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
+	ErrMultiAudience   = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
 )
+
+// reservedClaims are the names of standard registered claims that
+// must not appear in Claims.Custom — they are owned by the typed
+// fields on Claims and the verifier.
+var reservedClaims = map[string]struct{}{
+	"iss":     {},
+	"aud":     {},
+	"exp":     {},
+	"nbf":     {},
+	"iat":     {},
+	"sub":     {},
+	"jti":     {},
+	"kid":     {},
+	"aud_alt": {}, // legacy kit-specific name; reject to prevent revival of removed semantics.
+}
 
 // Claims is the kit-canonical claim set. Mirrors jwtutil.Claims so
 // downstream code can swap providers without rewriting consumers.
+//
+// PASETO v4 supports a single audience string. Audience must contain
+// at most one entry; if you need multi-audience semantics, issue
+// separate tokens or front them with an explicit verifier policy.
 type Claims struct {
 	Subject   string
 	Audience  []string
@@ -56,6 +79,8 @@ type config struct {
 	allowAnyIssuer     bool
 	allowAnyAudience   bool
 	clockSkewTolerance time.Duration
+	requireExp         bool
+	defaultLifetime    time.Duration
 }
 
 // Option configures the V4 wrappers.
@@ -91,8 +116,26 @@ func WithClockSkewTolerance(d time.Duration) Option {
 	return func(c *config) { c.clockSkewTolerance = d }
 }
 
+// WithoutExpiration disables the default requirement that every token
+// declare an exp claim. SECURITY: tokens minted without exp are valid
+// forever as long as issuer and audience match. Only use for
+// non-production token classes (offline test fixtures, deterministic
+// CLI tooling) where revocation is provided out-of-band.
+func WithoutExpiration() Option {
+	return func(c *config) { c.requireExp = false }
+}
+
+// WithDefaultLifetime sets the lifetime applied at sign/seal time when
+// Claims.ExpiresAt is zero. Must be positive. The verifier still
+// enforces exp presence by default — this option exists so issuers
+// can pin a single lifetime in one place rather than threading it
+// through every Sign call.
+func WithDefaultLifetime(d time.Duration) Option {
+	return func(c *config) { c.defaultLifetime = d }
+}
+
 func buildConfig(opts []Option) (config, error) {
-	cfg := config{}
+	cfg := config{requireExp: true}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -101,6 +144,9 @@ func buildConfig(opts []Option) (config, error) {
 	}
 	if !cfg.allowAnyAudience && cfg.expectedAudience == "" {
 		return cfg, errors.New("paseto: either WithExpectedAudience or WithAllowAnyAudience is required")
+	}
+	if cfg.defaultLifetime < 0 {
+		return cfg, errors.New("paseto: WithDefaultLifetime must be non-negative")
 	}
 	return cfg, nil
 }
@@ -135,7 +181,7 @@ func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error)
 
 	return &V4Public{
 		cfg:     cfg,
-		parser:  paseto.Parser{}, // empty rule set; we apply exp/nbf in validate()
+		parser:  paseto.Parser{},
 		pubKeys: wrapped,
 	}, nil
 }
@@ -170,7 +216,10 @@ func (v *V4Public) Sign(claims Claims, privateKey ed25519.PrivateKey) (string, e
 	if err != nil {
 		return "", fmt.Errorf("paseto: invalid Ed25519 private key: %w", err)
 	}
-	tok := buildToken(claims, v.cfg)
+	tok, err := buildToken(claims, v.cfg)
+	if err != nil {
+		return "", err
+	}
 	return tok.V4Sign(priv, nil), nil
 }
 
@@ -209,11 +258,35 @@ func (v *V4Local) Verify(token string, now time.Time) (*Claims, error) {
 
 // Seal issues a v4.local token under the configured key.
 func (v *V4Local) Seal(claims Claims) (string, error) {
-	tok := buildToken(claims, v.cfg)
+	tok, err := buildToken(claims, v.cfg)
+	if err != nil {
+		return "", err
+	}
 	return tok.V4Encrypt(v.key, nil), nil
 }
 
-func buildToken(c Claims, cfg config) paseto.Token {
+func buildToken(c Claims, cfg config) (paseto.Token, error) {
+	for k := range c.Custom {
+		if _, reserved := reservedClaims[k]; reserved {
+			return paseto.Token{}, fmt.Errorf("%w: %q", ErrReservedClaim, k)
+		}
+	}
+	if len(c.Audience) > 1 {
+		return paseto.Token{}, ErrMultiAudience
+	}
+
+	exp := c.ExpiresAt
+	if exp.IsZero() && cfg.defaultLifetime > 0 {
+		base := c.IssuedAt
+		if base.IsZero() {
+			base = time.Now()
+		}
+		exp = base.Add(cfg.defaultLifetime)
+	}
+	if exp.IsZero() && cfg.requireExp {
+		return paseto.Token{}, ErrNoExpiration
+	}
+
 	t := paseto.NewToken()
 	if c.Subject != "" {
 		t.SetSubject(c.Subject)
@@ -221,23 +294,16 @@ func buildToken(c Claims, cfg config) paseto.Token {
 	if iss := pick(c.Issuer, cfg.expectedIssuer); iss != "" {
 		t.SetIssuer(iss)
 	}
-	if len(c.Audience) > 0 {
-		// PASETO supports a single string audience; if the caller
-		// supplied multiple audiences, encode the first as the
-		// canonical aud claim and the rest as a custom "aud_alt"
-		// array so downstream readers can still see the full set.
+	if len(c.Audience) == 1 {
 		t.SetAudience(c.Audience[0])
-		if len(c.Audience) > 1 {
-			_ = t.Set("aud_alt", c.Audience[1:])
-		}
 	} else if cfg.expectedAudience != "" {
 		t.SetAudience(cfg.expectedAudience)
 	}
 	if !c.IssuedAt.IsZero() {
 		t.SetIssuedAt(c.IssuedAt)
 	}
-	if !c.ExpiresAt.IsZero() {
-		t.SetExpiration(c.ExpiresAt)
+	if !exp.IsZero() {
+		t.SetExpiration(exp)
 	}
 	if !c.NotBefore.IsZero() {
 		t.SetNotBefore(c.NotBefore)
@@ -245,7 +311,7 @@ func buildToken(c Claims, cfg config) paseto.Token {
 	for k, v := range c.Custom {
 		_ = t.Set(k, v)
 	}
-	return t
+	return t, nil
 }
 
 func (v *V4Public) validate(t *paseto.Token, now time.Time) (*Claims, error) {
@@ -268,15 +334,13 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 	if aud, err := t.GetAudience(); err == nil && aud != "" {
 		c.Audience = []string{aud}
 	}
-	var altAud []string
-	if err := t.Get("aud_alt", &altAud); err == nil {
-		c.Audience = append(c.Audience, altAud...)
-	}
 	if iat, err := t.GetIssuedAt(); err == nil {
 		c.IssuedAt = iat
 	}
+	expPresent := false
 	if exp, err := t.GetExpiration(); err == nil {
 		c.ExpiresAt = exp
+		expPresent = true
 	}
 	if nbf, err := t.GetNotBefore(); err == nil {
 		c.NotBefore = nbf
@@ -298,7 +362,10 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 		}
 	}
 
-	if !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt.Add(cfg.clockSkewTolerance)) {
+	if cfg.requireExp && !expPresent {
+		return nil, ErrTokenNoExp
+	}
+	if expPresent && now.After(c.ExpiresAt.Add(cfg.clockSkewTolerance)) {
 		return nil, ErrTokenExpired
 	}
 	if !c.NotBefore.IsZero() && now.Before(c.NotBefore.Add(-cfg.clockSkewTolerance)) {
