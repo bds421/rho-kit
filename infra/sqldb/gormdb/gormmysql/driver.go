@@ -44,6 +44,9 @@ func (MySQLDriver) Open(
 	logger *slog.Logger,
 	clientTLS *tls.Config,
 ) (*gorm.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	dsn := buildMySQLDSN(cfg)
 
 	tlsOpt := strings.ToLower(cfg.Option("tls", ""))
@@ -139,6 +142,9 @@ func applyPool(db *gorm.DB, pool sqldb.PoolConfig) error {
 
 // ping verifies connectivity with a 5-second timeout.
 func ping(db *gorm.DB, logger *slog.Logger, cfg sqldb.Config) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("get sql.DB for ping: %w", err)

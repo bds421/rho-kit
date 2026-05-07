@@ -1,6 +1,7 @@
 package storagehttp
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -46,6 +47,9 @@ type ServeOptions struct {
 // The returned error should be logged but cannot be translated into an
 // HTTP error response at that point.
 func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, key string, opts ServeOptions) error {
+	if backend == nil {
+		return fmt.Errorf("storagehttp: backend is required")
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}

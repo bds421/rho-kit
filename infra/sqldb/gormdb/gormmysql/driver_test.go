@@ -210,6 +210,26 @@ func TestBuildMySQLDSN_TLSBuiltinPassThrough(t *testing.T) {
 	}
 }
 
+// TestMySQLDriver_Open_NilLoggerDoesNotPanic verifies that direct callers
+// who pass a nil *slog.Logger get a graceful failure path (the underlying
+// connection still fails because port 1 is unreachable) rather than a
+// panic on logger.Info. The fix normalizes nil → slog.Default() at entry.
+func TestMySQLDriver_Open_NilLoggerDoesNotPanic(t *testing.T) {
+	cfg := sqldb.Config{
+		Host: "127.0.0.1", Port: 1,
+		User: "u", Password: "p", Name: "db",
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Open panicked with nil logger: %v", r)
+		}
+	}()
+	_, err := MySQLDriver{}.Open(cfg, sqldb.DefaultPool(), nil, nil)
+	if err == nil {
+		t.Fatal("expected open to fail against unreachable host")
+	}
+}
+
 func TestBuildMySQLDSN_SpecialCharsInCredentials(t *testing.T) {
 	cfg := sqldb.Config{
 		Host:     "127.0.0.1",

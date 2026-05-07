@@ -39,9 +39,34 @@ func (PostgresDriver) Open(
 	logger *slog.Logger,
 	clientTLS *tls.Config,
 ) (*gorm.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	tlsEnabled := clientTLS != nil
 	if tlsEnabled {
 		logger.Info("database TLS enabled")
+	}
+
+	// Direct driver entry requires an explicit sslmode. The validator path
+	// (sqldb.Fields.Validate) enforces strict modes for app-builder use; this
+	// catches the standalone-driver caller that would otherwise silently
+	// negotiate a "prefer" downgrade against a server that declines TLS.
+	rawSSLMode := strings.ToLower(cfg.Option("sslmode", ""))
+	if rawSSLMode == "" {
+		return nil, fmt.Errorf("postgres: sslmode is required (set Config.Options[\"sslmode\"] to disable, require, verify-ca, or verify-full)")
+	}
+
+	// Reject InsecureSkipVerify whenever the final sslmode performs cert
+	// verification — otherwise verify-full / verify-ca silently degrade to a
+	// trust-anything connection. Mirrors the escalation in buildPostgresDSN:
+	// disable/prefer with TLS enabled escalate to verify-full.
+	effectiveSSLMode := rawSSLMode
+	if tlsEnabled && (effectiveSSLMode == "disable" || effectiveSSLMode == "prefer") {
+		effectiveSSLMode = "verify-full"
+	}
+	if tlsEnabled && clientTLS.InsecureSkipVerify &&
+		(effectiveSSLMode == "verify-full" || effectiveSSLMode == "verify-ca") {
+		return nil, fmt.Errorf("postgres: clientTLS.InsecureSkipVerify=true is incompatible with sslmode=%q (would bypass server certificate verification)", effectiveSSLMode)
 	}
 
 	dsn := buildPostgresDSN(cfg, tlsEnabled)
@@ -53,6 +78,14 @@ func (PostgresDriver) Open(
 
 	if tlsEnabled {
 		mergeTLS(pgCfg, clientTLS, cfg.Host)
+		// Defense in depth: even though the validation above rejects
+		// InsecureSkipVerify under verify-full / verify-ca, ensure no other
+		// upstream change can let it through silently when strict TLS is in
+		// effect.
+		if (effectiveSSLMode == "verify-full" || effectiveSSLMode == "verify-ca") &&
+			pgCfg.TLSConfig != nil && pgCfg.TLSConfig.InsecureSkipVerify {
+			pgCfg.TLSConfig.InsecureSkipVerify = false
+		}
 	}
 
 	options := buildTimezoneOptions(dsn, pgCfg)
@@ -198,6 +231,9 @@ func ping(sqlDB interface {
 	PingContext(context.Context) error
 	Close() error
 }, logger *slog.Logger, cfg sqldb.Config) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

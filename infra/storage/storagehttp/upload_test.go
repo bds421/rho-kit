@@ -21,6 +21,20 @@ func TestParseAndStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
+	t.Run("rejects nil backend", func(t *testing.T) {
+		t.Parallel()
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("x"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, nil, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backend is required")
+	})
+
 	t.Run("rejects nil KeyFunc", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)

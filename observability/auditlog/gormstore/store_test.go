@@ -3,6 +3,7 @@ package gormstore
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io/fs"
 	"testing"
 	"time"
@@ -101,6 +102,40 @@ func TestDeleteBefore(t *testing.T) {
 	remaining, _, err := s.Query(ctx, auditlog.Filter{}, "", 10)
 	require.NoError(t, err)
 	assert.Len(t, remaining, 1)
+	assert.Equal(t, "new-1", remaining[0].ID)
+}
+
+// TestDeleteBefore_BatchesAcrossDialects pins the MEDIUM finding: the prior
+// `Limit(N).Delete(...)` form is not portable (PostgreSQL rejects DELETE
+// LIMIT, GORM may silently drop the limit). The fix selects primary keys
+// per batch, then deletes by id IN (...). With more than retentionBatchSize
+// expired rows, the loop must complete and remove every old row.
+func TestDeleteBefore_BatchesAcrossDialects(t *testing.T) {
+	s := setupStore(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	const oldRows = retentionBatchSize + 5
+	for i := 0; i < oldRows; i++ {
+		require.NoError(t, s.Append(ctx, auditlog.Event{
+			ID:        fmt.Sprintf("old-%05d", i),
+			Timestamp: now.Add(-48 * time.Hour),
+			Actor:     "a", Action: "x", Resource: "r", Status: "s",
+		}))
+	}
+	require.NoError(t, s.Append(ctx, auditlog.Event{
+		ID:        "new-1",
+		Timestamp: now,
+		Actor:     "a", Action: "x", Resource: "r", Status: "s",
+	}))
+
+	deleted, err := s.DeleteBefore(ctx, now.Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(oldRows), deleted)
+
+	remaining, _, err := s.Query(ctx, auditlog.Filter{}, "", oldRows+10)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
 	assert.Equal(t, "new-1", remaining[0].ID)
 }
 

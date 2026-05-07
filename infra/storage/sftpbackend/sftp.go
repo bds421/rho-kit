@@ -104,8 +104,13 @@ func WithLazyConnect() Option {
 }
 
 // WithLogger sets a structured logger. Defaults to slog.Default().
+// Passing nil falls back to slog.Default() rather than creating a latent
+// nil-deref panic on connect or health-failure paths.
 func WithLogger(logger *slog.Logger) Option {
 	return func(b *SFTPBackend) {
+		if logger == nil {
+			logger = slog.Default()
+		}
 		b.logger = logger
 	}
 }

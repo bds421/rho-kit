@@ -264,21 +264,40 @@ const retentionBatchSize = 1000
 
 // DeleteBefore removes all events with a timestamp before the given time.
 // Deletes in batches to avoid long-running transactions.
+//
+// Uses SELECT-then-DELETE-by-id rather than `DELETE ... LIMIT`: PostgreSQL
+// does not support DELETE with LIMIT, and GORM's Limit clause silently
+// drops on dialects that reject it — letting a single DeleteBefore wipe
+// the whole eligible range in one transaction. The two-step form is
+// dialect-portable and guarantees the configured batch size.
 func (s *GormStore) DeleteBefore(ctx context.Context, before time.Time) (int64, error) {
 	var total int64
 	for {
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		result := s.db.WithContext(ctx).
+
+		var ids []string
+		if err := s.db.WithContext(ctx).
+			Model(&auditEvent{}).
 			Where("timestamp < ?", before).
+			Order("timestamp ASC").
 			Limit(retentionBatchSize).
+			Pluck("id", &ids).Error; err != nil {
+			return total, fmt.Errorf("gormstore: delete before (select): %w", err)
+		}
+		if len(ids) == 0 {
+			break
+		}
+
+		result := s.db.WithContext(ctx).
+			Where("id IN ?", ids).
 			Delete(&auditEvent{})
 		if result.Error != nil {
 			return total, fmt.Errorf("gormstore: delete before: %w", result.Error)
 		}
 		total += result.RowsAffected
-		if result.RowsAffected < retentionBatchSize {
+		if len(ids) < retentionBatchSize {
 			break
 		}
 	}

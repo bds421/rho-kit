@@ -43,6 +43,9 @@ func RegisterReplica(
 	logger *slog.Logger,
 	clientTLS *tls.Config,
 ) (*gorm.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if primary == nil {
 		return nil, fmt.Errorf("register replica: primary database is nil")
 	}

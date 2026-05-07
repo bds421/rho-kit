@@ -19,6 +19,16 @@ func TestServeFile(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
+	t.Run("rejects nil backend", func(t *testing.T) {
+		t.Parallel()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/files/foo.txt", nil)
+
+		err := ServeFile(w, r, nil, "foo.txt", ServeOptions{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backend is required")
+	})
+
 	t.Run("serves file with correct headers", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)

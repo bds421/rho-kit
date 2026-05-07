@@ -80,3 +80,24 @@ func TestCloseDB_Nil(t *testing.T) {
 	err := gormdb.CloseDB(nil)
 	require.NoError(t, err)
 }
+
+// TestRegisterReplica_NilLoggerDoesNotPanic verifies that callers passing
+// a nil *slog.Logger get a normal error (open failure surfaces from the
+// driver) instead of a panic on logger.Info.
+func TestRegisterReplica_NilLoggerDoesNotPanic(t *testing.T) {
+	cfg := gormdb.ReplicaConfig{
+		Driver: &fakeDriver{
+			name:    "mysql",
+			openErr: fmt.Errorf("connection refused"),
+		},
+		Pool: sqldb.DefaultPool(),
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("RegisterReplica panicked with nil logger: %v", r)
+		}
+	}()
+	_, err := gormdb.RegisterReplica(&gorm.DB{}, cfg, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "open read replica")
+}

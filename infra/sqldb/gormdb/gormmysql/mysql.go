@@ -150,6 +150,9 @@ func WithTLS(cfg *tls.Config) Option {
 //
 //nolint:staticcheck // Uses deprecated MySQLConfig for backward compat.
 func New(cfg sqldb.MySQLConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, opts ...Option) (*gorm.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	var o dbOpts
 	for _, opt := range opts {
 		opt(&o)

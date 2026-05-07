@@ -82,6 +82,14 @@ func TestReadiness_DegradedReturns200(t *testing.T) {
 	assert.Equal(t, StatusDegraded, body.Status)
 }
 
+// TestReadiness_PanicsOnNilChecker pins the MEDIUM finding: a miswired
+// readiness route used to nil-deref on every probe. The fix fails fast at
+// handler construction so the route never registers in the first place.
+func TestReadiness_PanicsOnNilChecker(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { Readiness(nil) })
+}
+
 func TestReadiness_UnhealthyReturns503(t *testing.T) {
 	t.Parallel()
 

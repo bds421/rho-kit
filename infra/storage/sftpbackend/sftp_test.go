@@ -426,3 +426,23 @@ func TestSFTPBackend_List(t *testing.T) {
 
 // Verify _ = io.ReadCloser is satisfied by sftp.File at compile time.
 var _ io.ReadCloser = (*sftp.File)(nil)
+
+// TestSFTPBackend_WithLogger_NilFallsBackToDefault pins the MEDIUM finding:
+// WithLogger(nil) used to assign a nil pointer that only crashed on connect /
+// health-failure logging paths. The fix normalizes nil → slog.Default().
+func TestSFTPBackend_WithLogger_NilFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	mock := newMockSFTPClient("/nonexistent")
+	mock.statFn = func(p string) (os.FileInfo, error) {
+		return nil, errors.New("connection lost")
+	}
+	b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/nonexistent"}, WithLogger(nil))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Healthy panicked with nil logger option: %v", r)
+		}
+	}()
+	// The health-failure log path used to nil-deref; verify it now logs cleanly.
+	assert.False(t, b.Healthy())
+}

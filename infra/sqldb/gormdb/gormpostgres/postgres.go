@@ -41,6 +41,9 @@ func WithTLS(cfg *tls.Config) Option {
 //
 //nolint:staticcheck // Uses deprecated PostgresConfig for backward compat.
 func New(cfg sqldb.PostgresConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, opts ...Option) (*gorm.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	var o pgOpts
 	for _, opt := range opts {
 		opt(&o)

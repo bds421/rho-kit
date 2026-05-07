@@ -45,6 +45,9 @@ func Liveness(version string) http.Handler {
 // The body is a [Response] so operators get the full per-dependency
 // breakdown.
 func Readiness(checker *Checker) http.Handler {
+	if checker == nil {
+		panic("health: Readiness requires a non-nil *Checker")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := checker.Evaluate(r.Context())
 

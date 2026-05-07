@@ -88,6 +88,9 @@ func (o *UploadOptions) applyDefaults() {
 // Returns UploadResult on success, or an error that may wrap
 // [storage.ErrValidation] (use errors.Is to distinguish 422 vs 500 responses).
 func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {
+	if backend == nil {
+		return UploadResult{}, fmt.Errorf("storagehttp: backend is required")
+	}
 	if opts.KeyFunc == nil {
 		return UploadResult{}, fmt.Errorf("storagehttp: KeyFunc is required (use UUIDKeyFunc for unique keys)")
 	}
