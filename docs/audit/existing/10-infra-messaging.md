@@ -27,7 +27,7 @@ xDeath / actionDiscard items remain on the longer-term list (deferred — they t
 - [x] Phase 2: BufferedPublisher state-file documented permissions; LastSaveError surfaces persistence errors. ✅ `a0b70f0`
 - [x] Phase 3: `Connection.WaitForConnection`. ✅ `a0b70f0`
 - [x] Phase 3: membroker `Unsubscribe`. ✅ `a0b70f0`
-- [x] Default-Retry: kept current ack-and-discard semantics; `Consumer.ConsumeOnce` already logs a loud Warn at consumer start when `Retry == nil`. Flipping the default would silently break fire-and-forget callers; the warning is the right behaviour.
+- [x] Default-Retry: shipped as `messaging.NormalizeBindingSpecs` (commit `3474bf1`). When `Retry == nil && !WithoutRetry`, the kit applies `DefaultRetryPolicy` (3 retries, 10s) and emits a warning. Fire-and-forget callers opt out with `WithoutRetry: true`.
 - [x] xDeath retry-queue naming validation: structurally moot — `RetryQueue = b.Queue + ".retry"` is computed from the main queue with no override path, so the names cannot collide.
 
 ### Related new packages
