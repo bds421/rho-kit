@@ -63,10 +63,11 @@ func (b *Builder) WithPgx(cfg pgx.Config) *Builder
 
 ## Definition of done
 
-- [ ] Pool wrapper + lifecycle integration.
-- [ ] LISTEN/NOTIFY helper.
-- [ ] COPY helper.
-- [ ] TLS-required default in non-dev.
-- [ ] Tests against `dbtest.StartPostgres`.
-- [ ] Mutual-exclusion check vs `WithPostgres` in Builder.
-- [ ] Recipe in `docs/ai/sqldb.md`.
+- [x] Pool wrapper + Close. ✅ this PR (`infra/sqldb/pgx.Pool`)
+- [x] LISTEN/NOTIFY helper. ✅ `Listen(ctx, channels...)` + `Notify(ctx, channel, payload)`
+- [x] COPY helper. ✅ `Copy(ctx, table, columns, rows)`
+- [x] TLS-required default in non-dev (`require`/`verify-ca`/`verify-full` only; `prefer`/`allow`/`disable` rejected; URL + key=value DSN forms supported).
+- [x] Unit tests for sslmode parsing + production-env enforcement.
+- [x] Integration tests behind `//go:build integration` covering Ping, COPY, and LISTEN/NOTIFY round trip via testcontainers postgres.
+- [ ] Mutual-exclusion check vs `WithPostgres` in Builder (deferred — primitive ships first; Builder integration is a separate audit item).
+- [ ] Recipe in `docs/ai/sqldb.md` (deferred to docs sweep).

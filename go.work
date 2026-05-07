@@ -48,6 +48,7 @@ use (
 	./infra/sqldb
 	./infra/sqldb/gormdb/gormmysql
 	./infra/sqldb/gormdb/gormpostgres
+	./infra/sqldb/pgx
 	./infra/storage
 	./infra/storage/azurebackend
 	./infra/storage/gcsbackend
