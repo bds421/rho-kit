@@ -27,15 +27,11 @@ Largest single audit area. Middleware composition (`stack.Default`) ships incomp
 - ✅ **Tracing hijack handling** — when the response is hijacked the tracing middleware now records `HTTPResponseStatusCode(101)` instead of the recorder's misleading 200 default.
 - ✅ **Rate-limit cleanup doc** — comment rewritten to reflect that LRU pressure is the real GC; cleanup is a best-effort O(1000) hint.
 
-CSRF session-bound HMAC primitive landed as `security/csrf` (commit `ca3f5aa`). The httpx/middleware/csrf refit (becoming a thin wrapper) is a follow-up and remains tracked under `new/06`.
+CSRF session-bound HMAC primitive landed as `security/csrf` (commit `ca3f5aa`). The httpx/middleware/csrf refit closed: when `WithSessionExtractor` is set the middleware routes issue/verify through `securitycsrf.Issuer`, so a token minted for session A is rejected for session B even if a sibling-subdomain XSS plants it via Set-Cookie. Legacy double-submit flow is preserved for callers that haven't supplied an extractor.
 
 ### Open
 
-### [HIGH] CSRF middleware session-bound HMAC still missing
-**File**: `httpx/middleware/csrf/csrf.go:128-189`
-**Issue**: HMAC is over a random nonce only — bind it to the session ID so a sibling app on the same eTLD+1 cannot Set-Cookie an attacker-controlled token. The Secure-default half of the audit's recommendation is closed (commit `3784af8`); session binding is genuinely a different primitive and belongs in [new/06-security-csrf-tokens.md](../new/06-security-csrf-tokens.md).
-**Fix**: HMAC over `session_id || nonce`; ship as the new package and let the existing csrf middleware become a thin wrapper.
-**Effort**: M
+_Closed — see Recently Landed below._
 
 ### Migration checklist
 

@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	kitcfg "github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/httpx"
+	securitycsrf "github.com/bds421/rho-kit/security/csrf"
 )
 
 const (
@@ -34,15 +36,17 @@ const (
 type Option func(*config)
 
 type config struct {
-	cookieName     string
-	headerName     string
-	secure         bool
-	secret         []byte // HMAC key for token signing
-	sameSite       http.SameSite
-	path           string
-	skipCheck      func(*http.Request) bool
-	allowedOrigins map[string]struct{}
-	allowDevSecret bool
+	cookieName       string
+	headerName       string
+	secure           bool
+	secret           []byte // HMAC key for token signing
+	sameSite         http.SameSite
+	path             string
+	skipCheck        func(*http.Request) bool
+	allowedOrigins   map[string]struct{}
+	allowDevSecret   bool
+	sessionExtractor func(*http.Request) string
+	sessionTTL       time.Duration
 }
 
 // WithCookieName sets the CSRF cookie name. Default: "__csrf".
@@ -123,6 +127,30 @@ func WithAllowedOrigins(origins ...string) Option {
 	}
 }
 
+// WithSessionExtractor enables session-bound tokens. When set, every
+// issued token is HMAC-bound to the value the extractor returns for the
+// request — typically a session-cookie value or authenticated user ID
+// — so a token minted for session A cannot be replayed against session B
+// even if a sibling-subdomain XSS plants it via Set-Cookie.
+//
+// Internally, issuance and verification are delegated to
+// [securitycsrf.Issuer]. The legacy double-submit-cookie path is
+// disabled when this option is set.
+//
+// The extractor must return a non-empty string for every authenticated
+// state-changing request; an empty result causes the middleware to 403
+// rather than fall back to per-process pinning (which would defeat the
+// purpose of session binding).
+func WithSessionExtractor(fn func(*http.Request) string) Option {
+	return func(c *config) { c.sessionExtractor = fn }
+}
+
+// WithSessionTTL overrides the validity window for session-bound tokens.
+// Default: 1 hour. Has no effect unless [WithSessionExtractor] is set.
+func WithSessionTTL(d time.Duration) Option {
+	return func(c *config) { c.sessionTTL = d }
+}
+
 // WithSkipCheck registers a predicate that bypasses CSRF validation.
 // If skip returns true for a request, CSRF token validation is skipped.
 // The CSRF cookie is still set (so browser clients get a token for later use),
@@ -195,6 +223,18 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	// silently fail to set the cookie at all. Catch the misconfig at startup.
 	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
 		panic("csrf: SameSite=None requires Secure=true (browsers reject the cookie otherwise) — call WithSecure(true)")
+	}
+
+	// Session-bound mode: build the security/csrf Issuer once and route
+	// every request through it. The legacy double-submit path stays in
+	// place for callers that haven't supplied an extractor.
+	if cfg.sessionExtractor != nil {
+		issuerOpts := []securitycsrf.Option{}
+		if cfg.sessionTTL > 0 {
+			issuerOpts = append(issuerOpts, securitycsrf.WithTTL(cfg.sessionTTL))
+		}
+		issuer := securitycsrf.MustNewIssuer(cfg.secret, issuerOpts...)
+		return sessionBoundMiddleware(&cfg, issuer)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -279,6 +319,87 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 			// Verify the token was signed by this server.
 			if !isValidSignedToken(headerToken, cfg.secret) {
+				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// sessionBoundMiddleware is the session-bound flow: tokens are minted
+// and verified by [securitycsrf.Issuer] so cross-session replay is
+// rejected even when the cookie itself is intact.
+func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			session := cfg.sessionExtractor(r)
+
+			// Issue a fresh token cookie when the request lacks one OR
+			// the existing cookie no longer verifies under the current
+			// session (logout/login swap, expired token).
+			cookie, err := r.Cookie(cfg.cookieName)
+			cookieRegenerated := false
+			if err != nil || issuer.Verify(securitycsrf.Token(cookie.Value), session) != nil {
+				token, mintErr := issuer.Issue(session)
+				if mintErr != nil {
+					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name:     cfg.cookieName,
+					Value:    string(token),
+					Path:     cfg.path,
+					MaxAge:   86400,
+					HttpOnly: false,
+					Secure:   cfg.secure,
+					SameSite: cfg.sameSite,
+				})
+				cookie = &http.Cookie{Name: cfg.cookieName, Value: string(token)}
+				cookieRegenerated = true
+			}
+
+			switch r.Method {
+			case http.MethodGet, http.MethodHead, http.MethodOptions:
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if cfg.skipCheck != nil && cfg.skipCheck(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
+				httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+				return
+			}
+
+			// An empty session is a configuration bug or an
+			// unauthenticated state-changing request. Either way,
+			// session-bound CSRF can't protect it — reject loudly so
+			// the caller fixes the auth ordering.
+			if session == "" {
+				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+				return
+			}
+
+			if cookieRegenerated {
+				httpx.WriteError(w, http.StatusForbidden, "CSRF cookie was reissued; retry with the new cookie")
+				return
+			}
+
+			headerToken := r.Header.Get(cfg.headerName)
+			if headerToken == "" {
+				httpx.WriteError(w, http.StatusForbidden, "missing "+cfg.headerName+" header")
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
+				httpx.WriteError(w, http.StatusForbidden, "CSRF token mismatch")
+				return
+			}
+			if err := issuer.Verify(securitycsrf.Token(headerToken), session); err != nil {
 				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
 				return
 			}
