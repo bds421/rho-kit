@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -126,16 +128,27 @@ func TestServer_InvalidJSON_ReturnsParseError(t *testing.T) {
 }
 
 func TestServer_HandlerErrorMappedToOperationFailed(t *testing.T) {
-	s := mcp.NewServer()
+	// Default and conflict branches sanitise the error text to
+	// avoid leaking infrastructure detail (security review M-1).
+	// The full error must still appear in the server-side log.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	s := mcp.NewServer(mcp.WithLogger(logger))
 	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
-		return echoOut{}, apperror.NewOperationFailed("boom")
+		return echoOut{}, apperror.NewOperationFailed("boom: pq: relation \"x\" does not exist")
 	}
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "fail", boom))
 
 	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"fail","params":{"message":"x"},"id":9}`)
 	rpcErr := resp["error"].(map[string]any)
 	assert.EqualValues(t, -32603, rpcErr["code"])
-	assert.Equal(t, "boom", rpcErr["message"])
+	assert.Equal(t, "internal error", rpcErr["message"],
+		"default branch must not leak raw error text to JSON-RPC caller")
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "boom: pq: relation",
+		"server-side log must retain the full error for forensics")
 }
 
 func TestServer_RejectsCyclicTypeAtRegistration(t *testing.T) {
@@ -285,21 +298,216 @@ func TestServer_ActionLog_FailureEntryRecordsReason(t *testing.T) {
 	assert.Equal(t, "kaboom", entries[0].Reason)
 }
 
-func TestServer_ActionLog_SkipsWhenTenantMissing(t *testing.T) {
-	logger, _ := newTestActionLogger(t)
-	s := newTestServer(t, mcp.WithActionLogger(logger))
+// invokeCounterHandler returns an echo handler that increments the
+// supplied counter on every dispatch. Used to assert that strict
+// audit mode prevents the tool from running when the tenant cannot
+// be resolved.
+func invokeCounterHandler(counter *int) mcp.Handler[echoIn, echoOut] {
+	return func(_ context.Context, in echoIn) (echoOut, error) {
+		*counter++
+		return echoOut{Echoed: in.Message}, nil
+	}
+}
 
-	// No tenant injection — the request context never carries a
-	// tenant ID, so the server must skip rather than write an
-	// invalid entry.
-	r := httptest.NewRequest(http.MethodPost, "/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
-	w := httptest.NewRecorder()
-	s.HTTP().ServeHTTP(w, r)
+func TestServer_ActionLog_StrictMode_NoTenant_RefusesDispatch(t *testing.T) {
+	// H-2 fix: when an action logger is configured and tenant
+	// resolution fails, strict mode (the default) must return
+	// -32603 internal error AND NOT execute the tool. The audit
+	// invariant — every executed tool produces a signed entry —
+	// is preserved by refusing dispatch.
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(mcp.WithActionLogger(logger))
+
+	calls := 0
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", invokeCounterHandler(&calls)))
+
+	resp := doRPC(t, s.HTTP(),
+		`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`)
+
+	require.NotNil(t, resp["error"], "expected JSON-RPC error in strict mode without tenant")
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32603, rpcErr["code"])
+	assert.Equal(t, "internal error", rpcErr["message"])
+
+	assert.Equal(t, 0, calls, "tool MUST NOT execute when strict-mode audit cannot be attributed")
 
 	entries, err := logger.List(context.Background(), actionlog.Query{})
 	require.NoError(t, err)
-	assert.Empty(t, entries)
+	assert.Empty(t, entries, "no audit entry should be written when tool was refused")
+}
+
+func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T) {
+	// Loose mode preserves the legacy fail-open behaviour: log a
+	// warning, skip the audit entry, run the tool. Operators must
+	// opt in via WithStrictAudit(false).
+	var logBuf bytes.Buffer
+	slogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithLogger(slogger),
+		mcp.WithActionLogger(logger),
+		mcp.WithStrictAudit(false),
+	)
+
+	calls := 0
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", invokeCounterHandler(&calls)))
+
+	resp := doRPC(t, s.HTTP(),
+		`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`)
+
+	require.Nil(t, resp["error"], "loose mode must let the call succeed: %v", resp["error"])
+	result := resp["result"].(map[string]any)
+	assert.Equal(t, "hi", result["echoed"])
+	assert.Equal(t, 1, calls, "tool must execute in loose mode")
+
+	entries, err := logger.List(context.Background(), actionlog.Query{})
+	require.NoError(t, err)
+	assert.Empty(t, entries, "loose mode skips the audit entry when tenant absent")
+
+	assert.Contains(t, logBuf.String(), "skipping action log entry",
+		"loose mode must emit a warn-level log so operators can spot unscoped tool calls")
+}
+
+func TestServer_ActionLog_StrictMode_WithTenant_WritesEntry(t *testing.T) {
+	// Strict mode (the default) must not break the happy path.
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t, mcp.WithActionLogger(logger))
+
+	h := withTenantHandler(s.HTTP(), "tenant-strict")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	r.Header.Set("X-Actor-Id", "agent-strict")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-strict"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "agent-strict", entries[0].Actor)
+}
+
+// asyncBlockingLogger wraps a real action logger but blocks Append
+// until a signal channel is closed. Used to prove that async mode
+// does not extend MCP latency: the response must arrive before the
+// audit append releases.
+type asyncBlockingLogger struct {
+	inner   actionlog.Logger
+	release chan struct{}
+	wg      *sync.WaitGroup
+}
+
+func (l *asyncBlockingLogger) Append(ctx context.Context, e actionlog.Entry) (actionlog.Entry, error) {
+	defer l.wg.Done()
+	<-l.release
+	return l.inner.Append(ctx, e)
+}
+
+func (l *asyncBlockingLogger) Get(ctx context.Context, id string) (actionlog.Entry, error) {
+	return l.inner.Get(ctx, id)
+}
+
+func (l *asyncBlockingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	return l.inner.List(ctx, q)
+}
+
+func (l *asyncBlockingLogger) Sign(e actionlog.Entry) (string, string, error) {
+	return l.inner.Sign(e)
+}
+
+func (l *asyncBlockingLogger) Verify(e actionlog.Entry) error {
+	return l.inner.Verify(e)
+}
+
+func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
+	// L-3 fix: WithAsyncAudit(true) spawns the audit append in a
+	// background goroutine so MCP latency does not depend on the
+	// audit store's response time.
+	innerLogger, _ := newTestActionLogger(t)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	blocking := &asyncBlockingLogger{
+		inner:   innerLogger,
+		release: make(chan struct{}),
+		wg:      wg,
+	}
+
+	s := mcp.NewServer(
+		mcp.WithActionLogger(blocking),
+		mcp.WithAsyncAudit(true),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-async")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, r)
+	// Response must already be written even though the audit
+	// append is still blocked.
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Nil(t, resp["error"])
+
+	// At this point the goroutine is parked on `<-release`. No
+	// entry has reached the inner store yet.
+	entriesEarly, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
+	require.NoError(t, err)
+	assert.Empty(t, entriesEarly, "async append must not yet have written when response is returned")
+
+	// Release the audit, wait for the goroutine to land.
+	close(blocking.release)
+	wg.Wait()
+
+	entriesLate, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
+	require.NoError(t, err)
+	require.Len(t, entriesLate, 1, "async append must eventually write the entry")
+	assert.Equal(t, "mcp.echo", entriesLate[0].Action)
+}
+
+func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
+	// Sync mode (the default) writes the audit entry before the
+	// JSON-RPC response — the entry is visible the moment
+	// ServeHTTP returns.
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t, mcp.WithActionLogger(logger))
+
+	h := withTenantHandler(s.HTTP(), "tenant-sync")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-sync"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "sync mode writes the entry before returning the response")
+}
+
+func TestServer_DisallowUnknownFields_ReturnsGenericMessage(t *testing.T) {
+	// L-4 fix: an extra field in the params payload must be
+	// rejected as -32602 with a generic "invalid request" message.
+	// The decoder's "json: unknown field \"foo\"" string would
+	// otherwise leak the input-struct shape.
+	var logBuf bytes.Buffer
+	slogger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	s := newTestServer(t, mcp.WithLogger(slogger))
+
+	resp := doRPC(t, s.HTTP(),
+		`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi","extra":"bad"},"id":1}`)
+
+	require.NotNil(t, resp["error"])
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32602, rpcErr["code"])
+	assert.Equal(t, "invalid request", rpcErr["message"],
+		"unknown-field rejection must not echo the field name to the caller")
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "unknown field",
+		"server-side log retains the original decoder error for forensics")
 }
 
 func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {

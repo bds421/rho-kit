@@ -51,10 +51,22 @@
 //
 // Tenant comes from [tenant.FromContext]; actor comes from the
 // configured [WithActorExtractor] (default: the X-Actor-Id header).
-// When no tenant is on the context the entry is skipped (the
-// signed-store contract rejects empty tenant ids); the [Server]
-// emits a warn-level log so operators can spot unscoped tool calls
-// in production.
+//
+// When no tenant is on the context, behaviour depends on
+// [WithStrictAudit] (default: true):
+//   - Strict mode refuses to dispatch the tool and returns
+//     -32603 internal error to the JSON-RPC caller, preserving the
+//     audit invariant that every executed tool produces a signed
+//     entry.
+//   - Loose mode logs a warn-level message, skips the audit entry,
+//     and runs the tool — preserved for operators who explicitly
+//     accept the audit gap.
+//
+// By default the audit append runs synchronously between dispatch
+// and response-write so the entry is durable before the caller
+// sees the result. [WithAsyncAudit] flips the append to a
+// goroutine for latency-sensitive deployments — see that option's
+// doc comment for the trade-off.
 //
 // # What is NOT done here
 //

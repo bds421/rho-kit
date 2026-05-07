@@ -193,12 +193,30 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req jso
 
 // invoke dispatches a single tool call, runs the action log, and
 // emits the response.
+//
+// Audit invariant: when an action logger is configured the Server
+// MUST NOT execute the tool unless the audit append can be made
+// attributable. In strict mode (default) this means tenant
+// resolution must succeed before dispatch; the call returns a
+// -32603 internal error to the caller and no tool side effects
+// occur otherwise. See [WithStrictAudit] for the loose alternative.
 func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCRequest, name string, entry *toolEntry, args json.RawMessage) {
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
 
 	ctx := r.Context()
+
+	// Pre-dispatch audit gate: in strict mode, refuse to run the
+	// tool when no tenant is on context. Without this check the
+	// tool would execute and the audit entry would silently be
+	// skipped — fail-open audit gap (security review H-2).
+	if !s.auditPrecheck(ctx, name) {
+		writeJSONRPCError(w, http.StatusOK, req.ID,
+			rpcErrInternalError, "internal error")
+		return
+	}
+
 	result, dispatchErr := entry.dispatch(ctx, args)
 
 	// Action-log integration. We log every call with the resolved
@@ -206,7 +224,7 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 	s.recordActionLog(ctx, r, name, dispatchErr)
 
 	if dispatchErr != nil {
-		code, msg := mapErrorToRPC(dispatchErr)
+		code, msg := s.mapErrorToRPC(ctx, dispatchErr)
 		writeJSONRPCError(w, http.StatusOK, req.ID, code, msg)
 		return
 	}
@@ -220,6 +238,14 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 	writeJSONRPCRaw(w, req.ID, result)
 }
 
+// errUnknownField is the sentinel returned when a JSON-RPC params
+// payload contains a field not present on the tool's input struct.
+// We surface it as -32602 with a generic message rather than the
+// decoder's "json: unknown field \"foo\"" text — that text leaks
+// the input-struct shape to untrusted callers (security review
+// L-4). The original decoder error is logged server-side.
+var errUnknownField = errors.New("mcp: request contained an unknown field")
+
 // buildDispatch constructs a type-erased dispatch function for a
 // typed [Handler]. Validation runs against the freshly-decoded In
 // value before the handler is called, so a `validate:"required"`
@@ -232,6 +258,13 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 			dec := json.NewDecoder(bytes.NewReader(raw))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&in); err != nil {
+				if strings.Contains(err.Error(), "unknown field") {
+					// Wrap the original so the server-side
+					// log can include it via errors.Unwrap,
+					// but mapErrorToRPC sees the sentinel
+					// and returns the sanitised message.
+					return nil, fmt.Errorf("%w: %v", errUnknownField, err)
+				}
 				return nil, apperror.NewValidation("invalid arguments: " + err.Error())
 			}
 		}
@@ -252,11 +285,30 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 
 // mapErrorToRPC converts an error from a tool's handler into a
 // JSON-RPC error code + client-safe message.
-func mapErrorToRPC(err error) (int, string) {
+//
+// The validation / not-found / auth / forbidden / rate-limit
+// branches are intentional — callers benefit from field-level
+// detail to correct their next request, and the kit's apperror
+// types are constructed by handlers with the wire surface in mind.
+//
+// The default and conflict branches log the full error server-side
+// (so operators retain forensic detail) and return a generic
+// "internal error" message to the JSON-RPC caller. Wrapped
+// infrastructure errors ("pq: relation \"x\" does not exist",
+// "context deadline exceeded: ... 10.0.0.1:5432") would otherwise
+// leak topology to whoever can call a tool — security review M-1.
+func (s *Server) mapErrorToRPC(ctx context.Context, err error) (int, string) {
 	if err == nil {
 		return rpcErrInternalError, "internal error"
 	}
 	switch {
+	case errors.Is(err, errUnknownField):
+		// L-4: do not echo the field name back to the caller.
+		// The decoder's "json: unknown field \"foo\"" string
+		// reveals the input-struct shape; the wrapped error
+		// retains the detail server-side for forensics.
+		s.logInternalError(ctx, "mcp: rejected request with unknown field", err)
+		return rpcErrInvalidParams, "invalid request"
 	case apperror.IsValidation(err):
 		// Surface field-level details when present so the agent
 		// learns which argument was wrong without a fresh round
@@ -278,10 +330,22 @@ func mapErrorToRPC(err error) (int, string) {
 	case apperror.IsRateLimit(err):
 		return rpcErrInternalError, "rate limit exceeded"
 	case apperror.IsConflict(err):
-		return rpcErrInternalError, err.Error()
+		s.logInternalError(ctx, "mcp: tool returned conflict error", err)
+		return rpcErrInternalError, "internal error"
 	default:
-		return rpcErrInternalError, err.Error()
+		s.logInternalError(ctx, "mcp: tool returned internal error", err)
+		return rpcErrInternalError, "internal error"
 	}
+}
+
+// logInternalError records a server-side log entry for an error
+// whose details must not be returned to the JSON-RPC caller.
+// Includes request_id from context when present so operators can
+// correlate the log line with the response the caller received.
+func (s *Server) logInternalError(ctx context.Context, msg string, err error) {
+	s.cfg.logger.ErrorContext(ctx, msg,
+		"error", err,
+	)
 }
 
 // readBody enforces the configured body cap.

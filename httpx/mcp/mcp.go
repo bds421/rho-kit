@@ -105,6 +105,8 @@ type serverConfig struct {
 	actorExtractor  func(*http.Request) string
 	tenantExtractor func(ctx context.Context) (string, bool)
 	maxRequestBytes int64
+	strictAudit     bool
+	asyncAudit      bool
 }
 
 // WithLogger sets the [slog.Logger] used for server-side errors.
@@ -176,6 +178,48 @@ func WithMaxRequestBytes(n int64) ServerOption {
 	return func(c *serverConfig) { c.maxRequestBytes = n }
 }
 
+// WithStrictAudit controls the Server's behaviour when an action
+// logger is configured but the request context carries no tenant.
+//
+// Default: true (fail-closed). The JSON-RPC caller receives a
+// -32603 internal error and the tool does NOT execute. This
+// preserves the audit invariant that "every executed tool call
+// produced a signed entry."
+//
+// WithStrictAudit(false) restores the legacy behaviour: the Server
+// logs a warn-level message, skips the audit entry, and runs the
+// tool anyway. Use only when operators have explicitly accepted the
+// audit gap (e.g. a dev environment without tenant middleware). In
+// production this opens a fail-open path where a tool executed
+// against an unscoped request leaves no signed evidence.
+//
+// Has no effect when no action logger is configured (audit is
+// already opt-in there).
+func WithStrictAudit(strict bool) ServerOption {
+	return func(c *serverConfig) { c.strictAudit = strict }
+}
+
+// WithAsyncAudit controls whether the action-log append runs on the
+// request hot path or in a background goroutine.
+//
+// Default: false. The append runs synchronously between dispatch and
+// response-write — a slow audit store extends MCP latency, but a
+// crash between the two cannot lose the entry.
+//
+// WithAsyncAudit(true) spawns a goroutine that performs the append
+// using context.WithoutCancel of the request context. The response
+// is written immediately, latency is unaffected by audit-store
+// pressure, but a process crash between response-write and the
+// background append loses that entry. Use when MCP latency
+// dominates over single-request durability — e.g. high-RPS
+// read-only tools where the client retries on its own and a missed
+// entry is acceptable.
+//
+// Has no effect when no action logger is configured.
+func WithAsyncAudit(async bool) ServerOption {
+	return func(c *serverConfig) { c.asyncAudit = async }
+}
+
 // Server collects registered tools and serves the JSON-RPC surface.
 // Reuses the kit's HTTP middleware stack — auth, tenant,
 // idempotency, rate limit, audit — applied externally to the
@@ -224,6 +268,8 @@ func defaultServerConfig() serverConfig {
 		},
 		tenantExtractor: defaultTenantExtractor,
 		maxRequestBytes: 1 << 20,
+		strictAudit:     true,
+		asyncAudit:      false,
 	}
 }
 
