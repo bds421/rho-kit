@@ -65,9 +65,9 @@
       "type": "text",
       "options": {
         "mode": "markdown",
-        "content": "- [HTTP RED](/d/rhokit-http-red)\n- [Go runtime](/d/rhokit-runtime-go)\n\nMore dashboards (DB, Redis, messaging, storage, outbox, ratelimit) are tracked under [docs/audit/new/22](https://github.com/bds421/rho-kit/blob/main/docs/audit/new/22-observability-dashboards.md)."
+        "content": "**RED & runtime**\n- [HTTP RED](/d/rhokit-http-red)\n- [gRPC RED](/d/rhokit-grpc-red)\n- [Go runtime](/d/rhokit-runtime-go)\n\n**Infrastructure**\n- [DB pool](/d/rhokit-db-pool) — Postgres/MySQL connection pool\n- [Redis](/d/rhokit-redis) — commands, pool, reconnects\n- [Storage (S3 + SFTP)](/d/rhokit-storage)\n- [Outbox relay](/d/rhokit-outbox)\n\n**Skipped (no metrics yet)**\n- AMQP messaging — buffered publisher uses callback hooks rather than Prometheus collectors. Add when `infra/messaging` exposes Prometheus collectors.\n- Ratelimit — `httpx/middleware/ratelimit` does not currently emit metrics."
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 }
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 4 }
     }
   ]
 }
