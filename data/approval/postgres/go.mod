@@ -1,6 +1,6 @@
 module github.com/bds421/rho-kit/data/approval/postgres
 
-go 1.26.0
+go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/data/approval v0.0.0
