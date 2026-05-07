@@ -93,6 +93,12 @@ func Middleware(b budget.Budget, opts ...Option) func(http.Handler) http.Handler
 	cfg := config{
 		key:    TenantKeyFunc(),
 		amount: 1,
+		// Default scope label: matches httpx/middleware/ratelimit/tenant
+		// and stays meaningful in operator dashboards even when a service
+		// forgets to call WithScope. Anonymous 429s reading
+		// "X-Budget-Scope: tenant" are easier to triage than 429s with
+		// no scope header at all.
+		scope: "tenant",
 	}
 	for _, o := range opts {
 		o(&cfg)

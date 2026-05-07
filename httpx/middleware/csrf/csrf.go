@@ -269,23 +269,28 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Origin/Referer validation runs BEFORE the skip-check
+			// predicate. Defense-in-depth: a consumer that uses both
+			// WithSkipCheck(HasBearerToken) and WithAllowedOrigins(...)
+			// expects bearer-token requests to skip the cookie match
+			// AND unfamiliar-origin POSTs to be rejected. Reordering
+			// the skip-check ahead of the origin check would let a
+			// bearer-bearing POST from any origin pass — defeating the
+			// allowlist for the very class of caller most likely to
+			// be impersonated by an attacker who phished a token.
+			if len(cfg.allowedOrigins) > 0 {
+				if !originAllowed(r, cfg.allowedOrigins) {
+					httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+					return
+				}
+			}
+
 			// If the skip predicate matches, bypass CSRF token validation.
 			// The cookie was already set above, so browser clients still
 			// receive a token for later use.
 			if cfg.skipCheck != nil && cfg.skipCheck(r) {
 				next.ServeHTTP(w, r)
 				return
-			}
-
-			// Origin/Referer validation (when configured). Belt-and-braces
-			// alongside the double-submit cookie; defends against
-			// cookie-overwriting subdomain attacks and SameSite-leaky
-			// browsers.
-			if len(cfg.allowedOrigins) > 0 {
-				if !originAllowed(r, cfg.allowedOrigins) {
-					httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
-					return
-				}
 			}
 
 			// State-changing methods require a valid CSRF token. If the
@@ -366,13 +371,16 @@ func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.
 				return
 			}
 
-			if cfg.skipCheck != nil && cfg.skipCheck(r) {
-				next.ServeHTTP(w, r)
+			// Origin allowlist runs BEFORE the skip-check predicate
+			// for the same defense-in-depth reasoning as the
+			// double-submit flow above.
+			if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
+				httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
 				return
 			}
 
-			if len(cfg.allowedOrigins) > 0 && !originAllowed(r, cfg.allowedOrigins) {
-				httpx.WriteError(w, http.StatusForbidden, "untrusted origin")
+			if cfg.skipCheck != nil && cfg.skipCheck(r) {
+				next.ServeHTTP(w, r)
 				return
 			}
 

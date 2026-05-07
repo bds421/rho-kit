@@ -98,14 +98,31 @@ func TestMiddleware_RejectsWith429AndHeaders(t *testing.T) {
 	assert.LessOrEqual(t, retry, 30)
 }
 
-func TestMiddleware_OmitsScopeHeaderWhenBlank(t *testing.T) {
+func TestMiddleware_DefaultScopeIsTenant(t *testing.T) {
+	// When WithScope is not called, the rejection still carries a
+	// dashboard-friendly scope label so operators don't see anonymous
+	// 429s. M-8 in v2 audit: matches httpx/middleware/ratelimit/tenant.
 	b := &fakeBudget{allowed: false, remaining: 0, retry: time.Second}
 	h := mw.Middleware(b, mw.WithKeyFunc(staticKey("alice")))(okHandler())
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
 
-	assert.Empty(t, rec.Header().Get(mw.HeaderScope))
+	assert.Equal(t, "tenant", rec.Header().Get(mw.HeaderScope))
+}
+
+func TestMiddleware_ScopeOverride(t *testing.T) {
+	// Explicit scope overrides the tenant default.
+	b := &fakeBudget{allowed: false, remaining: 0, retry: time.Second}
+	h := mw.Middleware(b,
+		mw.WithKeyFunc(staticKey("alice")),
+		mw.WithScope("dollars-per-day"),
+	)(okHandler())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+
+	assert.Equal(t, "dollars-per-day", rec.Header().Get(mw.HeaderScope))
 }
 
 func TestMiddleware_PassesThroughOnNoKey(t *testing.T) {
