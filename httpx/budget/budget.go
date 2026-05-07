@@ -18,16 +18,23 @@
 //     ActualHeader (e.g. X-Actual-Tokens), refund the over-estimate
 //     or charge the under-estimate as a delta.
 //
-// The reconciliation step is best-effort: a refund failure is logged
-// (via the [Logger] option) but does not surface to the caller. A
-// charge failure for the *delta* propagates as an error so the
-// caller can decide what to do (back off, escalate, etc.).
+// # Enforcement
+//
+// The default enforcement mode ([EnforcementHard]) rejects the
+// response when the upstream's actual cost exceeds the pre-charged
+// estimate and the delta cannot be charged against the remaining
+// budget. The response body is closed and [ErrBudgetExceeded] is
+// returned so callers cannot consume bytes the budget did not
+// authorize. [EnforcementAuditOnly] preserves the historical
+// best-effort behavior: failed delta charges are logged but the
+// response is still returned.
 //
 // # Sentinel error
 //
-// When the budget rejects the pre-charge, [ErrBudgetExceeded] is
-// returned. Callers can `errors.Is(err, budget.ErrBudgetExceeded)`
-// to distinguish "we said no" from upstream HTTP 429s.
+// When the budget rejects the pre-charge or a hard-enforced delta
+// charge, [ErrBudgetExceeded] is returned. Callers can
+// `errors.Is(err, budget.ErrBudgetExceeded)` to distinguish "we said
+// no" from upstream HTTP 429s.
 package budget
 
 import (
@@ -37,12 +44,14 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/bds421/rho-kit/data/budget"
 )
 
 // ErrBudgetExceeded is the sentinel returned by RoundTrip when the
-// pre-charge fails. Callers compare with [errors.Is].
+// pre-charge fails or, under [EnforcementHard], when the actual-cost
+// delta cannot be charged. Callers compare with [errors.Is].
 var ErrBudgetExceeded = errors.New("httpx/budget: budget exceeded")
 
 // Logger is the minimal interface accepted by [WithLogger]. *slog.Logger
@@ -50,6 +59,26 @@ var ErrBudgetExceeded = errors.New("httpx/budget: budget exceeded")
 type Logger interface {
 	Warn(msg string, args ...any)
 }
+
+// Enforcement selects how actual-cost reconciliation reacts to a
+// delta the budget cannot pay.
+type Enforcement int
+
+const (
+	// EnforcementHard rejects the upstream response when the actual-cost
+	// delta cannot be charged. The body is closed and [ErrBudgetExceeded]
+	// is returned. This is the default.
+	EnforcementHard Enforcement = iota
+	// EnforcementAuditOnly logs delta failures but still returns the
+	// response. Use only when reconciliation is for accounting and the
+	// caller has out-of-band quota controls.
+	EnforcementAuditOnly
+)
+
+// defaultCleanupTimeout bounds the post-response refund and
+// reconcile path so a slow budget backend cannot stall the
+// transport indefinitely.
+const defaultCleanupTimeout = 2 * time.Second
 
 // Option configures the [Wrap]ed RoundTripper.
 type Option func(*config)
@@ -59,6 +88,8 @@ type config struct {
 	actualHeader   string
 	defaultAmount  int64
 	logger         Logger
+	enforcement    Enforcement
+	cleanupTimeout time.Duration
 }
 
 // WithEstimateHeader names a request header whose integer value is
@@ -85,9 +116,35 @@ func WithDefaultAmount(n int64) Option {
 }
 
 // WithLogger sets the logger used for non-fatal reconciliation
-// warnings. Default: slog.Default().
+// warnings. Passing nil falls back to slog.Default(); the kit-wide
+// convention is that loggers normalize nil rather than panic.
 func WithLogger(l Logger) Option {
-	return func(c *config) { c.logger = l }
+	return func(c *config) {
+		if l == nil {
+			c.logger = slog.Default()
+			return
+		}
+		c.logger = l
+	}
+}
+
+// WithEnforcement selects how the wrapper reacts when the actual-cost
+// delta cannot be charged. Default: [EnforcementHard].
+func WithEnforcement(e Enforcement) Option {
+	return func(c *config) { c.enforcement = e }
+}
+
+// WithCleanupTimeout bounds the post-response refund and reconcile
+// path. The cleanup context is detached from the request context
+// (so cancellation cannot strand accounting) and capped at d.
+// Values <= 0 are ignored. Default: 2s.
+func WithCleanupTimeout(d time.Duration) Option {
+	return func(c *config) {
+		if d <= 0 {
+			return
+		}
+		c.cleanupTimeout = d
+	}
 }
 
 // Wrap returns a RoundTripper that pre-charges `b` for `key` on every
@@ -107,8 +164,10 @@ func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) h
 		base = http.DefaultTransport
 	}
 	cfg := config{
-		defaultAmount: 1,
-		logger:        slog.Default(),
+		defaultAmount:  1,
+		logger:         slog.Default(),
+		enforcement:    EnforcementHard,
+		cleanupTimeout: defaultCleanupTimeout,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -129,8 +188,6 @@ type transport struct {
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	estimate := t.estimate(req)
 
-	// Pre-charge against the configured budget. A reject here means
-	// we never dispatch the request — the upstream sees no traffic.
 	allowed, _, _, err := t.b.Consume(req.Context(), t.key, estimate)
 	if err != nil {
 		return nil, fmt.Errorf("httpx/budget: pre-charge: %w", err)
@@ -141,15 +198,15 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		// Refund the optimistic charge so transport errors don't
-		// nibble at the budget. We don't hard-fail on refund errors
-		// because the caller already has a transport error.
-		t.refund(req.Context(), estimate, err)
+		t.cleanupRefund(req.Context(), estimate, err)
 		return nil, err
 	}
 
 	if t.cfg.actualHeader != "" {
-		t.reconcile(req.Context(), resp, estimate)
+		if rerr := t.reconcile(req.Context(), resp, estimate); rerr != nil {
+			_ = resp.Body.Close()
+			return nil, rerr
+		}
 	}
 	return resp, nil
 }
@@ -177,57 +234,63 @@ func (t *transport) estimate(req *http.Request) int64 {
 // by the upstream and either charges the under-estimate or refunds
 // the over-estimate.
 //
-// A failure to reconcile is non-fatal: the response is still
-// returned to the caller; we just log the gap so an operator can
-// notice when reconciliation is consistently broken (e.g. a
-// misconfigured header name).
-func (t *transport) reconcile(ctx context.Context, resp *http.Response, estimate int64) {
+// Returns a non-nil error only under [EnforcementHard] when the
+// delta cannot be charged; the caller closes the response body and
+// surfaces the error. Header parse failures, refund-side errors,
+// and audit-only mode never produce an error.
+func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estimate int64) error {
 	v := resp.Header.Get(t.cfg.actualHeader)
 	if v == "" {
-		return
+		return nil
 	}
 	actual, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || actual < 0 {
 		t.cfg.logger.Warn("httpx/budget: malformed actual header",
 			"header", t.cfg.actualHeader, "value", v)
-		return
+		return nil
 	}
 	delta := actual - estimate
 	if delta == 0 {
-		return
+		return nil
 	}
-	if delta > 0 {
-		// Under-estimated; charge the difference. We don't refuse
-		// the response on rejection — the request already happened
-		// and the user already got the data; pulling the rug here
-		// would be confusing. Just log so operators see chronic
-		// under-charging.
-		ok, _, _, err := t.b.Consume(ctx, t.key, delta)
-		if err != nil {
-			t.cfg.logger.Warn("httpx/budget: reconcile charge failed",
-				"key", t.key, "delta", delta, "err", err)
-			return
-		}
-		if !ok {
-			t.cfg.logger.Warn("httpx/budget: reconcile delta exceeded budget",
-				"key", t.key, "delta", delta)
-		}
-		return
+	if delta < 0 {
+		t.cleanupRefund(reqCtx, -delta, nil)
+		return nil
 	}
-	// Over-estimated; refund the gap. Backends without [budget.Refunder]
-	// cannot credit back — the missed amount converges at the next
-	// period boundary, which is bounded by `period`.
-	t.refund(ctx, -delta, nil)
+
+	ctx, cancel := t.cleanupContext(reqCtx)
+	defer cancel()
+	ok, _, _, cerr := t.b.Consume(ctx, t.key, delta)
+	if cerr != nil {
+		t.cfg.logger.Warn("httpx/budget: reconcile charge failed",
+			"key", t.key, "delta", delta, "err", cerr)
+		if t.cfg.enforcement == EnforcementHard {
+			t.cleanupRefund(reqCtx, estimate, cerr)
+			return fmt.Errorf("httpx/budget: reconcile: %w", cerr)
+		}
+		return nil
+	}
+	if !ok {
+		t.cfg.logger.Warn("httpx/budget: reconcile delta exceeded budget",
+			"key", t.key, "delta", delta)
+		if t.cfg.enforcement == EnforcementHard {
+			t.cleanupRefund(reqCtx, estimate, nil)
+			return ErrBudgetExceeded
+		}
+	}
+	return nil
 }
 
-// refund credits `amount` back to the budget via the optional
-// [budget.Refunder] capability. Backends without it lose the credit
-// for the current period — bounded by the period length, which
-// converges to zero at the boundary.
-func (t *transport) refund(ctx context.Context, amount int64, cause error) {
+// cleanupRefund credits `amount` back to the budget on a cleanup
+// path. The context is detached from the request so a canceled
+// caller cannot strand the refund, and is bounded by the configured
+// cleanup timeout.
+func (t *transport) cleanupRefund(reqCtx context.Context, amount int64, cause error) {
 	if amount <= 0 {
 		return
 	}
+	ctx, cancel := t.cleanupContext(reqCtx)
+	defer cancel()
 	_, ok, err := budget.Refund(ctx, t.b, t.key, amount)
 	if err != nil {
 		t.cfg.logger.Warn("httpx/budget: refund failed",
@@ -238,4 +301,11 @@ func (t *transport) refund(ctx context.Context, amount int64, cause error) {
 		t.cfg.logger.Warn("httpx/budget: refund unavailable on backend",
 			"key", t.key, "amount", amount, "cause", cause)
 	}
+}
+
+// cleanupContext returns a context detached from cancellation of
+// reqCtx but capped at the configured cleanup timeout, so accounting
+// always runs even when the client canceled.
+func (t *transport) cleanupContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(reqCtx), t.cfg.cleanupTimeout)
 }

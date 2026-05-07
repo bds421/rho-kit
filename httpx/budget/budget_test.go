@@ -335,3 +335,139 @@ func TestSentinelDistinctFromBudgetSentinels(t *testing.T) {
 	// And avoid an "unused import" when assertions evolve.
 	_ = strconv.Itoa
 }
+
+// TestRoundTrip_HardEnforcementRejectsOnDeltaExceedsBudget pins the
+// new spec contract: when reconcile reveals the upstream cost > what
+// the budget can pay, the response is closed and ErrBudgetExceeded
+// surfaces so the caller cannot read bytes the budget did not
+// authorize.
+func TestRoundTrip_HardEnforcementRejectsOnDeltaExceedsBudget(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"100"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{
+		consumeResp: []consumeResult{
+			{allowed: true, remaining: 999}, // pre-charge succeeds
+			{allowed: false, remaining: 0},  // delta charge denied
+		},
+	}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+	))
+
+	resp, err := c.Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, budget.ErrBudgetExceeded),
+		"hard enforcement must surface ErrBudgetExceeded for delta-denied")
+	require.Len(t, b.refunded, 1, "rejected response must refund the original estimate")
+	assert.Equal(t, int64(20), b.refunded[0].amount)
+}
+
+// TestRoundTrip_HardEnforcementRejectsOnDeltaBackendError covers the
+// other failure mode: backend error during the delta charge. Without
+// hard enforcement the caller would receive the response despite the
+// budget having lost track of the actual cost.
+func TestRoundTrip_HardEnforcementRejectsOnDeltaBackendError(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"100"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{
+		consumeResp: []consumeResult{
+			{allowed: true, remaining: 999},
+			{err: errors.New("redis down")},
+		},
+	}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+	))
+
+	resp, err := c.Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+}
+
+// TestRoundTrip_AuditOnlyKeepsLegacyBehavior pins that callers can
+// opt out of enforcement and keep the historical "log and return"
+// shape for accounting-only deployments.
+func TestRoundTrip_AuditOnlyKeepsLegacyBehavior(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"100"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{
+		consumeResp: []consumeResult{
+			{allowed: true, remaining: 999},
+			{allowed: false, remaining: 0},
+		},
+	}
+	logs := &captureLogger{}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+		budget.WithEnforcement(budget.EnforcementAuditOnly),
+		budget.WithLogger(logs),
+	))
+
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err, "audit-only must not reject the response")
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, logs.warns, "audit-only must still warn on denied delta")
+	assert.Empty(t, b.refunded, "audit-only must not refund the estimate on a denied delta")
+}
+
+// TestRoundTrip_CleanupRunsOnCanceledContext: a canceled request
+// context must not strand the refund on a transport error. Without
+// the WithoutCancel + bounded timeout fix, the refund would inherit
+// the canceled context and the backend call could fail or be skipped.
+func TestRoundTrip_CleanupRunsOnCanceledContext(t *testing.T) {
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 100}}}
+	c := newClient(budget.Wrap(observingTransport{
+		fn: func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("transport boom")
+		},
+	}, b, "alice"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled BEFORE the request runs
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.invalid/", nil)
+	resp, err := c.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	require.Len(t, b.refunded, 1, "cleanup refund must run even when the request context is canceled")
+	assert.Equal(t, int64(1), b.refunded[0].amount)
+}
+
+// TestWithLoggerNilNormalizes verifies WithLogger(nil) does not
+// disarm the default logger and therefore cannot panic on warning
+// paths. Pattern A from the kit-wide R2 audit: loggers normalize.
+func TestWithLoggerNilNormalizes(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"oops"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 100}}}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithActualHeader("X-Actual-Tokens"),
+		budget.WithLogger(nil),
+	))
+
+	// Malformed actual header walks the warning path; with nil
+	// not normalized this would panic.
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+}
+
+// observingTransport lets a test inject a function for RoundTrip
+// while keeping the resp.Body lifecycle assertions tight.
+type observingTransport struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (o observingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return o.fn(req)
+}
