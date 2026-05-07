@@ -5,7 +5,50 @@ package app
 import (
 	"context"
 	"net/http"
+{{- if .MCP}}
+
+	"github.com/bds421/rho-kit/httpx/mcp"
+{{- end}}
 )
+
+{{- if .MCP}}
+
+// EchoIn is the input for the sample MCP tool. Replace with your
+// service's own tool inputs — the validate:"required" tag is
+// honoured by mcp.Register, so missing fields surface as -32602
+// Invalid params at the JSON-RPC layer.
+type EchoIn struct {
+	Message string `json:"message" validate:"required" desc:"Text to echo back."`
+}
+
+// EchoOut is the response for the sample MCP tool.
+type EchoOut struct {
+	Echoed string `json:"echoed"`
+}
+
+// echo is the sample MCP handler. It demonstrates the typed
+// signature mcp.Register expects: (ctx, in) -> (out, err).
+func echo(_ context.Context, in EchoIn) (EchoOut, error) {
+	return EchoOut{Echoed: in.Message}, nil
+}
+
+// newMCPServer builds the kit's MCP server with one sample tool
+// registered. Production deployments wire WithActionLogger(...) and
+// WithActorExtractor(...) so each call writes a tenant-scoped audit
+// row.
+func newMCPServer() *mcp.Server {
+	srv := mcp.NewServer()
+	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
+		mcp.WithToolDescription("Echo the input message back to the caller."),
+	); err != nil {
+		// Registration only fails on programming errors (cyclic
+		// schema, duplicate name, empty name). Panic at startup so
+		// the bug is impossible to ignore.
+		panic("mcp register echo: " + err.Error())
+	}
+	return srv
+}
+{{- end}}
 
 // Run blocks until ctx cancels or the service errors.
 //
@@ -18,6 +61,14 @@ func Run(ctx context.Context) error {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+{{- if .MCP}}
+
+	// Mount the MCP JSON-RPC endpoint. Wrap with the kit's
+	// middleware stack (auth, tenant, rate limit) in production —
+	// the Server itself is just an http.Handler so middleware is
+	// composed externally.
+	mux.Handle("/mcp", newMCPServer().HTTP())
+{{- end}}
 
 	srv := &http.Server{Addr: ":8080", Handler: mux}
 	go func() {

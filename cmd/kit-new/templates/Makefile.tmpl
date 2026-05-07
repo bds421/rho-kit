@@ -1,4 +1,4 @@
-.PHONY: build test lint vet doctor
+.PHONY: build test lint vet doctor{{if .MCP}} mcp-smoke{{end}}
 
 build:
 	go build ./...
@@ -15,3 +15,17 @@ vet:
 
 doctor:
 	go run github.com/bds421/rho-kit/cmd/kit-doctor@latest ./...
+{{if .MCP}}
+# mcp-smoke POSTs a JSON-RPC tools/list call against a locally-running
+# service. Start the service in another terminal first:
+#
+#     go run ./cmd/{{.ServiceName}}
+#
+# Then `make mcp-smoke` should print the registered tool catalog.
+mcp-smoke:
+	@echo "Calling tools/list against http://localhost:8080/mcp ..."
+	@curl -sS -X POST http://localhost:8080/mcp \
+		-H 'Content-Type: application/json' \
+		-d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+	@echo
+{{end}}

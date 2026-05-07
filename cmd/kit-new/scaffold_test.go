@@ -77,3 +77,59 @@ func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
 		require.NoErrorf(t, err, "go %s failed:\n%s", strings.Join(args, " "), buf)
 	}
 }
+
+func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+		MCP:         true,
+	}))
+
+	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
+	require.NoError(t, err)
+	wire := string(wireBody)
+	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx/mcp"`,
+		"MCP scaffold must import the mcp package")
+	assert.Contains(t, wire, "mcp.Register[EchoIn, EchoOut]",
+		"MCP scaffold must call mcp.Register")
+	assert.Contains(t, wire, `mux.Handle("/mcp",`,
+		"MCP scaffold must mount the JSON-RPC handler")
+	assert.NotContains(t, wire, "{{", "wire.go must be fully rendered")
+
+	makefile, err := os.ReadFile(filepath.Join(out, "Makefile"))
+	require.NoError(t, err)
+	mk := string(makefile)
+	assert.Contains(t, mk, "mcp-smoke", "Makefile must include the smoke-test target")
+	assert.Contains(t, mk, "tools/list",
+		"Makefile smoke-test must call the JSON-RPC tools/list method")
+
+	// go.mod must reference the kit's mcp package so the generated
+	// service can be `go mod tidy`'d cleanly.
+	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/mcp")
+}
+
+func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	}))
+
+	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(wireBody), "mcp.NewServer",
+		"plain scaffold must not pull in MCP scaffolding")
+
+	makefile, err := os.ReadFile(filepath.Join(out, "Makefile"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(makefile), "mcp-smoke",
+		"plain Makefile must not include the smoke-test target")
+
+	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(gomod), "httpx/mcp",
+		"plain go.mod must not declare an mcp dependency")
+}

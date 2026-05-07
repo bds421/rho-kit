@@ -17,6 +17,11 @@ var templatesFS embed.FS
 type Params struct {
 	ServiceName string
 	ModulePath  string
+	// MCP toggles the scaffolded sample MCP tool registration. When
+	// true, wire.go.tmpl includes a `mcp.NewServer` block, and
+	// Makefile.tmpl gains a `mcp-smoke` target that POSTs a
+	// `tools/list` JSON-RPC call against a locally-running service.
+	MCP bool
 }
 
 // templateFile maps a template name to its destination path within

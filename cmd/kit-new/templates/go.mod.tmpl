@@ -1,3 +1,9 @@
 module {{.ModulePath}}
 
 go 1.26.2
+{{if .MCP}}
+// MCP scaffold requires the kit's mcp package. Run `go mod tidy`
+// after generation to populate the require block from the actual
+// imports in internal/app/wire.go.
+require github.com/bds421/rho-kit/httpx/mcp v0.0.0
+{{end}}
