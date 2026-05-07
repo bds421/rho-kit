@@ -6,7 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewPublisher_NotNil(t *testing.T) {
-	p := NewPublisher(nil)
-	assert.NotNil(t, p)
+func TestNewPublisher_PanicsOnNilProducer(t *testing.T) {
+	assert.Panics(t, func() {
+		NewPublisher(nil)
+	})
 }

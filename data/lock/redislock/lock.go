@@ -106,8 +106,12 @@ type Locker struct {
 
 // NewLocker creates a Locker bound to the given Redis client. The options
 // (TTL, retry interval, retry attempts) become the defaults for every
-// Acquire call.
+// Acquire call. Panics if client is nil — a miswired locker would otherwise
+// dereference nil on the first Acquire.
 func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
+	if client == nil {
+		panic("redislock: NewLocker requires a non-nil Redis client")
+	}
 	o := options{ttl: 30 * time.Second}
 	for _, fn := range opts {
 		fn(&o)

@@ -127,8 +127,13 @@ func WithProducerRegisterer(reg prometheus.Registerer) ProducerOption {
 
 // NewProducer creates a producer that writes to Redis streams.
 // The default maximum payload size is 1 MiB. Override with
-// WithProducerMaxPayloadSize. Set to 0 to disable the limit.
+// WithProducerMaxPayloadSize. Set to 0 to disable the limit. Panics if
+// client is nil — a miswired producer would otherwise dereference nil on
+// the first Publish.
 func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Producer {
+	if client == nil {
+		panic("redisstream: NewProducer requires a non-nil Redis client")
+	}
 	p := &Producer{
 		client:         client,
 		logger:         slog.Default(),

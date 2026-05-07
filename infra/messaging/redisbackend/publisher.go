@@ -15,7 +15,11 @@ type Publisher struct {
 }
 
 // NewPublisher creates a Publisher backed by the given StreamProducer.
+// Panics if producer is nil — the wrapper dereferences it on every Publish.
 func NewPublisher(producer *stream.Producer) *Publisher {
+	if producer == nil {
+		panic("redisbackend: NewPublisher requires a non-nil *stream.Producer")
+	}
 	return &Publisher{producer: producer}
 }
 

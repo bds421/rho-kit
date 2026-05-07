@@ -99,9 +99,17 @@ type middlewareConfig struct {
 	logger *slog.Logger
 }
 
-// WithLogger sets the logger for authorization errors.
+// WithLogger sets the logger for authorization errors. A nil logger is
+// normalized to [slog.Default] so test wiring stays ergonomic; the
+// middleware never holds a nil slog.Logger.
 func WithLogger(l *slog.Logger) MiddlewareOption {
-	return func(c *middlewareConfig) { c.logger = l }
+	return func(c *middlewareConfig) {
+		if l == nil {
+			c.logger = slog.Default()
+			return
+		}
+		c.logger = l
+	}
 }
 
 // --- Extractor helpers ---

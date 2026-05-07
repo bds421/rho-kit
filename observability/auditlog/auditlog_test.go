@@ -161,6 +161,12 @@ func TestNew_PanicsOnNilStore(t *testing.T) {
 	assert.Panics(t, func() { New(nil) })
 }
 
+func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
+	store := NewMemoryStore()
+	l := New(store, WithLogger(nil))
+	require.NotNil(t, l.logger)
+}
+
 func TestMemoryStore_QueryFiltersByIPAddress(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()

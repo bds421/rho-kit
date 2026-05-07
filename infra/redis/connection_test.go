@@ -220,6 +220,12 @@ func TestWithMaxReconnectAttempts_IgnoresNegative(t *testing.T) {
 	assert.Equal(t, 0, conn.maxReconnectAttempts) // default (unlimited)
 }
 
+func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
+	c := &Connection{}
+	WithLogger(nil)(c)
+	assert.NotNil(t, c.logger)
+}
+
 func TestWithInstance_PanicsOnInvalidName(t *testing.T) {
 	tests := []struct {
 		name     string

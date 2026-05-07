@@ -225,9 +225,16 @@ type Queue struct {
 // Option configures a Queue.
 type Option func(*Queue)
 
-// WithLogger sets the logger.
+// WithLogger sets the logger. A nil logger is normalized to [slog.Default]
+// so the queue never holds a nil slog.Logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(q *Queue) { q.logger = l }
+	return func(q *Queue) {
+		if l == nil {
+			q.logger = slog.Default()
+			return
+		}
+		q.logger = l
+	}
 }
 
 // WithBlockTimeout sets how long BLMOVE blocks waiting for messages.
@@ -316,8 +323,12 @@ func WithConsumerID(id string) Option {
 	}
 }
 
-// NewQueue creates a LIST-based queue.
+// NewQueue creates a LIST-based queue. Panics if client is nil — a miswired
+// queue would otherwise dereference nil on the first Push or Pop.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
+	if client == nil {
+		panic("redisqueue: NewQueue requires a non-nil Redis client")
+	}
 	consumerID, err := uuid.NewV7()
 	if err != nil {
 		panic("redis: failed to generate consumer ID: " + err.Error())

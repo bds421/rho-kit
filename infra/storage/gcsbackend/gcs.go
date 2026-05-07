@@ -82,6 +82,9 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 
 // NewWithClient creates a GCSBackend with a custom GCS client for testing.
 func NewWithClient(client *gcsstorage.Client, cfg GCSConfig, opts ...Option) *GCSBackend {
+	if client == nil {
+		panic("gcsbackend: NewWithClient requires a non-nil *storage.Client")
+	}
 	if cfg.Bucket == "" {
 		panic("gcsbackend: GCSConfig.Bucket is required")
 	}

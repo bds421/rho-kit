@@ -24,8 +24,17 @@ type Publisher struct {
 	logger *slog.Logger
 }
 
-// NewPublisher creates a Publisher bound to the given connection.
+// NewPublisher creates a Publisher bound to the given connection. Panics
+// if conn is nil — the publisher dereferences it on every channel open,
+// so accepting nil here would only defer the crash to the first publish.
+// A nil logger is normalized to [slog.Default].
 func NewPublisher(conn Connector, logger *slog.Logger) *Publisher {
+	if conn == nil {
+		panic("amqpbackend: NewPublisher requires a non-nil Connector")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Publisher{conn: conn, logger: logger}
 }
 

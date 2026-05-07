@@ -17,7 +17,16 @@ type Consumer struct {
 }
 
 // NewConsumer creates a Consumer backed by the given StreamConsumer.
+// Panics if consumer is nil — the wrapper dereferences it on every
+// Consume, so accepting nil here would only defer the crash to the
+// first delivery. A nil logger is normalized to [slog.Default].
 func NewConsumer(consumer *stream.Consumer, logger *slog.Logger) *Consumer {
+	if consumer == nil {
+		panic("redisbackend: NewConsumer requires a non-nil *stream.Consumer")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Consumer{consumer: consumer, logger: logger}
 }
 

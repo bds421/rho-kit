@@ -446,3 +446,10 @@ func TestSFTPBackend_WithLogger_NilFallsBackToDefault(t *testing.T) {
 	// The health-failure log path used to nil-deref; verify it now logs cleanly.
 	assert.False(t, b.Healthy())
 }
+
+func TestNewWithClient_PanicsOnNilClient(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		NewWithClient(nil, SFTPConfig{Host: "localhost"})
+	})
+}

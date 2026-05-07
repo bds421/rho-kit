@@ -46,9 +46,16 @@ type Connection struct {
 // ConnOption configures a Connection.
 type ConnOption func(*Connection)
 
-// WithLogger sets a structured logger for connection events.
+// WithLogger sets a structured logger for connection events. A nil logger is
+// normalized to [slog.Default] so test wiring stays ergonomic.
 func WithLogger(l *slog.Logger) ConnOption {
-	return func(c *Connection) { c.logger = l }
+	return func(c *Connection) {
+		if l == nil {
+			c.logger = slog.Default()
+			return
+		}
+		c.logger = l
+	}
 }
 
 // WithMaxReconnectAttempts limits reconnection attempts. 0 means unlimited.

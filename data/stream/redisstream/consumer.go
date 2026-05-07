@@ -269,7 +269,12 @@ func WithConsumerRegisterer(reg prometheus.Registerer) ConsumerOption {
 
 // NewConsumer creates a consumer for the given consumer group.
 // Returns an error if group is empty or the consumer ID cannot be generated.
+// Panics if client is nil — a miswired consumer would otherwise dereference
+// nil on the first Consume.
 func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerOption) (*Consumer, error) {
+	if client == nil {
+		panic("redisstream: NewConsumer requires a non-nil Redis client")
+	}
 	if err := redis.ValidateName(group, "consumer group"); err != nil {
 		return nil, err
 	}

@@ -58,9 +58,16 @@ func WithHealthCheck(d time.Duration) Option {
 	return func(e *Elector) { e.healthCheck = d }
 }
 
-// WithLogger sets the logger. Default: slog.Default.
+// WithLogger sets the logger. A nil logger is normalized to [slog.Default]
+// so the elector never holds a nil slog.Logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(e *Elector) { e.logger = l }
+	return func(e *Elector) {
+		if l == nil {
+			e.logger = slog.Default()
+			return
+		}
+		e.logger = l
+	}
 }
 
 // New constructs an Elector that competes for `key` against every

@@ -151,6 +151,9 @@ func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
 
 // NewWithClient creates an SFTPBackend with a custom client, for testing.
 func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBackend {
+	if client == nil {
+		panic("sftpbackend: NewWithClient requires a non-nil SFTPClient")
+	}
 	b := &SFTPBackend{
 		cfg:       cfg,
 		instance:  "default",

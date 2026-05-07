@@ -100,6 +100,9 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 
 // NewWithClient creates an AzureBackend with a custom BlobClient for testing.
 func NewWithClient(client BlobClient, containerName string, opts ...Option) *AzureBackend {
+	if client == nil {
+		panic("azurebackend: NewWithClient requires a non-nil BlobClient")
+	}
 	if containerName == "" {
 		panic("azurebackend: containerName must not be empty")
 	}

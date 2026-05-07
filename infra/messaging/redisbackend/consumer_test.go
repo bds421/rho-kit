@@ -7,7 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewConsumer_NotNil(t *testing.T) {
-	c := NewConsumer(nil, slog.Default())
-	assert.NotNil(t, c)
+func TestNewConsumer_PanicsOnNilConsumer(t *testing.T) {
+	assert.Panics(t, func() {
+		NewConsumer(nil, slog.Default())
+	})
 }

@@ -132,6 +132,12 @@ func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
 // NewWithClient creates an S3Backend with a custom S3Client and presigner.
 // Intended for testing with mock clients.
 func NewWithClient(client S3Client, presigner S3Presigner, bucket string, opts ...Option) *S3Backend {
+	if client == nil {
+		panic("s3backend: NewWithClient requires a non-nil S3Client")
+	}
+	if presigner == nil {
+		panic("s3backend: NewWithClient requires a non-nil S3Presigner")
+	}
 	if bucket == "" {
 		panic("s3backend: bucket must not be empty")
 	}

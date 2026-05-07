@@ -52,9 +52,17 @@ type Logger struct {
 // Option configures a Logger.
 type Option func(*Logger)
 
-// WithLogger sets the slog logger for error reporting. Default: slog.Default().
+// WithLogger sets the slog logger for error reporting. A nil logger is
+// normalized to [slog.Default] so test wiring stays ergonomic; the audit
+// logger never holds a nil slog.Logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(a *Logger) { a.logger = l }
+	return func(a *Logger) {
+		if l == nil {
+			a.logger = slog.Default()
+			return
+		}
+		a.logger = l
+	}
 }
 
 // New creates an audit Logger backed by the given Store.

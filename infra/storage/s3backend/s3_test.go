@@ -557,3 +557,17 @@ func TestNewPanicsOnEmptyBucket(t *testing.T) {
 		NewWithClient(&mockS3Client{}, &mockPresigner{}, "")
 	})
 }
+
+func TestNewWithClient_PanicsOnNilClient(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		NewWithClient(nil, &mockPresigner{}, "bucket")
+	})
+}
+
+func TestNewWithClient_PanicsOnNilPresigner(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		NewWithClient(&mockS3Client{}, nil, "bucket")
+	})
+}
