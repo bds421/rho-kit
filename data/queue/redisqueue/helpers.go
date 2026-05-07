@@ -228,6 +228,226 @@ func (q *Queue) deadLetter(ctx context.Context, queue, deadQ, data, msgID string
 // reads, instead of head-of-line-blocking the queue at every restart.
 const recoverProcessingBatchSize = 10
 
+// defaultReapInitialDelay is how long the reaper waits before its first
+// pass so freshly-started peers have time to write their heartbeats.
+// Without this delay, a fast-starting reaper could observe a peer that has
+// already started Process but hasn't yet written its heartbeat, and
+// reclaim the peer's in-flight messages (causing duplicate processing).
+const defaultReapInitialDelay = 5 * time.Second
+
+// reaperScanCount bounds how many keys are returned per SCAN cursor pass.
+// Conservative to avoid blocking Redis on large key spaces.
+const reaperScanCount int64 = 256
+
+// reapBatchSize bounds how many entries are reclaimed from a dead
+// consumer's processing list per reaper pass. Bounded so a backlog of
+// stranded entries does not produce a single oversized RPUSH burst.
+const reapBatchSize int64 = 100
+
+// heartbeatRefreshTimeout caps each individual SET/EXPIRE call so a
+// transient Redis stall in the heartbeat goroutine cannot block shutdown.
+const heartbeatRefreshTimeout = 5 * time.Second
+
+// refreshHeartbeat writes the heartbeat key with the configured TTL.
+// Errors are logged but not propagated — heartbeat misses are recoverable
+// (the peer reaper will rediscover us on the next refresh).
+func (q *Queue) refreshHeartbeat(ctx context.Context, heartbeatKey string) {
+	hbCtx, cancel := context.WithTimeout(ctx, heartbeatRefreshTimeout)
+	defer cancel()
+	if err := q.client.Set(hbCtx, heartbeatKey, "1", q.heartbeatTTL).Err(); err != nil {
+		// During shutdown the parent ctx may be cancelled; treat as benign.
+		if ctx.Err() != nil {
+			return
+		}
+		q.logger.Warn("failed to refresh heartbeat",
+			"consumer_id", q.consumerID,
+			"error", err,
+		)
+	}
+}
+
+// heartbeatLoop refreshes the heartbeat key at heartbeatInterval. Stops on
+// ctx cancellation. Does NOT delete the key on shutdown — the TTL handles
+// that, and leaving the key alive briefly past shutdown is the correct
+// posture: it gives any in-flight processing-list entries to be re-popped
+// on restart by the same consumer ID (when WithConsumerID is used).
+func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string) {
+	ticker := time.NewTicker(q.heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			q.refreshHeartbeat(ctx, heartbeatKey)
+		}
+	}
+}
+
+// reaperLoop periodically scans for processing lists owned by dead
+// consumers (heartbeat key missing) and reclaims their entries. Stops on
+// ctx cancellation. The cadence is tied to the heartbeat TTL: we wait at
+// least one TTL between passes so a peer that briefly stalled doesn't get
+// erroneously reclaimed.
+func (q *Queue) reaperLoop(
+	ctx context.Context,
+	queue, heartbeatPrefix, processingPrefix, ownProcessingQ, deadQ string,
+	handler Handler,
+) {
+	initialDelay := q.reapInitialDelay
+	if initialDelay <= 0 {
+		initialDelay = defaultReapInitialDelay
+	}
+	// Initial delay: let any fresh peers write heartbeats first.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(initialDelay):
+	}
+
+	q.reapDeadConsumers(ctx, queue, heartbeatPrefix, processingPrefix, ownProcessingQ, deadQ, handler)
+
+	ticker := time.NewTicker(q.heartbeatTTL)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			q.reapDeadConsumers(ctx, queue, heartbeatPrefix, processingPrefix, ownProcessingQ, deadQ, handler)
+		}
+	}
+}
+
+// reapDeadConsumers scans for stranded processing lists and reclaims them.
+// A processing list is "stranded" when its consumer ID has no live
+// heartbeat key. Reclaim is idempotent — entries are RPUSHed onto the main
+// queue and then LREMed from the dead list one at a time, so a crash mid-
+// reclaim leaves at most one duplicate (and handlers MUST be idempotent).
+func (q *Queue) reapDeadConsumers(
+	ctx context.Context,
+	queue, heartbeatPrefix, processingPrefix, ownProcessingQ, deadQ string,
+	handler Handler,
+) {
+	processingPattern := processingPrefix + "*"
+	var cursor uint64
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		keys, next, err := q.client.Scan(ctx, cursor, processingPattern, reaperScanCount).Result()
+		if err != nil {
+			if ctx.Err() == nil {
+				q.logger.Warn("processing-list scan failed",
+					"queue", queue,
+					"error", err,
+				)
+			}
+			return
+		}
+		for _, key := range keys {
+			if key == ownProcessingQ {
+				continue
+			}
+			deadConsumerID := key[len(processingPrefix):]
+			if deadConsumerID == "" {
+				continue
+			}
+			heartbeatKey := heartbeatPrefix + deadConsumerID
+			alive, err := q.client.Exists(ctx, heartbeatKey).Result()
+			if err != nil {
+				if ctx.Err() == nil {
+					q.logger.Warn("heartbeat existence check failed",
+						"queue", queue,
+						"dead_consumer_id", deadConsumerID,
+						"error", err,
+					)
+				}
+				continue
+			}
+			if alive > 0 {
+				continue
+			}
+			q.reclaimProcessingList(ctx, queue, key, deadConsumerID)
+		}
+		if next == 0 {
+			return
+		}
+		cursor = next
+	}
+}
+
+// reclaimProcessingList moves entries from a dead consumer's processing
+// list back to the main queue tail and deletes the list. Bounded by
+// reapBatchSize per pass so one giant stranded list cannot dominate a
+// single pass. Called only after the heartbeat has been verified missing.
+func (q *Queue) reclaimProcessingList(ctx context.Context, queue, deadProcessingQ, deadConsumerID string) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		items, err := q.client.LRange(ctx, deadProcessingQ, -reapBatchSize, -1).Result()
+		if err != nil {
+			if ctx.Err() == nil {
+				q.logger.Warn("dead-list LRange failed",
+					"queue", queue,
+					"dead_consumer_id", deadConsumerID,
+					"error", err,
+				)
+			}
+			return
+		}
+		if len(items) == 0 {
+			// List is empty — delete it so it doesn't reappear in the next scan.
+			if err := q.client.Del(ctx, deadProcessingQ).Err(); err != nil && ctx.Err() == nil {
+				q.logger.Warn("dead-list cleanup Del failed",
+					"queue", queue,
+					"dead_consumer_id", deadConsumerID,
+					"error", err,
+				)
+			}
+			return
+		}
+
+		q.logger.Info("reclaiming entries from dead consumer's processing list",
+			"queue", queue,
+			"dead_consumer_id", deadConsumerID,
+			"count", len(items),
+		)
+
+		// Process oldest first (tail-of-list = earliest-claimed), one at a
+		// time, so each entry's RPUSH-then-LREM is sequential. Avoids a
+		// pipeline that could leave the queue with N duplicates if one
+		// command failed mid-pipeline.
+		for i := len(items) - 1; i >= 0; i-- {
+			if ctx.Err() != nil {
+				return
+			}
+			data := items[i]
+			if err := q.client.RPush(ctx, queue, data).Err(); err != nil {
+				if ctx.Err() == nil {
+					q.logger.Warn("RPush to main queue failed during reclaim",
+						"queue", queue,
+						"dead_consumer_id", deadConsumerID,
+						"error", err,
+					)
+				}
+				return
+			}
+			if err := q.client.LRem(ctx, deadProcessingQ, 1, data).Err(); err != nil && ctx.Err() == nil {
+				q.logger.Warn("LRem from dead list failed during reclaim",
+					"queue", queue,
+					"dead_consumer_id", deadConsumerID,
+					"error", err,
+				)
+				// Don't return — main queue already has the entry; continue
+				// so we don't re-RPUSH the same data infinitely.
+			}
+		}
+	}
+}
+
 // recoverProcessing replays up to [recoverProcessingBatchSize] messages
 // left in THIS consumer's processing list (e.g. from a previous crash of
 // this consumer ID) through the normal handleMessage path.

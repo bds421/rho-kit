@@ -26,6 +26,19 @@ const (
 	// Override with WithMaxPayloadSize. Set to 0 to disable the limit.
 	// Kept in sync with stream.defaultStreamMaxPayloadSize.
 	defaultMaxPayloadSize = 1 << 20 // 1 MiB
+
+	// defaultHeartbeatTTL is how long an active consumer's heartbeat key
+	// lives in Redis before expiring. Recovery treats a missing heartbeat as
+	// proof that the owning consumer is dead and its processing list can be
+	// reclaimed safely.
+	defaultHeartbeatTTL = 60 * time.Second
+
+	// defaultHeartbeatInterval is how often Process refreshes its heartbeat
+	// key. Set to TTL/3 to tolerate transient failures and clock skew.
+	defaultHeartbeatInterval = 20 * time.Second
+
+	// heartbeatSuffix is the key suffix used by the heartbeat scheme.
+	heartbeatSuffix = "heartbeat"
 )
 
 // Message is a message stored in a Redis LIST-based queue.
@@ -214,6 +227,21 @@ type Queue struct {
 	deadLetterMax  int64 // max entries in dead-letter queue; 0 = no limit
 	maxPayloadSize int   // max message size in bytes; 0 = no limit
 
+	// heartbeatTTL is the lifetime of the per-consumer heartbeat key. Recovery
+	// considers a consumer dead when its heartbeat key has expired.
+	heartbeatTTL time.Duration
+
+	// heartbeatInterval is how often the Process loop refreshes the heartbeat key.
+	heartbeatInterval time.Duration
+
+	// recoveryEnabled toggles startup-and-periodic reclaim of stranded
+	// processing lists from dead consumers. Default true.
+	recoveryEnabled bool
+
+	// reapInitialDelay overrides the default reaper warm-up delay. Used by
+	// tests to avoid waiting the full default. Zero means use the default.
+	reapInitialDelay time.Duration
+
 	metrics *Metrics
 
 	// activeQueues tracks which queue names have an active Process goroutine
@@ -323,6 +351,38 @@ func WithConsumerID(id string) Option {
 	}
 }
 
+// WithHeartbeatTTL sets the lifetime of the per-consumer heartbeat key
+// used by recovery to detect dead consumers. Values <= 0 are ignored.
+// Default is 60s. Must be greater than [WithHeartbeatInterval].
+func WithHeartbeatTTL(d time.Duration) Option {
+	return func(q *Queue) {
+		if d > 0 {
+			q.heartbeatTTL = d
+		}
+	}
+}
+
+// WithHeartbeatInterval sets how often the Process loop refreshes its
+// heartbeat key. Values <= 0 are ignored. Default is 20s. Must be less
+// than [WithHeartbeatTTL].
+func WithHeartbeatInterval(d time.Duration) Option {
+	return func(q *Queue) {
+		if d > 0 {
+			q.heartbeatInterval = d
+		}
+	}
+}
+
+// WithRecoveryEnabled toggles automatic reclaim of stranded processing
+// lists left behind by dead consumers (detected via missing heartbeat).
+// Default true. Disable only if you have an external reaper or know that
+// consumers always shut down cleanly.
+func WithRecoveryEnabled(enabled bool) Option {
+	return func(q *Queue) {
+		q.recoveryEnabled = enabled
+	}
+}
+
 // NewQueue creates a LIST-based queue. Panics if client is nil — a miswired
 // queue would otherwise dereference nil on the first Push or Pop.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
@@ -334,15 +394,18 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 		panic("redis: failed to generate consumer ID: " + err.Error())
 	}
 	q := &Queue{
-		client:         client,
-		logger:         slog.Default(),
-		consumerID:     consumerID.String(),
-		blockTimeout:   5 * time.Second,
-		maxRetries:     5,
-		deadLetterMax:  defaultDeadLetterMaxLen,
-		maxPayloadSize: defaultMaxPayloadSize,
-		metrics:        defaultMetrics,
-		activeQueues:   make(map[string]bool),
+		client:            client,
+		logger:            slog.Default(),
+		consumerID:        consumerID.String(),
+		blockTimeout:      5 * time.Second,
+		maxRetries:        5,
+		deadLetterMax:     defaultDeadLetterMaxLen,
+		maxPayloadSize:    defaultMaxPayloadSize,
+		heartbeatTTL:      defaultHeartbeatTTL,
+		heartbeatInterval: defaultHeartbeatInterval,
+		recoveryEnabled:   true,
+		metrics:           defaultMetrics,
+		activeQueues:      make(map[string]bool),
 	}
 	for _, o := range opts {
 		o(q)
@@ -424,10 +487,14 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 // Important: handlers must be idempotent, as messages may be redelivered
 // after crashes (messages are recovered from the processing queue on restart).
 //
-// Panics if queue name is empty (programming error — fail fast).
+// Panics if queue name is empty or handler is nil (programming errors —
+// fail fast at startup rather than on the first message).
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		panic("redis: " + err.Error())
+	}
+	if handler == nil {
+		panic("redisqueue: Queue.Process requires a non-nil handler")
 	}
 
 	// Guard against concurrent Process on the same queue name.
@@ -463,10 +530,53 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if q.deadLetterQueue != "" {
 		deadQ = queue + ":" + q.deadLetterQueue
 	}
+	processingPrefix := queue + ":" + processingSuffix + ":"
+	heartbeatKey := queue + ":" + heartbeatSuffix + ":" + q.consumerID
+	heartbeatPrefix := queue + ":" + heartbeatSuffix + ":"
+
+	// Write our heartbeat synchronously before starting recovery so that any
+	// peer running recovery against us sees us as alive.
+	q.refreshHeartbeat(ctx, heartbeatKey)
+
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	defer bgCancel()
+
+	bgWG := q.startBackgroundLoops(bgCtx, queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
+	defer bgWG.Wait()
 
 	redis.RunWithBackoff(ctx, q.logger, "queue processor", func(ctx context.Context) error {
 		return q.processOnce(ctx, queue, processingQ, deadQ, handler)
 	})
+}
+
+// startBackgroundLoops launches the heartbeat refresh goroutine and (when
+// recovery is enabled) the dead-consumer reaper goroutine. Both stop when
+// ctx is cancelled. Returns a WaitGroup so Process can wait for them on
+// shutdown — the heartbeat key is intentionally NOT deleted at shutdown so
+// that any in-flight reclaim by a peer fails closed (peer sees the key still
+// alive, defers deletion of the processing list to the next reaper pass).
+func (q *Queue) startBackgroundLoops(
+	ctx context.Context,
+	queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ string,
+	handler Handler,
+) *sync.WaitGroup {
+	wg := &sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q.heartbeatLoop(ctx, heartbeatKey)
+	}()
+
+	if q.recoveryEnabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			q.reaperLoop(ctx, queue, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
+		}()
+	}
+
+	return wg
 }
 
 func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ string, handler Handler) error {

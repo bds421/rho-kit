@@ -2,7 +2,10 @@ package redisqueue
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,10 +15,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+// testWriter routes slog output to t.Log so failure traces include logs
+// and successful runs stay quiet under -v.
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(p))
+	return len(p), nil
+}
+
 func newTestClient(t *testing.T) goredis.UniversalClient {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	return goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+}
+
+func newTestClientWithMR(t *testing.T) (goredis.UniversalClient, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	return goredis.NewClient(&goredis.Options{Addr: mr.Addr()}), mr
 }
 
 func TestNewMessage(t *testing.T) {
@@ -188,6 +208,182 @@ func TestRemoveByID_ScopedToMessageID(t *testing.T) {
 	require.Len(t, remaining, 1)
 	assert.Contains(t, remaining[0], `"id":"id-A"`,
 		"removeByID must keep the message whose ID was NOT specified")
+}
+
+func TestProcess_PanicsOnNilHandler(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	assert.PanicsWithValue(t,
+		"redisqueue: Queue.Process requires a non-nil handler",
+		func() {
+			q.Process(context.TODO(), "test:queue", nil)
+		},
+	)
+}
+
+// TestReapDeadConsumers_ReclaimsStrandedEntries simulates an "old consumer"
+// by writing entries directly into a `queue:processing:<old-id>` list with
+// NO heartbeat key. A fresh queue with default config starts and the
+// reaper must move those entries to the main queue tail so the new
+// consumer picks them up.
+func TestReapDeadConsumers_ReclaimsStrandedEntries(t *testing.T) {
+	client, _ := newTestClientWithMR(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	queueName := "test:queue:reclaim"
+	deadProcessing := queueName + ":processing:dead-consumer"
+
+	// Stranded entries left by the "old consumer".
+	msgA, err := NewMessage("job", map[string]string{"k": "a"})
+	require.NoError(t, err)
+	msgB, err := NewMessage("job", map[string]string{"k": "b"})
+	require.NoError(t, err)
+	dataA, err := jsonMarshal(msgA)
+	require.NoError(t, err)
+	dataB, err := jsonMarshal(msgB)
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, deadProcessing, dataA).Err())
+	require.NoError(t, client.LPush(ctx, deadProcessing, dataB).Err())
+
+	// Fresh queue with stable consumer ID and tight heartbeat windows
+	// so the test does not need to wait for a 60s TTL.
+	q := NewQueue(client,
+		WithConsumerID("live-consumer"),
+		WithLogger(slog.New(slog.NewTextHandler(testWriter{t}, nil))),
+	)
+
+	// Run the reaper directly so we don't need a Process loop.
+	processingPrefix := queueName + ":processing:"
+	heartbeatPrefix := queueName + ":heartbeat:"
+	ownProcessing := processingPrefix + q.consumerID
+
+	q.reapDeadConsumers(ctx, queueName, heartbeatPrefix, processingPrefix, ownProcessing, queueName+":dead", nil)
+
+	// Both entries must be back on the main queue.
+	mainLen, err := client.LLen(ctx, queueName).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), mainLen, "stranded entries must be reclaimed to the main queue")
+
+	// Dead processing list must be drained.
+	deadLen, err := client.LLen(ctx, deadProcessing).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), deadLen)
+}
+
+// TestReapDeadConsumers_SkipsLiveConsumers ensures a peer with a live
+// heartbeat is NOT reclaimed.
+func TestReapDeadConsumers_SkipsLiveConsumers(t *testing.T) {
+	client, _ := newTestClientWithMR(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	queueName := "test:queue:peer"
+	peerProcessing := queueName + ":processing:peer-consumer"
+	peerHeartbeat := queueName + ":heartbeat:peer-consumer"
+
+	msg, err := NewMessage("job", "data")
+	require.NoError(t, err)
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, peerProcessing, data).Err())
+	// Peer is alive — heartbeat key present.
+	require.NoError(t, client.Set(ctx, peerHeartbeat, "1", time.Minute).Err())
+
+	q := NewQueue(client, WithConsumerID("self"))
+	processingPrefix := queueName + ":processing:"
+	heartbeatPrefix := queueName + ":heartbeat:"
+	ownProcessing := processingPrefix + q.consumerID
+
+	q.reapDeadConsumers(ctx, queueName, heartbeatPrefix, processingPrefix, ownProcessing, queueName+":dead", nil)
+
+	// Peer's processing list must remain untouched.
+	peerLen, err := client.LLen(ctx, peerProcessing).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), peerLen, "live peer's processing list must NOT be reclaimed")
+
+	mainLen, err := client.LLen(ctx, queueName).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), mainLen)
+}
+
+// TestProcess_RecoversFromDeadConsumerOnStartup is an end-to-end test:
+// stranded entries in a dead consumer's processing list are dispatched to
+// a fresh consumer's handler shortly after Process starts.
+func TestProcess_RecoversFromDeadConsumerOnStartup(t *testing.T) {
+	client, _ := newTestClientWithMR(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	queueName := "test:queue:e2e:recover"
+	deadProcessing := queueName + ":processing:old-pod"
+
+	msg, err := NewMessage("job", map[string]string{"data": "stranded"})
+	require.NoError(t, err)
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, deadProcessing, data).Err())
+
+	q := NewQueue(client,
+		WithConsumerID("new-pod"),
+		WithBlockTimeout(time.Second),
+		WithHeartbeatTTL(2*time.Second),
+		WithHeartbeatInterval(500*time.Millisecond),
+		WithLogger(slog.New(slog.NewTextHandler(testWriter{t}, nil))),
+	)
+	q.reapInitialDelay = 50 * time.Millisecond
+
+	var received atomic.Int32
+	processCtx, processCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		q.Process(processCtx, queueName, func(_ context.Context, m Message) error {
+			if m.ID == msg.ID {
+				received.Add(1)
+				processCancel()
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Process never received the stranded message")
+	}
+
+	assert.GreaterOrEqual(t, received.Load(), int32(1), "the stranded message must reach the new consumer's handler")
+}
+
+func TestStartProcessors_PanicsOnNilQueue(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = StartProcessors(context.TODO(), nil, nil, &sync.WaitGroup{}, slog.Default(), nil)
+	})
+}
+
+func TestStartProcessors_PanicsOnNilWaitGroup(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	assert.Panics(t, func() {
+		_ = StartProcessors(context.TODO(), q, nil, nil, slog.Default(), nil)
+	})
+}
+
+func TestStartProcessors_NilLoggerNormalized(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	err := StartProcessors(context.TODO(), q, nil, &sync.WaitGroup{}, nil, nil)
+	require.NoError(t, err)
 }
 
 func TestRemoveByID_NoMatchIsBenign(t *testing.T) {

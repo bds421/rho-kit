@@ -306,12 +306,16 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 // Blocks until ctx is cancelled.
 //
 // A single Consumer instance must be used for exactly one stream — see
-// the [Consumer] doc. Panics if stream name is empty (programming error)
-// or if Consume has already been called for this Consumer (multi-stream
-// usage). Use [StartConsumers] for multi-stream services.
+// the [Consumer] doc. Panics if stream name is empty, handler is nil
+// (programming errors), or if Consume has already been called for this
+// Consumer (multi-stream usage). Use [StartConsumers] for multi-stream
+// services.
 func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) {
 	if err := redis.ValidateName(stream, "stream"); err != nil {
 		panic("redis: " + err.Error())
+	}
+	if handler == nil {
+		panic("redisstream: Consumer.Consume requires a non-nil handler")
 	}
 	if !c.consumed.CompareAndSwap(false, true) {
 		panic("redisstream: Consumer.Consume called for a second stream — create a separate Consumer per stream (see StartConsumers)")
@@ -392,9 +396,48 @@ func (c *Consumer) consumeOnce(ctx context.Context, stream string, handler Handl
 // removeConsumer removes this consumer from the consumer group to prevent
 // accumulation of stale consumer entries in Redis. Only logs on failure —
 // stale consumers are harmless (they just waste a small amount of memory).
+//
+// CRITICAL: Redis XGROUP DELCONSUMER deletes the named consumer AND its
+// pending entries list (PEL) entries. The group's last-delivered-ID has
+// already advanced past those entries, so a "> " read will not redeliver
+// them. If we delete a consumer with pending entries, those messages are
+// silently lost — even though they could otherwise be recovered by
+// XAUTOCLAIM or by processPending after restart.
+//
+// To preserve durability, only delete this consumer when its PEL is empty.
+// A consumer with pending entries is left in place so XAUTOCLAIM (running
+// in sibling consumers) can recover the messages after claimMinIdle.
 func (c *Consumer) removeConsumer(stream string) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), consumerCleanupTimeout)
 	defer cancel()
+
+	pending, err := c.client.XPendingExt(cleanupCtx, &goredis.XPendingExtArgs{
+		Stream:   stream,
+		Group:    c.group,
+		Start:    "-",
+		End:      "+",
+		Count:    1,
+		Consumer: c.consumer,
+	}).Result()
+	if err != nil {
+		c.logger.Warn("failed to check pending entries before consumer cleanup, skipping deletion to preserve durability",
+			"stream", stream,
+			"group", c.group,
+			"consumer", c.consumer,
+			"error", err,
+		)
+		return
+	}
+	if len(pending) > 0 {
+		c.logger.Info("consumer has pending entries, leaving in group for XAUTOCLAIM recovery",
+			"stream", stream,
+			"group", c.group,
+			"consumer", c.consumer,
+			"pending_count", len(pending),
+		)
+		return
+	}
+
 	if err := c.client.XGroupDelConsumer(cleanupCtx, stream, c.group, c.consumer).Err(); err != nil {
 		c.logger.Warn("failed to remove consumer from group",
 			"stream", stream,

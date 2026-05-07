@@ -27,7 +27,8 @@ type Binding struct {
 // non-nil) is called to trigger graceful shutdown.
 //
 // Returns an error if any binding is malformed or if cloning the
-// prototype fails (UUID generation error).
+// prototype fails (UUID generation error). Panics if consumer or wg is
+// nil (programming errors); a nil logger is normalized to [slog.Default].
 func StartConsumers(
 	ctx context.Context,
 	consumer *Consumer,
@@ -36,6 +37,16 @@ func StartConsumers(
 	logger *slog.Logger,
 	shutdownFn func(),
 ) error {
+	if consumer == nil {
+		panic("redisstream: StartConsumers requires a non-nil consumer")
+	}
+	if wg == nil {
+		panic("redisstream: StartConsumers requires a non-nil sync.WaitGroup")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	for i, b := range bindings {
 		if b.Stream == "" {
 			return &redis.BindingError{Index: i, Reason: "stream name must not be empty"}
