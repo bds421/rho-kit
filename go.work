@@ -27,6 +27,7 @@ use (
 	./data/stream/redisstream
 	./grpcx
 	./httpx
+	./httpx/middleware/approval
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
