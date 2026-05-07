@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
-	kitcfg "github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/resilience/retry"
 )
 
@@ -212,8 +210,12 @@ func WithExpectedAudience(audience string) ProviderOption {
 // issued by any authority. Use ONLY when a service genuinely federates
 // across many issuers — even then, prefer accepting a known set with a
 // custom predicate at the application layer rather than turning issuer
-// validation off wholesale. Without this option, [NewProvider] panics in
-// non-development environments when no expected issuer is configured.
+// validation off wholesale.
+//
+// At the kit's application layer ([app.Builder]), the always-on validator
+// rejects [app.Builder.WithJWT] without a paired [app.Builder.WithJWTIssuer]
+// or the explicit [app.Builder.WithoutJWTIssuer]; this option lets a
+// hand-constructed Provider mirror that explicit opt-out.
 func WithAllowAnyIssuer() ProviderOption {
 	return func(p *Provider) { p.allowAnyIssuer = true }
 }
@@ -244,13 +246,12 @@ func withClock(fn func() time.Time) ProviderOption {
 // If httpClient is nil, a default client with a 5s timeout is used.
 // If refresh <= 0, it defaults to 10 minutes.
 //
-// Panics in non-development environments when called without
-// [WithExpectedIssuer] (or the explicit [WithAllowAnyIssuer] opt-out).
-// Without an expected issuer, the verifier accepts any token from any
-// authority that the JWKS server happens to advertise — the inverse of the
-// audience check, and just as load-bearing for confused-deputy defence.
-// KIT_ENV (or the deprecated APP_ENV) decides whether the panic fires;
-// see [kitcfg.IsDevelopment].
+// Issuer enforcement is the caller's responsibility — pass
+// [WithExpectedIssuer] for the standard case, or [WithAllowAnyIssuer]
+// to declare explicitly that the verifier accepts any authority. The
+// kit's [app.Builder] enforces this pairing at startup via the
+// always-on production-safety validator; standalone callers should
+// follow the same pattern.
 func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opts ...ProviderOption) *Provider {
 	if httpClient == nil {
 		httpClient = defaultHTTPClient()
@@ -270,15 +271,6 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 	}
 	if p.clock == nil {
 		p.clock = time.Now
-	}
-	if p.expectedIssuer == "" && !p.allowAnyIssuer {
-		env := os.Getenv("KIT_ENV")
-		if env == "" {
-			env = os.Getenv("APP_ENV")
-		}
-		if !kitcfg.IsDevelopment(env) {
-			panic("jwtutil: NewProvider requires WithExpectedIssuer in non-dev environments — pass WithAllowAnyIssuer to opt out of issuer validation (NOT recommended)")
-		}
 	}
 	return p
 }

@@ -11,25 +11,22 @@
 // pgx and the gorm driver are mutually exclusive in app.Builder — pick one
 // per service.
 //
-// TLS: Connect rejects sslmode=disable in non-development environments
-// (KIT_ENV / APP_ENV). Pass an explicit sslmode in the DSN — `require`,
-// `verify-ca`, or `verify-full`. Loose modes (`prefer`, `allow`) are
-// rejected too because they fall back to plaintext on a TLS handshake
-// error.
+// TLS: Connect always rejects sslmode=disable. Pass an explicit
+// sslmode in the DSN — `require`, `verify-ca`, or `verify-full`.
+// Loose modes (`prefer`, `allow`) are rejected too because they fall
+// back to plaintext on a TLS handshake error. There is no KIT_ENV
+// escape hatch — production-safe defaults are unconditional.
 package pgx
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	kitcfg "github.com/bds421/rho-kit/core/config"
 )
 
 // Config bundles the pgxpool tuning knobs the kit wants to be opinionated
@@ -37,8 +34,15 @@ import (
 // `pgxpool.Config` returned by [ConfigToPgxPool].
 type Config struct {
 	// DSN is the libpq-style connection string. The sslmode parameter is
-	// inspected at Connect time to enforce TLS in non-dev.
+	// inspected at Connect time and must be require/verify-ca/verify-full.
 	DSN string
+
+	// AllowPlaintext opts out of the unconditional sslmode check. Use
+	// only for tests against a local fixture (testcontainers, embedded
+	// postgres) where TLS is impractical and the connection never
+	// crosses a network boundary. Production deployments must leave
+	// this false.
+	AllowPlaintext bool
 
 	// MaxConns caps the pool. Default: 25 (mirrors gormpostgres).
 	MaxConns int32
@@ -66,8 +70,10 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("pgx: DSN must not be empty")
 	}
-	if err := requireTLSInProd(cfg.DSN); err != nil {
-		return nil, err
+	if !cfg.AllowPlaintext {
+		if err := requireTLS(cfg.DSN); err != nil {
+			return nil, err
+		}
 	}
 
 	pcfg, err := pgxpool.ParseConfig(cfg.DSN)
@@ -230,27 +236,20 @@ func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
 	}
 }
 
-// requireTLSInProd inspects the DSN's sslmode parameter and rejects
-// unsafe values when KIT_ENV (or the deprecated APP_ENV) names a non-dev
-// environment. Mirrors infra/sqldb's IsTLSEnabled tightening.
-func requireTLSInProd(dsn string) error {
-	env := os.Getenv("KIT_ENV")
-	if env == "" {
-		env = os.Getenv("APP_ENV")
-	}
-	if kitcfg.IsDevelopment(env) {
-		return nil
-	}
+// requireTLS inspects the DSN's sslmode parameter and rejects unsafe
+// values unconditionally — production-safe TLS settings are the kit's
+// only mode. Mirrors infra/sqldb's IsTLSEnabled tightening.
+func requireTLS(dsn string) error {
 	mode := extractSSLMode(dsn)
 	switch strings.ToLower(mode) {
 	case "require", "verify-ca", "verify-full":
 		return nil
 	case "":
-		return fmt.Errorf("pgx: production: DSN must set sslmode (require/verify-ca/verify-full)")
+		return fmt.Errorf("pgx: DSN must set sslmode (require/verify-ca/verify-full)")
 	case "allow", "prefer", "disable":
-		return fmt.Errorf("pgx: production: sslmode=%q falls back to plaintext on TLS handshake error; use require/verify-ca/verify-full", mode)
+		return fmt.Errorf("pgx: sslmode=%q falls back to plaintext on TLS handshake error; use require/verify-ca/verify-full", mode)
 	default:
-		return fmt.Errorf("pgx: production: sslmode=%q is unrecognized", mode)
+		return fmt.Errorf("pgx: sslmode=%q is unrecognized", mode)
 	}
 }
 

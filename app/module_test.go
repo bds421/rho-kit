@@ -334,6 +334,8 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 	}
 
 	b := New("fail-test", "v0.0.1", cfg).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithModule(mod1).
 		WithModule(mod2).
 		Router(func(infra Infrastructure) http.Handler {
@@ -368,6 +370,8 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 	// Use a background goroutine that immediately errors out to trigger
 	// shutdown without needing SIGINT.
 	b := New("populate-test", "v0.0.1", cfg).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithModule(mod).
 		Router(func(infra Infrastructure) http.Handler {
 			routerSawPopulate.Store(populateCalled.Load())

@@ -159,9 +159,9 @@ type zeroFileInfo struct {
 	size int64
 }
 
-func (z zeroFileInfo) Name() string      { return path.Base(z.name) }
-func (z zeroFileInfo) Size() int64       { return z.size }
-func (z zeroFileInfo) Mode() fs.FileMode { return 0o444 }
+func (z zeroFileInfo) Name() string       { return path.Base(z.name) }
+func (z zeroFileInfo) Size() int64        { return z.size }
+func (z zeroFileInfo) Mode() fs.FileMode  { return 0o444 }
 func (z zeroFileInfo) ModTime() time.Time { return time.Time{} }
-func (z zeroFileInfo) IsDir() bool       { return false }
-func (z zeroFileInfo) Sys() any          { return nil }
+func (z zeroFileInfo) IsDir() bool        { return false }
+func (z zeroFileInfo) Sys() any           { return nil }

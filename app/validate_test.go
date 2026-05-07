@@ -12,8 +12,15 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 )
 
+// newTestBuilder constructs a Builder with the always-on
+// production-safety validator's TLS / audience checks opted out so
+// individual tests can focus on the configuration knob they care
+// about. Tests that exercise TLS or audience enforcement build their
+// own Builder without these opt-outs.
 func newTestBuilder() *Builder {
-	return New("test-svc", "v0.1.0", BaseConfig{})
+	return New("test-svc", "v0.1.0", BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience()
 }
 
 func TestValidate_NilBuilder(t *testing.T) {
@@ -46,7 +53,9 @@ func TestValidate_DatabaseWithoutPool(t *testing.T) {
 func TestValidate_DatabaseWithPool(t *testing.T) {
 	b := newTestBuilder()
 	b.dbDriver = gormpostgres.PostgresDriver{}
-	b.dbCfg = &sqldb.Config{Host: "localhost"}
+	// Postgres requires an explicit TLS-enforcing sslmode under the
+	// always-on validator; this test only cares that pool + driver pass.
+	b.dbCfg = &sqldb.Config{Host: "localhost", Options: map[string]string{"sslmode": "require"}}
 	b.dbPoolCfg = &sqldb.PoolConfig{}
 	if err := b.Validate(); err != nil {
 		t.Fatalf("expected no error, got: %v", err)

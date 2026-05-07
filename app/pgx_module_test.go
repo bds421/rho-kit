@@ -39,6 +39,8 @@ func TestWithPgx_RegistersOnBuilder(t *testing.T) {
 
 func TestValidate_RejectsPgxAndPostgresTogether(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithPostgres(sqldb.Config{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db",
 			Options: map[string]string{"sslmode": "require"}}, sqldb.DefaultPool()).
 		WithPgx(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"})
@@ -50,6 +52,8 @@ func TestValidate_RejectsPgxAndPostgresTogether(t *testing.T) {
 
 func TestValidate_AllowsPgxAlone(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithPgx(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"})
 	require.NoError(t, b.Validate())
 }

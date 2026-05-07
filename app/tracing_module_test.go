@@ -57,7 +57,6 @@ func TestBuildIntegrationModules_NoTracing(t *testing.T) {
 }
 
 func TestBuildIntegrationModules_TracingOrder(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
 	b := New("test", "v1", BaseConfig{}).
 		WithTracing(tracing.Config{ServiceName: "test"}).
 		WithJWT("https://example.com/.well-known/jwks.json")

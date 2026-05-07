@@ -7,6 +7,14 @@ import (
 
 // Validate checks for common configuration mistakes before startup.
 // Callers may use this directly, but Run calls it automatically.
+//
+// All checks run unconditionally. The kit does not have a development
+// mode — production safety is the only mode. Each tightening can be
+// individually relaxed via an explicit Without*() opt-out (e.g.
+// [Builder.WithoutTLS], [Builder.WithInternalNonLoopback],
+// [Builder.WithoutJWTIssuer], [Builder.WithoutJWTAudience]). Those
+// opt-outs are deliberate, documented declarations — they are not
+// gated on KIT_ENV.
 func (b *Builder) Validate() error {
 	if b == nil {
 		return fmt.Errorf("builder is nil")
@@ -50,49 +58,44 @@ func (b *Builder) Validate() error {
 
 	// H-4: WithTenantBudget without WithMultiTenant fails open silently —
 	// the default TenantKeyFunc returns no key, the budget middleware
-	// short-circuits, and no enforcement happens. Reject the combination
-	// regardless of WithProductionDefaults so dev environments surface
-	// the misconfiguration too.
+	// short-circuits, and no enforcement happens.
 	if b.budgetSpec != nil && b.tenantSpec == nil {
 		return fmt.Errorf("WithTenantBudget requires WithMultiTenant — without it the default TenantKeyFunc returns no key and budget enforcement is silently skipped")
 	}
 
-	if b.productionDefaults {
-		if err := b.validateProductionDefaults(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return b.validateProductionSafety()
 }
 
-// validateProductionDefaults runs the [Builder.WithProductionDefaults]
-// tightenings. Returns nil when every required knob has been set.
-func (b *Builder) validateProductionDefaults() error {
-	// JWT: must specify issuer or explicitly opt-out.
+// validateProductionSafety runs the always-on production-shape
+// tightenings: JWT issuer/audience pinning, TLS, internal-host loopback,
+// Postgres TLS sslmode, and tracing sample-rate cap. Each is
+// individually relaxable via an explicit Without*() opt-out.
+func (b *Builder) validateProductionSafety() error {
+	// JWT: must specify issuer or explicitly opt out via WithoutJWTIssuer.
 	if b.jwksURL != "" && b.jwtIssuer == "" && !b.jwtAllowAnyIssue {
-		return fmt.Errorf("production: WithJWT requires WithJWTIssuer or the explicit WithJWTAllowAnyIssuer opt-out")
+		return fmt.Errorf("WithJWT requires WithJWTIssuer or the explicit WithoutJWTIssuer opt-out")
 	}
 
 	// H-5: JWT audience pinning is the standard confused-deputy mitigation
 	// (RFC 7519 §4.1.3). Without it, a token minted for a sibling service
 	// that trusts the same JWKS is silently accepted.
 	if b.jwksURL != "" && b.jwtAudience == "" && !b.jwtAllowAnyAudience {
-		return fmt.Errorf("production: WithJWT requires WithJWTAudience or the explicit WithJWTAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
+		return fmt.Errorf("WithJWT requires WithJWTAudience or the explicit WithoutJWTAudience opt-out (RFC 7519 confused-deputy mitigation)")
 	}
 
 	// C-2: TLS must be configured. Partial TLSConfig silently falls back
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who
 	// terminate TLS at an external proxy must opt in explicitly.
-	if !b.cfg.TLS.Enabled() && !b.allowProdPlaintext {
-		return fmt.Errorf("production: TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithProductionAllowPlaintext for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
+	if !b.cfg.TLS.Enabled() && !b.allowPlaintext {
+		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
 	// C-1: the internal ops port exposes /metrics without authentication.
 	// Binding to 0.0.0.0 leaks Prometheus labels (route patterns, tenant
 	// IDs) to anyone on the network. Operators with strict network
-	// isolation must opt in explicitly.
-	if b.cfg.Internal.Host == "0.0.0.0" && !b.allowProdInternalExposed {
-		return fmt.Errorf("production: Internal.Host=\"0.0.0.0\" exposes unauthenticated /metrics; bind to a loopback or internal interface, or call WithProductionInternalExposed when network isolation is enforced")
+	// isolation must opt in explicitly via WithInternalNonLoopback.
+	if b.cfg.Internal.Host == "0.0.0.0" && !b.allowInternalNonLoopback {
+		return fmt.Errorf("Internal.Host=\"0.0.0.0\" exposes unauthenticated /metrics; bind to a loopback or internal interface, or call WithInternalNonLoopback when network isolation is enforced")
 	}
 
 	// Postgres: sslmode must be a TLS-enforcing mode.
@@ -102,17 +105,17 @@ func (b *Builder) validateProductionDefaults() error {
 		case "require", "verify-ca", "verify-full":
 			// ok
 		case "":
-			return fmt.Errorf("production: Postgres sslmode must be set (require/verify-ca/verify-full); none configured")
+			return fmt.Errorf("Postgres sslmode must be set (require/verify-ca/verify-full); none configured")
 		case "allow", "prefer", "disable":
-			return fmt.Errorf("production: Postgres sslmode=%q does not fail closed on TLS handshake error; use require/verify-ca/verify-full", mode)
+			return fmt.Errorf("Postgres sslmode=%q does not fail closed on TLS handshake error; use require/verify-ca/verify-full", mode)
 		default:
-			return fmt.Errorf("production: Postgres sslmode=%q is unrecognized", mode)
+			return fmt.Errorf("Postgres sslmode=%q is unrecognized", mode)
 		}
 	}
 
-	// Tracing: full sampling is a collector-cost foot-gun in prod.
+	// Tracing: full sampling is a collector-cost foot-gun.
 	if b.tracingCfg != nil && b.tracingCfg.SampleRate > 0.1 {
-		return fmt.Errorf("production: tracing SampleRate=%.2f exceeds 0.1; set lower or pass WithProductionDefaults() before WithTracing(...) and override per-trace via the OTel SDK", b.tracingCfg.SampleRate)
+		return fmt.Errorf("tracing SampleRate=%.2f exceeds 0.1; lower the rate and override per-trace via the OTel SDK if you need bursts", b.tracingCfg.SampleRate)
 	}
 
 	return nil

@@ -12,45 +12,44 @@ import (
 	"github.com/bds421/rho-kit/security/netutil"
 )
 
-func newProdBuilder() *Builder {
-	// The base prod builder used by the legacy tests targets the JWT,
-	// Postgres, and tracing tightenings. The TLS / internal-host /
-	// audience checks are exercised in dedicated tests, so opt out of
-	// them here to keep each test single-purpose.
+// newSafeBuilder returns a Builder with the always-on production-safety
+// validator armed and the TLS / audience opt-outs applied. The TLS,
+// internal-host, and audience checks have dedicated tests below; the
+// helper isolates each remaining test to a single concern.
+func newSafeBuilder() *Builder {
 	return New("test", "v1", BaseConfig{}).
-		WithProductionDefaults().
-		WithProductionAllowPlaintext().
-		WithJWTAllowAnyAudience()
+		WithoutTLS().
+		WithoutJWTAudience()
 }
 
-func TestProductionDefaults_NoOpWithoutJWT(t *testing.T) {
+func TestBuilder_Validates_NoOpWithoutJWT(t *testing.T) {
 	// A service that doesn't enable JWT must still pass validation.
-	require.NoError(t, newProdBuilder().Validate())
+	require.NoError(t, newSafeBuilder().Validate())
 }
 
-func TestProductionDefaults_RejectsJWTWithoutIssuer(t *testing.T) {
-	b := newProdBuilder().
+func TestBuilder_Validates_RejectsJWTWithoutIssuer(t *testing.T) {
+	b := newSafeBuilder().
 		WithJWT("https://example.com/.well-known/jwks.json")
 	err := b.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WithJWTIssuer")
 }
 
-func TestProductionDefaults_AcceptsJWTWithIssuer(t *testing.T) {
-	b := newProdBuilder().
+func TestBuilder_Validates_AcceptsJWTWithIssuer(t *testing.T) {
+	b := newSafeBuilder().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com")
 	require.NoError(t, b.Validate())
 }
 
-func TestProductionDefaults_AcceptsJWTWithAllowAnyIssuer(t *testing.T) {
-	b := newProdBuilder().
+func TestBuilder_Validates_AcceptsJWTWithoutJWTIssuer(t *testing.T) {
+	b := newSafeBuilder().
 		WithJWT("https://example.com/.well-known/jwks.json").
-		WithJWTAllowAnyIssuer()
+		WithoutJWTIssuer()
 	require.NoError(t, b.Validate())
 }
 
-func TestProductionDefaults_PostgresMustHaveSSLMode(t *testing.T) {
+func TestBuilder_Validates_PostgresMustHaveSSLMode(t *testing.T) {
 	cfg := sqldb.Config{
 		Host:     "localhost",
 		Port:     5432,
@@ -59,13 +58,13 @@ func TestProductionDefaults_PostgresMustHaveSSLMode(t *testing.T) {
 		Name:     "db",
 		// No sslmode — production validation must reject.
 	}
-	b := newProdBuilder().WithPostgres(cfg, sqldb.DefaultPool())
+	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
 	err := b.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sslmode")
 }
 
-func TestProductionDefaults_PostgresRejectsLooseSSLMode(t *testing.T) {
+func TestBuilder_Validates_PostgresRejectsLooseSSLMode(t *testing.T) {
 	cfg := sqldb.Config{
 		Host:     "localhost",
 		Port:     5432,
@@ -74,13 +73,13 @@ func TestProductionDefaults_PostgresRejectsLooseSSLMode(t *testing.T) {
 		Name:     "db",
 		Options:  map[string]string{"sslmode": "prefer"},
 	}
-	b := newProdBuilder().WithPostgres(cfg, sqldb.DefaultPool())
+	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
 	err := b.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fail closed")
 }
 
-func TestProductionDefaults_PostgresAcceptsRequire(t *testing.T) {
+func TestBuilder_Validates_PostgresAcceptsRequire(t *testing.T) {
 	cfg := sqldb.Config{
 		Host:     "localhost",
 		Port:     5432,
@@ -89,19 +88,19 @@ func TestProductionDefaults_PostgresAcceptsRequire(t *testing.T) {
 		Name:     "db",
 		Options:  map[string]string{"sslmode": "require"},
 	}
-	b := newProdBuilder().WithPostgres(cfg, sqldb.DefaultPool())
+	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
 	require.NoError(t, b.Validate())
 }
 
-func TestProductionDefaults_TracingSampleRateCapped(t *testing.T) {
-	b := newProdBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 1.0})
+func TestBuilder_Validates_TracingSampleRateCapped(t *testing.T) {
+	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 1.0})
 	err := b.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SampleRate")
 }
 
-func TestProductionDefaults_TracingAcceptsLowSampleRate(t *testing.T) {
-	b := newProdBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 0.05})
+func TestBuilder_Validates_TracingAcceptsLowSampleRate(t *testing.T) {
+	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 0.05})
 	require.NoError(t, b.Validate())
 }
 
@@ -124,52 +123,48 @@ func TestInternalConfig_DefaultsToLoopback(t *testing.T) {
 		"internal ops port should default to loopback")
 }
 
-func TestProductionDefaults_RejectsExposedInternal(t *testing.T) {
+func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 	cfg := BaseConfig{
 		Internal: InternalConfig{Host: "0.0.0.0", Port: 9090},
 		TLS:      validTLSForTest(),
 	}
 	b := New("svc", "v1", cfg).
-		WithProductionDefaults().
-		WithJWTAllowAnyAudience()
+		WithoutJWTAudience()
 	err := b.Validate()
 	require.Error(t, err, "exposed internal port must fail validation")
 	assert.Contains(t, err.Error(), "Internal.Host")
-	assert.Contains(t, err.Error(), "WithProductionInternalExposed")
+	assert.Contains(t, err.Error(), "WithInternalNonLoopback")
 }
 
-func TestWithProductionInternalExposed_AcceptsOptIn(t *testing.T) {
+func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 	cfg := BaseConfig{
 		Internal: InternalConfig{Host: "0.0.0.0", Port: 9090},
 		TLS:      validTLSForTest(),
 	}
 	b := New("svc", "v1", cfg).
-		WithProductionDefaults().
-		WithProductionInternalExposed().
-		WithJWTAllowAnyAudience()
+		WithInternalNonLoopback().
+		WithoutJWTAudience()
 	require.NoError(t, b.Validate(),
-		"WithProductionInternalExposed must allow Internal.Host=0.0.0.0")
+		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
 }
 
-// --- C-2: WithProductionDefaults requires TLS ---
+// --- C-2: validator requires TLS ---
 
-func TestProductionDefaults_RequiresTLS(t *testing.T) {
+func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 	b := New("svc", "v1", BaseConfig{}).
-		WithProductionDefaults().
-		WithJWTAllowAnyAudience()
+		WithoutJWTAudience()
 	err := b.Validate()
-	require.Error(t, err, "production validator must reject empty TLS config")
+	require.Error(t, err, "validator must reject empty TLS config")
 	assert.Contains(t, err.Error(), "TLS")
-	assert.Contains(t, err.Error(), "WithProductionAllowPlaintext")
+	assert.Contains(t, err.Error(), "WithoutTLS")
 }
 
-func TestWithProductionAllowPlaintext_AcceptsOptIn(t *testing.T) {
+func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 	b := New("svc", "v1", BaseConfig{}).
-		WithProductionDefaults().
-		WithProductionAllowPlaintext().
-		WithJWTAllowAnyAudience()
+		WithoutTLS().
+		WithoutJWTAudience()
 	require.NoError(t, b.Validate(),
-		"WithProductionAllowPlaintext must allow empty TLS config")
+		"WithoutTLS must allow empty TLS config")
 }
 
 // --- H-4: WithTenantBudget requires WithMultiTenant ---
@@ -184,46 +179,45 @@ func TestBudget_RequiresMultiTenant(t *testing.T) {
 
 func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithMultiTenant(nil, true).
 		WithTenantBudget(&stubBudget{})
 	require.NoError(t, b.Validate(),
 		"WithTenantBudget paired with WithMultiTenant must pass validation")
 }
 
-// --- H-5: WithProductionDefaults requires WithJWTAudience ---
+// --- H-5: validator requires WithJWTAudience ---
 
-func TestProductionDefaults_RequiresJWTAudience(t *testing.T) {
+func TestBuilder_Validates_RequiresJWTAudience(t *testing.T) {
 	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
-		WithProductionDefaults().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com")
 	err := b.Validate()
-	require.Error(t, err, "production must require WithJWTAudience to mitigate confused-deputy")
+	require.Error(t, err, "validator must require WithJWTAudience to mitigate confused-deputy")
 	assert.Contains(t, err.Error(), "WithJWTAudience")
 }
 
-func TestProductionDefaults_AcceptsJWTAudience(t *testing.T) {
+func TestBuilder_Validates_AcceptsJWTAudience(t *testing.T) {
 	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
-		WithProductionDefaults().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
 		WithJWTAudience("svc")
 	require.NoError(t, b.Validate(),
-		"WithJWTAudience must satisfy the production audience check")
+		"WithJWTAudience must satisfy the audience check")
 }
 
-func TestProductionDefaults_AcceptsAllowAnyAudienceOptIn(t *testing.T) {
+func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
 	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
-		WithProductionDefaults().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
-		WithJWTAllowAnyAudience()
+		WithoutJWTAudience()
 	require.NoError(t, b.Validate(),
-		"WithJWTAllowAnyAudience must satisfy the production audience check")
+		"WithoutJWTAudience must satisfy the audience check")
 }
 
 // validTLSForTest returns a TLSConfig that reports Enabled() == true.
-// The paths are placeholders — the production-defaults validator only
+// The paths are placeholders — the production-safety validator only
 // inspects Enabled(), it does not load the files.
 func validTLSForTest() netutil.TLSConfig {
 	return netutil.TLSConfig{

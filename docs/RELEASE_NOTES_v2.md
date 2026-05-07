@@ -24,12 +24,100 @@ v2 stack in one file.
 
 ## Breaking changes
 
-**One runtime behaviour change in `httpx/middleware/auth`** —
-read the next section. Everything else in v2.0.0 is additive over
-v1.x; new `app.Builder` methods (`WithPASETO`, `WithNATS`,
-`WithPgx`, `WithLeaderElection`, `WithSignedRequests`,
-`WithMultiTenant`, `WithTenantBudget`, `WithActionLogger`,
-`WithApprovalStore`) don't change existing signatures.
+**Two runtime behaviour changes**: the `httpx/middleware/auth` fail-closed
+fix below, and the removal of development mode (next section). Everything
+else in v2.0.0 is additive over v1.x; new `app.Builder` methods
+(`WithPASETO`, `WithNATS`, `WithPgx`, `WithLeaderElection`,
+`WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
+`WithActionLogger`, `WithApprovalStore`) don't change existing signatures.
+
+## Breaking change: no development mode
+
+The kit no longer has a development mode. Production-safe defaults are
+the only mode, and the `app.Builder` runs the production-safety validator
+unconditionally at `Build()` time. There is no `KIT_ENV` (or `APP_ENV`)
+escape hatch in any kit code path — the runtime no longer reads those
+env vars to weaken safety checks.
+
+### Removed: `WithProductionDefaults()`
+
+`Builder.WithProductionDefaults()` is gone. Its checks (JWT issuer/
+audience pinning, TLS-required, internal-host loopback, postgres sslmode,
+tracing sample-rate cap, `WithTenantBudget` + `WithMultiTenant` pairing)
+now run unconditionally in `Builder.Build()`. Migration is to delete
+the `WithProductionDefaults()` call from your chain.
+
+### Renamed: opt-out methods
+
+The four explicit opt-outs lost their `Production` prefix and now read
+as deliberate "I know what I'm doing" declarations. Behaviour is
+identical, only names changed:
+
+| Old | New |
+|---|---|
+| `WithProductionAllowPlaintext` | `WithoutTLS` |
+| `WithProductionInternalExposed` | `WithInternalNonLoopback` |
+| `WithJWTAllowAnyIssuer` | `WithoutJWTIssuer` |
+| `WithJWTAllowAnyAudience` | `WithoutJWTAudience` |
+
+Each opt-out remains documented as a per-relaxation declaration the
+operator must apply consciously (network isolation confirmed,
+external TLS terminator in place, etc.).
+
+### Removed: `KIT_ENV` runtime checks
+
+The kit no longer reads `KIT_ENV` (or `APP_ENV`) to decide whether to
+enforce a check. The following call-site checks went unconditional:
+
+- `app/jwt_module.go` — issuer enforcement was previously gated on
+  `KIT_ENV != development`; the Builder validator now rejects missing
+  issuer upstream.
+- `security/jwtutil.NewProvider` — used to panic on missing issuer
+  outside development; now accepts any configuration the caller hands
+  it (Builder validates upstream; standalone callers should still
+  pair `WithExpectedIssuer` or `WithAllowAnyIssuer`).
+- `infra/sqldb/pgx.Connect` — TLS check is unconditional; tests against
+  testcontainers can pass `Config{AllowPlaintext: true}` to opt out.
+- `infra/messaging.NewBufferedPublisher` — state-file requirement is
+  unconditional; the existing `WithEphemeralBuffer()` is the only
+  opt-out.
+- `httpx/middleware/csrf.New` — HMAC secret requirement is
+  unconditional; the existing `WithDevSecret()` is the only opt-out.
+
+The `examples/agentic-service` reference binary's "refuse to run when
+KIT_ENV looks like production" guard was removed — the example is now
+documented as illustrative-only via package comments, and consumers
+that want production wiring use `app.Builder` whose always-on validator
+catches missing TLS/auth/sslmode at startup.
+
+`core/config.IsDevelopment` and `BaseConfig.Environment` are
+preserved for downstream consumers' own logic; the kit's core path
+simply stops calling them.
+
+### Migration
+
+```go
+// Before
+b := app.New("my-service", "v2.0.0", cfg).
+    WithProductionDefaults().
+    WithProductionAllowPlaintext().
+    WithProductionInternalExposed().
+    WithJWTAllowAnyIssuer().
+    WithJWTAllowAnyAudience().
+    Run(ctx)
+
+// After
+b := app.New("my-service", "v2.0.0", cfg).
+    // The validator runs automatically; remove WithProductionDefaults().
+    WithoutTLS().                  // was WithProductionAllowPlaintext
+    WithInternalNonLoopback().     // was WithProductionInternalExposed
+    WithoutJWTIssuer().            // was WithJWTAllowAnyIssuer
+    WithoutJWTAudience().          // was WithJWTAllowAnyAudience
+    Run(ctx)
+```
+
+Most services don't pass any opt-outs; the migration in that case is
+just to delete `WithProductionDefaults()`.
 
 ### Auth middleware now fails closed (security fix)
 
@@ -68,11 +156,11 @@ the marker.
    buffering. *This was already in main pre-v2; flagged here for
    visibility.*
 
-2. **`app.WithProductionDefaults()` enforces JWT issuer pinning**.
-   Calling `WithJWT(...)` without `WithJWTIssuer(...)` (or the
-   explicit `WithJWTAllowAnyIssuer()`) panics at boot in
-   `KIT_ENV=production`. Migration: chain the issuer call. *Same as above
-   — pre-v2.*
+2. **JWT issuer pinning is enforced unconditionally**. Calling
+   `WithJWT(...)` without `WithJWTIssuer(...)` (or the explicit
+   `WithoutJWTIssuer()` opt-out) fails `Builder.Build()` validation.
+   Migration: chain the issuer call. *Pre-v2; tightened from
+   "non-development only" to unconditional in v2.*
 
 3. **MCP server doesn't implement JSON-RPC batch**. Single-call
    semantics keep the action-log entry per-call rather than
@@ -99,10 +187,10 @@ import (
 )
 
 b := app.New("my-service", "v2.0.0", cfg).
-    WithProductionDefaults().
+    // Production-safety validator runs automatically — no opt-in needed.
 
     // Auth (pick one or both — they coexist for migration)
-    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).
+    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
     WithPASETO(pasetoProvider).
 
     // Multi-tenant — extracts X-Tenant-Id by default; required on

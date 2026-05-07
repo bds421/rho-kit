@@ -2,11 +2,21 @@
 //
 // SECURITY: this example is illustrative only. It mounts handlers
 // without authentication, rate limiting, or CSRF protection so the
-// demo curl invocations work out of the box. Production services MUST
-// use app.Builder.WithJWT / .WithSignedRequests / .WithMultiTenant /
-// .WithTenantBudget / .WithActionLogger / .WithApprovalStore (and
-// front the public mux with TLS) — the Builder composes the
-// middleware chain correctly.
+// demo curl invocations work out of the box. It must NEVER be used as
+// a starting point for production wiring — copy the per-primitive
+// recipes from the doc instead.
+//
+// Production services MUST use app.Builder.WithJWT (paired with
+// WithJWTIssuer + WithJWTAudience) / .WithSignedRequests /
+// .WithMultiTenant / .WithTenantBudget / .WithActionLogger /
+// .WithApprovalStore — the Builder composes the middleware chain
+// correctly and runs the always-on production-safety validator at
+// startup. The validator unconditionally rejects empty TLS, missing
+// JWT issuer/audience, exposed internal-host, weak postgres sslmode,
+// and excessive tracing sample rates. Each tightening has a documented
+// .Without* opt-out (.WithoutTLS, .WithoutJWTIssuer, etc.) for the
+// rare cases where the operator has compensating controls in place;
+// production deployments must NOT use those opt-outs casually.
 //
 // The composition shown here mirrors the canonical v2.0.0 ordering:
 //

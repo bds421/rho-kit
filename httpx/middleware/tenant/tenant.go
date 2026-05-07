@@ -45,9 +45,9 @@ func HeaderExtractor(header string) Extractor {
 type Option func(*config)
 
 type config struct {
-	extractor              Extractor
-	required               bool
-	requiredOnSafeMethods  bool
+	extractor             Extractor
+	required              bool
+	requiredOnSafeMethods bool
 }
 
 // WithExtractor overrides the default header extractor.

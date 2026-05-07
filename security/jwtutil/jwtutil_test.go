@@ -434,21 +434,13 @@ func TestNewProvider(t *testing.T) {
 	}
 }
 
-func TestNewProvider_PanicsWithoutIssuerInProduction(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
-	t.Setenv("APP_ENV", "")
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic when no expected issuer is configured outside dev")
-		}
-	}()
-	_ = NewProvider("https://example.com/jwks", nil, time.Minute)
-}
-
-func TestNewProvider_AllowsMissingIssuerInDev(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	t.Setenv("APP_ENV", "")
+// jwtutil's NewProvider no longer reads KIT_ENV — issuer enforcement is
+// the kit's [app.Builder] validator's job. NewProvider accepts any
+// configuration the caller hands it, including a missing issuer (which
+// the verifier then treats as "accept any authority"). Standalone callers
+// should pair WithExpectedIssuer or WithAllowAnyIssuer just like the
+// Builder does.
+func TestNewProvider_AcceptsMissingIssuerWithoutPanic(t *testing.T) {
 	p := NewProvider("https://example.com/jwks", nil, time.Minute)
 	if p == nil {
 		t.Fatal("expected provider, got nil")
@@ -456,9 +448,6 @@ func TestNewProvider_AllowsMissingIssuerInDev(t *testing.T) {
 }
 
 func TestProvider_KeySetReturnsNilWhenStale(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	t.Setenv("APP_ENV", "")
-
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
@@ -488,9 +477,6 @@ func TestProvider_KeySetReturnsNilWhenStale(t *testing.T) {
 }
 
 func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	t.Setenv("APP_ENV", "")
-
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
@@ -509,9 +495,6 @@ func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
 }
 
 func TestProvider_StalenessAccessor(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	t.Setenv("APP_ENV", "")
-
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
@@ -530,8 +513,6 @@ func TestProvider_StalenessAccessor(t *testing.T) {
 }
 
 func TestNewProvider_AllowAnyIssuerOptOut(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
-	t.Setenv("APP_ENV", "")
 	p := NewProvider("https://example.com/jwks", nil, time.Minute, WithAllowAnyIssuer())
 	if p == nil {
 		t.Fatal("expected provider, got nil")

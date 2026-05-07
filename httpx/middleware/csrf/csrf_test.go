@@ -916,32 +916,21 @@ func TestNew_AllowedOrigins_CaseInsensitiveHost(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-// --- Mandatory secret in non-dev ---
+// --- Mandatory secret unconditionally ---
 
-func TestNew_PanicsWithoutSecretInProduction(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
-	t.Setenv("APP_ENV", "")
+func TestNew_PanicsWithoutSecret(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("expected panic when no secret is configured in non-dev")
+			t.Fatal("expected panic when no secret is configured")
 		}
 		assert.Contains(t, r.(string), "no HMAC secret configured")
 	}()
 	_ = New() // no WithSecret, no WithDevSecret
 }
 
-func TestNew_DevSecretFallbackInDev(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	t.Setenv("APP_ENV", "")
-	mw := New() // no panic — dev allows per-process random fallback
-	assert.NotNil(t, mw)
-}
-
 func TestNew_DevSecretExplicitOptIn(t *testing.T) {
-	t.Setenv("KIT_ENV", "production") // would normally panic
-	t.Setenv("APP_ENV", "")
-	mw := New(WithDevSecret()) // explicit override
+	mw := New(WithDevSecret()) // explicit per-process random fallback
 	assert.NotNil(t, mw)
 }
 

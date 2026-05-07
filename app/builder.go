@@ -140,15 +140,12 @@ type Builder struct {
 	// Approval store (optional). Exposed via Infrastructure.
 	astore approval.Store
 
-	// Production-defaults switch — see Builder.WithProductionDefaults.
-	productionDefaults bool
-
-	// Production-defaults opt-outs. Each one is a deliberate, documented
-	// escape hatch from a specific tightening. Keep them isolated from
-	// productionDefaults itself so the validator can require an explicit
-	// acknowledgement per relaxation rather than a blanket "trust me".
-	allowProdInternalExposed bool // C-1: lets Internal.Host == "0.0.0.0" pass.
-	allowProdPlaintext       bool // C-2: lets TLS-disabled deployments pass.
+	// Production-safety opt-outs. Each one is a deliberate, documented
+	// escape hatch from a specific always-on tightening. The validator
+	// requires an explicit per-relaxation acknowledgement rather than a
+	// blanket "trust me" — there is no global "dev mode" toggle.
+	allowInternalNonLoopback bool // C-1: lets Internal.Host == "0.0.0.0" pass.
+	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
 	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
 
 	// Rate limiters
@@ -212,37 +209,9 @@ func New(name, version string, cfg BaseConfig) *Builder {
 	}
 }
 
-// WithProductionDefaults flips the Builder into "production-shape"
-// validation mode. The toggle does not by itself reconfigure existing
-// options; instead it adds startup checks that fail loudly when a
-// production-required configuration knob is missing.
-//
-// Tightenings (validated at [Builder.Build] time):
-//
-//   - JWT: WithJWT must be paired with WithJWTIssuer or
-//     WithJWTAllowAnyIssuer. The legacy "https://oathkeeper" default
-//     is not allowed in production.
-//   - Postgres: sslmode must be one of {require, verify-ca, verify-full}.
-//   - Tracing: SampleRate ≤ 0.1 unless explicitly overridden — full
-//     sampling is a collector-cost foot-gun.
-//
-// Calling WithProductionDefaults outside KIT_ENV=production logs a
-// warning but is otherwise allowed — useful for staging environments
-// that must mirror prod, or for local-dev integration tests that
-// want to flush out config gaps before they hit a real deployment.
-//
-// Each individual tightening is also enforceable standalone (the
-// jwtModule's KIT_ENV=production panic is independent of this
-// switch). The aggregate option is the right choice for any service
-// that aspires to a boring production stance.
-func (b *Builder) WithProductionDefaults() *Builder {
-	b.productionDefaults = true
-	return b
-}
-
-// WithProductionInternalExposed acknowledges that the internal ops port
+// WithInternalNonLoopback acknowledges that the internal ops port
 // (health, ready, metrics) is intentionally bound to a non-loopback
-// interface (e.g. 0.0.0.0). Without this opt-in, [Builder.WithProductionDefaults]
+// interface (e.g. 0.0.0.0). Without this opt-in, [Builder.Build]
 // rejects any configuration where Internal.Host resolves to "0.0.0.0",
 // because /metrics is unauthenticated and exposing it on a routable
 // interface leaks Prometheus labels (route patterns, tenant IDs, process
@@ -250,35 +219,38 @@ func (b *Builder) WithProductionDefaults() *Builder {
 //
 // Use this only when the operator has confirmed network isolation
 // (NetworkPolicy, security group, host-only Docker network) for the
-// internal port.
-func (b *Builder) WithProductionInternalExposed() *Builder {
-	b.allowProdInternalExposed = true
+// internal port. The check is unconditional — there is no KIT_ENV
+// escape hatch.
+func (b *Builder) WithInternalNonLoopback() *Builder {
+	b.allowInternalNonLoopback = true
 	return b
 }
 
-// WithProductionAllowPlaintext acknowledges that the public HTTP server
-// will run without TLS in production. Without this opt-in,
-// [Builder.WithProductionDefaults] rejects any configuration where
-// [netutil.TLSConfig.Enabled] is false, because partial TLS configuration
-// (one missing env var) silently downgrades to plaintext HTTP.
+// WithoutTLS acknowledges that the public HTTP server will run without
+// TLS. Without this opt-in, [Builder.Build] rejects any configuration
+// where [netutil.TLSConfig.Enabled] is false, because partial TLS
+// configuration (one missing env var) silently downgrades to plaintext
+// HTTP.
 //
 // Use this only for services explicitly fronted by an external TLS
 // terminator (Oathkeeper, ALB, ingress controller) that re-encrypts
-// to the cluster.
-func (b *Builder) WithProductionAllowPlaintext() *Builder {
-	b.allowProdPlaintext = true
+// to the cluster. The check is unconditional — there is no KIT_ENV
+// escape hatch.
+func (b *Builder) WithoutTLS() *Builder {
+	b.allowPlaintext = true
 	return b
 }
 
-// WithJWTAllowAnyAudience opts out of audience enforcement explicitly.
-// Without this opt-in, [Builder.WithProductionDefaults] rejects
-// configurations that call [Builder.WithJWT] without also calling
-// [Builder.WithJWTAudience], because absent audience pinning a token
-// minted for a sibling service that trusts the same JWKS is silently
-// valid — the standard JWT confused-deputy mitigation (RFC 7519 §4.1.3).
+// WithoutJWTAudience opts out of audience enforcement explicitly.
+// Without this opt-in, [Builder.Build] rejects configurations that
+// call [Builder.WithJWT] without also calling [Builder.WithJWTAudience],
+// because absent audience pinning a token minted for a sibling service
+// that trusts the same JWKS is silently valid — the standard JWT
+// confused-deputy mitigation (RFC 7519 §4.1.3).
 //
-// Use this only for genuinely multi-audience deployments.
-func (b *Builder) WithJWTAllowAnyAudience() *Builder {
+// Use this only for genuinely multi-audience deployments. The check
+// is unconditional — there is no KIT_ENV escape hatch.
+func (b *Builder) WithoutJWTAudience() *Builder {
 	b.jwtAllowAnyAudience = true
 	return b
 }
@@ -394,11 +366,11 @@ func (b *Builder) WithNATS(cfg natsbackend.Config) *Builder {
 // WithJWT configures a JWKS provider for JWT verification.
 // Panics if jwksURL is empty — use environment variables to conditionally skip.
 //
-// IMPORTANT: pair with [Builder.WithJWTIssuer] and (when applicable)
-// [Builder.WithJWTAudience]. In KIT_ENV=production, [Builder.Build] panics
-// if jwksURL is set but neither WithJWTIssuer nor [Builder.WithJWTAllowAnyIssuer]
-// has been called — silently disabling issuer enforcement was a known
-// foot-gun in earlier versions.
+// IMPORTANT: pair with [Builder.WithJWTIssuer] and [Builder.WithJWTAudience].
+// [Builder.Build] always rejects a configuration where jwksURL is set but
+// neither WithJWTIssuer nor [Builder.WithoutJWTIssuer] (and likewise for
+// audience) has been called — silently disabling issuer/audience enforcement
+// was a known foot-gun in earlier versions and is now an explicit declaration.
 func (b *Builder) WithJWT(jwksURL string) *Builder {
 	if jwksURL == "" {
 		panic("app: WithJWT requires a non-empty JWKS URL")
@@ -410,10 +382,10 @@ func (b *Builder) WithJWT(jwksURL string) *Builder {
 // WithJWTIssuer sets the expected `iss` claim. Tokens with a different
 // issuer (or no issuer) are rejected at verification time.
 //
-// Mutually exclusive with [Builder.WithJWTAllowAnyIssuer]; the last call wins.
+// Mutually exclusive with [Builder.WithoutJWTIssuer]; the last call wins.
 func (b *Builder) WithJWTIssuer(iss string) *Builder {
 	if iss == "" {
-		panic("app: WithJWTIssuer requires a non-empty issuer (use WithJWTAllowAnyIssuer to opt out)")
+		panic("app: WithJWTIssuer requires a non-empty issuer (use WithoutJWTIssuer to opt out)")
 	}
 	b.jwtIssuer = iss
 	b.jwtAllowAnyIssue = false
@@ -427,12 +399,13 @@ func (b *Builder) WithJWTAudience(aud string) *Builder {
 	return b
 }
 
-// WithJWTAllowAnyIssuer opts out of issuer enforcement explicitly. Use
-// only for first-party tokens issued by a trusted internal service where
-// the JWKS endpoint is itself authenticated. In KIT_ENV=production this
-// is required to satisfy [Builder.Build]'s guardrail when WithJWTIssuer is
-// not used.
-func (b *Builder) WithJWTAllowAnyIssuer() *Builder {
+// WithoutJWTIssuer opts out of issuer enforcement explicitly. Use only
+// for first-party tokens issued by a trusted internal service where the
+// JWKS endpoint is itself authenticated. Required to satisfy
+// [Builder.Build]'s always-on guardrail when [Builder.WithJWTIssuer] is
+// not used. The check is unconditional — there is no KIT_ENV escape
+// hatch.
+func (b *Builder) WithoutJWTIssuer() *Builder {
 	b.jwtAllowAnyIssue = true
 	b.jwtIssuer = ""
 	return b

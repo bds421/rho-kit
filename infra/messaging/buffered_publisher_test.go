@@ -117,19 +117,17 @@ func TestNewBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
 	NewBufferedPublisher(fakeMessagePublisher{}, nil, slog.Default())
 }
 
-func TestNewBufferedPublisher_PanicsInProdWithoutStateFile(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
+func TestNewBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("expected panic when KIT_ENV=production and no state file, got none")
+			t.Fatal("expected panic when no state file is configured, got none")
 		}
 	}()
 	NewBufferedPublisher(fakeMessagePublisher{}, &fakeConnector{healthy: true}, slog.Default())
 }
 
-func TestNewBufferedPublisher_ProdWithStateFileOK(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
+func TestNewBufferedPublisher_WithStateFileOK(t *testing.T) {
 	dir := t.TempDir()
 	pub := NewBufferedPublisher(
 		fakeMessagePublisher{}, &fakeConnector{healthy: true},
@@ -141,8 +139,7 @@ func TestNewBufferedPublisher_ProdWithStateFileOK(t *testing.T) {
 	}
 }
 
-func TestNewBufferedPublisher_ProdWithEphemeralOptOut(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
+func TestNewBufferedPublisher_EphemeralOptOut(t *testing.T) {
 	pub := NewBufferedPublisher(
 		fakeMessagePublisher{}, &fakeConnector{healthy: true},
 		slog.Default(),
@@ -150,17 +147,6 @@ func TestNewBufferedPublisher_ProdWithEphemeralOptOut(t *testing.T) {
 	)
 	if pub == nil {
 		t.Fatal("expected non-nil publisher")
-	}
-}
-
-func TestNewBufferedPublisher_DevAllowsEphemeralBuffer(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	pub := NewBufferedPublisher(
-		fakeMessagePublisher{}, &fakeConnector{healthy: true},
-		slog.Default(),
-	)
-	if pub == nil {
-		t.Fatal("expected non-nil publisher in dev")
 	}
 }
 

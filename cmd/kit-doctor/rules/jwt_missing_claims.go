@@ -27,8 +27,8 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 		// by inspecting the Builder fluent chain. We treat the
 		// containing expression statement as the chain root.
 		root := chainRoot(call)
-		hasIssuer := chainHas(root, "WithExpectedIssuer", "WithJWTIssuer", "WithJWTAllowAnyIssuer")
-		hasAud := chainHas(root, "WithExpectedAudience", "WithJWTAudience", "WithJWTAllowAnyAudience")
+		hasIssuer := chainHas(root, "WithExpectedIssuer", "WithJWTIssuer", "WithoutJWTIssuer")
+		hasAud := chainHas(root, "WithExpectedAudience", "WithJWTAudience", "WithoutJWTAudience")
 
 		pos := fset.Position(call.Pos())
 		if !hasIssuer {
@@ -38,7 +38,7 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 				File:       pos.Filename,
 				Line:       pos.Line,
 				Message:    "WithJWT called without an issuer pin",
-				Suggestion: "chain .WithJWTIssuer(\"https://issuer.example.com\") or explicit .WithJWTAllowAnyIssuer()",
+				Suggestion: "chain .WithJWTIssuer(\"https://issuer.example.com\") or explicit .WithoutJWTIssuer()",
 			})
 		}
 		if !hasAud {
@@ -48,7 +48,7 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 				File:       pos.Filename,
 				Line:       pos.Line,
 				Message:    "WithJWT called without an audience pin",
-				Suggestion: "chain .WithJWTAudience(\"my-service\") or explicit .WithJWTAllowAnyAudience()",
+				Suggestion: "chain .WithJWTAudience(\"my-service\") or explicit .WithoutJWTAudience()",
 			})
 		}
 		return true

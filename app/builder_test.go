@@ -240,6 +240,8 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		var routerCalled atomic.Bool
 
 		b := New("lifecycle-test", "v0.0.1", cfg).
+			WithoutTLS().
+			WithoutJWTAudience().
 			AddHealthCheck(health.DependencyCheck{
 				Name:     "test-dep",
 				Check:    func(_ context.Context) string { return health.StatusHealthy },
@@ -322,6 +324,8 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		var lateBgStarted atomic.Bool
 
 		b := New("lifecycle-bg-test", "v0.0.2", cfg).
+			WithoutTLS().
+			WithoutJWTAudience().
 			Background("early-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()

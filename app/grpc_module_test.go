@@ -210,6 +210,8 @@ func TestGRPCModule_Lifecycle(t *testing.T) {
 	var registrarCalled atomic.Bool
 
 	b := New("grpc-test", "v0.0.1", cfg).
+		WithoutTLS().
+		WithoutJWTAudience().
 		WithModule(NewGRPCModule(func(_ *grpc.Server) {
 			registrarCalled.Store(true)
 		}, fmt.Sprintf("127.0.0.1:%d", grpcPort))).

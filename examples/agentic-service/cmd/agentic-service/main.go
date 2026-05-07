@@ -30,8 +30,15 @@
 //
 // The example uses in-memory backends for budget, action log, and
 // approval store so it stands up without external dependencies.
-// Production wiring swaps these for the redis / postgres backends
-// described in the per-package docs.
+//
+// SECURITY: this binary is an EXAMPLE — it ships with no auth, in-memory
+// backends, and a hard-coded HMAC secret. Do NOT deploy it as-is to any
+// shared environment. Production wiring swaps these for the redis /
+// postgres backends described in the per-package docs and uses
+// app.Builder so the always-on production-safety validator (TLS, JWT
+// issuer/audience, internal-host loopback, sslmode) catches missing
+// configuration at startup rather than serving an unauthenticated
+// agent surface.
 package main
 
 import (
@@ -47,19 +54,6 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
-
-	// SECURITY: this binary is an EXAMPLE — it ships with no auth,
-	// in-memory backends, and a hard-coded HMAC secret. Refuse to
-	// boot in any environment that smells like production so a
-	// copy-paste-into-prod misadventure crashes loud rather than
-	// quietly serving an unauthenticated agent surface.
-	if env := os.Getenv("KIT_ENV"); env != "" && env != "development" && env != "dev" && env != "test" && env != "local" {
-		logger.Error("agentic-service example refuses to run outside dev/test environments",
-			"kit_env", env,
-			"hint", "this example has no auth and a public HMAC secret; use app.Builder for production wiring",
-		)
-		os.Exit(2)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

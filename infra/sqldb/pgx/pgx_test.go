@@ -13,34 +13,23 @@ func TestConnect_RejectsEmptyDSN(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRequireTLSInProd_AcceptsRequireFamily(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
+func TestRequireTLS_AcceptsRequireFamily(t *testing.T) {
 	for _, mode := range []string{"require", "verify-ca", "verify-full", "VERIFY-FULL"} {
-		err := requireTLSInProd("postgres://u:p@h/db?sslmode=" + mode)
+		err := requireTLS("postgres://u:p@h/db?sslmode=" + mode)
 		assert.NoError(t, err, "sslmode=%s must be accepted", mode)
 	}
 }
 
-func TestRequireTLSInProd_RejectsLooseModes(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
+func TestRequireTLS_RejectsLooseModes(t *testing.T) {
 	for _, mode := range []string{"prefer", "allow", "disable"} {
-		err := requireTLSInProd("postgres://u:p@h/db?sslmode=" + mode)
+		err := requireTLS("postgres://u:p@h/db?sslmode=" + mode)
 		assert.Error(t, err, "sslmode=%s must be rejected", mode)
 	}
 }
 
-func TestRequireTLSInProd_RejectsMissing(t *testing.T) {
-	t.Setenv("KIT_ENV", "production")
-	err := requireTLSInProd("postgres://u:p@h/db")
+func TestRequireTLS_RejectsMissing(t *testing.T) {
+	err := requireTLS("postgres://u:p@h/db")
 	assert.Error(t, err)
-}
-
-func TestRequireTLSInProd_AllowsAnythingInDev(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
-	for _, mode := range []string{"", "disable", "prefer"} {
-		err := requireTLSInProd("postgres://u:p@h/db?sslmode=" + mode)
-		assert.NoError(t, err, "dev should not enforce sslmode (got error for %q)", mode)
-	}
 }
 
 func TestExtractSSLMode_URLForm(t *testing.T) {

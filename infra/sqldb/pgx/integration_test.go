@@ -32,18 +32,16 @@ func startPostgres(t *testing.T) string {
 }
 
 func TestPing_Live(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
 	dsn := startPostgres(t)
-	pool, err := Connect(context.Background(), Config{DSN: dsn})
+	pool, err := Connect(context.Background(), Config{DSN: dsn, AllowPlaintext: true})
 	require.NoError(t, err)
 	defer pool.Close()
 	require.NoError(t, pool.Ping(context.Background()))
 }
 
 func TestCopy_LoadsRows(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
 	dsn := startPostgres(t)
-	pool, err := Connect(context.Background(), Config{DSN: dsn})
+	pool, err := Connect(context.Background(), Config{DSN: dsn, AllowPlaintext: true})
 	require.NoError(t, err)
 	defer pool.Close()
 
@@ -66,11 +64,10 @@ func TestCopy_LoadsRows(t *testing.T) {
 }
 
 func TestListenNotify_RoundTrip(t *testing.T) {
-	t.Setenv("KIT_ENV", "development")
 	dsn := startPostgres(t)
 	// Cap MaxConns to 5 so the listener pinning one is visible if the
 	// pool sizing math goes wrong.
-	pool, err := Connect(context.Background(), Config{DSN: dsn, MaxConns: 5})
+	pool, err := Connect(context.Background(), Config{DSN: dsn, MaxConns: 5, AllowPlaintext: true})
 	require.NoError(t, err)
 	defer pool.Close()
 

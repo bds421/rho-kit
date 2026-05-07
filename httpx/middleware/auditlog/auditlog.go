@@ -17,11 +17,11 @@ import (
 type Option func(*config)
 
 type config struct {
-	actorExtractor  func(*http.Request) string
-	pathFilter      func(string) bool
-	statusFilter    func(int) bool
-	clientIPFunc    func(*http.Request) string
-	trustedProxies  []*net.IPNet
+	actorExtractor func(*http.Request) string
+	pathFilter     func(string) bool
+	statusFilter   func(int) bool
+	clientIPFunc   func(*http.Request) string
+	trustedProxies []*net.IPNet
 }
 
 // WithActorExtractor sets a function that extracts the actor identity from the

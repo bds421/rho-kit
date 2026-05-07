@@ -9,11 +9,9 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
-	kitcfg "github.com/bds421/rho-kit/core/config"
 	"github.com/bds421/rho-kit/httpx"
 	securitycsrf "github.com/bds421/rho-kit/security/csrf"
 )
@@ -181,14 +179,13 @@ func WithSkipCheck(skip func(r *http.Request) bool) Option {
 // The frontend reads the cookie via JavaScript (HttpOnly=false) and sends
 // it back as a header on mutating requests.
 //
-// CRITICAL: a shared HMAC secret MUST be supplied via [WithSecret] in any
-// non-development environment. Without it, each pod generates a fresh
-// random secret at startup → tokens minted by pod A are rejected by pod B
-// → intermittent 403s after every deploy/autoscale/rotation. New panics
-// if no secret is configured AND `KIT_ENV` (or the deprecated `APP_ENV`)
-// names a non-dev environment. For local development with no shared
+// CRITICAL: a shared HMAC secret MUST be supplied via [WithSecret].
+// Without it, each pod generates a fresh random secret at startup →
+// tokens minted by pod A are rejected by pod B → intermittent 403s
+// after every deploy/autoscale/rotation. New panics unconditionally
+// if no secret is configured. For local development with no shared
 // infrastructure, use [WithDevSecret] to make the per-process random
-// fallback explicit.
+// fallback explicit — there is no KIT_ENV escape hatch.
 //
 // Panics if the HMAC secret is provided but shorter than 32 bytes.
 func New(opts ...Option) func(http.Handler) http.Handler {
@@ -203,12 +200,8 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 
 	if cfg.secret == nil {
-		env := os.Getenv("KIT_ENV")
-		if env == "" {
-			env = os.Getenv("APP_ENV")
-		}
-		if !cfg.allowDevSecret && !kitcfg.IsDevelopment(env) {
-			panic("csrf: no HMAC secret configured — call WithSecret in non-dev environments (otherwise multi-instance deployments break: each pod generates a different secret and tokens minted by pod A are rejected by pod B)")
+		if !cfg.allowDevSecret {
+			panic("csrf: no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 		}
 		cfg.secret = make([]byte, 32)
 		if _, err := rand.Read(cfg.secret); err != nil {
