@@ -2,7 +2,7 @@
 
 The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + nearly all Phase 2 has landed** (Wave 1+2+3+4+5 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
 
-The new-package work (Phases 4–6) is unstarted; those proposals live in `new/01-25`.
+The new-package work (Phases 4–6) is **mostly landed**; see per-phase status below. Remaining items are the genuine cloud/agent-tooling spikes (cloud-KMS subpackages, NATS/Kafka backends, kit-doctor/kit-new/dashboards).
 
 ## Phase 0 — Unblock — ✅ done
 
@@ -96,36 +96,51 @@ All Phase 3 polish items across `existing/02`–`existing/17` have landed. Each 
 - ✅ [existing/16] observability: Health Liveness/Readiness handlers; logattr Secret/Email; tracing Init timeout + fallback; auditlog memory IPAddress; promutil `Register` API; SLO `LatencyLabelFilter`.
 - ✅ [existing/17] io: progressReader concurrency doc + `WithThrottle` / `WithMinDelta`.
 
-## Phase 4 — Tier‑1 missing primitives (unstarted)
+## Phase 4 — Tier‑1 missing primitives — ✅ done
 
-- [new/03] `crypto/passhash` — argon2id with verify-then-rehash.
-- [new/04] `crypto/envelope` — DEK/KEK split, key-version metadata, KMS providers (AWS/GCP/Vault).
-- [new/05] `crypto/paseto` — safer JWT alternative for new services.
-- [new/06] `security/csrf` — session-bound CSRF tokens (existing middleware stays as a wrapper).
-- [new/07] `core/secret` — `SecretString` type that zeroes on Close, refuses to print/marshal.
-- [new/08] CSP-nonce middleware.
+- ✅ [new/03] `crypto/passhash` — argon2id with verify-then-rehash; PHC string format; `Verify` returns `(matched, needsRehash, err)` so callers can transparently upgrade params on next login (`8089439`).
+- ✅ [new/04] `crypto/envelope` — DEK/KEK split with self-describing blob (magic+ver+keyID+wrappedDEK+nonce+ct), AAD bound via SHA-256 of header, online `Rewrap` for rotation; ships `kekstatic` for tests/dev (`8089439`).
+- ✅ [new/05] `crypto/paseto` — V4Public (Ed25519) + V4Local (XChaCha20-Poly1305); mandatory expected-issuer/audience or explicit `WithAllowAnyIssuer` opt-out; clock-skew tolerance applied in our `validate()` (bypassing the library's default `NotExpired` rule) (`8089439`).
+- ✅ [new/06] `security/csrf` — `Issuer.Issue/Verify` with `prefix(8) || iat(8) || nonce(16) || hmac(32)` length-prefixing the sessionID; `OriginAllowlist` for Origin/Referer checks (`ca3f5aa`). Existing httpx CSRF middleware refit to use this primitive remains TODO under [existing/05].
+- ✅ [new/07] `core/secret` — `String` type with explicit `Reveal()`/`RevealString()`; `String()`, `GoString()`, `MarshalJSON`, `MarshalText`, `LogValue`, `Format` all emit `<redacted>` (`f3b7611`).
+- ✅ [new/08] `httpx/middleware/cspnonce` — per-request CSP nonce via `crypto/rand` injected into `script-src` and `style-src`; `FromContext` accessor + `HTMLAttr` template helper (`06386f1`).
 
-## Phase 5 — Tier‑2 infrastructure (unstarted)
+## Phase 5 — Tier‑2 infrastructure — partially done
 
-- [new/09] `data/lock/pgadvisory` — Postgres advisory lock.
-- [new/10] `data/ratelimit/slidingwindow` — GCRA / token bucket.
-- [new/11] `infra/leaderelection` — k8s-lease / etcd / pg-advisory.
-- [new/12] `infra/messaging/natsbackend` — JetStream.
-- [new/13] `infra/messaging/kafkabackend` — Kafka.
-- [new/14] `infra/sqldb/pgx` — `pgx`-native option for LISTEN/NOTIFY, COPY, pipelines.
-- [new/20] Multi-tenant primitives.
-- [new/24] `httpx/middleware/signedrequest`.
-- [new/25] `storagehttp/uploadsec`.
+Done:
 
-## Phase 6 — Agent-readiness (unstarted)
+- ✅ [new/09] `data/lock/pgadvisory` — `Locker.Acquire` (session-scoped) + `AcquireTx` (transaction-scoped); FNV-1a hash maps string key to int64; honours data/lock interface (`7253ecb`).
+- ✅ [new/10] `data/ratelimit` — `Limiter` interface plus `tokenbucket` and `gcra` implementations; GCRA off-by-one fixed via `!now.After(allowAt)` deny condition (`7253ecb`). Redis-backed cross-instance variant deferred.
+- ✅ [new/11] `infra/leaderelection` — `Elector` interface with `Run(ctx, Callbacks)` and `IsLeader()`; `pgadvisory` backend holds session-scoped lock with health-check ticker (`7253ecb`). k8slease/redislock/etcd backends deferred.
+- ✅ [new/24] `httpx/middleware/signedrequest` + `httpx/sign` — HMAC-SHA256 with timestamp+nonce+body-hash binding; `MemoryNonceStore` with sweep every 256 calls; client-side `Wrap(rt, secret, keyID)` round-tripper (`35aad31`).
+- ✅ [new/25] `storagehttp/uploadsec` — `Validator` interface + `Chain`; `AllowMIMETypes` (sniff via `http.DetectContentType`), `AllowExtensions` (cross-checks against ContentType), `MaxImageDimensions` using `image.DecodeConfig` (header-only — defends against decompression bombs); `HTTPStatusForError` maps to 415/422 (`35aad31`).
 
-- [new/15] `/debug/pprof` + go-runtime metrics on internal port.
-- [new/16] RED-metrics middleware with proper buckets.
-- [new/17] RFC 7807 problem-details writer.
-- [new/18] `cmd/kit-doctor`.
-- [new/21] `cmd/kit-new`.
-- [new/22] Observability pack (Grafana + alert templates).
-- [new/23] `cmd/kit-bench-gate`.
+Deferred (out of scope for this wave; require separate SDK/spike):
+
+- 🔴 [new/12] `infra/messaging/natsbackend` — JetStream.
+- 🔴 [new/13] `infra/messaging/kafkabackend` — Kafka.
+- 🔴 [new/14] `infra/sqldb/pgx` — `pgx`-native option for LISTEN/NOTIFY, COPY, pipelines.
+- 🔴 [new/20] Multi-tenant primitives.
+- 🔴 [new/04] Cloud-KMS subpackages (`kekaws`, `kekgcp`, `kekvault`) — deferred to keep envelope module dependency-light; only `kekstatic` ships.
+- 🔴 [new/05] PASETO `Provider` with periodic refresh — primitive shipped, dynamic-key Provider deferred.
+- 🔴 [new/10] Redis-backed GCRA for cross-instance rate limiting.
+- 🔴 [new/11] `k8slease`, `redislock`, `etcd` leader-election backends.
+
+## Phase 6 — Agent-readiness — partially done
+
+Done:
+
+- ✅ [new/15] `observability/pprof` + `observability/runtimemetrics` — `Mount(mux)` for net/http/pprof; `EnableMutexBlockProfiling`; curated Prometheus collector for goroutines, threads, heap, GC pause, max-RSS (linux/darwin via `getrusage` with platform-specific `scaleMaxRSS`) (`35aad31`).
+- ✅ [new/16] `observability/redmetrics` — `HTTPMetrics` (Requests/Errors/Duration/InFlight) with buckets `0.005..30s`; `BatchMetrics` with `0.1..3600s` buckets (`06386f1`).
+- ✅ [new/17] `httpx/problemdetails` — RFC 7807 `application/problem+json` writer; custom `MarshalJSON` inlines `Extensions` so callers can add `retry_after_seconds`, `errors[]`, etc.; `FromError` maps `apperror` to `Problem` (`06386f1`).
+- ✅ [new/19] `app.WithProductionDefaults()` — JWT requires `WithJWTIssuer` or explicit `WithJWTAllowAnyIssuer`; Postgres `sslmode` must be `require`/`verify-ca`/`verify-full`; tracing `SampleRate` capped at 0.1 (`35aad31`, `4d04fe1`).
+
+Deferred (require separate tooling effort):
+
+- 🔴 [new/18] `cmd/kit-doctor`.
+- 🔴 [new/21] `cmd/kit-new`.
+- 🔴 [new/22] Observability pack (Grafana + alert templates).
+- 🔴 [new/23] `cmd/kit-bench-gate`.
 
 ## Tracking
 
