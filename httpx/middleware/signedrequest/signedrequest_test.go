@@ -178,3 +178,56 @@ func TestMemoryNonceStore_Sweep(t *testing.T) {
 	third, _ := s.SeenOrStore("a")
 	assert.True(t, third)
 }
+
+func TestMemoryNonceStore_WithSweepEvery_Immediate(t *testing.T) {
+	// sweepEvery=1 means every call triggers a sweep, so an entry
+	// older than TTL is reclaimed on the very next SeenOrStore.
+	now := time.Now()
+	s := NewMemoryNonceStore(time.Second, WithSweepEvery(1))
+	s.now = func() time.Time { return now }
+
+	first, _ := s.SeenOrStore("a")
+	require.True(t, first)
+	require.Equal(t, 1, s.Len())
+
+	// Advance past TTL and probe a *different* nonce. With sweepEvery=1
+	// the sweep runs on this call and "a" is reclaimed before the
+	// probe of "b" inserts.
+	now = now.Add(2 * time.Second)
+	first, _ = s.SeenOrStore("b")
+	require.True(t, first)
+	assert.Equal(t, 1, s.Len(), "stale 'a' must be swept; only 'b' remains")
+}
+
+func TestMemoryNonceStore_WithSweepEvery_Deferred(t *testing.T) {
+	// A large sweepEvery means the map keeps stale entries until the
+	// cadence is reached. Verify the entry stays in the map after TTL
+	// has elapsed but before the sweep cadence fires.
+	now := time.Now()
+	s := NewMemoryNonceStore(time.Second, WithSweepEvery(1_000_000))
+	s.now = func() time.Time { return now }
+
+	for i := 0; i < 10; i++ {
+		nonce := "n-" + string(rune('a'+i))
+		ok, _ := s.SeenOrStore(nonce)
+		require.True(t, ok)
+	}
+	require.Equal(t, 10, s.Len())
+
+	// Advance past TTL. The sweep cadence is far higher than the
+	// number of calls so far — the map must still hold all entries.
+	now = now.Add(time.Hour)
+	ok, _ := s.SeenOrStore("post-ttl")
+	require.True(t, ok)
+	assert.Equal(t, 11, s.Len(),
+		"sweep is deferred; stale entries persist until cadence is reached")
+}
+
+func TestMemoryNonceStore_WithSweepEvery_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() {
+		NewMemoryNonceStore(time.Minute, WithSweepEvery(0))
+	})
+	assert.Panics(t, func() {
+		NewMemoryNonceStore(time.Minute, WithSweepEvery(-5))
+	})
+}
