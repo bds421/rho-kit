@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -242,4 +243,78 @@ func TestConsume_NoChargeOnRejection(t *testing.T) {
 	rem2, _ := b.Peek(ctx, "alice")
 	assert.Equal(t, rem, rem2,
 		"Peek after a rejection must agree with the rejected Consume")
+}
+
+// TestConsume_NearMaxInt64DoesNotOverflow guards the additive overflow
+// at memory.go: a naive `used + amount > cap` wraps for amounts close
+// to math.MaxInt64 and silently admits a charge that should reject.
+func TestConsume_NearMaxInt64DoesNotOverflow(t *testing.T) {
+	b := memory.New(100, time.Hour)
+	ctx := context.Background()
+
+	ok, _, _, _ := b.Consume(ctx, "alice", 10)
+	require.True(t, ok)
+
+	ok, rem, retry, err := b.Consume(ctx, "alice", math.MaxInt64-50)
+	require.NoError(t, err)
+	assert.False(t, ok, "near-MaxInt64 charge must reject without overflow")
+	assert.Equal(t, int64(90), rem, "remaining unchanged on rejection")
+	assert.Greater(t, retry, time.Duration(0))
+
+	ok, rem, _, err = b.Consume(ctx, "alice", math.MaxInt64)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int64(90), rem)
+}
+
+// TestSweeper_RemovesStaleKeys exercises WithSweeper: a key whose
+// period has rolled over is dropped on the next sweep.
+func TestSweeper_RemovesStaleKeys(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	b := memory.New(100, time.Minute,
+		memory.WithClock(func() time.Time { return cur }),
+		memory.WithSweeper(10*time.Millisecond),
+	)
+	t.Cleanup(b.Stop)
+	ctx := context.Background()
+
+	for _, k := range []string{"k1", "k2", "k3"} {
+		_, _, _, _ = b.Consume(ctx, k, 1)
+	}
+	require.Equal(t, 3, b.Len())
+
+	cur = cur.Add(2 * time.Minute)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.Len() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, 0, b.Len(), "sweeper must drop keys whose period has rolled over")
+}
+
+// TestStop_Idempotent ensures a double Stop neither panics nor
+// blocks.
+func TestStop_Idempotent(t *testing.T) {
+	b := memory.New(100, time.Hour, memory.WithSweeper(time.Hour))
+	b.Stop()
+	b.Stop()
+}
+
+// TestSweeperDisabled keeps the sweeper goroutine off and verifies
+// keys persist regardless of period rollover. Useful for callers that
+// want to bound cardinality themselves.
+func TestSweeperDisabled(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	b := memory.New(100, time.Minute,
+		memory.WithClock(func() time.Time { return cur }),
+		memory.WithSweeper(0),
+	)
+	ctx := context.Background()
+	_, _, _, _ = b.Consume(ctx, "alice", 1)
+	cur = cur.Add(2 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, 1, b.Len(), "no sweeper -> entry persists across rollover")
 }

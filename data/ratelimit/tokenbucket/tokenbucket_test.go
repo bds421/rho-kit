@@ -84,3 +84,39 @@ func mustAllow(t *testing.T, l *Limiter, key string) bool {
 	require.NoError(t, err)
 	return ok
 }
+
+// TestSweeper_RemovesColdBuckets bounds memory growth: a bucket that
+// has fully refilled is indistinguishable from a fresh one and the
+// sweeper reclaims it.
+func TestSweeper_RemovesColdBuckets(t *testing.T) {
+	cur := time.Now()
+	l := New(2, 2,
+		WithClock(func() time.Time { return cur }),
+		WithSweeper(10*time.Millisecond),
+	)
+	t.Cleanup(l.Stop)
+
+	for _, k := range []string{"a", "b", "c"} {
+		ok, _, err := l.Allow(context.Background(), k)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	require.Equal(t, 3, l.Len())
+
+	cur = cur.Add(10 * time.Second)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if l.Len() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, 0, l.Len(), "sweeper must drop fully-refilled buckets")
+}
+
+func TestStop_Idempotent(t *testing.T) {
+	l := New(1, 1, WithSweeper(time.Hour))
+	l.Stop()
+	l.Stop()
+}

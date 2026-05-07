@@ -15,6 +15,10 @@
 //   - Outbound API quotas where the upstream rate-limits us and we
 //     don't want to burst at the start of each window.
 //   - Per-tenant request smoothing.
+//
+// Idle keys are evicted by an optional sweeper goroutine (see
+// [WithSweeper]); without one the map can grow unbounded for
+// high-cardinality keyspaces.
 package gcra
 
 import (
@@ -25,14 +29,23 @@ import (
 	"github.com/bds421/rho-kit/data/ratelimit"
 )
 
+// defaultSweepInterval is the period between background passes that
+// remove cold keys whose theoretical arrival time has elapsed.
+const defaultSweepInterval = 5 * time.Minute
+
 // Limiter is a per-key GCRA [ratelimit.Limiter].
 type Limiter struct {
-	rate  time.Duration // emission interval; period / burst
-	burst int           // burst tolerance (cells)
+	rate  time.Duration
+	burst int
 	now   func() time.Time
 
 	mu   sync.Mutex
-	tats map[string]time.Time // theoretical arrival times
+	tats map[string]time.Time
+
+	sweepInterval time.Duration
+	stopOnce      sync.Once
+	stopCh        chan struct{}
+	doneCh        chan struct{}
 }
 
 // Option configures a [Limiter].
@@ -43,6 +56,14 @@ func WithClock(now func() time.Time) Option {
 	return func(l *Limiter) { l.now = now }
 }
 
+// WithSweeper overrides the interval at which the background sweeper
+// removes cold keys whose TAT lies in the past (which means another
+// admit there would not be rate-limited anyway). interval <= 0
+// disables the sweeper.
+func WithSweeper(interval time.Duration) Option {
+	return func(l *Limiter) { l.sweepInterval = interval }
+}
+
 // New constructs a Limiter that allows up to `burst` events within any
 // `period` duration, smoothed at `period/burst` per event.
 //
@@ -50,6 +71,9 @@ func WithClock(now func() time.Time) Option {
 //   - New(time.Second, 10): 10 events/sec smoothed (one every 100ms,
 //     burst tolerance 10).
 //   - New(time.Minute, 60): 60 events/min smoothed (one every second).
+//
+// Panics if period/burst rounds to zero — that produces a degenerate
+// limiter that admits every event without spacing.
 func New(period time.Duration, burst int, opts ...Option) *Limiter {
 	if period <= 0 {
 		panic("gcra: period must be > 0")
@@ -57,16 +81,64 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 	if burst < 1 {
 		panic("gcra: burst must be >= 1")
 	}
+	rate := period / time.Duration(burst)
+	if rate <= 0 {
+		panic("gcra: period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
+	}
 	l := &Limiter{
-		rate:  period / time.Duration(burst),
-		burst: burst,
-		now:   time.Now,
-		tats:  make(map[string]time.Time),
+		rate:          rate,
+		burst:         burst,
+		now:           time.Now,
+		tats:          make(map[string]time.Time),
+		sweepInterval: defaultSweepInterval,
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(l)
 	}
+	if l.sweepInterval > 0 {
+		go l.sweepLoop()
+	} else {
+		close(l.doneCh)
+	}
 	return l
+}
+
+// Stop terminates the background sweeper. Safe to call multiple
+// times.
+func (l *Limiter) Stop() {
+	l.stopOnce.Do(func() {
+		close(l.stopCh)
+		<-l.doneCh
+	})
+}
+
+func (l *Limiter) sweepLoop() {
+	defer close(l.doneCh)
+	t := time.NewTicker(l.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-l.stopCh:
+			return
+		case <-t.C:
+			l.sweep()
+		}
+	}
+}
+
+// sweep drops keys whose TAT is in the past — those have no live
+// rate-limit state (the next Allow would treat them as fresh).
+func (l *Limiter) sweep() {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for k, tat := range l.tats {
+		if !tat.After(now) {
+			delete(l.tats, k)
+		}
+	}
 }
 
 // Allow reports whether key's next event is permitted. retryAfter is
@@ -84,15 +156,10 @@ func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, err
 	if !ok || tat.Before(now) {
 		tat = now
 	}
-	// Standard GCRA: admit when (tat - now) < burst*rate, deny when ≥.
-	// Equivalently, deny when now ≤ tat - burst*rate. After `burst`
-	// admits at the same instant the next call must hit allowAt == now
-	// and be denied.
 	allowAt := tat.Add(-time.Duration(l.burst) * l.rate)
 	if !now.After(allowAt) {
 		return false, allowAt.Sub(now) + time.Nanosecond, nil
 	}
-	// Event admitted; bump TAT.
 	l.tats[key] = tat.Add(l.rate)
 	return true, 0, nil
 }

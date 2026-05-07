@@ -93,3 +93,50 @@ func mustAllow(t *testing.T, l *Limiter, key string) bool {
 	require.NoError(t, err)
 	return ok
 }
+
+// TestNew_PanicsWhenRateRoundsToZero pins the degenerate config:
+// burst exceeding the period in nanoseconds collapses the emission
+// interval to zero and would admit every event without spacing.
+func TestNew_PanicsWhenRateRoundsToZero(t *testing.T) {
+	assert.Panics(t, func() { New(time.Nanosecond, 2) },
+		"period (1ns) / burst (2) rounds to 0 — must panic")
+	assert.Panics(t, func() { New(10*time.Nanosecond, 100) },
+		"period (10ns) / burst (100) rounds to 0 — must panic")
+}
+
+// TestSweeper_RemovesColdKeys exercises the bounded-cardinality
+// guarantee. Keys whose theoretical arrival time has elapsed must be
+// reclaimed by the sweeper.
+func TestSweeper_RemovesColdKeys(t *testing.T) {
+	now := time.Now()
+	cur := now
+	l := New(time.Second, 1,
+		WithClock(func() time.Time { return cur }),
+		WithSweeper(10*time.Millisecond),
+	)
+	t.Cleanup(l.Stop)
+
+	for _, k := range []string{"a", "b", "c"} {
+		ok, _, err := l.Allow(context.Background(), k)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	require.Equal(t, 3, l.Len())
+
+	cur = cur.Add(2 * time.Second)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if l.Len() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, 0, l.Len(), "sweeper must drop cold keys whose TAT has elapsed")
+}
+
+func TestStop_Idempotent(t *testing.T) {
+	l := New(time.Second, 1, WithSweeper(time.Hour))
+	l.Stop()
+	l.Stop()
+}

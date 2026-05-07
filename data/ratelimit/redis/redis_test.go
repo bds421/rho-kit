@@ -125,6 +125,16 @@ func TestNew_PanicsOnZeroBurst(t *testing.T) {
 	New(client, time.Second, 0)
 }
 
+func TestNew_PanicsWhenRateRoundsToZero(t *testing.T) {
+	client, _ := newTestClient(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when period/burst rounds to 0")
+		}
+	}()
+	New(client, time.Nanosecond, 2)
+}
+
 func TestNew_PanicsOnTTLLessThanPeriod(t *testing.T) {
 	client, _ := newTestClient(t)
 	defer func() {

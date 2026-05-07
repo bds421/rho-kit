@@ -141,6 +141,9 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 		panic("ratelimit/redis: burst must be >= 1")
 	}
 	rate := period / time.Duration(burst)
+	if rate <= 0 {
+		panic("ratelimit/redis: period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
+	}
 	l := &Limiter{
 		client: client,
 		prefix: "ratelimit:gcra:",

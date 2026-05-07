@@ -3,8 +3,10 @@
 //
 // State per key is a single (period bucket id, used) pair held in a
 // [sync.Map]; admit and peek are constant-time. A bucket is replaced
-// atomically when a Consume call observes a stale period — there is
-// no background sweep, the data structure self-compacts on access.
+// atomically when a Consume call observes a stale period. By default
+// a background sweeper periodically removes buckets whose period has
+// rolled over and which carry no live state, so high-cardinality
+// keyspaces do not accumulate.
 //
 // Use this when:
 //
@@ -25,26 +27,29 @@ import (
 	"github.com/bds421/rho-kit/data/budget"
 )
 
+// defaultSweepInterval is the period between background passes that
+// remove cold keys whose window has rolled over.
+const defaultSweepInterval = 5 * time.Minute
+
 // Budget is a per-key in-process [budget.Budget] with a fixed-window
 // reset period.
 type Budget struct {
-	cap    int64         // per-period cap; > 0
-	period time.Duration // window length; > 0
+	cap    int64
+	period time.Duration
 	now    func() time.Time
 
 	buckets sync.Map // map[string]*bucket
+
+	sweepInterval time.Duration
+	stopOnce      sync.Once
+	stopCh        chan struct{}
+	doneCh        chan struct{}
 }
 
-// bucket holds the per-key state. We store the period id atomically
-// so a Peek path that races with the Consume that rolls the period
-// observes a consistent snapshot without acquiring a lock.
-//
-// The mutex serialises the read-modify-write inside a single bucket;
-// the outer sync.Map serialises insertion of new keys.
 type bucket struct {
 	mu      sync.Mutex
-	periodN atomic.Int64 // floor(unixNs / periodNs); identifies the window
-	used    atomic.Int64 // amount consumed in the current window
+	periodN atomic.Int64
+	used    atomic.Int64
 }
 
 // Option configures a [Budget].
@@ -53,6 +58,14 @@ type Option func(*Budget)
 // WithClock overrides the time source (tests only). Must not be nil.
 func WithClock(now func() time.Time) Option {
 	return func(b *Budget) { b.now = now }
+}
+
+// WithSweeper overrides the interval at which the background sweeper
+// removes buckets whose period has rolled over and that carry no live
+// state. interval <= 0 disables the sweeper entirely (the caller is
+// responsible for bounding cardinality).
+func WithSweeper(interval time.Duration) Option {
+	return func(b *Budget) { b.sweepInterval = interval }
 }
 
 // New constructs a Budget allowing up to `cap` units per `period`.
@@ -72,9 +85,12 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 		panic("budget/memory: period must be > 0")
 	}
 	b := &Budget{
-		cap:    cap,
-		period: period,
-		now:    time.Now,
+		cap:           cap,
+		period:        period,
+		now:           time.Now,
+		sweepInterval: defaultSweepInterval,
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(b)
@@ -82,13 +98,53 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 	if b.now == nil {
 		panic("budget/memory: clock must not be nil")
 	}
+	if b.sweepInterval > 0 {
+		go b.sweepLoop()
+	} else {
+		close(b.doneCh)
+	}
 	return b
 }
 
-// periodOf returns the integer period id and the wall-clock instant
-// the next window begins. Period ids are floor(unixNs / periodNs)
-// in the UTC frame so two replicas with synchronised clocks always
-// agree on the boundary.
+// Stop terminates the background sweeper. Safe to call multiple
+// times. After Stop, the budget continues to admit and refund as
+// normal but no longer evicts cold keys.
+func (b *Budget) Stop() {
+	b.stopOnce.Do(func() {
+		close(b.stopCh)
+		<-b.doneCh
+	})
+}
+
+func (b *Budget) sweepLoop() {
+	defer close(b.doneCh)
+	t := time.NewTicker(b.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-b.stopCh:
+			return
+		case <-t.C:
+			b.sweep()
+		}
+	}
+}
+
+// sweep removes buckets whose period id is older than the current
+// period. A bucket newly created in the current period and observed
+// by a concurrent Consume is preserved because its periodN is the
+// current period id by construction.
+func (b *Budget) sweep() {
+	currentPeriod, _ := b.periodOf(b.now())
+	b.buckets.Range(func(k, v any) bool {
+		bk := v.(*bucket)
+		if bk.periodN.Load() < currentPeriod {
+			b.buckets.CompareAndDelete(k, v)
+		}
+		return true
+	})
+}
+
 func (b *Budget) periodOf(t time.Time) (int64, time.Time) {
 	periodNs := int64(b.period)
 	id := t.UTC().UnixNano() / periodNs
@@ -96,9 +152,6 @@ func (b *Budget) periodOf(t time.Time) (int64, time.Time) {
 	return id, nextStart
 }
 
-// loadOrInitBucket returns the bucket for key, creating it if it
-// does not exist. The returned bucket may carry a stale period id;
-// callers re-validate under the bucket mutex.
 func (b *Budget) loadOrInitBucket(key string, currentPeriod int64) *bucket {
 	if v, ok := b.buckets.Load(key); ok {
 		return v.(*bucket)
@@ -125,21 +178,23 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 	bk.mu.Lock()
 	defer bk.mu.Unlock()
 
-	// Compaction: if the bucket id is stale, reset used and adopt
-	// the current period. Replacing in-place under the mutex avoids
-	// a churn of new bucket allocations on every roll-over.
 	if bk.periodN.Load() != periodID {
 		bk.periodN.Store(periodID)
 		bk.used.Store(0)
 	}
 
 	used := bk.used.Load()
-	if used+amount > b.cap {
-		remaining := b.cap - used
-		if remaining < 0 {
-			remaining = 0
-		}
-		return false, remaining, time.Until(nextStart), nil
+	// Defensive: a future change to Refund or external state could
+	// in principle leave used > cap. Treat that as "no headroom"
+	// rather than letting `cap - used` underflow remaining.
+	if used > b.cap {
+		return false, 0, time.Until(nextStart), nil
+	}
+	// Overflow-safe admission check. `used + amount` can wrap to a
+	// negative int64 for amounts near math.MaxInt64; comparing
+	// `amount > cap - used` keeps both sides in [0, cap].
+	if amount > b.cap-used {
+		return false, b.cap - used, time.Until(nextStart), nil
 	}
 	if amount > 0 {
 		bk.used.Add(amount)
@@ -161,13 +216,9 @@ func (b *Budget) Peek(_ context.Context, key string) (int64, error) {
 		return b.cap, nil
 	}
 	bk := v.(*bucket)
-	// Snapshot under the bucket mutex so a concurrent rollover does
-	// not return a torn (stale-id, fresh-used) pair.
 	bk.mu.Lock()
 	defer bk.mu.Unlock()
 	if bk.periodN.Load() != periodID {
-		// Period rolled over since the last write: by definition
-		// nothing has been spent in the current window yet.
 		return b.cap, nil
 	}
 	rem := b.cap - bk.used.Load()
@@ -199,8 +250,6 @@ func (b *Budget) Refund(_ context.Context, key string, amount int64) (int64, err
 	defer bk.mu.Unlock()
 
 	if bk.periodN.Load() != periodID {
-		// Period rolled over since last write — nothing has been
-		// charged yet, refund collapses to a no-op.
 		bk.periodN.Store(periodID)
 		bk.used.Store(0)
 		return b.cap, nil

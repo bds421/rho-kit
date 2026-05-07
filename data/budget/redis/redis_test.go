@@ -302,3 +302,76 @@ func TestRedisTime_Smoke(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
+
+// TestConsume_RejectedFirstRequestLeavesNoKey guards against the
+// INCRBY-then-DECRBY pattern leaving a non-expiring zero-valued key
+// when a brand-new request charges over the cap. miniredis exposes
+// TTL inspection so we can assert no orphaned key remains.
+func TestConsume_RejectedFirstRequestLeavesNoKey(t *testing.T) {
+	client, mr := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	ctx := context.Background()
+
+	ok, _, _, err := b.Consume(ctx, "alice", 200)
+	require.NoError(t, err)
+	require.False(t, ok, "200 over cap=100 must reject")
+
+	keys := mr.Keys()
+	assert.Empty(t, keys, "rejected first request must not leave a persistent key")
+}
+
+// TestConsume_RejectedFollowupRefreshesTTL: when an existing bucket
+// rejects a charge the TTL must still be refreshed so the bucket
+// continues to expire as expected. We can only assert that an EXPIRE
+// is set; the exact TTL is implementation-defined.
+func TestConsume_RejectedFollowupRefreshesTTL(t *testing.T) {
+	client, mr := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	ctx := context.Background()
+
+	ok, _, _, err := b.Consume(ctx, "alice", 50)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	keys := mr.Keys()
+	require.Len(t, keys, 1, "admitted request creates exactly one key")
+	ttlBefore := mr.TTL(keys[0])
+	require.Greater(t, ttlBefore, time.Duration(0))
+
+	mr.FastForward(30 * time.Minute)
+
+	ok, _, _, err = b.Consume(ctx, "alice", 200)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	ttlAfter := mr.TTL(keys[0])
+	assert.Greater(t, ttlAfter, time.Duration(0), "TTL must remain set after rejection")
+	assert.Greater(t, ttlAfter, 30*time.Minute, "rejected request refreshes TTL")
+}
+
+// TestRetryAfter_UsesSameTimeSource verifies that retry-after uses
+// the configured clock (not local time). With WithClock pinned and
+// the local clock free-running, retry-after must equal time-to-next
+// boundary measured against the pinned clock.
+func TestRetryAfter_UsesSameTimeSource(t *testing.T) {
+	client, _ := newTestClient(t)
+	period := time.Minute
+
+	cur := time.Unix(1_700_000_000, 0)
+	expectedNext := time.Unix(0, ((cur.UTC().UnixNano()/int64(period))+1)*int64(period)).UTC()
+	expectedRetry := expectedNext.Sub(cur)
+
+	b := budgetredis.New(client, 10, period,
+		budgetredis.WithClock(func() time.Time { return cur }),
+	)
+	ctx := context.Background()
+
+	ok, _, _, _ := b.Consume(ctx, "alice", 10)
+	require.True(t, ok)
+
+	ok, _, retry, err := b.Consume(ctx, "alice", 5)
+	require.NoError(t, err)
+	require.False(t, ok)
+	assert.InDelta(t, float64(expectedRetry), float64(retry), float64(time.Millisecond),
+		"retry-after must be derived from the pinned clock, not the host clock")
+}

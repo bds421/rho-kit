@@ -69,8 +69,19 @@ end
 
 local newUsed = redis.call("INCRBY", KEYS[1], amount)
 if newUsed > cap then
-  redis.call("DECRBY", KEYS[1], amount)
   local cur = newUsed - amount
+  if cur <= 0 then
+    -- First request over cap: the INCRBY created a fresh key. Drop
+    -- it instead of leaving a non-expiring zero-valued counter that
+    -- a hostile caller could spam to fill Redis with garbage keys.
+    redis.call("DEL", KEYS[1])
+  else
+    redis.call("DECRBY", KEYS[1], amount)
+    -- The key already existed (and therefore has a TTL); refresh it
+    -- so a rejected request still extends the window the same way
+    -- an admitted one does.
+    redis.call("EXPIRE", KEYS[1], ttl)
+  end
   local rem = cap - cur
   if rem < 0 then rem = 0 end
   return {0, rem}
@@ -258,7 +269,15 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	if allowed == 1 {
 		return true, remaining, 0, nil
 	}
-	return false, remaining, time.Until(nextStart), nil
+	// Retry-after is computed against the same time source used to
+	// pick the period boundary so WithRedisTime stays consistent
+	// across local-clock skew. Floor at zero to defend against the
+	// rare case where the clock advances between fetch and use.
+	retry := nextStart.Sub(now)
+	if retry < 0 {
+		retry = 0
+	}
+	return false, remaining, retry, nil
 }
 
 // Refund implements [budget.Refunder]. Refunding past the cap
