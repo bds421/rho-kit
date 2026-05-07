@@ -14,7 +14,7 @@ _Closed — see Recently Landed below._
 - ✅ **`storagehttp.MaxMemory` deprecated** — replaced with `MaxTotalSkippedBytes` (default 16 MiB) which actually bounds discard size; old field still in struct with a deprecation note + lint guard.
 - ✅ **`UUIDKeyFunc` extension fallback** — `extensionFromFilename` allowlists alphanumeric extensions ≤ 8 chars; falls back to filename ext only when content type yields nothing; rejects `..`, slashes, query strings.
 - ✅ **`encryption.WithMaxConcurrentEncryptions(n)`** — `putSem` (default `runtime.NumCPU()`) bounds concurrent in-memory encryptions; documented per-Put memory cost in package doc.
-- ✅ **sftp generation cleanup** — `cleanupGen atomic.Uint64`; cleanup goroutines short-circuit when a newer generation is set; idle FDs no longer accumulate when the SFTP server flaps.
+- ✅ **sftp generation cleanup** — `cleanupGen atomic.Uint64`; cleanup goroutines short-circuit when a newer generation is set; idle FDs no longer accumulate when the SFTP server flaps. Followup polish: poll loop now uses `time.NewTicker(200ms)` + `time.NewTimer(5s)` deadline rather than `time.Sleep` (no drift, no extra goroutine state).
 - ✅ **`Manager.Default` invariant** — `Default()` panics on order/backends drift instead of returning nil; backed by a regression test.
 - ✅ **S3 URL templating** — `URLTemplate` config field with `{bucket}` / `{region}` placeholders so China / GovCloud / R2 endpoints work.
 

@@ -209,16 +209,26 @@ func (b *SFTPBackend) connect() error {
 		b.cleanupWg.Add(1)
 		go func() {
 			defer b.cleanupWg.Done()
-			// Generation-aware sleep: poll every 200ms so a newer cleanup
-			// shortcircuits the wait. Bounded total wait remains 5s.
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
+			// Wait up to 5s for in-flight callers to release the old
+			// client, OR break early if a newer reconnect bumps the
+			// generation. Polling on a 200ms ticker rather than
+			// time.Sleep avoids drift and keeps shutdown latency low
+			// when a flap chain queues many cleanups.
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			for {
 				if b.cleanupGen.Load() != gen {
-					// A newer cleanup has run; close immediately.
 					break
 				}
-				time.Sleep(200 * time.Millisecond)
+				select {
+				case <-ticker.C:
+				case <-deadline.C:
+					goto closeOld
+				}
 			}
+		closeOld:
 			if oldClient != nil {
 				_ = oldClient.Close()
 			}

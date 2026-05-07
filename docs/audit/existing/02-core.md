@@ -18,10 +18,10 @@ _Closed — see Recently Landed below._
 - ✅ **`config.Load` rejects explicit empty for `required`** — `MY_SECRET=` no longer silently falls through to a default.
 - ✅ **`contextutil.NewSecureID() (string, error)`** — returns an error when `crypto/rand` fails instead of falling back to the time + counter mode.
 
-`apperror.HTTPStatus` decision deferred to v2 (cross-module migration; tracked separately).
+`apperror.HTTPStatus` removed — `httpx.HTTPStatus` is the supported replacement and already wires `Retry-After` from `RateLimitError`/`UnavailableError` (see `httpx/error_handler.go`). No external callers existed at deletion time.
 
 ### Migration checklist
 
 - [x] Phase 2: split `GetSecret` into `(string, error)` + `MustGetSecret`.
 - [x] Phase 3: `EnvReloader.WithImmediateLoad()`.
-- [ ] v2: decide on `apperror.HTTPStatus` removal vs keep (deferred — cross-module impact).
+- [x] Remove `apperror.HTTPStatus` (no external callers); `httpx.HTTPStatus` is canonical.
