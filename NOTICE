@@ -1,0 +1,45 @@
+rho-kit
+Copyright (c) 2024-2026 the rho-kit contributors.
+
+This product includes software derived from third-party open source
+projects. The list below enumerates the derivations and the reason
+each was vendored or modeled.
+
+================================================================================
+ory/x — github.com/ory/x (Apache License 2.0)
+Copyright (c) 2018-present, The Ory Authors
+
+The following packages in this repository are inspired by, modeled on, or
+have call-site-compatible APIs with the equivalent ory/x package. The
+implementations are original (clean-room rewrites against the standard
+library) but the API shape and behaviour are aligned so consumers
+familiar with ory/x see a familiar surface:
+
+  - core/randstr        — modeled on ory/x/randx (rejection-sampled
+                          random strings; uses crypto/rand.Int's
+                          built-in rejection sampling rather than
+                          ory's hand-rolled big.Int loop)
+  - core/safecast       — modeled on ory/x/safecast (clamping
+                          integer narrowing helpers; trivial 3-line
+                          functions; extends with IntToInt32 and
+                          IntToUint32)
+  - httpx/urlutil       — modeled on ory/x/urlx (URL join/copy/parse
+                          helpers; delegates to Go 1.19's
+                          *url.URL.JoinPath rather than reimplementing
+                          path joining)
+  - httpx/pagination    — offset.go and link_header.go are modeled on
+                          ory/x/pagination (RFC 5988 Link-header writer
+                          and ?limit=&offset= parser; original
+                          implementation, ory's API surface)
+
+ory/x is Apache 2.0 licensed and rho-kit is also Apache 2.0 licensed,
+so license compatibility is mutual. Per Apache-2.0 §4(d) this NOTICE
+file preserves the attribution. The ory/x license can be read at
+https://github.com/ory/x/blob/master/LICENSE.
+
+================================================================================
+Other dependencies
+
+For the full list of transitive dependencies and their licenses, see
+the per-module go.mod files in this repository. SBOM generation
+(CycloneDX) is wired in .github/workflows/sbom.yml.
