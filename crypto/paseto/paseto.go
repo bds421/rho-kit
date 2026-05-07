@@ -112,7 +112,12 @@ func WithAllowAnyAudience() Option {
 
 // WithClockSkewTolerance allows clock skew of up to d when checking
 // exp/nbf claims. Default: 0 (strict). Production usually wants 30s.
+// Panics if d is negative — a negative tolerance silently tightens
+// exp/nbf checks, which is never the caller's intent.
 func WithClockSkewTolerance(d time.Duration) Option {
+	if d < 0 {
+		panic("paseto: WithClockSkewTolerance requires a non-negative duration")
+	}
 	return func(c *config) { c.clockSkewTolerance = d }
 }
 
@@ -291,13 +296,21 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	if c.Subject != "" {
 		t.SetSubject(c.Subject)
 	}
-	if iss := pick(c.Issuer, cfg.expectedIssuer); iss != "" {
-		t.SetIssuer(iss)
+	if cfg.expectedIssuer != "" {
+		if c.Issuer != "" && c.Issuer != cfg.expectedIssuer {
+			return paseto.Token{}, fmt.Errorf("%w: caller %q want %q", ErrIssuerMismatch, c.Issuer, cfg.expectedIssuer)
+		}
+		t.SetIssuer(cfg.expectedIssuer)
+	} else if c.Issuer != "" {
+		t.SetIssuer(c.Issuer)
 	}
-	if len(c.Audience) == 1 {
-		t.SetAudience(c.Audience[0])
-	} else if cfg.expectedAudience != "" {
+	if cfg.expectedAudience != "" {
+		if len(c.Audience) == 1 && c.Audience[0] != cfg.expectedAudience {
+			return paseto.Token{}, fmt.Errorf("%w: caller %q want %q", ErrAudienceUnknown, c.Audience[0], cfg.expectedAudience)
+		}
 		t.SetAudience(cfg.expectedAudience)
+	} else if len(c.Audience) == 1 {
+		t.SetAudience(c.Audience[0])
 	}
 	if !c.IssuedAt.IsZero() {
 		t.SetIssuedAt(c.IssuedAt)
@@ -372,12 +385,12 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 		return nil, ErrTokenNotYet
 	}
 
-	return c, nil
-}
-
-func pick(a, b string) string {
-	if a != "" {
-		return a
+	for name, val := range t.Claims() {
+		if _, reserved := reservedClaims[name]; reserved {
+			continue
+		}
+		c.Custom[name] = val
 	}
-	return b
+
+	return c, nil
 }

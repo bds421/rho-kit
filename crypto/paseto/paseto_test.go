@@ -92,41 +92,57 @@ func TestV4Public_RejectsNotYetValid(t *testing.T) {
 
 func TestV4Public_RejectsIssuerMismatch(t *testing.T) {
 	pub, priv := mustEd25519Pair(t)
-	v, err := NewV4Public(
+
+	signer, err := NewV4Public(
 		[]ed25519.PublicKey{pub},
-		WithExpectedIssuer("svc-A"),
+		WithAllowAnyIssuer(),
 		WithExpectedAudience("svc-B"),
 	)
 	require.NoError(t, err)
 
-	tok, err := v.Sign(Claims{
+	tok, err := signer.Sign(Claims{
 		Issuer:    "wrong",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
 
-	_, err = v.Verify(tok, time.Now())
-	assert.ErrorIs(t, err, ErrIssuerMismatch)
-}
-
-func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
-	pub, priv := mustEd25519Pair(t)
-	v, err := NewV4Public(
+	verifier, err := NewV4Public(
 		[]ed25519.PublicKey{pub},
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
 	)
 	require.NoError(t, err)
 
-	tok, err := v.Sign(Claims{
+	_, err = verifier.Verify(tok, time.Now())
+	assert.ErrorIs(t, err, ErrIssuerMismatch)
+}
+
+func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+
+	signer, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithAllowAnyAudience(),
+	)
+	require.NoError(t, err)
+
+	tok, err := signer.Sign(Claims{
 		Issuer:    "svc-A",
 		Audience:  []string{"svc-Z"},
 		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
 
-	_, err = v.Verify(tok, time.Now())
+	verifier, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = verifier.Verify(tok, time.Now())
 	assert.ErrorIs(t, err, ErrAudienceUnknown)
 }
 
@@ -498,4 +514,134 @@ func TestSign_AllowsCustomClaimsThatAreNotReserved(t *testing.T) {
 
 	_, err = v.Verify(tok, time.Now())
 	assert.NoError(t, err)
+}
+
+func TestVerify_PreservesCustomClaims(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"role": "admin", "tenant": "x"},
+	}, priv)
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "admin", claims.Custom["role"])
+	assert.Equal(t, "x", claims.Custom["tenant"])
+	for _, reserved := range []string{"iss", "aud", "exp", "nbf", "iat", "sub", "jti"} {
+		_, present := claims.Custom[reserved]
+		assert.False(t, present, "reserved claim %q must not appear in Custom", reserved)
+	}
+}
+
+func TestVerify_PreservesCustomClaims_V4Local(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"scope": "read", "tier": float64(2)},
+	})
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "read", claims.Custom["scope"])
+	assert.Equal(t, float64(2), claims.Custom["tier"])
+}
+
+func TestSign_RejectsCallerIssuerMismatch(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Sign(Claims{
+		Issuer:    "svc-B",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, priv)
+	assert.ErrorIs(t, err, ErrIssuerMismatch)
+}
+
+func TestSign_StampsConfiguredIssuerWhenCallerOmitsIt(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, priv)
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "svc-A", claims.Issuer)
+}
+
+func TestSeal_RejectsCallerAudienceMismatch(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-Z"},
+		ExpiresAt: futureExp(),
+	})
+	assert.ErrorIs(t, err, ErrAudienceUnknown)
+}
+
+func TestSeal_StampsConfiguredAudienceWhenCallerOmitsIt(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Seal(Claims{
+		Issuer:    "svc-A",
+		ExpiresAt: futureExp(),
+	})
+	require.NoError(t, err)
+
+	claims, err := v.Verify(tok, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"svc-B"}, claims.Audience)
+}
+
+func TestWithClockSkewTolerance_PanicsOnNegative(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = WithClockSkewTolerance(-time.Second)
+	})
 }

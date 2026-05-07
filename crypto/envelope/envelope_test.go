@@ -70,11 +70,22 @@ func TestEncryptDecrypt_TamperedHeaderRejected(t *testing.T) {
 	require.Error(t, err) // either unknown keyID or auth-failed
 }
 
-func TestEncrypt_RejectsEmptyPlaintext(t *testing.T) {
+func TestEncryptDecrypt_EmptyPlaintextRoundTrips(t *testing.T) {
 	k := newKEK(t, "v1")
 	enc := envelope.New(k)
-	_, err := enc.Encrypt(context.Background(), nil, nil)
-	assert.Error(t, err)
+
+	blob, err := enc.Encrypt(context.Background(), nil, nil)
+	require.NoError(t, err)
+
+	got, err := enc.Decrypt(context.Background(), blob, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	blob2, err := enc.Encrypt(context.Background(), []byte{}, []byte("aad"))
+	require.NoError(t, err)
+	got2, err := enc.Decrypt(context.Background(), blob2, []byte("aad"))
+	require.NoError(t, err)
+	assert.Empty(t, got2)
 }
 
 func TestDecrypt_RejectsTruncated(t *testing.T) {
@@ -234,4 +245,27 @@ func TestKEKStatic_UnknownKeyIDRejected(t *testing.T) {
 	k := newKEK(t, "v1")
 	_, err := k.Unwrap(context.Background(), "v999", []byte("garbage"))
 	assert.Error(t, err)
+}
+
+func TestKEKStatic_KeyIDBoundAsAAD(t *testing.T) {
+	mk := make([]byte, 32)
+	_, err := rand.Read(mk)
+	require.NoError(t, err)
+
+	k, err := kekstatic.New("keyA", mk)
+	require.NoError(t, err)
+	require.NoError(t, k.AddKey("keyB", mk))
+
+	enc := envelope.New(k)
+	blob, err := enc.Encrypt(context.Background(), []byte("payload"), nil)
+	require.NoError(t, err)
+
+	// Tamper the blob's keyID from "keyA" to "keyB". Layout:
+	// magic(3) || version(1) || keyIDLen(1) || keyID(...) || ...
+	require.Equal(t, byte(4), blob[4], "expected keyID length 4")
+	require.Equal(t, byte('A'), blob[8])
+	blob[8] = 'B'
+
+	_, err = enc.Decrypt(context.Background(), blob, nil)
+	assert.Error(t, err, "swapped keyID must fail to unwrap because keyID is bound as AAD")
 }

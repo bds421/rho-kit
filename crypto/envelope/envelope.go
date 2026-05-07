@@ -116,10 +116,6 @@ func New(kek KEK) *Encryptor {
 // or any other context that must not be mixable with another row's
 // ciphertext.
 func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
-	if len(plaintext) == 0 {
-		return nil, fmt.Errorf("envelope: plaintext must not be empty")
-	}
-
 	dek := make([]byte, dekLen)
 	if _, err := rand.Read(dek); err != nil {
 		return nil, fmt.Errorf("envelope: read DEK: %w", err)

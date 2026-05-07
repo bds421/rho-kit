@@ -103,10 +103,15 @@ func (k *KEK) KeyID() string {
 }
 
 // Wrap encrypts dek under the active master key with AES-256-GCM. The
-// returned blob is `nonce(12) || ciphertext+tag`.
+// returned blob is `nonce(12) || ciphertext+tag`. The active keyID is
+// bound as AEAD AAD so a wrapped DEK can only be opened under the
+// exact keyID it was wrapped with — even if the same master bytes are
+// registered under multiple ids, swapping the envelope's keyID header
+// to an alternate id fails to authenticate.
 func (k *KEK) Wrap(_ context.Context, dek []byte) ([]byte, error) {
 	k.mu.RLock()
 	master := k.keys[k.current]
+	keyID := k.current
 	k.mu.RUnlock()
 	if master == nil {
 		return nil, errors.New("kekstatic: no active key")
@@ -120,7 +125,7 @@ func (k *KEK) Wrap(_ context.Context, dek []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("kekstatic: read nonce: %w", err)
 	}
-	ct := gcm.Seal(nil, nonce, dek, nil)
+	ct := gcm.Seal(nil, nonce, dek, []byte(keyID))
 
 	out := make([]byte, 0, gcm.NonceSize()+len(ct))
 	out = append(out, nonce...)
@@ -130,7 +135,9 @@ func (k *KEK) Wrap(_ context.Context, dek []byte) ([]byte, error) {
 
 // Unwrap decrypts wrapped under the named keyID. Returns an error if
 // the keyID is not registered (rejected explicitly rather than silently
-// trying the active key).
+// trying the active key). The keyID is bound as AEAD AAD; mismatched
+// keyIDs fail authentication even when the underlying master bytes
+// match.
 func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, error) {
 	k.mu.RLock()
 	master := k.keys[keyID]
@@ -149,7 +156,7 @@ func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, e
 	}
 	nonce := wrapped[:nonceLen]
 	ct := wrapped[nonceLen:]
-	pt, err := gcm.Open(nil, nonce, ct, nil)
+	pt, err := gcm.Open(nil, nonce, ct, []byte(keyID))
 	if err != nil {
 		return nil, fmt.Errorf("kekstatic: gcm open: %w", err)
 	}
