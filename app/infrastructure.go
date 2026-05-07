@@ -10,6 +10,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/bds421/rho-kit/crypto/paseto"
+	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/approval"
+	"github.com/bds421/rho-kit/data/budget"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging"
@@ -64,6 +67,10 @@ type Infrastructure struct {
 	PASETO *paseto.Provider  // nil if no WithPASETO
 
 	Leader leaderelection.Elector // nil if no WithLeaderElection
+
+	TenantBudget  budget.Budget    // nil if no WithTenantBudget
+	ActionLog     actionlog.Logger // nil if no WithActionLogger
+	ApprovalStore approval.Store   // nil if no WithApprovalStore
 
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit

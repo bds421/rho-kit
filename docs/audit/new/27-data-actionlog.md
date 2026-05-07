@@ -75,7 +75,7 @@ secret manager.
 - [x] Tamper-detection tests for both backends.
 - [x] Integration test (postgres testcontainer) under
       `//go:build integration`.
-- [ ] Builder integration (Theme 3 sweep — separate PR).
+- [x] Builder integration ✅ (Wave 2) — `Builder.WithActionLogger(l)` registers the logger; exposed via `Infrastructure.ActionLog` so handlers can attribute writes to actor + tenant. Builder panics on nil (no silent no-attribution).
 - [ ] Recipe in `docs/ai/`.
 
 ## Trade-offs

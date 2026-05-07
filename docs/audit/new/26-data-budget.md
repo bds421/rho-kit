@@ -102,7 +102,7 @@ said no" from "upstream said no".
 - [x] HTTP middleware (`httpx/middleware/budget`) with default tenant key, header attachments, and 503-on-backend-error policy. ✅ `07af16f`
 - [x] Outbound RoundTripper (`httpx/budget`) with sentinel error, estimate header, and reconciliation against an actual header. ✅ `18745af`
 - [x] Audit entry (this file).
-- [ ] Builder integration (`Builder.WithTokenBudget(b, scope)`) — explicitly deferred per Theme 2 charter; lands in a separate Builder sweep.
+- [x] Builder integration ✅ (Wave 2) — `Builder.WithTenantBudget(b, opts...)` activates the inbound budget middleware on the public mux. Default key function reads tenant ID from ctx (composes naturally with `WithMultiTenant`); supply `httpxbudget.WithKeyFunc` for non-tenant scopes. Builder panics on nil store (no silent no-budget). Budget exposed on Infrastructure for handler-side use.
 - [ ] Recipe in `docs/ai/http.md` — deferred to docs sweep.
 
 ## Design choices worth flagging

@@ -93,7 +93,7 @@ same middleware constructor.
 - [x] `httpx/middleware/approval` (HTTP middleware).
 - [x] Integration test (postgres testcontainer) under
       `//go:build integration`.
-- [ ] Builder integration (Theme 3 sweep — separate PR).
+- [x] Builder integration ✅ (Wave 2) — `Builder.WithApprovalStore(s)` registers the store; exposed via `Infrastructure.ApprovalStore` so handlers can gate destructive ops behind the pending → approved → executed lifecycle. Builder panics on nil.
 - [ ] Recipe in `docs/ai/`.
 
 ## Trade-offs

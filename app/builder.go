@@ -13,10 +13,15 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/crypto/paseto"
+	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/approval"
+	"github.com/bds421/rho-kit/data/budget"
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
+	httpxbudget "github.com/bds421/rho-kit/httpx/middleware/budget"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/slohttp"
 	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
@@ -120,6 +125,20 @@ type Builder struct {
 	// Signed requests (optional). The public mux wraps every route in
 	// the signedrequest middleware when this is set.
 	signedSpec *signedRequestSpec
+
+	// Multi-tenant request handling (optional). Activates the tenant
+	// middleware so handlers can read tenant.FromContext.
+	tenantSpec *tenantSpec
+
+	// Per-tenant cost budgets (optional). The public mux charges every
+	// request against the tenant's bucket when set.
+	budgetSpec *budgetSpec
+
+	// Append-only action log (optional). Exposed via Infrastructure.
+	alog actionlog.Logger
+
+	// Approval store (optional). Exposed via Infrastructure.
+	astore approval.Store
 
 	// Production-defaults switch — see Builder.WithProductionDefaults.
 	productionDefaults bool
@@ -422,6 +441,73 @@ func (b *Builder) WithSignedRequests(
 		store:    store,
 		opts:     opts,
 	}
+	return b
+}
+
+// WithMultiTenant activates tenant-aware request handling. The
+// public mux gets the tenant middleware (extracts the tenant ID
+// from the request and stores it on ctx); handlers downstream
+// can call [tenant.FromContext] / [tenant.Required] without
+// each route reinventing the extractor.
+//
+// `extractor` defaults to [httpxtenant.HeaderExtractor("X-Tenant-Id")]
+// when nil. Pass a custom one to read from a JWT claim, mTLS
+// certificate, or whatever your auth boundary surfaces.
+//
+// `required` controls whether state-changing requests without a
+// tenant are rejected with 400 (the recommended default — see
+// the tenant middleware's package doc).
+//
+// Cache and idempotency wrappers ([data/cache/tenant.Wrap] /
+// [data/idempotency/tenant.Wrap]) are caller-applied — the
+// Builder doesn't own those instances and shouldn't silently
+// rewrite them.
+func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor, required bool) *Builder {
+	b.tenantSpec = &tenantSpec{extractor: extractor, required: required}
+	return b
+}
+
+// WithTenantBudget enforces a per-tenant cost budget on every
+// inbound request via [httpx/middleware/budget]. The default key
+// function pulls the tenant ID from ctx (assumes
+// [WithMultiTenant] is also configured); supply a custom one via
+// [httpxbudget.WithKeyFunc] if your scope is different.
+//
+// Panics if `b2` is nil — silent no-budget would defeat the
+// kit's "refuse to misconfigure" stance.
+func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Builder {
+	if b2 == nil {
+		panic("app: WithTenantBudget requires a non-nil Budget store")
+	}
+	b.budgetSpec = &budgetSpec{store: b2, opts: opts}
+	return b
+}
+
+// WithActionLogger registers an [actionlog.Logger] so handlers can
+// attribute writes to the originating actor + tenant. Exposed via
+// [Infrastructure.ActionLog] — handlers append entries; the kit
+// doesn't auto-instrument routes (verb/resource attribution is
+// app-specific).
+//
+// Panics if `l` is nil.
+func (b *Builder) WithActionLogger(l actionlog.Logger) *Builder {
+	if l == nil {
+		panic("app: WithActionLogger requires a non-nil Logger")
+	}
+	b.alog = l
+	return b
+}
+
+// WithApprovalStore registers an [approval.Store] so handlers can
+// gate destructive operations behind a pending → approved →
+// executed lifecycle. Exposed via [Infrastructure.ApprovalStore].
+//
+// Panics if `s` is nil.
+func (b *Builder) WithApprovalStore(s approval.Store) *Builder {
+	if s == nil {
+		panic("app: WithApprovalStore requires a non-nil Store")
+	}
+	b.astore = s
 	return b
 }
 
@@ -792,6 +878,9 @@ func (b *Builder) Run() error {
 		Cron:           cronScheduler,
 		AuditLog:       auditLogger,
 		EventBus:       eventBus,
+		TenantBudget:   b.budgetSpecStore(),
+		ActionLog:      b.actionLogger(),
+		ApprovalStore:  b.approvalStore(),
 		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			lateBgsMu.Lock()
@@ -830,11 +919,19 @@ func (b *Builder) Run() error {
 	} else {
 		httpHandler = http.NotFoundHandler()
 	}
-	// Wrap inbound requests in signedrequest verification when
-	// configured. Outermost so unsigned requests get rejected before
-	// any router-side work runs (logging, tracing, metrics still see
-	// the rejection — they wrap signedrequest, not the other way
-	// around).
+	// Compose the inbound middleware chain from the inside out:
+	//
+	//   1. budget — charges per-tenant; furthest from the network
+	//      so rejections still see tenant ctx populated.
+	//   2. tenant — extracts tenant ID into ctx for budget + handler.
+	//   3. signedrequest — outermost; unsigned requests get rejected
+	//      before any tenant or budget work runs.
+	if mw := b.budgetMiddleware(); mw != nil {
+		httpHandler = mw(httpHandler)
+	}
+	if mw := b.tenantMiddleware(); mw != nil {
+		httpHandler = mw(httpHandler)
+	}
 	if mw := b.signedRequestMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
 	}

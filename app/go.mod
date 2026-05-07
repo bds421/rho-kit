@@ -4,8 +4,12 @@ go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/crypto/paseto v0.0.0
+	github.com/bds421/rho-kit/data/actionlog v0.0.0
+	github.com/bds421/rho-kit/data/approval v0.0.0
+	github.com/bds421/rho-kit/data/budget v0.0.0
 	github.com/bds421/rho-kit/grpcx v0.2.0
 	github.com/bds421/rho-kit/httpx v1.5.0
+	github.com/bds421/rho-kit/httpx/middleware/budget v0.0.0
 	github.com/bds421/rho-kit/httpx/middleware/signedrequest v0.0.0
 	github.com/bds421/rho-kit/infra/leaderelection v0.0.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0
@@ -130,6 +134,10 @@ require (
 
 replace (
 	github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto
+	github.com/bds421/rho-kit/data/actionlog => ../data/actionlog
+	github.com/bds421/rho-kit/data/approval => ../data/approval
+	github.com/bds421/rho-kit/data/budget => ../data/budget
+	github.com/bds421/rho-kit/httpx/middleware/budget => ../httpx/middleware/budget
 	github.com/bds421/rho-kit/httpx/middleware/signedrequest => ../httpx/middleware/signedrequest
 	github.com/bds421/rho-kit/infra/leaderelection => ../infra/leaderelection
 	github.com/bds421/rho-kit/infra/messaging/natsbackend => ../infra/messaging/natsbackend
