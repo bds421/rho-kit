@@ -52,9 +52,12 @@ func (b *Builder) WithLeaderElection(e leaderelection.Elector) *Builder
 
 ## Definition of done
 
-- [ ] Top-level `Elector` interface and `Callbacks`.
-- [ ] At least `k8slease` and `pgadvisory` subpackages (the two most common in practice).
-- [ ] Builder `WithLeaderElection`.
-- [ ] Cron integration: jobs check `IsLeader()` before running.
-- [ ] Tests: leadership transfers correctly when leader's ctx is cancelled.
-- [ ] Recipe in `docs/ai/utilities.md`.
+- [x] Top-level `Elector` interface and `Callbacks`. ✅ `7253ecb`
+- [x] `pgadvisory` subpackage. ✅ `7253ecb`
+- [x] `redislock` subpackage with renew-loop + lost-lock detection. ✅ this PR
+- [ ] `k8slease` subpackage (deferred — requires k8s API stack).
+- [ ] `etcd` subpackage (deferred — requires etcd client SDK).
+- [ ] Builder `WithLeaderElection` (deferred — primitives ship first; Builder integration is a separate audit item).
+- [ ] Cron integration: jobs check `IsLeader()` before running (deferred with Builder integration above).
+- [x] Tests: leadership transfers when leader's ctx is cancelled or renewal fails. ✅
+- [ ] Recipe in `docs/ai/utilities.md` (deferred to docs sweep).

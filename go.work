@@ -36,6 +36,7 @@ use (
 	./httpx/sign
 	./infra/leaderelection
 	./infra/leaderelection/pgadvisory
+	./infra/leaderelection/redislock
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
