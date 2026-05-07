@@ -97,12 +97,22 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 	if cfg.AllowPlaintextLoopbackForTests {
 		// Defence-in-depth: an operator may have flipped the bool by
 		// accident or copy-pasted a test config. Refuse to honour the
-		// opt-out unless the parsed host is a loopback — at that point
-		// the network risk is mechanically zero. Use pcfg.ConnConfig.Host
-		// (pgxpool's authoritative host) so the check sees what
-		// pgxpool will actually dial.
-		if err := requireLoopbackHost(pcfg.ConnConfig.Host); err != nil {
-			return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN host is not loopback: %w", err)
+		// opt-out unless EVERY host pgx might dial is a loopback — pgx
+		// supports comma-separated multi-host DSNs (libpq HA syntax)
+		// where additional hosts land on ConnConfig.Fallbacks; without
+		// the loop a DSN like
+		//   host=localhost,evil.example.com sslmode=disable
+		// would pass the gate via the primary "localhost" while pgx
+		// failed over to "evil.example.com" sending plaintext
+		// credentials (audit finding N-6).
+		hosts := []string{pcfg.ConnConfig.Host}
+		for _, fb := range pcfg.ConnConfig.Fallbacks {
+			hosts = append(hosts, fb.Host)
+		}
+		for _, h := range hosts {
+			if err := requireLoopbackHost(h); err != nil {
+				return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN host is not loopback: %w", err)
+			}
 		}
 	} else {
 		if err := requireTLSOnParsedConfig(pcfg); err != nil {
@@ -272,7 +282,9 @@ func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
 //
 // Operates on the host AFTER pgxpool.ParseConfig has resolved the DSN,
 // so a crafted DSN cannot trick this check by exploiting first/last-wins
-// disagreements between the kit and pgxpool.
+// disagreements between the kit and pgxpool. Bracket-wrapped IPv6
+// literals (`[::1]`) are accepted by stripping the brackets before
+// the IP parse — pgxpool emits them in some DSN forms.
 func requireLoopbackHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("DSN does not specify a host")
@@ -281,7 +293,10 @@ func requireLoopbackHost(host string) error {
 	if low == "localhost" {
 		return nil
 	}
-	ip := net.ParseIP(host)
+	// Strip brackets that pgxpool may have left around an IPv6 literal
+	// — net.ParseIP rejects "[::1]" but accepts "::1".
+	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	ip := net.ParseIP(stripped)
 	if ip == nil {
 		return fmt.Errorf("DSN host %q is not a loopback address", host)
 	}

@@ -3,31 +3,31 @@ package app
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
 // isUnspecifiedHost reports whether host names an "all-interfaces"
-// bind explicitly. Catches:
+// bind. Catches every form net.Listen accepts as the IPv4 wildcard:
 //
 //   - IPv4 0.0.0.0 in canonical form
-//   - IPv4 short / leading-zero forms that net.Listen accepts but
-//     net.ParseIP rejects: "0", "0.0", "0.0.0", "00.00.00.00",
-//     "000.000.000.000", "0.00.00.00", etc.
+//   - IPv4 short / leading-zero forms: "0", "0.0", "0.0.0", "00.00.00.00",
+//     "000.000.000.000", "0.00.00.00"
+//   - IPv4 hex / octal forms: "0x0", "0X00000000", "0x0.0x0.0x0.0x0",
+//     "00", "000" (octal interpretation)
 //   - IPv6 [::], ::, 0:0:0:0:0:0:0:0 in canonical and bracket-wrapped form
 //   - IPv6-mapped IPv4 wildcard ::ffff:0.0.0.0
 //
 // Empty host is NOT flagged here because [InternalConfig.Addr] defaults
-// empty to "127.0.0.1" — i.e. an unset INTERNAL_HOST resolves to
-// loopback at listen time. The audit's concern is the operator who
-// actively sets the config to a wildcard; an unset config is already
-// safe.
+// empty to "127.0.0.1" — an unset INTERNAL_HOST resolves to loopback
+// at listen time.
 //
-// The all-zero-dotted-decimal check is required because net.Listen
-// uses a more lenient address parser than net.ParseIP — strings like
-// "00.00.00.00" pass through net.Listen as 0.0.0.0 even though
-// net.ParseIP rejects them as malformed. The previous version used
-// only net.ParseIP and would have admitted those forms (audit
-// finding N-1).
+// The fix walks numeric segments with strconv.ParseUint base-0, which
+// auto-detects decimal / octal / hex per Go's standard rules. This
+// catches the hex-encoded zero forms net.Listen accepts but
+// net.ParseIP rejects (audit finding N-7). The audit's recommended
+// alternative (net.ResolveTCPAddr) would also work but does DNS
+// lookup as a side effect — the numeric-only walk has no I/O.
 func isUnspecifiedHost(host string) bool {
 	if host == "" {
 		return false
@@ -37,17 +37,26 @@ func isUnspecifiedHost(host string) bool {
 	if ip := net.ParseIP(stripped); ip != nil && ip.IsUnspecified() {
 		return true
 	}
-	if isAllZeroDottedDecimal(stripped) {
+	if isAllZeroIPv4Numeric(stripped) {
 		return true
 	}
 	return false
 }
 
-// isAllZeroDottedDecimal reports whether s is one of the IPv4-style
-// all-zero forms net.Listen accepts but net.ParseIP rejects:
-// "0", "0.0", "0.0.0", "0.0.0.0", "00", "000", "00.00", ..., up to
-// four dotted segments each consisting only of zero digits.
-func isAllZeroDottedDecimal(s string) bool {
+// isAllZeroIPv4Numeric reports whether s is an IPv4-style numeric form
+// that resolves to all-zero (and thus binds to 0.0.0.0 under
+// net.Listen). Each dotted segment must parse as a non-negative integer
+// with value zero. Accepts decimal, octal (leading 0), and hex
+// (0x/0X prefix) per strconv.ParseUint base 0 conventions:
+//
+//	"0", "00", "000"          → all decimal/octal zeros
+//	"0x0", "0X00", "0x000000" → hex zeros
+//	"0.0", "0.0.0", "0.0.0.0" → up to 4 segments
+//	"0x0.0", "0X0.0x0.0x0.0x0", mixed forms
+//
+// 5+ segments are rejected (net.Listen routes those through DNS lookup
+// rather than IPv4 parsing — audit finding N-7's "5+ segment" branch).
+func isAllZeroIPv4Numeric(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -59,10 +68,14 @@ func isAllZeroDottedDecimal(s string) bool {
 		if p == "" {
 			return false
 		}
-		for _, c := range p {
-			if c != '0' {
-				return false
-			}
+		// strconv.ParseUint with base 0 auto-detects:
+		//   "0x" / "0X" prefix → base 16
+		//   "0" prefix          → base 8
+		//   otherwise           → base 10
+		// Accept any encoding whose value is zero.
+		v, err := strconv.ParseUint(p, 0, 64)
+		if err != nil || v != 0 {
+			return false
 		}
 	}
 	return true

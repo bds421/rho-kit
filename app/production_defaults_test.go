@@ -173,8 +173,30 @@ func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
 // but accepted leading-zero or short-form variants like "00.00.00.00",
 // "0", "0.0" — all of which net.Listen interprets as the IPv4 wildcard
 // even though net.ParseIP rejects them as malformed.
+//
+// The hex-encoded variants (0x0, 0X00000000, mixed forms) are the N-7
+// audit fix — net.Listen accepts these through octal/hex IPv4 parsing.
 func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
-	for _, host := range []string{"00.00.00.00", "000.000.000.000", "0", "0.0", "0.0.0", "0.00.00.00"} {
+	hosts := []string{
+		// N-1: leading-zero / short decimal forms
+		"00.00.00.00",
+		"000.000.000.000",
+		"0",
+		"0.0",
+		"0.0.0",
+		"0.00.00.00",
+		// N-7: hex-encoded zeros
+		"0x0",
+		"0X0",
+		"0x00000000",
+		"0X00000000",
+		"0x0.0x0.0x0.0x0",
+		"0X0.0X0.0X0.0X0",
+		"0x00.0x00.0x00.0x00",
+		"0x0.0",
+		"0.0X0",
+	}
+	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
 			cfg := BaseConfig{
 				Internal: InternalConfig{Host: host, Port: 9090},

