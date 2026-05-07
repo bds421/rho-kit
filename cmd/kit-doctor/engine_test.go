@@ -1,0 +1,144 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/cmd/kit-doctor/rules"
+)
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+func TestScan_FlagsJWTWithoutClaims(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+func wire() {
+	b.WithJWT("https://issuer/.well-known/jwks.json")
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+
+	if !hasRule(findings, "jwt-missing-claims") {
+		t.Fatalf("expected jwt-missing-claims finding, got %+v", findings)
+	}
+}
+
+func TestScan_AcceptsJWTWithIssuerAndAudience(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+func wire() {
+	b.WithJWT("https://issuer/.well-known/jwks.json").
+		WithJWTIssuer("https://issuer.example.com").
+		WithJWTAudience("svc")
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "jwt-missing-claims"),
+		"chained issuer + audience should suppress finding, got %+v", findings)
+}
+
+func TestScan_FlagsIdempotencyMissingUserExtractor(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "mw.go", `package svc
+
+func wire() {
+	idempotency.Middleware(store)
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "idempotency-user-extractor"))
+}
+
+func TestScan_FlagsDefaultHTTPClient(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "client.go", `package svc
+
+import "net/http"
+
+func wire() {
+	c := http.DefaultClient
+	_ = c
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "default-http-client"))
+}
+
+func TestScan_FlagsHTTPServerMissingErrorLog(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package svc
+
+func wire() {
+	httpx.NewServer(handler, httpx.WithReadTimeout(10))
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-error-log"))
+}
+
+func TestScan_SkipsVendor(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "vendor", "x"), 0o700))
+	writeFile(t, dir, "vendor/x/x.go", `package x
+
+import "net/http"
+
+var c = http.DefaultClient
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	for _, f := range findings {
+		assert.NotContains(t, f.File, "vendor", "vendor must be skipped")
+	}
+}
+
+func TestExitCode_FloorRespected(t *testing.T) {
+	findings := []rules.Finding{
+		{Severity: rules.Warning, Rule: "x"},
+	}
+	assert.Equal(t, 0, exitCode(findings, rules.High))
+	assert.Equal(t, 1, exitCode(findings, rules.Warning))
+}
+
+func TestFormatFindings_RendersAtLeastOneLine(t *testing.T) {
+	findings := []rules.Finding{
+		{
+			Rule: "x", Severity: rules.High, File: "a.go", Line: 7,
+			Message: "boom", Suggestion: "fix it",
+		},
+	}
+	out := formatFindings(findings)
+	assert.Contains(t, out, "✗ HIGH [x]: boom")
+	assert.Contains(t, out, "at a.go:7")
+	assert.Contains(t, out, "fix: fix it")
+}
+
+func TestFormatFindings_EmptyShowsCheck(t *testing.T) {
+	out := formatFindings(nil)
+	assert.True(t, strings.HasPrefix(out, "✓"))
+}
+
+func hasRule(findings []rules.Finding, name string) bool {
+	for _, f := range findings {
+		if f.Rule == name {
+			return true
+		}
+	}
+	return false
+}

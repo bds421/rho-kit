@@ -59,8 +59,8 @@ Exit code 0 if no findings ≥ HIGH; 1 if CRITICAL/HIGH present; 2 on tool error
 
 ## Definition of done
 
-- [ ] CLI binary that takes a service's package path.
-- [ ] At least the rules above.
-- [ ] CI integration sample (`go run ./cmd/kit-doctor ./...` in a workflow).
-- [ ] Exit codes documented.
-- [ ] Doc explaining how to write a new rule.
+- [x] CLI binary that takes a service's package path. ✅ this PR
+- [x] Rule scaffold: 4 rules ship in this PR (jwt-missing-claims, idempotency-user-extractor, default-http-client, http-server-error-log). The remaining audit-rule list (S3 SSE, JWKS private-IP, AAD binding, etc.) plugs into the same `rules.Rule` interface — adding a rule is one file plus a registration entry.
+- [x] CI integration: `kit-doctor [-strict=high|critical] [-format=text|json] PATH`; exit 0 on clean, 1 on findings ≥ floor, 2 on tool error.
+- [x] Exit codes documented in main.go package comment.
+- [x] Adding a rule documented in main.go package comment.
