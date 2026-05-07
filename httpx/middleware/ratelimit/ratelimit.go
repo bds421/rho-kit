@@ -48,8 +48,13 @@ type RateLimiter struct {
 // RateLimiterOption configures optional RateLimiter behaviour.
 type RateLimiterOption func(*RateLimiter)
 
-// WithClock sets a custom time source (useful for testing).
+// WithClock sets a custom time source (useful for testing). Panics on
+// nil to fail fast at construction rather than dereferencing a nil
+// func on the first request through the limiter.
 func WithClock(fn func() time.Time) RateLimiterOption {
+	if fn == nil {
+		panic("ratelimit: WithClock requires a non-nil time source")
+	}
 	return func(rl *RateLimiter) { rl.now = fn }
 }
 

@@ -104,6 +104,58 @@ func TestWithTenantBudget_BuildsMiddleware(t *testing.T) {
 	assert.Same(t, b.budgetSpec.store.(*stubBudget), b.budgetSpecStore())
 }
 
+// R3-H: WithTenantBudget combined with the safe-method bypass would
+// let GETs skip both tenant validation and budget charging. Validate
+// must reject the combination so it cannot re-emerge through
+// misconfiguration.
+func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
+	b := New("test", "v1", validBaseConfig()).
+		WithMultiTenant(nil, true).
+		WithAllowMissingTenantOnSafeMethods().
+		WithTenantBudget(&stubBudget{})
+	err := b.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WithAllowMissingTenantOnSafeMethods")
+}
+
+// R3-H: WithTenantBudget combined with required=false on the tenant
+// middleware lets requests bypass the budget entirely by omitting the
+// header. Validate must reject this.
+func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
+	b := New("test", "v1", validBaseConfig()).
+		WithMultiTenant(nil, false).
+		WithTenantBudget(&stubBudget{})
+	err := b.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required=true")
+}
+
+// R3-H: WithTenantBudget + WithMultiTenant(..., required=true) is the
+// canonical, accepted shape. End-to-end exercise: GET without
+// X-Tenant-Id must receive 400 (the tenant middleware rejects it
+// before the budget middleware can be silently bypassed).
+func TestWithTenantBudget_RejectsGETWithoutTenant(t *testing.T) {
+	b := New("test", "v1", BaseConfig{}).
+		WithMultiTenant(nil, true).
+		WithTenantBudget(&stubBudget{})
+
+	tenantMW := b.tenantMiddleware()
+	require.NotNil(t, tenantMW)
+	budgetMW := b.budgetMiddleware()
+	require.NotNil(t, budgetMW)
+
+	handler := tenantMW(budgetMW(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler must not run when tenant is absent")
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"GET without tenant must be rejected — guarantees the tenant budget cannot be bypassed on safe methods")
+}
+
 func TestWithActionLogger_PanicsOnNil(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

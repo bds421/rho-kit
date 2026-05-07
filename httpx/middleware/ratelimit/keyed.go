@@ -44,8 +44,13 @@ type KeyedRateLimiter struct {
 type KeyedOption func(*KeyedRateLimiter)
 
 // WithKeyedClock sets the time source for the keyed rate limiter.
-// Useful for deterministic testing without time.Sleep.
+// Useful for deterministic testing without time.Sleep. Panics on nil
+// to fail fast at construction rather than dereferencing a nil func
+// on the first request through the limiter.
 func WithKeyedClock(fn func() time.Time) KeyedOption {
+	if fn == nil {
+		panic("ratelimit: WithKeyedClock requires a non-nil time source")
+	}
 	return func(rl *KeyedRateLimiter) { rl.now = fn }
 }
 

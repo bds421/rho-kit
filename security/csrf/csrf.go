@@ -71,8 +71,12 @@ func WithTTL(d time.Duration) Option {
 }
 
 // WithClock overrides the time source. Test-only — production callers
-// should not need this.
+// should not need this. Panics on nil to fail fast at construction
+// rather than dereferencing a nil func on the first Issue/Verify call.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("csrf: WithClock requires a non-nil time source")
+	}
 	return func(i *Issuer) { i.now = now }
 }
 

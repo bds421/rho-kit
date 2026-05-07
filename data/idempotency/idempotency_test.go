@@ -53,6 +53,15 @@ func TestMemoryStore_TryLock_PositiveTTLSucceeds(t *testing.T) {
 	}
 }
 
+func TestWithMemoryStoreClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = WithMemoryStoreClock(nil)
+}
+
 // TestMemoryStore_SubSecondTTL_NotImmediatelyExpired guards the contract
 // documented at the package level: a positive TTL — even sub-second — MUST
 // produce a row that's reachable for at least a moment. MemoryStore stores

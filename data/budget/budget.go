@@ -107,7 +107,17 @@ type Refunder interface {
 // Returns ok=false when the backend has no refund capability so the
 // caller can decide whether to log, ignore, or wait for the next
 // period rollover. amount must be >= 0.
+//
+// Argument validation runs at this layer so callers see consistent
+// errors regardless of optional backend capability — a bad refund
+// must not look like a harmless unsupported refund.
 func Refund(ctx context.Context, b Budget, key string, amount int64) (remaining int64, ok bool, err error) {
+	if key == "" {
+		return 0, false, ErrInvalidKey
+	}
+	if amount < 0 {
+		return 0, false, ErrInvalidAmount
+	}
 	if r, isRefunder := b.(Refunder); isRefunder {
 		rem, rerr := r.Refund(ctx, key, amount)
 		return rem, true, rerr

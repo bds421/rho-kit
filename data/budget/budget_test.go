@@ -94,3 +94,24 @@ func TestRefund_FallsBackWhenBackendCannotRefund(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "non-Refunder backend must report ok=false, no error")
 }
+
+// Validation runs at the helper level so callers see consistent
+// errors regardless of optional backend capability — a bad refund
+// must not look like a harmless unsupported refund.
+func TestRefund_ValidatesArgumentsBeforeBackendDispatch(t *testing.T) {
+	plain := &staticBudget{cap: 100}
+
+	_, ok, err := budget.Refund(context.Background(), plain, "", 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+	assert.False(t, ok)
+
+	_, ok, err = budget.Refund(context.Background(), plain, "k", -1)
+	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
+	assert.False(t, ok)
+
+	rb := &refundingBudget{staticBudget: &staticBudget{cap: 100, used: 30}}
+	_, ok, err = budget.Refund(context.Background(), rb, "k", -1)
+	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
+	assert.False(t, ok)
+	assert.Equal(t, int64(0), rb.refunded, "Refunder must not be invoked for invalid amounts")
+}

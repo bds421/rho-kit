@@ -132,16 +132,11 @@ func visitChain(call *ast.CallExpr, visit func(string) bool) {
 	}
 }
 
-// currentFile is the file the engine is currently scanning. Set via
-// SetCurrentFile from the engine entry point. Parents derived from
-// it back the chain-walking helpers above.
-var (
-	currentFile *ast.File
-	parents     map[ast.Node]ast.Node
-)
+// parents back the chain-walking helpers above; SetCurrentFile rebuilds
+// the map for each scanned file.
+var parents map[ast.Node]ast.Node
 
 func SetCurrentFile(f *ast.File) {
-	currentFile = f
 	parents = buildParents(f)
 }
 

@@ -157,3 +157,12 @@ func TestOriginAllowlist_StripsPathQuery(t *testing.T) {
 	a := NewOriginAllowlist("https://app.example.com")
 	assert.True(t, a.Allowed("https://app.example.com/some/path?x=1", ""))
 }
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = WithClock(nil)
+}

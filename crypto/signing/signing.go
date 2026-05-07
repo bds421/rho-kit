@@ -28,8 +28,13 @@ type Signer struct {
 // SignerOption configures a Signer.
 type SignerOption func(*Signer)
 
-// WithClock sets the time source for signing. Useful for deterministic testing.
+// WithClock sets the time source for signing. Useful for deterministic
+// testing. Panics on nil to fail fast at construction rather than
+// dereferencing a nil func on the first Sign/Verify call.
 func WithClock(fn func() time.Time) SignerOption {
+	if fn == nil {
+		panic("signing: WithClock requires a non-nil time source")
+	}
 	return func(s *Signer) { s.clock = fn }
 }
 

@@ -303,3 +303,12 @@ func TestRateLimiterWithClock(t *testing.T) {
 		t.Fatal("should be allowed after clock advance")
 	}
 }
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = WithClock(nil)
+}

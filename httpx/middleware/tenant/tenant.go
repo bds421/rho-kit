@@ -7,10 +7,13 @@
 // httpx module doesn't pull a JWT dependency for callers who don't
 // use it.
 //
-// When [WithRequired] is true (the default), state-changing requests
-// without a tenant get a 400. GET/HEAD/OPTIONS short-circuit through
-// the middleware so health and discovery endpoints stay reachable
-// pre-auth.
+// When [WithRequired] is true (the default), every request without a
+// tenant gets a 400 — including safe methods (GET/HEAD/OPTIONS).
+// Health/readiness probes belong on a sibling router (e.g. the kit's
+// internal ops port) so this middleware can stay strict.
+// [WithAllowMissingTenantOnSafeMethods] is an explicit opt-out for
+// services that intentionally expose pre-auth GETs through the same
+// router (legacy compatibility).
 package tenant
 
 import (
@@ -62,9 +65,9 @@ func HeaderExtractor(header string) Extractor {
 type Option func(*config)
 
 type config struct {
-	extractor             Extractor
-	required              bool
-	requiredOnSafeMethods bool
+	extractor                       Extractor
+	required                        bool
+	allowMissingTenantOnSafeMethods bool
 }
 
 // WithExtractor overrides the default header extractor.
@@ -73,36 +76,34 @@ func WithExtractor(e Extractor) Option {
 }
 
 // WithRequired controls whether a missing tenant returns 400. Default:
-// true.
+// true. When true, every request method is required to carry a tenant
+// (including GET/HEAD/OPTIONS) — see
+// [WithAllowMissingTenantOnSafeMethods] for the explicit opt-out.
 func WithRequired(required bool) Option {
 	return func(c *config) { c.required = required }
 }
 
-// WithRequiredOnSafeMethods controls whether GET/HEAD/OPTIONS requests
-// without a tenant are also rejected when [WithRequired] is true.
+// WithAllowMissingTenantOnSafeMethods opts out of the default
+// require-tenant-on-every-method rule for GET/HEAD/OPTIONS. Use this
+// only when the same router intentionally serves pre-auth probes or
+// discovery endpoints alongside tenant-scoped routes — the safer
+// pattern is to mount those probes on a sibling router (the kit's
+// internal ops port already does this for /health, /ready, /metrics).
 //
-// Default: false — preserving the existing behaviour where safe
-// methods short-circuit through the middleware so health/readiness
-// and discovery endpoints stay reachable when the tenant header has
-// not been set yet.
-//
-// Set to true on routers that mount the tenant middleware in front of
-// state-revealing GETs (per-tenant data lists, dashboards). Without
-// this option a caller can issue GET /tenants/123/secrets without any
-// X-Tenant-Id header at all, and the handler runs against an empty
-// tenant context — the handler must compensate, which is easy to
-// forget.
-//
-// Trade-off: enabling this requires the operator to expose health
-// endpoints on a sibling router (or supply [WithRequired(false)]) so
-// pre-auth probes do not 400.
-func WithRequiredOnSafeMethods(required bool) Option {
-	return func(c *config) { c.requiredOnSafeMethods = required }
+// The default is OFF: [WithRequired] applies to every method. The
+// previous behavior (safe-method short-circuit by default) let
+// downstream tenant-budget enforcement be silently bypassed by GETs
+// that omitted X-Tenant-Id. Making the bypass an explicit opt-out
+// keeps that mistake from re-emerging.
+func WithAllowMissingTenantOnSafeMethods() Option {
+	return func(c *config) { c.allowMissingTenantOnSafeMethods = true }
 }
 
 // New returns the middleware. By default the tenant ID is read from
-// the "X-Tenant-Id" header and required on every state-changing
-// request.
+// the "X-Tenant-Id" header and required on every request — including
+// GET/HEAD/OPTIONS. Mount health/readiness on a sibling router or use
+// [WithAllowMissingTenantOnSafeMethods] when pre-auth GETs must share
+// the public mux.
 func New(opts ...Option) func(http.Handler) http.Handler {
 	cfg := config{
 		extractor: HeaderExtractor("X-Tenant-Id"),
@@ -134,19 +135,18 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			isSafe := false
-			switch r.Method {
-			case http.MethodGet, http.MethodHead, http.MethodOptions:
-				isSafe = true
-			}
-			if isSafe && !cfg.requiredOnSafeMethods {
-				// Safe methods short-circuit through — they do not
-				// mutate state and may be reachable pre-auth (health,
-				// discovery). Opt in to enforcement via
-				// WithRequiredOnSafeMethods when the route surfaces
-				// tenant-scoped data on GET.
-				next.ServeHTTP(w, r)
-				return
+			if cfg.allowMissingTenantOnSafeMethods {
+				switch r.Method {
+				case http.MethodGet, http.MethodHead, http.MethodOptions:
+					// Explicit opt-out: pre-auth GET/HEAD/OPTIONS
+					// short-circuit through with no tenant on ctx.
+					// Downstream tenant-keyed middleware (budget,
+					// cache) MUST treat absent tenant as a bypass to
+					// stay safe — see httpx/middleware/budget for the
+					// reference behavior.
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 			if cfg.required {
 				httpx.WriteError(w, http.StatusBadRequest, "tenant: required tenant ID is missing")

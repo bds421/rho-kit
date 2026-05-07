@@ -255,6 +255,15 @@ func TestSigner_Verify_EmptySecret(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = WithClock(nil)
+}
+
 // signWithTimestamp is a test helper that signs with an explicit timestamp.
 func signWithTimestamp(body []byte, secret []byte, timestamp int64) (string, int64) {
 	payload := fmt.Appendf(nil, "%d.", timestamp)

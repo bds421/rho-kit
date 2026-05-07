@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -340,13 +341,51 @@ func TestConsume_RejectedFollowupRefreshesTTL(t *testing.T) {
 
 	mr.FastForward(30 * time.Minute)
 
-	ok, _, _, err = b.Consume(ctx, "alice", 200)
+	// Charge 80 against remaining 50: Lua-side rejection (amount <= cap
+	// so the Go-side over-cap check does not short-circuit). Lua
+	// refreshes the TTL on the existing bucket.
+	ok, _, _, err = b.Consume(ctx, "alice", 80)
 	require.NoError(t, err)
 	require.False(t, ok)
 
 	ttlAfter := mr.TTL(keys[0])
 	assert.Greater(t, ttlAfter, time.Duration(0), "TTL must remain set after rejection")
 	assert.Greater(t, ttlAfter, 30*time.Minute, "rejected request refreshes TTL")
+}
+
+// TestWithClock_PanicsOnNil ensures a misconfigured test option fails
+// fast at construction rather than panicking on the first Consume.
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = budgetredis.WithClock(nil)
+}
+
+// TestConsume_NearMaxInt64DoesNotOverflow guards the Lua script against
+// amounts close to math.MaxInt64. Without the pre-INCRBY headroom check
+// (and the Go-side amount > cap rejection) Redis would surface a script
+// integer overflow error instead of a clean denial.
+func TestConsume_NearMaxInt64DoesNotOverflow(t *testing.T) {
+	client, _ := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	ctx := context.Background()
+
+	ok, _, _, _ := b.Consume(ctx, "alice", 10)
+	require.True(t, ok)
+
+	ok, rem, retry, err := b.Consume(ctx, "alice", math.MaxInt64-50)
+	require.NoError(t, err, "near-MaxInt64 charge must not surface a script error")
+	assert.False(t, ok, "charge larger than cap must reject")
+	assert.Equal(t, int64(90), rem, "remaining unchanged on rejection")
+	assert.Greater(t, retry, time.Duration(0))
+
+	ok, rem, _, err = b.Consume(ctx, "alice", math.MaxInt64)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, int64(90), rem)
 }
 
 // TestRetryAfter_UsesSameTimeSource verifies that retry-after uses

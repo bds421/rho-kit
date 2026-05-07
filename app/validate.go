@@ -122,6 +122,21 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("WithTenantBudget requires WithMultiTenant — without it the default TenantKeyFunc returns no key and budget enforcement is silently skipped")
 	}
 
+	// R3-H: WithTenantBudget enforces a per-tenant budget that keys on
+	// the tenant ID. If the tenant middleware lets requests through
+	// without a tenant, the budget middleware sees no key and bypasses
+	// — the same hole that a missing tenant on safe methods opens. Pin
+	// the strict combination at construction so the bypass cannot
+	// re-emerge through misconfiguration.
+	if b.budgetSpec != nil && b.tenantSpec != nil {
+		if !b.tenantSpec.required {
+			return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) — a non-required tenant lets requests bypass the budget by omitting the tenant header")
+		}
+		if b.tenantSpec.allowMissingTenantOnSafeMethods {
+			return fmt.Errorf("WithTenantBudget is incompatible with WithAllowMissingTenantOnSafeMethods — a safe-method bypass lets GET/HEAD/OPTIONS skip both tenant validation and budget charging")
+		}
+	}
+
 	return b.validateProductionSafety()
 }
 

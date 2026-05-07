@@ -478,9 +478,14 @@ func (b *Builder) WithSignedRequests(
 // when nil. Pass a custom one to read from a JWT claim, mTLS
 // certificate, or whatever your auth boundary surfaces.
 //
-// `required` controls whether state-changing requests without a
-// tenant are rejected with 400 (the recommended default — see
-// the tenant middleware's package doc).
+// `required` controls whether requests without a tenant are
+// rejected with 400 — applied to every method by default
+// (including GET/HEAD/OPTIONS). Health/readiness probes belong on
+// the kit's internal ops port, which is a separate listener and
+// never sees the tenant middleware. Use
+// [Builder.WithAllowMissingTenantOnSafeMethods] only when the
+// public mux must serve pre-auth GETs alongside tenant-scoped
+// routes.
 //
 // Cache and idempotency wrappers ([data/cache/tenant.Wrap] /
 // [data/idempotency/tenant.Wrap]) are caller-applied — the
@@ -488,6 +493,22 @@ func (b *Builder) WithSignedRequests(
 // rewrite them.
 func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor, required bool) *Builder {
 	b.tenantSpec = &tenantSpec{extractor: extractor, required: required}
+	return b
+}
+
+// WithAllowMissingTenantOnSafeMethods opts out of the default
+// require-tenant-on-every-method rule for GET/HEAD/OPTIONS. Forwards
+// to [httpxtenant.WithAllowMissingTenantOnSafeMethods].
+//
+// Mutually exclusive with [Builder.WithTenantBudget]: budget
+// enforcement keys on the tenant ID, so a safe-method bypass would
+// let GETs skip both tenant validation and budget charging.
+// [Builder.Validate] rejects the combination at startup.
+func (b *Builder) WithAllowMissingTenantOnSafeMethods() *Builder {
+	if b.tenantSpec == nil {
+		panic("app: WithAllowMissingTenantOnSafeMethods must be called after WithMultiTenant")
+	}
+	b.tenantSpec.allowMissingTenantOnSafeMethods = true
 	return b
 }
 

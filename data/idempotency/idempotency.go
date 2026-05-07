@@ -126,9 +126,13 @@ type MemoryStore struct {
 // MemoryStoreOption configures a MemoryStore.
 type MemoryStoreOption func(*MemoryStore)
 
-// WithMemoryStoreClock sets the time source. Useful for deterministic testing
-// without time.Sleep.
+// WithMemoryStoreClock sets the time source. Useful for deterministic
+// testing without time.Sleep. Panics on nil to fail fast at construction
+// rather than dereferencing a nil func on the first store operation.
 func WithMemoryStoreClock(fn func() time.Time) MemoryStoreOption {
+	if fn == nil {
+		panic("idempotency: WithMemoryStoreClock requires a non-nil time source")
+	}
 	return func(m *MemoryStore) { m.clock = fn }
 }
 

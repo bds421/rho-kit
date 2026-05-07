@@ -303,6 +303,38 @@ func TestStop_Idempotent(t *testing.T) {
 	b.Stop()
 }
 
+// TestConsume_RetryAfterUsesInjectedClock verifies retry-after is
+// computed against the configured clock, not the wall clock. With a
+// fixed fake clock the retry value is fully deterministic.
+func TestConsume_RetryAfterUsesInjectedClock(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0).UTC()
+	b := memory.New(10, time.Minute, memory.WithClock(func() time.Time { return cur }))
+	ctx := context.Background()
+
+	ok, _, _, _ := b.Consume(ctx, "alice", 10)
+	require.True(t, ok)
+
+	ok, _, retry, err := b.Consume(ctx, "alice", 1)
+	require.NoError(t, err)
+	require.False(t, ok)
+	periodNs := int64(time.Minute)
+	id := cur.UnixNano() / periodNs
+	nextStart := time.Unix(0, (id+1)*periodNs).UTC()
+	assert.Equal(t, nextStart.Sub(cur), retry,
+		"retry-after must be computed against the injected clock")
+}
+
+// TestWithClock_PanicsOnNil mirrors the redis backend so a misconfigured
+// test option fails fast at construction.
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	memory.New(100, time.Hour, memory.WithClock(nil))
+}
+
 // TestSweeperDisabled keeps the sweeper goroutine off and verifies
 // keys persist regardless of period rollover. Useful for callers that
 // want to bound cardinality themselves.

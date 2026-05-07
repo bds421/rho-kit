@@ -67,25 +67,25 @@ if amount == 0 then
   return {1, rem}
 end
 
-local newUsed = redis.call("INCRBY", KEYS[1], amount)
-if newUsed > cap then
-  local cur = newUsed - amount
-  if cur <= 0 then
-    -- First request over cap: the INCRBY created a fresh key. Drop
-    -- it instead of leaving a non-expiring zero-valued counter that
-    -- a hostile caller could spam to fill Redis with garbage keys.
-    redis.call("DEL", KEYS[1])
-  else
-    redis.call("DECRBY", KEYS[1], amount)
-    -- The key already existed (and therefore has a TTL); refresh it
-    -- so a rejected request still extends the window the same way
-    -- an admitted one does.
+-- Compare available headroom BEFORE INCRBY so amounts near MaxInt64
+-- produce a clean denial instead of a Lua integer overflow when
+-- (cur + amount) would wrap. The Go side already rejects amount > cap,
+-- so cur + amount cannot exceed 2*cap here, but the headroom check
+-- keeps the script overflow-safe regardless.
+local cur = tonumber(redis.call("GET", KEYS[1])) or 0
+if cur < 0 then cur = 0 end
+if amount > cap - cur then
+  if cur > 0 then
+    -- Refresh the TTL on the existing counter so a rejected request
+    -- still extends the window the same way an admitted one does.
     redis.call("EXPIRE", KEYS[1], ttl)
   end
   local rem = cap - cur
   if rem < 0 then rem = 0 end
   return {0, rem}
 end
+
+local newUsed = redis.call("INCRBY", KEYS[1], amount)
 redis.call("EXPIRE", KEYS[1], ttl)
 return {1, cap - newUsed}
 `)
@@ -158,8 +158,12 @@ func WithKeyTTL(d time.Duration) Option {
 }
 
 // WithClock overrides the local clock used to compute the current
-// period (tests only).
+// period (tests only). Panics on nil to fail loudly at construction
+// rather than dereferencing a nil func on the first Consume/Peek/Refund.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("budget/redis: WithClock requires a non-nil time source")
+	}
 	return func(b *Budget) {
 		b.now = func(_ context.Context) (time.Time, error) { return now(), nil }
 	}
@@ -249,6 +253,26 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 		return false, 0, 0, err
 	}
 	periodID, nextStart := b.periodOf(now)
+
+	// Reject amounts larger than the cap before invoking the Lua
+	// script. Mirrors the memory backend's overflow-safe admission
+	// check: amounts near math.MaxInt64 would otherwise risk a Lua
+	// integer overflow inside the script (and would always reject
+	// anyway since no charge larger than the cap can fit).
+	if amount > b.cap {
+		retry := nextStart.Sub(now)
+		if retry < 0 {
+			retry = 0
+		}
+		rem, perr := peekScript.Run(ctx, b.client,
+			[]string{b.bucketKey(key, periodID)},
+			b.cap,
+		).Int64()
+		if perr != nil {
+			return false, 0, 0, fmt.Errorf("budget/redis: script: %w", perr)
+		}
+		return false, rem, retry, nil
+	}
 
 	res, err := budgetScript.Run(ctx, b.client,
 		[]string{b.bucketKey(key, periodID)},

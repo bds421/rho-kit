@@ -13,8 +13,9 @@ import (
 // tenantSpec captures everything WithMultiTenant configures so the
 // public-mux assembly can install the middleware on inbound requests.
 type tenantSpec struct {
-	extractor httpxtenant.Extractor
-	required  bool
+	extractor                       httpxtenant.Extractor
+	required                        bool
+	allowMissingTenantOnSafeMethods bool
 }
 
 // budgetSpec captures everything WithTenantBudget configures.
@@ -34,6 +35,9 @@ func (b *Builder) tenantMiddleware() func(http.Handler) http.Handler {
 		opts = append(opts, httpxtenant.WithExtractor(b.tenantSpec.extractor))
 	}
 	opts = append(opts, httpxtenant.WithRequired(b.tenantSpec.required))
+	if b.tenantSpec.allowMissingTenantOnSafeMethods {
+		opts = append(opts, httpxtenant.WithAllowMissingTenantOnSafeMethods())
+	}
 	return httpxtenant.New(opts...)
 }
 

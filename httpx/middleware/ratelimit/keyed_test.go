@@ -126,3 +126,12 @@ func TestKeyedRateLimitMiddleware(t *testing.T) {
 		t.Fatalf("different key: expected 200, got %d", rec2.Code)
 	}
 }
+
+func TestWithKeyedClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	_ = WithKeyedClock(nil)
+}

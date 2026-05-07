@@ -55,8 +55,13 @@ type bucket struct {
 // Option configures a [Budget].
 type Option func(*Budget)
 
-// WithClock overrides the time source (tests only). Must not be nil.
+// WithClock overrides the time source (tests only). Panics on nil to
+// fail loudly at construction rather than dereferencing a nil func on
+// the first Consume/Peek/Refund.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("budget/memory: WithClock requires a non-nil time source")
+	}
 	return func(b *Budget) { b.now = now }
 }
 
@@ -184,17 +189,26 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 	}
 
 	used := bk.used.Load()
+	// retry-after is computed against the injected clock so tests
+	// with a fake clock and production wall-clock jumps both produce
+	// values consistent with the period boundary above. Floor at zero
+	// to defend against the rare case where the clock advances
+	// between the period decision and this calculation.
+	retry := nextStart.Sub(now)
+	if retry < 0 {
+		retry = 0
+	}
 	// Defensive: a future change to Refund or external state could
 	// in principle leave used > cap. Treat that as "no headroom"
 	// rather than letting `cap - used` underflow remaining.
 	if used > b.cap {
-		return false, 0, time.Until(nextStart), nil
+		return false, 0, retry, nil
 	}
 	// Overflow-safe admission check. `used + amount` can wrap to a
 	// negative int64 for amounts near math.MaxInt64; comparing
 	// `amount > cap - used` keeps both sides in [0, cap].
 	if amount > b.cap-used {
-		return false, b.cap - used, time.Until(nextStart), nil
+		return false, b.cap - used, retry, nil
 	}
 	if amount > 0 {
 		bk.used.Add(amount)
