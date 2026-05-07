@@ -16,6 +16,7 @@ import (
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
+	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
 	"github.com/bds421/rho-kit/httpx/slohttp"
 	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
@@ -115,6 +116,10 @@ type Builder struct {
 	// work. Other infrastructure (HTTP, consumers) keeps running on
 	// every replica.
 	leaderElector leaderelection.Elector
+
+	// Signed requests (optional). The public mux wraps every route in
+	// the signedrequest middleware when this is set.
+	signedSpec *signedRequestSpec
 
 	// Production-defaults switch — see Builder.WithProductionDefaults.
 	productionDefaults bool
@@ -385,6 +390,38 @@ func (b *Builder) WithPASETO(p *paseto.Provider) *Builder {
 		panic("app: WithPASETO requires a non-nil Provider")
 	}
 	b.pasetoProvider = p
+	return b
+}
+
+// WithSignedRequests installs the [signedrequest] middleware on the
+// public mux so every inbound request must carry a valid HMAC
+// signature header (`X-Signature`, plus timestamp and nonce). Use
+// this for service-to-service traffic where mTLS isn't available
+// but message integrity is required.
+//
+// `resolver` looks up the HMAC secret for a given key ID; `store`
+// caches recently-seen nonces to defeat replay. The middleware is
+// strict about defaults — a nil store panics at construction since
+// no-store means trivially-replayable signatures.
+//
+// `opts` flow through to [signedrequest.Middleware] (clock skew,
+// required headers, body cap).
+func (b *Builder) WithSignedRequests(
+	resolver signedrequest.KeyResolver,
+	store signedrequest.NonceStore,
+	opts ...signedrequest.Option,
+) *Builder {
+	if resolver == nil {
+		panic("app: WithSignedRequests requires a non-nil KeyResolver")
+	}
+	if store == nil {
+		panic("app: WithSignedRequests requires a non-nil NonceStore (no-store means trivially-replayable signatures)")
+	}
+	b.signedSpec = &signedRequestSpec{
+		resolver: resolver,
+		store:    store,
+		opts:     opts,
+	}
 	return b
 }
 
@@ -792,6 +829,14 @@ func (b *Builder) Run() error {
 		httpHandler = b.routerFn(infra)
 	} else {
 		httpHandler = http.NotFoundHandler()
+	}
+	// Wrap inbound requests in signedrequest verification when
+	// configured. Outermost so unsigned requests get rejected before
+	// any router-side work runs (logging, tracing, metrics still see
+	// the rejection — they wrap signedrequest, not the other way
+	// around).
+	if mw := b.signedRequestMiddleware(); mw != nil {
+		httpHandler = mw(httpHandler)
 	}
 
 	// Freeze late background registration — any calls after routerFn returns
