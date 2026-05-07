@@ -290,7 +290,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 | AMQP messaging dashboard | Backend uses callback hooks (`BufferedPublisherMetrics`) rather than Prometheus collectors; needs the metrics surface first |
 | Per-package benchmarks for `kit-bench-gate` | Gate ships; baselines land per-area as benchmarks are written |
 | Recipe entries in `docs/ai/*.md` | Separate docs sweep; the v2 primitives' package docs and `examples/agentic-service` cover the canonical wiring |
-| GAP-01..10 from `THREAT_MODEL.md` (except GAP-01 cost budgets and GAP-03 gRPC deadline, which shipped) | Each is its own audit item; tracked in `docs/audit/new/` |
+| GAP-01..10 from `THREAT_MODEL.md` (except GAP-01 cost budgets and GAP-03 gRPC deadline, which shipped) | Each is its own audit item; tracked in `docs/audit/THREAT_MODEL.md` §8 plus `docs/audit/ROADMAP.md` |
 
 ## Stats
 

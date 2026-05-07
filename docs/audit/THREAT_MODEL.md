@@ -700,7 +700,7 @@ upstream layer or a major redesign.
 
 Items the threat model lists as a **gap** (i.e., a real threat
 without a clear in-kit mitigation). Each becomes a follow-up audit
-item. Severity uses the same scale as `docs/audit/existing/*.md`.
+item. Severity uses the standard scale (CRITICAL / HIGH / MEDIUM / LOW).
 
 | ID | Gap | Severity | Owner / next step |
 |---|---|---|---|
@@ -708,7 +708,7 @@ item. Severity uses the same scale as `docs/audit/existing/*.md`.
 | GAP-02 | **No generic open-redirect helper.** §4.1 / H-12 — service authors hand-roll URL validation. | MEDIUM | Add `httpx.SafeRedirect(allowedHosts)` helper. |
 | GAP-03 | **gRPC default per-RPC deadline.** §4.2 / G-03 — `grpcx.NewServer` does not enforce a per-RPC timeout interceptor. | HIGH | Add a default timeout interceptor mirroring `httpx/middleware/timeout`. |
 | GAP-04 | **gRPC health endpoint exposed on public listener.** §4.2 / G-05 — services that want health on the internal port must wire it manually. | MEDIUM | Move `health.NewServer` registration to the internal listener by default. |
-| GAP-05 | **Tenant-aware Redis key wrapper not enforced.** §4.5 / R-01 — tenant prefixing is convention, not API. A multi-tenant primitives package was proposed (`docs/audit/new/20-multitenant-primitives.md`) but a production-ready API hasn't shipped. | HIGH | Land `core/tenant.Key(ctx, parts...)` and require `data/cache.NewTenantCache(parts...)`. |
+| GAP-05 | **Tenant-aware Redis key wrapper not enforced.** §4.5 / R-01 — tenant prefixing is convention, not API. The multi-tenant primitives shipped in v2.0.0 (`core/tenant`, `data/cache/tenant.Wrap`, `data/idempotency/tenant.Wrap`) — but a `core/tenant.Key(ctx, parts...)` builder that callers must go through (rather than wrapping after-the-fact) hasn't shipped. | HIGH | Land `core/tenant.Key(ctx, parts...)` and require `data/cache.NewTenantCache(parts...)`. |
 | GAP-06 | **JWT revocation store.** §4.7 / T-04 — services that need post-logout revocation roll their own. | MEDIUM | Add `security/jwtutil/revocation` thin wrapper over `data/cache`. |
 | GAP-07 | **Per-RPC max-message-size override.** §4.3 — the AMQP backend has a configurable max payload, but Redis/NATS/in-memory backends share a single global cap. | LOW | Standardise the option across backends. |
 | GAP-08 | **`storagehttp/uploadsec` AV adapter** is interface-only — no shipped implementation. | MEDIUM | Add ClamAV / cloud-native AV adapter. |
@@ -731,8 +731,8 @@ These gaps are not blockers for v2.0.0; they are the intended Theme
 4. **Specify the mitigation.** "Service author has to be careful"
    is not a mitigation. Concrete defaults, refuse-to-misconfigure
    panics, or interface invariants are.
-5. **Open a PR** that updates this file, the `docs/audit/existing/`
-   file for the affected package, and a test that demonstrates the
+5. **Open a PR** that updates this file (the §4 sub-section and the
+   §8 gap list as appropriate) and a test that demonstrates the
    mitigation. CI's `vuln.yml` and `sbom.yml` runs gate the merge.
 6. **For HIGH/CRITICAL findings**, follow the response SLO in
    [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) §"Vulnerability response".
@@ -824,7 +824,7 @@ considered through every STRIDE lens.
 
 | Date | Theme | Change |
 |---|---|---|
-| 2026-04 | (pre-Theme-5 audit) | Original audit landed in `docs/audit/existing/*.md` and `CRITICAL.md`; threat surface implicit, no consolidated doc. |
+| 2026-04 | (pre-Theme-5 audit) | Original audit landed in `CRITICAL.md` plus per-package implementation-plan files (since retired, see [README.md](README.md)); threat surface implicit, no consolidated doc. |
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
 
 Future updates: amend this table whenever §4 acquires a new threat

@@ -11,7 +11,7 @@ security defaults, correctness under concurrency, and operational reliability.
 | `make test-race` | Pass | Full workspace. |
 | `make vet` | Pass | Full workspace. |
 | `make build` | Pass | Full workspace. |
-| `make lint` | Fail | Sequential workaround applied — see [docs/audit/existing/00-cross-cutting.md](../audit/existing/00-cross-cutting.md). |
+| `make lint` | Fail | Sequential workaround applied — closed via commit `56bf04e`; see [docs/audit/CRITICAL.md](../audit/CRITICAL.md). |
 | Sequential lint loop | Pass | Same modules, same version, run one module at a time: 0 issues. |
 | `make vulncheck` | Now passing | After Go 1.26.2 toolchain bump (commit `5df122f`). |
 
@@ -23,14 +23,16 @@ landed-with-commit-hash, or open) is tracked there:
 
 - [`docs/audit/CRITICAL.md`](../audit/CRITICAL.md) — cross-package CRITICAL
   ledger plus the operational-footgun HIGH cluster.
-- [`docs/audit/ROADMAP.md`](../audit/ROADMAP.md) — phase-by-phase status.
-- [`docs/audit/existing/*.md`](../audit/existing/) — per-area findings, each
-  split into `## Landed` and `## Open` sections.
+- [`docs/audit/ROADMAP.md`](../audit/ROADMAP.md) — phase-by-phase status
+  and v2.1+ deferred items.
+- [`docs/audit/THREAT_MODEL.md`](../audit/THREAT_MODEL.md) — STRIDE
+  surface and the GAP-01..10 follow-up list.
 
-All findings from this audit (P0 / P1 / P2 / most P3) closed in Wave 1+2+3+4+5.
-The remaining open work is captured in the structured ledger and is mostly
-new-package proposals (`docs/audit/new/01-25`) plus a few P3 items individually
-called out in the per-area files.
+All findings from this audit (P0 / P1 / P2 / P3) closed in Wave 1+2+3+4+5
+plus the v2.0.0 push. Remaining work is the explicitly-deferred set in
+[`ROADMAP.md`](../audit/ROADMAP.md) (cloud KMS, k8slease/etcd, Kafka,
+dashboards subset, kit-new flags, per-package benchmarks) and the
+GAP-01..10 follow-ups in [`THREAT_MODEL.md`](../audit/THREAT_MODEL.md) §8.
 
 If you re-run this audit, write the new snapshot under a different filename
 (e.g. `repo-audit-YYYY-MM-DD.md`) and reconcile findings into the structured

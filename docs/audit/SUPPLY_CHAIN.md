@@ -453,9 +453,9 @@ The clock starts at the *earliest* of:
    summary.
 4. **Notify.** GitHub Security Advisory + email to security@
    subscribers.
-5. **Post-mortem** for any CRITICAL: filed in
-   `docs/audit/existing/` under the affected area, linked from
-   `docs/audit/CRITICAL.md`.
+5. **Post-mortem** for any CRITICAL: filed under
+   [`THREAT_MODEL.md`](THREAT_MODEL.md) §4 (the affected area) and
+   linked from [`CRITICAL.md`](CRITICAL.md).
 
 ### 7.3 Detection
 
@@ -467,8 +467,9 @@ The clock starts at the *earliest* of:
 
 ### 7.4 Documented exceptions
 
-A finding may be downgraded with an explicit, dated entry in
-`docs/audit/existing/00-cross-cutting.md`. Allowed reasons:
+A finding may be downgraded with an explicit, dated entry in the
+PR description and a follow-up entry in
+[`THREAT_MODEL.md`](THREAT_MODEL.md) §8 (gap list). Allowed reasons:
 
 - Vulnerability is in a code path the kit does not exercise
   (govulncheck "imported but not called").
