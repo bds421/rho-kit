@@ -16,31 +16,21 @@
 
 ## Open
 
-### [MEDIUM] MemoryStore eviction is O(n) under write lock
-**File**: `data/idempotency/idempotency.go:122-141`
-**Issue**: Every 100 Sets (or when len ≥ 10000), eviction scans every map entry while holding `mu.Lock()`. With 10k entries and write-heavy load, regularly stalls all readers/writers. Insertion proceeds even if every entry is unexpired → map grows past the cap between Sets.
-**Fix**: Heap of expirations or background sweeper goroutine; enforce hard max with FIFO/LRU eviction when cap is hit.
+_Closed — see Recently Landed below._
 
-### [MEDIUM] `data/cache.Cache` interface lacks MGet/MSet/SetNX
-**File**: `data/cache/cache.go:51-65` + `data/cache/rediscache/cache.go`
-**Issue**: Interface only Get/Set/Delete/Exists. Bulk operations require N round-trips. No `SetNX` — can't implement cross-process compute-once at the cache layer.
-**Fix**: Add `MGet([]string)`, `MSet(map[string][]byte, ttl)`, `SetNX(key, val, ttl) (bool, error)`. Redis impl is one MGET/MSET/SET NX call; memory impl is trivial.
-**Effort**: S
+## Recently Landed (Phase 3, commit `fd4f579`)
 
-### [MEDIUM] `executeCompute` swallows backend Set errors silently
-**File**: `data/cache/compute.go:300-305`
-**Issue**: Backend Set failure (Redis OOM, exceeds maxValueSize, network) returns `(val, nil)` with no error counter incremented. Operators see no signal that compute cache stopped persisting.
-**Fix**: Call `cc.recordError()` on backend Set failure; emit a debug log including key prefix.
-
-### [MEDIUM] pgstore `Get` fails closed on corrupted headers JSON
-**File**: `data/idempotency/pgstore/store.go:90-101`
-**Issue**: Corrupted headers JSON returns an error → middleware treats as "key not found" → re-processes the request. Acceptable if intentional; document the policy.
-**Fix**: Decide explicitly: fail closed (current) and document, or partially recover (return body/status with empty headers + log).
+- ✅ **Bounded background sweeper** — `evictBudget=256` per tick, `sweepInterval=30s`, `sweepExpiredLocked(budget)` runs from `Run(ctx)`; eviction no longer holds `mu.Lock()` over O(n).
+- ✅ **`BulkCache` interface** — `MGet`/`MSet`/`SetNX` exposed via capability detection; `data/cache.MGet/MSet/SetNX` package functions fall back gracefully on backends that haven't implemented BulkCache yet (with a doc-warning about the racy fallback).
+- ✅ **`memory_cache` BulkCache impl** — atomic SetNX via `setNXMu`; MGet/MSet trivially implemented.
+- ✅ **`rediscache` BulkCache impl** — pipelined SET-EX MSet, MGET MGet, native SET NX SetNX.
+- ✅ **Compute cache surfaces backend errors** — `executeCompute` now calls `recordError + slog.Warn` on backend Set failure; `WithComputeLogger` lets callers route the warning.
+- ✅ **pgstore corrupted-headers policy documented** — fail-closed is the explicit contract; comment in `Get` now records why.
 
 ### Migration checklist
 
 - [x] Phase 2: ComputeCache zero-TTL contract (reject, or encode no-expire sentinel). ✅ `6ba1e7d`
-- [ ] Phase 3: MemoryStore eviction heap/sweeper.
-- [ ] Phase 3: cache.Cache add MGet/MSet/SetNX.
-- [ ] Phase 3: compute cache surface backend Set errors.
-- [ ] Phase 3: pgstore Get corrupted-headers policy decision.
+- [x] Phase 3: MemoryStore eviction heap/sweeper. ✅ `fd4f579`
+- [x] Phase 3: cache.Cache add MGet/MSet/SetNX. ✅ `fd4f579`
+- [x] Phase 3: compute cache surface backend Set errors. ✅ `fd4f579`
+- [x] Phase 3: pgstore Get corrupted-headers policy decision. ✅ `fd4f579`

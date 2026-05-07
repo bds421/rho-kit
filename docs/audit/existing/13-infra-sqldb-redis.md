@@ -9,27 +9,20 @@
 
 ## Open
 
-### [MEDIUM] `dbtest.StartPostgres` pins `sslmode=disable` → masks production default
-**File**: `infra/sqldb/dbtest/postgres.go:46-53`
-**Issue**: Tests pin sslmode=disable explicitly (fine for tests). Production previously defaulted to the same, masking the issue. Now that production defaults are `prefer`/`verify-full`, the test pin is just noise — but a `sqldb.Config.IsTLSEnabled()` helper would let tests assert TLS in non-dev environments.
-**Fix**: Add a `sqldb.Config.IsTLSEnabled()` helper used by tests.
+_Closed — see Recently Landed below._
 
-### [MEDIUM] `infra/redis.Connection` uses `NewClient` not `NewUniversalClient` despite typed as `UniversalClient`
-**File**: `infra/redis/connection.go:128-167`
-**Issue**: Caller field typed `UniversalClient` but constructed via `redis.NewClient(opts)` — single-node only. Production usage with Sentinel or Cluster cannot use this Connection wrapper.
-**Fix**: Accept `*redis.UniversalOptions` (or both); use `redis.NewUniversalClient`.
+## Recently Landed (Phase 3, commit `4280790`)
 
-### [MEDIUM] `redistest.Start` returns one shared URL via `sync.Once`; tests share key namespaces
-**File**: `infra/redis/redistest/redis.go:14-50`
-**Issue**: Lock/queue/idempotency tests all use predictable names. Tests share Redis state. Lock tests fail nondeterministically with `-shuffle=on`.
-**Fix**: Per-test isolation (rotating `SELECT N` DB index or random key prefixes). Expose a `FlushDB(t)` helper.
+- ✅ **`sqldb.Config.IsTLSEnabled()` + `IsTLSAttempted()`** — recognises Postgres (`require`/`verify-ca`/`verify-full`) and MySQL (`true`/`custom-*`); the softer `IsTLSAttempted` covers `prefer`/`allow`/`preferred`/`skip-verify` for telemetry but is **not** treated as TLS-enabled (would silently legitimise insecure configs — the post-merge code review caught this and `4d04fe1` tightened the boundary).
+- ✅ **`infra/redis.ConnectUniversal(opts *redis.UniversalOptions, ...)`** — Sentinel and Cluster topologies are now supported by the same Connection wrapper.
+- ✅ **`redistest.FlushDB(t)`** — per-test isolation helper; tests can use `t.Cleanup(func() { redistest.FlushDB(t) })` to scrub between scenarios.
 
 ### Migration checklist
 
 - [x] Phase 1: gormmysql TLS registry deregister on close. ✅ `af39f9c`
-- [ ] Phase 3: `infra/redis.Connection` Sentinel/Cluster support.
-- [ ] Phase 3: `redistest` per-test isolation + `FlushDB` helper.
-- [ ] Phase 3: `dbtest` IsTLSEnabled assertion helper.
+- [x] Phase 3: `infra/redis.Connection` Sentinel/Cluster support. ✅ `4280790`
+- [x] Phase 3: `redistest` per-test isolation + `FlushDB` helper. ✅ `4280790`
+- [x] Phase 3: `dbtest` IsTLSEnabled assertion helper. ✅ `4280790`
 
 ### Related new packages
 

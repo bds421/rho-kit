@@ -14,30 +14,21 @@ The security primitives are largely correct (GCM with random nonces, HMAC via `s
 
 ## Open
 
-### [HIGH] JWT Provider serves stale keys forever after JWKS endpoint goes permanently bad
-**File**: `security/jwtutil/jwtutil.go:226-240`
-**Issue**: After initial fetch, periodic refresh failures only log; cached keys are served indefinitely. After rotation + permanent JWKS outage, the kit verifies with old keys (potentially compromised) and rejects all new tokens forever.
-**Fix**: Track `lastSuccessfulFetch`. After a configurable max-stale duration (default 1h) start rejecting tokens with `ErrKeysetStale`. Expose staleness as a metric/health check.
-**Effort**: S
+_Closed — see Recently Landed below._
 
-### [HIGH] `StaticKeyStore` panics make rotation fragile
-**File**: `crypto/signing/keystore.go:45-56`
-**Issue**: `NewStaticKeyStore` panics on empty/short keys/missing currentID. With keys from env vars, one bad rotation kills the process at startup with a panic.
-**Fix**: Add `NewStaticKeyStoreE(...) (*StaticKeyStore, error)`; keep panic version as `MustNewStaticKeyStore`.
-**Effort**: S
+## Recently Landed (Phase 3, commit `69fcc85`)
 
-### [MEDIUM] `Signer` has no `WithFutureSkew` option
-**File**: `crypto/signing/signing.go:80`
-**Issue**: Hard-coded 30s skew. Some integrations need wider tolerance; some want zero.
-**Fix**: Add `WithFutureSkew(time.Duration)` option mirroring `WithClock`.
+- ✅ **JWT Provider max-stale rejection** — `lastSuccessfulFetch` tracked atomically; default max-stale = 1 hour; `WithMaxStale(d)` overrides; `LastSuccessfulFetch()` and `Staleness()` accessors expose it for health/metrics.
+- ✅ **`StaticKeyStore` error-API split** — `NewStaticKeyStoreE(keys, currentID) (*StaticKeyStore, error)` for callers that load keys from env vars; the original panic-on-bad-rotation constructor stays as `NewStaticKeyStore` (now a thin wrapper).
+- ✅ **`signing.WithFutureSkew(d)`** — option replaces the hard-coded 30s constant; default preserved when not set.
 
 ### Migration checklist
 
-- [ ] Phase 2: JWT staleness metric + max-stale rejection.
-- [ ] Phase 2: `StaticKeyStore` `New*E`/`Must*` split.
+- [x] Phase 2: JWT staleness metric + max-stale rejection. ✅ `69fcc85`
+- [x] Phase 2: `StaticKeyStore` `New*E`/`Must*` split. ✅ `69fcc85`
 - [x] Phase 2: SSRF `*FromURL` constructors. ✅ `a649495`
-- [x] Phase 2: JWT mandatory issuer (jwtutil layer). ✅ `659babb` (Builder integration still TODO)
-- [ ] Phase 2: signing `WithFutureSkew`.
+- [x] Phase 2: JWT mandatory issuer (jwtutil layer). ✅ `659babb` + Builder enforcement `4d04fe1`
+- [x] Phase 2: signing `WithFutureSkew`. ✅ `69fcc85`
 
 ### Related new packages
 

@@ -7,17 +7,17 @@
 
 ## Open
 
-### [MEDIUM] `Relay.poll` processes entries serially → head-of-line blocking
-**File**: `infra/outbox/relay.go:198-203`
-**Issue**: With `batchSize=100` and 100ms-per-publish, one cycle takes 10s. New entries inserted during that time wait full duration.
-**Fix**: Add `WithMaxConcurrentPublishes(n)`; dispatch entries into a worker pool; collect results and call `MarkPublished` per entry as they finish.
+_Closed — see Recently Landed below._
 
-### [MEDIUM] gormstore SQLite `FOR UPDATE SKIP LOCKED` is no-op → multi-relay double-publish
-**File**: `infra/outbox/gormstore/gormstore.go:113-148`
-**Issue**: SQLite ignores SKIP LOCKED. Two relay instances against same SQLite file each fetch full pending set → double-publish.
-**Fix**: Reject SQLite at construction when concurrent relay is enabled, or detect dialect at startup and gate `FetchPending` with a process-local mutex on SQLite.
+## Recently Landed (Phase 3, commit `039061e`)
+
+- ✅ **`WithMaxConcurrentPublishes(n)`** — bounded-semaphore worker pool dispatches entries concurrently while preserving the per-entry `MarkPublished`/`IncrementAttempts` semantics. Default remains `n=1` (serial) for backwards compatibility.
+- ✅ **SQLite multi-relay process-local guard** — `gormstore` detects the dialect at construction (`db.Dialector.Name() == "sqlite"`); `FetchPending` is gated by `sqliteMu sync.Mutex` so two relays in one process are safe (the cross-process case still requires Postgres or MySQL since SQLite ignores SKIP LOCKED — documented in `WithLogger`).
+
+The HIGH-fix from the post-merge code review (relay.go ctx-aware sem send) is captured in commit `4d04fe1`.
 
 ### Migration checklist
 
 - [x] Phase 2: `Writer.WithRequireTransaction()`. ✅ `5cfa5c9` (default OFF; new services should opt in)
-- [ ] Phase 3: `WithMaxConcurrentPublishes` worker pool; SQLite multi-instance guard.
+- [x] Phase 3: `WithMaxConcurrentPublishes` worker pool. ✅ `039061e`
+- [x] Phase 3: SQLite multi-instance guard. ✅ `039061e`

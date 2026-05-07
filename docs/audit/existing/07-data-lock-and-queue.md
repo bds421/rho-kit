@@ -11,16 +11,16 @@
 
 ## Open
 
-### [HIGH] Queue `recoverProcessing` runs synchronously before BLMove
-**File**: `data/queue/redisqueue/helpers.go:225` + `queue.go:processOnce`
-**Issue**: `processOnce` calls `recoverProcessing` once at start, then enters the BLMove loop. The bound (100 entries per pass) shipped in commit `f4a0a95` keeps any single pass small, but a permanent 100-entry backlog still head-of-line-blocks new traffic on every Process restart. Stream-consumer's interleaved approach (recover N, process M new, recover N more...) is the cleaner pattern.
-**Fix**: Interleave recovery with `BLMove` reads — e.g. consume one recovery batch, then run a normal `BLMove` cycle, then optionally another recovery batch. Mirrors the data/stream consumer's `claimMinIdle` cadence.
-**Effort**: M
+_Closed — see Recently Landed below._
+
+## Recently Landed (Phase 3, commit `7e3e1d4`)
+
+- ✅ **Bounded interleaved recovery** — `recoverProcessingBatchSize=10`; `processOnce` now runs one recovery batch every 10 BLMove iterations instead of draining the entire processing list before serving new traffic. Eliminates the head-of-line-blocking restart pattern.
 
 ### Migration checklist
 
 - [x] Phase 2: `Acquire` surfaces transient-SET orphans (probe via `GET` on transient errors). ✅ `432f001`
-- [ ] Phase 2: bounded `recoverProcessing` interleaved with new-message reads.
+- [x] Phase 2: bounded `recoverProcessing` interleaved with new-message reads. ✅ `7e3e1d4`
 
 ### Related new packages
 

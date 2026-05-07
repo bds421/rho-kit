@@ -11,38 +11,21 @@ Server defaults, client defaults, and the test helpers. Middleware findings live
 
 ## Open
 
-### [HIGH] Cursor pagination is not opaque — leaks PKs and trusts client cursors
-**File**: `httpx/pagination/cursor.go:43-78`
-**Issue**: `BuildResult` returns the raw last-PK as `next_cursor`. `ParseCursorParams` reads `q.Get("cursor")` and `HandleCursorList` passes it to `ListFn(ctx, cursor, limit)`. Default validator only checks UUID syntax. A client can: (1) enumerate by guessing IDs; (2) skip access-control by passing a foreign user's ID as cursor; (3) inject SQL fragments if `ListFn` interpolates without parameterization.
-**Fix**: Sign the cursor with HMAC at the kit level — `nextCursor = base64(id || hmac(secret, id || user_id))` — and verify on parse. Mirrors the auditlog gormstore pattern shipped in `98f05e4`. Document the SQL-injection risk loudly.
-**Effort**: M
-**Migration**: Phase 3. Existing cursors will not validate after the change; document the rollover (accept both formats for one release, then strict).
+_Closed — see Recently Landed below._
 
-### [HIGH] `WriteTimeout` 35s but `Default` middleware doesn't include `Timeout`
-**File**: `httpx/httpx.go:71` + `httpx/middleware/stack/stack.go`
-**Issue**: Comment says `WriteTimeout` must exceed configured request timeout so middleware can write 503 — but `stack.Default` doesn't include the timeout middleware. So a slow handler is killed by `WriteTimeout` (server-level, generic message). Worse: if a user adds `timeout.Timeout(60*time.Second)` (longer than 35s `WriteTimeout`), the server kills the connection before middleware can write 503.
-**Fix**: Either include `timeout.Timeout` in `Default` (sensible default 30s), or add startup validation that `WriteTimeout > timeoutMW + buffer`. Document the constraint.
-**Effort**: S
-**Phase**: 1
+## Recently Landed (Phase 3, commit `6f03d78`)
 
-### [MEDIUM] Client doesn't expose `IdleConnTimeout` knob
-**File**: `httpx/httpx.go:24-46`
-**Issue**: `MaxIdleConnsPerHost` is now sane (default 100), but `IdleConnTimeout` still inherits the stdlib default (90s) with no option to change it. For services behind aggressive load balancers (60s idle), connections die mid-request.
-**Fix**: Expose `WithIdleConnTimeout(time.Duration)` matching the existing `WithErrorLog` option pattern.
-**Effort**: S
-
-### [MEDIUM] `httpxtest` bypasses real `http.Server` — tests pass that fail in prod
-**File**: `httpx/httpxtest/httpxtest.go:22-46`
-**Issue**: `Do`/`DoRequest` call `handler.ServeHTTP` directly with `httptest.NewRequest`. `MaxHeaderBytes`, `RemoteAddr`, default `Host` are all fake. Middleware that asserts on these passes tests but fails prod.
-**Fix**: Document loudly. Add a `DoRealServer(handler)` variant that uses `httptest.NewServer` so the full stack runs end-to-end.
-**Effort**: S
+- ✅ **Signed cursor pagination** — `CursorSigner` (`NewCursorSigner` / `MustNewCursorSigner`) HMAC-signs cursors as `base64url(payload).base64url(sig)`; `Encode` / `Decode` enforce constant-time verification; `CursorListOpts.Signer` opts handlers in. Mirrors the auditlog signing pattern.
+- ✅ **`stack.Default` includes Timeout middleware** — 30s default with `WithTimeout(d)` override and `WithoutTimeout()` opt-out; sized so the server's 35s `WriteTimeout` always leaves middleware time to write 503. Constraint also explicitly documented on `WithWriteTimeout`.
+- ✅ **`WithIdleConnTimeout(d)` on the client** — exposed through `NewTracingHTTPClientWithOptions(...)`.
+- ✅ **`httpxtest.DoRealServer(t, handler, ...)`** — runs the full stack via `httptest.NewServer` so middleware sees real `RemoteAddr`, real `Host`, real `MaxHeaderBytes` enforcement.
 
 ### Migration checklist
 
-- [ ] Phase 1: include `Timeout` in `stack.Default` (or validate WriteTimeout sizing).
-- [ ] Phase 2: expose `WithIdleConnTimeout` on the default client.
-- [ ] Phase 3: cursor pagination signing (mirror auditlog gormstore).
-- [ ] Phase 3: `httpxtest.DoRealServer` variant.
+- [x] Phase 1: include `Timeout` in `stack.Default`. ✅ `6f03d78`
+- [x] Phase 2: expose `WithIdleConnTimeout` on the default client. ✅ `6f03d78`
+- [x] Phase 3: cursor pagination signing. ✅ `6f03d78`
+- [x] Phase 3: `httpxtest.DoRealServer` variant. ✅ `6f03d78`
 
 ### Related new packages
 
