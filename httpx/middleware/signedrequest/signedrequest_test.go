@@ -161,6 +161,51 @@ func TestMiddleware_PanicsWithoutResolver(t *testing.T) {
 	})
 }
 
+func TestVerify_RejectsShortResolvedSecret(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	short := bytes.Repeat([]byte("a"), 31)
+	resolver := func(string) ([]byte, error) { return short, nil }
+	mw := Middleware(resolver, store)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	r := signRequest(t, "POST", "/x", "body", time.Now(), "nonce-short", nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
+func TestVerify_AcceptsExactly32ByteResolvedSecret(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	exact := bytes.Repeat([]byte("a"), 32)
+	resolver := func(string) ([]byte, error) { return exact, nil }
+	mw := Middleware(resolver, store)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	tsUnix := time.Now().UTC().Unix()
+	body := "hello"
+	req := httptest.NewRequest("POST", "/api/x", strings.NewReader(body))
+	req.Header.Set(HeaderTimestamp, formatUnix(tsUnix))
+	req.Header.Set(HeaderNonce, "n-32-exact")
+	req.Header.Set(HeaderKeyID, keyID)
+	req.Header.Set(HeaderSignature, SignCanonical(exact, req, formatUnix(tsUnix), "n-32-exact", []byte(body), nil))
+	req.Body = newBody(body)
+	req.ContentLength = int64(len(body))
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestWithMaxClockSkew_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithMaxClockSkew(0) })
+	assert.Panics(t, func() { WithMaxClockSkew(-time.Second) })
+}
+
+func TestWithBodyMaxSize_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithBodyMaxSize(0) })
+	assert.Panics(t, func() { WithBodyMaxSize(-1) })
+}
+
 func TestMemoryNonceStore_Sweep(t *testing.T) {
 	now := time.Now()
 	s := NewMemoryNonceStore(time.Second)

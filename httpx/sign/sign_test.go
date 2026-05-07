@@ -54,10 +54,29 @@ func TestSign_RejectsEmptySecret(t *testing.T) {
 	})
 }
 
+func TestSign_RejectsShortSecret(t *testing.T) {
+	short := bytes.Repeat([]byte("a"), 31)
+	assert.Panics(t, func() {
+		Wrap(http.DefaultTransport, short, keyID)
+	})
+}
+
+func TestSign_AcceptsExactly32ByteSecret(t *testing.T) {
+	exact := bytes.Repeat([]byte("a"), 32)
+	assert.NotPanics(t, func() {
+		Wrap(http.DefaultTransport, exact, keyID)
+	})
+}
+
 func TestSign_RejectsEmptyKeyID(t *testing.T) {
 	assert.Panics(t, func() {
 		Wrap(http.DefaultTransport, []byte(secret), "")
 	})
+}
+
+func TestSign_WithBodyMaxSize_RejectsNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithBodyMaxSize(0) })
+	assert.Panics(t, func() { WithBodyMaxSize(-1) })
 }
 
 func TestSign_NoBody(t *testing.T) {

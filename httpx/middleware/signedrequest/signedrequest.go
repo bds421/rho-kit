@@ -45,6 +45,11 @@ const (
 	signaturePrefix = "hmac-sha256="
 )
 
+// minSecretLen matches HMAC-SHA256 output size and the floor enforced by
+// crypto/signing. Sub-32-byte secrets resolved from the operator's secret
+// store are rejected so a misconfigured deployment fails closed.
+const minSecretLen = 32
+
 // Sentinel errors. Verify is internal; the middleware translates these
 // into 400/401/413 responses.
 var (
@@ -53,6 +58,7 @@ var (
 	ErrSignatureInvalid = errors.New("signedrequest: signature did not verify")
 	ErrNonceReplayed    = errors.New("signedrequest: nonce replayed")
 	ErrBodyTooLarge     = errors.New("signedrequest: body exceeds maximum")
+	ErrSecretTooShort   = errors.New("signedrequest: resolved secret is shorter than the 32-byte HMAC-SHA256 minimum")
 )
 
 // KeyResolver returns the HMAC secret bytes for the given key ID.
@@ -84,7 +90,13 @@ type config struct {
 
 // WithMaxClockSkew sets the tolerance window. Tokens with timestamps
 // outside [now-skew, now+skew] are rejected. Default: 5 minutes.
+//
+// Panics if d is non-positive — a zero or negative skew window would
+// reject every legitimate request and is almost certainly a wiring bug.
 func WithMaxClockSkew(d time.Duration) Option {
+	if d <= 0 {
+		panic("signedrequest: WithMaxClockSkew requires a positive duration")
+	}
 	return func(c *config) { c.maxClockSkew = d }
 }
 
@@ -102,7 +114,13 @@ func WithRequiredHeaders(names ...string) Option {
 
 // WithBodyMaxSize bounds the request body that will be MAC'd. Bodies
 // past the limit are rejected with 413. Default: 10 MiB.
+//
+// Panics if n is non-positive — a zero/negative cap would either reject
+// every body or behave unpredictably depending on the LimitReader path.
 func WithBodyMaxSize(n int64) Option {
+	if n <= 0 {
+		panic("signedrequest: WithBodyMaxSize requires a positive byte cap")
+	}
 	return func(c *config) { c.bodyMaxSize = n }
 }
 
@@ -185,6 +203,9 @@ func verify(r *http.Request, cfg *config) error {
 	if err != nil || len(secret) == 0 {
 		return ErrSignatureInvalid
 	}
+	if len(secret) < minSecretLen {
+		return ErrSecretTooShort
+	}
 
 	body, err := readBody(r, cfg.bodyMaxSize)
 	if err != nil {
@@ -215,6 +236,11 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 	case errors.Is(err, ErrSignatureInvalid), errors.Is(err, ErrNonceReplayed):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	case errors.Is(err, ErrSecretTooShort):
+		// Operator misconfiguration: the resolver returned a too-short key.
+		// 500 keeps the failure mode visible without leaking which key ID
+		// was tried.
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}

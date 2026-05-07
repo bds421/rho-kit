@@ -24,6 +24,11 @@ import (
 	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
 )
 
+// minSecretLen matches HMAC-SHA256 output size and the floor enforced by
+// crypto/signing. Sub-32-byte secrets do not provide the security HMAC-SHA256
+// is designed for and are rejected at construction.
+const minSecretLen = 32
+
 // Option configures the [Wrap] RoundTripper.
 type Option func(*config)
 
@@ -49,7 +54,13 @@ func WithIncludeHeaders(names ...string) Option {
 
 // WithBodyMaxSize bounds the size of the request body the wrapper
 // will buffer to compute the signature. Default: 10 MiB.
+//
+// Panics if n is non-positive — options are wired at startup and a
+// zero/negative cap silently breaks every signed request.
 func WithBodyMaxSize(n int64) Option {
+	if n <= 0 {
+		panic("sign: WithBodyMaxSize requires a positive byte cap")
+	}
 	return func(c *config) { c.bodyMaxSize = n }
 }
 
@@ -73,8 +84,8 @@ func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) h
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	if len(secret) == 0 {
-		panic("sign: secret must not be empty")
+	if len(secret) < minSecretLen {
+		panic(fmt.Sprintf("sign: secret must be at least %d bytes for HMAC-SHA256", minSecretLen))
 	}
 	if keyID == "" {
 		panic("sign: keyID must not be empty")
