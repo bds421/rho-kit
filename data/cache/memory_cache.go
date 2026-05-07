@@ -21,6 +21,7 @@ type MemoryCache struct {
 	bufferItems     int64
 	metricsEnabled  bool
 	costFunc        func(value []byte) int64
+	entryCost       bool
 	ignoreIntCost   bool
 	cleanupInterval time.Duration
 
@@ -29,18 +30,45 @@ type MemoryCache struct {
 	// without this two concurrent SetNX calls could both observe "key
 	// missing" and both write — defeating the whole point of NX.
 	setNXMu sync.Mutex
+
+	// nxClaims tracks keys that have been successfully claimed via SetNX.
+	// Ristretto buffers SetWithTTL writes AND its TinyLFU admission policy
+	// may silently reject entries, so a subsequent Get cannot reliably
+	// observe a prior SetNX. Claims here give true test-and-set semantics
+	// within the process; entries are cleaned up on Delete or once their
+	// recorded expiry passes.
+	nxClaims sync.Map
+}
+
+// nxClaim records when a SetNX claim expires. A zero expiresAt means the
+// claim has no TTL and lives until Delete.
+type nxClaim struct {
+	expiresAt time.Time
 }
 
 // MemoryCacheOption configures a MemoryCache.
 type MemoryCacheOption func(*MemoryCache)
 
 // WithMaxSize sets the maximum number of entries by treating each entry
-// as cost=1. Values <= 0 are ignored.
+// as cost=1. Values <= 0 are ignored. Implies WithEntryCost — when set,
+// the default byte-based cost accounting is disabled and the cache is
+// bounded by entry count instead.
 func WithMaxSize(n int) MemoryCacheOption {
 	return func(mc *MemoryCache) {
 		if n > 0 {
 			mc.maxSize = n
+			mc.entryCost = true
 		}
+	}
+}
+
+// WithEntryCost forces every entry to count as cost=1 regardless of value
+// size. Use this when the cache is sized by entry count rather than bytes.
+// Mutually exclusive with WithByteCost / WithCostFunc; the last option wins.
+func WithEntryCost() MemoryCacheOption {
+	return func(mc *MemoryCache) {
+		mc.entryCost = true
+		mc.costFunc = nil
 	}
 }
 
@@ -84,10 +112,13 @@ func WithMetrics(enabled bool) MemoryCacheOption {
 func WithCostFunc(fn func(value []byte) int64) MemoryCacheOption {
 	return func(mc *MemoryCache) {
 		mc.costFunc = fn
+		mc.entryCost = false
 	}
 }
 
-// WithByteCost uses len(value) as the item cost (bytes).
+// WithByteCost uses len(value) as the item cost (bytes). This is the
+// default for unconfigured caches; the option exists for explicit
+// documentation of intent and to override a prior WithEntryCost.
 func WithByteCost() MemoryCacheOption {
 	return WithCostFunc(func(value []byte) int64 { return int64(len(value)) })
 }
@@ -110,21 +141,24 @@ func WithCleanupInterval(d time.Duration) MemoryCacheOption {
 }
 
 // NewMemoryCache creates an in-memory cache.
+//
+// Cost accounting: by default the cache is bounded by bytes — every entry
+// counts as len(value) and the default MaxCost is 64 MiB. Use WithMaxSize
+// or WithEntryCost to switch to entry-count accounting; use WithCostFunc
+// to plug in a custom cost (e.g. struct size including overhead).
 func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	mc := &MemoryCache{metricsEnabled: true}
 	for _, o := range opts {
 		o(mc)
 	}
 
+	if mc.costFunc == nil && !mc.entryCost {
+		mc.costFunc = func(value []byte) int64 { return int64(len(value)) }
+	}
+
 	maxCost := mc.maxCost
 	numCounters := mc.numCounters
 	if maxCost <= 0 {
-		// Default cap (64 MiB) so an unconfigured MemoryCache cannot grow
-		// without bound. Previously the default was math.MaxInt64 — which
-		// silently turned attacker-controlled or high-cardinality cache
-		// keys into an OOM vector. Production deployments should set
-		// WithMaxCost / WithMaxSize explicitly; this default is a safety
-		// net rather than a sizing recommendation.
 		maxCost = int64(64 * 1024 * 1024)
 		if mc.maxSize > 0 {
 			maxCost = int64(mc.maxSize)
@@ -202,7 +236,6 @@ func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time
 	if ttl < 0 {
 		return fmt.Errorf("cache set: TTL must not be negative (got %v)", ttl)
 	}
-	// Copy value to prevent caller mutation.
 	stored := make([]byte, len(value))
 	copy(stored, value)
 
@@ -211,14 +244,8 @@ func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time
 		cost = 0
 	}
 	if !mc.cache.SetWithTTL(key, stored, cost, ttl) {
-		// Ristretto's TinyLFU admission policy rejected the entry — this is
-		// normal behavior (the policy predicts the entry won't be accessed
-		// frequently enough to justify evicting an existing one). Not an error.
 		return nil
 	}
-	// Note: no Wait() call here. Ristretto batches writes for throughput;
-	// the entry will be visible after the next batch flush. Use Sync() if
-	// immediate visibility is required (e.g. in tests).
 	return nil
 }
 
@@ -259,18 +286,41 @@ func (mc *MemoryCache) MSet(ctx context.Context, items map[string][]byte, ttl ti
 
 // SetNX implements [BulkCache]. Atomic only within a single process; for
 // cross-process compute-once, use the Redis-backed BulkCache.
+//
+// Implementation: Ristretto buffers SetWithTTL writes AND its TinyLFU
+// admission policy may silently reject entries, so a subsequent Get
+// cannot reliably observe a prior SetNX. The mutex serialises the path;
+// we track claims in nxClaims for the duration of the requested TTL so
+// that follow-up SetNX calls see the claim independent of Ristretto's
+// admission decisions and buffer flushes.
 func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
 	if err := ValidateKey(key); err != nil {
 		return false, err
 	}
 	mc.setNXMu.Lock()
 	defer mc.setNXMu.Unlock()
+
+	if existing, claimed := mc.nxClaims.Load(key); claimed {
+		c := existing.(nxClaim)
+		if c.expiresAt.IsZero() || time.Now().Before(c.expiresAt) {
+			return false, nil
+		}
+		mc.nxClaims.Delete(key)
+	}
 	if _, ok := mc.cache.Get(key); ok {
 		return false, nil
 	}
+
 	if err := mc.Set(ctx, key, value, ttl); err != nil {
 		return false, err
 	}
+	mc.cache.Wait()
+
+	claim := nxClaim{}
+	if ttl > 0 {
+		claim.expiresAt = time.Now().Add(ttl)
+	}
+	mc.nxClaims.Store(key, claim)
 	return true, nil
 }
 
@@ -280,6 +330,7 @@ func (mc *MemoryCache) Delete(_ context.Context, key string) error {
 		return err
 	}
 	mc.cache.Del(key)
+	mc.nxClaims.Delete(key)
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -413,4 +414,152 @@ func TestValidateKey_TooLong(t *testing.T) {
 	longKey := strings.Repeat("x", MaxKeyLen+1)
 	err := ValidateKey(longKey)
 	assert.ErrorIs(t, err, ErrKeyTooLong)
+}
+
+// TestMemoryCache_DefaultByteCost verifies the default cache caps total
+// bytes (not entry count): inserting more bytes than the configured
+// maxCost must trigger eviction. Before the v2 audit fix, the default
+// cost was 1 per entry which let ~67M entries accumulate before the
+// 64 MiB cap kicked in.
+func TestMemoryCache_DefaultByteCost(t *testing.T) {
+	const maxBytes = int64(64 * 1024)
+	mc, err := NewMemoryCache(
+		WithMaxCost(maxBytes),
+		WithNumCounters(10_000),
+		WithIgnoreInternalCost(true),
+	)
+	require.NoError(t, err)
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	value := make([]byte, 1024)
+	for i := range value {
+		value[i] = byte(i)
+	}
+
+	// Write 10x the cap as 1KiB values; if cost were 1-per-entry, every
+	// entry would fit. With byte-cost defaulting on, the cache must
+	// evict to stay near maxBytes.
+	const writes = 10 * 64
+	for i := range writes {
+		key := fmt.Sprintf("byte-cost-%d", i)
+		require.NoError(t, mc.Set(ctx, key, value, time.Minute))
+	}
+	mc.Sync()
+	time.Sleep(20 * time.Millisecond) // let admission/eviction settle
+
+	present := 0
+	for i := range writes {
+		key := fmt.Sprintf("byte-cost-%d", i)
+		if exists, _ := mc.Exists(ctx, key); exists {
+			present++
+		}
+	}
+
+	maxEntriesAtCap := int(maxBytes / 1024)
+	assert.LessOrEqualf(t, present, maxEntriesAtCap*2,
+		"byte-cost default should evict to stay near %d bytes; got %d entries of 1KiB",
+		maxBytes, present)
+	assert.Lessf(t, present, writes,
+		"byte-cost default must evict at least one entry when total bytes exceed cap")
+}
+
+// TestMemoryCache_WithEntryCost_EvictsByCount verifies the entry-count
+// opt-out actually counts entries.
+func TestMemoryCache_WithEntryCost_EvictsByCount(t *testing.T) {
+	mc, err := NewMemoryCache(
+		WithEntryCost(),
+		WithMaxCost(3),
+		WithNumCounters(30),
+		WithIgnoreInternalCost(true),
+	)
+	require.NoError(t, err)
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	for i := range 10 {
+		require.NoError(t, mc.Set(ctx, fmt.Sprintf("k%d", i), []byte("x"), time.Minute))
+	}
+	mc.Sync()
+	time.Sleep(20 * time.Millisecond)
+
+	present := 0
+	for i := range 10 {
+		if exists, _ := mc.Exists(ctx, fmt.Sprintf("k%d", i)); exists {
+			present++
+		}
+	}
+	assert.LessOrEqual(t, present, 6, "entry-count cap (3) should evict aggressively, saw %d", present)
+}
+
+// TestMemoryCache_SetNX_ConcurrentAtomicity drives many goroutines into
+// SetNX on the same key; exactly one must report ok=true. Before the
+// v2 audit fix, Ristretto's buffered writes meant two concurrent SetNX
+// calls could each observe the key as missing and both return true.
+func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
+	t.Parallel()
+
+	mc := MustNewMemoryCache()
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	var trueCount int64
+	start := make(chan struct{})
+
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			<-start
+			ok, err := mc.SetNX(ctx, "race-key", []byte("v"), time.Minute)
+			require.NoError(t, err)
+			if ok {
+				atomic.AddInt64(&trueCount, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.EqualValues(t, 1, trueCount, "exactly one SetNX must win, got %d winners", trueCount)
+}
+
+// TestMemoryCache_SetNX_ClaimExpires verifies the in-process NX claim
+// is released once the requested TTL elapses, so a subsequent SetNX
+// after expiry can succeed.
+func TestMemoryCache_SetNX_ClaimExpires(t *testing.T) {
+	mc := MustNewMemoryCache()
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	ok, err := mc.SetNX(ctx, "ttl-claim", []byte("v"), 30*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	time.Sleep(60 * time.Millisecond)
+
+	ok, err = mc.SetNX(ctx, "ttl-claim", []byte("v2"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "claim should be released after TTL expiry")
+}
+
+// TestMemoryCache_SetNX_DeleteClearsClaim verifies that an explicit
+// Delete clears the in-process claim so a follow-up SetNX can succeed.
+func TestMemoryCache_SetNX_DeleteClearsClaim(t *testing.T) {
+	mc := MustNewMemoryCache()
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	ok, err := mc.SetNX(ctx, "del-claim", []byte("v"), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	require.NoError(t, mc.Delete(ctx, "del-claim"))
+
+	ok, err = mc.SetNX(ctx, "del-claim", []byte("v2"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "Delete should release the SetNX claim")
 }

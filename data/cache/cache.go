@@ -82,10 +82,12 @@ type BulkCache interface {
 	// Errors are returned as-is from the backend.
 	MGet(ctx context.Context, keys []string) (map[string][]byte, error)
 
-	// MSet stores all items atomically when the backend supports it
-	// (Redis MSET, in-memory single-lock); ttl applies to every entry.
-	// Backends that cannot do an atomic MSET fall back to per-key Set,
-	// which means a partial failure may leave some keys written.
+	// MSet stores all items with a shared ttl. MSet is NOT guaranteed to
+	// be all-or-nothing: the Redis backend uses a pipeline (a connection
+	// failure mid-batch can leave a partial write), and the in-memory
+	// backend fans out per-key Set. Callers that need transactional
+	// semantics across multiple keys must build that on top with a
+	// MULTI/EXEC or Lua-script path of their own.
 	MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error
 
 	// SetNX stores value only if key does not exist. Returns true when

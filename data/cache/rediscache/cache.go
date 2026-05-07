@@ -204,8 +204,14 @@ func (rc *RedisCache) MGet(ctx context.Context, keys []string) (map[string][]byt
 // MSet stores multiple keys with a shared TTL. Implemented as a pipelined
 // SET-with-EX rather than MSET because Redis MSET does not accept a TTL —
 // the alternatives are MSET + per-key EXPIRE round-trips (slower, two
-// network round-trips per batch) or pipelined SET (atomic from the client's
-// perspective; the server still applies them in order).
+// network round-trips per batch) or pipelined SET.
+//
+// Atomicity caveat: this is NOT all-or-nothing. The pipeline is sent as
+// a single batch and Redis processes the commands in order, but a
+// connection failure or server crash mid-batch can leave a partial set
+// of keys written. Callers that require all-or-nothing semantics must
+// implement their own MULTI/EXEC or Lua-script path; the BulkCache
+// contract documents the same caveat.
 func (rc *RedisCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
 	if len(items) == 0 {
 		return nil

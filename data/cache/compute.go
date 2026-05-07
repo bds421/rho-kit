@@ -267,9 +267,13 @@ var envelopeCodec = JSONCodec[envelope]{}
 func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
-	// Use WithoutCancel so that if the first caller's context is cancelled,
-	// other waiters sharing this singleflight call are not affected.
-	computeCtx := context.WithoutCancel(ctx)
+	// Detach cancellation so a follower whose context is cancelled does
+	// not abort the shared compute, but keep the original deadline so
+	// long computes still respect the request budget. Without this,
+	// context.WithoutCancel would strip the deadline along with the
+	// cancellation source and let compute run past the budget.
+	computeCtx, cancelCompute := detachCancelKeepDeadline(ctx)
+	defer cancelCompute()
 	result, err, shared := cc.group.Do(full, func() (interface{}, error) {
 		return cc.executeCompute(computeCtx, full, fn)
 	})
@@ -427,4 +431,17 @@ func (cc *ComputeCache[T]) recordError() {
 	if cc.cfg.metrics != nil {
 		cc.cfg.metrics.errors.WithLabelValues(cc.cfg.name).Inc()
 	}
+}
+
+// detachCancelKeepDeadline returns a context that does not inherit
+// cancellation from parent (so that one cancelled caller cannot abort a
+// shared singleflight compute) but does inherit any deadline so the
+// compute is still bounded by the original request budget. The returned
+// cancel must always be invoked by the caller.
+func detachCancelKeepDeadline(parent context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(parent)
+	if dl, ok := parent.Deadline(); ok {
+		return context.WithDeadline(detached, dl)
+	}
+	return context.WithCancel(detached)
 }

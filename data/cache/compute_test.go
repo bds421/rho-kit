@@ -525,3 +525,66 @@ func TestComputeCache_StaleTTLZeroNoStaleServing(t *testing.T) {
 	assert.Equal(t, "v2", val, "should NOT serve stale value when staleTTL=0")
 	assert.Equal(t, int32(2), calls.Load())
 }
+
+// TestComputeCache_ForegroundComputeRespectsDeadline verifies that the
+// caller's deadline is preserved across the singleflight detach. Before
+// the v2 audit fix, computeAndStore used context.WithoutCancel which
+// strips the deadline along with the cancellation, letting compute run
+// past the request budget.
+func TestComputeCache_ForegroundComputeRespectsDeadline(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "deadline:")
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(2 * time.Second):
+			return "ignored", 5 * time.Minute, nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = cc.GetOrCompute(ctx, "deadline-key", fn)
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "deadline must surface as error")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"compute must observe the original deadline; got %v", err)
+	assert.Lessf(t, elapsed, 1500*time.Millisecond,
+		"compute returned in %v; deadline should have fired well before fn's 2s timer", elapsed)
+}
+
+// TestComputeCache_ForegroundComputeIsolatesCancellation verifies that
+// when the parent context has no deadline, cancelling it does not abort
+// the compute (the singleflight guarantee).
+func TestComputeCache_ForegroundComputeIsolatesCancellation(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "isolate:")
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	computed := make(chan struct{})
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+			close(computed)
+			return "ok", time.Minute, nil
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	val, err := cc.GetOrCompute(ctx, "isolate-key", fn)
+	require.NoError(t, err, "cancelled-but-no-deadline parent must not abort compute")
+	assert.Equal(t, "ok", val)
+	<-computed
+}

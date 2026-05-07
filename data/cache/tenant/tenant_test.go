@@ -126,6 +126,106 @@ func TestWrap_MissReachesCaller(t *testing.T) {
 	assert.True(t, errors.Is(err, cache.ErrCacheMiss), "expected ErrCacheMiss, got %v", err)
 }
 
+// fakeBulkCache extends fakeCache with the BulkCache interface so we
+// can verify that Wrap preserves bulk/CAS semantics when the inner
+// cache supports them.
+type fakeBulkCache struct {
+	*fakeCache
+	mgetCalls  int
+	msetCalls  int
+	setNXCalls int
+}
+
+func newFakeBulkCache() *fakeBulkCache {
+	return &fakeBulkCache{fakeCache: newFakeCache()}
+}
+
+func (f *fakeBulkCache) MGet(_ context.Context, keys []string) (map[string][]byte, error) {
+	f.mgetCalls++
+	out := make(map[string][]byte, len(keys))
+	for _, k := range keys {
+		if v, ok := f.store[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeBulkCache) MSet(_ context.Context, items map[string][]byte, _ time.Duration) error {
+	f.msetCalls++
+	for k, v := range items {
+		f.store[k] = append([]byte(nil), v...)
+	}
+	return nil
+}
+
+func (f *fakeBulkCache) SetNX(_ context.Context, key string, value []byte, _ time.Duration) (bool, error) {
+	f.setNXCalls++
+	if _, ok := f.store[key]; ok {
+		return false, nil
+	}
+	f.store[key] = append([]byte(nil), value...)
+	return true, nil
+}
+
+// TestWrap_PreservesBulkCache verifies that Wrap on a BulkCache returns
+// a BulkCache whose MGet/MSet/SetNX route to the inner bulk methods
+// with tenant-prefixed keys. Before the v2 audit fix, the wrapper
+// returned cache.Cache and MGet/MSet/SetNX silently fell back to the
+// per-key racy helpers.
+func TestWrap_PreservesBulkCache(t *testing.T) {
+	inner := newFakeBulkCache()
+	w := Wrap(inner)
+
+	bulk, ok := w.(cache.BulkCache)
+	require.True(t, ok, "wrapped BulkCache must satisfy cache.BulkCache")
+
+	ctx := ctxWith("acme")
+
+	require.NoError(t, bulk.MSet(ctx, map[string][]byte{
+		"k1": []byte("v1"),
+		"k2": []byte("v2"),
+	}, time.Minute))
+	assert.Equal(t, 1, inner.msetCalls, "MSet must reach inner BulkCache once")
+
+	_, ok1 := inner.store["tenant:4:acme:k1"]
+	_, ok2 := inner.store["tenant:4:acme:k2"]
+	assert.True(t, ok1 && ok2, "MSet must store tenant-scoped keys in inner")
+
+	got, err := bulk.MGet(ctx, []string{"k1", "k2", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, inner.mgetCalls, "MGet must reach inner BulkCache once")
+	assert.Equal(t, []byte("v1"), got["k1"])
+	assert.Equal(t, []byte("v2"), got["k2"])
+	_, hasMissing := got["missing"]
+	assert.False(t, hasMissing, "MGet must not invent missing keys")
+
+	ok, err = bulk.SetNX(ctx, "claim", []byte("first"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, 1, inner.setNXCalls, "SetNX must reach inner BulkCache")
+
+	ok, err = bulk.SetNX(ctx, "claim", []byte("second"), time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "second SetNX must fail")
+
+	// Different tenant must be able to claim the same raw key.
+	ok, err = bulk.SetNX(ctxWith("widgets"), "claim", []byte("widgets-claim"), time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "different tenant must not collide with prior claim")
+}
+
+// TestWrap_NonBulkInner_KeepsCacheOnly verifies that wrapping a plain
+// Cache does not synthesize a fake BulkCache — the type assertion in
+// callers should fail and they should keep using the per-key fallback.
+func TestWrap_NonBulkInner_KeepsCacheOnly(t *testing.T) {
+	inner := newFakeCache()
+	w := Wrap(inner)
+
+	_, isBulk := w.(cache.BulkCache)
+	assert.False(t, isBulk, "wrapping a plain Cache must not synthesize BulkCache")
+}
+
 // TestScopedKey_ColonInTenantIDNoCollision is the audit's exact test
 // case for C-3. With a naive `tenant:<id>:<key>` scheme, tenant `"a:b"`
 // with key `"c"` collides with tenant `"a"` with key `"b:c"` — both

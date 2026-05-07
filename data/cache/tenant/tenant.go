@@ -40,15 +40,31 @@ type scoped struct {
 	inner cache.Cache
 }
 
+// scopedBulk extends scoped with the BulkCache fast paths. It is
+// returned from Wrap when the inner cache implements BulkCache so the
+// wrapper does not silently downgrade MGet/MSet/SetNX to the racy
+// fallbacks in [cache.SetNX] and friends.
+type scopedBulk struct {
+	scoped
+	bulk cache.BulkCache
+}
+
 // Wrap returns a [cache.Cache] that prefixes every key with the
 // caller's tenant ID. The returned cache panics on any operation
 // invoked without a tenant ID on ctx — see package doc for rationale.
+//
+// When inner implements [cache.BulkCache], the returned value also
+// implements BulkCache so MGet/MSet/SetNX are forwarded with tenant
+// scoping rather than falling back to the per-key Cache helpers.
 //
 // Wrap panics on a nil inner cache; callers should treat a nil inner
 // as a programming error and the wrapper makes that explicit upfront.
 func Wrap(inner cache.Cache) cache.Cache {
 	if inner == nil {
 		panic("cache/tenant: inner cache must not be nil")
+	}
+	if bulk, ok := inner.(cache.BulkCache); ok {
+		return &scopedBulk{scoped: scoped{inner: inner}, bulk: bulk}
 	}
 	return &scoped{inner: inner}
 }
@@ -95,4 +111,55 @@ func (s *scoped) Delete(ctx context.Context, key string) error {
 // Exists rewrites the key and delegates.
 func (s *scoped) Exists(ctx context.Context, key string) (bool, error) {
 	return s.inner.Exists(ctx, scopedKey(ctx, key))
+}
+
+// MGet rewrites every key and forwards a single bulk read to the inner
+// BulkCache. The result map is rebuilt with the caller's raw keys so
+// scoping is invisible to consumers.
+func (s *scopedBulk) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if len(keys) == 0 {
+		return map[string][]byte{}, nil
+	}
+	scoped := make([]string, len(keys))
+	rawByScoped := make(map[string]string, len(keys))
+	for i, k := range keys {
+		sk := scopedKey(ctx, k)
+		scoped[i] = sk
+		rawByScoped[sk] = k
+	}
+	got, err := s.bulk.MGet(ctx, scoped)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]byte, len(got))
+	for sk, v := range got {
+		raw, ok := rawByScoped[sk]
+		if !ok {
+			continue
+		}
+		out[raw] = v
+	}
+	return out, nil
+}
+
+// MSet rewrites every key and forwards a single bulk write to the inner
+// BulkCache, preserving whatever atomicity guarantees that backend
+// provides (Redis pipeline, in-memory single-lock fan-out).
+func (s *scopedBulk) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if len(items) == 0 {
+		return nil
+	}
+	scoped := make(map[string][]byte, len(items))
+	for k, v := range items {
+		scoped[scopedKey(ctx, k)] = v
+	}
+	return s.bulk.MSet(ctx, scoped, ttl)
+}
+
+// SetNX rewrites the key and forwards to the inner BulkCache so that
+// cross-process compute-once semantics survive tenant scoping. Without
+// this, the [cache.SetNX] free function falls back to a racy
+// Exists+Set sequence.
+func (s *scopedBulk) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	return s.bulk.SetNX(ctx, scopedKey(ctx, key), value, ttl)
 }
