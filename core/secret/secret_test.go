@@ -140,6 +140,59 @@ func TestClose_Idempotent(t *testing.T) {
 	assert.True(t, s.IsEmpty())
 }
 
+// TestValueTypedUsage_StillRedacts is the regression test for the H-1
+// finding: prior to the value-receiver fix, a by-value copy or a
+// dereference of *String would lose the redaction methods from the
+// type's method set, and fmt.Printf("%+v", s) printed s.buf as a
+// decimal byte slice — i.e. the plaintext, decoded.
+func TestValueTypedUsage_StillRedacts(t *testing.T) {
+	src := NewFromString(plain)
+
+	// 1. Deref into a value-typed local. Pre-fix, this lost the
+	//    redaction methods. Post-fix, value receivers keep them in the
+	//    method set.
+	v := *src
+	assert.Equal(t, redactedValue, fmt.Sprintf("%v", v))
+	assert.Equal(t, redactedValue, fmt.Sprintf("%+v", v))
+	assert.Equal(t, redactedValue, fmt.Sprintf("%#v", v))
+	assert.Equal(t, redactedValue, v.String())
+	assert.NotContains(t, fmt.Sprintf("%+v", v), plain)
+
+	// 2. Embed by value in another struct. fmt.Sprintf reaches into
+	//    the struct field; if the redaction methods weren't on the
+	//    value method set the whole nested struct would print the
+	//    backing buf.
+	type wrapper struct {
+		Token String
+		Open  string
+	}
+	w := wrapper{Token: *src, Open: "visible"}
+	out := fmt.Sprintf("%+v", w)
+	assert.Contains(t, out, redactedValue)
+	assert.Contains(t, out, "visible")
+	assert.NotContains(t, out, plain)
+
+	// 3. JSON marshalling of a value-typed field.
+	type cfg struct {
+		Token String `json:"token"`
+	}
+	b, err := json.Marshal(cfg{Token: *src})
+	require.NoError(t, err)
+	var decoded struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.Unmarshal(b, &decoded))
+	assert.Equal(t, redactedValue, decoded.Token)
+	assert.NotContains(t, string(b), plain)
+
+	// 4. Zero-value String (never went through New) — also redacts and
+	//    does not panic. This is the variable-declared-in-config-struct
+	//    case.
+	var zero String
+	assert.Equal(t, redactedValue, zero.String())
+	assert.Equal(t, redactedValue, fmt.Sprintf("%+v", zero))
+}
+
 func TestConcurrentReadsAreSafe(t *testing.T) {
 	s := NewFromString(plain)
 	done := make(chan struct{})
