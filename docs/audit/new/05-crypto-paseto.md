@@ -68,9 +68,9 @@ Add `app.Builder.WithPASETO(provider)` analogous to `WithJWT`. Keep `WithJWT` fo
 
 ## Definition of done
 
-- [ ] Package with V4 public + V4 local types.
-- [ ] Round-trip tests + RFC-vector tests for v4.public and v4.local.
-- [ ] Audience/issuer/exp/nbf validation tests.
-- [ ] Provider with periodic refresh.
-- [ ] Builder method `WithPASETO`.
-- [ ] Recipe in `docs/ai/security.md` comparing PASETO and JWT use-cases.
+- [x] Package with V4 public + V4 local types. ✅ `8089439`
+- [x] Round-trip tests + RFC-vector tests for v4.public and v4.local. ✅ `8089439`
+- [x] Audience/issuer/exp/nbf validation tests. ✅ `8089439`
+- [x] Provider with periodic refresh (atomic key swap; previous trust set retained on refresh failure; empty-set refresh refused; `WithOnRefreshError` callback for telemetry). ✅ this PR
+- [ ] Builder method `WithPASETO` (deferred — separate Builder integration item).
+- [ ] Recipe in `docs/ai/security.md` (deferred to docs sweep).
