@@ -2,6 +2,7 @@ package reqsign
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -227,5 +228,48 @@ func TestWithVerifySignerNilUsesDefault(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("VerifyRequest should succeed when nil signer is followed by valid signer: %v", err)
+	}
+}
+
+func TestSignRequest_RejectsOversizedBody(t *testing.T) {
+	store := testStore()
+
+	body := make([]byte, 101)
+	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(body))
+
+	err := SignRequest(req, body, store, WithSignMaxBodySize(100))
+	if err == nil {
+		t.Fatal("expected ErrBodyTooLarge for oversized body, got nil")
+	}
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
+	}
+	if req.Header.Get(HeaderSignature) != "" {
+		t.Error("oversized body must not produce a signature header")
+	}
+}
+
+func TestVerifyRequest_RejectsOversizedBody(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := make([]byte, 50)
+	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(body))
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	oversized := make([]byte, 101)
+	err := VerifyRequest(req, oversized, store,
+		WithVerifySigner(signer),
+		WithVerifyMaxBodySize(100),
+	)
+	if err == nil {
+		t.Fatal("expected ErrBodyTooLarge for oversized body during verify, got nil")
+	}
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
 	}
 }

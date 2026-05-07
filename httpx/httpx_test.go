@@ -710,3 +710,115 @@ func TestDecodeJSON_EmptyBody(t *testing.T) {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
+
+// --- NewServer panic on nil handler ---
+
+func TestNewServer_PanicsOnNilHandler(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil handler")
+		}
+	}()
+	NewServer(":0", nil)
+}
+
+// --- NewHTTPClient panic on non-positive timeout ---
+
+func TestNewHTTPClient_PanicsOnZeroTimeout(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero timeout")
+		}
+	}()
+	NewHTTPClient(0, nil)
+}
+
+func TestNewHTTPClient_PanicsOnNegativeTimeout(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative timeout")
+		}
+	}()
+	NewHTTPClient(-1*time.Second, nil)
+}
+
+func TestNewTracingHTTPClient_PanicsOnZeroTimeout(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero timeout")
+		}
+	}()
+	NewTracingHTTPClient(0, nil)
+}
+
+func TestNewTracingHTTPClientWithOptions_PanicsOnZeroTimeout(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for zero timeout")
+		}
+	}()
+	NewTracingHTTPClientWithOptions(0, nil, nil)
+}
+
+// --- newKitTransport handles replaced http.DefaultTransport ---
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestNewHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("not used")
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewHTTPClient must not panic when DefaultTransport is not *http.Transport: %v", r)
+		}
+	}()
+	c := NewHTTPClient(5*time.Second, nil)
+	if c == nil || c.Transport == nil {
+		t.Fatal("expected client with transport")
+	}
+	if _, ok := c.Transport.(*http.Transport); !ok {
+		t.Fatalf("expected *http.Transport fallback, got %T", c.Transport)
+	}
+}
+
+func TestNewTracingHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("not used")
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewTracingHTTPClient must not panic when DefaultTransport is not *http.Transport: %v", r)
+		}
+	}()
+	c := NewTracingHTTPClient(5*time.Second, nil)
+	if c == nil || c.Transport == nil {
+		t.Fatal("expected client with transport")
+	}
+}
+
+func TestNewResilientHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("not used")
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewResilientHTTPClient must not panic when DefaultTransport is not *http.Transport: %v", r)
+		}
+	}()
+	c := NewResilientHTTPClient()
+	if c == nil || c.Transport == nil {
+		t.Fatal("expected client with transport")
+	}
+}

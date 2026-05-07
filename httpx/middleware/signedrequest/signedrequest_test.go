@@ -206,6 +206,22 @@ func TestWithBodyMaxSize_PanicsOnNonPositive(t *testing.T) {
 	assert.Panics(t, func() { WithBodyMaxSize(-1) })
 }
 
+func TestWithRequiredHeaders_PanicsOnEmptyName(t *testing.T) {
+	assert.Panics(t, func() { WithRequiredHeaders("") })
+}
+
+func TestWithRequiredHeaders_PanicsOnInvalidName(t *testing.T) {
+	// Space is not a valid HTTP header field name character (RFC 7230).
+	assert.Panics(t, func() { WithRequiredHeaders("Bad Header") })
+	// Colon is also disallowed.
+	assert.Panics(t, func() { WithRequiredHeaders("Bad:Header") })
+}
+
+func TestWithRequiredHeaders_PanicsWhenAnyNameInvalid(t *testing.T) {
+	// First name is valid; second is empty. Whole call must panic.
+	assert.Panics(t, func() { WithRequiredHeaders("X-Tenant-ID", "") })
+}
+
 func TestMemoryNonceStore_Sweep(t *testing.T) {
 	now := time.Now()
 	s := NewMemoryNonceStore(time.Second)

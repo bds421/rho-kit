@@ -93,6 +93,14 @@ func TestSign_NoBody(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestSign_WithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestSign_WithNonceFn_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithNonceFn(nil) })
+}
+
 func TestSign_IncludeHeaders_BoundIntoSignature(t *testing.T) {
 	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
 	resolver := func(string) ([]byte, error) { return []byte(secret), nil }

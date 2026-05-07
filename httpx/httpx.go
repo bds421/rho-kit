@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -41,8 +42,17 @@ func WithIdleConnTimeout(d time.Duration) ClientOption {
 }
 
 // newKitTransport clones http.DefaultTransport and applies kit-wide overrides.
+// Processes that replace http.DefaultTransport with a custom RoundTripper
+// (otelhttp wrappers, test doubles) cause the type assertion to fail; in that
+// case fall back to a fresh *http.Transport with stdlib-style defaults so
+// construction stays panic-free.
 func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = tr.Clone()
+	} else {
+		transport = newFallbackTransport()
+	}
 	transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 	if tlsConfig != nil {
 		transport.TLSClientConfig = tlsConfig
@@ -51,6 +61,21 @@ func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
 		transport.IdleConnTimeout = cfg.idleConnTimeout
 	}
 	return transport
+}
+
+func newFallbackTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 // NewHTTPClient returns an *http.Client with the given timeout and optional TLS
@@ -65,6 +90,9 @@ func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
 // Use [WithIdleConnTimeout] to override the stdlib 90s idle-connection cap
 // when fronting a load balancer with a tighter idle timeout.
 func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientOption) *http.Client {
+	if timeout <= 0 {
+		panic("httpx: NewHTTPClient requires a positive timeout — pass an explicit upper bound to avoid hung requests")
+	}
 	var cfg clientConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -82,6 +110,9 @@ func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientO
 // kit-level ClientOption values must be applied via the variadic ClientOption
 // returned by [WithClientOptions].
 func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
+	if timeout <= 0 {
+		panic("httpx: NewTracingHTTPClient requires a positive timeout — pass an explicit upper bound to avoid hung requests")
+	}
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig, clientConfig{}), opts...),
@@ -92,6 +123,9 @@ func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...
 // that accepts kit-level [ClientOption] values (e.g. [WithIdleConnTimeout])
 // alongside the OTel transport options.
 func NewTracingHTTPClientWithOptions(timeout time.Duration, tlsConfig *tls.Config, kitOpts []ClientOption, otelOpts ...otelhttp.Option) *http.Client {
+	if timeout <= 0 {
+		panic("httpx: NewTracingHTTPClientWithOptions requires a positive timeout — pass an explicit upper bound to avoid hung requests")
+	}
 	var cfg clientConfig
 	for _, opt := range kitOpts {
 		opt(&cfg)
@@ -140,6 +174,9 @@ func WithErrorLog(l *log.Logger) ServerOption {
 // structured logger rather than the global "log" package — without this,
 // raw client RemoteAddrs leak to stdout and pollute SIEMs.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
+	if handler == nil {
+		panic("httpx: NewServer requires a non-nil handler — net/http would otherwise serve http.DefaultServeMux and expose globally-registered handlers")
+	}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,

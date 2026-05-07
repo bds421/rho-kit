@@ -41,6 +41,10 @@ var ErrKeyNotFound = errors.New("reqsign: key ID not found")
 // signature provided in the request.
 var ErrSignatureMismatch = errors.New("reqsign: signature mismatch")
 
+// ErrBodyTooLarge is returned when a body exceeds the configured maximum size
+// for signing or verification.
+var ErrBodyTooLarge = errors.New("reqsign: body exceeds configured maximum size")
+
 // defaultSigner is a package-level Signer reused across calls.
 // signing.Signer is safe for concurrent use (it only carries a clock function).
 var defaultSigner = signing.NewSigner()
@@ -150,6 +154,10 @@ func SignRequest(req *http.Request, body []byte, store signing.KeyStore, opts ..
 		o(&cfg)
 	}
 
+	if int64(len(body)) > cfg.maxBodySize {
+		return fmt.Errorf("%w: %d > %d", ErrBodyTooLarge, len(body), cfg.maxBodySize)
+	}
+
 	// Use unsafe access when available to avoid allocation on the hot path.
 	var keyID string
 	var secret []byte
@@ -175,6 +183,10 @@ func SignRequest(req *http.Request, body []byte, store signing.KeyStore, opts ..
 // verifyRequestWithConfig verifies a request using a pre-built verifyConfig.
 // This avoids re-applying options on every request in the middleware hot path.
 func verifyRequestWithConfig(req *http.Request, body []byte, store signing.KeyStore, cfg verifyConfig) error {
+	if int64(len(body)) > cfg.maxBodySize {
+		return fmt.Errorf("%w: %d > %d", ErrBodyTooLarge, len(body), cfg.maxBodySize)
+	}
+
 	sig := req.Header.Get(HeaderSignature)
 	tsStr := req.Header.Get(HeaderTimestamp)
 	keyID := req.Header.Get(HeaderKeyID)

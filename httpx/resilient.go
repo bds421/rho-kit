@@ -110,7 +110,12 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 		o(&cfg)
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = tr.Clone()
+	} else {
+		transport = newFallbackTransport()
+	}
 	if cfg.tlsConfig != nil {
 		transport.TLSClientConfig = cfg.tlsConfig
 	}

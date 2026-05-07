@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // Header names. Exported so client-side packages can use the same constants.
@@ -104,7 +106,17 @@ func WithMaxClockSkew(d time.Duration) Option {
 // signing string. Names are case-insensitive; values are taken
 // verbatim from the request. The middleware rejects requests that
 // omit any required header.
+//
+// Panics if any name is empty or fails RFC 7230 header-field-name
+// validation — an invalid name would force every request to fail with
+// a confusing missing-header error and almost certainly indicates a
+// wiring bug.
 func WithRequiredHeaders(names ...string) Option {
+	for _, n := range names {
+		if !httpguts.ValidHeaderFieldName(n) {
+			panic(fmt.Sprintf("signedrequest: WithRequiredHeaders requires a valid HTTP header field name (got %q)", n))
+		}
+	}
 	return func(c *config) {
 		for _, n := range names {
 			c.requiredHeaders = append(c.requiredHeaders, strings.ToLower(n))

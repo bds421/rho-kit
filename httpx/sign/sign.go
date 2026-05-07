@@ -65,12 +65,24 @@ func WithBodyMaxSize(n int64) Option {
 }
 
 // WithClock overrides the time source for tests.
+//
+// Panics if now is nil — RoundTrip would otherwise dereference a nil func
+// on every outbound request.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("sign: WithClock requires a non-nil time source")
+	}
 	return func(c *config) { c.now = now }
 }
 
 // WithNonceFn overrides the nonce generator for tests.
+//
+// Panics if fn is nil — RoundTrip would otherwise dereference a nil func
+// on every outbound request.
 func WithNonceFn(fn func() string) Option {
+	if fn == nil {
+		panic("sign: WithNonceFn requires a non-nil nonce generator")
+	}
 	return func(c *config) { c.nonceFn = fn }
 }
 
