@@ -11,6 +11,8 @@ use (
 	./core/apperror
 	./core/config
 	./core/contextutil
+	./core/randstr
+	./core/safecast
 	./core/secret
 	./core/tenant
 	./core/validate
@@ -55,7 +57,9 @@ use (
 	./httpx/middleware/budget
 	./httpx/middleware/ratelimit/tenant
 	./httpx/middleware/signedrequest
+	./httpx/middleware/signedrequest/redis
 	./httpx/sign
+	./httpx/urlutil
 	./infra/leaderelection
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/redislock
@@ -88,8 +92,8 @@ use (
 	./observability/pprof
 	./observability/promutil
 	./observability/promutil/labelguard
-	./observability/runtimemetrics
 	./observability/redmetrics
+	./observability/runtimemetrics
 	./observability/slo
 	./observability/tracing
 	./resilience/circuitbreaker
