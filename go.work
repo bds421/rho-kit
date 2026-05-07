@@ -8,6 +8,7 @@ use (
 	./core/apperror
 	./core/config
 	./core/contextutil
+	./core/secret
 	./core/validate
 	./crypto
 	./data/cache
