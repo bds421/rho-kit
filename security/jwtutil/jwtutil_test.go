@@ -183,6 +183,42 @@ func TestVerify_ValidToken(t *testing.T) {
 	}
 }
 
+func TestVerify_MissingExp(t *testing.T) {
+	// Tokens without exp must be rejected by default — non-expiring
+	// bearer tokens are indistinguishable from a stolen credential.
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+	})
+
+	_, err := ks.Verify(token, now)
+	if err == nil {
+		t.Fatal("expected error for token missing exp claim")
+	}
+}
+
+func TestVerify_FutureExp(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(1 * time.Hour).Unix(),
+	})
+
+	claims, err := ks.Verify(token, now)
+	if err != nil {
+		t.Fatalf("future-exp token must verify: %v", err)
+	}
+	if claims.ExpiresAt == 0 {
+		t.Fatal("ExpiresAt must be populated for accepted token")
+	}
+}
+
 func TestVerify_ExpiredToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
@@ -420,6 +456,38 @@ func TestToStringSlice_Other(t *testing.T) {
 	out := toStringSlice("not-a-slice")
 	if out != nil {
 		t.Errorf("toStringSlice(string) = %v, want nil", out)
+	}
+}
+
+func TestDefaultHTTPClient_RetainsTransportDefaults(t *testing.T) {
+	// Regression: defaultHTTPClient previously installed a bare
+	// http.Transport that lost proxy handling, dialer timeouts, and the
+	// idle-conn pool. It now clones http.DefaultTransport.
+	c := defaultHTTPClient()
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", c.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Error("Proxy must be inherited from DefaultTransport (env-aware)")
+	}
+	if tr.DialContext == nil {
+		t.Error("DialContext must be inherited from DefaultTransport")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Error("TLSHandshakeTimeout must be inherited from DefaultTransport")
+	}
+	if tr.IdleConnTimeout == 0 {
+		t.Error("IdleConnTimeout must be inherited from DefaultTransport")
+	}
+	if tr.MaxIdleConns == 0 {
+		t.Error("MaxIdleConns must be inherited from DefaultTransport")
+	}
+	if tr.MaxResponseHeaderBytes != 64*1024 {
+		t.Errorf("MaxResponseHeaderBytes = %d, want 65536 (kit override)", tr.MaxResponseHeaderBytes)
+	}
+	if c.Timeout != defaultHTTPTimeout {
+		t.Errorf("client Timeout = %v, want %v", c.Timeout, defaultHTTPTimeout)
 	}
 }
 

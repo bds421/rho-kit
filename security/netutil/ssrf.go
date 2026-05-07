@@ -125,6 +125,15 @@ var privateIPv6Ranges = func() []net.IPNet {
 // IsPrivateIP reports whether ip is in a private, reserved, or otherwise
 // non-routable address range.
 func IsPrivateIP(ip net.IP) bool {
+	// Unspecified (0.0.0.0 and ::) must always be rejected — dialing them
+	// targets local-host wildcard semantics regardless of address family,
+	// which trivially defeats the SSRF boundary. The IPv4 0.0.0.0/8 entry
+	// in privateIPv4Ranges already catches the v4 case, but checking
+	// IsUnspecified() up front documents the intent and removes any
+	// reliance on ordering of the v4 range loop.
+	if ip.IsUnspecified() {
+		return true
+	}
 	if ip4 := ip.To4(); ip4 != nil {
 		for _, r := range privateIPv4Ranges {
 			if r.Contains(ip4) {

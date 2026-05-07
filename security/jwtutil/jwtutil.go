@@ -83,13 +83,16 @@ func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 }
 
 // Verify parses and verifies a compact-serialized JWT (header.payload.signature).
-// It validates the signature, expiration, and not-before claims.
+// It validates the signature, expiration, and not-before claims. Tokens
+// without an `exp` claim are rejected — non-expiring bearer tokens are
+// indistinguishable from a stolen credential and have no place in this kit.
 func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	parseOpts := []jwt.ParseOption{
 		jwt.WithKeySet(ks.set, jws.WithInferAlgorithmFromKey(true)),
 		jwt.WithValidate(true),
 		jwt.WithAcceptableSkew(clockSkew),
 		jwt.WithClock(jwt.ClockFunc(func() time.Time { return now })),
+		jwt.WithRequiredClaim(jwt.ExpirationKey),
 	}
 	if ks.ExpectedIssuer != "" {
 		parseOpts = append(parseOpts, jwt.WithIssuer(ks.ExpectedIssuer))
@@ -102,6 +105,14 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 		return nil, err
 	}
 
+	exp, hasExp := tok.Expiration()
+	if !hasExp || exp.IsZero() {
+		// Belt-and-braces: WithRequiredClaim already enforces this, but
+		// re-check after parse so a future jwx upgrade that loosens the
+		// validator cannot silently re-introduce non-expiring tokens.
+		return nil, errors.New("missing exp claim")
+	}
+
 	sub, _ := tok.Subject()
 	if sub == "" {
 		return nil, errors.New("missing sub claim")
@@ -109,14 +120,12 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 
 	iss, _ := tok.Issuer()
 	claims := &Claims{
-		Subject: sub,
-		Issuer:  iss,
+		Subject:   sub,
+		Issuer:    iss,
+		ExpiresAt: exp.Unix(),
 	}
 	if iat, ok := tok.IssuedAt(); ok {
 		claims.IssuedAt = iat.Unix()
-	}
-	if exp, ok := tok.Expiration(); ok {
-		claims.ExpiresAt = exp.Unix()
 	}
 	if nbf, ok := tok.NotBefore(); ok {
 		claims.NotBefore = nbf.Unix()
@@ -327,17 +336,23 @@ func (p *Provider) Run(ctx context.Context) {
 }
 
 func defaultHTTPClient() *http.Client {
+	// Clone http.DefaultTransport so we keep its proxy handling, dialer
+	// timeouts, TLS handshake timeout, idle-conn pool, and HTTP/2 attempt
+	// — replacing it wholesale loses every one of those production
+	// defaults. We only tighten one knob:
+	//
 	// MaxResponseHeaderBytes caps the JWKS response header size at 64 KB.
-	// The default of 0 means "use net/http's default" which is 1 MB —
-	// plenty for a real JWKS service but enough room for a hostile JWKS
-	// endpoint to ship pathological headers (e.g., a SET-COOKIE flood)
-	// that bloats memory under attacker influence. The body cap is
-	// enforced separately at fetch time (1 MB via io.LimitReader).
+	// The Go default of 0 means "1 MB", plenty for a real JWKS service
+	// but enough room for a hostile JWKS endpoint to ship pathological
+	// headers (e.g., a SET-COOKIE flood) that bloats memory under
+	// attacker influence. The body cap is enforced separately at fetch
+	// time (1 MB via io.LimitReader).
+	transport, _ := http.DefaultTransport.(*http.Transport)
+	clone := transport.Clone()
+	clone.MaxResponseHeaderBytes = 64 * 1024
 	return &http.Client{
-		Timeout: defaultHTTPTimeout,
-		Transport: &http.Transport{
-			MaxResponseHeaderBytes: 64 * 1024,
-		},
+		Timeout:   defaultHTTPTimeout,
+		Transport: clone,
 	}
 }
 

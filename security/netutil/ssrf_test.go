@@ -38,6 +38,8 @@ func TestIsPrivateIP(t *testing.T) {
 		{"6to4 relay", "192.88.99.1", true},
 		{"public IP", "8.8.8.8", false},
 		{"public IP 2", "1.1.1.1", false},
+		{"unspecified v4", "0.0.0.0", true},
+		{"unspecified v6", "::", true},
 		{"loopback v6", "::1", true},
 		{"link-local v6", "fe80::1", true},
 		{"multicast v6", "ff02::1", true},
