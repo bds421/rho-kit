@@ -165,6 +165,7 @@ func TestStore_MarkPublished(t *testing.T) {
 	ctx := context.Background()
 
 	entry := newEntry(t)
+	entry.Status = outbox.StatusProcessing
 	require.NoError(t, store.Insert(ctx, entry))
 
 	publishedAt := time.Now().UTC()
@@ -176,12 +177,41 @@ func TestStore_MarkPublished(t *testing.T) {
 	assert.Equal(t, int64(0), count)
 }
 
+func TestStore_MarkPublished_NotFound(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	missing := uuid.New().String()
+	err := store.MarkPublished(ctx, missing, time.Now().UTC())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrNotFound,
+		"marking a non-existent id must surface ErrNotFound, not silent zero-row success")
+}
+
+func TestStore_MarkPublished_StaleState(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	entry := newEntry(t)
+	require.NoError(t, store.Insert(ctx, entry))
+
+	// Row exists but is in "pending" — simulates a concurrent stale-recovery
+	// reset that happened between FetchPending claim and MarkPublished.
+	err := store.MarkPublished(ctx, entry.ID.String(), time.Now().UTC())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrStaleState,
+		"marking a row no longer in processing state must return ErrStaleState")
+}
+
 func TestStore_MarkFailed(t *testing.T) {
 	db := testDB(t)
 	store := gormstore.New(db)
 	ctx := context.Background()
 
 	entry := newEntry(t)
+	entry.Status = outbox.StatusProcessing
 	require.NoError(t, store.Insert(ctx, entry))
 
 	err := store.MarkFailed(ctx, entry.ID.String(), "connection refused")
@@ -190,6 +220,74 @@ func TestStore_MarkFailed(t *testing.T) {
 	count, err := store.CountPending(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
+}
+
+func TestStore_MarkFailed_NotFound(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	err := store.MarkFailed(ctx, uuid.New().String(), "boom")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrNotFound)
+}
+
+func TestStore_MarkFailed_StaleState(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	entry := newEntry(t)
+	require.NoError(t, store.Insert(ctx, entry))
+
+	err := store.MarkFailed(ctx, entry.ID.String(), "boom")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrStaleState)
+}
+
+func TestStore_Heartbeat_ProtectsLongPublish(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	// Insert an entry already claimed (processing) with a very old
+	// updated_at. Without heartbeat, ResetStaleProcessing(5min) would
+	// reset it. Heartbeat must refresh updated_at so the same call
+	// leaves the row alone.
+	e := newEntry(t)
+	e.Status = outbox.StatusProcessing
+	require.NoError(t, store.Insert(ctx, e))
+
+	staleTime := time.Now().UTC().Add(-10 * time.Minute)
+	require.NoError(t, db.Exec(
+		"UPDATE outbox_entries SET updated_at = ? WHERE id = ?",
+		staleTime, e.ID.String()).Error)
+
+	touched, err := store.Heartbeat(ctx, []string{e.ID.String()})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), touched)
+
+	reset, err := store.ResetStaleProcessing(ctx, 5*time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), reset,
+		"heartbeated row must NOT be reset by stale recovery")
+}
+
+func TestStore_Heartbeat_OnlyTouchesProcessingRows(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	// A row already moved to published must NOT be resurrected by Heartbeat.
+	e := newEntry(t)
+	e.Status = outbox.StatusPublished
+	now := time.Now().UTC()
+	e.PublishedAt = &now
+	require.NoError(t, store.Insert(ctx, e))
+
+	touched, err := store.Heartbeat(ctx, []string{e.ID.String()})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), touched)
 }
 
 func TestStore_IncrementAttempts(t *testing.T) {

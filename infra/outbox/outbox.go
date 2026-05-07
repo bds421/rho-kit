@@ -3,11 +3,26 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound indicates that the targeted outbox row no longer exists when
+// a status update was attempted. Callers (typically the relay) should treat
+// this as an unexpected condition: the row was deleted out from under the
+// publish loop, e.g. by retention cleanup or external surgery.
+var ErrNotFound = errors.New("outbox: entry not found")
+
+// ErrStaleState indicates that the targeted outbox row exists but is no
+// longer in the expected state for the requested update. The most common
+// cause is concurrent stale recovery resetting a long-running processing
+// row back to pending while the original relay was still publishing.
+// Returning a typed error lets the relay detect the race instead of
+// silently swallowing a no-op UPDATE.
+var ErrStaleState = errors.New("outbox: entry not in expected state")
 
 // Publisher publishes outbox entries to an external system.
 // Implementations exist for messaging (AMQP), streaming (Redis Streams),

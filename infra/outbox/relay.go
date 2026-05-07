@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -22,6 +23,11 @@ const (
 	// of retries before the row is marked permanently failed.
 	defaultBackoffBase = 2 * time.Second
 	defaultBackoffMax  = 5 * time.Minute
+
+	// minHeartbeatInterval guards against pathological staleDuration values
+	// that would heartbeat tighter than the database round-trip, hammering
+	// the row updated_at column for no benefit.
+	minHeartbeatInterval = 100 * time.Millisecond
 )
 
 // Relay polls the outbox table and publishes pending entries via a Publisher.
@@ -38,6 +44,8 @@ type Relay struct {
 	maxAttempts          int
 	maxConcurrentPublish int
 	retention            time.Duration
+	staleDuration        time.Duration
+	publishTimeout       time.Duration
 
 	cancel    context.CancelFunc
 	mu        sync.Mutex
@@ -94,6 +102,44 @@ func WithMetrics(m *Metrics) RelayOption {
 	}
 }
 
+// WithStaleDuration sets how long a row may remain in "processing" state
+// before [Store.ResetStaleProcessing] resets it back to pending. Default:
+// 5 minutes. The relay heartbeats processing rows roughly every
+// staleDuration/3 while a publish is in flight, so legitimate long
+// publishes do not get reset by another relay instance. Operators that
+// know their publisher backend has a tighter or looser tail latency can
+// tune this knob — but [WithPublishTimeout] should always be set strictly
+// below staleDuration so a hung publisher is detected before the row is
+// eligible for stale recovery.
+//
+// Values <= 0 are ignored (default preserved).
+func WithStaleDuration(d time.Duration) RelayOption {
+	return func(r *Relay) {
+		if d > 0 {
+			r.staleDuration = d
+		}
+	}
+}
+
+// WithPublishTimeout bounds each Publisher.Publish call with a derived
+// context deadline. When zero (the default) the relay does not impose a
+// deadline and a hung publisher pins the row in processing until the
+// stale-recovery timer fires.
+//
+// Setting publishTimeout < staleDuration is REQUIRED for at-most-once
+// duplicate avoidance: if the publisher legitimately exceeds
+// staleDuration, another relay can pick the row up and republish it.
+// The relay logs a startup warning when publishTimeout >= staleDuration.
+//
+// Values <= 0 are ignored (no timeout applied).
+func WithPublishTimeout(d time.Duration) RelayOption {
+	return func(r *Relay) {
+		if d > 0 {
+			r.publishTimeout = d
+		}
+	}
+}
+
 // WithMaxConcurrentPublishes caps the number of in-flight Publisher calls
 // per poll batch. Default: 1 (serial — preserves the historical
 // FIFO-on-the-wire behaviour). Increase for high-throughput workloads
@@ -138,9 +184,15 @@ func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...Rel
 		batchSize:            defaultBatchSize,
 		maxAttempts:          defaultMaxAttempts,
 		retention:            defaultRetention,
+		staleDuration:        defaultStaleDuration,
 	}
 	for _, opt := range opts {
 		opt(r)
+	}
+	if r.publishTimeout > 0 && r.publishTimeout >= r.staleDuration {
+		r.logger.Warn("outbox relay: publish_timeout >= stale_duration — long publishes may be reset before completing, causing duplicate sends",
+			"publish_timeout", r.publishTimeout,
+			"stale_duration", r.staleDuration)
 	}
 	return r
 }
@@ -165,6 +217,8 @@ func (r *Relay) Start(ctx context.Context) error {
 		"batch_size", r.batchSize,
 		"max_attempts", r.maxAttempts,
 		"retention", r.retention,
+		"stale_duration", r.staleDuration,
+		"publish_timeout", r.publishTimeout,
 	)
 
 	// Initial poll immediately on start.
@@ -285,8 +339,18 @@ func (r *Relay) poll(ctx context.Context) {
 
 // publishEntry attempts to publish a single entry via the Publisher.
 func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
+	heartbeatStop := r.startHeartbeat(ctx, entry.ID.String())
+	defer heartbeatStop()
+
+	publishCtx := ctx
+	if r.publishTimeout > 0 {
+		var cancel context.CancelFunc
+		publishCtx, cancel = context.WithTimeout(ctx, r.publishTimeout)
+		defer cancel()
+	}
+
 	start := time.Now()
-	err := r.publisher.Publish(ctx, entry)
+	err := r.publisher.Publish(publishCtx, entry)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -298,6 +362,16 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 
 	now := time.Now().UTC()
 	if markErr := r.store.MarkPublished(ctx, entry.ID.String(), now); markErr != nil {
+		// ErrStaleState means a concurrent stale-recovery reset the row to
+		// pending while the publish was in flight. The message has been sent
+		// downstream once already; the next poll will pick the same row up
+		// and publish it again. Log loudly so operators can tune
+		// stale_duration / publish_timeout.
+		if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
+			r.logger.Error("outbox relay: mark published lost row — likely concurrent stale recovery, possible duplicate publish",
+				"entry_id", entry.ID, "error", markErr)
+			return
+		}
 		r.logger.Error("outbox relay: mark published failed",
 			"entry_id", entry.ID, "error", markErr)
 		return
@@ -313,6 +387,45 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 	)
 }
 
+// startHeartbeat refreshes the row's updated_at timestamp on a fixed
+// cadence so a long-running publish does not get reset to pending by
+// another relay's stale-recovery sweep. Returns a stop function the
+// caller MUST defer.
+//
+// The heartbeat fires every staleDuration/3 (clamped at
+// minHeartbeatInterval) — three heartbeats per stale window keeps a
+// publish alive even if one heartbeat round-trip transiently fails.
+func (r *Relay) startHeartbeat(ctx context.Context, id string) func() {
+	interval := r.staleDuration / 3
+	if interval < minHeartbeatInterval {
+		interval = minHeartbeatInterval
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := r.store.Heartbeat(ctx, []string{id}); err != nil {
+					r.logger.Warn("outbox relay: heartbeat failed",
+						"entry_id", id, "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stopCh)
+		<-doneCh
+	}
+}
+
 // handlePublishError increments attempts or marks the entry as failed.
 func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr error) {
 	nextAttempt := entry.Attempts + 1
@@ -320,8 +433,13 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 
 	if nextAttempt >= r.maxAttempts {
 		if markErr := r.store.MarkFailed(ctx, entry.ID.String(), errMsg); markErr != nil {
-			r.logger.Error("outbox relay: mark failed error",
-				"entry_id", entry.ID, "error", markErr)
+			if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
+				r.logger.Error("outbox relay: mark failed lost row — likely concurrent stale recovery",
+					"entry_id", entry.ID, "error", markErr)
+			} else {
+				r.logger.Error("outbox relay: mark failed error",
+					"entry_id", entry.ID, "error", markErr)
+			}
 		}
 		r.recordError()
 		r.logger.Error("outbox relay: entry failed permanently",
@@ -355,7 +473,7 @@ func (r *Relay) recoverStale(ctx context.Context) {
 		return
 	}
 
-	reset, err := r.store.ResetStaleProcessing(ctx, defaultStaleDuration)
+	reset, err := r.store.ResetStaleProcessing(ctx, r.staleDuration)
 	if err != nil {
 		r.logger.Error("outbox relay: recover stale failed", "error", err)
 		return
@@ -363,7 +481,7 @@ func (r *Relay) recoverStale(ctx context.Context) {
 
 	if reset > 0 {
 		r.logger.Warn("outbox relay: recovered stale processing entries",
-			"count", reset, "stale_duration", defaultStaleDuration)
+			"count", reset, "stale_duration", r.staleDuration)
 	}
 }
 

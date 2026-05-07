@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -28,8 +29,15 @@ type MySQLDriver struct{}
 func (MySQLDriver) Name() string { return "mysql" }
 
 // Open creates a GORM database connection to MySQL/MariaDB using the unified
-// config. It registers TLS when clientTLS is non-nil and applies connection
-// pool settings.
+// config. It registers TLS when clientTLS is non-nil OR when
+// Config.Options["tls"] requests a registered config; in both cases the
+// resulting DSN includes the corresponding tls= parameter.
+//
+// On every error path that occurs after a TLS registration the registration
+// is released (refcount decremented) so failed opens do not leak global
+// driver entries. Successful opens "commit" the registration: it stays
+// alive for the lifetime of the connection and is released when the
+// caller invokes [ReleaseTLS].
 func (MySQLDriver) Open(
 	cfg sqldb.Config,
 	pool sqldb.PoolConfig,
@@ -38,14 +46,34 @@ func (MySQLDriver) Open(
 ) (*gorm.DB, error) {
 	dsn := buildMySQLDSN(cfg)
 
-	if clientTLS != nil {
+	tlsOpt := strings.ToLower(cfg.Option("tls", ""))
+	var registeredTLS bool
+	switch {
+	case clientTLS != nil:
 		tlsKey, err := registerTLSConfigDedup(clientTLS)
 		if err != nil {
 			return nil, fmt.Errorf("register mysql TLS config: %w", err)
 		}
+		registeredTLS = true
 		dsn += "&tls=" + url.QueryEscape(tlsKey)
 		logger.Info("database TLS enabled")
+	case tlsOpt == "true":
+		return nil, fmt.Errorf("mysql: Config.Options[\"tls\"]=true requires a registered *tls.Config; pass one via WithTLS or use a registered custom-* name")
+	case tlsOpt == "" || tlsOpt == "false":
+		// Plain TCP — DSN already complete.
+	default:
+		// Driver builtins ("skip-verify", "preferred") and caller-
+		// registered "custom-*" names pass through verbatim.
+		dsn += "&tls=" + url.QueryEscape(tlsOpt)
+		logger.Info("database TLS enabled", "tls", tlsOpt)
 	}
+
+	committed := false
+	defer func() {
+		if registeredTLS && !committed {
+			ReleaseTLS(clientTLS)
+		}
+	}()
 
 	logLevel := gormlogger.Warn
 	if cfg.LogLevel == "info" {
@@ -70,6 +98,7 @@ func (MySQLDriver) Open(
 		return nil, err
 	}
 
+	committed = true
 	return db, nil
 }
 

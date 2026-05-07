@@ -167,6 +167,13 @@ func New(cfg sqldb.MySQLConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, o
 		logger.Info("database TLS enabled")
 	}
 
+	committed := false
+	defer func() {
+		if tlsEnabled && !committed {
+			ReleaseTLS(o.tlsConfig)
+		}
+	}()
+
 	logLevel := gormlogger.Warn
 	if cfg.LogLevel == "info" {
 		logLevel = gormlogger.Info
@@ -207,5 +214,6 @@ func New(cfg sqldb.MySQLConfig, poolCfg sqldb.PoolConfig, logger *slog.Logger, o
 
 	logger.Info("database connected", "host", cfg.Host, "name", cfg.Name)
 
+	committed = true
 	return db, nil
 }

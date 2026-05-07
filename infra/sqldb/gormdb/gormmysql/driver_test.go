@@ -3,6 +3,8 @@ package gormmysql
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/bds421/rho-kit/infra/sqldb"
@@ -141,6 +143,70 @@ func TestReleaseTLS_FingerprintEquivalence(t *testing.T) {
 	tlsRegistryMu.Unlock()
 	if stillThere {
 		t.Error("entry still present; ReleaseTLS via equivalent cfg did not match by fingerprint")
+	}
+}
+
+// TestMySQLDriver_Open_TLSTrueWithoutClientConfigErrors pins the high-severity
+// finding: Config.Options["tls"]=true used to be treated as enabled by
+// IsTLSEnabled while the DSN omitted tls=, so the connection silently
+// went plaintext. The fix rejects that combination at Open time when no
+// *tls.Config has been supplied.
+func TestMySQLDriver_Open_TLSTrueWithoutClientConfigErrors(t *testing.T) {
+	cfg := sqldb.Config{
+		Host: "localhost", Port: 3306,
+		User: "u", Password: "p", Name: "db",
+		Options: map[string]string{"tls": "true"},
+	}
+	_, err := MySQLDriver{}.Open(cfg, sqldb.DefaultPool(), slog.Default(), nil)
+	if err == nil {
+		t.Fatal("expected error for tls=true without registered TLS config")
+	}
+	if !strings.Contains(err.Error(), "tls") {
+		t.Errorf("error %q should mention TLS", err.Error())
+	}
+}
+
+// TestMySQLDriver_Open_ReleasesTLSOnFailure pins the medium-severity
+// registry-leak finding: an Open that fails after registerTLSConfigDedup
+// (host unreachable, ping timeout, etc.) used to leak the TLS registry
+// entry forever. With the fix, every error path after registration
+// releases the entry.
+func TestMySQLDriver_Open_ReleasesTLSOnFailure(t *testing.T) {
+	cfg := sqldb.Config{
+		// Port 1 reliably refuses on every platform — gorm.Open will
+		// fail (or PingContext will), exercising the failure path.
+		Host: "127.0.0.1", Port: 1,
+		User: "u", Password: "p", Name: "db",
+	}
+	tlsCfg := &tls.Config{ServerName: "leak.example.test", RootCAs: x509.NewCertPool()}
+
+	fp := tlsFingerprint(tlsCfg)
+
+	_, err := MySQLDriver{}.Open(cfg, sqldb.DefaultPool(), slog.Default(), tlsCfg)
+	if err == nil {
+		t.Fatal("expected open to fail against unreachable host")
+	}
+
+	tlsRegistryMu.Lock()
+	_, leaked := tlsRegistry[fp]
+	tlsRegistryMu.Unlock()
+	if leaked {
+		t.Error("TLS registry entry leaked after failed Open")
+	}
+}
+
+// TestMySQLDriver_Open_PassesThroughTLSBuiltins ensures driver builtins
+// like skip-verify and preferred are appended to the DSN verbatim
+// without interacting with the registry.
+func TestBuildMySQLDSN_TLSBuiltinPassThrough(t *testing.T) {
+	cfg := sqldb.Config{
+		Host: "h", Port: 3306, User: "u", Password: "p", Name: "db",
+		Options: map[string]string{"tls": "skip-verify"},
+	}
+	// buildMySQLDSN itself does NOT add tls= — that happens in Open.
+	got := buildMySQLDSN(cfg)
+	if strings.Contains(got, "tls=") {
+		t.Errorf("buildMySQLDSN must not emit tls=, got %q", got)
 	}
 }
 

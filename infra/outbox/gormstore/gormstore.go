@@ -36,6 +36,7 @@ package gormstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -200,11 +201,16 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	return toEntries(rows), nil
 }
 
-// MarkPublished updates the entry status to published.
+// MarkPublished updates the entry status to published. The UPDATE is
+// guarded by status='processing' so a concurrent stale-recovery that
+// reset the row to pending no longer matches: callers receive
+// [outbox.ErrStaleState] (row exists but moved out of processing) or
+// [outbox.ErrNotFound] (row deleted entirely) instead of a silent
+// zero-row success.
 func (s *Store) MarkPublished(ctx context.Context, id string, publishedAt time.Time) error {
 	result := s.db.WithContext(ctx).
 		Model(&entry{}).
-		Where("id = ?", id).
+		Where("id = ? AND status = ?", id, outbox.StatusProcessing).
 		Updates(map[string]any{
 			"status":       outbox.StatusPublished,
 			"published_at": publishedAt,
@@ -212,14 +218,19 @@ func (s *Store) MarkPublished(ctx context.Context, id string, publishedAt time.T
 	if result.Error != nil {
 		return fmt.Errorf("gormstore: mark published %s: %w", id, result.Error)
 	}
+	if result.RowsAffected == 0 {
+		return s.classifyMissing(ctx, id, "mark published")
+	}
 	return nil
 }
 
-// MarkFailed updates the entry status to failed.
+// MarkFailed updates the entry status to failed. Like [Store.MarkPublished]
+// it requires the row to be in "processing" state so a concurrent stale
+// reset surfaces as [outbox.ErrStaleState] rather than silent success.
 func (s *Store) MarkFailed(ctx context.Context, id string, lastError string) error {
 	result := s.db.WithContext(ctx).
 		Model(&entry{}).
-		Where("id = ?", id).
+		Where("id = ? AND status = ?", id, outbox.StatusProcessing).
 		Updates(map[string]any{
 			"status":     outbox.StatusFailed,
 			"last_error": lastError,
@@ -227,7 +238,48 @@ func (s *Store) MarkFailed(ctx context.Context, id string, lastError string) err
 	if result.Error != nil {
 		return fmt.Errorf("gormstore: mark failed %s: %w", id, result.Error)
 	}
+	if result.RowsAffected == 0 {
+		return s.classifyMissing(ctx, id, "mark failed")
+	}
 	return nil
+}
+
+// Heartbeat refreshes updated_at on processing rows matching ids so that
+// [Store.ResetStaleProcessing] does not reset a row whose publish is
+// still in flight. Only rows currently in "processing" state are touched
+// — rows already moved to published/failed stay put.
+func (s *Store) Heartbeat(ctx context.Context, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	result := s.db.WithContext(ctx).
+		Model(&entry{}).
+		Where("id IN ? AND status = ?", ids, outbox.StatusProcessing).
+		Update("updated_at", now)
+	if result.Error != nil {
+		return 0, fmt.Errorf("gormstore: heartbeat: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// classifyMissing distinguishes "row never existed" (ErrNotFound) from
+// "row exists but is no longer in processing state" (ErrStaleState) so
+// the relay can log the latter as a stale-recovery race rather than a
+// generic database error.
+func (s *Store) classifyMissing(ctx context.Context, id, op string) error {
+	var existing entry
+	if err := s.db.WithContext(ctx).
+		Select("status").
+		Where("id = ?", id).
+		Take(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("gormstore: %s %s: %w", op, id, outbox.ErrNotFound)
+		}
+		return fmt.Errorf("gormstore: %s %s: classify: %w", op, id, err)
+	}
+	return fmt.Errorf("gormstore: %s %s (current status %q): %w",
+		op, id, existing.Status, outbox.ErrStaleState)
 }
 
 // IncrementAttempts bumps the attempt counter, records the error, schedules

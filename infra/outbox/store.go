@@ -19,10 +19,26 @@ type Store interface {
 	FetchPending(ctx context.Context, limit int) ([]Entry, error)
 
 	// MarkPublished sets the entry status to published with the given timestamp.
+	// Implementations MUST return [ErrNotFound] when no row matches id and
+	// [ErrStaleState] when the row exists but is not in the expected
+	// "processing" state — typically because a concurrent stale-recovery
+	// reset the row to pending while the publish was in flight.
 	MarkPublished(ctx context.Context, id string, publishedAt time.Time) error
 
 	// MarkFailed sets the entry status to failed with the last error message.
+	// Implementations MUST return [ErrNotFound] when no row matches id and
+	// [ErrStaleState] when the row exists but is not in the expected
+	// "processing" state.
 	MarkFailed(ctx context.Context, id string, lastError string) error
+
+	// Heartbeat refreshes the updated_at timestamp on processing rows
+	// matching ids so that a long-running publish does not get reset by
+	// [Store.ResetStaleProcessing]. Implementations MUST only update rows
+	// currently in "processing" state to avoid resurrecting rows that have
+	// already been marked published or failed. Returns the number of rows
+	// touched (useful for diagnostics; the relay logs unexpectedly low
+	// counts).
+	Heartbeat(ctx context.Context, ids []string) (int64, error)
 
 	// IncrementAttempts increments the attempt counter, records the last error,
 	// resets the entry status to pending, and sets next_retry_at to a future

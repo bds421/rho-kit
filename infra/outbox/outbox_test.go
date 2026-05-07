@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,8 +26,9 @@ var assertedTxError = errors.New("tx required")
 // fakeStore is an in-memory Store implementation for unit testing.
 // Safe for concurrent use.
 type fakeStore struct {
-	mu      sync.Mutex
-	entries []outbox.Entry
+	mu       sync.Mutex
+	entries  []outbox.Entry
+	updateAt map[string]time.Time
 
 	insertErr            error
 	fetchPendingErr      error
@@ -37,6 +39,9 @@ type fakeStore struct {
 	deleteFailedErr      error
 	resetStaleErr        error
 	countPendingErr      error
+	heartbeatErr         error
+
+	heartbeatCalls atomic.Int64
 }
 
 func (s *fakeStore) Insert(_ context.Context, entry outbox.Entry) error {
@@ -74,6 +79,9 @@ func (s *fakeStore) MarkPublished(_ context.Context, id string, publishedAt time
 	}
 	for i := range s.entries {
 		if s.entries[i].ID.String() == id {
+			if s.entries[i].Status != outbox.StatusProcessing {
+				return outbox.ErrStaleState
+			}
 			e := s.entries[i]
 			e.Status = outbox.StatusPublished
 			e.PublishedAt = &publishedAt
@@ -81,7 +89,7 @@ func (s *fakeStore) MarkPublished(_ context.Context, id string, publishedAt time
 			return nil
 		}
 	}
-	return nil
+	return outbox.ErrNotFound
 }
 
 func (s *fakeStore) MarkFailed(_ context.Context, id string, lastError string) error {
@@ -92,6 +100,9 @@ func (s *fakeStore) MarkFailed(_ context.Context, id string, lastError string) e
 	}
 	for i := range s.entries {
 		if s.entries[i].ID.String() == id {
+			if s.entries[i].Status != outbox.StatusProcessing {
+				return outbox.ErrStaleState
+			}
 			e := s.entries[i]
 			e.Status = outbox.StatusFailed
 			e.LastError = &lastError
@@ -99,7 +110,30 @@ func (s *fakeStore) MarkFailed(_ context.Context, id string, lastError string) e
 			return nil
 		}
 	}
-	return nil
+	return outbox.ErrNotFound
+}
+
+func (s *fakeStore) Heartbeat(_ context.Context, ids []string) (int64, error) {
+	s.heartbeatCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.heartbeatErr != nil {
+		return 0, s.heartbeatErr
+	}
+	if s.updateAt == nil {
+		s.updateAt = make(map[string]time.Time)
+	}
+	now := time.Now().UTC()
+	var touched int64
+	for _, id := range ids {
+		for i := range s.entries {
+			if s.entries[i].ID.String() == id && s.entries[i].Status == outbox.StatusProcessing {
+				s.updateAt[id] = now
+				touched++
+			}
+		}
+	}
+	return touched, nil
 }
 
 func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError string, nextRetryAt time.Time) error {
@@ -174,7 +208,16 @@ func (s *fakeStore) ResetStaleProcessing(_ context.Context, staleDuration time.D
 	cutoff := time.Now().UTC().Add(-staleDuration)
 	var reset int64
 	for i := range s.entries {
-		if s.entries[i].Status == outbox.StatusProcessing && s.entries[i].CreatedAt.Before(cutoff) {
+		if s.entries[i].Status != outbox.StatusProcessing {
+			continue
+		}
+		// Heartbeat refreshes updateAt; if a row has heartbeated more
+		// recently than the cutoff, it is NOT stale even if its CreatedAt
+		// predates the cutoff (the whole point of heartbeating).
+		if hb, ok := s.updateAt[s.entries[i].ID.String()]; ok && hb.After(cutoff) {
+			continue
+		}
+		if s.entries[i].CreatedAt.Before(cutoff) {
 			s.entries[i] = withStatus(s.entries[i], outbox.StatusPending)
 			reset++
 		}

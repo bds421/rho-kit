@@ -419,6 +419,86 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// TestRelay_LongPublishDoesNotDuplicate pins the high-severity stale-recovery
+// finding: a publish that legitimately exceeds defaultStaleDuration must not
+// be reset to pending and double-published. The fix is heartbeating the
+// processing row + a configurable stale duration. This test wires both:
+//
+//   - staleDuration: 200ms (short enough for a unit test).
+//   - publish takes 600ms (3x stale duration) — without heartbeat, the
+//     stale-recovery sweep would reset the row mid-flight.
+//   - We assert exactly one publish reached the publisher AND the row ends
+//     up in published state.
+func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
+	store := &fakeStore{}
+	writer := outbox.NewWriter(store)
+	logger := slog.Default()
+	ctx := context.Background()
+
+	pub := &slowPublisher{delay: 600 * time.Millisecond}
+
+	require.NoError(t, writer.Write(ctx, outbox.WriteParams{
+		Topic: "t", RoutingKey: "rk", MessageID: "msg-1",
+		MessageType: "test.event", Payload: []byte(`{}`),
+	}))
+
+	relay := outbox.NewRelay(store, pub, logger,
+		outbox.WithPollInterval(10*time.Millisecond),
+		outbox.WithStaleDuration(200*time.Millisecond),
+	)
+
+	relayCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Start(relayCtx)
+	}()
+
+	require.Eventually(t, func() bool {
+		return pub.count() >= 1
+	}, 5*time.Second, 20*time.Millisecond)
+
+	// Give the relay one extra stale window to expose any duplicate
+	// publish that an unguarded relay would issue.
+	time.Sleep(400 * time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+
+	assert.Equal(t, 1, pub.count(),
+		"long publish must not be duplicated by stale recovery (heartbeat keeps the row alive)")
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.entries, 1)
+	assert.Equal(t, outbox.StatusPublished, store.entries[0].Status)
+
+	// Heartbeat must have been called at least once during the slow publish.
+	assert.GreaterOrEqual(t, store.heartbeatCalls.Load(), int64(1),
+		"heartbeat must fire while publish is in flight")
+}
+
+// slowPublisher takes a configurable delay before recording the publish.
+// Used to simulate a long-running publish that exceeds staleDuration.
+type slowPublisher struct {
+	mu        sync.Mutex
+	published []outbox.Entry
+	delay     time.Duration
+}
+
+func (s *slowPublisher) Publish(_ context.Context, entry outbox.Entry) error {
+	time.Sleep(s.delay)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.published = append(s.published, entry)
+	return nil
+}
+
+func (s *slowPublisher) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.published)
+}
+
 func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriter(store)

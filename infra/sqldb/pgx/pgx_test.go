@@ -115,6 +115,39 @@ func TestRequireLoopbackHost_RejectsNonLoopback(t *testing.T) {
 	}
 }
 
+// TestParseCopyIdentifier covers the schema-qualified table fix.
+// pgx.Identifier{table} quoted the whole "schema.table" string as one
+// identifier, which Postgres rejects. The fix splits on the first dot
+// and lets pgx emit "schema"."table".
+func TestParseCopyIdentifier(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    []string
+		wantErr bool
+	}{
+		{name: "bare", in: "users", want: []string{"users"}},
+		{name: "schema-qualified", in: "public.users", want: []string{"public", "users"}},
+		{name: "three-segments", in: "db.public.users", wantErr: true},
+		{name: "trailing dot", in: "public.", wantErr: true},
+		{name: "leading dot", in: ".users", wantErr: true},
+		{name: "empty middle", in: ".", wantErr: true},
+		{name: "embedded quote", in: "public.\"users", wantErr: true},
+		{name: "embedded null byte", in: "public.us\x00ers", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseCopyIdentifier(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, []string(got))
+		})
+	}
+}
+
 // TestRequireLoopbackHost_RejectsHostBypass covers the N-2 finding:
 // the previous extractDSNHost ignored URL query-string `?host=` and
 // took the first `host=` in libpq form. Going through pgxpool.ParseConfig

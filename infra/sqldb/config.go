@@ -143,10 +143,16 @@ func ParsePostgresDSN(rawURL string) (Config, error) {
 }
 
 // ParseMySQLDSN parses a MySQL/MariaDB connection URI into a [Config].
-// Format: mysql://user:password@host:port/dbname
+// Format: mysql://user:password@host:port/dbname?tls=true&charset=utf8mb4
 //
 // The password is automatically percent-decoded. Port defaults to 3306 if omitted.
 // LogLevel is not part of the DSN and must be set separately.
+//
+// Recognised query options are preserved into Config.Options so the
+// driver layer can honour them in the constructed go-sql-driver DSN —
+// most importantly "tls". Without preservation, "tls=true" silently
+// degrades to a plaintext connection while [Config.IsTLSEnabled]
+// reports TLS as on.
 func ParseMySQLDSN(rawURL string) (Config, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -170,12 +176,23 @@ func ParseMySQLDSN(rawURL string) (Config, error) {
 		password, _ = u.User.Password()
 	}
 
+	var opts map[string]string
+	for _, key := range []string{"tls", "charset", "loc"} {
+		if v := u.Query().Get(key); v != "" {
+			if opts == nil {
+				opts = make(map[string]string)
+			}
+			opts[key] = v
+		}
+	}
+
 	return Config{
 		Host:     u.Hostname(),
 		Port:     port,
 		User:     user,
 		Password: password,
 		Name:     strings.TrimPrefix(u.Path, "/"),
+		Options:  opts,
 	}, nil
 }
 

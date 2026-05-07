@@ -349,6 +349,18 @@ func TestLoadMySQLFields_DATABASE_URL(t *testing.T) {
 	assert.Equal(t, "info", f.Database.LogLevel)
 }
 
+// TestParseMySQLDSN_PreservesTLSOption pins the high-severity finding:
+// `tls=true` in the URL was dropped by ParseMySQLDSN, so the validation
+// path saw it via IsTLSEnabled while the driver layer never received it.
+// The fix preserves recognised options into Config.Options.
+func TestParseMySQLDSN_PreservesTLSOption(t *testing.T) {
+	cfg, err := ParseMySQLDSN("mysql://u:p@h:3306/db?tls=true&charset=utf8mb4")
+	require.NoError(t, err)
+	assert.Equal(t, "true", cfg.Option("tls", ""))
+	assert.Equal(t, "utf8mb4", cfg.Option("charset", ""))
+	assert.True(t, cfg.IsTLSEnabled())
+}
+
 func TestLoadMySQLFields_DATABASE_URL_Precedence(t *testing.T) {
 	t.Setenv("DATABASE_URL", "mysql://urluser:urlpass@urlhost:3306/urldb")
 	t.Setenv("DB_HOST", "field-host")

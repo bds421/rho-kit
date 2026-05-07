@@ -153,6 +153,12 @@ func (p *Pool) Ping(ctx context.Context) error {
 // Copy loads rows into table via Postgres COPY (one round-trip
 // regardless of row count). Returns the number of rows copied.
 //
+// table accepts either a bare name ("users") or a schema-qualified
+// name ("public.users"). The dot is split into a two-component
+// pgx.Identifier so the wire identifier is "public"."users" rather
+// than the single quoted literal "public.users", which Postgres
+// would reject as an unknown table.
+//
 // Use this for bulk-load ingest paths (CSV import, batch backfill).
 // For < 1000 rows, a parameterized INSERT is usually faster because
 // it amortizes connection setup.
@@ -166,11 +172,36 @@ func (p *Pool) Copy(ctx context.Context, table string, columns []string, rows []
 	if len(columns) == 0 {
 		return 0, errors.New("pgx: COPY columns must not be empty")
 	}
+	ident, err := parseCopyIdentifier(table)
+	if err != nil {
+		return 0, err
+	}
 	return p.pool.CopyFrom(ctx,
-		pgx.Identifier{table},
+		ident,
 		columns,
 		pgx.CopyFromRows(rows),
 	)
+}
+
+// parseCopyIdentifier splits a possibly schema-qualified table name into
+// a pgx.Identifier whose Sanitize() emits "schema"."table". A single
+// segment is returned as a one-element identifier. Any segment that is
+// empty or contains an embedded dot/quote is rejected so callers cannot
+// accidentally smuggle SQL through the identifier path.
+func parseCopyIdentifier(table string) (pgx.Identifier, error) {
+	parts := strings.Split(table, ".")
+	if len(parts) > 2 {
+		return nil, fmt.Errorf("pgx: COPY table %q must be either \"name\" or \"schema.name\"", table)
+	}
+	for _, p := range parts {
+		if p == "" {
+			return nil, fmt.Errorf("pgx: COPY table %q has an empty schema or name component", table)
+		}
+		if strings.ContainsAny(p, "\"\x00") {
+			return nil, fmt.Errorf("pgx: COPY table %q contains an invalid character", table)
+		}
+	}
+	return pgx.Identifier(parts), nil
 }
 
 // Notification is the kit-stable shape of a LISTEN/NOTIFY delivery.
