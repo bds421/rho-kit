@@ -14,10 +14,20 @@ import (
 	"github.com/bds421/rho-kit/data/actionlog"
 )
 
-// DefaultActorHeader is the request header read for the actor id
-// when no [WithActorExtractor] override is configured. Services that
-// already place the actor on context via JWT/auth middleware should
-// pass [WithActorExtractor] to read from there instead.
+// AnonymousActor is the actor id recorded when no authenticated identity
+// is available for a tool call (no auth middleware ran, or it ran but did
+// not surface a user id). The signed action-log store rejects empty actor
+// values, so the Server substitutes this sentinel.
+const AnonymousActor = "anonymous"
+
+// DefaultActorHeader is the conventional header name used by the
+// opt-in [WithActorFromHeader] extractor. The Server does NOT read
+// this header by default — see the documentation on
+// [WithActorFromHeader] for the trust requirement.
+//
+// Services that authenticate callers via JWT/auth middleware should
+// wire [WithActorFromContext] (or a custom [WithActorExtractor]) and
+// leave this header alone.
 const DefaultActorHeader = "X-Actor-Id"
 
 // MaxReasonLength caps the length of [actionlog.Entry.Reason] when
@@ -135,12 +145,18 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 }
 
 // WithActorExtractor sets the function that resolves an actor id
-// from a request. The default reads [DefaultActorHeader]; services
-// that put actor on context via auth middleware should override.
+// from a request. The default returns [AnonymousActor] — the Server
+// does NOT trust any header by default, since headers can be spoofed
+// by any caller able to reach the JSON-RPC endpoint.
 //
-// An empty return value is recorded as "anonymous" — same convention
-// as [httpx/middleware/approval] — so the action log never carries
-// an empty Actor field that the store would reject.
+// Services that put actor on context via auth middleware should pass
+// [WithActorFromContext]. Services that genuinely want to trust a
+// header (and have a reverse proxy stamping it) can pass
+// [WithActorFromHeader] — read its doc first.
+//
+// An empty return value is recorded as [AnonymousActor] — same
+// convention as [httpx/middleware/approval] — so the action log
+// never carries an empty Actor field that the store would reject.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorExtractor: function must not be nil")
@@ -149,11 +165,54 @@ func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 		c.actorExtractor = func(r *http.Request) string {
 			v := fn(r)
 			if v == "" {
-				return "anonymous"
+				return AnonymousActor
 			}
 			return v
 		}
 	}
+}
+
+// WithActorFromContext returns a ServerOption that reads the actor id
+// from the request context using fn — typically a wrapper around
+// [auth.UserID] from httpx/middleware/auth. This is the recommended
+// way to wire actor identity: the auth middleware has already
+// verified the caller's credentials and a context value cannot be
+// forged by a remote client.
+//
+// fn must not be nil. An empty return is recorded as [AnonymousActor].
+func WithActorFromContext(fn func(context.Context) string) ServerOption {
+	if fn == nil {
+		panic("mcp: WithActorFromContext: function must not be nil")
+	}
+	return WithActorExtractor(func(r *http.Request) string {
+		return fn(r.Context())
+	})
+}
+
+// WithActorFromHeader returns a ServerOption that reads the actor id
+// from the named request header.
+//
+// SECURITY WARNING: any caller able to reach this service can set the
+// header to an arbitrary value. Use this only when ALL of the
+// following are true:
+//
+//  1. the service is exclusively reachable via a reverse proxy
+//     (Oathkeeper, ingress, mesh sidecar) that you control;
+//  2. that proxy strips the header from inbound requests and
+//     re-stamps it from a verified identity (mTLS CN, verified JWT
+//     subject) before forwarding;
+//  3. the proxy's own connection to this service is mutually
+//     authenticated (mTLS, sidecar-only network).
+//
+// In every other case prefer [WithActorFromContext]. An empty header
+// is recorded as [AnonymousActor].
+func WithActorFromHeader(header string) ServerOption {
+	if header == "" {
+		panic("mcp: WithActorFromHeader: header must not be empty")
+	}
+	return WithActorExtractor(func(r *http.Request) string {
+		return r.Header.Get(header)
+	})
 }
 
 // WithTenantExtractor sets the function that resolves a tenant id
@@ -259,12 +318,12 @@ func NewServer(opts ...ServerOption) *Server {
 func defaultServerConfig() serverConfig {
 	return serverConfig{
 		logger: slog.Default(),
-		actorExtractor: func(r *http.Request) string {
-			v := r.Header.Get(DefaultActorHeader)
-			if v == "" {
-				return "anonymous"
-			}
-			return v
+		// Default actor extractor must NOT trust any header — any
+		// caller can set X-Actor-Id and forge the audit trail. Wire
+		// WithActorFromContext (or WithActorFromHeader for
+		// reverse-proxy-stamped headers) to record real actor ids.
+		actorExtractor: func(_ *http.Request) string {
+			return AnonymousActor
 		},
 		tenantExtractor: defaultTenantExtractor,
 		maxRequestBytes: 1 << 20,

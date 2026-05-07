@@ -249,7 +249,9 @@ func withTenantHandler(next http.Handler, tenantID string) http.Handler {
 
 func TestServer_ActionLog_SuccessfulCallWritesEntry(t *testing.T) {
 	logger, store := newTestActionLogger(t)
-	s := newTestServer(t, mcp.WithActionLogger(logger))
+	// Opt in to the legacy X-Actor-Id behaviour for this trust-boundary
+	// fixture — the default extractor no longer trusts the header.
+	s := newTestServer(t, mcp.WithActionLogger(logger), mcp.WithActorFromHeader("X-Actor-Id"))
 
 	h := withTenantHandler(s.HTTP(), "tenant-123")
 	r := httptest.NewRequest(http.MethodPost, "/mcp",
@@ -278,7 +280,7 @@ func TestServer_ActionLog_SuccessfulCallWritesEntry(t *testing.T) {
 
 func TestServer_ActionLog_FailureEntryRecordsReason(t *testing.T) {
 	logger, _ := newTestActionLogger(t)
-	s := mcp.NewServer(mcp.WithActionLogger(logger))
+	s := mcp.NewServer(mcp.WithActionLogger(logger), mcp.WithActorFromHeader("X-Actor-Id"))
 	boom := func(_ context.Context, _ echoIn) (echoOut, error) {
 		return echoOut{}, errors.New("kaboom")
 	}
@@ -372,7 +374,7 @@ func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T)
 func TestServer_ActionLog_StrictMode_WithTenant_WritesEntry(t *testing.T) {
 	// Strict mode (the default) must not break the happy path.
 	logger, _ := newTestActionLogger(t)
-	s := newTestServer(t, mcp.WithActionLogger(logger))
+	s := newTestServer(t, mcp.WithActionLogger(logger), mcp.WithActorFromHeader("X-Actor-Id"))
 
 	h := withTenantHandler(s.HTTP(), "tenant-strict")
 	r := httptest.NewRequest(http.MethodPost, "/mcp",
@@ -508,6 +510,65 @@ func TestServer_DisallowUnknownFields_ReturnsGenericMessage(t *testing.T) {
 	logged := logBuf.String()
 	assert.Contains(t, logged, "unknown field",
 		"server-side log retains the original decoder error for forensics")
+}
+
+func TestDefaultActorExtractor_NoLongerTrustsHeader(t *testing.T) {
+	// H-7 fix: the default actor extractor must NOT read X-Actor-Id —
+	// any caller can set the header and forge the audit trail. The
+	// recorded actor must be AnonymousActor regardless of what the
+	// caller sends.
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t, mcp.WithActionLogger(logger))
+
+	h := withTenantHandler(s.HTTP(), "tenant-h7")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	r.Header.Set("X-Actor-Id", "alice")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor,
+		"default extractor must not trust X-Actor-Id; recorded actor must be the anonymous sentinel")
+	assert.NotEqual(t, "alice", entries[0].Actor)
+}
+
+func TestWithActorFromContext_ReadsAuthContext(t *testing.T) {
+	// Define a private context key that mirrors how an auth middleware
+	// would attach the verified user id to the request context.
+	type userIDKey struct{}
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t,
+		mcp.WithActionLogger(logger),
+		mcp.WithActorFromContext(func(ctx context.Context) string {
+			v, _ := ctx.Value(userIDKey{}).(string)
+			return v
+		}),
+	)
+
+	// Wrap the handler in a thin middleware that mocks the auth
+	// middleware contract: it stamps the verified user id onto the
+	// context BEFORE the MCP server sees the request.
+	h := withTenantHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), userIDKey{}, "verified-bob")
+		s.HTTP().ServeHTTP(w, r.WithContext(ctx))
+	}), "tenant-h7-ctx")
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	r.Header.Set("X-Actor-Id", "spoofed")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7-ctx"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "verified-bob", entries[0].Actor,
+		"WithActorFromContext must read from the auth-populated context, not the request header")
 }
 
 func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {

@@ -99,7 +99,7 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 
 	actor := s.cfg.actorExtractor(r)
 	if actor == "" {
-		actor = "anonymous"
+		actor = AnonymousActor
 	}
 
 	outcome := actionlog.OutcomeSuccess

@@ -50,7 +50,10 @@
 //     safe length so a verbose error doesn't blow up the audit row).
 //
 // Tenant comes from [tenant.FromContext]; actor comes from the
-// configured [WithActorExtractor] (default: the X-Actor-Id header).
+// configured [WithActorExtractor] (default: [AnonymousActor] — the
+// Server does NOT trust any request header by default; wire
+// [WithActorFromContext] to read the verified user id from the
+// auth-middleware-populated context).
 //
 // When no tenant is on the context, behaviour depends on
 // [WithStrictAudit] (default: true):
