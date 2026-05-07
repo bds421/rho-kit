@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCompare_RegressionMarkedWhenAboveThresholdAndTracked(t *testing.T) {
@@ -64,6 +65,46 @@ func TestCompare_MissingBenchFlaggedMissing(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "benchmarks gone from current must be flagged missing")
+}
+
+func TestCompare_ZeroBaselineFlaggedAsRegression(t *testing.T) {
+	base := []Result{{Name: "BenchmarkAlloc", AllocsOp: 0}}
+	cur := []Result{{Name: "BenchmarkAlloc", AllocsOp: 1}}
+	failOn := map[Metric]struct{}{MetricAllocs: {}}
+
+	diffs := Compare(base, cur, []Metric{MetricAllocs}, failOn, 10)
+	require.Len(t, diffs, 1)
+
+	d := diffs[0]
+	assert.True(t, d.Regressed, "0 -> positive must be marked Regressed")
+	assert.True(t, d.ZeroBaseline, "ZeroBaseline must be true when baseline is zero and current is positive")
+	assert.Equal(t, 0.0, d.PctChange, "PctChange must remain zero when baseline is zero")
+	assert.Equal(t, 1.0, d.AbsoluteIncrease)
+
+	out := Format(diffs)
+	assert.Contains(t, out, "regression from zero")
+	assert.Contains(t, out, "n/a")
+}
+
+func TestCompare_ZeroBaselineUntrackedNotMarked(t *testing.T) {
+	base := []Result{{Name: "BenchmarkAlloc", AllocsOp: 0}}
+	cur := []Result{{Name: "BenchmarkAlloc", AllocsOp: 1}}
+
+	diffs := Compare(base, cur, []Metric{MetricAllocs}, map[Metric]struct{}{}, 10)
+	require.Len(t, diffs, 1)
+	assert.False(t, diffs[0].Regressed, "untracked metric must not regress even on zero baseline")
+	assert.True(t, diffs[0].ZeroBaseline)
+}
+
+func TestCompare_ZeroBaselineZeroCurrentNotRegressed(t *testing.T) {
+	base := []Result{{Name: "BenchmarkAlloc", AllocsOp: 0}}
+	cur := []Result{{Name: "BenchmarkAlloc", AllocsOp: 0}}
+	failOn := map[Metric]struct{}{MetricAllocs: {}}
+
+	diffs := Compare(base, cur, []Metric{MetricAllocs}, failOn, 10)
+	require.Len(t, diffs, 1)
+	assert.False(t, diffs[0].Regressed)
+	assert.False(t, diffs[0].ZeroBaseline)
 }
 
 func TestHasRegressions(t *testing.T) {

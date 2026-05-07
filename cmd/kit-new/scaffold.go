@@ -6,9 +6,25 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 )
+
+var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// ValidateServiceName rejects names that are not safe path segments
+// or that violate the lowercase-kebab convention used by the
+// scaffolded module path.
+func ValidateServiceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("kit-new: ServiceName must not be empty")
+	}
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("kit-new: ServiceName %q must match %s", name, serviceNamePattern)
+	}
+	return nil
+}
 
 //go:embed templates/*.tmpl
 var templatesFS embed.FS
@@ -45,12 +61,22 @@ var templateFile = []struct {
 // — callers writing to a fresh directory get a clear half-written
 // tree they can `rm -rf`).
 func scaffold(outDir string, p Params) error {
-	if p.ServiceName == "" {
-		return fmt.Errorf("kit-new: ServiceName must not be empty")
+	if err := ValidateServiceName(p.ServiceName); err != nil {
+		return err
 	}
 	if p.ModulePath == "" {
 		return fmt.Errorf("kit-new: ModulePath must not be empty")
 	}
+
+	absOutDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return fmt.Errorf("kit-new: resolve outDir %q: %w", outDir, err)
+	}
+	absOutDir = filepath.Clean(absOutDir)
+	if err := os.MkdirAll(absOutDir, 0o750); err != nil {
+		return fmt.Errorf("kit-new: mkdir %q: %w", absOutDir, err)
+	}
+	prefix := absOutDir + string(filepath.Separator)
 
 	for _, row := range templateFile {
 		body, err := fs.ReadFile(templatesFS, "templates/"+row.tmpl)
@@ -73,7 +99,10 @@ func scaffold(outDir string, p Params) error {
 			return fmt.Errorf("kit-new: render dest path %q: %w", row.dest, err)
 		}
 
-		full := filepath.Join(outDir, destPath)
+		full := filepath.Clean(filepath.Join(absOutDir, destPath))
+		if full != absOutDir && !strings.HasPrefix(full, prefix) {
+			return fmt.Errorf("kit-new: rendered path %q escapes outDir %q", full, absOutDir)
+		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			return fmt.Errorf("kit-new: mkdir %q: %w", filepath.Dir(full), err)
 		}

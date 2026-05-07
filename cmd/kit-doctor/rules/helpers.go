@@ -4,9 +4,6 @@ import (
 	"go/ast"
 )
 
-// isMethodCall reports whether call is a method call selector with
-// the given selector name (e.g. recognises `b.WithJWT(...)` for
-// "WithJWT" regardless of receiver expression shape).
 func isMethodCall(call *ast.CallExpr, name string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -15,8 +12,6 @@ func isMethodCall(call *ast.CallExpr, name string) bool {
 	return sel.Sel.Name == name
 }
 
-// isPackageCall reports whether call is a package-qualified call:
-// `pkg.Func(...)` for the given package and function name.
 func isPackageCall(call *ast.CallExpr, pkg, fn string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -32,44 +27,25 @@ func isPackageCall(call *ast.CallExpr, pkg, fn string) bool {
 	return ident.Name == pkg
 }
 
-// chainRoot returns the outermost CallExpr that contains call's
-// fluent chain. For `b.WithJWT(...).WithJWTIssuer(...)` invoked on
-// `WithJWT`, this returns the `.WithJWTIssuer(...)` call so
-// [chainHas] can scan all chained sites.
-//
-// Implementation note: this is a heuristic. The Go AST does not
-// link chained calls upwards, so the recogniser walks the file
-// instead in [chainHas]. We retain this signature for symmetry with
-// future improvements that thread parent links through.
-func chainRoot(call *ast.CallExpr) ast.Node {
-	return call
-}
-
-// chainHas reports whether any of the named methods appear as
-// selectors in the file enclosing root. It is intentionally
-// over-approximating: any call to one of `names` anywhere in the
-// surrounding file counts as the option being set, which means a
-// rule won't flag callers who set the option in a sibling
-// function in the same file. The trade-off is preferring false
-// negatives over false positives — kit-doctor stays advisory.
-func chainHas(root ast.Node, names ...string) bool {
-	if root == nil {
+// chainHas reports whether any of the named methods appears as a
+// selector in the same fluent call chain as call. The chain is
+// resolved by walking up parent links until the call is no longer
+// the receiver of an outer method call, then walking back down
+// through every nested CallExpr-on-SelectorExpr the resulting root
+// dominates. Sibling Builders elsewhere in the file are ignored.
+func chainHas(call *ast.CallExpr, names ...string) bool {
+	if call == nil {
 		return false
 	}
 	want := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		want[n] = struct{}{}
 	}
+
+	root := chainTop(call)
 	found := false
-	ast.Inspect(rootFile(root), func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if _, ok := want[sel.Sel.Name]; ok {
+	visitChain(root, func(sel string) bool {
+		if _, ok := want[sel]; ok {
 			found = true
 			return false
 		}
@@ -78,34 +54,99 @@ func chainHas(root ast.Node, names ...string) bool {
 	return found
 }
 
-// rootFile returns the *ast.File that the rules engine attaches to
-// nodes via the per-file scan. We track it via a package-level
-// variable set in [SetCurrentFile]; rules are only ever invoked
-// after SetCurrentFile.
-func rootFile(_ ast.Node) ast.Node {
-	if currentFile != nil {
-		return currentFile
+// chainTop walks parent pointers upward while call is the X of an
+// enclosing SelectorExpr that is the Fun of an enclosing CallExpr
+// (i.e. while call is the receiver of an outer fluent method call),
+// returning the outermost CallExpr in the chain.
+func chainTop(call *ast.CallExpr) *ast.CallExpr {
+	cur := ast.Node(call)
+	for {
+		parent, ok := parentOf(cur)
+		if !ok {
+			return cur.(*ast.CallExpr)
+		}
+		sel, ok := parent.(*ast.SelectorExpr)
+		if !ok || sel.X != cur {
+			return cur.(*ast.CallExpr)
+		}
+		grand, ok := parentOf(sel)
+		if !ok {
+			return cur.(*ast.CallExpr)
+		}
+		gc, ok := grand.(*ast.CallExpr)
+		if !ok || gc.Fun != sel {
+			return cur.(*ast.CallExpr)
+		}
+		cur = gc
 	}
-	// Fall back to the node itself so the inspect over a single
-	// expression at least runs.
-	return nil
 }
 
-// currentFile is the file that the engine is currently scanning.
-// Set via [SetCurrentFile] from the engine entry point.
-var currentFile *ast.File
+// visitChain walks every selector name along the fluent chain rooted
+// at call, descending through nested CallExpr.Fun.SelectorExpr.X
+// links. Visit returns false to stop early.
+func visitChain(call *ast.CallExpr, visit func(string) bool) {
+	cur := ast.Expr(call)
+	for {
+		c, ok := cur.(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		sel, ok := c.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return
+		}
+		if !visit(sel.Sel.Name) {
+			return
+		}
+		cur = sel.X
+	}
+}
 
-// SetCurrentFile is invoked by the engine before running each rule
-// against a parsed file. Helpers that need to walk the surrounding
-// file (e.g. fluent-chain detection) consult this state.
+// currentFile is the file the engine is currently scanning. Set via
+// SetCurrentFile from the engine entry point. Parents derived from
+// it back the chain-walking helpers above.
+var (
+	currentFile *ast.File
+	parents     map[ast.Node]ast.Node
+)
+
 func SetCurrentFile(f *ast.File) {
 	currentFile = f
+	parents = buildParents(f)
 }
 
-// callHasOption reports whether call's argument list contains a
-// selector whose name matches optName (e.g. detecting
-// `httpx.WithErrorLog(...)` inside a `httpx.NewServer(...)` argument
-// list).
+func parentOf(n ast.Node) (ast.Node, bool) {
+	if parents == nil {
+		return nil, false
+	}
+	p, ok := parents[n]
+	return p, ok
+}
+
+func buildParents(f *ast.File) map[ast.Node]ast.Node {
+	if f == nil {
+		return nil
+	}
+	out := make(map[ast.Node]ast.Node)
+	ast.Walk(parentVisitor{parent: nil, m: out}, f)
+	return out
+}
+
+type parentVisitor struct {
+	parent ast.Node
+	m      map[ast.Node]ast.Node
+}
+
+func (v parentVisitor) Visit(n ast.Node) ast.Visitor {
+	if n == nil {
+		return nil
+	}
+	if v.parent != nil {
+		v.m[n] = v.parent
+	}
+	return parentVisitor{parent: n, m: v.m}
+}
+
 func callHasOption(call *ast.CallExpr, optName string) bool {
 	for _, arg := range call.Args {
 		switch a := arg.(type) {

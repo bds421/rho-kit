@@ -17,14 +17,16 @@ const (
 
 // Diff is one benchmark's regression report for a single metric.
 type Diff struct {
-	Name         string
-	Metric       Metric
-	Baseline     float64
-	Current      float64
-	PctChange    float64 // (current - baseline) / baseline * 100
-	Regressed    bool    // true when PctChange exceeds the configured threshold
-	NewBench     bool    // present in current but not baseline
-	MissingBench bool    // present in baseline but absent in current
+	Name             string
+	Metric           Metric
+	Baseline         float64
+	Current          float64
+	PctChange        float64 // (current - baseline) / baseline * 100; 0 when baseline is 0
+	Regressed        bool    // true when PctChange exceeds the configured threshold OR baseline was zero and current is positive
+	NewBench         bool    // present in current but not baseline
+	MissingBench     bool    // present in baseline but absent in current
+	ZeroBaseline     bool    // baseline was zero and current is positive — regression has no percentage but an absolute increase
+	AbsoluteIncrease float64 // current - baseline; populated for every diff, primarily useful when ZeroBaseline is true
 }
 
 // Compare aligns baseline against current by name and produces a Diff
@@ -86,11 +88,15 @@ func getMetric(r Result, m Metric) float64 {
 func mkDiff(name string, m Metric, b, c Result, failOn map[Metric]struct{}, thresholdPct float64) Diff {
 	bv := getMetric(b, m)
 	cv := getMetric(c, m)
-	d := Diff{Name: name, Metric: m, Baseline: bv, Current: cv}
-	if bv > 0 {
+	d := Diff{Name: name, Metric: m, Baseline: bv, Current: cv, AbsoluteIncrease: cv - bv}
+	switch {
+	case bv > 0:
 		d.PctChange = (cv - bv) / bv * 100
+	case bv == 0 && cv > 0:
+		d.ZeroBaseline = true
 	}
-	if _, track := failOn[m]; track && d.PctChange > thresholdPct {
+	_, track := failOn[m]
+	if track && (d.PctChange > thresholdPct || d.ZeroBaseline) {
 		d.Regressed = true
 	}
 	return d
@@ -107,6 +113,8 @@ func Format(diffs []Diff) string {
 	for _, d := range diffs {
 		status := "ok"
 		switch {
+		case d.Regressed && d.ZeroBaseline:
+			status = fmt.Sprintf("REGRESSED (regression from zero, +%.2f)", d.AbsoluteIncrease)
 		case d.Regressed:
 			status = "REGRESSED"
 		case d.NewBench:
@@ -114,8 +122,12 @@ func Format(diffs []Diff) string {
 		case d.MissingBench:
 			status = "missing"
 		}
-		fmt.Fprintf(&b, "| %s | %s | %.2f | %.2f | %+.1f%% | %s |\n",
-			d.Name, d.Metric, d.Baseline, d.Current, d.PctChange, status)
+		pct := fmt.Sprintf("%+.1f%%", d.PctChange)
+		if d.ZeroBaseline {
+			pct = "n/a"
+		}
+		fmt.Fprintf(&b, "| %s | %s | %.2f | %.2f | %s | %s |\n",
+			d.Name, d.Metric, d.Baseline, d.Current, pct, status)
 	}
 	return b.String()
 }

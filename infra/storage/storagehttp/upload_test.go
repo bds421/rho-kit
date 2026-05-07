@@ -33,6 +33,35 @@ func TestParseAndStore(t *testing.T) {
 		assert.Contains(t, err.Error(), "KeyFunc is required")
 	})
 
+	t.Run("rejects missing MaxFileSize", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("x"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc: passthroughKeyFunc,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MaxFileSize is required")
+	})
+
+	t.Run("rejects negative MaxFileSize", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("x"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: -42,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MaxFileSize must be positive")
+	})
+
 	t.Run("uploads file successfully", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)
@@ -41,7 +70,8 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", contentType)
 
 		result, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			KeyFunc: passthroughKeyFunc,
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 		})
 		require.NoError(t, err)
 
@@ -56,6 +86,37 @@ func TestParseAndStore(t *testing.T) {
 		assert.Equal(t, []byte("hello world"), got)
 	})
 
+	t.Run("default MaxFileSize cap rejects oversize", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		// Body is 16 bytes; cap at 5 — the auto-injected cap rejects without
+		// any caller-provided Validators slice.
+		body, contentType := createMultipartBody(t, "file", "big.txt", []byte("this is too long"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 5,
+		})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, storage.ErrValidation))
+	})
+
+	t.Run("Unlimited opts out of cap", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("hello world"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: Unlimited,
+		})
+		require.NoError(t, err)
+	})
+
 	t.Run("uses custom KeyFunc", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)
@@ -67,6 +128,7 @@ func TestParseAndStore(t *testing.T) {
 			KeyFunc: func(_ *http.Request, filename string, _ storage.ObjectMeta) (string, error) {
 				return "uploads/custom-" + filename, nil
 			},
+			MaxFileSize: 1 << 20,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "uploads/custom-photo.jpg", result.Key)
@@ -84,8 +146,9 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", contentType)
 
 		result, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			FormField: "document",
-			KeyFunc:   passthroughKeyFunc,
+			FormField:   "document",
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "doc.pdf", result.Key)
@@ -99,8 +162,9 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", contentType)
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			FormField: "file",
-			KeyFunc:   passthroughKeyFunc,
+			FormField:   "file",
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no file part")
@@ -114,7 +178,8 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", contentType)
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			KeyFunc: passthroughKeyFunc,
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 			Validators: []storage.Validator{
 				storage.MaxFileSize(5),
 			},
@@ -130,7 +195,8 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", "text/plain")
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			KeyFunc: passthroughKeyFunc,
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 	})
@@ -153,7 +219,8 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", w.FormDataContentType())
 
 		_, err = ParseAndStore(ctx, r, backend, UploadOptions{
-			KeyFunc: passthroughKeyFunc,
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no filename")
@@ -170,6 +237,7 @@ func TestParseAndStore(t *testing.T) {
 			KeyFunc: func(_ *http.Request, _ string, _ storage.ObjectMeta) (string, error) {
 				return "", errors.New("key derivation failed")
 			},
+			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "key derivation")

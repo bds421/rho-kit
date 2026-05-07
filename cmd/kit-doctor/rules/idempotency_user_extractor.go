@@ -24,7 +24,7 @@ func (r idempotencyMissingUserExtractorRule) Run(fset *token.FileSet, file *ast.
 		if !isPackageCall(call, "idempotency", "Middleware") {
 			return true
 		}
-		if !chainHas(chainRoot(call), "WithUserExtractor", "WithAllowSharedKeys") {
+		if !chainHas(call, "WithUserExtractor", "WithAllowSharedKeys") {
 			pos := fset.Position(call.Pos())
 			findings = append(findings, Finding{
 				Rule:       r.Name(),

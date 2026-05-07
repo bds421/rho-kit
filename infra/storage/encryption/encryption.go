@@ -92,7 +92,18 @@ func WithMaxConcurrentEncryptions(n int) Option {
 func (e *EncryptedStorage) Unwrap() storage.Storage { return e.backend }
 
 // New wraps backend with client-side AES-256-GCM encryption.
+//
+// Panics if backend or keys is nil — both are required dependencies and
+// nil values would only surface as a confusing nil-pointer panic on the
+// first Put/Get. Failing fast at construction makes misconfiguration a
+// startup error.
 func New(backend storage.Storage, keys KeyProvider, opts ...Option) *EncryptedStorage {
+	if backend == nil {
+		panic("encryption: backend must not be nil")
+	}
+	if keys == nil {
+		panic("encryption: keys provider must not be nil")
+	}
 	e := &EncryptedStorage{
 		backend: backend,
 		keys:    keys,
@@ -102,6 +113,27 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) *EncryptedSt
 		opt(e)
 	}
 	return e
+}
+
+// aadForKey returns the AEAD associated data that binds ciphertext to its
+// storage key. Without AAD, ciphertext is portable across keys: a
+// compromised backend (or a confused-deputy copy) can move ciphertext from
+// key A to key B and have it decrypt cleanly. Binding the storage key as
+// AAD makes such a substitution fail authentication at Open time.
+//
+// Format: "rho-kit/storage:v1:" + storage key (UTF-8). The version prefix
+// reserves room to extend the bound metadata (e.g. tenant) without
+// breaking forward compatibility.
+//
+// BREAKING CHANGE in v2: ciphertext written by v1 cannot be decrypted by
+// v2 because v2 supplies AAD that v1 did not bind. There is no on-disk
+// format change.
+func aadForKey(key string) []byte {
+	const prefix = "rho-kit/storage:v1:"
+	out := make([]byte, 0, len(prefix)+len(key))
+	out = append(out, prefix...)
+	out = append(out, key...)
+	return out
 }
 
 // MaxEncryptableSize is the maximum content size that can be encrypted.
@@ -141,6 +173,9 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 	defer zeroBytes(keyBytes)
 
 	plaintext, err := io.ReadAll(io.LimitReader(r, MaxEncryptableSize+1))
+	// Defer zero immediately so the oversize/short-circuit paths below also
+	// scrub plaintext from memory.
+	defer zeroBytes(plaintext)
 	if err != nil {
 		return fmt.Errorf("encryption: read plaintext: %w", err)
 	}
@@ -153,17 +188,14 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 		return fmt.Errorf("encryption: %w", err)
 	}
 
-	ciphertext, err := encrypt.SealBytes(gcm, plaintext)
-	// Zero plaintext now that encryption is complete.
-	zeroBytes(plaintext)
+	ciphertext, err := encrypt.SealBytesAAD(gcm, plaintext, aadForKey(key))
 	if err != nil {
 		return fmt.Errorf("encryption: %w", err)
 	}
+	defer zeroBytes(ciphertext)
 
 	meta.Size = int64(len(ciphertext))
-	putErr := e.backend.Put(ctx, key, bytes.NewReader(ciphertext), meta)
-	zeroBytes(ciphertext)
-	return putErr
+	return e.backend.Put(ctx, key, bytes.NewReader(ciphertext), meta)
 }
 
 // Get retrieves and decrypts the stored content.
@@ -185,6 +217,8 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	// Close the backend reader immediately — we've consumed all bytes and
 	// the returned cleaningReader wraps a bytes.Reader, not rc.
 	_ = rc.Close()
+	// Defer zero immediately so all error paths below scrub ciphertext too.
+	defer zeroBytes(ciphertext)
 	if err != nil {
 		return nil, meta, fmt.Errorf("encryption: read ciphertext: %w", err)
 	}
@@ -203,9 +237,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 		return nil, meta, fmt.Errorf("encryption: %w", err)
 	}
 
-	plaintext, err := encrypt.OpenBytes(gcm, ciphertext)
-	// Zero ciphertext now that decryption is complete.
-	zeroBytes(ciphertext)
+	plaintext, err := encrypt.OpenBytesAAD(gcm, ciphertext, aadForKey(key))
 	if err != nil {
 		return nil, meta, fmt.Errorf("encryption: %w", err)
 	}

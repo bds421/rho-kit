@@ -34,6 +34,35 @@ func wire() {
 	}
 }
 
+func TestScan_FlagsOnlyBuilderMissingClaims(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+func wire() {
+	a.WithJWT("https://issuer/.well-known/jwks.json").
+		WithJWTIssuer("https://issuer.example.com").
+		WithJWTAudience("svc-a")
+
+	b.WithJWT("https://issuer/.well-known/jwks.json")
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+
+	var jwtFindings []rules.Finding
+	for _, f := range findings {
+		if f.Rule == "jwt-missing-claims" {
+			jwtFindings = append(jwtFindings, f)
+		}
+	}
+	require.Len(t, jwtFindings, 2,
+		"expected exactly two findings (issuer + audience) for the unconfigured builder, got %+v", findings)
+	for _, f := range jwtFindings {
+		assert.Equal(t, 8, f.Line,
+			"finding must point at the second builder, not the configured one")
+	}
+}
+
 func TestScan_AcceptsJWTWithIssuerAndAudience(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc

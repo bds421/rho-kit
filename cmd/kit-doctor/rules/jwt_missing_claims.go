@@ -23,12 +23,8 @@ func (r jwtMissingClaimsRule) Run(fset *token.FileSet, file *ast.File) []Finding
 		if !isMethodCall(call, "WithJWT") {
 			return true
 		}
-		// Walk up the chained call (e.g. WithJWT(...).WithExpectedIssuer(...))
-		// by inspecting the Builder fluent chain. We treat the
-		// containing expression statement as the chain root.
-		root := chainRoot(call)
-		hasIssuer := chainHas(root, "WithExpectedIssuer", "WithJWTIssuer", "WithoutJWTIssuer")
-		hasAud := chainHas(root, "WithExpectedAudience", "WithJWTAudience", "WithoutJWTAudience")
+		hasIssuer := chainHas(call, "WithExpectedIssuer", "WithJWTIssuer", "WithoutJWTIssuer")
+		hasAud := chainHas(call, "WithExpectedAudience", "WithJWTAudience", "WithoutJWTAudience")
 
 		pos := fset.Position(call.Pos())
 		if !hasIssuer {

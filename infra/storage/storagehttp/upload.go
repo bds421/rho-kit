@@ -49,6 +49,8 @@ type UploadOptions struct {
 
 	// Validators are applied to the upload stream before storing.
 	// These run in addition to any validators configured on the backend.
+	// A [storage.MaxFileSize] validator equal to MaxFileSize is prepended
+	// automatically to enforce the cap.
 	Validators []storage.Validator
 
 	// MaxTotalSkippedBytes caps the cumulative size of multipart parts that
@@ -56,7 +58,19 @@ type UploadOptions struct {
 	// maxPartDiscard × maxSkippedParts (~100 MiB) of attacker-supplied
 	// data per request. Default: 16 MiB.
 	MaxTotalSkippedBytes int64
+
+	// MaxFileSize is the maximum number of bytes ParseAndStore will accept
+	// for the file part. REQUIRED — without an explicit cap a malicious
+	// client could stream gigabytes into the backend. Use [Unlimited] to
+	// opt out explicitly when an upstream layer (reverse proxy, body
+	// limiter middleware) already enforces a cap.
+	MaxFileSize int64
 }
+
+// Unlimited disables the [UploadOptions.MaxFileSize] cap. Pass this only
+// when an upstream layer (reverse proxy, body limiter middleware) already
+// caps request bodies — otherwise a single Put can stream unbounded bytes.
+const Unlimited int64 = -1
 
 func (o *UploadOptions) applyDefaults() {
 	if o.FormField == "" {
@@ -76,6 +90,12 @@ func (o *UploadOptions) applyDefaults() {
 func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {
 	if opts.KeyFunc == nil {
 		return UploadResult{}, fmt.Errorf("storagehttp: KeyFunc is required (use UUIDKeyFunc for unique keys)")
+	}
+	if opts.MaxFileSize == 0 {
+		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize is required — set a positive byte cap, or pass Unlimited to opt out explicitly")
+	}
+	if opts.MaxFileSize < 0 && opts.MaxFileSize != Unlimited {
+		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize must be positive or Unlimited (-1), got %d", opts.MaxFileSize)
 	}
 	opts.applyDefaults()
 
@@ -152,9 +172,16 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 
 	// Apply upload-level validators before key derivation so that
 	// KeyFunc can use the sniffed ContentType (set by AllowedMIMETypes).
+	// Prepend the mandatory MaxFileSize cap unless the caller explicitly
+	// opted out with Unlimited — without this, an unconfigured Validators
+	// slice would let a request stream unbounded bytes into backend.Put.
+	validators := opts.Validators
+	if opts.MaxFileSize > 0 {
+		validators = append([]storage.Validator{storage.MaxFileSize(opts.MaxFileSize)}, validators...)
+	}
 	var reader io.Reader = part
-	if len(opts.Validators) > 0 {
-		validated, err := storage.ApplyValidators(reader, &meta, opts.Validators)
+	if len(validators) > 0 {
+		validated, err := storage.ApplyValidators(reader, &meta, validators)
 		if err != nil {
 			return UploadResult{}, err
 		}

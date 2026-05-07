@@ -43,6 +43,10 @@ func main() {
 		os.Exit(2)
 	}
 	name := flag.Arg(0)
+	if err := ValidateServiceName(name); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if *modulePath == "" {
 		fmt.Fprintln(os.Stderr, "kit-new: -module-path is required")
 		os.Exit(2)

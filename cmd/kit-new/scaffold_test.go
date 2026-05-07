@@ -45,6 +45,29 @@ func TestScaffold_RejectsEmptyServiceName(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ModulePath: "example.com/demo"}))
 }
 
+func TestScaffold_RejectsTraversalServiceName(t *testing.T) {
+	out := t.TempDir()
+	err := scaffold(out, Params{ServiceName: "../../outside", ModulePath: "example.com/demo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ServiceName")
+
+	siblings, _ := os.ReadDir(filepath.Dir(out))
+	for _, e := range siblings {
+		assert.NotEqual(t, "outside", e.Name(), "scaffold must not write outside outDir")
+	}
+}
+
+func TestScaffold_RejectsUppercaseServiceName(t *testing.T) {
+	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "MyService", ModulePath: "example.com/demo"}))
+}
+
+func TestScaffold_AcceptsKebabServiceName(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{ServiceName: "my-service", ModulePath: "example.com/my-service"}))
+	_, err := os.Stat(filepath.Join(out, "cmd/my-service/main.go"))
+	require.NoError(t, err)
+}
+
 func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "demo"}))
 }

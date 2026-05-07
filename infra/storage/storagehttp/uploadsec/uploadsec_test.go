@@ -119,6 +119,43 @@ func TestMaxImageDimensions_PassesNonImage(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestMaxImageDimensions_DoesNotBufferEntireBody asserts the validator
+// reads at most imageHeaderReadLimit bytes regardless of the body size.
+// A countingReader proves the read count never approaches the body's
+// 100 MiB length — the previous io.ReadAll(body) would have buffered all
+// 100 MiB before any size check ran.
+func TestMaxImageDimensions_DoesNotBufferEntireBody(t *testing.T) {
+	v := MaxImageDimensions(1024, 1024)
+
+	const bodySize = 100 << 20 // 100 MiB
+	header := tinyPNG(t)
+	cr := &countingReadSeeker{r: bytes.NewReader(append(header, make([]byte, bodySize-len(header))...))}
+
+	_, err := v.Validate(context.Background(), cr, Meta{ContentType: "image/png"})
+	require.NoError(t, err)
+	// The validator must read at most imageHeaderReadLimit bytes — proving
+	// it doesn't buffer the full body. Anything close to bodySize means
+	// regression to the io.ReadAll(body) path.
+	assert.LessOrEqual(t, cr.read, int64(imageHeaderReadLimit),
+		"validator must not read more than imageHeaderReadLimit (%d) bytes; got %d", imageHeaderReadLimit, cr.read)
+}
+
+// countingReadSeeker counts bytes read from an underlying ReadSeeker.
+type countingReadSeeker struct {
+	r    io.ReadSeeker
+	read int64
+}
+
+func (c *countingReadSeeker) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	return n, err
+}
+
+func (c *countingReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	return c.r.Seek(offset, whence)
+}
+
 func TestChain_ShortCircuitsOnFirstError(t *testing.T) {
 	count := 0
 	mark := ValidatorFunc(func(_ context.Context, _ io.ReadSeeker, meta Meta) (Meta, error) {

@@ -116,3 +116,54 @@ func TestStaticKey_PanicsOnWrongSize(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() { StaticKey([]byte("short")) })
 }
+
+// TestEncryptedStorage_AAD_BindsToStorageKey asserts that ciphertext
+// copy-pasted from key A to key B fails to decrypt under the AAD-binding
+// rule introduced in v2. Substituting objects between keys is the
+// confused-deputy attack the binding defends against.
+func TestEncryptedStorage_AAD_BindsToStorageKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	key := testKey()
+	backend := membackend.New()
+	enc := New(backend, StaticKey(key))
+
+	original := []byte("payload bound to keyA")
+	require.NoError(t, enc.Put(ctx, "keyA", bytes.NewReader(original), storage.ObjectMeta{}))
+
+	// Copy raw ciphertext from keyA to keyB at the backend level. With AAD
+	// binding, the ciphertext is no longer portable.
+	rc, _, err := backend.Get(ctx, "keyA")
+	require.NoError(t, err)
+	stolen, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	require.NoError(t, backend.Put(ctx, "keyB", bytes.NewReader(stolen), storage.ObjectMeta{Size: int64(len(stolen))}))
+
+	// Reading keyB must fail authentication (different AAD) — that is the
+	// whole point of binding.
+	_, _, err = enc.Get(ctx, "keyB")
+	require.Error(t, err, "ciphertext copied to a different key must not decrypt")
+	assert.Contains(t, err.Error(), "decrypt")
+
+	// Reading keyA must still work — same key, same AAD.
+	rc, _, err = enc.Get(ctx, "keyA")
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	assert.Equal(t, original, got)
+}
+
+func TestEncryptedStorage_New_PanicsOnNilBackend(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "encryption: backend must not be nil", func() {
+		New(nil, StaticKey(testKey()))
+	})
+}
+
+func TestEncryptedStorage_New_PanicsOnNilKeys(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "encryption: keys provider must not be nil", func() {
+		New(membackend.New(), nil)
+	})
+}

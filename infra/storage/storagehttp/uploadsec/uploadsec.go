@@ -165,11 +165,22 @@ func AllowExtensions(allowed ...string) Validator {
 	})
 }
 
+// imageHeaderReadLimit caps the bytes read for image.DecodeConfig.
+// Standard image headers (PNG, JPEG, GIF) parse within the first ~1 KiB;
+// 64 KiB is generous for exotic format variants while keeping memory use
+// bounded regardless of upload size. Reading the full body would let a
+// 100 MiB upload buffer 100 MiB in RAM before any size check runs.
+const imageHeaderReadLimit = 64 << 10
+
 // MaxImageDimensions returns a Validator that rejects images whose
 // width × height exceeds maxWidth × maxHeight. Only the image header
 // is parsed (image.DecodeConfig); the full pixel buffer is never
 // allocated, so a 100,000 × 100,000 PNG decompression bomb is rejected
 // without ever materialising the megabytes of pixels.
+//
+// Memory use is bounded by [imageHeaderReadLimit] (64 KiB) regardless of
+// the upload size — only the header is read into memory, the body is left
+// at its current offset for downstream validators / persistence.
 //
 // Non-image content types pass through unchanged. Wire AllowMIMETypes
 // before this validator so meta.ContentType is the sniffed value.
@@ -181,14 +192,14 @@ func MaxImageDimensions(maxWidth, maxHeight int) Validator {
 		if !strings.HasPrefix(meta.ContentType, "image/") {
 			return meta, nil
 		}
-		// DecodeConfig reads only the image header. We still buffer
-		// because the body must be rewindable for downstream
-		// validators / persistence.
-		buf, err := io.ReadAll(body)
+		// Read only enough bytes for image.DecodeConfig. Using a bounded
+		// LimitReader instead of ReadAll caps validator memory at
+		// imageHeaderReadLimit even for arbitrarily large uploads.
+		header, err := io.ReadAll(io.LimitReader(body, imageHeaderReadLimit))
 		if err != nil {
-			return meta, fmt.Errorf("uploadsec: buffer image: %w", err)
+			return meta, fmt.Errorf("uploadsec: buffer image header: %w", err)
 		}
-		cfg, _, err := image.DecodeConfig(bytes.NewReader(buf))
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(header))
 		if err != nil {
 			return meta, fmt.Errorf("%w: %v", ErrInvalidImage, err)
 		}
