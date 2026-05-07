@@ -27,7 +27,7 @@ Largest single audit area. Middleware composition (`stack.Default`) ships incomp
 - ✅ **Tracing hijack handling** — when the response is hijacked the tracing middleware now records `HTTPResponseStatusCode(101)` instead of the recorder's misleading 200 default.
 - ✅ **Rate-limit cleanup doc** — comment rewritten to reflect that LRU pressure is the real GC; cleanup is a best-effort O(1000) hint.
 
-CSRF session-bound HMAC remains a `new/06` work item — it is a different primitive (not an `existing` regression).
+CSRF session-bound HMAC primitive landed as `security/csrf` (commit `ca3f5aa`). The httpx/middleware/csrf refit (becoming a thin wrapper) is a follow-up and remains tracked under `new/06`.
 
 ### Open
 
