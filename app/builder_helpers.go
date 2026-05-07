@@ -90,6 +90,10 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, newNatsModule(*b.natsCfg))
 	}
 
+	if b.pgxCfg != nil {
+		modules = append(modules, newPgxModule(*b.pgxCfg))
+	}
+
 	return modules, dbMod
 }
 

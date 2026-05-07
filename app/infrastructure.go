@@ -14,6 +14,7 @@ import (
 	"github.com/bds421/rho-kit/infra/messaging"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/observability/health"
@@ -48,6 +49,8 @@ type Infrastructure struct {
 
 	DB       *gorm.DB // nil if no WithMySQL or WithPostgres
 	DBReader *gorm.DB // read replica; falls back to DB when no replica is configured
+
+	Pgx *pgxbackend.Pool // nil if no WithPgx — pgx-native pool
 
 	Broker    messaging.Connector        // nil if no WithRabbitMQ
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ

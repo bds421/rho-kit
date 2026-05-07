@@ -23,6 +23,7 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
 	"github.com/bds421/rho-kit/observability/health"
@@ -81,6 +82,11 @@ type Builder struct {
 	dbPoolCfg   *sqldb.PoolConfig
 	dbMetrics   bool
 	dbNamespace string
+
+	// pgx-native Postgres (alternative to WithPostgres). Validate
+	// rejects the combination — the two represent different drivers
+	// against the same DB and would race on connection state.
+	pgxCfg *pgxbackend.Config
 
 	// Redis
 	redisOpts     *goredis.Options
@@ -220,6 +226,27 @@ func (b *Builder) WithPostgres(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder
 	b.dbCfg = &cfg
 	b.dbPoolCfg = &pool
 	b.dbNamespace = b.name
+	return b
+}
+
+// WithPgx configures a pgx-native Postgres pool. Use this when the
+// service needs LISTEN/NOTIFY, COPY, or pipelined queries that
+// `database/sql` (the WithPostgres path) cannot expose.
+//
+// WithPgx and [WithPostgres] are mutually exclusive — both target
+// Postgres but with different drivers, and configuring both
+// simultaneously would create two pools competing for the same
+// database with different lifecycle semantics. Validate rejects the
+// combination at startup.
+//
+// Panics if cfg.DSN is empty. TLS rules mirror WithPostgres: in
+// non-dev, sslmode must be require/verify-ca/verify-full (enforced
+// inside the pgx package's Connect).
+func (b *Builder) WithPgx(cfg pgxbackend.Config) *Builder {
+	if cfg.DSN == "" {
+		panic("app: WithPgx requires a non-empty DSN")
+	}
+	b.pgxCfg = &cfg
 	return b
 }
 

@@ -15,6 +15,9 @@ func (b *Builder) Validate() error {
 	if b.dbDriver != nil && b.dbPoolCfg == nil {
 		return fmt.Errorf("database pool config is required when a database is configured")
 	}
+	if b.dbDriver != nil && b.pgxCfg != nil {
+		return fmt.Errorf("WithPgx and WithPostgres/WithMySQL are mutually exclusive — pick one DB driver")
+	}
 	if b.dbMetrics && b.dbDriver == nil {
 		return fmt.Errorf("database metrics require a configured database")
 	}
