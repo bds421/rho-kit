@@ -11,6 +11,10 @@ use (
 	./core/secret
 	./core/validate
 	./crypto
+	./crypto/envelope
+	./crypto/envelope/kekstatic
+	./crypto/paseto
+	./crypto/passhash
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
