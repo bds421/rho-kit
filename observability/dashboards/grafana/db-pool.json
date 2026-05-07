@@ -1,0 +1,114 @@
+{
+  "title": "rho-kit / DB pool",
+  "uid": "rhokit-db-pool",
+  "tags": ["rho-kit", "db", "pool"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\".+_db_open_connections\"}, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\".+_db_open_connections\", namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Open connections",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\".+_db_open_connections\", namespace=\"$namespace\", service=\"$service\"})",
+          "legendFormat": "open"
+        },
+        {
+          "expr": "sum({__name__=~\".+_db_idle_connections\", namespace=\"$namespace\", service=\"$service\"})",
+          "legendFormat": "idle"
+        },
+        {
+          "expr": "sum({__name__=~\".+_db_open_connections\", namespace=\"$namespace\", service=\"$service\"}) - sum({__name__=~\".+_db_idle_connections\", namespace=\"$namespace\", service=\"$service\"})",
+          "legendFormat": "in-use"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Connection wait rate (waits/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate({__name__=~\".+_db_wait_count_total\", namespace=\"$namespace\", service=\"$service\"}[5m]))",
+          "legendFormat": "waits/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "In-use connections",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\".+_db_open_connections\", namespace=\"$namespace\", service=\"$service\"}) - sum({__name__=~\".+_db_idle_connections\", namespace=\"$namespace\", service=\"$service\"})"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Idle connections",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\".+_db_idle_connections\", namespace=\"$namespace\", service=\"$service\"})"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 }
+    },
+    {
+      "title": "Open connections (total)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\".+_db_open_connections\", namespace=\"$namespace\", service=\"$service\"})"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Total waits (cumulative)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum({__name__=~\".+_db_wait_count_total\", namespace=\"$namespace\", service=\"$service\"})"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 }
+    },
+    {
+      "title": "Notes",
+      "type": "text",
+      "options": {
+        "mode": "markdown",
+        "content": "DB pool metrics are emitted by `infra/sqldb.NewPoolMetrics` and exported on a 15s tick by the `app` builder. The metric name is prefixed with the service's namespace (e.g. `mysvc_db_open_connections`), hence the `__name__` regex match. Works for both Postgres (pgx, gorm) and MySQL (gorm) drivers."
+      },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 12 }
+    }
+  ]
+}
