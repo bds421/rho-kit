@@ -1,3 +1,17 @@
+// Cron emits its own RED metrics under the `cron_*` prefix:
+//
+//   - cron_job_runs_total{name, status}
+//   - cron_job_duration_seconds{name}
+//   - cron_job_skipped_not_leader_total{name}
+//
+// These metric names predate the kit's general-purpose
+// [github.com/bds421/rho-kit/observability/redmetrics] BatchMetrics
+// which uses `cron_runs_total` / `cron_run_duration_seconds`. The two
+// are intentionally NOT unified: existing services have dashboards
+// pinned to `cron_job_*`, and the BatchMetrics shape is exposed as a
+// generic constructor for batchworker / outbox / custom-runner code
+// that doesn't have the same back-compat constraint.
+
 package cron
 
 import (

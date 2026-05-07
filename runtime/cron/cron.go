@@ -34,9 +34,9 @@ type Scheduler struct {
 type Option func(*config)
 
 type config struct {
-	location  *time.Location
-	registry  prometheus.Registerer
-	leaderFn  func() bool
+	location *time.Location
+	registry prometheus.Registerer
+	leaderFn func() bool
 }
 
 // WithLocation sets the timezone for cron schedule evaluation.

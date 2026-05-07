@@ -1,3 +1,22 @@
+// Package metrics is the v1-era HTTP RED middleware. It emits
+// `http_requests_total{method,path,status}`,
+// `http_request_duration_seconds{method,path}`, and
+// `http_requests_in_flight`.
+//
+// New services should prefer
+// [github.com/bds421/rho-kit/observability/redmetrics] which:
+//
+//   - Spells the route label `route` (USE-method conventions and
+//     matching the kit's observability/dashboards/grafana/http-red.json
+//     layout).
+//   - Splits errors into a separate `*_errors_total` counter so
+//     dashboards distinguish the rate of bad outcomes from the rate
+//     of all outcomes.
+//   - Provides namespace + subsystem options for multi-service
+//     deployments where bare metric names would collide.
+//
+// This package is preserved without breaking changes for services
+// whose dashboards are pinned to the original label names.
 package metrics
 
 import (

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/httpx/problemdetails"
 	"github.com/bds421/rho-kit/observability/logattr"
 )
 
@@ -110,4 +111,55 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 		Fields: ve.Fields,
 	}
 	WriteJSON(w, http.StatusBadRequest, resp)
+}
+
+// WriteServiceProblem is the RFC 7807 sibling of [WriteServiceError].
+// It logs the same way (request ID + path + dependency where
+// available) and emits an `application/problem+json` response with
+// the kit's apperror→Problem mapping plus the request URI as the
+// `instance`.
+//
+// Use this for new services that prefer problem+json — e.g. APIs
+// consumed by generated SDKs that expect the RFC 7807 envelope, or
+// services that want extension fields (`retry_after_seconds`,
+// per-field validation errors) without redefining a JSON shape.
+//
+// `opts` flow through to [problemdetails.FromError] (e.g.
+// `problemdetails.WithBaseURL("https://errors.example.com")` for
+// linkable type URIs).
+func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, opts ...problemdetails.Option) {
+	logErr := func(msg string) {
+		if logger == nil {
+			return
+		}
+		attrs := []any{
+			logattr.Error(err),
+			logattr.RequestID(RequestID(r.Context())),
+			logattr.Method(r.Method),
+			logattr.Path(r.URL.Path),
+		}
+		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
+			attrs = append(attrs, slog.String("dependency", ue.Dependency))
+		}
+		logger.Error(msg, attrs...)
+	}
+
+	switch {
+	case apperror.IsValidation(err), apperror.IsRateLimit(err),
+		apperror.IsNotFound(err), apperror.IsConflict(err),
+		apperror.IsPermanent(err), apperror.IsAuthRequired(err),
+		apperror.IsForbidden(err):
+		// Client-recoverable: caller may add their own audit-level event.
+	case apperror.IsUnavailable(err):
+		logErr("upstream unavailable")
+	case apperror.IsOperationFailed(err):
+		logErr("operation failed")
+	default:
+		logErr("unhandled service error")
+	}
+
+	allOpts := append([]problemdetails.Option{
+		problemdetails.WithInstance(r.URL.RequestURI()),
+	}, opts...)
+	problemdetails.Write(w, problemdetails.FromError(err, allOpts...))
 }
