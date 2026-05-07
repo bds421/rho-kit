@@ -11,8 +11,18 @@ import (
 type Option func(*timeoutOptions)
 
 type timeoutOptions struct {
-	maxBuffer int
-	hard      bool
+	maxBuffer             int
+	hard                  bool
+	allowWebSocketUpgrade bool
+}
+
+// WithWebSocketUpgradeBypass opts the route into bypassing the timeout
+// when the request carries `Upgrade: websocket`. Only call this for
+// routes that legitimately serve WebSocket connections — without the
+// opt-in, any client could send the header against any route to run
+// unbounded.
+func WithWebSocketUpgradeBypass() Option {
+	return func(o *timeoutOptions) { o.allowWebSocketUpgrade = true }
 }
 
 // WithMaxBufferSize overrides the per-request response buffer cap (default
@@ -75,7 +85,13 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			// Bypass the timeout only when the route opted into
+			// WebSocket via cfg.allowWebSocketUpgrade. Honoring the
+			// header alone is a generic timeout bypass: any client
+			// could send `Upgrade: websocket` against a non-WS route
+			// to run unbounded. Routes that genuinely upgrade should
+			// be mounted via a builder that sets the option.
+			if cfg.allowWebSocketUpgrade && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 				next.ServeHTTP(w, r)
 				return
 			}

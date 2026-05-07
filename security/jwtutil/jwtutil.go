@@ -323,7 +323,18 @@ func (p *Provider) Run(ctx context.Context) {
 }
 
 func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: defaultHTTPTimeout}
+	// MaxResponseHeaderBytes caps the JWKS response header size at 64 KB.
+	// The default of 0 means "use net/http's default" which is 1 MB —
+	// plenty for a real JWKS service but enough room for a hostile JWKS
+	// endpoint to ship pathological headers (e.g., a SET-COOKIE flood)
+	// that bloats memory under attacker influence. The body cap is
+	// enforced separately at fetch time (1 MB via io.LimitReader).
+	return &http.Client{
+		Timeout: defaultHTTPTimeout,
+		Transport: &http.Transport{
+			MaxResponseHeaderBytes: 64 * 1024,
+		},
+	}
 }
 
 // KeySet returns the current cached key set. Returns nil if keys haven't

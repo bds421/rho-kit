@@ -178,8 +178,15 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler
 		return
 	}
 
+	// Precondition: this function is only reached after verifyClientCert
+	// returned true, which already enforced len(r.TLS.VerifiedChains) > 0.
+	// Reading PeerCertificates here is safe because the chain was actually
+	// verified upstream — but keep that contract close at hand: if a
+	// future refactor splits verifyClientCert from this function and
+	// PeerCertificates can be reached without a chain check, this code
+	// must re-add `len(r.TLS.VerifiedChains) > 0`.
 	cn := ""
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 && len(r.TLS.VerifiedChains) > 0 {
 		cn = r.TLS.PeerCertificates[0].Subject.CommonName
 	}
 	httpx.Logger(r.Context(), slog.Default()).Info("s2s user impersonation",

@@ -133,8 +133,15 @@ func readBody(req *http.Request, max int64) ([]byte, error) {
 	return buf, nil
 }
 
+// defaultNonce returns 16 random bytes base64-encoded. Panics if
+// crypto/rand fails — on a healthy Linux system this never happens, but
+// silently falling back to all-zero bytes would defeat replay
+// protection (every request would carry the same nonce). Better to
+// crash than to ship a forgeable signature.
 func defaultNonce() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("sign: crypto/rand failed: %v", err))
+	}
 	return base64.StdEncoding.EncodeToString(b[:])
 }

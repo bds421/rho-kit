@@ -71,11 +71,24 @@ func NewInternalHandler(version string, readiness http.Handler, opts ...Internal
 	liveness := Handler(&health.Checker{Version: health.ResolveVersion(version)})
 	mux.Handle("GET /health", liveness)
 	mux.Handle("GET /ready", readiness)
-	mux.Handle("GET /metrics", promhttp.Handler())
+	// Wrap promhttp with a Cache-Control: no-store header so a
+	// misconfigured CDN/reverse proxy in front of the internal port
+	// can't serve stale metrics. Prometheus itself ignores cache
+	// headers, but operators occasionally point a CDN at /metrics for
+	// "convenience".
+	mux.Handle("GET /metrics", noStoreHandler(promhttp.Handler()))
 	if cfg.sloHandler != nil {
 		mux.Handle("GET /slo", cfg.sloHandler)
 	}
 	return mux
+}
+
+// noStoreHandler wraps h to send Cache-Control: no-store on the response.
+func noStoreHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		h.ServeHTTP(w, r)
+	})
 }
 
 // HTTPCheck returns a [health.DependencyCheck] that probes the given URL with
