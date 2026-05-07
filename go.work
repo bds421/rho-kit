@@ -8,6 +8,7 @@ use (
 	./core/contextutil
 	./core/validate
 	./crypto
+	./data/actionlog
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
