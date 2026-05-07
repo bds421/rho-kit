@@ -19,6 +19,7 @@ use (
 	./crypto/envelope/kekstatic
 	./crypto/paseto
 	./crypto/passhash
+	./data/budget
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
