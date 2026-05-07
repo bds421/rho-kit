@@ -21,14 +21,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ID identifies a tenant. Construct via [NewID] (validates the input)
 // or, for a value already validated upstream (e.g. read from a trusted
 // DB column), [NewIDUnchecked].
 //
-// Allowed characters in a tenant ID: any byte *except* the separators
-// and control codes used by the rest of the kit. Specifically rejected:
+// Allowed characters in a tenant ID: any byte *except* the separators,
+// control codes, and whitespace used by the rest of the kit. Specifically rejected:
 //
 //   - ':' — reserved as the field separator in cache / idempotency
 //     scoped keys. Allowing ':' would let `tenant:"a:b" + key:"c"`
@@ -36,6 +38,10 @@ import (
 //   - '/' — reserved for path-like keying schemes and operator URLs.
 //   - '\n', '\r', '\t', '\x00' — control codes that corrupt log lines,
 //     header values, and Redis MONITOR traces.
+//   - any whitespace rune (per unicode.IsSpace) — tenant IDs are tokens,
+//     not free text; leading/trailing/embedded whitespace would make
+//     `acme`, ` acme`, `acme `, and `ac me` distinct keys in cache,
+//     metric, log, and budget scopes.
 //
 // All other bytes (alphanumerics, '-', '_', '.', UUIDs) are accepted.
 // Length is bounded to [MaxIDLen] bytes — long enough to fit any
@@ -78,12 +84,30 @@ const forbiddenBytes = ":/\n\r\t\x00"
 // callers that want to validate input before passing it through other
 // layers (e.g. an HTTP middleware that wants a 400 response, not a
 // panic, on bad input).
+//
+// Tenant IDs are tokens, not free text. Any leading/trailing whitespace
+// or internal whitespace rune (per Go's unicode.IsSpace) is rejected so
+// `acme`, ` acme`, `acme `, and `ac me` are not silently distinct keys
+// in cache prefixes, log lines, metric labels, or budget scopes.
 func ValidateID(s string) error {
 	if s == "" {
 		return fmt.Errorf("%w: must not be empty", ErrInvalid)
 	}
 	if len(s) > MaxIDLen {
 		return fmt.Errorf("%w: length %d exceeds maximum %d bytes", ErrInvalid, len(s), MaxIDLen)
+	}
+	if strings.TrimSpace(s) != s {
+		return fmt.Errorf("%w: contains leading or trailing whitespace", ErrInvalid)
+	}
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			return fmt.Errorf("%w: contains invalid UTF-8 at offset %d", ErrInvalid, i)
+		}
+		if unicode.IsSpace(r) {
+			return fmt.Errorf("%w: contains whitespace rune %q at offset %d", ErrInvalid, r, i)
+		}
+		i += size
 	}
 	if i := strings.IndexAny(s, forbiddenBytes); i >= 0 {
 		return fmt.Errorf("%w: contains forbidden byte %q at offset %d", ErrInvalid, s[i], i)

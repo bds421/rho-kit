@@ -46,16 +46,23 @@ func TestNew_RejectsMissingOnPOST(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestNew_GETPassesWithoutTenant(t *testing.T) {
+func TestNew_RejectsMissingOnGET_DefaultRequired(t *testing.T) {
+	// Default behavior: WithRequired(true) applies to every method,
+	// including GET/HEAD/OPTIONS. The previous safe-method
+	// short-circuit was the source of a tenant-budget bypass.
 	mw := New()
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
 }
 
 func TestNew_NonRequiredPassesWithoutTenant(t *testing.T) {
@@ -95,12 +102,16 @@ func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
 	}))
 
 	cases := map[string]string{
-		"colon":    "a:b",
-		"slash":    "a/b",
-		"newline":  "a\nb",
-		"tab":      "a\tb",
-		"null":     "a\x00b",
-		"too-long": strings.Repeat("a", coretenant.MaxIDLen+1),
+		"colon":           "a:b",
+		"slash":           "a/b",
+		"newline":         "a\nb",
+		"tab":             "a\tb",
+		"null":            "a\x00b",
+		"too-long":        strings.Repeat("a", coretenant.MaxIDLen+1),
+		"leading space":   " acme",
+		"trailing space":  "acme ",
+		"embedded space":  "ac me",
+		"only whitespace": "   ",
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -179,11 +190,10 @@ func TestNew_EmptyHeaderTreatedAsMissing(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestTenantMiddleware_SafeMethodEnforcement(t *testing.T) {
-	// M-4 fix: WithRequiredOnSafeMethods(true) makes GET/HEAD/OPTIONS
-	// reject when no tenant is supplied (instead of the default
-	// short-circuit pass-through).
-	mw := New(WithRequired(true), WithRequiredOnSafeMethods(true))
+func TestNew_AllowMissingOnSafeMethods_PassesGET(t *testing.T) {
+	// Explicit opt-out: GET/HEAD/OPTIONS without a tenant short-circuit
+	// through the middleware while POST still requires one.
+	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -193,32 +203,30 @@ func TestTenantMiddleware_SafeMethodEnforcement(t *testing.T) {
 			req := httptest.NewRequest(method, "/", nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
-			assert.Equal(t, http.StatusBadRequest, rec.Code,
-				"safe method without tenant must reject when WithRequiredOnSafeMethods is true")
+			assert.Equal(t, http.StatusOK, rec.Code,
+				"safe method without tenant must short-circuit when WithAllowMissingTenantOnSafeMethods is set")
 		})
 	}
 }
 
-func TestTenantMiddleware_SafeMethodEnforcement_PassesWithTenant(t *testing.T) {
-	mw := New(WithRequired(true), WithRequiredOnSafeMethods(true))
+func TestNew_AllowMissingOnSafeMethods_StillRejectsPOST(t *testing.T) {
+	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestNew_AllowMissingOnSafeMethods_PassesWithTenant(t *testing.T) {
+	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
 	handler := mw(okHandler(t, coretenant.ID("acme")))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Tenant-Id", "acme")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestTenantMiddleware_SafeMethodEnforcement_DefaultStillPasses(t *testing.T) {
-	// Default (WithRequiredOnSafeMethods not set, i.e. false) preserves
-	// the legacy short-circuit on safe methods so existing deployments
-	// don't regress.
-	mw := New(WithRequired(true))
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)

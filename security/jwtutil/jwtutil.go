@@ -351,8 +351,36 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 // max-stale is implicitly disabled because there is no fetch loop to
 // refresh the lastSuccessfulFetch timestamp; staleness is meaningless when
 // the keys are pinned by hand.
-func NewProviderWithKeySet(ks *KeySet) *Provider {
-	return &Provider{keyset: ks, clock: time.Now}
+//
+// Issuer and audience enforcement match [NewProvider]: the constructor
+// panics unless either [WithExpectedIssuer] or [WithAllowAnyIssuer] is
+// supplied, and likewise for the audience pair. A pinned-keyset provider
+// that skipped this check would still verify any correctly-signed token
+// regardless of issuer/audience and reopen the confused-deputy hazard
+// (RFC 7519 §4.1.3) the [NewProvider] guardrail closes.
+//
+// The supplied options also overwrite [KeySet.ExpectedIssuer] and
+// [KeySet.ExpectedAudience] so the provider's policy is the source of
+// truth, regardless of what was set on the keyset literal.
+func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
+	p := &Provider{keyset: ks, clock: time.Now}
+	for _, opt := range opts {
+		opt(p)
+	}
+	if p.clock == nil {
+		p.clock = time.Now
+	}
+	if p.expectedIssuer == "" && !p.allowAnyIssuer {
+		panic("jwtutil: NewProviderWithKeySet requires WithExpectedIssuer or the explicit WithAllowAnyIssuer opt-out")
+	}
+	if p.expectedAudience == "" && !p.allowAnyAudience {
+		panic("jwtutil: NewProviderWithKeySet requires WithExpectedAudience or the explicit WithAllowAnyAudience opt-out (RFC 7519 confused-deputy mitigation)")
+	}
+	if ks != nil {
+		ks.ExpectedIssuer = p.expectedIssuer
+		ks.ExpectedAudience = p.expectedAudience
+	}
+	return p
 }
 
 // Run starts the background JWKS refresh loop. It blocks until ctx is cancelled.

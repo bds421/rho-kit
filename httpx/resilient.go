@@ -51,12 +51,24 @@ func WithCBResetTimeout(d time.Duration) ResilientOption {
 // WithCBShouldTrip sets a custom predicate for deciding whether a response/error
 // should count toward the circuit breaker failure threshold. By default,
 // transport errors and HTTP 5xx responses trip the breaker.
+//
+// Panics if fn is nil — a nil predicate would compile but crash on the
+// first outbound request through the transport, long after construction.
 func WithCBShouldTrip(fn func(resp *http.Response, err error) bool) ResilientOption {
+	if fn == nil {
+		panic("httpx: WithCBShouldTrip requires a non-nil predicate")
+	}
 	return func(c *resilientConfig) { c.shouldTrip = fn }
 }
 
 // WithCBOnStateChange registers a callback for circuit breaker state transitions.
+//
+// Panics if fn is nil — installing a nil callback would compile but crash
+// on the first state transition.
 func WithCBOnStateChange(fn func(from, to circuitbreaker.State)) ResilientOption {
+	if fn == nil {
+		panic("httpx: WithCBOnStateChange requires a non-nil callback")
+	}
 	return func(c *resilientConfig) { c.onStateChange = fn }
 }
 

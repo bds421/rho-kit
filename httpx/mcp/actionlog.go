@@ -143,28 +143,27 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 // async mode is best-effort by definition, and a hung audit store
 // must not be allowed to accumulate goroutines without bound.
 //
-// Race-safety: senders never close auditQueue. Stop closes the done
-// channel and workers drain the remaining queue; senders use a
-// select on done so they cannot send after Stop has signalled.
+// Race-safety: enqueueAuditJob takes auditStopMu.RLock for the whole
+// check-then-send window. [Server.Stop] takes the write lock to flip
+// auditStopped and close auditDone, so a sender that observes
+// auditStopped == false is guaranteed to send to a still-open queue
+// before Stop's close runs. The earlier two-step
+// "select-default-then-select" pattern allowed the Go scheduler to
+// pick the send case after Stop had already signalled, leaking a job
+// past the worker drain.
 func (s *Server) enqueueAuditJob(job auditJob) {
-	select {
-	case <-s.auditDone:
+	s.auditStopMu.RLock()
+	defer s.auditStopMu.RUnlock()
+	if s.auditStopped.Load() {
 		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
 			"tool", job.tool,
 			"tenant_id", job.tenantID,
 		)
 		return
-	default:
 	}
 	select {
 	case s.auditQueue <- job:
-	case <-s.auditDone:
-		s.auditDropped.Add(1)
-		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
-			"tool", job.tool,
-			"tenant_id", job.tenantID,
-		)
 	default:
 		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit queue full; dropping entry",

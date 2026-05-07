@@ -50,7 +50,10 @@ func testKeyAndProvider(t *testing.T) (*jwtutil.Provider, *ecdsa.PrivateKey) {
 	ks, err := jwtutil.ParseKeySet(data)
 	require.NoError(t, err)
 
-	provider := jwtutil.NewProviderWithKeySet(ks)
+	provider := jwtutil.NewProviderWithKeySet(ks,
+		jwtutil.WithAllowAnyIssuer(),
+		jwtutil.WithAllowAnyAudience(),
+	)
 	return provider, privKey
 }
 

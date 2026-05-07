@@ -137,7 +137,13 @@ func WithBodyMaxSize(n int64) Option {
 }
 
 // WithClock overrides the time source for tests.
+//
+// Panics if now is nil — a nil clock would compile but blow up on the
+// first signed request, well after construction.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("signedrequest: WithClock requires a non-nil clock function")
+	}
 	return func(c *config) { c.now = now }
 }
 

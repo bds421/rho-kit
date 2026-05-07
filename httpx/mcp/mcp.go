@@ -349,8 +349,18 @@ type Server struct {
 	// never close it; only Stop closes auditDone to signal that no
 	// new appends will be enqueued. Workers exit when the channel
 	// drains and auditDone is closed.
+	//
+	// Race-safety: enqueue and Stop are mutually exclusive on
+	// auditStopMu. Enqueue takes the read lock, re-checks
+	// auditStopped, and sends to auditQueue while still holding the
+	// read lock. Stop takes the write lock, flips auditStopped, and
+	// closes auditDone before releasing — so any send that observes
+	// auditStopped == false has serialized before Stop's close, and
+	// the send to a still-open auditQueue cannot collide with a
+	// concurrent shutdown.
 	auditQueue   chan auditJob
 	auditDone    chan struct{}
+	auditStopMu  sync.RWMutex
 	auditStopped atomic.Bool
 	auditWG      sync.WaitGroup
 	auditDropped atomic.Int64
@@ -461,18 +471,22 @@ func (s *Server) runAuditJob(job auditJob) {
 // use. Returns when ctx expires or the workers have drained, whichever
 // comes first; remaining queued jobs after ctx expires are abandoned.
 //
-// Race-safety: Stop closes auditDone (a sentinel channel) rather than
-// auditQueue. Senders select on auditDone to detect shutdown without
-// risking send-on-closed-channel — concurrent enqueueAuditJob calls
-// during Stop drop their entry instead of panicking.
+// Race-safety: Stop takes auditStopMu.Lock so it cannot run concurrently
+// with any [Server.enqueueAuditJob] critical section. Once Stop returns
+// from the locked block, every subsequent enqueue observes
+// auditStopped == true and drops without touching auditQueue.
 func (s *Server) Stop(ctx context.Context) error {
 	if !s.cfg.asyncAudit {
 		return nil
 	}
-	if !s.auditStopped.CompareAndSwap(false, true) {
+	s.auditStopMu.Lock()
+	if s.auditStopped.Load() {
+		s.auditStopMu.Unlock()
 		return nil
 	}
+	s.auditStopped.Store(true)
 	close(s.auditDone)
+	s.auditStopMu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		s.auditWG.Wait()

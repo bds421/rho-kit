@@ -222,6 +222,10 @@ func TestWithRequiredHeaders_PanicsWhenAnyNameInvalid(t *testing.T) {
 	assert.Panics(t, func() { WithRequiredHeaders("X-Tenant-ID", "") })
 }
 
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
 func TestMemoryNonceStore_Sweep(t *testing.T) {
 	now := time.Now()
 	s := NewMemoryNonceStore(time.Second)

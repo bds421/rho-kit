@@ -822,3 +822,21 @@ func TestNewResilientHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
 		t.Fatal("expected client with transport")
 	}
 }
+
+func TestWithCBShouldTrip_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil predicate")
+		}
+	}()
+	WithCBShouldTrip(nil)
+}
+
+func TestWithCBOnStateChange_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil callback")
+		}
+	}()
+	WithCBOnStateChange(nil)
+}

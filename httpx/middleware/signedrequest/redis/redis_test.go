@@ -276,3 +276,21 @@ func TestWithCallTimeout_Compiles(t *testing.T) {
 		t.Fatal("smoke: expected admit")
 	}
 }
+
+func TestWithCallTimeout_PanicsOnZero(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on zero call timeout")
+		}
+	}()
+	signedredis.WithCallTimeout(0)
+}
+
+func TestWithCallTimeout_PanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on negative call timeout")
+		}
+	}()
+	signedredis.WithCallTimeout(-time.Second)
+}

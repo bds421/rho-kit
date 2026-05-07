@@ -664,9 +664,62 @@ func TestNewProvider_WithExpectedIssuer(t *testing.T) {
 func TestNewProviderWithKeySet(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
-	p := NewProviderWithKeySet(ks)
+	p := NewProviderWithKeySet(ks, WithAllowAnyIssuer(), WithAllowAnyAudience())
 	if p.KeySet() != ks {
 		t.Error("expected keyset to be set")
+	}
+}
+
+func TestNewProviderWithKeySet_PanicsWithoutIssuerOrAudienceOpts(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+
+	cases := map[string][]ProviderOption{
+		"missing both":     nil,
+		"missing audience": {WithExpectedIssuer("https://issuer")},
+		"missing issuer":   {WithExpectedAudience("svc")},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic on missing iss/aud opt")
+				}
+			}()
+			_ = NewProviderWithKeySet(ks, opts...)
+		})
+	}
+}
+
+func TestNewProviderWithKeySet_AcceptsExplicitOptIns(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+
+	p := NewProviderWithKeySet(ks,
+		WithExpectedIssuer("https://issuer"),
+		WithExpectedAudience("svc"),
+	)
+	if p.KeySet() != ks {
+		t.Fatal("expected keyset to be set")
+	}
+	if got := ks.ExpectedIssuer; got != "https://issuer" {
+		t.Errorf("ExpectedIssuer = %q, want https://issuer", got)
+	}
+	if got := ks.ExpectedAudience; got != "svc" {
+		t.Errorf("ExpectedAudience = %q, want svc", got)
+	}
+}
+
+func TestNewProviderWithKeySet_AcceptsExplicitOptOuts(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+
+	p := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+	)
+	if p.KeySet() != ks {
+		t.Fatal("expected keyset to be set")
 	}
 }
 

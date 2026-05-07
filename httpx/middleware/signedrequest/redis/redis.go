@@ -48,7 +48,14 @@ func WithKeyPrefix(p string) Option {
 // round trip. Default: 2 seconds. Set tighter for latency-sensitive
 // services; set looser only if your Redis is reliably slow (you
 // almost certainly have a different problem in that case).
+//
+// Panics if d <= 0 — a zero or negative timeout would create an
+// immediately expired context and fail every nonce SET NX call closed,
+// silently turning the verifier into a denial-of-service.
 func WithCallTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("signedrequest/redis: WithCallTimeout requires a positive duration")
+	}
 	return func(s *RedisNonceStore) {
 		s.ctx = func() (context.Context, context.CancelFunc) {
 			return context.WithTimeout(context.Background(), d)

@@ -48,6 +48,27 @@ func TestNewID_RejectsControlChars(t *testing.T) {
 	}
 }
 
+func TestNewID_RejectsWhitespace(t *testing.T) {
+	cases := map[string]string{
+		"leading space":    " acme",
+		"trailing space":   "acme ",
+		"embedded space":   "ac me",
+		"embedded tab":     "ac\tme",
+		"only whitespace":  "   ",
+		"nbsp embedded":    "ac me",
+		"unicode space":    "ac me",
+		"leading newline":  "\nacme",
+		"trailing newline": "acme\n",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewID(input)
+			require.Error(t, err, "expected %q to be rejected", input)
+			assert.ErrorIs(t, err, ErrInvalid)
+		})
+	}
+}
+
 func TestNewID_AcceptsAlphanum(t *testing.T) {
 	cases := []string{
 		"acme",

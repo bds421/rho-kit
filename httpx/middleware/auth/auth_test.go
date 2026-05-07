@@ -216,7 +216,10 @@ func toInt64(v any) int64 {
 }
 
 func newTestProvider(ks *jwtutil.KeySet) *jwtutil.Provider {
-	return jwtutil.NewProviderWithKeySet(ks)
+	return jwtutil.NewProviderWithKeySet(ks,
+		jwtutil.WithAllowAnyIssuer(),
+		jwtutil.WithAllowAnyAudience(),
+	)
 }
 
 // --- RequireUserWithJWT tests (JWT-only mode) ---

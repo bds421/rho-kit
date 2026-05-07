@@ -815,6 +815,58 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	assert.Len(t, entries, 4)
 }
 
+// TestServer_AsyncAudit_StopRace_NoLostJobs proves the round-3 fix:
+// concurrent enqueueAuditJob calls racing Server.Stop must either be
+// counted as a successful append (visible in the store) or counted as
+// dropped — never silently lost. Before the fix, the two-step
+// "select<-done; select queue<-/<-done/default" pattern allowed the Go
+// scheduler to pick the queue-send case after Stop had already closed
+// auditDone; a worker that had already entered its drain branch could
+// then exit without seeing that send.
+func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
+	const N = 100
+	logger, store := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditWorkers(2),
+		mcp.WithAsyncAuditQueue(N),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	h := withTenantHandler(s.HTTP(), "tenant-race")
+
+	droppedBefore := s.AsyncAuditDropped()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			r := httptest.NewRequest(http.MethodPost, "/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+		}()
+	}
+	close(start)
+
+	// Race Stop against the senders. Some senders win and enqueue; the
+	// rest are dropped. Either way no entry may vanish unaccounted.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, s.Stop(stopCtx))
+	wg.Wait()
+
+	entries, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-race"})
+	require.NoError(t, err)
+	dropped := s.AsyncAuditDropped() - droppedBefore
+	assert.Equal(t, int64(N), int64(len(entries))+dropped,
+		"every enqueue must either land in the store (%d) or be counted dropped (%d); none may be silently lost",
+		len(entries), dropped)
+}
+
 func TestServer_ToolsCall_ReturnsMCPContentShape(t *testing.T) {
 	// MCP-spec compliant: tools/call result must be
 	// {content: [{type: "json", data: ...}]}.
