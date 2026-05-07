@@ -118,7 +118,7 @@ func New(db *gorm.DB, opts ...StoreOption) *Store {
 	for _, opt := range opts {
 		opt(s)
 	}
-	if name := db.Dialector.Name(); name == "sqlite" || name == "sqlite3" {
+	if name := db.Name(); name == "sqlite" || name == "sqlite3" {
 		s.isSQLite = true
 		s.logger.Warn("outbox/gormstore: SQLite detected — SKIP LOCKED is a no-op on SQLite. " +
 			"FetchPending is serialised by an in-process mutex; multiple OS processes against the " +

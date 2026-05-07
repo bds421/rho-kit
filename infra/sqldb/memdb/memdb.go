@@ -107,7 +107,7 @@ func (r rewriteFS) Open(name string) (fs.File, error) {
 	if path.Ext(name) != ".sql" {
 		return f, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err

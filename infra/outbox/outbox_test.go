@@ -17,11 +17,11 @@ import (
 	"github.com/bds421/rho-kit/infra/outbox"
 )
 
-// testTxKey + assertedTxError mirror the way real callers wire a tx check
+// testTxKey + errAssertedTx mirror the way real callers wire a tx check
 // without pulling a SQL backend into the outbox module's tests.
 type testTxKey struct{}
 
-var assertedTxError = errors.New("tx required")
+var errAssertedTx = errors.New("tx required")
 
 // fakeStore is an in-memory Store implementation for unit testing.
 // Safe for concurrent use.
@@ -280,7 +280,7 @@ func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
 	store := &fakeStore{}
 	check := func(ctx context.Context) error {
 		if ctx.Value(testTxKey{}) == nil {
-			return assertedTxError
+			return errAssertedTx
 		}
 		return nil
 	}
@@ -308,7 +308,7 @@ func TestWriter_RequireTransaction_AcceptsWithTx(t *testing.T) {
 	store := &fakeStore{}
 	check := func(ctx context.Context) error {
 		if ctx.Value(testTxKey{}) == nil {
-			return assertedTxError
+			return errAssertedTx
 		}
 		return nil
 	}

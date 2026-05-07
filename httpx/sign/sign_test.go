@@ -41,7 +41,7 @@ func TestSignAndVerify_RoundTrip(t *testing.T) {
 
 	resp, err := client.Post(srv.URL+"/api/x", "application/json", bytes.NewReader([]byte(`{"hello":"world"}`)))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	echoed, _ := io.ReadAll(resp.Body)
@@ -89,7 +89,7 @@ func TestSign_NoBody(t *testing.T) {
 	client := &http.Client{Transport: Wrap(http.DefaultTransport, []byte(secret), keyID)}
 	resp, err := client.Get(srv.URL + "/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -116,6 +116,6 @@ func TestSign_IncludeHeaders_BoundIntoSignature(t *testing.T) {
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

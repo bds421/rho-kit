@@ -156,18 +156,14 @@ func (n *nullResponseWriter) WriteHeader(int)             {}
 //   - "<tool-name>" → shorthand: invoke the named tool directly,
 //     params are the tool input.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCRequest) {
-	switch {
-	case req.Method == "initialize":
+	switch req.Method {
+	case "initialize":
 		s.handleInitialize(w, req)
-
-	case req.Method == "tools/list":
+	case "tools/list":
 		s.handleToolsList(w, req)
-
-	case req.Method == "tools/call":
+	case "tools/call":
 		s.handleToolsCall(w, r, req)
-
 	default:
-		// Treat any other method name as a direct tool call.
 		entry, ok := s.lookup(req.Method)
 		if !ok {
 			writeJSONRPCError(w, http.StatusOK, req.ID,
@@ -443,7 +439,7 @@ func readBody(r *http.Request, max int64) ([]byte, error) {
 	if r.Body == nil {
 		return nil, errors.New("missing request body")
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if max <= 0 {
 		max = 1 << 20
 	}

@@ -157,7 +157,7 @@ func TestWrite_WithFromError_EndToEnd(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/api/things?limit=1")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
 	assert.Equal(t, ContentType, resp.Header.Get("Content-Type"))

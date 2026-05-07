@@ -329,10 +329,20 @@ func (c *Consumer) cloneForStream() (*Consumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate consumer ID: %w", err)
 	}
-	cp := *c
-	cp.consumer = id.String()
-	cp.consumed = atomic.Bool{}
-	return &cp, nil
+	return &Consumer{
+		client:           c.client,
+		logger:           c.logger,
+		group:            c.group,
+		consumer:         id.String(),
+		blockDuration:    c.blockDuration,
+		claimMinIdle:     c.claimMinIdle,
+		claimInterval:    c.claimInterval,
+		batchSize:        c.batchSize,
+		maxRetries:       c.maxRetries,
+		deadLetterStream: c.deadLetterStream,
+		deadLetterMaxLen: c.deadLetterMaxLen,
+		metrics:          c.metrics,
+	}, nil
 }
 
 // consumeOnce runs a single consumer session. Returns on error or context cancellation.

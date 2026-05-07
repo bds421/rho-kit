@@ -15,7 +15,7 @@ func TestHandler_ServesIndex(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/debug/pprof/")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -26,7 +26,7 @@ func TestHandler_ServesNamedProfile(t *testing.T) {
 	// "goroutine" is a named profile that returns the running goroutines.
 	resp, err := http.Get(srv.URL + "/debug/pprof/goroutine?debug=1")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -38,7 +38,7 @@ func TestMount_AttachesRoutesToCallerMux(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/debug/pprof/")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 

@@ -19,7 +19,6 @@ package runtimemetrics
 
 import (
 	"runtime"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -41,8 +40,6 @@ func Register(reg prometheus.Registerer) {
 // collector implements prometheus.Collector by reading runtime stats
 // on each Collect call.
 type collector struct {
-	once sync.Once
-
 	goroutines *prometheus.Desc
 	threads    *prometheus.Desc
 	heapAlloc  *prometheus.Desc

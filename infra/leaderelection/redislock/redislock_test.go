@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/lock"
 	rlock "github.com/bds421/rho-kit/data/lock/redislock"
 	"github.com/bds421/rho-kit/infra/leaderelection"
 )
@@ -31,8 +30,7 @@ func (f *fakeLockHandle) Extend(_ context.Context) (bool, error) {
 // stubAcquirer lets us simulate "always leader" or "lose after N
 // renewals" without standing up Redis.
 type stubAcquirer struct {
-	handle  *fakeLockHandle
-	acquire func(ctx context.Context) (lock.Lock, bool, error)
+	handle *fakeLockHandle
 }
 
 func runWithStub(t *testing.T, e *Elector, stub *stubAcquirer, cb leaderelection.Callbacks) error {

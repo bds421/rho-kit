@@ -463,7 +463,13 @@ func (s *Server) runAuditJob(job auditJob) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.asyncAuditTimeout)
 	defer cancel()
-	s.appendActionLog(ctx, job.entry, job.tool, job.tenantID)
+	if err := s.appendActionLog(ctx, job.entry, job.tool, job.tenantID); err != nil {
+		s.cfg.logger.Warn("mcp: async audit append failed",
+			"tool", job.tool,
+			"tenant_id", job.tenantID,
+			"err", err,
+		)
+	}
 }
 
 // Stop drains in-flight async audit appends and shuts down the worker

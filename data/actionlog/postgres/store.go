@@ -61,7 +61,7 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	if tenantID == "" {
 		return actionlog.Entry{}, actionlog.ErrInvalidEntry
 	}
-	isPostgres := s.db.Dialector.Name() == "postgres"
+	isPostgres := s.db.Name() == "postgres"
 	var out actionlog.Entry
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// pg_advisory_xact_lock serialises concurrent first-appends for

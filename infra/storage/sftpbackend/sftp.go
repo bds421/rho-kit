@@ -226,10 +226,7 @@ func (b *SFTPBackend) connect() error {
 			defer ticker.Stop()
 			deadline := time.NewTimer(5 * time.Second)
 			defer deadline.Stop()
-			for {
-				if b.cleanupGen.Load() != gen {
-					break
-				}
+			for b.cleanupGen.Load() == gen {
 				select {
 				case <-ticker.C:
 				case <-deadline.C:

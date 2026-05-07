@@ -280,9 +280,13 @@ func filterHistogramByLabel(mf *dto.MetricFamily, filter LabelFilter) *dto.Metri
 	if len(matched) == 0 {
 		return nil
 	}
-	clone := *mf
-	clone.Metric = matched
-	return &clone
+	return &dto.MetricFamily{
+		Name:   mf.Name,
+		Help:   mf.Help,
+		Type:   mf.Type,
+		Metric: matched,
+		Unit:   mf.Unit,
+	}
 }
 
 // evaluateErrorRate computes the error ratio from a counter metric.

@@ -314,7 +314,7 @@ func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {
 
 	// TTL expires, someone else takes the key.
 	mr.FastForward(2 * time.Second)
-	mr.Set("test:lock", "stolen-by-someone-else")
+	require.NoError(t, mr.Set("test:lock", "stolen-by-someone-else"))
 
 	relErr := l.Release(ctx)
 	assert.ErrorIs(t, relErr, lock.ErrLockLost)
@@ -328,7 +328,9 @@ func TestLocker_WithLockSurfacesErrLockLost(t *testing.T) {
 
 	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
 		mr.FastForward(2 * time.Second)
-		mr.Set("test:lock", "stolen-by-someone-else")
+		if setErr := mr.Set("test:lock", "stolen-by-someone-else"); setErr != nil {
+			return setErr
+		}
 		return nil
 	})
 	assert.ErrorIs(t, err, lock.ErrLockLost)
@@ -343,7 +345,9 @@ func TestLocker_WithLockJoinsFnErrAndLockLost(t *testing.T) {
 
 	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
 		mr.FastForward(2 * time.Second)
-		mr.Set("test:lock", "stolen-by-someone-else")
+		if setErr := mr.Set("test:lock", "stolen-by-someone-else"); setErr != nil {
+			return setErr
+		}
 		return fnErr
 	})
 	assert.ErrorIs(t, err, fnErr)
@@ -397,7 +401,7 @@ func TestLock_ReleaseAfterTTLExpiryReturnsErrLockLost(t *testing.T) {
 	require.True(t, ok)
 
 	mr.FastForward(2 * time.Second)
-	mr.Set("test:lock", "someone-else")
+	require.NoError(t, mr.Set("test:lock", "someone-else"))
 
 	relErr := l.Release(ctx)
 	assert.ErrorIs(t, relErr, lock.ErrLockLost)

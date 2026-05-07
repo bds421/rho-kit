@@ -61,5 +61,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stdout, "kit-new: generated %s into %s\n", name, out)
+	if _, err := fmt.Fprintf(os.Stdout, "kit-new: generated %s into %s\n", name, out); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

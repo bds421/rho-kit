@@ -147,5 +147,5 @@ func writeRejected(w http.ResponseWriter, scope string, remaining int64, retryAf
 	// in the headers, the body is human-readable companion text.
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
-	fmt.Fprintf(w, `{"error":"budget exceeded","code":"BUDGET_EXCEEDED","remaining":%d}`, remaining)
+	_, _ = fmt.Fprintf(w, `{"error":"budget exceeded","code":"BUDGET_EXCEEDED","remaining":%d}`, remaining)
 }
