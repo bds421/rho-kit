@@ -8,7 +8,12 @@ CREATE TABLE IF NOT EXISTS action_log_entries (
     outcome           VARCHAR(20)  NOT NULL,
     reason            TEXT NOT NULL DEFAULT '',
     metadata          JSONB,
-    occurred_at       TIMESTAMP NOT NULL,
+    -- TIMESTAMPTZ (not TIMESTAMP) so the round-trip preserves UTC
+    -- regardless of the database session timezone. The HMAC signing
+    -- input formats OccurredAt as RFC3339Nano UTC, so a session-local
+    -- TIMESTAMP would cause every signature verification to fail after
+    -- a round trip on drivers that interpret the column literally.
+    occurred_at       TIMESTAMPTZ NOT NULL,
     signature_key_id  VARCHAR(64) NOT NULL,
     signature         VARCHAR(128) NOT NULL
 );

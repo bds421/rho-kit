@@ -8,10 +8,14 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     payload     JSONB,
     state       VARCHAR(20)  NOT NULL,
     decided_by  VARCHAR(255) NOT NULL DEFAULT '',
-    decided_at  TIMESTAMP NULL,
+    -- TIMESTAMPTZ (not TIMESTAMP) so the round-trip preserves UTC
+    -- regardless of the database session timezone. State-machine
+    -- comparisons (expires_at > now()) and audit forensics rely on a
+    -- single, unambiguous timezone.
+    decided_at  TIMESTAMPTZ NULL,
     reason      TEXT NOT NULL DEFAULT '',
-    created_at  TIMESTAMP NOT NULL,
-    expires_at  TIMESTAMP NOT NULL
+    created_at  TIMESTAMPTZ NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_requests_tenant_state
