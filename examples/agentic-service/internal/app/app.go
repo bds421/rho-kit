@@ -1,10 +1,21 @@
-// Package app wires the agentic-service example together. The
-// composition shown here is the canonical v2.0.0 stack:
+// Package app wires the agentic-service EXAMPLE.
 //
-//	signedrequest (outermost when configured) → tenant → budget → handlers
+// SECURITY: this example is illustrative only. It mounts handlers
+// without authentication, rate limiting, or CSRF protection so the
+// demo curl invocations work out of the box. Production services MUST
+// use app.Builder.WithJWT / .WithSignedRequests / .WithMultiTenant /
+// .WithTenantBudget / .WithActionLogger / .WithApprovalStore (and
+// front the public mux with TLS) — the Builder composes the
+// middleware chain correctly.
 //
-// All optional middleware can be omitted independently. The Builder
-// composes them in the right order regardless of registration sequence.
+// The composition shown here mirrors the canonical v2.0.0 ordering:
+//
+//	(in production) signedrequest → tenant → budget → handler
+//
+// In this example only `tenant` is wired (in front of MCP) so the
+// strict-audit gate has a tenant on context. The budget and approval
+// stores are exercised via the /admin/* handlers' direct API access
+// rather than middleware — both forms are documented to consumers.
 package app
 
 import (
@@ -65,9 +76,19 @@ func Run(ctx context.Context) error {
 	mux.HandleFunc("/admin/budget", budgetStatus(bud))
 
 	srv := &http.Server{
-		Addr:              ":8080",
-		Handler:           mux,
+		Addr:    ":8080",
+		Handler: mux,
+		// Slowloris protection: cap every phase of the request
+		// lifecycle. Without these, a single attacker can hold all
+		// inbound goroutines on slow reads/writes. The kit's
+		// app.Builder wires equivalent defaults via httpx.WithTimeouts;
+		// the example sets them by hand because it does not use the
+		// Builder.
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 	go func() {
 		<-ctx.Done()
@@ -125,9 +146,21 @@ func mcpHTTPHandler(srv *mcp.Server) http.Handler {
 }
 
 // dangerousAction is a contrived endpoint that creates an approval
-// request rather than executing immediately. Production code wraps
-// this in the httpx/middleware/approval middleware which does the
-// same thing automatically.
+// request rather than executing immediately.
+//
+// SECURITY: in production, wrap this in:
+//   - auth middleware (RequireUserWithJWT or RequireS2SAuth) so the
+//     caller is authenticated; the actor field is derived from the
+//     verified JWT subject (auth.UserID), NOT from a client header.
+//   - the httpx/middleware/approval middleware which creates the
+//     approval entry from a verified actor automatically.
+//
+// This handler reads X-Tenant-Id from the header, which is acceptable
+// only because the demo has no auth — production must take the tenant
+// from the verified JWT or signed-request claim. The placeholder
+// "demo-actor" actor below is a deliberate non-spoofable string so
+// audit forensics on this example don't accept attacker-controlled
+// values.
 func dangerousAction(s approval.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-Id")
@@ -137,7 +170,7 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 		}
 		req, err := s.Create(r.Context(), approval.Request{
 			TenantID:  tenantID,
-			Actor:     r.Header.Get("X-Actor"),
+			Actor:     "demo-actor",
 			Action:    "admin.dangerous-action",
 			Resource:  "example",
 			State:     approval.StatePending,
@@ -157,9 +190,13 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 	}
 }
 
-// budgetStatus exposes the remaining budget for the tenant. Real
-// services emit X-Budget-Remaining via the budget middleware on
-// every response; this endpoint demonstrates the Peek API directly.
+// budgetStatus exposes the remaining budget for the tenant.
+//
+// SECURITY: in production, the tenant ID must come from the verified
+// JWT claim, not a client-supplied header. Wrap in auth + tenant
+// middleware. Real services also emit X-Budget-Remaining via the
+// budget middleware on every response so callers see headroom inline
+// — this endpoint demonstrates the Peek API for completeness.
 func budgetStatus(b budget.Budget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-Id")

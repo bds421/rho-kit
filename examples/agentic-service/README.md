@@ -1,5 +1,16 @@
 # examples/agentic-service
 
+> **SECURITY**: this is an EXAMPLE for learning the kit. The binary
+> mounts every handler with no authentication, no rate limiting, no
+> CSRF protection, and a hard-coded HMAC secret. **It refuses to boot
+> if `KIT_ENV` is anything but `dev` / `development` / `test` /
+> `local`** so a copy-paste-into-prod misadventure crashes loud rather
+> than quietly serving an unauthenticated agent surface. Production
+> services use `app.Builder` end-to-end — see
+> `app.Builder.WithJWT / .WithSignedRequests / .WithMultiTenant /
+> .WithTenantBudget / .WithActionLogger / .WithApprovalStore` and
+> the per-package docs.
+
 A reference rho-kit v2.0.0 service that demonstrates the full
 agentic-AI stack composed in one binary:
 
