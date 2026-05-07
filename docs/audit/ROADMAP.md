@@ -2,7 +2,7 @@
 
 The original 6–10 week plan compressed into Phases 0–3 of the existing-package work. **All Phase 1 + nearly all Phase 2 has landed** (Wave 1+2+3+4+5 commits, see [CRITICAL.md](CRITICAL.md) for the per-finding ledger). What's left in the existing-package surface is documented inline below.
 
-The new-package work (Phases 4–6) is **mostly landed**; see per-phase status below. Remaining items are the genuine cloud/agent-tooling spikes (cloud-KMS subpackages, NATS/Kafka backends, kit-doctor/kit-new/dashboards).
+The new-package work (Phases 4–6) is **landed**; see per-phase status below. Remaining items are the genuine SDK-bound spikes (cloud-KMS subpackages, k8slease/etcd leader-election backends, Kafka backend) and surface-area expansions (additional dashboards, per-package benchmarks, multi-tenant cache/idempotency wrappers) that ship per-area as their respective primitives stabilise.
 
 ## Phase 0 — Unblock — ✅ done
 
@@ -105,42 +105,45 @@ All Phase 3 polish items across `existing/02`–`existing/17` have landed. Each 
 - ✅ [new/07] `core/secret` — `String` type with explicit `Reveal()`/`RevealString()`; `String()`, `GoString()`, `MarshalJSON`, `MarshalText`, `LogValue`, `Format` all emit `<redacted>` (`f3b7611`).
 - ✅ [new/08] `httpx/middleware/cspnonce` — per-request CSP nonce via `crypto/rand` injected into `script-src` and `style-src`; `FromContext` accessor + `HTMLAttr` template helper (`06386f1`).
 
-## Phase 5 — Tier‑2 infrastructure — partially done
+## Phase 5 — Tier‑2 infrastructure — ✅ done (with explicit deferrals)
 
 Done:
 
-- ✅ [new/09] `data/lock/pgadvisory` — `Locker.Acquire` (session-scoped) + `AcquireTx` (transaction-scoped); FNV-1a hash maps string key to int64; honours data/lock interface (`7253ecb`).
-- ✅ [new/10] `data/ratelimit` — `Limiter` interface plus `tokenbucket` and `gcra` implementations; GCRA off-by-one fixed via `!now.After(allowAt)` deny condition (`7253ecb`). Redis-backed cross-instance variant deferred.
-- ✅ [new/11] `infra/leaderelection` — `Elector` interface with `Run(ctx, Callbacks)` and `IsLeader()`; `pgadvisory` backend holds session-scoped lock with health-check ticker (`7253ecb`). k8slease/redislock/etcd backends deferred.
-- ✅ [new/24] `httpx/middleware/signedrequest` + `httpx/sign` — HMAC-SHA256 with timestamp+nonce+body-hash binding; `MemoryNonceStore` with sweep every 256 calls; client-side `Wrap(rt, secret, keyID)` round-tripper (`35aad31`).
-- ✅ [new/25] `storagehttp/uploadsec` — `Validator` interface + `Chain`; `AllowMIMETypes` (sniff via `http.DetectContentType`), `AllowExtensions` (cross-checks against ContentType), `MaxImageDimensions` using `image.DecodeConfig` (header-only — defends against decompression bombs); `HTTPStatusForError` maps to 415/422 (`35aad31`).
+- ✅ [new/09] `data/lock/pgadvisory` — `Locker.Acquire` + `AcquireTx`; FNV-1a hash maps string key to int64; honours data/lock interface (`7253ecb`).
+- ✅ [new/10] `data/ratelimit` — `Limiter` interface plus `tokenbucket`, `gcra`, and `redis` (cross-instance, atomic Lua) implementations.
+- ✅ [new/11] `infra/leaderelection` — `Elector` interface with `Run(ctx, Callbacks)` and `IsLeader()`; `pgadvisory` and `redislock` backends ship.
+- ✅ [new/12] `infra/messaging/natsbackend` — JetStream Publisher/Consumer with explicit ack, durable consumers, redeliver-on-nack, Term-on-malformed.
+- ✅ [new/14] `infra/sqldb/pgx` — pgx-native pool with LISTEN/NOTIFY + COPY + TLS-required-in-prod sslmode enforcement.
+- ✅ [new/20] Multi-tenant primitives — `core/tenant` (type-distinct `ID`, `WithID/FromContext/Required`) + `httpx/middleware/tenant` (default header extractor, `WithRequired`, safe-method passthrough).
+- ✅ [new/24] `httpx/middleware/signedrequest` + `httpx/sign` — HMAC-SHA256 with timestamp+nonce+body-hash binding (`35aad31`).
+- ✅ [new/25] `storagehttp/uploadsec` — `Validator` chain with MIME sniffing, extension cross-check, image-decode-config bomb defence (`35aad31`).
+- ✅ [new/05] PASETO `Provider` with periodic refresh — atomic key swap, previous-set-on-failure semantics, `WithOnRefreshError` callback for telemetry.
 
-Deferred (out of scope for this wave; require separate SDK/spike):
+Deferred (genuinely out of scope, require separate effort):
 
-- 🔴 [new/12] `infra/messaging/natsbackend` — JetStream.
-- 🔴 [new/13] `infra/messaging/kafkabackend` — Kafka.
-- 🔴 [new/14] `infra/sqldb/pgx` — `pgx`-native option for LISTEN/NOTIFY, COPY, pipelines.
-- 🔴 [new/20] Multi-tenant primitives.
-- 🔴 [new/04] Cloud-KMS subpackages (`kekaws`, `kekgcp`, `kekvault`) — deferred to keep envelope module dependency-light; only `kekstatic` ships.
-- 🔴 [new/05] PASETO `Provider` with periodic refresh — primitive shipped, dynamic-key Provider deferred.
-- 🔴 [new/10] Redis-backed GCRA for cross-instance rate limiting.
-- 🔴 [new/11] `k8slease`, `redislock`, `etcd` leader-election backends.
+- 🔴 [new/04] Cloud-KMS subpackages (`kekaws`, `kekgcp`, `kekvault`) — only `kekstatic` ships; cloud variants need provider SDKs.
+- 🔴 [new/11] `k8slease`, `etcd` leader-election backends — need k8s.io / etcd SDKs.
+- 🔴 [new/13] `infra/messaging/kafkabackend` — Kafka backend skipped per "don't do kafka" directive.
+- 🔴 [new/20] cache + idempotency tenant wrappers, per-tenant rate-limit middleware, `promutil/labelguard`, Builder `WithMultiTenant` — primitives ship; integrations are follow-up audit items.
 
-## Phase 6 — Agent-readiness — partially done
+## Phase 6 — Agent-readiness — ✅ done (with explicit deferrals)
 
 Done:
 
-- ✅ [new/15] `observability/pprof` + `observability/runtimemetrics` — `Mount(mux)` for net/http/pprof; `EnableMutexBlockProfiling`; curated Prometheus collector for goroutines, threads, heap, GC pause, max-RSS (linux/darwin via `getrusage` with platform-specific `scaleMaxRSS`) (`35aad31`).
-- ✅ [new/16] `observability/redmetrics` — `HTTPMetrics` (Requests/Errors/Duration/InFlight) with buckets `0.005..30s`; `BatchMetrics` with `0.1..3600s` buckets (`06386f1`).
-- ✅ [new/17] `httpx/problemdetails` — RFC 7807 `application/problem+json` writer; custom `MarshalJSON` inlines `Extensions` so callers can add `retry_after_seconds`, `errors[]`, etc.; `FromError` maps `apperror` to `Problem` (`06386f1`).
-- ✅ [new/19] `app.WithProductionDefaults()` — JWT requires `WithJWTIssuer` or explicit `WithJWTAllowAnyIssuer`; Postgres `sslmode` must be `require`/`verify-ca`/`verify-full`; tracing `SampleRate` capped at 0.1 (`35aad31`, `4d04fe1`).
+- ✅ [new/15] `observability/pprof` + `observability/runtimemetrics` — `Mount(mux)` for net/http/pprof; curated Prometheus collector (`35aad31`).
+- ✅ [new/16] `observability/redmetrics` — `HTTPMetrics` (Requests/Errors/Duration/InFlight) + `BatchMetrics` (`06386f1`).
+- ✅ [new/17] `httpx/problemdetails` — RFC 7807 writer with `Extensions` inlined via custom MarshalJSON (`06386f1`).
+- ✅ [new/18] `cmd/kit-doctor` — CLI with rule scaffold + 4 initial rules (jwt-missing-claims, idempotency-user-extractor, default-http-client, http-server-error-log); `-strict` floor + JSON output.
+- ✅ [new/19] `app.WithProductionDefaults()` — JWT issuer pin, Postgres TLS-required, tracing SampleRate capped (`35aad31`, `4d04fe1`).
+- ✅ [new/21] `cmd/kit-new` — scaffold generator with embedded templates; generated tree builds + vets clean (verified by self-test in CI).
+- ✅ [new/22] `observability/dashboards` — HTTP RED + Go runtime + service overview Grafana JSON; recording rules + availability/latency alerts; SLO multi-burn-rate templates.
+- ✅ [new/23] `cmd/kit-bench-gate` — `go test -bench` text parser + diff/regression engine; GOMAXPROCS-suffix stripping for cross-runner stability; `-fail-on` ratchet.
 
-Deferred (require separate tooling effort):
+Deferred (large surfaces; ship per-area as the surface stabilises):
 
-- 🔴 [new/18] `cmd/kit-doctor`.
-- 🔴 [new/21] `cmd/kit-new`.
-- 🔴 [new/22] Observability pack (Grafana + alert templates).
-- 🔴 [new/23] `cmd/kit-bench-gate`.
+- 🔴 [new/22] gRPC, DB, Redis, messaging, storage, outbox, ratelimit dashboards — only HTTP+runtime+overview ship in this wave.
+- 🔴 [new/21] `kit-new --modules` / `--tenant` / `--token` flags — base scaffold ships; Builder-aware module wiring follows the corresponding Builder integration items.
+- 🔴 [new/23] Per-package benchmarks for the surface listed in the audit — gate ships; benchmarks land per-package as audit identifies hot paths.
 
 ## Tracking
 
