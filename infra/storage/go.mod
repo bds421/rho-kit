@@ -14,8 +14,8 @@ require (
 
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 )
 
 require (

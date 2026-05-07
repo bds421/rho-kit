@@ -12,5 +12,8 @@ replace github.com/bds421/rho-kit/httpx/middleware/signedrequest => ../
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 )

@@ -3,6 +3,7 @@ module github.com/bds421/rho-kit/app
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/core/tenant v0.0.0
 	github.com/bds421/rho-kit/crypto/paseto v0.0.0
 	github.com/bds421/rho-kit/data/actionlog v0.0.0
 	github.com/bds421/rho-kit/data/approval v0.0.0
@@ -44,7 +45,7 @@ require (
 	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
 	github.com/bds421/rho-kit/resilience/circuitbreaker v1.1.0 // indirect
 	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
@@ -82,7 +83,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
@@ -118,10 +119,10 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
@@ -133,10 +134,12 @@ require (
 )
 
 replace (
+	github.com/bds421/rho-kit/core/tenant => ../core/tenant
 	github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto
 	github.com/bds421/rho-kit/data/actionlog => ../data/actionlog
 	github.com/bds421/rho-kit/data/approval => ../data/approval
 	github.com/bds421/rho-kit/data/budget => ../data/budget
+	github.com/bds421/rho-kit/httpx => ../httpx
 	github.com/bds421/rho-kit/httpx/middleware/budget => ../httpx/middleware/budget
 	github.com/bds421/rho-kit/httpx/middleware/signedrequest => ../httpx/middleware/signedrequest
 	github.com/bds421/rho-kit/infra/leaderelection => ../infra/leaderelection
