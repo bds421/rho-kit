@@ -4,11 +4,4 @@
 // slashes, double-encodes already-percent-encoded segments, and discards
 // query/fragment. The helpers here preserve trailing slashes, treat encoded
 // segments as opaque, and never mutate their inputs.
-//
-// # Original implementation
-//
-// Behavior and edge-case handling follow github.com/ory/x/urlx (Apache-2.0).
-// That codebase has been hardened by years of running Hydra/Kratos in
-// production — the trailing-slash and RawQuery preservation rules in
-// particular were non-obvious until they had years of bug reports.
 package urlutil

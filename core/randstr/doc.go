@@ -12,10 +12,4 @@
 // The pre-defined charsets cover the common cases: alphanumeric (mixed,
 // lower-only, upper-only), digits, and the no-ambiguous variant that excludes
 // visually-confusable characters (0/O/I/l/1) for human-readable codes.
-//
-// # Original implementation
-//
-// The implementation is modeled on github.com/ory/x/randx (Apache-2.0). The
-// rejection-sampling approach (instead of modulo-bias) is what makes the
-// output uniform.
 package randstr

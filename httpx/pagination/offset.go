@@ -23,9 +23,8 @@ type OffsetParams struct {
 // always trace back to a missing or zero-or-negative limit allowing a
 // runaway scan, or a maxLimit that wasn't enforced.
 //
-// Returns (limit, offset) in that order to match the call-site syntax of the
-// equivalent ory/x helper. The OffsetParams struct is also exposed for
-// callers that prefer named fields.
+// Returns (limit, offset) in that order. The OffsetParams struct is also
+// exposed for callers that prefer named fields.
 func ParseOffset(r *http.Request, defaultLimit, defaultOffset, maxLimit int) (limit, offset int) {
 	q := r.URL.Query()
 

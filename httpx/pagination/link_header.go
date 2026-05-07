@@ -1,11 +1,5 @@
 package pagination
 
-// API surface (WriteLinkHeader, ParseOffset) is modeled on the offset
-// pagination helpers from github.com/ory/x/pagination (Apache-2.0).
-// The implementation here is original — written against the RFC 5988
-// spec and Go's net/url package — but call-site signatures align so
-// consumers familiar with ory/x have a familiar surface.
-
 import (
 	"fmt"
 	"net/http"

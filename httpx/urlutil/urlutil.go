@@ -1,10 +1,5 @@
 package urlutil
 
-// Behavior here mirrors github.com/ory/x/urlx (Apache-2.0): trailing-slash
-// preservation, RawQuery/Fragment preservation, and treating
-// already-percent-encoded segments as opaque. The actual joining is delegated
-// to (*url.URL).JoinPath, which has the same semantics.
-
 import (
 	"fmt"
 	"net/url"
