@@ -73,6 +73,7 @@ use (
 	./observability/logging
 	./observability/pprof
 	./observability/promutil
+	./observability/promutil/labelguard
 	./observability/runtimemetrics
 	./observability/redmetrics
 	./observability/slo
