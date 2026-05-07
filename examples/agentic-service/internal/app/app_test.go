@@ -37,7 +37,7 @@ func TestMCPServer_EchoToolRoundtrip(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
-	srv.HTTP().ServeHTTP(rec, req)
+	mcpHTTPHandler(srv).ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp map[string]any
@@ -59,7 +59,7 @@ func TestMCPServer_RejectsValidationFailure(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
-	srv.HTTP().ServeHTTP(rec, req)
+	mcpHTTPHandler(srv).ServeHTTP(rec, req)
 
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(rec.Result().Body).Decode(&resp))

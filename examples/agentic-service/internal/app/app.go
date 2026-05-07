@@ -21,6 +21,7 @@ import (
 	"github.com/bds421/rho-kit/data/budget"
 	budgetmem "github.com/bds421/rho-kit/data/budget/memory"
 	"github.com/bds421/rho-kit/httpx/mcp"
+	"github.com/bds421/rho-kit/httpx/middleware/tenant"
 )
 
 // Run starts the HTTP server with the agentic-service stack.
@@ -54,7 +55,12 @@ func Run(ctx context.Context) error {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.Handle("/mcp", mcpServer.HTTP())
+	// Tenant middleware sits outside MCP so the X-Tenant-Id header
+	// lifts to context BEFORE the MCP server's strict-audit gate
+	// inspects it. With strict audit on (the v2.0.0 default), MCP
+	// refuses to dispatch a tool when no tenant resolves and an
+	// action logger is configured. See httpx/mcp doc for details.
+	mux.Handle("/mcp", mcpHTTPHandler(mcpServer))
 	mux.HandleFunc("/admin/dangerous-action", dangerousAction(astore))
 	mux.HandleFunc("/admin/budget", budgetStatus(bud))
 
@@ -92,11 +98,9 @@ func echo(_ context.Context, in EchoIn) (EchoOut, error) {
 
 // newMCPServer registers the sample tools with the MCP server.
 //
-// In production:
-//   - Wrap srv.HTTP() with the kit's tenant + auth + ratelimit
-//     middleware before mounting on the mux.
-//   - Use a real action-log Logger (postgres backend) so calls land
-//     in a query-able audit trail.
+// In production, also chain auth + ratelimit middleware in front via
+// the Builder. Use a real action-log Logger (postgres backend) so
+// calls land in a query-able audit trail.
 func newMCPServer(alog actionlog.Logger) *mcp.Server {
 	srv := mcp.NewServer(mcp.WithActionLogger(alog))
 	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
@@ -105,6 +109,19 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 		panic(fmt.Errorf("mcp register echo: %w", err))
 	}
 	return srv
+}
+
+// mcpHTTPHandler returns the MCP server's HTTP handler wrapped in the
+// kit's tenant middleware. The middleware lifts X-Tenant-Id from the
+// request header onto context so MCP's default tenant extractor (which
+// reads from core/tenant context) finds it. WithRequired(false) means
+// requests without the header still pass through; the strict-audit gate
+// inside MCP rejects them at the audit-precheck step rather than the
+// transport edge — that gives the audit a single chokepoint and a
+// uniform error code (-32603) regardless of which transport carried
+// the call.
+func mcpHTTPHandler(srv *mcp.Server) http.Handler {
+	return tenant.New(tenant.WithRequired(false))(srv.HTTP())
 }
 
 // dangerousAction is a contrived endpoint that creates an approval
