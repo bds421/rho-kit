@@ -267,14 +267,36 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, h
 
 	d := fromAMQPDelivery(delivery, msg)
 
-	if err := handler(ctx, d); err != nil {
-		c.handleFailure(delivery, msg, b, err)
+	handlerErr := c.invokeHandler(ctx, handler, d, msg, b.Queue)
+	if handlerErr != nil {
+		c.handleFailure(delivery, msg, b, handlerErr)
 		return
 	}
 
 	if ackErr := delivery.Ack(false); ackErr != nil {
 		c.logger.Error("ack failed", "error", ackErr, "id", msg.ID)
 	}
+}
+
+// invokeHandler runs the user handler with panic recovery. A panic is
+// converted to a permanent error so handleFailure routes it through
+// dead-letter handling (when configured) without nack-requeue, preventing
+// a poison-pill panic from killing the consumer goroutine and leaving the
+// delivery unacked until channel teardown. NATS already has equivalent
+// recovery in dispatch.
+func (c *Consumer) invokeHandler(ctx context.Context, handler messaging.Handler, d messaging.Delivery, msg messaging.Message, queue string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("amqpbackend: handler panicked",
+				"panic", r,
+				"id", msg.ID,
+				"type", msg.Type,
+				"queue", queue,
+			)
+			err = apperror.NewPermanentWithCause("handler panicked", fmt.Errorf("%v", r))
+		}
+	}()
+	return handler(ctx, d)
 }
 
 // unmarshal is a pure parse function — no I/O, no ACK, no side-effects.

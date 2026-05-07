@@ -536,8 +536,9 @@ func TestBufferedPublisherLoad_CorruptFile_ReturnsError(t *testing.T) {
 
 func TestBufferedPublisherSaveLocked_NoStateFile_Noop(t *testing.T) {
 	pub := newBufferedPublisher(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	// Should not panic or error with empty stateFile.
-	pub.saveLocked()
+	if err := pub.saveLocked(); err != nil {
+		t.Fatalf("expected nil with empty stateFile, got %v", err)
+	}
 }
 
 func TestBufferedPublisherSaveLocked_InvalidPath_LogsError(t *testing.T) {
@@ -545,10 +546,10 @@ func TestBufferedPublisherSaveLocked_InvalidPath_LogsError(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
 	)
-	// Manually seed pending so saveLocked has something to write.
 	pub.pending = []pendingMessage{{Exchange: "ex", RoutingKey: "rk"}}
-	// Should not panic even though save will fail.
-	pub.saveLocked()
+	if err := pub.saveLocked(); err == nil {
+		t.Fatal("expected error from saveLocked with invalid path")
+	}
 }
 
 func TestBufferedPublisherRun_DrainOnTick(t *testing.T) {
@@ -590,6 +591,61 @@ func TestBufferedPublisherRun_DrainOnTick(t *testing.T) {
 	// Initial drain should have published.
 	if pub.Pending() != 0 {
 		t.Fatalf("expected 0 pending after Run drain, got %d", pub.Pending())
+	}
+}
+
+func TestBufferedPublisher_PersistFailureSurfacesError(t *testing.T) {
+	pub := newTestBufferedPublisher(
+		(&fakePublisher{}).publish,
+		func() bool { return false },
+		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+	)
+
+	msg, _ := NewMessage("test.event", "payload")
+	err := pub.Publish(context.Background(), "ex", "rk", msg)
+	if err == nil {
+		t.Fatal("expected Publish to surface persistence failure")
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected rollback to leave 0 pending, got %d", pub.Pending())
+	}
+}
+
+func TestBufferedPublisher_LossyModeSwallowsPersistFailure(t *testing.T) {
+	pub := newTestBufferedPublisher(
+		(&fakePublisher{}).publish,
+		func() bool { return false },
+		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+		WithLossyMode(),
+	)
+
+	msg, _ := NewMessage("test.event", "payload")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+		t.Fatalf("expected lossy mode to swallow persistence failure, got %v", err)
+	}
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 pending in lossy mode, got %d", pub.Pending())
+	}
+}
+
+func TestBufferedPublisher_PersistFailureAfterDirectPublishFail(t *testing.T) {
+	fp := &fakePublisher{failUntil: 1}
+	pub := newTestBufferedPublisher(
+		fp.publish,
+		func() bool { return true },
+		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+	)
+
+	msg, _ := NewMessage("test.event", "payload")
+	err := pub.Publish(context.Background(), "ex", "rk", msg)
+	if err == nil {
+		t.Fatal("expected Publish to surface persistence failure on buffering after direct publish failed")
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected rollback to leave 0 pending, got %d", pub.Pending())
+	}
+	if pub.directInFlight {
+		t.Fatal("directInFlight must be cleared after error rollback")
 	}
 }
 

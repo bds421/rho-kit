@@ -44,7 +44,7 @@ func (m *natsModule) Init(ctx context.Context, mc ModuleContext) error {
 		return fmt.Errorf("nats module: %w", err)
 	}
 	m.conn = conn
-	m.publisher = natsbackend.NewPublisher(conn)
+	m.publisher = conn.NewPublisher()
 
 	mc.Logger.Info("nats connection configured", "url", m.cfg.URL)
 	return nil

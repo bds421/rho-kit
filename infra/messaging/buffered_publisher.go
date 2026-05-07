@@ -67,6 +67,12 @@ type BufferedPublisher struct {
 	// when no state file is configured. Pattern matches csrf.WithDevSecret.
 	allowEphemeralBuffer bool
 
+	// lossyMode opts in to "Publish returns nil even when persistence
+	// failed". By default, when a state file is configured, persistence
+	// failure is reported as a Publish error so callers can react before
+	// a process crash drops the message.
+	lossyMode bool
+
 	// lastSaveErr holds the most recent error from saveLocked(). Stored as
 	// atomic.Pointer so [LastSaveError] reads it without contending with
 	// the publish path.
@@ -106,6 +112,16 @@ func WithBufferedStateFile(path string) BufferedPublisherOption {
 // WithBufferedMetrics sets the metrics callbacks for the buffered publisher.
 func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.metrics = m }
+}
+
+// WithLossyMode opts in to the legacy behavior where Publish returns nil
+// even when persistence to the configured state file fails. The default
+// behavior is to surface the persistence error so callers can react
+// before a process crash drops the buffered message. This option only
+// affects publishers configured with [WithBufferedStateFile]; ephemeral
+// buffers do not persist regardless.
+func WithLossyMode() BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.lossyMode = true }
 }
 
 // WithEphemeralBuffer opts in to memory-only buffering. By default,
@@ -239,7 +255,15 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			RoutingKey: routingKey,
 			Msg:        msg,
 		})
-		o.saveLocked()
+		saveErr := o.saveLocked()
+		if saveErr != nil && !o.lossyMode {
+			// Roll back the buffered append so memory state matches what
+			// was successfully persisted. Without this, a later successful
+			// save would persist a message the caller was told failed.
+			o.pending = o.pending[:len(o.pending)-1]
+			o.mu.Unlock()
+			return fmt.Errorf("buffered publisher: persist message after direct publish failure: %w", saveErr)
+		}
 		o.reportPending()
 		pending := len(o.pending)
 		o.mu.Unlock()
@@ -286,7 +310,12 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		RoutingKey: routingKey,
 		Msg:        msg,
 	})
-	o.saveLocked()
+	saveErr := o.saveLocked()
+	if saveErr != nil && !o.lossyMode {
+		o.pending = o.pending[:len(o.pending)-1]
+		o.mu.Unlock()
+		return fmt.Errorf("buffered publisher: persist buffered message: %w", saveErr)
+	}
 	o.reportPending()
 	pending := len(o.pending)
 	o.mu.Unlock()
@@ -411,7 +440,7 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		compacted := make([]pendingMessage, remaining)
 		copy(compacted, o.pending[published:])
 		o.pending = compacted
-		o.saveLocked()
+		_ = o.saveLocked()
 		o.reportPending()
 	}
 	o.mu.Unlock()
@@ -426,7 +455,10 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 }
 
 // saveLocked persists the current pending slice to disk. Must be called
-// with o.mu held.
+// with o.mu held. Returns the underlying atomicfile error (or nil) so
+// callers in the Publish path can fail-closed when persistence fails,
+// rather than silently acknowledging a message that exists only in
+// memory.
 //
 // State file permissions are 0600 (atomicfile.Save default). The file
 // contains full message payloads as JSON — if the buffered publisher
@@ -436,19 +468,19 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 //
 // Persistence errors are logged AND surfaced via [LastSaveError] so a
 // monitoring loop can detect stuck disk-full / EROFS / quota conditions
-// rather than discovering them only on shutdown drain. The publish path
-// stays non-blocking.
-func (o *BufferedPublisher) saveLocked() {
+// rather than discovering them only on shutdown drain.
+func (o *BufferedPublisher) saveLocked() error {
 	if o.stateFile == "" {
-		return
+		return nil
 	}
 
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
 		o.logger.Error("failed to save buffered publisher state", "error", err)
 		o.lastSaveErr.Store(&err)
-		return
+		return err
 	}
 	o.lastSaveErr.Store(nil)
+	return nil
 }
 
 // LastSaveError returns the most recent state-file save error, or nil if

@@ -18,12 +18,17 @@
 // The translation between [messaging.Message] and NATS JetStream:
 //
 //   - Stream subject = `exchange + "." + routingKey` when routingKey
-//     is non-empty, otherwise just `exchange`. The dotted subject form
-//     mirrors NATS conventions and keeps wildcard subscriptions
-//     workable.
+//     is non-empty, otherwise just `exchange`. The dotted form keeps
+//     NATS-native wildcard subscriptions workable.
+//   - The original exchange and routing-key are also carried as NATS
+//     message headers (`X-Exchange`, `X-Routing-Key`). The consumer
+//     reads these headers to reconstruct the [messaging.Delivery],
+//     which preserves the original (exchange, routingKey) pair even
+//     when one or both contain dots — splitting the subject would be
+//     ambiguous in that case.
 //   - Message body = JSON-encoded [messaging.Message] (same shape used
 //     by the AMQP and Redis backends).
-//   - Headers ride the NATS Msg.Header map.
+//   - User headers ride the NATS Msg.Header map.
 package natsbackend
 
 import (
@@ -40,6 +45,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/bds421/rho-kit/infra/messaging"
+)
+
+const (
+	headerExchange   = "X-Exchange"
+	headerRoutingKey = "X-Routing-Key"
 )
 
 // Config is the connection-level configuration. Stream/consumer
@@ -68,8 +78,9 @@ type Config struct {
 // Connection holds an open nats.Conn and its JetStream context. Use
 // [Connect] to construct.
 type Connection struct {
-	nc *nats.Conn
-	js jetstream.JetStream
+	nc             *nats.Conn
+	js             jetstream.JetStream
+	publishAckWait time.Duration
 }
 
 // Connect dials NATS and returns a Connection. The connection
@@ -89,11 +100,25 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		cfg.ReconnectWait = 2 * time.Second
 	}
 
-	nc, err := nats.Connect(cfg.URL,
+	opts := []nats.Option{
 		nats.Name(cfg.Name),
 		nats.MaxReconnects(cfg.MaxReconnects),
 		nats.ReconnectWait(cfg.ReconnectWait),
-	)
+	}
+	// Honour ctx deadline for the dial. nats.Connect itself does not
+	// accept a context, so we derive a finite Timeout from the deadline
+	// when present. Without this, a cancelled ctx would not abort the
+	// dial.
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := time.Until(deadline); d > 0 {
+			opts = append(opts, nats.Timeout(d))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("natsbackend: connect: %w", err)
+	}
+
+	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("natsbackend: connect: %w", err)
 	}
@@ -103,7 +128,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		nc.Close()
 		return nil, fmt.Errorf("natsbackend: jetstream: %w", err)
 	}
-	return &Connection{nc: nc, js: js}, nil
+	return &Connection{nc: nc, js: js, publishAckWait: cfg.PublishAckWait}, nil
 }
 
 // Healthy reports whether the underlying NATS connection is currently
@@ -165,20 +190,58 @@ type Publisher struct {
 	wait time.Duration
 }
 
-// NewPublisher returns a Publisher backed by conn.
-func NewPublisher(conn *Connection) *Publisher {
+// PublisherOption configures a Publisher.
+type PublisherOption func(*Publisher)
+
+// WithPublishAckWait overrides the per-publish ack-wait timeout. Pass <= 0
+// to disable the timeout (the call inherits the caller's ctx deadline only).
+func WithPublishAckWait(d time.Duration) PublisherOption {
+	return func(p *Publisher) { p.wait = d }
+}
+
+// defaultPublishAckWait is used when neither [Config.PublishAckWait] nor
+// [WithPublishAckWait] is set.
+const defaultPublishAckWait = 5 * time.Second
+
+// NewPublisher returns a Publisher backed by conn. The publish ack-wait
+// defaults to [defaultPublishAckWait]; callers can override it with
+// [WithPublishAckWait], or surface it through [Connection.NewPublisher]
+// which threads [Config.PublishAckWait] automatically.
+func NewPublisher(conn *Connection, opts ...PublisherOption) *Publisher {
 	if conn == nil {
 		panic("natsbackend: Publisher requires a Connection")
 	}
-	return &Publisher{conn: conn, wait: 5 * time.Second}
+	p := &Publisher{conn: conn, wait: defaultPublishAckWait}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// NewPublisher returns a Publisher backed by this Connection, threading
+// the connection's [Config.PublishAckWait] (when non-zero) through to the
+// publisher. Use this rather than the package-level [NewPublisher] when
+// you want operator-tuned ack-wait behavior. Additional [PublisherOption]
+// values override the threaded default.
+func (c *Connection) NewPublisher(opts ...PublisherOption) *Publisher {
+	all := make([]PublisherOption, 0, len(opts)+1)
+	if c.publishAckWait > 0 {
+		all = append(all, WithPublishAckWait(c.publishAckWait))
+	}
+	all = append(all, opts...)
+	return NewPublisher(c, all...)
 }
 
 // Publish satisfies [messaging.MessagePublisher].
 //
-// The NATS subject is `exchange + "." + routingKey` (or just
-// `exchange` when routingKey is empty). Returns only after the
-// JetStream broker confirms storage, so a non-nil return guarantees
-// the message will not be lost to a broker crash.
+// The NATS subject is the sanitized form of `exchange + "." + routingKey`
+// (or just the sanitized `exchange` when routingKey is empty). Dots
+// within an exchange or routing-key segment are URL-encoded so the
+// boundary is unambiguous. The original (unencoded) values also ride as
+// `X-Exchange` / `X-Routing-Key` headers, which the consumer prefers
+// when reconstructing the [messaging.Delivery]. Returns only after the
+// JetStream broker confirms storage, so a non-nil return guarantees the
+// message will not be lost to a broker crash.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
 	subject := composeSubject(exchange, routingKey)
 	body, err := json.Marshal(msg)
@@ -195,6 +258,8 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	natsMsg.Header.Set("X-Message-Id", msg.ID)
 	natsMsg.Header.Set("X-Message-Type", msg.Type)
+	natsMsg.Header.Set(headerExchange, exchange)
+	natsMsg.Header.Set(headerRoutingKey, routingKey)
 
 	pubCtx := ctx
 	if p.wait > 0 {
@@ -317,7 +382,7 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	}()
 
 	subject := jm.Subject()
-	exchange, routingKey := splitSubject(subject)
+	exchange, routingKey := extractExchangeAndRoutingKey(jm)
 
 	var msg messaging.Message
 	if err := json.Unmarshal(jm.Data(), &msg); err != nil {
@@ -363,6 +428,13 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	_ = jm.Ack()
 }
 
+// composeSubject builds the NATS subject for the (exchange, routingKey)
+// pair. The subject is the natural dotted form so NATS-native wildcard
+// subscriptions (e.g. `orders.>`) keep working. Reconstruction of the
+// original (exchange, routingKey) on the consumer side reads the
+// `X-Exchange` / `X-Routing-Key` headers — never the subject — so a
+// dotted exchange like `orders.v1` paired with routing-key `created`
+// is preserved exactly even though the subject is `orders.v1.created`.
 func composeSubject(exchange, routingKey string) string {
 	if routingKey == "" {
 		return exchange
@@ -370,10 +442,31 @@ func composeSubject(exchange, routingKey string) string {
 	return exchange + "." + routingKey
 }
 
+// splitSubject is the legacy splitter used only for messages that
+// arrive without the [headerExchange] / [headerRoutingKey] headers
+// (e.g. produced by older clients or tools other than this backend).
+// It splits on the first dot, which is lossy for dotted exchange names
+// but matches pre-v2 behaviour. The dispatcher prefers headers.
 func splitSubject(subject string) (exchange, routingKey string) {
 	i := strings.IndexByte(subject, '.')
 	if i < 0 {
 		return subject, ""
 	}
 	return subject[:i], subject[i+1:]
+}
+
+// extractExchangeAndRoutingKey returns the exchange and routing-key for
+// a delivery. It prefers the [headerExchange] / [headerRoutingKey]
+// headers (added by [Publisher.Publish]) and falls back to splitting
+// the subject for messages produced by older clients.
+func extractExchangeAndRoutingKey(jm jetstream.Msg) (exchange, routingKey string) {
+	hdr := jm.Headers()
+	if hdr != nil {
+		ex := hdr.Get(headerExchange)
+		rk := hdr.Get(headerRoutingKey)
+		if ex != "" || rk != "" {
+			return ex, rk
+		}
+	}
+	return splitSubject(jm.Subject())
 }

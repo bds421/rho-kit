@@ -478,6 +478,55 @@ func TestConsumer_HandleFailure_DeadLetter_AckFailure(t *testing.T) {
 	assert.True(t, ack.acked, "ack attempted even when it fails")
 }
 
+// --- Panic recovery ---
+
+func TestConsumer_HandleDelivery_HandlerPanic_DoesNotKillGoroutine(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	var discarded bool
+	c := newTestConsumer(nil, ConsumerHooks{
+		OnDiscard: func(_, _, _ string) { discarded = true },
+	})
+	msg, _ := messaging.NewMessage("test.event", "payload")
+	delivery := makeAMQPDelivery(ack, msg)
+	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
+
+	handler := func(_ context.Context, _ messaging.Delivery) error {
+		panic("boom")
+	}
+
+	assert.NotPanics(t, func() {
+		c.handleDelivery(context.Background(), delivery, handler, binding)
+	})
+	assert.True(t, ack.acked, "panic should route through permanent-error discard, which acks")
+	assert.False(t, ack.nacked, "panic must not requeue (would create poison-pill loop)")
+	assert.True(t, discarded, "OnDiscard should fire because panic is converted to permanent error")
+}
+
+func TestConsumer_HandleDelivery_HandlerPanicWithRetry_RoutesToDiscard(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	c := newTestConsumer(&fakeDeadLetterPublisher{}, ConsumerHooks{})
+	msg, _ := messaging.NewMessage("test.event", "payload")
+	delivery := makeAMQPDelivery(ack, msg)
+	binding := messaging.Binding{
+		BindingSpec: messaging.BindingSpec{
+			Queue:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+		},
+		DeadExchange: "test-exchange.dead",
+	}
+
+	handler := func(_ context.Context, _ messaging.Delivery) error {
+		panic(errors.New("nil deref"))
+	}
+
+	assert.NotPanics(t, func() {
+		c.handleDelivery(context.Background(), delivery, handler, binding)
+	})
+	assert.True(t, ack.acked, "permanent panic must ack, never requeue, even when retry is configured")
+	assert.False(t, ack.nacked)
+}
+
 // --- Hooks not called when nil ---
 
 func TestConsumer_HandleFailure_NilHooks_DoNotPanic(t *testing.T) {
