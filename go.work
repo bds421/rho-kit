@@ -39,6 +39,7 @@ use (
 	./data/stream/redisstream
 	./grpcx
 	./httpx
+	./httpx/middleware/ratelimit/tenant
 	./httpx/middleware/signedrequest
 	./httpx/sign
 	./infra/leaderelection
