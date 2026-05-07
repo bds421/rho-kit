@@ -11,26 +11,30 @@ import (
 // It checks scopes from the request context (set by JWT verification in
 // RequireUserWithJWT/RequireS2SAuth).
 //
-// When scopes are absent entirely (cookie-session auth), the request passes
-// through — session-based users are governed by RBAC, not scopes.
+// Fail-closed semantics:
+//   - A request authenticated via the trusted-S2S mTLS branch bypasses the
+//     check (verified internal caller).
+//   - Otherwise the scopes string on context must contain the required
+//     scope. An absent or empty scopes string is rejected.
 //
-// For machine-to-machine endpoints that must NEVER allow cookie-session fallback,
-// use RequireScopeStrict instead.
+// The previous "no scopes ⇒ pass through" rule was unsafe: it let any
+// caller without a scopes claim — including a misconfigured route with no
+// auth middleware in front — through to the handler. Routes that legitimately
+// want to coexist with cookie-session callers must be split (one handler
+// for scope-bearing API keys, one for sessions) instead of relying on this
+// middleware to silently fall through.
 func RequireScope(requiredScope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			scopes := scopesFromRequest(r)
-			if scopes == "" {
-				// No scopes = cookie-session auth; RBAC applies instead.
+			if IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
-
-			if !hasScope(scopes, requiredScope) {
+			scopes := scopesFromRequest(r)
+			if scopes == "" || !hasScope(scopes, requiredScope) {
 				httpx.WriteError(w, http.StatusForbidden, "insufficient scope")
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}

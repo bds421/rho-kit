@@ -567,6 +567,70 @@ func TestRequireS2SAuth_InvalidJWT(t *testing.T) {
 	}
 }
 
+// TestRequireS2SAuth_MTLS_SetsTrustedMarker locks in the invariant that
+// the mTLS branch is what stamps the trusted-S2S marker — and is the only
+// thing that does. Without this guarantee, RequirePermission's bypass
+// becomes either too broad (every nil-perms request bypasses) or
+// inaccessible to legitimate internal callers.
+func TestRequireS2SAuth_MTLS_SetsTrustedMarker(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	var sawTrusted bool
+	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTrusted = IsTrustedS2S(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for mTLS S2S, got %d", rec.Code)
+	}
+	if !sawTrusted {
+		t.Fatal("mTLS S2S branch must set the trusted-S2S marker")
+	}
+}
+
+// TestRequireS2SAuth_JWT_DoesNotSetTrustedMarker locks in the converse
+// invariant: the JWT branch (whether reached via RequireUserWithJWT or
+// RequireS2SAuth's first-class JWT check) must NOT set the trusted-S2S
+// marker. JWT callers are governed by their permissions claim; treating
+// them as trusted would let a token issued without permissions bypass RBAC.
+func TestRequireS2SAuth_JWT_DoesNotSetTrustedMarker(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	var sawTrusted bool
+	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTrusted = IsTrustedS2S(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": testUUID,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for JWT S2S, got %d", rec.Code)
+	}
+	if sawTrusted {
+		t.Fatal("JWT branch must not set the trusted-S2S marker")
+	}
+}
+
 func TestRequireS2SAuth_MultipleCNsAllowed(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
@@ -633,7 +697,11 @@ func TestRequirePermission_Denied(t *testing.T) {
 	}
 }
 
-func TestRequirePermission_NilPermissions_S2S(t *testing.T) {
+// TestRequirePermission_TrustedS2S_PassesThrough confirms that requests
+// carrying the trusted-S2S marker bypass the permission check. The marker
+// is set only by RequireS2SAuth's mTLS branch; the test sets it via the
+// WithTrustedS2S helper to exercise the same path.
+func TestRequirePermission_TrustedS2S_PassesThrough(t *testing.T) {
 	called := false
 	h := RequirePermission("general:view")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -641,15 +709,62 @@ func TestRequirePermission_NilPermissions_S2S(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	ctx := WithUserID(req.Context(), testUUID)
+	ctx = WithTrustedS2S(ctx)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for S2S (nil perms), got %d", rec.Code)
+		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
 	}
 	if !called {
-		t.Error("next handler should be called for S2S")
+		t.Error("next handler should be called for trusted-S2S caller")
+	}
+}
+
+// TestRequirePermission_NilPermissions_NoMarker_Denied is the regression
+// test for the fail-open bug: a request with no permissions claim and no
+// trusted-S2S marker (e.g., a route accidentally mounted without any auth
+// middleware in front of it, or a JWT issued without a permissions claim)
+// must be rejected.
+func TestRequirePermission_NilPermissions_NoMarker_Denied(t *testing.T) {
+	called := false
+	h := RequirePermission("general:view")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing permissions claim without trusted-S2S marker, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler must not be called when permissions claim is missing")
+	}
+}
+
+// TestRequirePermission_NoAuthAtAll_Denied covers the most dangerous
+// misconfiguration: RequirePermission mounted on a route with NO auth
+// middleware in front. The pre-fix behaviour silently granted access.
+func TestRequirePermission_NoAuthAtAll_Denied(t *testing.T) {
+	called := false
+	h := RequirePermission("general:view")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unauthenticated request, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler must not be called for unauthenticated request")
 	}
 }
 
@@ -743,7 +858,9 @@ func TestPermissionByMethod_WriteDenied(t *testing.T) {
 	}
 }
 
-func TestPermissionByMethod_NilPermissions_S2S(t *testing.T) {
+// TestPermissionByMethod_TrustedS2S_PassesThrough mirrors
+// TestRequirePermission_TrustedS2S_PassesThrough for the by-method variant.
+func TestPermissionByMethod_TrustedS2S_PassesThrough(t *testing.T) {
 	called := false
 	h := PermissionByMethod("general:view", "general:manage")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -751,15 +868,38 @@ func TestPermissionByMethod_NilPermissions_S2S(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	ctx := WithUserID(req.Context(), testUUID)
+	ctx = WithTrustedS2S(ctx)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for S2S, got %d", rec.Code)
+		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
 	}
 	if !called {
-		t.Error("next handler should be called for S2S")
+		t.Error("next handler should be called for trusted-S2S caller")
+	}
+}
+
+// TestPermissionByMethod_NilPermissions_NoMarker_Denied is the regression
+// test for the by-method fail-open variant.
+func TestPermissionByMethod_NilPermissions_NoMarker_Denied(t *testing.T) {
+	called := false
+	h := PermissionByMethod("general:view", "general:manage")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing permissions claim without trusted-S2S marker, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler must not be called when permissions claim is missing")
 	}
 }
 

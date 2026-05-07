@@ -18,11 +18,18 @@ type authUserID string
 type authScopes string
 type permissionSet map[string]struct{}
 
+// trustedS2SMarker is the value type for the trusted-service marker. Its
+// presence on the context means the request was authenticated via the mTLS
+// S2S branch of RequireS2SAuth and is permitted to bypass RBAC and scope
+// checks. Absence means the request must satisfy normal authorization rules.
+type trustedS2SMarker struct{}
+
 var (
 	userIDKey      contextutil.Key[authUserID]
 	permissionsKey contextutil.Key[[]string]
 	permSetKey     contextutil.Key[permissionSet]
 	scopesKey      contextutil.Key[authScopes]
+	trustedS2SKey  contextutil.Key[trustedS2SMarker]
 )
 
 // uuidPattern matches a standard UUID string (v4, v7, etc.).
@@ -156,9 +163,14 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 
 // requireHeaderUser extracts the user ID from the X-User-Id header for
 // mTLS-authenticated S2S requests. Logs the impersonation for audit trail.
-// Note: no permissions are injected into context — RequirePermission and
-// PermissionByMethod will see nil permissions and skip RBAC checks. This is
-// intentional: mTLS-authenticated internal services are trusted.
+//
+// The trusted-S2S marker is stamped onto the context here — and ONLY here —
+// so that downstream RBAC/scope middleware (RequirePermission,
+// PermissionByMethod, RequireScope) can distinguish a verified internal
+// caller from a request that simply happens to lack a permissions claim
+// (e.g., a JWT minted without the claim, or a route that was misconfigured
+// to not run JWT verification at all). Without the marker those middlewares
+// fail closed.
 func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	userID := r.Header.Get("X-User-Id")
 	if userID == "" || !uuidPattern.MatchString(userID) {
@@ -166,10 +178,6 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler
 		return
 	}
 
-	// Audit log: record which service (cert CN) is acting on behalf of which user.
-	// This enables forensic analysis if an upstream service is compromised.
-	// Note: request_id is intentionally omitted — it is already injected by the
-	// structured logger from WithRequestLogger middleware via context attributes.
 	cn := ""
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		cn = r.TLS.PeerCertificates[0].Subject.CommonName
@@ -182,6 +190,7 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler
 	)
 
 	ctx := userIDKey.Set(r.Context(), authUserID(userID))
+	ctx = trustedS2SKey.Set(ctx, trustedS2SMarker{})
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -213,15 +222,27 @@ func Scopes(ctx context.Context) string {
 	return string(v)
 }
 
-// RequirePermission returns middleware that checks the JWT-embedded permissions
-// for the required permission string (e.g. "general:view", "users:manage").
-// When permissions are nil (internal S2S calls via mTLS), the check is
-// skipped — mTLS-authenticated internal calls are trusted.
+// RequirePermission returns middleware that checks the JWT-embedded
+// permissions for the required permission string (e.g. "general:view",
+// "users:manage").
+//
+// Fail-closed semantics:
+//   - If the trusted-S2S marker is set (request authenticated via the mTLS
+//     branch of RequireS2SAuth), the check is bypassed — internal services
+//     are trusted explicitly, by virtue of the verified client cert + CN
+//     allowlist, not by virtue of "happened to have no permissions claim".
+//   - Otherwise the request must carry a permissions set on context
+//     (typically from JWT verification) AND the set must contain the
+//     required permission. Anything else returns 403.
+//
+// In particular, a request with no permissions claim and no trusted-S2S
+// marker is rejected — this prevents misconfigured routes (auth middleware
+// missing in front, JWT issued without the claim) from silently granting
+// access.
 func RequirePermission(permission string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			perms := Permissions(r.Context())
-			if perms == nil {
+			if IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -235,12 +256,13 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 }
 
 // PermissionByMethod returns middleware that selects the required permission
-// based on the HTTP method: readPerm for GET/HEAD/OPTIONS, writePerm otherwise.
+// based on the HTTP method: readPerm for GET/HEAD/OPTIONS, writePerm
+// otherwise. Fail-closed semantics match RequirePermission — a request
+// without a permissions claim and without the trusted-S2S marker is denied.
 func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			perms := Permissions(r.Context())
-			if perms == nil {
+			if IsTrustedS2S(r.Context()) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -256,6 +278,26 @@ func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Hand
 			httpx.WriteError(w, http.StatusForbidden, "insufficient permissions")
 		})
 	}
+}
+
+// IsTrustedS2S reports whether ctx carries the trusted service-to-service
+// marker. The marker is set only by RequireS2SAuth's mTLS branch after a
+// fully verified client certificate with an allow-listed CN. Handlers and
+// middleware can use this to grant trust to verified internal callers
+// without conflating it with the absence of a permissions claim.
+func IsTrustedS2S(ctx context.Context) bool {
+	_, ok := trustedS2SKey.Get(ctx)
+	return ok
+}
+
+// WithTrustedS2S returns ctx marked as a trusted service-to-service caller.
+//
+// This is intended for use in tests only. Production code must rely on
+// RequireS2SAuth's mTLS branch to set the marker after a verified client
+// certificate. Setting the marker manually in production would let callers
+// bypass RBAC.
+func WithTrustedS2S(ctx context.Context) context.Context {
+	return trustedS2SKey.Set(ctx, trustedS2SMarker{})
 }
 
 // hasPermissionFast checks the pre-built map from context for O(1) lookup.

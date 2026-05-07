@@ -18,15 +18,33 @@ func withScopes(r *http.Request, scopes string) *http.Request {
 	return r.WithContext(scopesKey.Set(r.Context(), authScopes(scopes)))
 }
 
-func TestRequireScope_NoScopes_PassesThrough(t *testing.T) {
+// TestRequireScope_NoScopes_NoMarker_Denied is the regression test for the
+// scope fail-open bug. Pre-fix, an empty scopes string passed through
+// silently — including for routes mounted without any auth middleware.
+func TestRequireScope_NoScopes_NoMarker_Denied(t *testing.T) {
 	handler := RequireScope("admin")(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for no scopes without trusted-S2S marker, got %d", rec.Code)
+	}
+}
+
+// TestRequireScope_TrustedS2S_PassesThrough confirms the trusted-S2S
+// marker bypasses the scope check, mirroring RequirePermission.
+func TestRequireScope_TrustedS2S_PassesThrough(t *testing.T) {
+	handler := RequireScope("admin")(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(WithTrustedS2S(req.Context()))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
 	}
 }
 
