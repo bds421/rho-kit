@@ -25,6 +25,7 @@ use (
 	./data/idempotency
 	./data/idempotency/pgstore
 	./data/idempotency/redisstore
+	./data/idempotency/tenant
 	./data/lock
 	./data/lock/pgadvisory
 	./data/lock/redislock
