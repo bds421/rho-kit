@@ -142,6 +142,7 @@ type registeredHandler struct {
 	id        uint64
 	name      string
 	async     bool
+	alive     bool
 	eventType reflect.Type
 	fn        func(ctx context.Context, event any) error
 }
@@ -221,6 +222,7 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 		id:        id,
 		name:      cfg.name,
 		async:     cfg.async,
+		alive:     true,
 		eventType: expectedType,
 		fn: func(ctx context.Context, event any) error {
 			e, ok := event.(E)
@@ -234,14 +236,31 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 
 	b.mu.Lock()
 	b.handlers[eventName] = append(b.handlers[eventName], rh)
+	// Opportunistic compaction: if dead-count is non-trivial relative to
+	// the live slice, drop tombstoned entries while we're already holding
+	// the write lock.
+	b.maybeCompactLocked(eventName)
 	b.mu.Unlock()
 
 	return Subscription{eventName: eventName, id: id}
 }
 
-// Unsubscribe removes the handler associated with sub. Returns true if the
-// handler was found and removed, false if it was already removed or sub is
-// the zero value.
+// compactionThreshold is the number of tombstoned handlers that triggers
+// a compaction during the next [Subscribe] or [Bus.Unsubscribe] call.
+// Small enough that wasted Publish-time skips stay bounded; large enough
+// that a single Subscribe → Unsubscribe pair doesn't churn allocations.
+const compactionThreshold = 8
+
+// Unsubscribe marks the handler associated with sub as dead. The handler
+// slot is left in place (a "tombstone") and Publish snapshots simply skip
+// dead entries; the slot is reclaimed lazily during the next [Subscribe]
+// when the dead-count exceeds [compactionThreshold]. Tombstoning is O(n)
+// in the slice walk but allocation-free on the hot path, in contrast to
+// the previous "allocate a fresh slice on every Unsubscribe" approach
+// that hurt high-churn workloads (test churn, dynamic plugins).
+//
+// Returns true if the handler was found and tombstoned, false if it was
+// already removed or sub is the zero value.
 //
 // Safe to call concurrently with [Publish]: in-flight dispatches use a
 // snapshot of the handler slice taken at the start of Publish, so a handler
@@ -254,18 +273,44 @@ func (b *Bus) Unsubscribe(sub Subscription) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	hs := b.handlers[sub.eventName]
-	for i, h := range hs {
-		if h.id == sub.id {
-			// Allocate new slice so any in-flight Publish snapshot is
-			// untouched (immutable handoff).
-			next := make([]registeredHandler, 0, len(hs)-1)
-			next = append(next, hs[:i]...)
-			next = append(next, hs[i+1:]...)
-			b.handlers[sub.eventName] = next
+	for i := range hs {
+		if hs[i].id == sub.id && hs[i].alive {
+			hs[i].alive = false
+			// Drop fn so the closure (and any captured large state) can
+			// be GC'd before compaction reclaims the slot.
+			hs[i].fn = nil
+			b.handlers[sub.eventName] = hs
+			b.maybeCompactLocked(sub.eventName)
 			return true
 		}
 	}
 	return false
+}
+
+// maybeCompactLocked drops tombstoned entries when their count exceeds
+// [compactionThreshold]. Caller holds b.mu.
+//
+// Compaction allocates a new slice so any in-flight Publish snapshot is
+// untouched — that property is what lets Publish copy the handler slice
+// without re-acquiring the lock for each invocation.
+func (b *Bus) maybeCompactLocked(eventName string) {
+	hs := b.handlers[eventName]
+	dead := 0
+	for i := range hs {
+		if !hs[i].alive {
+			dead++
+		}
+	}
+	if dead < compactionThreshold {
+		return
+	}
+	next := make([]registeredHandler, 0, len(hs)-dead)
+	for i := range hs {
+		if hs[i].alive {
+			next = append(next, hs[i])
+		}
+	}
+	b.handlers[eventName] = next
 }
 
 // Publish dispatches event to all handlers registered for E's event name.
@@ -300,6 +345,12 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 
 	var dispatchErrs []error
 	for _, h := range snapshot {
+		// Skip tombstoned handlers — Unsubscribe marks alive=false in
+		// place rather than reallocating; the slot is reclaimed lazily
+		// during the next Subscribe/Unsubscribe call.
+		if !h.alive {
+			continue
+		}
 		if h.async {
 			if err := b.dispatchAsync(ctx, eventName, h, event); err != nil {
 				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler %q: %w", h.name, err))
@@ -329,11 +380,17 @@ func callSync(ctx context.Context, h registeredHandler, event any) (err error) {
 	return h.fn(ctx, event)
 }
 
-// HasHandlers reports whether any handlers are registered for the given event name.
+// HasHandlers reports whether any live handlers are registered for the
+// given event name. Tombstoned (unsubscribed) handlers are not counted.
 func (b *Bus) HasHandlers(eventName string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return len(b.handlers[eventName]) > 0
+	for i := range b.handlers[eventName] {
+		if b.handlers[eventName][i].alive {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchAsync routes an async handler invocation to either the bounded

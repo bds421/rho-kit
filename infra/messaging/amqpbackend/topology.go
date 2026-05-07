@@ -2,6 +2,7 @@ package amqpbackend
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -52,7 +53,15 @@ func DeclareTopology(conn Connector, b messaging.BindingSpec) (messaging.Binding
 
 // DeclareAll declares all provided bindings on a single AMQP channel.
 // Returns a Binding for each input, with computed retry/dead names.
+//
+// Bindings are normalized before validation: when Retry is nil and
+// WithoutRetry is false, [messaging.DefaultRetryPolicy] is applied and a
+// slog.Default warning is emitted. Set WithoutRetry=true on the BindingSpec
+// to opt out and keep ack-and-discard semantics.
 func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.Binding, error) {
+	for _, w := range messaging.NormalizeBindingSpecs(bindings) {
+		slog.Default().Warn("amqpbackend: " + w)
+	}
 	if err := messaging.ValidateBindingSpecs(bindings); err != nil {
 		return nil, err
 	}

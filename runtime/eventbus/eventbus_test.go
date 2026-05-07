@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -397,4 +398,87 @@ func TestUnsubscribe_DoubleUnsubscribeReturnsFalse(t *testing.T) {
 
 	assert.True(t, bus.Unsubscribe(sub))
 	assert.False(t, bus.Unsubscribe(sub))
+}
+
+func TestUnsubscribe_TombstoneSkippedByPublish(t *testing.T) {
+	bus := New()
+
+	var calls atomic.Int64
+	subs := make([]Subscription, 5)
+	for i := range subs {
+		subs[i] = Subscribe(bus, func(_ context.Context, _ testEvent) error {
+			calls.Add(1)
+			return nil
+		})
+	}
+
+	// Tombstone the middle three handlers — under compactionThreshold
+	// (8) so the slice retains the dead slots.
+	for i := 1; i < 4; i++ {
+		assert.True(t, bus.Unsubscribe(subs[i]))
+	}
+
+	// Publish must invoke only the two live handlers.
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "x"}))
+	assert.Equal(t, int64(2), calls.Load(), "tombstoned handlers must not fire")
+}
+
+func TestUnsubscribe_CompactionTriggersAtThreshold(t *testing.T) {
+	bus := New()
+	eventName := (testEvent{}).EventName()
+
+	subs := make([]Subscription, 10)
+	for i := range subs {
+		subs[i] = Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil })
+	}
+
+	// Tombstone the first 7 — under threshold (8); no compaction yet.
+	for i := 0; i < 7; i++ {
+		bus.Unsubscribe(subs[i])
+	}
+	bus.mu.RLock()
+	preCompact := len(bus.handlers[eventName])
+	bus.mu.RUnlock()
+	assert.Equal(t, 10, preCompact, "no compaction yet — under threshold")
+
+	// 8th tombstone hits the threshold; compaction drops the dead slots.
+	bus.Unsubscribe(subs[7])
+	bus.mu.RLock()
+	postCompact := len(bus.handlers[eventName])
+	bus.mu.RUnlock()
+	assert.Equal(t, 2, postCompact, "compaction should leave only live handlers")
+}
+
+func TestUnsubscribe_DoesNotAllocateUnderThreshold(t *testing.T) {
+	// The hot path (Unsubscribe with dead-count under threshold) must
+	// reuse the existing backing array rather than reallocating — that
+	// was the regression the audit flagged.
+	bus := New()
+	eventName := (testEvent{}).EventName()
+
+	for range 5 {
+		Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil })
+	}
+	sub := Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil })
+
+	bus.mu.RLock()
+	beforePtr := sliceArrayPtr(bus.handlers[eventName])
+	bus.mu.RUnlock()
+
+	bus.Unsubscribe(sub) // dead=1 < threshold 8 — must not reallocate.
+
+	bus.mu.RLock()
+	afterPtr := sliceArrayPtr(bus.handlers[eventName])
+	afterAlive := bus.handlers[eventName][5].alive
+	bus.mu.RUnlock()
+
+	assert.Equal(t, beforePtr, afterPtr, "Unsubscribe must mark slot dead in place, not reallocate")
+	assert.False(t, afterAlive, "tombstoned handler must be marked alive=false")
+}
+
+func sliceArrayPtr[T any](s []T) uintptr {
+	if cap(s) == 0 {
+		return 0
+	}
+	return reflect.ValueOf(s).Pointer()
 }

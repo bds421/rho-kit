@@ -96,10 +96,12 @@ func TestComputeBindings_Valid_HeadersExchange(t *testing.T) {
 func TestComputeBindings_MultipleSpecs(t *testing.T) {
 	specs := []messaging.BindingSpec{
 		{
+			// Explicit fire-and-forget binding — no retry topology.
 			Exchange:     "ex1",
 			ExchangeType: messaging.ExchangeDirect,
 			Queue:        "q1",
 			RoutingKey:   "rk1",
+			WithoutRetry: true,
 		},
 		{
 			Exchange:     "ex2",
@@ -118,10 +120,47 @@ func TestComputeBindings_MultipleSpecs(t *testing.T) {
 	require.Len(t, bindings, 2)
 
 	assert.Equal(t, "q1", bindings[0].Queue)
-	assert.Empty(t, bindings[0].RetryExchange)
+	assert.Empty(t, bindings[0].RetryExchange, "WithoutRetry binding has no retry topology")
 
 	assert.Equal(t, "q2", bindings[1].Queue)
 	assert.Equal(t, "ex2.retry", bindings[1].RetryExchange)
+}
+
+func TestComputeBindings_NilRetryGetsDefault(t *testing.T) {
+	specs := []messaging.BindingSpec{
+		{
+			Exchange:     "ex",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "q",
+			RoutingKey:   "rk",
+			// no Retry, no WithoutRetry — kit applies DefaultRetryPolicy.
+		},
+	}
+
+	bindings, err := messaging.ComputeBindings(specs...)
+	require.NoError(t, err)
+	require.Len(t, bindings, 1)
+
+	require.NotNil(t, bindings[0].Retry, "default retry must be applied")
+	assert.Equal(t, 3, bindings[0].Retry.MaxRetries)
+	assert.Equal(t, 10*time.Second, bindings[0].Retry.Delay)
+	assert.Equal(t, "ex.retry", bindings[0].RetryExchange)
+}
+
+func TestValidateBindingSpecs_RetryAndWithoutRetryConflict(t *testing.T) {
+	specs := []messaging.BindingSpec{
+		{
+			Exchange:     "ex",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "q",
+			RoutingKey:   "rk",
+			Retry:        &messaging.RetryPolicy{MaxRetries: 3, Delay: time.Second},
+			WithoutRetry: true, // conflict
+		},
+	}
+	err := messaging.ValidateBindingSpecs(specs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
 func TestComputeBindings_NoSpecs(t *testing.T) {

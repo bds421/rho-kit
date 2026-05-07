@@ -155,19 +155,26 @@ func resolveFailure(delivery amqp.Delivery, b messaging.Binding) (failureAction,
 //
 // Requires a non-nil publisher on the Consumer when Retry is set.
 //
-// NOTE: when b.Retry is nil, ANY handler error results in ack-and-discard.
-// That is the historical behaviour and matches "fire-and-forget" use cases
-// (broadcast notifications, idempotent deletes), but it is destructive and
-// rarely what you want for business-critical workloads. The kit logs a
-// loud warning at consumer start when a binding has no retry configured;
-// pass an explicit Retry policy whenever message loss on transient
-// failures is unacceptable.
+// Retry semantics:
+//   - b.Retry != nil: retries via the declared retry topology, then dead-letters.
+//   - b.Retry == nil && b.WithoutRetry == true: explicit fire-and-forget;
+//     handler errors ack-and-discard the message. Logged at INFO at consumer
+//     start so the choice is visible in the startup log.
+//   - b.Retry == nil && b.WithoutRetry == false: should not happen — the
+//     kit's [messaging.NormalizeBindingSpecs] applies [messaging.DefaultRetryPolicy]
+//     and emits a warning. If it slips through (caller built a Binding manually),
+//     the consumer logs an ERROR and treats the binding as drop-on-error to
+//     avoid breaking startup.
 func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
 	if b.Retry != nil && c.publisher == nil {
 		return fmt.Errorf("consumeOnce with retry requires a publisher (pass non-nil publisher to NewConsumer)")
 	}
-	if b.Retry == nil {
-		c.logger.Warn("consumer binding has no retry policy — handler errors will ack-and-discard the message; pass Retry on the binding for at-least-once semantics",
+	switch {
+	case b.Retry == nil && b.WithoutRetry:
+		c.logger.Info("consumer binding configured with WithoutRetry — handler errors will ack-and-discard the message",
+			"queue", b.Queue, "exchange", b.Exchange)
+	case b.Retry == nil && !b.WithoutRetry:
+		c.logger.Error("consumer binding reached the consumer with no retry policy and WithoutRetry=false — defaults should have been applied via DeclareAll/ComputeBindings; treating as drop-on-error",
 			"queue", b.Queue, "exchange", b.Exchange)
 	}
 

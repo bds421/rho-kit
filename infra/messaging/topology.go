@@ -21,14 +21,38 @@ type RetryPolicy struct {
 	Delay      time.Duration
 }
 
+// DefaultRetryPolicy returns the kit's default retry policy applied to
+// bindings that omit Retry and do not set WithoutRetry. Three retries
+// at 10-second intervals matches typical consumer-side transient-error
+// recovery (database connection bounce, AMQP reconnect grace period,
+// downstream API rate-limit cooldown).
+func DefaultRetryPolicy() *RetryPolicy {
+	return &RetryPolicy{MaxRetries: 3, Delay: 10 * time.Second}
+}
+
 // BindingSpec describes an exchange, queue, and the routing key that connects them.
 // It is the configuration input for backend-specific topology declaration.
+//
+// Retry behaviour:
+//   - Retry set: that policy is used as-is.
+//   - Retry nil + WithoutRetry false: [DefaultRetryPolicy] is applied at
+//     [ValidateBindingSpecs] time and a warning is logged. This is the
+//     safe default — silent ack-and-discard on first transient error
+//     (the previous default) was a footgun.
+//   - WithoutRetry true: ack-and-discard on the first handler error,
+//     with no retry topology declared. Use only for fire-and-forget
+//     workloads (broadcast notifications, idempotent deletes, etc.)
+//     where message loss on transient failures is acceptable.
+//
+// Setting both Retry and WithoutRetry is a configuration error and
+// fails [ValidateBindingSpecs].
 type BindingSpec struct {
 	Exchange     string
 	ExchangeType string
 	Queue        string
 	RoutingKey   string
 	Retry        *RetryPolicy
+	WithoutRetry bool
 }
 
 // Binding is a BindingSpec whose topology has been declared on the broker.
@@ -49,8 +73,36 @@ type ExchangeSpec struct {
 	ExchangeType string
 }
 
+// NormalizeBindingSpecs applies kit defaults to specs and returns a slice of
+// warnings describing any defaults that were applied. It mutates specs in
+// place — callers pass a freshly built slice (the typical pattern).
+//
+// Currently:
+//   - When Retry is nil AND WithoutRetry is false, [DefaultRetryPolicy] is
+//     applied. Silent ack-and-discard on first transient error was the
+//     previous default and is now opt-in via WithoutRetry. The warning lets
+//     operators see, in the consumer's startup log, that the kit picked
+//     the default for them.
+func NormalizeBindingSpecs(specs []BindingSpec) []string {
+	var warnings []string
+	for i := range specs {
+		if specs[i].Retry == nil && !specs[i].WithoutRetry {
+			specs[i].Retry = DefaultRetryPolicy()
+			warnings = append(warnings, fmt.Sprintf(
+				"binding %q: Retry not configured and WithoutRetry not set; applied DefaultRetryPolicy (MaxRetries=%d, Delay=%s). Set WithoutRetry=true on the BindingSpec to keep ack-and-discard semantics.",
+				specs[i].Queue, specs[i].Retry.MaxRetries, specs[i].Retry.Delay,
+			))
+		}
+	}
+	return warnings
+}
+
 // ValidateBindingSpecs checks that all specs have valid exchange names, queue
 // names, exchange types, routing keys, and retry policies.
+//
+// Callers that want kit defaults applied (Retry filling) should call
+// [NormalizeBindingSpecs] *before* validation. [ComputeBindings] and the
+// backend-specific DeclareAll do this for you.
 func ValidateBindingSpecs(specs []BindingSpec) error {
 	for _, b := range specs {
 		if b.Exchange == "" {
@@ -66,6 +118,9 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 		}
 		if b.RoutingKey == "" && (b.ExchangeType == ExchangeDirect || b.ExchangeType == ExchangeTopic) {
 			return fmt.Errorf("routing key required for %s exchange %q", b.ExchangeType, b.Exchange)
+		}
+		if b.Retry != nil && b.WithoutRetry {
+			return fmt.Errorf("binding %q: Retry and WithoutRetry are mutually exclusive — set Retry to override the default policy, or set WithoutRetry=true for ack-and-discard semantics", b.Queue)
 		}
 		if b.Retry != nil {
 			if b.Retry.MaxRetries < 1 {
@@ -88,7 +143,11 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 // retry/dead exchange and queue names. Unlike backend-specific DeclareAll,
 // it requires no broker connection — it is a pure function. Consumer services
 // use this to obtain Binding objects without declaring topology themselves.
+//
+// Mutates specs by calling [NormalizeBindingSpecs] before validation, so a
+// freshly built slice should be passed.
 func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
+	_ = NormalizeBindingSpecs(specs)
 	if err := ValidateBindingSpecs(specs); err != nil {
 		return nil, err
 	}
