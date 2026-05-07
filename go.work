@@ -9,6 +9,7 @@ use (
 	./core/config
 	./core/contextutil
 	./core/secret
+	./core/tenant
 	./core/validate
 	./crypto
 	./crypto/envelope

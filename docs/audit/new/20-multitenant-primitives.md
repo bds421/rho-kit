@@ -94,11 +94,11 @@ Activates the tenant middleware on the public mux, wraps the default cache and i
 
 ## Definition of done
 
-- [ ] `core/tenant` package with type-distinct `ID` and ctx helpers.
-- [ ] `httpx/middleware/tenant` with default-JWT extractor.
-- [ ] Cache + idempotency wrappers.
-- [ ] Per-tenant rate-limit middleware.
-- [ ] `promutil/labelguard` for cardinality protection.
-- [ ] Builder `WithMultiTenant`.
-- [ ] Tests covering each integration's tenant isolation.
-- [ ] Recipe in `docs/ai/utilities.md`.
+- [x] `core/tenant` package with type-distinct `ID`, ctx helpers, `Required` (ErrMissing). ✅ this PR
+- [x] `httpx/middleware/tenant` with default header extractor + custom-extractor option (JWT extraction stays in caller code so httpx doesn't pull a JWT dep). ✅ this PR
+- [ ] Cache + idempotency wrappers (deferred — depends on rolling out tenant ID into existing call sites; track as separate audit items).
+- [ ] Per-tenant rate-limit middleware (deferred — wraps existing ratelimit.Limiter once tenant ID is on the request ctx, which this PR enables).
+- [ ] `promutil/labelguard` for cardinality protection (deferred — separate observability sweep).
+- [ ] Builder `WithMultiTenant` (deferred — Builder integration after wrappers land).
+- [x] Tests: zero-ID never appears as present; nil ctx tolerated; Required surfaces ErrMissing; middleware rejects 400 on missing tenant for state-changing methods; safe methods pass through; custom extractor honoured.
+- [ ] Recipe in `docs/ai/utilities.md` (deferred to docs sweep).

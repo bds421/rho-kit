@@ -2,12 +2,16 @@ module github.com/bds421/rho-kit/httpx
 
 go 1.26.2
 
-replace github.com/bds421/rho-kit/security/csrf => ../security/csrf
+replace (
+	github.com/bds421/rho-kit/core/tenant => ../core/tenant
+	github.com/bds421/rho-kit/security/csrf => ../security/csrf
+)
 
 require (
 	github.com/bds421/rho-kit/core/apperror v1.2.0
 	github.com/bds421/rho-kit/core/config v1.2.0
 	github.com/bds421/rho-kit/core/contextutil v1.2.0
+	github.com/bds421/rho-kit/core/tenant v0.0.0
 	github.com/bds421/rho-kit/core/validate v1.1.0
 	github.com/bds421/rho-kit/crypto v1.2.0
 	github.com/bds421/rho-kit/data/idempotency v1.1.0
