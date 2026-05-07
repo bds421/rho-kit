@@ -7,8 +7,9 @@ import (
 )
 
 type metrics struct {
-	runs     *prometheus.CounterVec
-	duration *prometheus.HistogramVec
+	runs             *prometheus.CounterVec
+	duration         *prometheus.HistogramVec
+	skippedNotLeader *prometheus.CounterVec
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -31,7 +32,13 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Buckets: []float64{0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 		}, []string{"name"}),
 	}
+	m.skippedNotLeader = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "cron",
+		Name:      "job_skipped_not_leader_total",
+		Help:      "Cron jobs skipped because the leader-election gate reported this replica is not the leader.",
+	}, []string{"name"})
 	promutil.RegisterCollector(reg, m.runs)
 	promutil.RegisterCollector(reg, m.duration)
+	promutil.RegisterCollector(reg, m.skippedNotLeader)
 	return m
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/httpx/slohttp"
+	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/infra/sqldb"
@@ -108,6 +109,12 @@ type Builder struct {
 	// PASETO (alternative to JWT). Caller-constructed Provider, so the
 	// kit does not impose a particular key source.
 	pasetoProvider *paseto.Provider
+
+	// Leader election (optional). When set, cron jobs gate on
+	// elector.IsLeader() so only the elected replica runs scheduled
+	// work. Other infrastructure (HTTP, consumers) keeps running on
+	// every replica.
+	leaderElector leaderelection.Elector
 
 	// Production-defaults switch — see Builder.WithProductionDefaults.
 	productionDefaults bool
@@ -459,9 +466,33 @@ func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *B
 // infra.Cron in the RouterFunc, where jobs can be added with infra.Cron.Add().
 // The scheduler is started as a lifecycle component before the HTTP server
 // and stopped during graceful shutdown (waits for running jobs to complete).
+//
+// When [WithLeaderElection] is also configured, every cron job gates on
+// `elector.IsLeader()` automatically — only the elected replica runs
+// scheduled work. Other infrastructure (HTTP, consumers) keeps running on
+// every replica.
 func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
 	b.cronEnabled = true
 	b.cronOpts = opts
+	return b
+}
+
+// WithLeaderElection registers an [leaderelection.Elector] that runs
+// continuously under the lifecycle runner. The elector's IsLeader()
+// is consulted automatically by the cron scheduler: jobs skip when
+// the replica is not the leader. Other replicas keep their HTTP
+// servers and consumers running normally.
+//
+// The elector is reachable via Infrastructure.Leader for advanced
+// callers (custom worker loops, leader-only routes).
+//
+// Panics if elector is nil — pass an explicit elector or don't call
+// this method.
+func (b *Builder) WithLeaderElection(e leaderelection.Elector) *Builder {
+	if e == nil {
+		panic("app: WithLeaderElection requires a non-nil Elector")
+	}
+	b.leaderElector = e
 	return b
 }
 
@@ -662,7 +693,11 @@ func (b *Builder) Run() error {
 	// 6. Cron scheduler
 	var cronScheduler *kitcron.Scheduler
 	if b.cronEnabled {
-		cronScheduler = kitcron.New(logger, b.cronOpts...)
+		opts := append([]kitcron.Option(nil), b.cronOpts...)
+		if b.leaderElector != nil {
+			opts = append(opts, kitcron.WithLeaderGate(b.leaderElector.IsLeader))
+		}
+		cronScheduler = kitcron.New(logger, opts...)
 		runner.Add("cron-scheduler", cronScheduler)
 	}
 

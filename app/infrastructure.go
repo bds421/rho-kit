@@ -11,6 +11,7 @@ import (
 
 	"github.com/bds421/rho-kit/crypto/paseto"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
+	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
@@ -61,6 +62,8 @@ type Infrastructure struct {
 
 	JWT    *jwtutil.Provider // nil if no WithJWT
 	PASETO *paseto.Provider  // nil if no WithPASETO
+
+	Leader leaderelection.Elector // nil if no WithLeaderElection
 
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit

@@ -94,6 +94,10 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, newPgxModule(*b.pgxCfg))
 	}
 
+	if b.leaderElector != nil {
+		modules = append(modules, newLeaderModule(b.leaderElector))
+	}
+
 	return modules, dbMod
 }
 

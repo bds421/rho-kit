@@ -6,6 +6,7 @@ require (
 	github.com/bds421/rho-kit/crypto/paseto v0.0.0
 	github.com/bds421/rho-kit/grpcx v0.2.0
 	github.com/bds421/rho-kit/httpx v1.5.0
+	github.com/bds421/rho-kit/infra/leaderelection v0.0.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend v1.2.0
 	github.com/bds421/rho-kit/infra/messaging/natsbackend v0.0.0
@@ -128,6 +129,7 @@ require (
 
 replace (
 	github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto
+	github.com/bds421/rho-kit/infra/leaderelection => ../infra/leaderelection
 	github.com/bds421/rho-kit/infra/messaging/natsbackend => ../infra/messaging/natsbackend
 	github.com/bds421/rho-kit/infra/sqldb/pgx => ../infra/sqldb/pgx
 )

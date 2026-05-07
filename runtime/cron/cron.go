@@ -26,14 +26,17 @@ type Scheduler struct {
 	cancel context.CancelFunc
 
 	jobTimeouts map[string]time.Duration // per-job timeout; nil/missing = inherit scheduler ctx
+
+	leaderFn func() bool // optional gate; jobs skip when this returns false
 }
 
 // Option configures a Scheduler.
 type Option func(*config)
 
 type config struct {
-	location *time.Location
-	registry prometheus.Registerer
+	location  *time.Location
+	registry  prometheus.Registerer
+	leaderFn  func() bool
 }
 
 // WithLocation sets the timezone for cron schedule evaluation.
@@ -46,6 +49,21 @@ func WithLocation(loc *time.Location) Option {
 // Default: prometheus.DefaultRegisterer.
 func WithRegistry(reg prometheus.Registerer) Option {
 	return func(c *config) { c.registry = reg }
+}
+
+// WithLeaderGate gates every job's execution on the supplied
+// predicate. When fn returns false, the scheduled job is skipped (a
+// `cron_job_skipped_not_leader_total` counter is incremented and a
+// debug log line emitted) but the schedule keeps ticking.
+//
+// Use this with [github.com/bds421/rho-kit/infra/leaderelection]:
+// `WithLeaderGate(elector.IsLeader)` ensures cron jobs run only on
+// the elected leader replica without each job needing its own gate.
+//
+// The predicate is called once per scheduled tick; it must be
+// non-blocking and concurrency-safe.
+func WithLeaderGate(fn func() bool) Option {
+	return func(c *config) { c.leaderFn = fn }
 }
 
 // New creates a Scheduler. Jobs are added with [Scheduler.Add] and the
@@ -71,6 +89,7 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 		logger:      logger,
 		metrics:     newMetrics(cfg.registry),
 		jobTimeouts: make(map[string]time.Duration),
+		leaderFn:    cfg.leaderFn,
 	}
 }
 
@@ -151,6 +170,12 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 
 		if baseCtx == nil {
 			baseCtx = context.Background()
+		}
+
+		if s.leaderFn != nil && !s.leaderFn() {
+			s.metrics.skippedNotLeader.WithLabelValues(name).Inc()
+			s.logger.Debug("cron job skipped (not leader)", "job", name)
+			return
 		}
 
 		ctx := baseCtx
