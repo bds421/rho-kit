@@ -20,6 +20,7 @@ use (
 	./crypto/paseto
 	./crypto/passhash
 	./data/budget
+	./data/budget/memory
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
