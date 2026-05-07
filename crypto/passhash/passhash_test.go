@@ -119,11 +119,11 @@ func TestVerify_MalformedRejected(t *testing.T) {
 	cases := []string{
 		"",
 		"not-a-hash",
-		"$argon2id$v=19$m=8192,t=1,p=1$short",                      // missing hash segment
-		"$bcrypt$v=19$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",    // wrong algorithm
-		"$argon2id$v=20$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",  // wrong version
-		"$argon2id$v=19$m=BAD,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",   // bad params
-		"$argon2id$v=19$m=8192,t=1,p=1$NOT-BASE64@@@$YQ",           // bad salt b64
+		"$argon2id$v=19$m=8192,t=1,p=1$short", // missing hash segment
+		"$bcrypt$v=19$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",   // wrong algorithm
+		"$argon2id$v=20$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ", // wrong version
+		"$argon2id$v=19$m=BAD,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",  // bad params
+		"$argon2id$v=19$m=8192,t=1,p=1$NOT-BASE64@@@$YQ",          // bad salt b64
 	}
 	for _, c := range cases {
 		_, _, err := Verify("hunter2", c, fastParams())

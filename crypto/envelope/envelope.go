@@ -18,17 +18,17 @@
 //
 // Blob format (network byte order):
 //
-//	+--------+----+----+--------+----+-------+----+----+--------+
-//	| magic  | v  | kL | keyID  | wL | wDEK  | n  |    | ct+tag |
-//	|  3B    | 1B | 1B |  …     | 2B |  …    | 12B |   |   …    |
-//	+--------+----+----+--------+----+-------+----+----+--------+
+//		+--------+----+----+--------+----+-------+----+----+--------+
+//		| magic  | v  | kL | keyID  | wL | wDEK  | n  |    | ct+tag |
+//		|  3B    | 1B | 1B |  …     | 2B |  …    | 12B |   |   …    |
+//		+--------+----+----+--------+----+-------+----+----+--------+
 //
-//   - magic: "ENV" (3 bytes) — quick-reject for non-envelope blobs.
-//   - v: version, currently 1.
-//   - kL + keyID: KEK identifier (string), length-prefixed.
-//   - wL + wDEK: wrapped DEK bytes, length-prefixed (uint16 BE).
-//   - n: AES-GCM nonce (12 bytes).
-//   - ct+tag: AES-256-GCM(plaintext, AAD := caller-supplied || header).
+//	  - magic: "ENV" (3 bytes) — quick-reject for non-envelope blobs.
+//	  - v: version, currently 1.
+//	  - kL + keyID: KEK identifier (string), length-prefixed.
+//	  - wL + wDEK: wrapped DEK bytes, length-prefixed (uint16 BE).
+//	  - n: AES-GCM nonce (12 bytes).
+//	  - ct+tag: AES-256-GCM(plaintext, AAD := caller-supplied || header).
 //
 // AAD binding: the AAD passed to GCM is the caller's AAD concatenated
 // with a hash of the header bytes. This means a blob is only decryptable
@@ -61,10 +61,10 @@ const nonceLen = 12
 // Sentinel errors. Verify-style checks all wrap one of these so callers
 // can branch without parsing the underlying error message.
 var (
-	ErrMalformed       = errors.New("envelope: malformed blob")
-	ErrUnsupportedVer  = errors.New("envelope: unsupported blob version")
-	ErrTruncated       = errors.New("envelope: truncated blob")
-	ErrAuthFailed      = errors.New("envelope: authentication failed")
+	ErrMalformed      = errors.New("envelope: malformed blob")
+	ErrUnsupportedVer = errors.New("envelope: unsupported blob version")
+	ErrTruncated      = errors.New("envelope: truncated blob")
+	ErrAuthFailed     = errors.New("envelope: authentication failed")
 )
 
 // KEK abstracts a key-encryption-key provider. Implementations are

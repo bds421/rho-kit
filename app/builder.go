@@ -94,6 +94,9 @@ type Builder struct {
 	jwtAudience      string
 	jwtAllowAnyIssue bool
 
+	// Production-defaults switch — see Builder.WithProductionDefaults.
+	productionDefaults bool
+
 	// Rate limiters
 	ipRateRequests int
 	ipRateWindow   time.Duration
@@ -153,6 +156,34 @@ func New(name, version string, cfg BaseConfig) *Builder {
 		version: version,
 		cfg:     cfg,
 	}
+}
+
+// WithProductionDefaults flips the Builder into "production-shape"
+// validation mode. The toggle does not by itself reconfigure existing
+// options; instead it adds startup checks that fail loudly when a
+// production-required configuration knob is missing.
+//
+// Tightenings (validated at [Builder.Build] time):
+//
+//   - JWT: WithJWT must be paired with WithJWTIssuer or
+//     WithJWTAllowAnyIssuer. The legacy "https://oathkeeper" default
+//     is not allowed in production.
+//   - Postgres: sslmode must be one of {require, verify-ca, verify-full}.
+//   - Tracing: SampleRate ≤ 0.1 unless explicitly overridden — full
+//     sampling is a collector-cost foot-gun.
+//
+// Calling WithProductionDefaults outside KIT_ENV=production logs a
+// warning but is otherwise allowed — useful for staging environments
+// that must mirror prod, or for local-dev integration tests that
+// want to flush out config gaps before they hit a real deployment.
+//
+// Each individual tightening is also enforceable standalone (the
+// jwtModule's KIT_ENV=production panic is independent of this
+// switch). The aggregate option is the right choice for any service
+// that aspires to a boring production stance.
+func (b *Builder) WithProductionDefaults() *Builder {
+	b.productionDefaults = true
+	return b
 }
 
 // WithMySQL configures a MariaDB connection.

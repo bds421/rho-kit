@@ -51,10 +51,10 @@ type Claims struct {
 }
 
 type config struct {
-	expectedIssuer    string
-	expectedAudience  string
-	allowAnyIssuer    bool
-	allowAnyAudience  bool
+	expectedIssuer     string
+	expectedAudience   string
+	allowAnyIssuer     bool
+	allowAnyAudience   bool
 	clockSkewTolerance time.Duration
 }
 
@@ -144,7 +144,7 @@ func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error)
 // against the configured issuer/audience and the supplied now.
 func (v *V4Public) Verify(token string, now time.Time) (*Claims, error) {
 	var (
-		parsed *paseto.Token
+		parsed  *paseto.Token
 		lastErr error
 	)
 	for _, k := range v.pubKeys {

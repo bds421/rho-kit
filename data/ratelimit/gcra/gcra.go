@@ -27,12 +27,12 @@ import (
 
 // Limiter is a per-key GCRA [ratelimit.Limiter].
 type Limiter struct {
-	rate   time.Duration // emission interval; period / burst
-	burst  int           // burst tolerance (cells)
-	now    func() time.Time
+	rate  time.Duration // emission interval; period / burst
+	burst int           // burst tolerance (cells)
+	now   func() time.Time
 
-	mu     sync.Mutex
-	tats   map[string]time.Time // theoretical arrival times
+	mu   sync.Mutex
+	tats map[string]time.Time // theoretical arrival times
 }
 
 // Option configures a [Limiter].

@@ -32,6 +32,8 @@ use (
 	./data/stream/redisstream
 	./grpcx
 	./httpx
+	./httpx/middleware/signedrequest
+	./httpx/sign
 	./infra/leaderelection
 	./infra/leaderelection/pgadvisory
 	./infra/messaging
@@ -49,6 +51,7 @@ use (
 	./infra/storage/gcsbackend
 	./infra/storage/s3backend
 	./infra/storage/sftpbackend
+	./infra/storage/storagehttp/uploadsec
 	./infra/storage/storagetest
 	./io/atomicfile
 	./io/progress
@@ -57,7 +60,9 @@ use (
 	./observability/health
 	./observability/logattr
 	./observability/logging
+	./observability/pprof
 	./observability/promutil
+	./observability/runtimemetrics
 	./observability/redmetrics
 	./observability/slo
 	./observability/tracing
