@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/net/http/httpguts"
 
 	idem "github.com/bds421/rho-kit/data/idempotency"
 	"github.com/bds421/rho-kit/httpx"
@@ -140,13 +141,24 @@ func WithTTL(d time.Duration) Option {
 }
 
 // WithHeader sets the header name used as idempotency key. Default: "Idempotency-Key".
+// Panics if name is empty or not a valid HTTP header field name — an invalid
+// header name would make every request fail with a confusing missing-header error.
 func WithHeader(name string) Option {
+	if !httpguts.ValidHeaderFieldName(name) {
+		panic(fmt.Sprintf("idempotency: WithHeader requires a valid HTTP header field name (got %q)", name))
+	}
 	return func(c *config) { c.header = name }
 }
 
-// WithLogger sets the logger for idempotency store errors. Default: slog.Default().
+// WithLogger sets the logger for idempotency store errors. A nil logger is
+// normalized to slog.Default() so error paths cannot panic.
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) { c.logger = l }
+	return func(c *config) {
+		if l == nil {
+			l = slog.Default()
+		}
+		c.logger = l
+	}
 }
 
 // WithMetrics enables Prometheus metrics for the middleware.
@@ -248,6 +260,9 @@ func defaultConfig() config {
 // strip list with [WithPreserveHeaders] if your service legitimately
 // needs to replay a header on this list.
 func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handler {
+	if store == nil {
+		panic("idempotency: Middleware requires a non-nil Store")
+	}
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(&cfg)

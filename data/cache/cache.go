@@ -11,6 +11,13 @@ import (
 // ErrCacheMiss is returned when a key is not found in the cache.
 var ErrCacheMiss = errors.New("cache: key not found")
 
+// ErrAdmissionRejected is returned when a backend silently dropped an
+// otherwise-valid write. Ristretto's TinyLFU admission policy can reject
+// entries that are believed less valuable than what is already cached;
+// surfacing the rejection lets callers decide whether to retry, fall back,
+// or treat the write as critical.
+var ErrAdmissionRejected = errors.New("cache: write rejected by admission policy")
+
 // ErrKeyEmpty is returned when a cache key is empty.
 var ErrKeyEmpty = errors.New("cache: key must not be empty")
 

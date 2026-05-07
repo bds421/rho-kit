@@ -244,7 +244,7 @@ func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time
 		cost = 0
 	}
 	if !mc.cache.SetWithTTL(key, stored, cost, ttl) {
-		return nil
+		return ErrAdmissionRejected
 	}
 	return nil
 }
@@ -312,6 +312,9 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 	}
 
 	if err := mc.Set(ctx, key, value, ttl); err != nil {
+		// Admission rejection means the value never made it into the cache,
+		// so recording a claim would block legitimate retries against an
+		// empty slot until the recorded TTL elapsed.
 		return false, err
 	}
 	mc.cache.Wait()

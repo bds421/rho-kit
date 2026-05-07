@@ -94,8 +94,12 @@ func WithCacheRegisterer(reg prometheus.Registerer) CacheOption {
 
 // NewRedisCache creates a Redis-backed cache. The name is used for
 // Prometheus metric labels to distinguish multiple cache instances.
-// Returns an error if name is invalid.
+// Returns an error if name is invalid. Panics if client is nil — a
+// miswired cache would otherwise dereference nil on first use.
 func NewRedisCache(client goredis.UniversalClient, name string, opts ...CacheOption) (*RedisCache, error) {
+	if client == nil {
+		panic("rediscache: NewRedisCache requires a non-nil Redis client")
+	}
 	if err := redis.ValidateName(name, "cache"); err != nil {
 		return nil, err
 	}

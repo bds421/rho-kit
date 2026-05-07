@@ -79,8 +79,13 @@ type RedisStore struct {
 	prefix string
 }
 
-// New creates a RedisStore backed by the given Redis client.
+// New creates a RedisStore backed by the given Redis client. Panics if
+// client is nil — a miswired store would otherwise dereference nil on
+// first use.
 func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
+	if client == nil {
+		panic("redisstore: New requires a non-nil Redis client")
+	}
 	s := &RedisStore{
 		client: client,
 		prefix: "idempotency:",

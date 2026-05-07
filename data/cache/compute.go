@@ -274,13 +274,18 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// cancellation source and let compute run past the budget.
 	computeCtx, cancelCompute := detachCancelKeepDeadline(ctx)
 	defer cancelCompute()
-	result, err, shared := cc.group.Do(full, func() (interface{}, error) {
-		return cc.executeCompute(computeCtx, full, fn)
-	})
-	if err != nil {
-		if !shared {
+	result, err, _ := cc.group.Do(full, func() (interface{}, error) {
+		val, execErr := cc.executeCompute(computeCtx, full, fn)
+		if execErr != nil {
+			// Record once per group execution rather than keying off the
+			// shared flag. singleflight returns shared=true to the leader
+			// when followers joined, so the previous shared==false guard
+			// dropped errors whenever any contention existed.
 			cc.recordError()
 		}
+		return val, execErr
+	})
+	if err != nil {
 		return zero, err
 	}
 

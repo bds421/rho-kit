@@ -416,6 +416,51 @@ func TestComputeCache_ErrorMetrics(t *testing.T) {
 	assertCounterValue(t, metrics.misses, "err_cache", 1)
 }
 
+// TestComputeCache_ErrorMetricsSingleflight verifies that a failing
+// compute that is shared across many concurrent callers records exactly
+// one error — the previous logic keyed the error metric on
+// singleflight's `shared` flag, which dropped errors whenever followers
+// joined the leader's call.
+func TestComputeCache_ErrorMetricsSingleflight(t *testing.T) {
+	backend := newTestBackend(t)
+	reg := prometheus.NewPedanticRegistry()
+	metrics := NewComputeMetrics(reg)
+
+	cc, err := NewComputeCache[string](backend, "sferr:",
+		WithComputeMetricsRegisterer(metrics),
+		WithComputeName("sferr_cache"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	released := make(chan struct{})
+	var calls atomic.Int32
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		calls.Add(1)
+		<-released
+		return "", 0, errors.New("boom")
+	}
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			_, _ = cc.GetOrCompute(context.Background(), "k", fn)
+		}()
+	}
+
+	// Let them join the singleflight group, then release the failure.
+	time.Sleep(50 * time.Millisecond)
+	close(released)
+	wg.Wait()
+
+	assert.EqualValues(t, 1, calls.Load(), "singleflight must dedupe to a single compute")
+	assertCounterValue(t, metrics.errors, "sferr_cache", 1)
+	assertCounterValue(t, metrics.misses, "sferr_cache", float64(goroutines))
+}
+
 func TestComputeCache_UnmarshalFailure(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()

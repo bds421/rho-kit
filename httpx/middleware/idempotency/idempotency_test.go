@@ -35,6 +35,71 @@ func TestMiddleware_PanicsWithoutUserExtractorOrSharedKeysOptIn(t *testing.T) {
 	Middleware(store) // intentionally missing both — must panic
 }
 
+// TestMiddleware_PanicsOnNilStore verifies the constructor fails fast
+// instead of waiting for the first request to dereference nil.
+func TestMiddleware_PanicsOnNilStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when Middleware is constructed with a nil Store")
+		}
+	}()
+	Middleware(nil, WithAllowSharedKeys())
+}
+
+// TestWithHeader_PanicsOnEmpty verifies that an invalid header field name
+// is rejected at construction rather than producing a confusing
+// "missing empty header" error on every request.
+func TestWithHeader_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty header name")
+		}
+	}()
+	WithHeader("")
+}
+
+// TestWithHeader_PanicsOnInvalid rejects names with spaces or control
+// characters, which would not be a valid HTTP field name.
+func TestWithHeader_PanicsOnInvalid(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid header name")
+		}
+	}()
+	WithHeader("bad header") // space is not allowed in field names
+}
+
+// TestWithLogger_NilNormalizesToDefault ensures error paths can run
+// without panicking when callers pass a nil logger.
+func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
+	store := idem.NewMemoryStore()
+	// If WithLogger(nil) failed to normalize, the post-handler error
+	// path on the hung-store test would dereference nil and panic. Build
+	// a middleware with a nil logger and a hanging store, then drive a
+	// request through and confirm the request goroutine returns.
+	handler := Middleware(hangingStore{},
+		WithAllowSharedKeys(),
+		WithLogger(nil),
+		WithPostHandlerTimeout(50*time.Millisecond),
+	)(newTestHandler("ok", http.StatusOK))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Idempotency-Key", "nil-logger")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("middleware did not return; nil logger likely caused panic on error path")
+	}
+	_ = store
+}
+
 // TestIdempotency_EmptyUserReturns400_NotShared verifies that when an extractor
 // is configured but returns "" at runtime (anonymous request, missing auth ctx,
 // JWT minted without sub), the middleware fails closed with 400 rather than

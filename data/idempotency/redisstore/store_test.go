@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+// TestNew_NilClientPanics verifies the constructor fails fast rather
+// than letting a miswired store dereference nil on first use.
+func TestNew_NilClientPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil client")
+		}
+	}()
+	_ = New(nil)
+}
+
 // TestTTLMillisRoundUp guards the TTL precision fix: Redis SET PX accepts
 // integer milliseconds. Truncating a sub-millisecond duration with
 // ttl.Milliseconds() used to round to 0 and cause Redis to reject the

@@ -19,6 +19,17 @@ func newTestClient(t *testing.T) goredis.UniversalClient {
 	return goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 }
 
+// TestNewRedisCache_NilClientPanics verifies the constructor fails fast
+// rather than letting a miswired cache dereference nil on first use.
+func TestNewRedisCache_NilClientPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil client")
+		}
+	}()
+	_, _ = NewRedisCache(nil, "test")
+}
+
 func TestNewRedisCache_InvalidName(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })

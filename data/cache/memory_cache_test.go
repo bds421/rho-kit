@@ -443,7 +443,10 @@ func TestMemoryCache_DefaultByteCost(t *testing.T) {
 	const writes = 10 * 64
 	for i := range writes {
 		key := fmt.Sprintf("byte-cost-%d", i)
-		require.NoError(t, mc.Set(ctx, key, value, time.Minute))
+		err := mc.Set(ctx, key, value, time.Minute)
+		if err != nil && !errors.Is(err, ErrAdmissionRejected) {
+			t.Fatalf("Set: %v", err)
+		}
 	}
 	mc.Sync()
 	time.Sleep(20 * time.Millisecond) // let admission/eviction settle
@@ -478,7 +481,10 @@ func TestMemoryCache_WithEntryCost_EvictsByCount(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 10 {
-		require.NoError(t, mc.Set(ctx, fmt.Sprintf("k%d", i), []byte("x"), time.Minute))
+		err := mc.Set(ctx, fmt.Sprintf("k%d", i), []byte("x"), time.Minute)
+		if err != nil && !errors.Is(err, ErrAdmissionRejected) {
+			t.Fatalf("Set: %v", err)
+		}
 	}
 	mc.Sync()
 	time.Sleep(20 * time.Millisecond)
@@ -544,6 +550,44 @@ func TestMemoryCache_SetNX_ClaimExpires(t *testing.T) {
 	ok, err = mc.SetNX(ctx, "ttl-claim", []byte("v2"), time.Minute)
 	require.NoError(t, err)
 	assert.True(t, ok, "claim should be released after TTL expiry")
+}
+
+// TestMemoryCache_Set_AdmissionRejectionSurfacesError exercises the
+// rejection path on a closed cache — Ristretto's SetWithTTL returns
+// false on a closed cache, which is the deterministic way to drive
+// the rejection branch in tests. The previous behaviour silently
+// swallowed this signal; Set now surfaces ErrAdmissionRejected so
+// callers can react.
+func TestMemoryCache_Set_AdmissionRejectionSurfacesError(t *testing.T) {
+	mc, err := NewMemoryCache()
+	require.NoError(t, err)
+	require.NoError(t, mc.Close())
+
+	err = mc.Set(context.Background(), "rejected", []byte("v"), time.Minute)
+	assert.ErrorIs(t, err, ErrAdmissionRejected)
+}
+
+// TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse verifies that a
+// rejected write does NOT record an NX claim — otherwise the slot
+// would be locked out for the TTL despite holding no value.
+func TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse(t *testing.T) {
+	mc, err := NewMemoryCache()
+	require.NoError(t, err)
+	require.NoError(t, mc.Close())
+
+	ok, err := mc.SetNX(context.Background(), "rejected", []byte("v"), time.Minute)
+	assert.False(t, ok, "SetNX must return ok=false when the underlying write is rejected")
+	assert.ErrorIs(t, err, ErrAdmissionRejected)
+
+	// And no claim must have been recorded — a fresh cache constructed
+	// for the same key must accept it (proving SetNX did not stamp the
+	// rejection-period claim into the shared sync.Map).
+	mc2, err := NewMemoryCache()
+	require.NoError(t, err)
+	defer func() { _ = mc2.Close() }()
+	ok2, err := mc2.SetNX(context.Background(), "rejected", []byte("v"), time.Minute)
+	assert.NoError(t, err)
+	assert.True(t, ok2, "a fresh cache must accept the same key the rejected one declined")
 }
 
 // TestMemoryCache_SetNX_DeleteClearsClaim verifies that an explicit
