@@ -924,3 +924,34 @@ func TestWithPermissions(t *testing.T) {
 		t.Errorf("WithPermissions: Permissions() = %v, want %v", got, perms)
 	}
 }
+
+func TestRequirePermission_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty permission name, got none")
+		}
+	}()
+	RequirePermission("")
+}
+
+func TestPermissionByMethod_PanicsOnEmpty(t *testing.T) {
+	cases := []struct {
+		name      string
+		readPerm  string
+		writePerm string
+	}{
+		{"empty read", "", "users:write"},
+		{"empty write", "users:read", ""},
+		{"both empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic, got none")
+				}
+			}()
+			PermissionByMethod(tc.readPerm, tc.writePerm)
+		})
+	}
+}

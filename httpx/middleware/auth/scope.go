@@ -24,6 +24,9 @@ import (
 // for scope-bearing API keys, one for sessions) instead of relying on this
 // middleware to silently fall through.
 func RequireScope(requiredScope string) func(http.Handler) http.Handler {
+	if requiredScope == "" {
+		panic("auth: RequireScope requires a non-empty scope name")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if IsTrustedS2S(r.Context()) {
@@ -48,6 +51,9 @@ func RequireScope(requiredScope string) func(http.Handler) http.Handler {
 // that must only be accessible via API keys with specific scopes, preventing
 // privilege escalation via missing-header spoofing from adjacent containers.
 func RequireScopeStrict(requiredScope string) func(http.Handler) http.Handler {
+	if requiredScope == "" {
+		panic("auth: RequireScopeStrict requires a non-empty scope name")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			scopes := scopesFromRequest(r)

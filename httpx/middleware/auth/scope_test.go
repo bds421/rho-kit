@@ -155,3 +155,21 @@ func TestHasScope_WhitespaceOnly(t *testing.T) {
 		t.Error("expected hasScope(\"  ,  \", \"read\") to be false")
 	}
 }
+
+func TestRequireScope_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty scope, got none")
+		}
+	}()
+	RequireScope("")
+}
+
+func TestRequireScopeStrict_PanicsOnEmpty(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty scope, got none")
+		}
+	}()
+	RequireScopeStrict("")
+}

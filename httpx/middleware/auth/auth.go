@@ -247,6 +247,14 @@ func Scopes(ctx context.Context) string {
 // missing in front, JWT issued without the claim) from silently granting
 // access.
 func RequirePermission(permission string) func(http.Handler) http.Handler {
+	if permission == "" {
+		// An empty permission silently allows every caller through (the
+		// permissions set never contains "" so the check fails-closed,
+		// but a typo at wire time should surface at startup, not as a
+		// blanket-deny that operators only notice in prod). Match the
+		// kit's "refuse to misconfigure" stance.
+		panic("auth: RequirePermission requires a non-empty permission name")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if IsTrustedS2S(r.Context()) {
@@ -267,6 +275,12 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 // otherwise. Fail-closed semantics match RequirePermission — a request
 // without a permissions claim and without the trusted-S2S marker is denied.
 func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Handler {
+	if readPerm == "" {
+		panic("auth: PermissionByMethod requires a non-empty readPerm")
+	}
+	if writePerm == "" {
+		panic("auth: PermissionByMethod requires a non-empty writePerm")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if IsTrustedS2S(r.Context()) {

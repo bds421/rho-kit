@@ -343,3 +343,332 @@ func TestAuthStream_ValidToken(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, codes.Unimplemented, st.Code())
 }
+
+// ---------------------------------------------------------------------------
+// Authorization primitives (RequirePermission, RequireScope, IsTrustedS2S)
+// ---------------------------------------------------------------------------
+
+// noopUnaryInfo is a placeholder UnaryServerInfo for direct interceptor invocation.
+var noopUnaryInfo = &grpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}
+
+// noopStreamInfo is a placeholder StreamServerInfo for direct interceptor invocation.
+var noopStreamInfo = &grpc.StreamServerInfo{FullMethod: "/test.Service/Method"}
+
+// fakeStream is a minimal grpc.ServerStream that returns a configured ctx.
+type fakeStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f *fakeStream) Context() context.Context { return f.ctx }
+
+func TestRequirePermissionUnary_PanicsOnEmpty(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.RequirePermissionUnary("")
+	})
+}
+
+func TestRequirePermissionStream_PanicsOnEmpty(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.RequirePermissionStream("")
+	})
+}
+
+func TestRequireScopeUnary_PanicsOnEmpty(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.RequireScopeUnary("")
+	})
+}
+
+func TestRequireScopeStream_PanicsOnEmpty(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.RequireScopeStream("")
+	})
+}
+
+// TestRequirePermissionUnary_NoPermsClaim_PermissionDenied verifies that a
+// request with no permissions slot on context AND no trusted-S2S marker is
+// rejected with codes.PermissionDenied. This is the fail-closed default.
+func TestRequirePermissionUnary_NoPermsClaim_PermissionDenied(t *testing.T) {
+	called := false
+	handler := func(ctx context.Context, req any) (any, error) {
+		called = true
+		return "ok", nil
+	}
+
+	ic := interceptor.RequirePermissionUnary("read")
+	resp, err := ic(context.Background(), nil, noopUnaryInfo, handler)
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.False(t, called, "handler must not run when permission missing")
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+// TestRequirePermissionUnary_HasPermission_Allowed verifies that a request
+// with the required permission on context is permitted.
+func TestRequirePermissionUnary_HasPermission_Allowed(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read", "write"})
+
+	authCtx, err := authedCtx(t, provider, token)
+	require.NoError(t, err)
+
+	called := false
+	handler := func(ctx context.Context, req any) (any, error) {
+		called = true
+		return "ok", nil
+	}
+
+	ic := interceptor.RequirePermissionUnary("read")
+	resp, err := ic(authCtx, nil, noopUnaryInfo, handler)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp)
+	assert.True(t, called)
+}
+
+// TestRequirePermissionUnary_TrustedS2S_BypassesCheck verifies that the
+// trusted-S2S marker bypasses the permission check even when no permissions
+// claim is present. This is the documented S2S composition.
+func TestRequirePermissionUnary_TrustedS2S_BypassesCheck(t *testing.T) {
+	called := false
+	handler := func(ctx context.Context, req any) (any, error) {
+		called = true
+		return "ok", nil
+	}
+
+	// Use the test-only WithTrustedS2S helper to simulate the marker that
+	// MTLSAuthUnary's mTLS branch stamps after a verified client cert.
+	ctx := interceptor.WithTrustedS2S(context.Background())
+
+	ic := interceptor.RequirePermissionUnary("read")
+	resp, err := ic(ctx, nil, noopUnaryInfo, handler)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp)
+	assert.True(t, called)
+}
+
+// TestRequirePermissionStream_TrustedS2S_BypassesCheck mirrors the unary
+// test for streaming RPCs.
+func TestRequirePermissionStream_TrustedS2S_BypassesCheck(t *testing.T) {
+	called := false
+	handler := func(srv any, stream grpc.ServerStream) error {
+		called = true
+		return nil
+	}
+
+	ctx := interceptor.WithTrustedS2S(context.Background())
+	ss := &fakeStream{ctx: ctx}
+
+	ic := interceptor.RequirePermissionStream("read")
+	err := ic(nil, ss, noopStreamInfo, handler)
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+// TestRequirePermissionStream_NoPermsClaim_PermissionDenied verifies the
+// fail-closed semantics for the stream variant.
+func TestRequirePermissionStream_NoPermsClaim_PermissionDenied(t *testing.T) {
+	called := false
+	handler := func(srv any, stream grpc.ServerStream) error {
+		called = true
+		return nil
+	}
+
+	ss := &fakeStream{ctx: context.Background()}
+
+	ic := interceptor.RequirePermissionStream("read")
+	err := ic(nil, ss, noopStreamInfo, handler)
+	require.Error(t, err)
+	assert.False(t, called)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+// TestRequireScopeUnary_HasScope_Allowed verifies scope-bearing requests
+// pass.
+func TestRequireScopeUnary_HasScope_Allowed(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+
+	tok, err := jwt.NewBuilder().
+		Subject("11111111-1111-1111-1111-111111111111").
+		IssuedAt(time.Now()).
+		Expiration(time.Now().Add(time.Hour)).
+		Build()
+	require.NoError(t, err)
+	require.NoError(t, tok.Set("scopes", "read write"))
+
+	jwkKey, err := jwk.Import(privKey)
+	require.NoError(t, err)
+	require.NoError(t, jwkKey.Set(jwk.KeyIDKey, "test-key"))
+
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.ES256(), jwkKey))
+	require.NoError(t, err)
+
+	authCtx, err := authedCtx(t, provider, string(signed))
+	require.NoError(t, err)
+
+	called := false
+	handler := func(ctx context.Context, req any) (any, error) {
+		called = true
+		return "ok", nil
+	}
+
+	ic := interceptor.RequireScopeUnary("read")
+	resp, err := ic(authCtx, nil, noopUnaryInfo, handler)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp)
+	assert.True(t, called)
+}
+
+// TestRequireScopeUnary_MissingScope_PermissionDenied verifies fail-closed
+// for scope checks: no scopes claim and no trusted-S2S marker → denied.
+func TestRequireScopeUnary_MissingScope_PermissionDenied(t *testing.T) {
+	handler := func(ctx context.Context, req any) (any, error) {
+		return "ok", nil
+	}
+	ic := interceptor.RequireScopeUnary("admin")
+	_, err := ic(context.Background(), nil, noopUnaryInfo, handler)
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+// TestIsTrustedS2S_NotSetByJWTAuth verifies the load-bearing invariant:
+// the trusted-S2S marker is set ONLY by the mTLS branch of MTLSAuthUnary,
+// never by AuthUnary. A handler authenticated via JWT must not be able to
+// claim S2S trust.
+func TestIsTrustedS2S_NotSetByJWTAuth(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
+
+	var observedTrusted bool
+	var observedUserID string
+
+	// Direct invocation of AuthUnary so we can inspect the resulting context.
+	ic := interceptor.AuthUnary(provider)
+	_, err := ic(
+		metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			observedTrusted = interceptor.IsTrustedS2S(ctx)
+			observedUserID = interceptor.UserID(ctx)
+			return nil, nil
+		},
+	)
+	require.NoError(t, err)
+	assert.False(t, observedTrusted, "JWT auth must NOT set trusted-S2S marker")
+	assert.NotEmpty(t, observedUserID, "JWT auth must populate userID")
+}
+
+// TestMTLSAuthUnary_PanicsOnNilProvider mirrors HTTP RequireS2SAuth.
+func TestMTLSAuthUnary_PanicsOnNilProvider(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(nil, []string{"svc"})
+	})
+}
+
+// TestMTLSAuthUnary_PanicsOnEmptyCNs mirrors HTTP RequireS2SAuth.
+func TestMTLSAuthUnary_PanicsOnEmptyCNs(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(provider, nil)
+	})
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(provider, []string{})
+	})
+}
+
+func TestMTLSAuthStream_PanicsOnNilProvider(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthStream(nil, []string{"svc"})
+	})
+}
+
+func TestMTLSAuthStream_PanicsOnEmptyCNs(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthStream(provider, nil)
+	})
+}
+
+// TestMTLSAuthUnary_NoCertNoToken_Unauthenticated verifies the mTLS
+// fail-closed: a request with neither a Bearer token nor a verified client
+// cert is rejected, the same shape as the HTTP RequireS2SAuth.
+func TestMTLSAuthUnary_NoCertNoToken_Unauthenticated(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+
+	ic := interceptor.MTLSAuthUnary(provider, []string{"svc-a"})
+
+	called := false
+	_, err := ic(
+		context.Background(),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+// TestMTLSAuthUnary_JWTPath_NoTrustedMarker verifies that when MTLSAuthUnary
+// authenticates via the JWT branch (Bearer header present), it does NOT
+// stamp the trusted-S2S marker. Only the mTLS branch should do that.
+func TestMTLSAuthUnary_JWTPath_NoTrustedMarker(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
+
+	ic := interceptor.MTLSAuthUnary(provider, []string{"svc-a"})
+
+	var observedTrusted bool
+	_, err := ic(
+		metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			observedTrusted = interceptor.IsTrustedS2S(ctx)
+			return nil, nil
+		},
+	)
+	require.NoError(t, err)
+	assert.False(t, observedTrusted,
+		"JWT branch of MTLSAuthUnary must NOT stamp the trusted-S2S marker")
+}
+
+// authedCtx invokes AuthUnary with the given Bearer token and returns the
+// authenticated context as observed by a noop handler. Used to set up the
+// permissions+scopes slots without mTLS.
+func authedCtx(t *testing.T, provider *jwtutil.Provider, token string) (context.Context, error) {
+	t.Helper()
+	var captured context.Context
+	ic := interceptor.AuthUnary(provider)
+	_, err := ic(
+		metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			captured = ctx
+			return nil, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return captured, nil
+}
