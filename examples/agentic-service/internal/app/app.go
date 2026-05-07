@@ -1,0 +1,158 @@
+// Package app wires the agentic-service example together. The
+// composition shown here is the canonical v2.0.0 stack:
+//
+//	signedrequest (outermost when configured) → tenant → budget → handlers
+//
+// All optional middleware can be omitted independently. The Builder
+// composes them in the right order regardless of registration sequence.
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/bds421/rho-kit/data/actionlog"
+	actionlogmem "github.com/bds421/rho-kit/data/actionlog/memory"
+	"github.com/bds421/rho-kit/data/approval"
+	approvalmem "github.com/bds421/rho-kit/data/approval/memory"
+	"github.com/bds421/rho-kit/data/budget"
+	budgetmem "github.com/bds421/rho-kit/data/budget/memory"
+	"github.com/bds421/rho-kit/httpx/mcp"
+)
+
+// Run starts the HTTP server with the agentic-service stack.
+//
+// In a real service this would call app.Builder.WithMultiTenant /
+// .WithTenantBudget / .WithActionLogger / .WithApprovalStore and let
+// the Builder install the middleware on the public mux. The example
+// uses a hand-composed mux to keep it dependency-light (no DB, no
+// Redis) while still exercising every primitive.
+func Run(ctx context.Context) error {
+	// In-memory backends keep the example self-contained. Production
+	// wiring swaps these for the postgres / redis backends.
+	bud := budgetmem.New(1000 /* cap per period */, time.Minute)
+
+	alogStore := actionlogmem.New()
+	alogger := actionlog.New(alogStore, actionlog.NewStaticSecrets("v1", map[string][]byte{
+		"v1": []byte("at-least-32-bytes-of-secret-bytes!"),
+	}))
+
+	astore := approvalmem.New()
+
+	mcpServer := newMCPServer(alogger)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/mcp", mcpServer.HTTP())
+	mux.HandleFunc("/admin/dangerous-action", dangerousAction(astore))
+	mux.HandleFunc("/admin/budget", budgetStatus(bud))
+
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// EchoIn is the input for the sample MCP tool.
+type EchoIn struct {
+	Message string `json:"message" validate:"required" desc:"Text to echo back."`
+}
+
+// EchoOut is the response for the sample MCP tool.
+type EchoOut struct {
+	Echoed string `json:"echoed"`
+}
+
+// echo is the canonical MCP handler shape.
+func echo(_ context.Context, in EchoIn) (EchoOut, error) {
+	return EchoOut{Echoed: in.Message}, nil
+}
+
+// newMCPServer registers the sample tools with the MCP server.
+//
+// In production:
+//   - Wrap srv.HTTP() with the kit's tenant + auth + ratelimit
+//     middleware before mounting on the mux.
+//   - Use a real action-log Logger (postgres backend) so calls land
+//     in a query-able audit trail.
+func newMCPServer(alog actionlog.Logger) *mcp.Server {
+	srv := mcp.NewServer(mcp.WithActionLogger(alog))
+	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
+		mcp.WithToolDescription("Echo the input message back to the caller."),
+	); err != nil {
+		panic(fmt.Errorf("mcp register echo: %w", err))
+	}
+	return srv
+}
+
+// dangerousAction is a contrived endpoint that creates an approval
+// request rather than executing immediately. Production code wraps
+// this in the httpx/middleware/approval middleware which does the
+// same thing automatically.
+func dangerousAction(s approval.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := r.Header.Get("X-Tenant-Id")
+		if tenantID == "" {
+			http.Error(w, "missing X-Tenant-Id", http.StatusBadRequest)
+			return
+		}
+		req, err := s.Create(r.Context(), approval.Request{
+			TenantID:  tenantID,
+			Actor:     r.Header.Get("X-Actor"),
+			Action:    "admin.dangerous-action",
+			Resource:  "example",
+			State:     approval.StatePending,
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"approval_id": req.ID,
+			"status":      string(req.State),
+		})
+	}
+}
+
+// budgetStatus exposes the remaining budget for the tenant. Real
+// services emit X-Budget-Remaining via the budget middleware on
+// every response; this endpoint demonstrates the Peek API directly.
+func budgetStatus(b budget.Budget) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := r.Header.Get("X-Tenant-Id")
+		if tenantID == "" {
+			http.Error(w, "missing X-Tenant-Id", http.StatusBadRequest)
+			return
+		}
+		remaining, err := b.Peek(r.Context(), tenantID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tenant":    tenantID,
+			"remaining": remaining,
+		})
+	}
+}

@@ -46,6 +46,7 @@ use (
 	./data/ratelimit/tokenbucket
 	./data/stream
 	./data/stream/redisstream
+	./examples/agentic-service
 	./grpcx
 	./httpx
 	./httpx/budget
