@@ -91,9 +91,13 @@ func (c BaseConfig) IsDevelopment() bool {
 	return config.IsDevelopment(c.Environment)
 }
 
-// ValidateBase checks universal config fields: server port range and TLS config.
+// ValidateBase checks universal config fields: server port range,
+// internal-port range, and TLS config.
 func (c BaseConfig) ValidateBase() error {
 	if err := config.ValidatePort("server", c.Server.Port); err != nil {
+		return err
+	}
+	if err := config.ValidatePort("internal", c.Internal.Port); err != nil {
 		return err
 	}
 	if err := c.TLS.Validate(); err != nil {

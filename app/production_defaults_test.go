@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,7 +18,7 @@ import (
 // internal-host, and audience checks have dedicated tests below; the
 // helper isolates each remaining test to a single concern.
 func newSafeBuilder() *Builder {
-	return New("test", "v1", BaseConfig{}).
+	return New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience()
 }
@@ -125,8 +126,9 @@ func TestInternalConfig_DefaultsToLoopback(t *testing.T) {
 
 func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 	cfg := BaseConfig{
+		Server:   ServerConfig{Port: 8080},
 		Internal: InternalConfig{Host: "0.0.0.0", Port: 9090},
-		TLS:      validTLSForTest(),
+		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
 		WithoutJWTAudience()
@@ -138,8 +140,9 @@ func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 
 func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 	cfg := BaseConfig{
+		Server:   ServerConfig{Port: 8080},
 		Internal: InternalConfig{Host: "0.0.0.0", Port: 9090},
-		TLS:      validTLSForTest(),
+		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
 		WithInternalNonLoopback().
@@ -157,8 +160,9 @@ func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
 	for _, host := range []string{"::", "[::]", "0:0:0:0:0:0:0:0"} {
 		t.Run(host, func(t *testing.T) {
 			cfg := BaseConfig{
+				Server:   ServerConfig{Port: 8080},
 				Internal: InternalConfig{Host: host, Port: 9090},
-				TLS:      validTLSForTest(),
+				TLS:      validTLSForTest(t),
 			}
 			b := New("svc", "v1", cfg).WithoutJWTAudience()
 			err := b.Validate()
@@ -216,8 +220,9 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
 			cfg := BaseConfig{
+				Server:   ServerConfig{Port: 8080},
 				Internal: InternalConfig{Host: host, Port: 9090},
-				TLS:      validTLSForTest(),
+				TLS:      validTLSForTest(t),
 			}
 			b := New("svc", "v1", cfg).WithoutJWTAudience()
 			err := b.Validate()
@@ -230,7 +235,7 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 // --- C-2: validator requires TLS ---
 
 func TestBuilder_Validates_RequiresTLS(t *testing.T) {
-	b := New("svc", "v1", BaseConfig{}).
+	b := New("svc", "v1", validBaseConfig()).
 		WithoutJWTAudience()
 	err := b.Validate()
 	require.Error(t, err, "validator must reject empty TLS config")
@@ -239,7 +244,7 @@ func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 }
 
 func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
-	b := New("svc", "v1", BaseConfig{}).
+	b := New("svc", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience()
 	require.NoError(t, b.Validate(),
@@ -249,7 +254,7 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 // --- H-4: WithTenantBudget requires WithMultiTenant ---
 
 func TestBudget_RequiresMultiTenant(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).
+	b := New("test", "v1", validBaseConfig()).
 		WithTenantBudget(&stubBudget{})
 	err := b.Validate()
 	require.Error(t, err, "WithTenantBudget without WithMultiTenant must fail")
@@ -257,7 +262,7 @@ func TestBudget_RequiresMultiTenant(t *testing.T) {
 }
 
 func TestBudget_WithMultiTenant_Passes(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).
+	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience().
 		WithMultiTenant(nil, true).
@@ -269,7 +274,9 @@ func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 // --- H-5: validator requires WithJWTAudience ---
 
 func TestBuilder_Validates_RequiresJWTAudience(t *testing.T) {
-	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
+	cfg := validBaseConfig()
+	cfg.TLS = validTLSForTest(t)
+	b := New("svc", "v1", cfg).
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com")
 	err := b.Validate()
@@ -278,7 +285,9 @@ func TestBuilder_Validates_RequiresJWTAudience(t *testing.T) {
 }
 
 func TestBuilder_Validates_AcceptsJWTAudience(t *testing.T) {
-	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
+	cfg := validBaseConfig()
+	cfg.TLS = validTLSForTest(t)
+	b := New("svc", "v1", cfg).
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
 		WithJWTAudience("svc")
@@ -287,7 +296,9 @@ func TestBuilder_Validates_AcceptsJWTAudience(t *testing.T) {
 }
 
 func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
-	b := New("svc", "v1", BaseConfig{TLS: validTLSForTest()}).
+	cfg := validBaseConfig()
+	cfg.TLS = validTLSForTest(t)
+	b := New("svc", "v1", cfg).
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
 		WithoutJWTAudience()
@@ -295,13 +306,26 @@ func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
 		"WithoutJWTAudience must satisfy the audience check")
 }
 
-// validTLSForTest returns a TLSConfig that reports Enabled() == true.
-// The paths are placeholders — the production-safety validator only
-// inspects Enabled(), it does not load the files.
-func validTLSForTest() netutil.TLSConfig {
+// validTLSForTest returns a TLSConfig backed by readable temp files so
+// ValidateBase()'s file-accessibility check passes. The contents are
+// empty — only the Enabled() and existence checks run during
+// Builder.Validate().
+func validTLSForTest(t *testing.T) netutil.TLSConfig {
+	t.Helper()
+	dir := t.TempDir()
+	paths := make(map[string]string, 3)
+	for _, name := range []string{"ca.pem", "cert.pem", "key.pem"} {
+		p := dir + "/" + name
+		f, err := os.Create(p)
+		if err != nil {
+			t.Fatalf("create %s: %v", p, err)
+		}
+		_ = f.Close()
+		paths[name] = p
+	}
 	return netutil.TLSConfig{
-		CACert: "/dev/null/ca.pem",
-		Cert:   "/dev/null/cert.pem",
-		Key:    "/dev/null/key.pem",
+		CACert: paths["ca.pem"],
+		Cert:   paths["cert.pem"],
+		Key:    paths["key.pem"],
 	}
 }

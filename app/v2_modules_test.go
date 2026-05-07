@@ -13,7 +13,6 @@ import (
 	coretenant "github.com/bds421/rho-kit/core/tenant"
 	"github.com/bds421/rho-kit/data/actionlog"
 	"github.com/bds421/rho-kit/data/approval"
-	"github.com/bds421/rho-kit/data/budget"
 	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
 )
 
@@ -43,7 +42,8 @@ func (stubActionLog) List(_ context.Context, _ actionlog.Query) ([]actionlog.Ent
 func (stubActionLog) Sign(_ actionlog.Entry) (string, string, error) {
 	return "", "", nil
 }
-func (stubActionLog) Verify(_ actionlog.Entry) error { return nil }
+func (stubActionLog) Verify(_ actionlog.Entry) error                { return nil }
+func (stubActionLog) VerifyChain(_ context.Context, _ string) error { return nil }
 
 type stubApproval struct{}
 
@@ -102,8 +102,6 @@ func TestWithTenantBudget_BuildsMiddleware(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).WithTenantBudget(&stubBudget{})
 	require.NotNil(t, b.budgetMiddleware())
 	assert.Same(t, b.budgetSpec.store.(*stubBudget), b.budgetSpecStore())
-	// Type-check the helper resolves the correct interface.
-	var _ budget.Budget = b.budgetSpecStore()
 }
 
 func TestWithActionLogger_PanicsOnNil(t *testing.T) {

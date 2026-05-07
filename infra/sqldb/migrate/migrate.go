@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -21,7 +22,35 @@ type Config struct {
 
 // Up applies all pending migrations. Returns the number of migrations applied.
 func Up(ctx context.Context, db *gorm.DB, cfg Config) (int, error) {
-	provider, err := newProvider(db, cfg)
+	sqlDB, err := extractSQL(db)
+	if err != nil {
+		return 0, err
+	}
+	return UpDB(ctx, sqlDB, cfg)
+}
+
+// Down rolls back the last migration.
+func Down(ctx context.Context, db *gorm.DB, cfg Config) error {
+	sqlDB, err := extractSQL(db)
+	if err != nil {
+		return err
+	}
+	return DownDB(ctx, sqlDB, cfg)
+}
+
+// Status logs the current migration status to the provided logger.
+func Status(ctx context.Context, db *gorm.DB, cfg Config, logger *slog.Logger) error {
+	sqlDB, err := extractSQL(db)
+	if err != nil {
+		return err
+	}
+	return StatusDB(ctx, sqlDB, cfg, logger)
+}
+
+// UpDB applies all pending migrations against an explicit *sql.DB.
+// Use this when the caller manages a non-GORM driver (for example pgx-native).
+func UpDB(ctx context.Context, db *sql.DB, cfg Config) (int, error) {
+	provider, err := newProviderFromSQL(db, cfg)
 	if err != nil {
 		return 0, err
 	}
@@ -33,9 +62,9 @@ func Up(ctx context.Context, db *gorm.DB, cfg Config) (int, error) {
 	return len(results), nil
 }
 
-// Down rolls back the last migration.
-func Down(ctx context.Context, db *gorm.DB, cfg Config) error {
-	provider, err := newProvider(db, cfg)
+// DownDB rolls back the last migration against an explicit *sql.DB.
+func DownDB(ctx context.Context, db *sql.DB, cfg Config) error {
+	provider, err := newProviderFromSQL(db, cfg)
 	if err != nil {
 		return err
 	}
@@ -46,13 +75,13 @@ func Down(ctx context.Context, db *gorm.DB, cfg Config) error {
 	return nil
 }
 
-// Status logs the current migration status to the provided logger.
-func Status(ctx context.Context, db *gorm.DB, cfg Config, logger *slog.Logger) error {
+// StatusDB logs the current migration status against an explicit *sql.DB.
+func StatusDB(ctx context.Context, db *sql.DB, cfg Config, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	provider, err := newProvider(db, cfg)
+	provider, err := newProviderFromSQL(db, cfg)
 	if err != nil {
 		return err
 	}
@@ -90,8 +119,24 @@ func mapDialect(dialect string) (goose.Dialect, error) {
 	}
 }
 
-// newProvider creates a goose provider from the GORM database and config.
-func newProvider(db *gorm.DB, cfg Config) (*goose.Provider, error) {
+// extractSQL pulls the underlying *sql.DB out of GORM. Used by the
+// gorm-based entry points to delegate to the *sql.DB-based ones.
+func extractSQL(db *gorm.DB) (*sql.DB, error) {
+	if db == nil {
+		return nil, fmt.Errorf("migrate: gorm.DB must not be nil")
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("migrate: extract sql.DB from gorm: %w", err)
+	}
+	return sqlDB, nil
+}
+
+// newProviderFromSQL creates a goose provider from a *sql.DB and config.
+func newProviderFromSQL(db *sql.DB, cfg Config) (*goose.Provider, error) {
+	if db == nil {
+		return nil, fmt.Errorf("migrate: db must not be nil")
+	}
 	if cfg.Dir == nil {
 		return nil, fmt.Errorf("migrate: Dir must not be nil")
 	}
@@ -104,12 +149,7 @@ func newProvider(db *gorm.DB, cfg Config) (*goose.Provider, error) {
 		return nil, err
 	}
 
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("migrate: extract sql.DB from gorm: %w", err)
-	}
-
-	provider, err := goose.NewProvider(dialect, sqlDB, cfg.Dir)
+	provider, err := goose.NewProvider(dialect, db, cfg.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("migrate: create provider: %w", err)
 	}

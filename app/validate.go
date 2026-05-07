@@ -75,6 +75,10 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("builder is nil")
 	}
 
+	if err := b.cfg.ValidateBase(); err != nil {
+		return err
+	}
+
 	if b.dbDriver != nil && b.dbPoolCfg == nil {
 		return fmt.Errorf("database pool config is required when a database is configured")
 	}
@@ -87,8 +91,8 @@ func (b *Builder) Validate() error {
 	if b.seedFn != nil && b.dbDriver == nil {
 		return fmt.Errorf("seed requires a configured database")
 	}
-	if b.migrationsDir != nil && b.dbDriver == nil {
-		return fmt.Errorf("migrations require a configured database (use WithMySQL or WithPostgres)")
+	if b.migrationsDir != nil && b.dbDriver == nil && b.pgxCfg == nil {
+		return fmt.Errorf("migrations require a configured database (use WithMySQL, WithPostgres, or WithPgx)")
 	}
 	if b.criticalBroker && b.mqURL == "" {
 		return fmt.Errorf("critical broker requires a RabbitMQ URL")

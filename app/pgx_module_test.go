@@ -16,7 +16,7 @@ func TestNewPgxModule_PanicsOnEmptyDSN(t *testing.T) {
 			t.Fatal("expected panic on empty DSN")
 		}
 	}()
-	newPgxModule(pgxbackend.Config{})
+	newPgxModule(pgxbackend.Config{}, nil)
 }
 
 func TestWithPgx_PanicsOnEmptyDSN(t *testing.T) {
@@ -38,7 +38,7 @@ func TestWithPgx_RegistersOnBuilder(t *testing.T) {
 }
 
 func TestValidate_RejectsPgxAndPostgresTogether(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).
+	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience().
 		WithPostgres(sqldb.Config{Host: "h", Port: 5432, User: "u", Password: "p", Name: "db",
@@ -51,7 +51,7 @@ func TestValidate_RejectsPgxAndPostgresTogether(t *testing.T) {
 }
 
 func TestValidate_AllowsPgxAlone(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).
+	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience().
 		WithPgx(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"})

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"io/fs"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
 	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
 )
 
 // newTestBuilder constructs a Builder with the always-on
@@ -18,9 +21,19 @@ import (
 // about. Tests that exercise TLS or audience enforcement build their
 // own Builder without these opt-outs.
 func newTestBuilder() *Builder {
-	return New("test-svc", "v0.1.0", BaseConfig{}).
+	return New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience()
+}
+
+// validBaseConfig returns a BaseConfig with valid server / internal
+// ports. ValidateBase rejects the zero-value defaults, so tests that
+// run Validate() must seed both fields.
+func validBaseConfig() BaseConfig {
+	return BaseConfig{
+		Server:   ServerConfig{Port: 8080},
+		Internal: InternalConfig{Port: 9090},
+	}
 }
 
 func TestValidate_NilBuilder(t *testing.T) {
@@ -153,3 +166,71 @@ func TestValidate_KeyedLimiterValid(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
+
+func TestValidate_InvalidServerPort(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Server.Port = 0
+	b := New("test-svc", "v0.1.0", cfg).
+		WithoutTLS().
+		WithoutJWTAudience()
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid server port")
+	}
+	if !strings.Contains(err.Error(), "server") {
+		t.Fatalf("expected server-port error, got: %v", err)
+	}
+}
+
+func TestValidate_InvalidInternalPort(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Internal.Port = 70000
+	b := New("test-svc", "v0.1.0", cfg).
+		WithoutTLS().
+		WithoutJWTAudience()
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid internal port")
+	}
+	if !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("expected internal-port error, got: %v", err)
+	}
+}
+
+func TestValidate_ValidPorts(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.Server.Port = 1
+	cfg.Internal.Port = 65535
+	b := New("test-svc", "v0.1.0", cfg).
+		WithoutTLS().
+		WithoutJWTAudience()
+	if err := b.Validate(); err != nil {
+		t.Fatalf("expected no error for valid ports, got: %v", err)
+	}
+}
+
+func TestValidate_PgxWithMigrations(t *testing.T) {
+	b := New("test-svc", "v0.1.0", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithPgx(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"}).
+		WithMigrations(emptyFS{})
+	if err := b.Validate(); err != nil {
+		t.Fatalf("expected pgx + migrations to validate, got: %v", err)
+	}
+}
+
+func TestValidate_MigrationsWithoutDriver(t *testing.T) {
+	b := newTestBuilder().WithMigrations(emptyFS{})
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error for migrations without a configured database")
+	}
+	if !strings.Contains(err.Error(), "WithPgx") {
+		t.Fatalf("expected WithPgx mentioned in migrations error, got: %v", err)
+	}
+}
+
+type emptyFS struct{}
+
+func (emptyFS) Open(_ string) (fs.File, error) { return nil, fs.ErrNotExist }
