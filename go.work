@@ -21,13 +21,19 @@ use (
 	./data/idempotency/pgstore
 	./data/idempotency/redisstore
 	./data/lock
+	./data/lock/pgadvisory
 	./data/lock/redislock
 	./data/queue
 	./data/queue/redisqueue
+	./data/ratelimit
+	./data/ratelimit/gcra
+	./data/ratelimit/tokenbucket
 	./data/stream
 	./data/stream/redisstream
 	./grpcx
 	./httpx
+	./infra/leaderelection
+	./infra/leaderelection/pgadvisory
 	./infra/messaging
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
