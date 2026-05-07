@@ -540,6 +540,33 @@ func TestConsumer_HandleFailure_NilHooks_DoNotPanic(t *testing.T) {
 	c.handleFailure(delivery, msg, binding, errors.New("err"))
 }
 
+// --- NewConsumer nil-dependency guards ---
+
+type noopConnector struct{}
+
+func (noopConnector) Channel() (*amqp.Channel, error) { return nil, errors.New("noop") }
+func (noopConnector) Healthy() bool                   { return true }
+func (noopConnector) Close() error                    { return nil }
+
+func TestNewConsumer_PanicsOnNilConnector(t *testing.T) {
+	assert.Panics(t, func() {
+		NewConsumer(nil, nil, discardLogger())
+	})
+}
+
+func TestNewConsumer_NilLoggerNormalisedToDefault(t *testing.T) {
+	c := NewConsumer(noopConnector{}, nil, nil)
+	require.NotNil(t, c.logger, "nil logger must be replaced with slog.Default()")
+}
+
+func TestConsumeOnce_PanicsOnNilHandler(t *testing.T) {
+	c := NewConsumer(noopConnector{}, nil, discardLogger())
+	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "q"}}
+	assert.Panics(t, func() {
+		_ = c.ConsumeOnce(context.Background(), binding, nil)
+	})
+}
+
 // --- ConsumeOnce validation ---
 
 func TestConsumeOnce_RetryWithoutPublisher_ReturnsError(t *testing.T) {

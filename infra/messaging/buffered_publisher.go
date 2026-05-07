@@ -73,6 +73,12 @@ type BufferedPublisher struct {
 	// a process crash drops the message.
 	lossyMode bool
 
+	// lossyStateRecovery opts in to "start with an empty buffer when the
+	// configured state file fails to load". By default, a load failure
+	// is fatal at construction so a corrupt or unreadable state file does
+	// not silently drop the messages buffering exists to preserve.
+	lossyStateRecovery bool
+
 	// lastSaveErr holds the most recent error from saveLocked(). Stored as
 	// atomic.Pointer so [LastSaveError] reads it without contending with
 	// the publish path.
@@ -122,6 +128,15 @@ func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
 // buffers do not persist regardless.
 func WithLossyMode() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.lossyMode = true }
+}
+
+// WithLossyStateRecovery opts in to "start with an empty buffer when the
+// configured state file fails to load". The default fails startup so a
+// corrupt or unreadable state file does not silently drop the messages
+// buffering exists to preserve. Use only when the surrounding system has
+// its own at-least-once guarantee (e.g. an upstream outbox), or for tests.
+func WithLossyStateRecovery() BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.lossyStateRecovery = true }
 }
 
 // WithEphemeralBuffer opts in to memory-only buffering. By default,
@@ -181,6 +196,9 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 
 	if o.stateFile != "" {
 		if err := o.load(); err != nil {
+			if !o.lossyStateRecovery {
+				panic(fmt.Sprintf("messaging: BufferedPublisher state load failed for %q: %v — corrupt or unreadable state would silently drop buffered messages; pass WithLossyStateRecovery() to opt in", o.stateFile, err))
+			}
 			logger.Error("failed to load buffered publisher state, starting empty — potential data loss", "error", err, "file", o.stateFile)
 		} else if len(o.pending) > 0 {
 			logger.Info("restored pending buffered publisher messages", "count", len(o.pending))

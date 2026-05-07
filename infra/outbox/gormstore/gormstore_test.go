@@ -308,6 +308,65 @@ func TestStore_IncrementAttempts(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestStore_IncrementAttempts_NotFound pins the v2 round-2 fix: a row
+// that no longer exists must surface ErrNotFound rather than silent
+// zero-row success.
+func TestStore_IncrementAttempts_NotFound(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	err := store.IncrementAttempts(ctx, uuid.New().String(), "boom", time.Now().UTC().Add(time.Second))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrNotFound,
+		"increment on a non-existent id must surface ErrNotFound")
+}
+
+// TestStore_IncrementAttempts_StaleState pins the v2 round-2 fix: a row
+// already moved out of "processing" (e.g. concurrent stale-recovery, or
+// another worker that already published or failed it) must NOT be
+// resurrected by a late publish failure. Returning ErrStaleState lets the
+// relay log the race rather than silently double-process.
+func TestStore_IncrementAttempts_StaleState_AlreadyPublished(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	entry := newEntry(t)
+	entry.Status = outbox.StatusPublished
+	now := time.Now().UTC()
+	entry.PublishedAt = &now
+	require.NoError(t, store.Insert(ctx, entry))
+
+	err := store.IncrementAttempts(ctx, entry.ID.String(), "late failure", time.Now().UTC().Add(time.Second))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrStaleState,
+		"increment on a published row must return ErrStaleState, not resurrect to pending")
+
+	// Verify the row's status is unchanged — the published row must NOT
+	// have been moved back to pending.
+	var status outbox.Status
+	require.NoError(t, db.Raw(
+		"SELECT status FROM outbox_entries WHERE id = ?",
+		entry.ID.String()).Scan(&status).Error)
+	assert.Equal(t, outbox.StatusPublished, status,
+		"increment on stale row must not change status")
+}
+
+func TestStore_IncrementAttempts_StaleState_AlreadyPending(t *testing.T) {
+	db := testDB(t)
+	store := gormstore.New(db)
+	ctx := context.Background()
+
+	entry := newEntry(t) // default StatusPending
+	require.NoError(t, store.Insert(ctx, entry))
+
+	err := store.IncrementAttempts(ctx, entry.ID.String(), "late failure", time.Now().UTC().Add(time.Second))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, outbox.ErrStaleState,
+		"increment on a pending row (e.g. after concurrent stale-recovery reset) must return ErrStaleState")
+}
+
 func TestStore_DeletePublishedBefore(t *testing.T) {
 	db := testDB(t)
 	store := gormstore.New(db)

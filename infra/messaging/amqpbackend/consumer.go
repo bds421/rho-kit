@@ -101,7 +101,17 @@ func WithMaxDLQConsecutiveFailures(n int) ConsumerOption {
 // NewConsumer creates a Consumer bound to the given connection.
 // The publisher is used for confirmed dead-letter publishes when consuming
 // bindings with retry. Pass nil if no retry bindings will be consumed.
+//
+// Panics if conn is nil — the consumer dereferences it on every channel
+// open, so accepting nil here would only defer the crash to the first
+// delivery. A nil logger is normalised to [slog.Default].
 func NewConsumer(conn Connector, publisher DeadLetterPublisher, logger *slog.Logger, opts ...ConsumerOption) *Consumer {
+	if conn == nil {
+		panic("amqpbackend: NewConsumer requires a non-nil Connector")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	c := &Consumer{
 		conn:                  conn,
 		publisher:             publisher,
@@ -166,6 +176,9 @@ func resolveFailure(delivery amqp.Delivery, b messaging.Binding) (failureAction,
 //     the consumer logs an ERROR and treats the binding as drop-on-error to
 //     avoid breaking startup.
 func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
+	if handler == nil {
+		panic("amqpbackend: ConsumeOnce requires a non-nil handler")
+	}
 	if b.Retry != nil && c.publisher == nil {
 		return fmt.Errorf("consumeOnce with retry requires a publisher (pass non-nil publisher to NewConsumer)")
 	}

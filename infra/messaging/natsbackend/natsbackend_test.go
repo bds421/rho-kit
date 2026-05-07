@@ -193,6 +193,44 @@ func TestExtractExchangeAndRoutingKey_FallsBackToSubject(t *testing.T) {
 	assert.Equal(t, "user.created", rk)
 }
 
+// TestDrainWithTimeout_HangingDrainForceCloses pins the v2 fix that
+// Close() respects [closeDrainTimeout]: a drain that never returns must
+// not stall shutdown. The fake drain blocks forever; Close must invoke
+// the fake close and surface a force-closed error inside the timeout.
+func TestDrainWithTimeout_HangingDrainForceCloses(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	drain := func() error { select {} }
+	closeFn := func() { closed <- struct{}{} }
+
+	start := time.Now()
+	err := drainWithTimeout(drain, closeFn, 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err, "force-close must surface as an error")
+	assert.Contains(t, err.Error(), "force-closed")
+	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond)
+	assert.Less(t, elapsed, 500*time.Millisecond, "must not wait far past timeout")
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("force-close must invoke close() when drain hangs")
+	}
+}
+
+// TestDrainWithTimeout_FastDrainReturnsCleanly verifies the happy path —
+// a drain that completes inside the timeout surfaces its own return value
+// and does NOT trigger force-close.
+func TestDrainWithTimeout_FastDrainReturnsCleanly(t *testing.T) {
+	drainErr := errors.New("drain done")
+	drain := func() error { return drainErr }
+	var closed bool
+	closeFn := func() { closed = true }
+
+	err := drainWithTimeout(drain, closeFn, time.Second)
+	assert.ErrorIs(t, err, drainErr)
+	assert.False(t, closed, "fast drain must not trigger force-close")
+}
+
 // TestExtractExchangeAndRoutingKey_HeaderOnlyExchange covers the
 // routing-key-empty case where only X-Exchange is non-empty.
 func TestExtractExchangeAndRoutingKey_HeaderOnlyExchange(t *testing.T) {

@@ -46,6 +46,14 @@ type Store interface {
 	// must skip entries whose next_retry_at is still in the future, so a
 	// persistently failing downstream produces exponential backoff rather than
 	// a tight retry loop.
+	//
+	// Implementations MUST guard the update on status='processing' so a row
+	// that has already been moved out of processing (e.g. by a concurrent
+	// stale-recovery, or because another worker already published or failed
+	// it) is not resurrected. Implementations MUST return [ErrNotFound] when
+	// no row matches id and [ErrStaleState] when the row exists but is no
+	// longer in the expected "processing" state, matching [Store.MarkPublished]
+	// and [Store.MarkFailed].
 	IncrementAttempts(ctx context.Context, id string, lastError string, nextRetryAt time.Time) error
 
 	// DeletePublishedBefore removes published entries older than the given time.

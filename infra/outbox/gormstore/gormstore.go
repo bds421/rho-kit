@@ -286,10 +286,16 @@ func (s *Store) classifyMissing(ctx context.Context, id, op string) error {
 // the next retry attempt at nextRetryAt, and resets the entry status to
 // pending. FetchPending will skip the row until that timestamp passes, giving
 // the relay exponential backoff behavior across consecutive failures.
+//
+// Like [Store.MarkPublished] and [Store.MarkFailed], the UPDATE is guarded by
+// status='processing' so a concurrent stale-recovery (or a worker that already
+// classified the row as published/failed) cannot be resurrected by a late
+// publish failure: callers receive [outbox.ErrStaleState] when the row exists
+// but moved out of processing, and [outbox.ErrNotFound] when the row is gone.
 func (s *Store) IncrementAttempts(ctx context.Context, id string, lastError string, nextRetryAt time.Time) error {
 	result := s.db.WithContext(ctx).
 		Model(&entry{}).
-		Where("id = ?", id).
+		Where("id = ? AND status = ?", id, outbox.StatusProcessing).
 		Updates(map[string]any{
 			"status":        outbox.StatusPending,
 			"attempts":      gorm.Expr("attempts + 1"),
@@ -298,6 +304,9 @@ func (s *Store) IncrementAttempts(ctx context.Context, id string, lastError stri
 		})
 	if result.Error != nil {
 		return fmt.Errorf("gormstore: increment attempts %s: %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return s.classifyMissing(ctx, id, "increment attempts")
 	}
 	return nil
 }

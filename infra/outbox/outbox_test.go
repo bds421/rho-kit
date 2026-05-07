@@ -144,6 +144,9 @@ func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError st
 	}
 	for i := range s.entries {
 		if s.entries[i].ID.String() == id {
+			if s.entries[i].Status != outbox.StatusProcessing {
+				return outbox.ErrStaleState
+			}
 			e := s.entries[i]
 			e.Attempts++
 			e.LastError = &lastError
@@ -154,7 +157,7 @@ func (s *fakeStore) IncrementAttempts(_ context.Context, id string, lastError st
 			return nil
 		}
 	}
-	return nil
+	return outbox.ErrNotFound
 }
 
 func (s *fakeStore) DeletePublishedBefore(_ context.Context, before time.Time) (int64, error) {

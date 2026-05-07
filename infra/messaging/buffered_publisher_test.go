@@ -150,6 +150,54 @@ func TestNewBufferedPublisher_EphemeralOptOut(t *testing.T) {
 	}
 }
 
+// TestNewBufferedPublisher_PanicsOnCorruptStateFile pins the v2 round-2 fix:
+// a corrupt state file silently dropping buffered messages is the exact
+// data-loss scenario buffering exists to prevent. Default behaviour must
+// fail startup so operators see the corruption rather than a silent empty
+// queue.
+func TestNewBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+	if err := os.WriteFile(stateFile, []byte(`not valid json`), 0600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on corrupt state file, got none")
+		}
+	}()
+	NewBufferedPublisher(
+		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithBufferedStateFile(stateFile),
+	)
+}
+
+// TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption pins the
+// opt-in escape hatch: when the caller explicitly accepts lossy startup,
+// a corrupt state file is logged and the publisher starts empty.
+func TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+	if err := os.WriteFile(stateFile, []byte(`not valid json`), 0600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	pub := NewBufferedPublisher(
+		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithBufferedStateFile(stateFile),
+		WithLossyStateRecovery(),
+	)
+	if pub == nil {
+		t.Fatal("expected non-nil publisher")
+	}
+	if got := pub.Pending(); got != 0 {
+		t.Fatalf("expected lossy recovery to start empty, got %d pending", got)
+	}
+}
+
 func TestBufferedPublisher_HealthyDirectPublish(t *testing.T) {
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, true)

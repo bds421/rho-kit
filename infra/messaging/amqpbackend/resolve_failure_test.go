@@ -145,11 +145,11 @@ func TestResolveFailure_SafetyMultiplierApplied(t *testing.T) {
 // --- NewConsumer defaults ---
 
 func TestNewConsumer_Defaults(t *testing.T) {
-	c := NewConsumer(nil, nil, slog.Default())
+	c := NewConsumer(noopConnector{}, nil, slog.Default())
 
 	require.NotNil(t, c)
 	assert.Equal(t, defaultPrefetch, c.prefetch, "default prefetch should be %d", defaultPrefetch)
-	assert.Nil(t, c.conn)
+	assert.NotNil(t, c.conn)
 	assert.Nil(t, c.publisher)
 	assert.NotNil(t, c.logger)
 }
@@ -164,19 +164,19 @@ func TestNewConsumer_StoresConnectionAndPublisher(t *testing.T) {
 // --- WithPrefetch ---
 
 func TestWithPrefetch_OverridesDefault(t *testing.T) {
-	c := NewConsumer(nil, nil, slog.Default(), WithPrefetch(50))
+	c := NewConsumer(noopConnector{}, nil, slog.Default(), WithPrefetch(50))
 
 	assert.Equal(t, 50, c.prefetch)
 }
 
 func TestWithPrefetch_One(t *testing.T) {
-	c := NewConsumer(nil, nil, slog.Default(), WithPrefetch(1))
+	c := NewConsumer(noopConnector{}, nil, slog.Default(), WithPrefetch(1))
 
 	assert.Equal(t, 1, c.prefetch)
 }
 
 func TestWithPrefetch_HighValue(t *testing.T) {
-	c := NewConsumer(nil, nil, slog.Default(), WithPrefetch(1000))
+	c := NewConsumer(noopConnector{}, nil, slog.Default(), WithPrefetch(1000))
 
 	assert.Equal(t, 1000, c.prefetch)
 }
@@ -194,7 +194,7 @@ func TestWithHooks_SetsHooks(t *testing.T) {
 		OnDiscard:    func(msgID, msgType, queue string) { discardCalled = true },
 	}
 
-	c := NewConsumer(nil, nil, slog.Default(), WithHooks(hooks))
+	c := NewConsumer(noopConnector{}, nil, slog.Default(), WithHooks(hooks))
 
 	require.NotNil(t, c.hooks.OnRetry)
 	require.NotNil(t, c.hooks.OnDeadLetter)
@@ -217,7 +217,7 @@ func TestWithHooks_NilHooksAreAccepted(t *testing.T) {
 		OnDiscard:    nil,
 	}
 
-	c := NewConsumer(nil, nil, slog.Default(), WithHooks(hooks))
+	c := NewConsumer(noopConnector{}, nil, slog.Default(), WithHooks(hooks))
 
 	assert.Nil(t, c.hooks.OnRetry)
 	assert.Nil(t, c.hooks.OnDeadLetter)
@@ -230,7 +230,7 @@ func TestWithHooks_MultipleOptionsApplied(t *testing.T) {
 		OnDiscard: func(msgID, msgType, queue string) { discardCalled = true },
 	}
 
-	c := NewConsumer(nil, nil, slog.Default(),
+	c := NewConsumer(noopConnector{}, nil, slog.Default(),
 		WithPrefetch(25),
 		WithHooks(hooks),
 	)

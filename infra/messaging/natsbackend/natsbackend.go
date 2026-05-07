@@ -52,6 +52,11 @@ const (
 	headerRoutingKey = "X-Routing-Key"
 )
 
+// closeDrainTimeout caps how long [Connection.Close] waits for a graceful
+// drain. Beyond this we force-close so an unhealthy broker or stuck pending
+// publish cannot stall shutdown indefinitely.
+const closeDrainTimeout = 5 * time.Second
+
 // Config is the connection-level configuration. Stream/consumer
 // declarations live on [StreamConfig] and [ConsumerConfig] so a single
 // connection can serve multiple streams.
@@ -104,6 +109,10 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		nats.Name(cfg.Name),
 		nats.MaxReconnects(cfg.MaxReconnects),
 		nats.ReconnectWait(cfg.ReconnectWait),
+		// Bound the internal drain step so a stuck broker cannot stall
+		// shutdown beyond closeDrainTimeout. The outer wrapper in Close()
+		// also force-closes if the goroutine itself does not return.
+		nats.DrainTimeout(closeDrainTimeout),
 	}
 	// Honour ctx deadline for the dial. nats.Connect itself does not
 	// accept a context, so we derive a finite Timeout from the deadline
@@ -138,12 +147,29 @@ func (c *Connection) Healthy() bool {
 }
 
 // Close drains pending publishes and closes the connection. Drain is
-// best-effort with a 5s deadline.
+// best-effort with a [closeDrainTimeout] deadline — if the drain does not
+// finish in time we force-close so an unhealthy broker cannot stall
+// shutdown.
 func (c *Connection) Close() error {
 	if c.nc == nil {
 		return nil
 	}
-	return c.nc.Drain()
+	return drainWithTimeout(c.nc.Drain, c.nc.Close, closeDrainTimeout)
+}
+
+// drainWithTimeout runs drain in a goroutine and force-closes via close if
+// drain has not returned within timeout. Extracted so unit tests can
+// substitute fakes for the underlying nats.Conn methods.
+func drainWithTimeout(drain func() error, close func(), timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- drain() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		close()
+		return fmt.Errorf("natsbackend: drain exceeded %s, force-closed", timeout)
+	}
 }
 
 // JetStream returns the raw JetStream context for callers needing

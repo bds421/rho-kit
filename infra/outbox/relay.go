@@ -453,8 +453,13 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 
 	nextRetryAt := time.Now().UTC().Add(retryBackoff(nextAttempt))
 	if incErr := r.store.IncrementAttempts(ctx, entry.ID.String(), errMsg, nextRetryAt); incErr != nil {
-		r.logger.Error("outbox relay: increment attempts error",
-			"entry_id", entry.ID, "error", incErr)
+		if errors.Is(incErr, ErrStaleState) || errors.Is(incErr, ErrNotFound) {
+			r.logger.Error("outbox relay: increment attempts lost row — likely concurrent stale recovery",
+				"entry_id", entry.ID, "error", incErr)
+		} else {
+			r.logger.Error("outbox relay: increment attempts error",
+				"entry_id", entry.ID, "error", incErr)
+		}
 	}
 	r.recordError()
 
