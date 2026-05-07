@@ -140,3 +140,23 @@ func TestStop_Idempotent(t *testing.T) {
 	l.Stop()
 	l.Stop()
 }
+
+func TestAllow_RetryAtAdvertisedBoundaryAdmits(t *testing.T) {
+	cur := time.Now()
+	l := New(time.Second, 1, WithClock(func() time.Time { return cur }))
+	require.True(t, mustAllow(t, l, "k"))
+
+	ok, retry, err := l.Allow(context.Background(), "k")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Greater(t, retry, time.Nanosecond)
+
+	cur = cur.Add(retry - time.Nanosecond)
+	ok, _, err = l.Allow(context.Background(), "k")
+	require.NoError(t, err)
+	assert.True(t, ok, "retry landing exactly on allowAt must admit, not deny again")
+}
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}

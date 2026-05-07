@@ -57,8 +57,8 @@ local tat = tonumber(redis.call("GET", KEYS[1]))
 if not tat or tat < now then
   tat = now
 end
-local allowAt = tat - burst * rate
-if now <= allowAt then
+local allowAt = tat - (burst - 1) * rate
+if now < allowAt then
   return {0, allowAt - now + 1}
 end
 local newTat = tat + rate
@@ -100,6 +100,9 @@ func WithKeyTTL(d time.Duration) Option {
 // WithClock overrides the local clock used to compute `now`. Tests
 // only.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("ratelimit/redis: clock must not be nil")
+	}
 	return func(l *Limiter) {
 		l.now = func(_ context.Context) (time.Time, error) { return now(), nil }
 	}

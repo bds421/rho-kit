@@ -54,6 +54,9 @@ type Option func(*Limiter)
 
 // WithClock overrides the time source for tests.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("tokenbucket: clock must not be nil")
+	}
 	return func(l *Limiter) { l.now = now }
 }
 

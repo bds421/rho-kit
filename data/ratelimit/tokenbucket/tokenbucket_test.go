@@ -120,3 +120,7 @@ func TestStop_Idempotent(t *testing.T) {
 	l.Stop()
 	l.Stop()
 }
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithClock(nil) })
+}

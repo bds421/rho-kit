@@ -145,6 +145,35 @@ func TestNew_PanicsOnTTLLessThanPeriod(t *testing.T) {
 	New(client, 5*time.Minute, 1, WithKeyTTL(time.Second))
 }
 
+func TestAllow_RetryAtAdvertisedBoundaryAdmits(t *testing.T) {
+	client, _ := newTestClient(t)
+	cur := time.Unix(1_700_000_000, 0)
+	l := New(client, time.Second, 1, WithClock(func() time.Time { return cur }))
+
+	ok, _, err := l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, retry, err := l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Greater(t, retry, time.Nanosecond)
+
+	cur = cur.Add(retry - time.Nanosecond)
+	ok, _, err = l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.True(t, ok, "retry landing exactly on allowAt must admit, not deny again")
+}
+
+func TestWithClock_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil clock")
+		}
+	}()
+	WithClock(nil)
+}
+
 func TestAllow_ConcurrentSameKeyConvergesToBurst(t *testing.T) {
 	// With burst=N, exactly N concurrent admits should happen at the
 	// same instant; the rest must deny.

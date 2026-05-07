@@ -53,6 +53,9 @@ type Option func(*Limiter)
 
 // WithClock overrides the time source for tests.
 func WithClock(now func() time.Time) Option {
+	if now == nil {
+		panic("gcra: clock must not be nil")
+	}
 	return func(l *Limiter) { l.now = now }
 }
 
@@ -156,8 +159,8 @@ func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, err
 	if !ok || tat.Before(now) {
 		tat = now
 	}
-	allowAt := tat.Add(-time.Duration(l.burst) * l.rate)
-	if !now.After(allowAt) {
+	allowAt := tat.Add(-time.Duration(l.burst-1) * l.rate)
+	if now.Before(allowAt) {
 		return false, allowAt.Sub(now) + time.Nanosecond, nil
 	}
 	l.tats[key] = tat.Add(l.rate)
