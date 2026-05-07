@@ -19,6 +19,12 @@ use (
 	./crypto/envelope/kekstatic
 	./crypto/paseto
 	./crypto/passhash
+	./data/actionlog
+	./data/actionlog/memory
+	./data/actionlog/postgres
+	./data/approval
+	./data/approval/memory
+	./data/approval/postgres
 	./data/budget
 	./data/budget/memory
 	./data/budget/redis
@@ -43,6 +49,7 @@ use (
 	./grpcx
 	./httpx
 	./httpx/budget
+	./httpx/middleware/approval
 	./httpx/middleware/budget
 	./httpx/middleware/ratelimit/tenant
 	./httpx/middleware/signedrequest
