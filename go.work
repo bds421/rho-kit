@@ -21,6 +21,7 @@ use (
 	./crypto/passhash
 	./data/cache
 	./data/cache/rediscache
+	./data/cache/tenant
 	./data/idempotency
 	./data/idempotency/pgstore
 	./data/idempotency/redisstore
