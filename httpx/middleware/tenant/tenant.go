@@ -45,8 +45,9 @@ func HeaderExtractor(header string) Extractor {
 type Option func(*config)
 
 type config struct {
-	extractor Extractor
-	required  bool
+	extractor              Extractor
+	required               bool
+	requiredOnSafeMethods  bool
 }
 
 // WithExtractor overrides the default header extractor.
@@ -58,6 +59,28 @@ func WithExtractor(e Extractor) Option {
 // true.
 func WithRequired(required bool) Option {
 	return func(c *config) { c.required = required }
+}
+
+// WithRequiredOnSafeMethods controls whether GET/HEAD/OPTIONS requests
+// without a tenant are also rejected when [WithRequired] is true.
+//
+// Default: false — preserving the existing behaviour where safe
+// methods short-circuit through the middleware so health/readiness
+// and discovery endpoints stay reachable when the tenant header has
+// not been set yet.
+//
+// Set to true on routers that mount the tenant middleware in front of
+// state-revealing GETs (per-tenant data lists, dashboards). Without
+// this option a caller can issue GET /tenants/123/secrets without any
+// X-Tenant-Id header at all, and the handler runs against an empty
+// tenant context — the handler must compensate, which is easy to
+// forget.
+//
+// Trade-off: enabling this requires the operator to expose health
+// endpoints on a sibling router (or supply [WithRequired(false)]) so
+// pre-auth probes do not 400.
+func WithRequiredOnSafeMethods(required bool) Option {
+	return func(c *config) { c.requiredOnSafeMethods = required }
 }
 
 // New returns the middleware. By default the tenant ID is read from
@@ -82,10 +105,17 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Safe methods always pass through — they do not mutate
-			// state and may be reachable pre-auth (health, discovery).
+			isSafe := false
 			switch r.Method {
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
+				isSafe = true
+			}
+			if isSafe && !cfg.requiredOnSafeMethods {
+				// Safe methods short-circuit through — they do not
+				// mutate state and may be reachable pre-auth (health,
+				// discovery). Opt in to enforcement via
+				// WithRequiredOnSafeMethods when the route surfaces
+				// tenant-scoped data on GET.
 				next.ServeHTTP(w, r)
 				return
 			}
