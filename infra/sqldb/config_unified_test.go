@@ -231,3 +231,29 @@ func TestFields_Validate_MySQL_IgnoresSSLMode(t *testing.T) {
 	}
 	require.NoError(t, f.Validate("SVC", "development", "mysql"))
 }
+
+// TestFields_Validate_RejectsLooseSSLMode pins the N-4 audit fix on
+// the standalone validation path. validatePostgresSSLMode used to
+// accept "prefer" and "allow" (both silently degrade to plaintext on
+// TLS handshake error). The fix tightens to require/verify-ca/verify-full.
+//
+// The Builder path (TestBuilder_Validates_PostgresRejectsLooseSSLMode)
+// already covers the same bug; this test pins the standalone path used
+// by CLI tools / non-HTTP daemons that consume Fields.Validate
+// directly.
+func TestFields_Validate_RejectsLooseSSLMode(t *testing.T) {
+	for _, mode := range []string{"prefer", "allow"} {
+		t.Run(mode, func(t *testing.T) {
+			f := Fields{
+				Database: Config{
+					Host: "h", Port: 5432, User: "u",
+					Password: "a-strong-password-here", Name: "n",
+					Options: map[string]string{"sslmode": mode},
+				},
+			}
+			err := f.Validate("SVC", "production", "postgres")
+			require.Error(t, err, "sslmode=%q must be rejected (admits plaintext fallback)", mode)
+			assert.Contains(t, err.Error(), "plaintext")
+		})
+	}
+}
