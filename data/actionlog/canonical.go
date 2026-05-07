@@ -14,17 +14,26 @@ import (
 // produce byte-identical canonical forms — the property the verify
 // step depends on.
 //
-// Format (newline-joined):
+// Format (length-prefixed, newline-separated):
 //
-//	id
-//	tenant_id
-//	actor
-//	action
-//	resource
-//	outcome
-//	reason
-//	occurred_at        – RFC3339Nano UTC
-//	metadata           – canonical JSON (see canonicalJSON)
+//	<len(id)>:id\n
+//	<len(tenant_id)>:tenant_id\n
+//	<len(actor)>:actor\n
+//	<len(action)>:action\n
+//	<len(resource)>:resource\n
+//	<len(outcome)>:outcome\n
+//	<len(reason)>:reason\n
+//	<len(occurred_at)>:occurred_at\n   – RFC3339Nano UTC
+//	<len(metadata)>:metadata\n         – canonical JSON (see canonicalJSON)
+//
+// The length prefix is essential: a field value containing a literal
+// newline could otherwise shift the field boundary in the canonical
+// bytes, letting two distinct entries (different field assignments,
+// same total bytes after a plain newline join) produce identical
+// canonical strings and therefore identical signatures. With the
+// length prefix the parse is unambiguous — the next field always
+// starts at exactly the byte boundary the previous field's length
+// dictates.
 //
 // SignatureKeyID is intentionally not part of the signed form. Including
 // it would make it impossible to detect "same content signed by a
@@ -50,7 +59,24 @@ func canonicalForm(e Entry) ([]byte, error) {
 		e.OccurredAt.UTC().Format(time.RFC3339Nano),
 		string(metaJSON),
 	}
-	return []byte(strings.Join(parts, "\n")), nil
+	var buf strings.Builder
+	buf.Grow(canonicalEstimate(parts))
+	for _, p := range parts {
+		fmt.Fprintf(&buf, "%d:%s\n", len(p), p)
+	}
+	return []byte(buf.String()), nil
+}
+
+// canonicalEstimate returns a byte-budget estimate for the canonical
+// buffer so strings.Builder.Grow can size the backing slice once.
+// Conservative: 4 bytes for the length prefix + 1 colon + 1 newline +
+// payload bytes.
+func canonicalEstimate(parts []string) int {
+	n := 0
+	for _, p := range parts {
+		n += len(p) + 6
+	}
+	return n
 }
 
 // canonicalJSON marshals v with all map keys sorted lexicographically
