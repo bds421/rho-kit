@@ -27,6 +27,7 @@ use (
 	./data/queue/redisqueue
 	./data/ratelimit
 	./data/ratelimit/gcra
+	./data/ratelimit/redis
 	./data/ratelimit/tokenbucket
 	./data/stream
 	./data/stream/redisstream

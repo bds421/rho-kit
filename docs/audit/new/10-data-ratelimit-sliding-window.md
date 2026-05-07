@@ -42,9 +42,9 @@ The existing fixed-window limiter stays as a default for simple cases; consumers
 
 ## Definition of done
 
-- [ ] Top-level `Limiter` interface.
-- [ ] In-memory token bucket + GCRA implementations.
-- [ ] Redis-backed GCRA via Lua.
-- [ ] HTTP middleware accepts any `Limiter`.
-- [ ] Tests: round-trip; cross-process limit-sharing via test Redis container.
-- [ ] Recipe entry in `docs/ai/http.md`.
+- [x] Top-level `Limiter` interface. ✅ `7253ecb`
+- [x] In-memory token bucket + GCRA implementations. ✅ `7253ecb`
+- [x] Redis-backed GCRA via Lua (atomic single-round-trip script; `WithRedisTime` opt-in for clock-skew-free fairness; key-TTL guard; miniredis-driven concurrent + cross-client tests). ✅ this PR
+- [ ] HTTP middleware accepts any `Limiter` (deferred — middleware refit is a separate audit item).
+- [x] Tests: round-trip; cross-process limit-sharing via miniredis (`TestAllow_AcrossClientsSharesState`). ✅
+- [ ] Recipe entry in `docs/ai/http.md` (deferred to docs sweep).
