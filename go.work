@@ -13,6 +13,7 @@ use (
 	./data/actionlog/postgres
 	./data/approval
 	./data/approval/memory
+	./data/approval/postgres
 	./data/cache
 	./data/cache/rediscache
 	./data/idempotency
