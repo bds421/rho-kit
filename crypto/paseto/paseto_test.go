@@ -645,3 +645,41 @@ func TestWithClockSkewTolerance_PanicsOnNegative(t *testing.T) {
 		_ = WithClockSkewTolerance(-time.Second)
 	})
 }
+
+func TestSign_PropagatesCustomClaimWriteError(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"bad": func() {}},
+	}, priv)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `set custom claim "bad"`)
+}
+
+func TestSeal_PropagatesCustomClaimWriteError(t *testing.T) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	v, err := NewV4Local(key,
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = v.Seal(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+		Custom:    map[string]any{"bad": make(chan int)},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `set custom claim "bad"`)
+}

@@ -322,7 +322,9 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 		t.SetNotBefore(c.NotBefore)
 	}
 	for k, v := range c.Custom {
-		_ = t.Set(k, v)
+		if err := t.Set(k, v); err != nil {
+			return paseto.Token{}, fmt.Errorf("paseto: set custom claim %q: %w", k, err)
+		}
 	}
 	return t, nil
 }
