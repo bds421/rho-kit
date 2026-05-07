@@ -48,6 +48,7 @@ use (
 	./observability/logattr
 	./observability/logging
 	./observability/promutil
+	./observability/redmetrics
 	./observability/slo
 	./observability/tracing
 	./resilience/circuitbreaker
