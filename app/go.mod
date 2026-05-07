@@ -3,6 +3,7 @@ module github.com/bds421/rho-kit/app
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/crypto/paseto v0.0.0
 	github.com/bds421/rho-kit/grpcx v0.2.0
 	github.com/bds421/rho-kit/httpx v1.5.0
 	github.com/bds421/rho-kit/infra/messaging v1.2.0
@@ -27,6 +28,8 @@ require (
 )
 
 require (
+	aidanwoods.dev/go-paseto v1.6.0 // indirect
+	aidanwoods.dev/go-result v0.3.1 // indirect
 	github.com/bds421/rho-kit/core/contextutil v1.2.0 // indirect
 	github.com/bds421/rho-kit/core/validate v1.1.0 // indirect
 	github.com/bds421/rho-kit/observability/logattr v1.1.0 // indirect
@@ -116,3 +119,5 @@ require (
 	gorm.io/driver/mysql v1.6.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/bds421/rho-kit/crypto/paseto => ../crypto/paseto

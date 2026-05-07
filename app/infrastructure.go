@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"gorm.io/gorm"
 
+	"github.com/bds421/rho-kit/crypto/paseto"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/infra/messaging"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
@@ -51,7 +52,8 @@ type Infrastructure struct {
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
 	Consumer  messaging.MessageConsumer  // nil if no WithRabbitMQ
 
-	JWT *jwtutil.Provider // nil if no WithJWT
+	JWT    *jwtutil.Provider // nil if no WithJWT
+	PASETO *paseto.Provider  // nil if no WithPASETO
 
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit

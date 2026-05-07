@@ -57,6 +57,12 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		}))
 	}
 
+	// PASETO is independent of httpClientModule — the caller-built
+	// Provider already encapsulates whatever key source it uses.
+	if b.pasetoProvider != nil {
+		modules = append(modules, newPasetoModule(b.pasetoProvider))
+	}
+
 	if b.dbDriver != nil {
 		dbMod = newDatabaseModule(databaseModuleConfig{
 			driver:        b.dbDriver,

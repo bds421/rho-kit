@@ -12,6 +12,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/crypto/paseto"
 	"github.com/bds421/rho-kit/httpx"
 	"github.com/bds421/rho-kit/httpx/healthhttp"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
@@ -93,6 +94,10 @@ type Builder struct {
 	jwtIssuer        string
 	jwtAudience      string
 	jwtAllowAnyIssue bool
+
+	// PASETO (alternative to JWT). Caller-constructed Provider, so the
+	// kit does not impose a particular key source.
+	pasetoProvider *paseto.Provider
 
 	// Production-defaults switch — see Builder.WithProductionDefaults.
 	productionDefaults bool
@@ -298,6 +303,31 @@ func (b *Builder) WithJWTAudience(aud string) *Builder {
 func (b *Builder) WithJWTAllowAnyIssuer() *Builder {
 	b.jwtAllowAnyIssue = true
 	b.jwtIssuer = ""
+	return b
+}
+
+// WithPASETO registers a PASETO Provider as the service's token
+// verifier. PASETO is the recommended alternative to JWT for new
+// internal services — its v4 spec eliminates the algorithm-confusion
+// and `alg=none` attack classes by baking exactly one algorithm into
+// each (version, purpose) tuple.
+//
+// The caller constructs the Provider (via [paseto.NewProvider]) so
+// the kit is unopinionated about key sourcing — services pull from
+// KMS, a JWKS-equivalent endpoint, or a static config file using
+// whatever shape fits their deployment.
+//
+// `WithPASETO` and `WithJWT` are NOT mutually exclusive — a service
+// can verify both simultaneously during a migration. New endpoints
+// pick one explicitly via the auth middleware they install.
+//
+// Panics if `p` is nil — pass an explicitly-constructed Provider or
+// don't call this method.
+func (b *Builder) WithPASETO(p *paseto.Provider) *Builder {
+	if p == nil {
+		panic("app: WithPASETO requires a non-nil Provider")
+	}
+	b.pasetoProvider = p
 	return b
 }
 
