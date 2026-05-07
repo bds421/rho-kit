@@ -26,11 +26,23 @@ const (
 )
 
 // jsonRPCRequest is the inbound request envelope.
+//
+// ID is read as json.RawMessage so we can distinguish "absent"
+// (notification — len(ID) == 0) from "explicit null" (a valid
+// JSON-RPC id whose value happens to be null). Per the JSON-RPC 2.0
+// spec, notifications MUST NOT receive a response.
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	ID      json.RawMessage `json:"id,omitempty"`
+}
+
+// isNotification reports whether the request's `id` member was absent
+// from the wire. An absent id makes the request a notification and
+// the server MUST NOT write a response (JSON-RPC 2.0 §4.1).
+func isNotification(id json.RawMessage) bool {
+	return len(id) == 0
 }
 
 // jsonRPCResponse is the outbound response envelope. ID is preserved
@@ -84,24 +96,56 @@ func (s *Server) HTTP() http.Handler {
 
 		var req jsonRPCRequest
 		if err := json.Unmarshal(body, &req); err != nil {
+			// Spec exception: parse errors permit id:null even when
+			// the caller's id was unparseable.
 			writeJSONRPCError(w, http.StatusOK, json.RawMessage("null"),
 				rpcErrParseError, "invalid JSON: "+err.Error())
 			return
 		}
-		if req.JSONRPC != "" && req.JSONRPC != "2.0" {
+		// JSON-RPC 2.0 notifications: a request without an `id` member
+		// MUST NOT receive a response. Track presence (vs. null) by
+		// reading id as a json.RawMessage and checking len.
+		notification := isNotification(req.ID)
+		if req.JSONRPC != "2.0" {
+			if notification {
+				return
+			}
 			writeJSONRPCError(w, http.StatusOK, req.ID,
 				rpcErrInvalidRequest, "jsonrpc must be \"2.0\"")
 			return
 		}
 		if req.Method == "" {
+			if notification {
+				return
+			}
 			writeJSONRPCError(w, http.StatusOK, req.ID,
 				rpcErrInvalidRequest, "method is required")
 			return
 		}
 
+		// For notifications, swap in a writer that drops the response
+		// body so dispatch and invoke can keep their existing
+		// "always emit a JSON-RPC response" shape — the audit and
+		// strict-mode checks still need to run, but the bytes never
+		// leave the server.
+		if notification {
+			w = &nullResponseWriter{header: http.Header{}}
+		}
 		s.dispatch(w, r, req)
 	})
 }
+
+// nullResponseWriter discards all writes. Used to suppress JSON-RPC
+// responses for notifications (requests without an `id` member) while
+// preserving the rest of the dispatch path — audit, strict-mode checks,
+// and tool execution still run.
+type nullResponseWriter struct {
+	header http.Header
+}
+
+func (n *nullResponseWriter) Header() http.Header         { return n.header }
+func (n *nullResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (n *nullResponseWriter) WriteHeader(int)             {}
 
 // dispatch routes a JSON-RPC method to the appropriate handler.
 // Recognised methods:

@@ -3,7 +3,6 @@ package interceptor
 import (
 	"context"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -36,11 +35,6 @@ var (
 	scopesKey      contextutil.Key[grpcScopes]
 	trustedS2SKey  contextutil.Key[grpcTrustedS2SMarker]
 )
-
-// uuidPattern matches a standard UUID string (v4, v7, etc.). Mirrors the
-// pattern used by httpx/middleware/auth so the X-User-Id metadata value
-// validated on the mTLS S2S branch is shaped the same as the HTTP version.
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // xUserIDMetadataKey is the gRPC metadata key carrying the impersonated
 // user ID on mTLS S2S calls. Lower-cased to match gRPC metadata canonicalisation.
@@ -143,6 +137,12 @@ func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Cont
 
 	claims, err := ks.Verify(token, time.Now())
 	if err != nil {
+		return ctx, status.Error(codes.Unauthenticated, "invalid token")
+	}
+
+	// Same subject contract as httpx/middleware/auth: a non-UUID sub
+	// must not flow into authorization or business logic as a user id.
+	if !jwtutil.IsUUID(claims.Subject) {
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
@@ -474,7 +474,7 @@ func authenticateMTLSOrJWT(
 	}
 
 	userID := extractXUserID(ctx)
-	if userID == "" || !uuidPattern.MatchString(userID) {
+	if userID == "" || !jwtutil.IsUUID(userID) {
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -31,9 +30,6 @@ var (
 	scopesKey      contextutil.Key[authScopes]
 	trustedS2SKey  contextutil.Key[trustedS2SMarker]
 )
-
-// uuidPattern matches a standard UUID string (v4, v7, etc.).
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // RequireUserWithJWT returns middleware that verifies Oathkeeper-signed JWTs.
 // Only Bearer tokens are accepted; X-User-Id header fallback is rejected.
@@ -144,7 +140,7 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 		return
 	}
 
-	if !uuidPattern.MatchString(claims.Subject) {
+	if !jwtutil.IsUUID(claims.Subject) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -173,7 +169,7 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // fail closed.
 func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	userID := r.Header.Get("X-User-Id")
-	if userID == "" || !uuidPattern.MatchString(userID) {
+	if userID == "" || !jwtutil.IsUUID(userID) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}

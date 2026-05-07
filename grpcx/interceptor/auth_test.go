@@ -81,7 +81,7 @@ func signTestToken(t *testing.T, privKey *ecdsa.PrivateKey, subject string, perm
 
 func TestAuthUnary_ValidToken(t *testing.T) {
 	provider, privKey := testKeyAndProvider(t)
-	token := signTestToken(t, privKey, "user-123", []string{"read", "write"})
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read", "write"})
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer(
@@ -305,7 +305,7 @@ func TestAuthStream_SkipMethods(t *testing.T) {
 
 func TestAuthStream_ValidToken(t *testing.T) {
 	provider, privKey := testKeyAndProvider(t)
-	token := signTestToken(t, privKey, "user-stream-123", []string{"read"})
+	token := signTestToken(t, privKey, "22222222-2222-2222-2222-222222222222", []string{"read"})
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer(

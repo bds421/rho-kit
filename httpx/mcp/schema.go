@@ -239,9 +239,14 @@ func structSchema(t reflect.Type, visiting map[reflect.Type]bool) (map[string]an
 		props[name] = fieldSchema
 	}
 
+	// additionalProperties:false matches the runtime decoder, which
+	// uses DisallowUnknownFields. Without this, schema-validating
+	// clients can craft requests that look valid against the schema
+	// but fail at runtime — a contract drift the audit flagged.
 	out := map[string]any{
-		"type":       "object",
-		"properties": props,
+		"type":                 "object",
+		"properties":           props,
+		"additionalProperties": false,
 	}
 	if len(required) > 0 {
 		out["required"] = required

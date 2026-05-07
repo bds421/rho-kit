@@ -113,16 +113,17 @@ func WithDestructive(b bool) ToolOption {
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	logger            *slog.Logger
-	actionLogger      actionlog.Logger
-	actorExtractor    func(*http.Request) string
-	tenantExtractor   func(ctx context.Context) (string, bool)
-	maxRequestBytes   int64
-	strictAudit       bool
-	asyncAudit        bool
-	asyncAuditWorkers int
-	asyncAuditQueue   int
-	asyncAuditTimeout time.Duration
+	logger             *slog.Logger
+	actionLogger       actionlog.Logger
+	actorExtractor     func(*http.Request) string
+	tenantExtractor    func(ctx context.Context) (string, bool)
+	maxRequestBytes    int64
+	strictAudit        bool
+	strictAuditTimeout time.Duration
+	asyncAudit         bool
+	asyncAuditWorkers  int
+	asyncAuditQueue    int
+	asyncAuditTimeout  time.Duration
 }
 
 // WithLogger sets the [slog.Logger] used for server-side errors.
@@ -243,6 +244,18 @@ func WithMaxRequestBytes(n int64) ServerOption {
 	return func(c *serverConfig) { c.maxRequestBytes = n }
 }
 
+// WithStrictAuditTimeout caps how long a synchronous strict-mode audit
+// append may run before its bounded context deadline trips. A hung
+// audit store would otherwise pin the tool-call goroutine indefinitely
+// after the tool's side effects already happened. Default: 5s. Must be
+// > 0. Has no effect in async mode (see [WithAsyncAuditTimeout]).
+func WithStrictAuditTimeout(d time.Duration) ServerOption {
+	if d <= 0 {
+		panic("mcp: WithStrictAuditTimeout requires a positive value")
+	}
+	return func(c *serverConfig) { c.strictAuditTimeout = d }
+}
+
 // WithStrictAudit controls the Server's behaviour when an action
 // logger is configured but the request context carries no tenant.
 //
@@ -332,11 +345,15 @@ type Server struct {
 	mu    sync.RWMutex
 	tools map[string]*toolEntry
 
+	// auditQueue is a bounded channel that workers drain. Senders
+	// never close it; only Stop closes auditDone to signal that no
+	// new appends will be enqueued. Workers exit when the channel
+	// drains and auditDone is closed.
 	auditQueue   chan auditJob
+	auditDone    chan struct{}
+	auditStopped atomic.Bool
 	auditWG      sync.WaitGroup
-	auditStop    chan struct{}
-	auditStopped int32
-	auditDropped int64
+	auditDropped atomic.Int64
 }
 
 type auditJob struct {
@@ -381,21 +398,23 @@ func defaultServerConfig() serverConfig {
 		actorExtractor: func(_ *http.Request) string {
 			return AnonymousActor
 		},
-		tenantExtractor:   defaultTenantExtractor,
-		maxRequestBytes:   1 << 20,
-		strictAudit:       true,
-		asyncAudit:        false,
-		asyncAuditWorkers: 4,
-		asyncAuditQueue:   256,
-		asyncAuditTimeout: 5 * time.Second,
+		tenantExtractor:    defaultTenantExtractor,
+		maxRequestBytes:    1 << 20,
+		strictAudit:        true,
+		strictAuditTimeout: 5 * time.Second,
+		asyncAudit:         false,
+		asyncAuditWorkers:  4,
+		asyncAuditQueue:    256,
+		asyncAuditTimeout:  5 * time.Second,
 	}
 }
 
 // startAuditWorkers spins up a bounded worker pool for async audit
-// appends. Workers drain when [Server.Stop] is called.
+// appends. Workers drain remaining entries after [Server.Stop] closes
+// auditDone, then exit.
 func (s *Server) startAuditWorkers() {
 	s.auditQueue = make(chan auditJob, s.cfg.asyncAuditQueue)
-	s.auditStop = make(chan struct{})
+	s.auditDone = make(chan struct{})
 	for i := 0; i < s.cfg.asyncAuditWorkers; i++ {
 		s.auditWG.Add(1)
 		go s.auditWorker()
@@ -404,8 +423,21 @@ func (s *Server) startAuditWorkers() {
 
 func (s *Server) auditWorker() {
 	defer s.auditWG.Done()
-	for job := range s.auditQueue {
-		s.runAuditJob(job)
+	for {
+		select {
+		case job := <-s.auditQueue:
+			s.runAuditJob(job)
+		case <-s.auditDone:
+			// Drain remaining queued jobs after Stop signal.
+			for {
+				select {
+				case job := <-s.auditQueue:
+					s.runAuditJob(job)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -428,14 +460,19 @@ func (s *Server) runAuditJob(job auditJob) {
 // pool. Safe to call multiple times. No-op when async audit is not in
 // use. Returns when ctx expires or the workers have drained, whichever
 // comes first; remaining queued jobs after ctx expires are abandoned.
+//
+// Race-safety: Stop closes auditDone (a sentinel channel) rather than
+// auditQueue. Senders select on auditDone to detect shutdown without
+// risking send-on-closed-channel — concurrent enqueueAuditJob calls
+// during Stop drop their entry instead of panicking.
 func (s *Server) Stop(ctx context.Context) error {
 	if !s.cfg.asyncAudit {
 		return nil
 	}
-	if !atomic.CompareAndSwapInt32(&s.auditStopped, 0, 1) {
+	if !s.auditStopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	close(s.auditQueue)
+	close(s.auditDone)
 	done := make(chan struct{})
 	go func() {
 		s.auditWG.Wait()
@@ -454,7 +491,7 @@ func (s *Server) Stop(ctx context.Context) error {
 // when the request handler tried to enqueue. Surfaces as a counter
 // for operators to alert on saturation.
 func (s *Server) AsyncAuditDropped() int64 {
-	return atomic.LoadInt64(&s.auditDropped)
+	return s.auditDropped.Load()
 }
 
 // Tools returns a copy of the registered tool catalog, sorted by

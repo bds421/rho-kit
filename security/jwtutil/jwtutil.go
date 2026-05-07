@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -23,6 +24,18 @@ import (
 
 	"github.com/bds421/rho-kit/resilience/retry"
 )
+
+// uuidPattern is the canonical UUID matcher shared by httpx and grpcx auth
+// middleware so the identity contract ("subject must be a UUID") cannot
+// drift between transports.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// IsUUID reports whether s is a syntactically-valid UUID. Centralised here
+// so HTTP and gRPC auth paths apply the same rule to JWT subjects and the
+// X-User-Id metadata/header used by mTLS S2S impersonation.
+func IsUUID(s string) bool {
+	return uuidPattern.MatchString(s)
+}
 
 const (
 	clockSkew              = 30 * time.Second

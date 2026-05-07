@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"net/http"
-	"sync/atomic"
 
 	"github.com/bds421/rho-kit/core/tenant"
 	"github.com/bds421/rho-kit/data/actionlog"
@@ -128,9 +127,14 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 
 	// Sync path: detach cancellation from the request context so the
 	// append survives a client disconnect after the tool returned,
-	// but the caller still observes the error so strict mode can
-	// fail-closed.
-	appendCtx := context.WithoutCancel(ctx)
+	// but bound the wait so a hung audit store cannot pin the
+	// tool-call goroutine indefinitely. The caller still observes
+	// the error so strict mode can fail-closed.
+	appendCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		s.cfg.strictAuditTimeout,
+	)
+	defer cancel()
 	return s.appendActionLog(appendCtx, entry, tool, tenantID)
 }
 
@@ -138,19 +142,31 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 // queue is saturated the entry is dropped and a counter incremented:
 // async mode is best-effort by definition, and a hung audit store
 // must not be allowed to accumulate goroutines without bound.
+//
+// Race-safety: senders never close auditQueue. Stop closes the done
+// channel and workers drain the remaining queue; senders use a
+// select on done so they cannot send after Stop has signalled.
 func (s *Server) enqueueAuditJob(job auditJob) {
-	if atomic.LoadInt32(&s.auditStopped) == 1 {
-		atomic.AddInt64(&s.auditDropped, 1)
+	select {
+	case <-s.auditDone:
+		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
 			"tool", job.tool,
 			"tenant_id", job.tenantID,
 		)
 		return
+	default:
 	}
 	select {
 	case s.auditQueue <- job:
+	case <-s.auditDone:
+		s.auditDropped.Add(1)
+		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
+			"tool", job.tool,
+			"tenant_id", job.tenantID,
+		)
 	default:
-		atomic.AddInt64(&s.auditDropped, 1)
+		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit queue full; dropping entry",
 			"tool", job.tool,
 			"tenant_id", job.tenantID,
