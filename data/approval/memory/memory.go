@@ -4,12 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/data/approval"
 )
+
+// requestIDPattern mirrors the package-level rule in data/approval. The
+// pattern is duplicated rather than exported because the rule is an
+// internal invariant — callers should not be able to bypass the safe-
+// charset guard by constructing IDs that match a custom regexp.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 // ErrDuplicateID is returned when [Store.Create] is called with an id
 // that already exists in the store.
@@ -202,7 +209,10 @@ func (s *Store) MarkExecuted(_ context.Context, id string) (approval.Request, er
 // store callers must opt into a deadline because permanent pending
 // approvals defeat the kit's bounded-decision-window invariant.
 func validateForCreate(r approval.Request, now time.Time) error {
-	if r.ID == "" || r.TenantID == "" || r.Actor == "" || r.Action == "" {
+	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
+		return approval.ErrInvalidRequest
+	}
+	if !requestIDPattern.MatchString(r.ID) {
 		return approval.ErrInvalidRequest
 	}
 	if r.State != "" && r.State != approval.StatePending {

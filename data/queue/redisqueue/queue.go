@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -16,6 +17,22 @@ import (
 	"github.com/bds421/rho-kit/infra/redis"
 	"github.com/bds421/rho-kit/observability/promutil"
 )
+
+// messageIDPattern bounds Message.ID to a safe character set: ASCII letters,
+// digits, hyphen, and underscore. UUIDs (with hyphens), ULIDs, and hex IDs
+// all fit. The set is deliberately strict so the value is safe as a Lua
+// argument, in log lines, in metric labels, and inside JSON without any
+// escaping concerns. 1..255 bytes; non-empty and bounded.
+var messageIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
+
+// validateMessageID enforces messageIDPattern. Returned as an error so
+// callers (Enqueue, EnqueueBatch) can surface the failure without panicking.
+func validateMessageID(id string) error {
+	if !messageIDPattern.MatchString(id) {
+		return fmt.Errorf("message ID must match %s (got %q)", messageIDPattern, id)
+	}
+	return nil
+}
 
 const (
 	// defaultDeadLetterMaxLen is the approximate maximum number of entries
@@ -80,6 +97,7 @@ type Metrics struct {
 	messagesDeadLettered *prometheus.CounterVec
 	processingDuration   *prometheus.HistogramVec
 	messagesRetried      *prometheus.CounterVec
+	ackNotFound          *prometheus.CounterVec
 	processingDepth      *prometheus.GaugeVec
 	queueDepth           *prometheus.GaugeVec
 }
@@ -147,6 +165,15 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"queue"},
 		),
+		ackNotFound: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "redis",
+				Subsystem: "queue",
+				Name:      "ack_not_found_total",
+				Help:      "Total successful handler acks where the processing-list entry was not found. A non-zero value signals processing-list corruption (e.g. concurrent reaping or a malformed entry).",
+			},
+			[]string{"queue"},
+		),
 		processingDepth: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "redis",
@@ -173,6 +200,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	promutil.RegisterCollector(reg, m.messagesDeadLettered)
 	promutil.RegisterCollector(reg, m.processingDuration)
 	promutil.RegisterCollector(reg, m.messagesRetried)
+	promutil.RegisterCollector(reg, m.ackNotFound)
 	promutil.RegisterCollector(reg, m.processingDepth)
 	promutil.RegisterCollector(reg, m.queueDepth)
 
@@ -353,7 +381,9 @@ func WithConsumerID(id string) Option {
 
 // WithHeartbeatTTL sets the lifetime of the per-consumer heartbeat key
 // used by recovery to detect dead consumers. Values <= 0 are ignored.
-// Default is 60s. Must be greater than [WithHeartbeatInterval].
+// Default is 60s. The configured interval must be at most TTL/2 so a
+// single missed refresh does not immediately expire the key — [NewQueue]
+// panics otherwise.
 func WithHeartbeatTTL(d time.Duration) Option {
 	return func(q *Queue) {
 		if d > 0 {
@@ -363,8 +393,8 @@ func WithHeartbeatTTL(d time.Duration) Option {
 }
 
 // WithHeartbeatInterval sets how often the Process loop refreshes its
-// heartbeat key. Values <= 0 are ignored. Default is 20s. Must be less
-// than [WithHeartbeatTTL].
+// heartbeat key. Values <= 0 are ignored. Default is 20s. Must be at
+// most TTL/2 (see [WithHeartbeatTTL]); [NewQueue] panics otherwise.
 func WithHeartbeatInterval(d time.Duration) Option {
 	return func(q *Queue) {
 		if d > 0 {
@@ -410,6 +440,25 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	for _, o := range opts {
 		o(q)
 	}
+
+	// Heartbeat-ratio guard: enforce interval <= TTL/2 so one missed refresh
+	// does not immediately expire the key and let a peer's reaper reclaim
+	// this consumer's in-flight messages mid-handler. interval >= TTL is an
+	// outright bug; interval > TTL/2 is the unsafe edge where a single
+	// transient Redis stall causes false-dead reclaim under normal load.
+	if q.heartbeatTTL <= 0 {
+		panic(fmt.Sprintf("redisqueue: heartbeat TTL must be positive (got %s)", q.heartbeatTTL))
+	}
+	if q.heartbeatInterval <= 0 {
+		panic(fmt.Sprintf("redisqueue: heartbeat interval must be positive (got %s)", q.heartbeatInterval))
+	}
+	if q.heartbeatInterval*2 > q.heartbeatTTL {
+		panic(fmt.Sprintf(
+			"redisqueue: heartbeat interval %s must be at most TTL/2 (TTL=%s); a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim",
+			q.heartbeatInterval, q.heartbeatTTL,
+		))
+	}
+
 	return q
 }
 
@@ -419,9 +468,17 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 func (q *Queue) ConsumerID() string { return q.consumerID }
 
 // Enqueue adds a message to the queue (LPUSH — left side).
-// Returns an error if the serialized message exceeds the configured max payload size.
+// Returns an error if the serialized message exceeds the configured max
+// payload size or if Message.ID is not a safe identifier (see
+// [validateMessageID]). Caller-supplied IDs are constrained because the ack
+// path uses the ID as an exact-match key inside a Lua script; allowing
+// arbitrary bytes (quotes, control chars) leaves the door open for ack
+// misses and processing-list corruption.
 func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if err := redis.ValidateName(queue, "queue"); err != nil {
+		return err
+	}
+	if err := validateMessageID(msg.ID); err != nil {
 		return err
 	}
 	data, err := json.Marshal(msg)
@@ -449,6 +506,12 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	}
 	if len(msgs) == 0 {
 		return nil
+	}
+
+	for i, msg := range msgs {
+		if err := validateMessageID(msg.ID); err != nil {
+			return fmt.Errorf("message [%d] %w", i, err)
+		}
 	}
 
 	pipe := q.client.Pipeline()

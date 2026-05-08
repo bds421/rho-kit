@@ -12,23 +12,31 @@ import (
 	"github.com/bds421/rho-kit/core/apperror"
 )
 
-// removeByIDScript scans the processing list for an entry whose JSON has the
-// given message ID, then atomically replaces it with a tombstone and LREMs
-// the tombstone. This avoids LREM-by-payload races where two messages with
-// identical bytes (rare but possible — especially on retry of identical
-// user-enqueued payloads) would result in the wrong copy being removed.
+// removeByIDScript scans the processing list for an entry whose top-level
+// JSON `id` field equals the given message ID, then atomically replaces it
+// with a tombstone and LREMs the tombstone. This avoids LREM-by-payload
+// races where two messages with identical bytes would result in the wrong
+// copy being removed.
+//
+// We decode each entry with cjson.decode and compare the decoded `id`
+// field exactly. The earlier "find a substring like '\"id\":\"X\"'"
+// approach is unsafe: an ID containing a JSON-escaped quote or backslash
+// produces a needle that no entry contains, so ack silently misses; a
+// payload field that happens to spell the literal "id":"<other>" also
+// matches and removes the wrong entry. cjson decoding is robust to both
+// escaping and to nested `id` fields.
 //
 // The scan is O(n) over the per-consumer processing list, which is bounded
-// by the consumer's in-flight count (typically <100). The cost is amortised
-// over a successful handler invocation.
+// by the consumer's in-flight count (typically <100). Decode cost per
+// entry is paid only on the success path.
 //
 //	KEYS[1] = processing list
-//	ARGV[1] = message ID to remove
+//	ARGV[1] = message ID to remove (compared against decoded top-level "id")
 var removeByIDScript = goredis.NewScript(`
 local items = redis.call('LRANGE', KEYS[1], 0, -1)
-local needle = '"id":"' .. ARGV[1] .. '"'
 for i = 1, #items do
-	if string.find(items[i], needle, 1, true) then
+	local ok, decoded = pcall(cjson.decode, items[i])
+	if ok and type(decoded) == 'table' and decoded.id == ARGV[1] then
 		local sentinel = '__rho-tombstone__:' .. KEYS[1] .. ':' .. ARGV[1] .. ':' .. tostring(i)
 		redis.call('LSET', KEYS[1], i - 1, sentinel)
 		redis.call('LREM', KEYS[1], 1, sentinel)
@@ -57,13 +65,24 @@ const (
 	queueHandlerShutdownTimeout = 30 * time.Second
 )
 
-// removeByID runs the Lua tombstone script. Returns nil if the entry was
-// removed or no longer present (both treated as success).
-func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) error {
-	if _, err := removeByIDScript.Run(ctx, q.client, []string{processingQ}, msgID).Result(); err != nil && !errors.Is(err, goredis.Nil) {
-		return err
+// removeByID runs the Lua tombstone script. Returns (true, nil) when the
+// entry was removed, (false, nil) when no entry matched the ID (the
+// processing list did not contain the message — a corruption signal that
+// the caller surfaces via metric + warn log), or (false, err) on a Redis-
+// level execution error.
+func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) (bool, error) {
+	res, err := removeByIDScript.Run(ctx, q.client, []string{processingQ}, msgID).Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return false, nil
+		}
+		return false, err
 	}
-	return nil
+	n, ok := res.(int64)
+	if !ok {
+		return false, fmt.Errorf("removeByID: unexpected script result type %T", res)
+	}
+	return n == 1, nil
 }
 
 // handleMessage processes a single queue message: unmarshal, handle, ack.
@@ -133,11 +152,20 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 	// and this removal. If the process crashes in that window, the message
 	// will exist in both queues and be reprocessed on recovery. This is why
 	// handlers MUST be idempotent (see Process godoc and doc.go).
-	if remErr := q.removeByID(ackCtx, processingQ, msg.ID); remErr != nil {
+	removed, remErr := q.removeByID(ackCtx, processingQ, msg.ID)
+	if remErr != nil {
 		q.logger.Error("failed to remove message from processing queue",
 			"queue", queue,
 			"msg_id", msg.ID,
 			"error", remErr,
+		)
+		return
+	}
+	if !removed {
+		q.metrics.ackNotFound.WithLabelValues(queue).Inc()
+		q.logger.Warn("ack found no matching processing-list entry — possible corruption or concurrent reap",
+			"queue", queue,
+			"msg_id", msg.ID,
 		)
 	}
 }

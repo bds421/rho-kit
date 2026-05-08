@@ -201,7 +201,9 @@ func TestRemoveByID_ScopedToMessageID(t *testing.T) {
 	require.NoError(t, client.LPush(ctx, processingQ, msgA).Err())
 	require.NoError(t, client.LPush(ctx, processingQ, msgB).Err())
 
-	require.NoError(t, q.removeByID(ctx, processingQ, "id-B"))
+	removed, err := q.removeByID(ctx, processingQ, "id-B")
+	require.NoError(t, err)
+	assert.True(t, removed, "removeByID must report the entry as removed")
 
 	remaining, err := client.LRange(ctx, processingQ, 0, -1).Result()
 	require.NoError(t, err)
@@ -394,13 +396,200 @@ func TestRemoveByID_NoMatchIsBenign(t *testing.T) {
 	ctx := context.Background()
 	processingQ := "test:processing"
 
-	// Empty list — must not error.
-	require.NoError(t, q.removeByID(ctx, processingQ, "missing-id"))
+	// Empty list — must not error and must report not-removed.
+	removed, err := q.removeByID(ctx, processingQ, "missing-id")
+	require.NoError(t, err)
+	assert.False(t, removed, "empty list: removeByID must report not-removed")
 
-	// List with no matching ID — must not error and must not remove anything.
+	// List with no matching ID — must not error, must not remove anything,
+	// and must report not-removed.
 	require.NoError(t, client.LPush(ctx, processingQ, `{"id":"keep","type":"x","payload":"x","timestamp":"2026-01-01T00:00:00Z","attempt":1}`).Err())
-	require.NoError(t, q.removeByID(ctx, processingQ, "absent"))
+	removed, err = q.removeByID(ctx, processingQ, "absent")
+	require.NoError(t, err)
+	assert.False(t, removed, "no matching ID: removeByID must report not-removed")
 	remaining, err := client.LRange(ctx, processingQ, 0, -1).Result()
 	require.NoError(t, err)
 	require.Len(t, remaining, 1)
+}
+
+// TestRemoveByID_PayloadFieldDoesNotCollide ensures that an `id` field in
+// the payload (or any nested structure) does NOT cause the wrong entry to
+// be removed. Caller-supplied IDs are validated against messageIDPattern so
+// embedded "id":"..." substrings cannot match a different message's
+// top-level ID — the Lua script decodes JSON and compares the top-level
+// `id` exactly. The previous substring-match design was vulnerable to this
+// collision: it would remove any list entry whose serialized JSON contained
+// the literal needle, including a payload field by the same name.
+func TestRemoveByID_PayloadFieldDoesNotCollide(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	processingQ := "test:processing:collision"
+
+	// Entry whose payload contains a nested "id" field equal to "otherID".
+	// Removing message "otherID" must NOT remove this entry — its top-level
+	// id is "msgA", not "otherID".
+	collidingEntry := `{"id":"msgA","type":"x","payload":{"id":"otherID"},"timestamp":"2026-01-01T00:00:00Z","attempt":1}`
+	otherEntry := `{"id":"otherID","type":"x","payload":"plain","timestamp":"2026-01-01T00:00:00Z","attempt":1}`
+	require.NoError(t, client.LPush(ctx, processingQ, collidingEntry).Err())
+	require.NoError(t, client.LPush(ctx, processingQ, otherEntry).Err())
+
+	removed, err := q.removeByID(ctx, processingQ, "otherID")
+	require.NoError(t, err)
+	assert.True(t, removed, "removeByID must remove the entry whose top-level id matches")
+
+	remaining, err := client.LRange(ctx, processingQ, 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	assert.Equal(t, collidingEntry, remaining[0],
+		"removeByID must NOT remove an entry whose nested payload field happens to share the requested id")
+}
+
+// TestEnqueue_RejectsUnsafeID ensures Enqueue rejects IDs that contain
+// JSON-escaping characters or whitespace. With the substring-needle design
+// these IDs would never match in ack and the entry would silently leak.
+func TestEnqueue_RejectsUnsafeID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+
+	cases := []string{
+		"",
+		`id"with"quotes`,
+		`id\with\backs`,
+		"id with spaces",
+		"id\nwith\nnewline",
+		"id:with:colon",
+	}
+	for _, badID := range cases {
+		msg := Message{ID: badID, Type: "test", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1}
+		err := q.Enqueue(ctx, "test:queue:reject", msg)
+		assert.Error(t, err, "Enqueue must reject unsafe ID %q", badID)
+	}
+}
+
+// TestEnqueueBatch_RejectsUnsafeID ensures the batch path validates every
+// ID up front; a single bad ID rejects the whole batch.
+func TestEnqueueBatch_RejectsUnsafeID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+
+	good, err := NewMessage("test", "data")
+	require.NoError(t, err)
+	bad := Message{ID: `id"quote"`, Type: "test", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1}
+
+	err = q.EnqueueBatch(ctx, "test:queue:batch:reject", []Message{good, bad})
+	assert.Error(t, err)
+
+	n, err := q.Len(ctx, "test:queue:batch:reject")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "no message must be enqueued when validation fails")
+}
+
+// TestNewQueue_PanicsOnBadHeartbeatRatio enforces interval <= TTL/2.
+// Without this guard, a configuration like TTL=5s + interval=30s lets the
+// heartbeat key expire between refreshes and triggers false-dead reclaim.
+func TestNewQueue_PanicsOnBadHeartbeatRatio(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	defer func() {
+		r := recover()
+		require.NotNil(t, r, "NewQueue must panic when heartbeat interval > TTL/2")
+		msg, ok := r.(string)
+		require.True(t, ok, "panic value must be a string, got %T", r)
+		assert.Contains(t, msg, "heartbeat interval", "panic must reference heartbeat configuration")
+		assert.Contains(t, msg, "TTL/2", "panic must explain the ratio policy")
+	}()
+	_ = NewQueue(client,
+		WithHeartbeatTTL(5*time.Second),
+		WithHeartbeatInterval(30*time.Second),
+	)
+}
+
+// TestNewQueue_PanicsWhenIntervalEqualsTTL — the 1:1 ratio is also unsafe
+// because clock skew and Redis stalls can stretch refresh latency past TTL.
+func TestNewQueue_PanicsWhenIntervalEqualsTTL(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	defer func() {
+		require.NotNil(t, recover(), "NewQueue must panic when interval == TTL")
+	}()
+	_ = NewQueue(client,
+		WithHeartbeatTTL(10*time.Second),
+		WithHeartbeatInterval(10*time.Second),
+	)
+}
+
+// TestNewQueue_AcceptsHalfTTLRatio — exactly TTL/2 is the boundary case
+// and must be accepted (one missed refresh leaves a full interval of
+// safety margin before the key expires).
+func TestNewQueue_AcceptsHalfTTLRatio(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client,
+		WithHeartbeatTTL(10*time.Second),
+		WithHeartbeatInterval(5*time.Second),
+	)
+	require.NotNil(t, q)
+}
+
+// TestProcess_AckRoundTrip_QuotedID verifies that a message with quote
+// characters in its ID makes it through enqueue, processing, and ack
+// (the previous substring-needle design would have failed because
+// JSON-encoded "id":"id\"with\"quotes" never contained the raw needle).
+//
+// Today, validateMessageID rejects quote characters at Enqueue time, so we
+// inject the entry directly into the processing list to exercise the Lua
+// path with an awkward (legacy or hand-crafted) ID — the cjson.decode
+// implementation must still match it exactly.
+func TestProcess_AckRoundTrip_QuotedID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	processingQ := "test:processing:quoted"
+
+	weirdID := `id"with"quotes`
+	entry, err := jsonMarshal(Message{ID: weirdID, Type: "x", Payload: []byte(`"y"`), Timestamp: time.Now(), Attempt: 1})
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, processingQ, entry).Err())
+
+	removed, err := q.removeByID(ctx, processingQ, weirdID)
+	require.NoError(t, err)
+	assert.True(t, removed, "Lua decode path must match a quoted ID exactly")
+
+	n, err := client.LLen(ctx, processingQ).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+}
+
+// TestProcess_AckRoundTrip_BackslashID — same as the quoted-ID case for
+// IDs with backslash characters.
+func TestProcess_AckRoundTrip_BackslashID(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	processingQ := "test:processing:backslash"
+
+	weirdID := `id\with\backs`
+	entry, err := jsonMarshal(Message{ID: weirdID, Type: "x", Payload: []byte(`"y"`), Timestamp: time.Now(), Attempt: 1})
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, processingQ, entry).Err())
+
+	removed, err := q.removeByID(ctx, processingQ, weirdID)
+	require.NoError(t, err)
+	assert.True(t, removed, "Lua decode path must match a backslash ID exactly")
 }

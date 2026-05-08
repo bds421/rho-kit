@@ -4,8 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 )
+
+// requestIDPattern bounds Request.ID to a safe character set: ASCII
+// letters, digits, hyphen, and underscore. UUIDs (with hyphens), ULIDs,
+// and hex IDs all fit. Same policy used by data/queue/redisqueue.Message.ID
+// — caller-supplied IDs that survive into log lines, metric labels, and
+// downstream key paths must be tokens, not free text.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 // State is the lifecycle position of a [Request].
 type State string
@@ -137,7 +145,10 @@ type Store interface {
 // otherwise create permanent pending approvals that never auto-expire,
 // which defeats the kit's bounded-decision-window invariant.
 func validate(r Request, now time.Time) error {
-	if r.ID == "" || r.TenantID == "" || r.Actor == "" || r.Action == "" {
+	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
+		return ErrInvalidRequest
+	}
+	if !requestIDPattern.MatchString(r.ID) {
 		return ErrInvalidRequest
 	}
 	if r.State != "" && r.State != StatePending {
