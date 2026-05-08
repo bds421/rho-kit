@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"net/http"
@@ -11,12 +12,32 @@ import (
 	"github.com/bds421/rho-kit/observability/logattr"
 )
 
+// serviceErrorContext returns logging-safe request attributes regardless of
+// whether r is nil. A nil *http.Request collapses to an empty method/path and
+// a context.Background() — keeping every error branch panic-free without
+// silently dropping logs.
+func serviceErrorContext(r *http.Request) (ctx context.Context, method, path string) {
+	if r == nil {
+		return context.Background(), "", ""
+	}
+	p := ""
+	if r.URL != nil {
+		p = r.URL.Path
+	}
+	return r.Context(), r.Method, p
+}
+
 // WriteServiceError maps service-layer error types to appropriate HTTP status codes
 // with safe, generic messages that avoid leaking internal details to clients.
 // Includes request ID and request details in logs for error correlation.
+//
+// A nil *http.Request is supported: the error is still written to the
+// response, but request-derived log fields (method, path, request ID) are
+// empty.
 func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	ctx, method, path := serviceErrorContext(r)
 	if r != nil {
-		logger = Logger(r.Context(), logger)
+		logger = Logger(ctx, logger)
 	} else if logger == nil {
 		logger = slog.Default()
 	}
@@ -48,9 +69,9 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case apperror.IsUnavailable(err):
 		logAttrs := []any{
 			logattr.Error(err),
-			logattr.RequestID(RequestID(r.Context())),
-			logattr.Method(r.Method),
-			logattr.Path(r.URL.Path),
+			logattr.RequestID(RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
 		}
 		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
 			logAttrs = append(logAttrs, slog.String("dependency", ue.Dependency))
@@ -68,9 +89,9 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case apperror.IsOperationFailed(err):
 		logger.Error("operation failed",
 			logattr.Error(err),
-			logattr.RequestID(RequestID(r.Context())),
-			logattr.Method(r.Method),
-			logattr.Path(r.URL.Path),
+			logattr.RequestID(RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
 		)
 		// OperationFailedError.Error() is sent to the client as-is.
 		// IMPORTANT: Callers must ensure the message is client-safe and does
@@ -85,9 +106,9 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	default:
 		logger.Error("unhandled service error",
 			logattr.Error(err),
-			logattr.RequestID(RequestID(r.Context())),
-			logattr.Method(r.Method),
-			logattr.Path(r.URL.Path),
+			logattr.RequestID(RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
 		)
 		WriteError(w, http.StatusInternalServerError, "internal error")
 	}
@@ -133,15 +154,20 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 // `problemdetails.WithBaseURL("https://errors.example.com")` for
 // linkable type URIs).
 func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, opts ...problemdetails.Option) {
+	ctx, method, path := serviceErrorContext(r)
+	instance := ""
+	if r != nil && r.URL != nil {
+		instance = r.URL.RequestURI()
+	}
 	logErr := func(msg string) {
 		if logger == nil {
 			return
 		}
 		attrs := []any{
 			logattr.Error(err),
-			logattr.RequestID(RequestID(r.Context())),
-			logattr.Method(r.Method),
-			logattr.Path(r.URL.Path),
+			logattr.RequestID(RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
 		}
 		if ue, ok := apperror.AsUnavailable(err); ok && ue.Dependency != "" {
 			attrs = append(attrs, slog.String("dependency", ue.Dependency))
@@ -164,7 +190,7 @@ func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 	}
 
 	allOpts := append([]problemdetails.Option{
-		problemdetails.WithInstance(r.URL.RequestURI()),
+		problemdetails.WithInstance(instance),
 	}, opts...)
 	problemdetails.Write(w, problemdetails.FromError(err, allOpts...))
 }

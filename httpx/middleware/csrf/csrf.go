@@ -120,7 +120,11 @@ func WithAllowedOrigins(origins ...string) Option {
 	return func(c *config) {
 		c.allowedOrigins = make(map[string]struct{}, len(origins))
 		for _, o := range origins {
-			c.allowedOrigins[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
+			normalised := strings.ToLower(strings.TrimSpace(o))
+			if normalised == "" {
+				continue
+			}
+			c.allowedOrigins[normalised] = struct{}{}
 		}
 	}
 }

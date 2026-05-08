@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -50,27 +51,111 @@ func RequireUserWithJWT(provider *jwtutil.Provider) func(http.Handler) http.Hand
 //  1. Bearer JWT (same as RequireUserWithJWT)
 //  2. mTLS client certificate + X-User-Id header (service-to-service)
 //
-// For mode 2, the caller's TLS client certificate CN must be in allowedCNs.
-// The TLS layer (ServerTLS with VerifyClientCertIfGiven) verifies the cert
-// against the CA; this middleware only checks the CN allowlist.
+// For mode 2, the caller's TLS client certificate must satisfy the CN
+// allowlist. The TLS layer (ServerTLS with VerifyClientCertIfGiven) verifies
+// the cert against the CA; this middleware enforces the per-cert allowlist.
+//
+// CN-based identity is legacy. CABs deprecate CN as an identity source and
+// modern certificate tooling (cert-manager, SPIFFE) emits identities as SANs.
+// Prefer [RequireS2SAuthWithIdentity] paired with [WithAllowedSANs] for new
+// services; keep this entry point for fleets whose internal CA still issues
+// CN-only certs.
 //
 // Both provider and allowedCNs are required — the function panics at startup
-// if either is nil/empty, making misconfiguration impossible.
+// if either is nil/empty after trimming, making misconfiguration impossible.
 //
 // An auditor can grep for "RequireS2SAuth" to find all S2S entry points.
 func RequireS2SAuth(provider *jwtutil.Provider, allowedCNs []string) func(http.Handler) http.Handler {
+	return RequireS2SAuthWithIdentity(provider, WithAllowedCNs(allowedCNs))
+}
+
+// MTLSIdentityOption configures the mTLS identity allowlist for
+// [RequireS2SAuthWithIdentity]. At least one of [WithAllowedSANs] or
+// [WithAllowedCNs] must be supplied with at least one non-empty entry.
+type MTLSIdentityOption func(*mtlsIdentityConfig)
+
+type mtlsIdentityConfig struct {
+	allowedCNs     map[string]struct{}
+	allowedSANDNS  map[string]struct{}
+	allowedSANURIs map[string]struct{}
+}
+
+// WithAllowedSANs authorises peers whose verified client certificate carries
+// at least one DNS SAN or URI SAN matching the provided list. SAN-based
+// identities are the modern replacement for CN — SPIFFE IDs and DNS-style
+// service names live there — and should be preferred for new deployments.
+//
+// DNS values (e.g. "svc-a.internal") are matched against [x509.Certificate.DNSNames].
+// URI values (e.g. "spiffe://example.org/svc-a") are matched against
+// [x509.Certificate.URIs] using exact string equality after URL parsing.
+//
+// Empty/whitespace entries are skipped.
+func WithAllowedSANs(sans []string) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) {
+		for _, s := range sans {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if strings.Contains(s, "://") {
+				if c.allowedSANURIs == nil {
+					c.allowedSANURIs = map[string]struct{}{}
+				}
+				c.allowedSANURIs[s] = struct{}{}
+			} else {
+				if c.allowedSANDNS == nil {
+					c.allowedSANDNS = map[string]struct{}{}
+				}
+				c.allowedSANDNS[s] = struct{}{}
+			}
+		}
+	}
+}
+
+// WithAllowedCNs authorises peers whose verified client certificate has a
+// Subject Common Name matching the provided list. CN identity is legacy;
+// new code should pair this with [WithAllowedSANs] or migrate to SANs.
+//
+// Empty/whitespace entries are skipped.
+func WithAllowedCNs(cns []string) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) {
+		for _, cn := range cns {
+			cn = strings.TrimSpace(cn)
+			if cn == "" {
+				continue
+			}
+			if c.allowedCNs == nil {
+				c.allowedCNs = map[string]struct{}{}
+			}
+			c.allowedCNs[cn] = struct{}{}
+		}
+	}
+}
+
+// RequireS2SAuthWithIdentity is the SAN-aware sibling of [RequireS2SAuth].
+// It accepts JWT or mTLS+header authentication; the mTLS branch matches the
+// peer certificate against the configured CN/SAN allowlists.
+//
+// At least one identity allowlist option ([WithAllowedCNs] or
+// [WithAllowedSANs]) must contribute at least one non-empty entry.
+func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
 	if provider == nil {
-		panic("middleware: RequireS2SAuth requires a non-nil JWT provider")
+		panic("middleware: RequireS2SAuthWithIdentity requires a non-nil JWT provider")
 	}
-	if len(allowedCNs) == 0 {
-		panic("middleware: RequireS2SAuth requires at least one allowed CN")
+	cfg := mtlsIdentityConfig{}
+	for _, o := range opts {
+		o(&cfg)
 	}
-	cnSet := make(map[string]struct{}, len(allowedCNs))
-	for _, cn := range allowedCNs {
-		cnSet[cn] = struct{}{}
+	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
+		panic("middleware: RequireS2SAuthWithIdentity requires at least one non-empty allowed CN or SAN entry")
+	}
+	if len(cfg.allowedCNs) > 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
+		slog.Warn("httpx auth middleware: CN-only mTLS allowlist is legacy; prefer WithAllowedSANs",
+			slog.String("component", "RequireS2SAuthWithIdentity"),
+		)
 	}
 	return func(next http.Handler) http.Handler {
-		return s2sHandler(provider, cnSet, next)
+		return s2sHandler(provider, cfg, next)
 	}
 }
 
@@ -88,7 +173,7 @@ func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler 
 }
 
 // s2sHandler returns a handler that accepts JWT or mTLS+header authentication.
-func s2sHandler(provider *jwtutil.Provider, allowedCNs map[string]struct{}, next http.Handler) http.Handler {
+func s2sHandler(provider *jwtutil.Provider, cfg mtlsIdentityConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try JWT from Authorization header first.
 		if token := extractBearerToken(r); token != "" {
@@ -96,18 +181,23 @@ func s2sHandler(provider *jwtutil.Provider, allowedCNs map[string]struct{}, next
 			return
 		}
 
-		// Fallback: verify mTLS client certificate CN for S2S auth.
-		if !verifyClientCert(r, allowedCNs) {
+		// Fallback: verify mTLS client certificate identity for S2S auth.
+		matched, identity := verifyClientCert(r, cfg)
+		if !matched {
 			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
-		requireHeaderUser(w, r, next)
+		requireHeaderUser(w, r, identity, next)
 	})
 }
 
 // verifyClientCert checks that the request was made over TLS with a fully
-// verified client certificate whose CN is in the allowlist.
+// verified client certificate whose SAN URI / SAN DNS / CN is in one of the
+// configured allowlists. Match order: SAN URI, SAN DNS, then CN. The first
+// match wins; the returned identity string carries the matched value (logged
+// for audit). A SAN-only certificate (CN empty) is rejected unless a SAN
+// matches.
 //
 // The VerifiedChains check is essential: r.TLS.PeerCertificates is populated
 // any time a peer presents a certificate, even when chain verification was
@@ -115,13 +205,34 @@ func s2sHandler(provider *jwtutil.Provider, allowedCNs map[string]struct{}, next
 // misconfigured proxy (or a tls.Config that omits ClientCAs) admit
 // unverified certs. Only trust an identity that the TLS layer itself
 // validated against a trusted CA.
-func verifyClientCert(r *http.Request, allowedCNs map[string]struct{}) bool {
+func verifyClientCert(r *http.Request, cfg mtlsIdentityConfig) (bool, string) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 {
-		return false
+		return false, ""
 	}
-	cn := r.TLS.PeerCertificates[0].Subject.CommonName
-	_, ok := allowedCNs[cn]
-	return ok
+	return matchCertIdentity(r.TLS.PeerCertificates[0], cfg)
+}
+
+func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, string) {
+	for _, u := range cert.URIs {
+		if u == nil {
+			continue
+		}
+		s := u.String()
+		if _, ok := cfg.allowedSANURIs[s]; ok {
+			return true, "uri:" + s
+		}
+	}
+	for _, dns := range cert.DNSNames {
+		if _, ok := cfg.allowedSANDNS[dns]; ok {
+			return true, "dns:" + dns
+		}
+	}
+	if cn := cert.Subject.CommonName; cn != "" {
+		if _, ok := cfg.allowedCNs[cn]; ok {
+			return true, "cn:" + cn
+		}
+	}
+	return false, ""
 }
 
 // verifyJWT validates the token, injects claims into context, and calls next.
@@ -169,27 +280,16 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // (e.g., a JWT minted without the claim, or a route that was misconfigured
 // to not run JWT verification at all). Without the marker those middlewares
 // fail closed.
-func requireHeaderUser(w http.ResponseWriter, r *http.Request, next http.Handler) {
+func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, next http.Handler) {
 	userID := r.Header.Get("X-User-Id")
 	if userID == "" || !jwtutil.IsUUID(userID) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	// Precondition: this function is only reached after verifyClientCert
-	// returned true, which already enforced len(r.TLS.VerifiedChains) > 0.
-	// Reading PeerCertificates here is safe because the chain was actually
-	// verified upstream — but keep that contract close at hand: if a
-	// future refactor splits verifyClientCert from this function and
-	// PeerCertificates can be reached without a chain check, this code
-	// must re-add `len(r.TLS.VerifiedChains) > 0`.
-	cn := ""
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 && len(r.TLS.VerifiedChains) > 0 {
-		cn = r.TLS.PeerCertificates[0].Subject.CommonName
-	}
 	httpx.Logger(r.Context(), slog.Default()).Info("s2s user impersonation",
 		"user_id", userID,
-		"client_cn", cn,
+		"client_identity", identity,
 		"method", r.Method,
 		"path", r.URL.Path,
 	)

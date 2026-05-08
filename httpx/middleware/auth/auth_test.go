@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ const testUUID = "550e8400-e29b-41d4-a716-446655440000"
 // without JWT verification.
 func headerOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requireHeaderUser(w, r, next)
+		requireHeaderUser(w, r, "test", next)
 	})
 }
 
@@ -43,6 +44,15 @@ func fakePeerCert(cn string) *x509.Certificate {
 // that to be representative.
 func withMTLS(r *http.Request, cn string) *http.Request {
 	cert := fakePeerCert(cn)
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
+	return r
+}
+
+// withMTLSCert attaches a fully-formed certificate (CN + SANs) to the request.
+func withMTLSCert(r *http.Request, cert *x509.Certificate) *http.Request {
 	r.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 		VerifiedChains:   [][]*x509.Certificate{{cert}},
@@ -956,5 +966,254 @@ func TestPermissionByMethod_PanicsOnEmpty(t *testing.T) {
 			}()
 			PermissionByMethod(tc.readPerm, tc.writePerm)
 		})
+	}
+}
+
+// --- CN allowlist hardening (R5) ---
+
+// TestRequireS2SAuth_PanicsOnSingleEmptyCN locks in the regression that
+// pre-fix accepted []string{""} and authorised any verified SAN-only cert.
+func TestRequireS2SAuth_PanicsOnSingleEmptyCN(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for []string{\"\"}")
+		}
+	}()
+	RequireS2SAuth(provider, []string{""})
+}
+
+func TestRequireS2SAuth_PanicsOnWhitespaceCN(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for []string{\"  \"}")
+		}
+	}()
+	RequireS2SAuth(provider, []string{"  "})
+}
+
+func TestRequireS2SAuth_TrimsCN(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := RequireS2SAuth(provider, []string{"  backend  "})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with trimmed CN allowlist, got %d", rec.Code)
+	}
+}
+
+func TestRequireS2SAuth_RejectsSANOnlyCertWithCNAllowlist(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	cert := &x509.Certificate{
+		Subject:  pkix.Name{CommonName: ""},
+		DNSNames: []string{"some-other.internal"},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for SAN-only cert against CN allowlist, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler must not be called for SAN-only cert with no SAN allowlist match")
+	}
+}
+
+// --- SAN-aware identity (RequireS2SAuthWithIdentity) ---
+
+func TestRequireS2SAuthWithIdentity_PanicsOnNilProvider(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil provider")
+		}
+	}()
+	RequireS2SAuthWithIdentity(nil, WithAllowedCNs([]string{"backend"}))
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsOnNoIdentities(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when neither CNs nor SANs are supplied")
+		}
+	}()
+	RequireS2SAuthWithIdentity(provider)
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsOnAllEmptyEntries(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when all entries are empty after trimming")
+		}
+	}()
+	RequireS2SAuthWithIdentity(provider,
+		WithAllowedCNs([]string{"", "  "}),
+		WithAllowedSANs([]string{"", "   "}),
+	)
+}
+
+func TestRequireS2SAuthWithIdentity_SANDNSMatch(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := RequireS2SAuthWithIdentity(provider,
+		WithAllowedSANs([]string{"svc-a.internal"}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cert := &x509.Certificate{
+		Subject:  pkix.Name{CommonName: ""},
+		DNSNames: []string{"svc-a.internal"},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for SAN DNS match, got %d", rec.Code)
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_SANURIMatch(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := RequireS2SAuthWithIdentity(provider,
+		WithAllowedSANs([]string{"spiffe://example.org/svc-a"}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	uri, err := url.Parse("spiffe://example.org/svc-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{
+		Subject: pkix.Name{CommonName: "ignored"},
+		URIs:    []*url.URL{uri},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for SAN URI match, got %d", rec.Code)
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_NoMatchOnEither(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireS2SAuthWithIdentity(provider,
+		WithAllowedCNs([]string{"svc-cn"}),
+		WithAllowedSANs([]string{"svc-other.internal"}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	cert := &x509.Certificate{
+		Subject:  pkix.Name{CommonName: "stranger"},
+		DNSNames: []string{"stranger.internal"},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for cert that matches neither allowlist, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler must not be called when neither CN nor SAN matches")
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_SANPreferredOverCN(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := RequireS2SAuthWithIdentity(provider,
+		WithAllowedCNs([]string{"svc-cn"}),
+		WithAllowedSANs([]string{"svc-san.internal"}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cert := &x509.Certificate{
+		Subject:  pkix.Name{CommonName: "svc-cn"},
+		DNSNames: []string{"svc-san.internal"},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when both CN and SAN match, got %d", rec.Code)
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_TrimsAndSkipsEmpty(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	// Mix of empty/whitespace and one real entry — handler must still build and accept.
+	handler := RequireS2SAuthWithIdentity(provider,
+		WithAllowedCNs([]string{"", "  ", "  backend  "}),
+		WithAllowedSANs([]string{""}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (real CN survives empty/whitespace siblings), got %d", rec.Code)
 	}
 }
