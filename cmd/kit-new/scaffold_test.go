@@ -57,11 +57,50 @@ func TestScaffold_GeneratedWireUsesKitHTTPServer(t *testing.T) {
 		"generated wire.go must call httpx.NewServer so the service inherits the kit's HTTP defaults")
 	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx"`,
 		"generated wire.go must import the kit's httpx package")
+}
+
+func TestScaffold_DefaultGoModHasNoUnpublishablePin(t *testing.T) {
+	// Without -rho-version, the generated go.mod must not pin
+	// internal modules to v0.0.0 (the prior placeholder did this and
+	// broke downstream resolution against the public proxy). Empty
+	// require block is fine — `go mod tidy` populates it from
+	// imports.
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	}))
 
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx",
-		"generated go.mod must declare the httpx dependency so go mod tidy can resolve it")
+	body := string(gomod)
+	assert.NotContains(t, body, "v0.0.0",
+		"generated go.mod must not pin any module to v0.0.0; that breaks downstream consumers")
+	assert.Contains(t, body, "module example.com/demo")
+}
+
+func TestScaffold_RhoVersionFlagWritesRequire(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+		RhoVersion:  "v2.0.0",
+	}))
+
+	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx v2.0.0",
+		"generated go.mod must pin to the requested version when RhoVersion is set")
+}
+
+func TestScaffold_RhoVersionRejectsInvalidString(t *testing.T) {
+	err := scaffold(t.TempDir(), Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+		RhoVersion:  "latest",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RhoVersion")
 }
 
 func TestScaffold_RejectsEmptyServiceName(t *testing.T) {
@@ -96,6 +135,21 @@ func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 }
 
 func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, false)
+}
+
+func TestScaffold_MCPGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, true)
+}
+
+// runScaffoldBuildTest scaffolds a fresh tree, points the kit
+// require at the local checkout (the only practical way to run a
+// downstream-style build before the kit publishes a tag), then runs
+// `go mod tidy && go build && go vet`. Covers both the default
+// scaffold and the MCP variant so the MCP path has the same compile
+// guarantee as the default.
+func runScaffoldBuildTest(t *testing.T, mcp bool) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("self-test invokes go build / go test")
 	}
@@ -107,21 +161,42 @@ func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
 	require.NoError(t, scaffold(out, Params{
 		ServiceName: "demo",
 		ModulePath:  "example.com/demo",
+		MCP:         mcp,
 	}))
 
-	// The scaffold pins kit modules at v0.0.0 (real versions land via
-	// `go mod tidy` once the consumer wires the kit). For the in-test
-	// build we replace the kit module with the local checkout so the
-	// build does not depend on the public proxy resolving v0.0.0.
 	repoRoot, err := filepath.Abs("../..")
 	require.NoError(t, err)
 	httpxDir := filepath.Join(repoRoot, "httpx")
 	if _, statErr := os.Stat(httpxDir); statErr != nil {
 		t.Skipf("httpx local checkout not found at %s: %v", httpxDir, statErr)
 	}
-	replaceCmd := exec.Command("go", "mod", "edit",
-		"-replace=github.com/bds421/rho-kit/httpx="+httpxDir,
-	)
+
+	// Modules transitively required at v0.0.0 by httpx and
+	// httpx/mcp. Until the kit publishes real tags, the in-repo
+	// build test resolves them via local replaces — the same pattern
+	// the workspace uses. The release pipeline strips these
+	// replaces before tagging (see hierarchical-release.sh).
+	internal := []string{"httpx"}
+	if mcp {
+		internal = append(internal,
+			"httpx/mcp",
+			"core/tenant",
+			"core/validate",
+			"data/actionlog",
+			"data/actionlog/memory",
+		)
+	}
+	replaceArgs := []string{"mod", "edit"}
+	for _, sub := range internal {
+		dir := filepath.Join(repoRoot, sub)
+		if _, statErr := os.Stat(dir); statErr != nil {
+			t.Skipf("local checkout not found at %s: %v", dir, statErr)
+		}
+		replaceArgs = append(replaceArgs,
+			"-replace=github.com/bds421/rho-kit/"+sub+"="+dir,
+		)
+	}
+	replaceCmd := exec.Command("go", replaceArgs...)
 	replaceCmd.Dir = out
 	replaceCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 	if buf, err := replaceCmd.CombinedOutput(); err != nil {
@@ -134,9 +209,6 @@ func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
 		t.Fatalf("go mod tidy failed:\n%s", buf)
 	}
 
-	// Each `go` invocation runs in the generated dir; failures
-	// surface the toolchain output so a regression in a template is
-	// immediately diagnosable.
 	for _, args := range [][]string{
 		{"build", "./..."},
 		{"vet", "./..."},
@@ -155,6 +227,7 @@ func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
 		ServiceName: "demo",
 		ModulePath:  "example.com/demo",
 		MCP:         true,
+		RhoVersion:  "v2.0.0",
 	}))
 
 	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
@@ -175,11 +248,11 @@ func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
 	assert.Contains(t, mk, "tools/list",
 		"Makefile smoke-test must call the JSON-RPC tools/list method")
 
-	// go.mod must reference the kit's mcp package so the generated
-	// service can be `go mod tidy`'d cleanly.
+	// With an explicit RhoVersion the generated go.mod pins both
+	// httpx and httpx/mcp to that version.
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/mcp")
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/mcp v2.0.0")
 }
 
 func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
@@ -187,6 +260,7 @@ func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
 	require.NoError(t, scaffold(out, Params{
 		ServiceName: "demo",
 		ModulePath:  "example.com/demo",
+		RhoVersion:  "v2.0.0",
 	}))
 
 	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))

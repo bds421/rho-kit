@@ -38,7 +38,21 @@ type Params struct {
 	// Makefile.tmpl gains a `mcp-smoke` target that POSTs a
 	// `tools/list` JSON-RPC call against a locally-running service.
 	MCP bool
+	// RhoVersion pins the rho-kit module versions written into the
+	// generated go.mod. Empty means no explicit require — the
+	// generated tree relies on `go mod tidy` populating require
+	// blocks from imports against whatever the consumer's environment
+	// resolves (proxy, GOPROXY, replaces). Set to a concrete tag
+	// (e.g. "v2.0.0") to lock the scaffold to a known release.
+	RhoVersion string
 }
+
+// rhoVersionPattern accepts the version specifiers Go accepts in a
+// go.mod require directive: full semver tags ("v2.0.0",
+// "v2.0.0-rc1") and pseudo-versions
+// ("v0.0.0-20240101120000-abcdef012345"). Accepting "latest" or other
+// non-version sentinels would produce a go.mod that does not parse.
+var rhoVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
 // templateFile maps a template name to its destination path within
 // the generated tree. Add a row to ship a new file from a new
@@ -66,6 +80,9 @@ func scaffold(outDir string, p Params) error {
 	}
 	if p.ModulePath == "" {
 		return fmt.Errorf("kit-new: ModulePath must not be empty")
+	}
+	if p.RhoVersion != "" && !rhoVersionPattern.MatchString(p.RhoVersion) {
+		return fmt.Errorf("kit-new: RhoVersion %q must be a semver tag like v2.0.0 or a pseudo-version", p.RhoVersion)
 	}
 
 	absOutDir, err := filepath.Abs(outDir)

@@ -145,7 +145,16 @@ for (( level=0; level<=max_level; level++ )); do
   echo "  Level $level:$modules_at_level"
 done
 
-# --- Step 3: Release each level ---
+# --- Step 3: Pre-tag gate ---
+# nx release version must have rewritten every internal require to a
+# real version before we tag. If anything still pins an internal
+# rho-kit module at v0.0.0, abort before producing a broken tag —
+# downstream consumers do not inherit the workspace's local replaces.
+echo ""
+echo "=== Pre-tag gate: no internal v0.0.0 requires ==="
+bash "$(dirname "$0")/check-no-internal-v0.sh"
+
+# --- Step 4: Release each level ---
 
 for (( level=0; level<=max_level; level++ )); do
   echo ""

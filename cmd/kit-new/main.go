@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp]
+//	kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-rho-version vX.Y.Z]
 //
 // Flags:
 //
@@ -14,6 +14,11 @@
 //	-mcp          Scaffold a sample MCP tool registration in
 //	              internal/app/wire.go and add a smoke-test target
 //	              to the generated Makefile.
+//	-rho-version  Pin the rho-kit module version in the generated
+//	              go.mod (e.g. v2.0.0). Empty (default) writes no
+//	              explicit require block; the user runs `go mod tidy`
+//	              to populate it from the imports against their
+//	              configured proxy.
 //
 // To regenerate a service into a fresh directory after upgrading
 // rho-kit, run kit-new again with the same flags into a sibling
@@ -36,10 +41,11 @@ func main() {
 	modulePath := flag.String("module-path", "", "Go module path (e.g. github.com/org/my-service)")
 	dir := flag.String("dir", "", "output directory (default: ./<service-name>)")
 	withMCP := flag.Bool("mcp", false, "scaffold a sample MCP tool registration in internal/app/wire.go")
+	rhoVersion := flag.String("rho-version", "", "pin rho-kit module version in go.mod (e.g. v2.0.0); empty leaves go.mod without explicit require so go mod tidy resolves from imports")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp]")
+		fmt.Fprintln(os.Stderr, "usage: kit-new SERVICE_NAME -module-path github.com/org/SERVICE_NAME [-dir ./SERVICE_NAME] [-mcp] [-rho-version vX.Y.Z]")
 		os.Exit(2)
 	}
 	name := flag.Arg(0)
@@ -56,7 +62,7 @@ func main() {
 		out = "./" + name
 	}
 
-	p := Params{ServiceName: name, ModulePath: *modulePath, MCP: *withMCP}
+	p := Params{ServiceName: name, ModulePath: *modulePath, MCP: *withMCP, RhoVersion: *rhoVersion}
 	if err := scaffold(out, p); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

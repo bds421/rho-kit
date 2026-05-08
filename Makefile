@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci
+.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
@@ -86,3 +86,7 @@ clean:
 
 ## ci: Run the full CI pipeline locally (lint + test + build)
 ci: lint test-race build
+
+## check-publishable: Static pre-tag gate — fail if any go.mod still pins internal modules at v0.0.0
+check-publishable:
+	@bash tools/nx-release/check-no-internal-v0.sh

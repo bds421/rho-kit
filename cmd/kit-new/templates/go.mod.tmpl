@@ -1,15 +1,8 @@
 module {{.ModulePath}}
 
 go 1.26.2
-
-// The scaffold imports the kit's httpx package so the generated
-// service starts an http.Server with the kit's slowloris and
-// structured-error-log defaults instead of a raw net/http construction.
-// Run `go mod tidy` after generation to populate the actual versions.
-require github.com/bds421/rho-kit/httpx v0.0.0
+{{if .RhoVersion}}
+require github.com/bds421/rho-kit/httpx {{.RhoVersion}}
 {{if .MCP}}
-// MCP scaffold requires the kit's mcp package. Run `go mod tidy`
-// after generation to populate the require block from the actual
-// imports in internal/app/wire.go.
-require github.com/bds421/rho-kit/httpx/mcp v0.0.0
-{{end}}
+require github.com/bds421/rho-kit/httpx/mcp {{.RhoVersion}}
+{{end}}{{end}}
