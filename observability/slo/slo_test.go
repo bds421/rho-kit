@@ -91,7 +91,7 @@ func TestChecker_Evaluate_ErrorRate_NoBreach(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 
 	// 1000 OK, 0 errors -> 0% error rate
@@ -110,7 +110,7 @@ func TestChecker_Evaluate_ErrorRate_Breached(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 
 	// 900 OK, 100 errors -> 10% error rate, threshold 1%
@@ -131,7 +131,7 @@ func TestChecker_Evaluate_SuccessRate_NoBreach(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 
 	// 999 OK, 1 error -> 99.9% success rate, threshold 99.9%
@@ -151,7 +151,7 @@ func TestChecker_Evaluate_SuccessRate_Breached(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 
 	// 990 OK, 10 errors -> 99.0% success rate, threshold 99.9%
@@ -215,7 +215,7 @@ func TestChecker_Evaluate_CustomMetricName(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "grpc_requests_total",
 		Help: "gRPC requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 
 	total.WithLabelValues("200").Add(900)
@@ -268,7 +268,7 @@ func TestChecker_DependencyCheck_NoBreach(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(1000)
 
@@ -285,7 +285,7 @@ func TestChecker_DependencyCheck_Breached(t *testing.T) {
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Total requests.",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)

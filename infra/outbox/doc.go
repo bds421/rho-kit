@@ -4,10 +4,13 @@
 // then asynchronously relaying them to an external system via a pluggable
 // [Publisher] interface.
 //
-// The package is transport-agnostic and storage-agnostic: it does not depend
-// on any specific broker or database driver. Adapters for AMQP, Redis Streams,
-// Kafka, or any other transport implement the [Publisher] interface. Storage
-// backends (GORM, pgx, etc.) implement the [Store] interface.
+// The package is transport-agnostic and storage-agnostic: it does not
+// depend on any specific broker or database driver. Adapters for AMQP,
+// Redis Streams, Kafka, or any other transport implement the
+// [Publisher] interface. Storage backends (pgx, sqlc-generated, raw
+// database/sql) implement the [Store] interface. v2 dropped the
+// shipped GORM store; new consumers ship pgx-backed Store
+// implementations alongside their other repositories.
 //
 // # Architecture
 //
@@ -36,14 +39,14 @@
 //
 // # Usage
 //
-//	store := gormstore.New(db)   // from infra/outbox/gormstore
+//	store := mypg.NewOutboxStore(pool)   // pgx-backed Store implementation
 //	writer := outbox.NewWriter(store)
 //
-//	// Inside a transaction (using gormdb.ContextWithTx for atomicity):
-//	err := db.Transaction(func(tx *gorm.DB) error {
-//	    ctx := gormdb.ContextWithTx(ctx, tx)
+//	// Inside a pgx transaction:
+//	err := pool.BeginTxFunc(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+//	    txCtx := withTx(ctx, tx) // package-local helper that puts tx in ctx
 //	    // ... domain writes using tx ...
-//	    return writer.Write(ctx, outbox.WriteParams{
+//	    return writer.Write(txCtx, outbox.WriteParams{
 //	        Topic:       "orders",
 //	        RoutingKey:  "order.created",
 //	        MessageID:   msg.ID,

@@ -60,6 +60,18 @@ type Policy struct {
 	// stability cycle. When StableReset fires, the counter resets to 1.
 	// For total-attempt tracking across cycles, use an external counter.
 	OnRetry func(err error, attempt int, delay time.Duration)
+
+	// MaxElapsedTime, if > 0, aborts the retry loop once the total
+	// wall-clock time spent since the first attempt reaches this limit.
+	// Use this to bound retries by SLO budget rather than just attempt
+	// count. Zero disables the cap (only MaxRetries applies).
+	MaxElapsedTime time.Duration
+
+	// DelayOverride, if set, can replace the computed exponential delay
+	// based on the failing error — typically used to honor a server's
+	// Retry-After header. Return zero from the callback to fall back
+	// to the policy's exponential delay.
+	DelayOverride func(err error) time.Duration
 }
 
 // DefaultPolicy is a sensible default: 3 retries, 1s base, 30s max, 2x factor,
@@ -105,8 +117,34 @@ func WithMaxDelay(d time.Duration) Option { return func(p *Policy) { p.MaxDelay 
 // WithFactor sets the exponential backoff multiplier.
 func WithFactor(f float64) Option { return func(p *Policy) { p.Factor = f } }
 
-// WithJitter sets the jitter fraction (e.g. 0.25 for ±25%).
-func WithJitter(f float64) Option { return func(p *Policy) { p.Jitter = f } }
+// WithMaxElapsedTime aborts retries once cumulative wall-clock time
+// reaches d. Zero disables the cap.
+func WithMaxElapsedTime(d time.Duration) Option {
+	return func(p *Policy) { p.MaxElapsedTime = d }
+}
+
+// WithDelayOverride sets a callback that can override the computed
+// exponential delay based on the failing error — typically used for
+// HTTP Retry-After headers. Return zero to use the policy's default.
+func WithDelayOverride(fn func(err error) time.Duration) Option {
+	return func(p *Policy) { p.DelayOverride = fn }
+}
+
+// WithJitter sets the jitter fraction. Clamped to [0, 1]: negative
+// values would produce negative delays (the underlying backoff library
+// silently clamps them to zero) and values >1 amplify the spread without
+// any documented benefit.
+func WithJitter(f float64) Option {
+	return func(p *Policy) {
+		if f < 0 {
+			f = 0
+		}
+		if f > 1 {
+			f = 1
+		}
+		p.Jitter = f
+	}
+}
 
 // WithStableReset enables stability detection: if the function runs for at
 // least d before failing, the delay resets to BaseDelay.
@@ -205,6 +243,11 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		}
 
 		wait := bo.NextBackOff()
+		if p.DelayOverride != nil {
+			if override := p.DelayOverride(err); override > 0 {
+				wait = override
+			}
+		}
 
 		if p.OnRetry != nil {
 			p.OnRetry(err, attempt+1, wait)
@@ -249,8 +292,15 @@ func (p Policy) Delay(attempt int) time.Duration {
 func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) error) error {
 	bo := newBackOff(p)
 	attempt := 0
+	loopStart := time.Now()
 
 	for {
+		// Honor a pre-cancelled ctx — otherwise the caller pays one full
+		// fn() invocation against an already-dead context.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		start := time.Now()
 		err := fn(ctx)
 		if err == nil {
@@ -260,6 +310,12 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 			return ctx.Err()
 		}
 		if p.RetryIf != nil && !p.RetryIf(err) {
+			return err
+		}
+
+		// Bound by total wall-clock so retries don't outlast the caller's
+		// SLO budget even when MaxRetries is generous.
+		if p.MaxElapsedTime > 0 && time.Since(loopStart) >= p.MaxElapsedTime {
 			return err
 		}
 
@@ -275,6 +331,11 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		}
 
 		wait := bo.NextBackOff()
+		if p.DelayOverride != nil {
+			if override := p.DelayOverride(err); override > 0 {
+				wait = override
+			}
+		}
 
 		if p.OnRetry != nil {
 			p.OnRetry(err, attempt+1, wait)

@@ -14,8 +14,16 @@ import (
 // probes and load balancer health checks over the gRPC transport.
 //
 // The Check method evaluates the health checker and maps the result:
-//   - StatusHealthy / StatusDegraded / StatusConnecting → SERVING
-//   - StatusUnhealthy → NOT_SERVING
+//   - StatusHealthy / StatusDegraded → SERVING
+//   - StatusConnecting / StatusUnhealthy → NOT_SERVING
+//
+// Connecting maps to NOT_SERVING because by definition it means "still
+// establishing dependency connections" — routing traffic during this
+// warmup window guarantees the first requests fail with closed-pool /
+// uninitialised-cache errors. Load balancers should hold traffic
+// until warmup completes; Degraded continues to serve because by
+// definition it means "non-critical dependency is degraded but the
+// service still answers correctly."
 //
 // The Watch method is not implemented; it returns Unimplemented. Most
 // Kubernetes probes and load balancers use Check, not Watch.
@@ -44,7 +52,8 @@ func (h *HealthServer) Check(ctx context.Context, req *healthpb.HealthCheckReque
 
 	resp := h.checker.Evaluate(ctx)
 	servingStatus := healthpb.HealthCheckResponse_SERVING
-	if resp.Status == health.StatusUnhealthy {
+	switch resp.Status {
+	case health.StatusUnhealthy, health.StatusConnecting:
 		servingStatus = healthpb.HealthCheckResponse_NOT_SERVING
 	}
 

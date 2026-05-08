@@ -6,6 +6,7 @@ import (
 	"github.com/bds421/rho-kit/data/actionlog"
 	"github.com/bds421/rho-kit/data/approval"
 	"github.com/bds421/rho-kit/data/budget"
+	kitflags "github.com/bds421/rho-kit/flags"
 	httpxbudget "github.com/bds421/rho-kit/httpx/middleware/budget"
 	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
 )
@@ -56,6 +57,18 @@ func (b *Builder) actionLogger() actionlog.Logger { return b.alog }
 
 // approvalStore returns the registered store or nil.
 func (b *Builder) approvalStore() approval.Store { return b.astore }
+
+// flagsClient builds a flags.Client around the registered provider
+// the first time it is requested, returning nil when no provider was
+// registered. Callers receive a fresh client per Builder.Run because
+// the client wraps an OpenFeature SDK client whose lifecycle is tied
+// to the service process.
+func (b *Builder) flagsClient() *kitflags.Client {
+	if b.flagsProvider == nil {
+		return nil
+	}
+	return kitflags.New(b.name, b.flagsProvider)
+}
 
 // budgetSpecStore returns the registered budget store or nil. The
 // helper exists so Infrastructure population stays a single-line

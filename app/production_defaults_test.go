@@ -7,8 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/sqldb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 	"github.com/bds421/rho-kit/observability/tracing"
 	"github.com/bds421/rho-kit/security/netutil"
 )
@@ -50,48 +48,10 @@ func TestBuilder_Validates_AcceptsJWTWithoutJWTIssuer(t *testing.T) {
 	require.NoError(t, b.Validate())
 }
 
-func TestBuilder_Validates_PostgresMustHaveSSLMode(t *testing.T) {
-	cfg := sqldb.Config{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "u",
-		Password: "p",
-		Name:     "db",
-		// No sslmode — production validation must reject.
-	}
-	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sslmode")
-}
-
-func TestBuilder_Validates_PostgresRejectsLooseSSLMode(t *testing.T) {
-	cfg := sqldb.Config{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "u",
-		Password: "p",
-		Name:     "db",
-		Options:  map[string]string{"sslmode": "prefer"},
-	}
-	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fail closed")
-}
-
-func TestBuilder_Validates_PostgresAcceptsRequire(t *testing.T) {
-	cfg := sqldb.Config{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "u",
-		Password: "p",
-		Name:     "db",
-		Options:  map[string]string{"sslmode": "require"},
-	}
-	b := newSafeBuilder().WithPostgres(cfg, sqldb.DefaultPool())
-	require.NoError(t, b.Validate())
-}
+// Postgres TLS validation is now enforced inside the pgx package's
+// Connect — by the time Builder.Run reaches WithPostgres, the DSN is
+// passed through. The validator no longer pre-parses the DSN, so the
+// equivalent test belongs in infra/sqldb/pgx, not here.
 
 func TestBuilder_Validates_TracingSampleRateCapped(t *testing.T) {
 	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 1.0})
@@ -103,11 +63,6 @@ func TestBuilder_Validates_TracingSampleRateCapped(t *testing.T) {
 func TestBuilder_Validates_TracingAcceptsLowSampleRate(t *testing.T) {
 	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 0.05})
 	require.NoError(t, b.Validate())
-}
-
-func TestIsPostgresDriver(t *testing.T) {
-	assert.True(t, isPostgresDriver(gormpostgres.PostgresDriver{}))
-	assert.False(t, isPostgresDriver(nil))
 }
 
 // --- C-1: internal ops port must default to loopback ---

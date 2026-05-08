@@ -10,12 +10,16 @@ import (
 // subscriber notification. Safe for concurrent use.
 //
 // Reads via Get are lock-free (atomic.Value). Writes via Set atomically
-// replace the value and notify all registered subscribers synchronously.
+// replace the value and notify all registered subscribers synchronously
+// in store order — concurrent Set(A) and Set(B) deliver consistent
+// (old, new) pairs to every subscriber so derived state cannot diverge
+// from the canonical sequence.
 type Watchable[T any] struct {
 	value       atomic.Value // holds wrapper[T]
 	subscribers map[uint64]func(old, new T)
 	nextID      uint64
-	mu          sync.Mutex // protects subscribers map and write ordering
+	mu          sync.Mutex // protects subscribers map (re-entrant from Set callbacks)
+	setMu       sync.Mutex // serialises Set so notifications fire in store order
 }
 
 // wrapper avoids the atomic.Value constraint that stored types must be
@@ -39,18 +43,29 @@ func (w *Watchable[T]) Get() T {
 }
 
 // Set atomically replaces the value and notifies all subscribers.
-// Subscribers are called synchronously in the caller's goroutine.
+// Subscribers are called synchronously in the caller's goroutine in the
+// same order Set was invoked across goroutines — setMu serialises the
+// store-and-notify pair so concurrent Set(A) and Set(B) produce
+// consistent (old, new) sequences for every subscriber. A slow
+// subscriber blocks other Set callers; pair with a buffered channel
+// inside the subscriber if that matters.
+//
+// Subscribers may safely call OnChange (re-entrant) — the per-Set lock
+// (setMu) is distinct from the subscriber-map lock (mu).
+//
 // A panicking subscriber is recovered and logged so that remaining
 // subscribers are still notified.
-// The write lock ensures concurrent Set calls read a consistent old value.
 func (w *Watchable[T]) Set(val T) {
-	w.mu.Lock()
+	w.setMu.Lock()
+	defer w.setMu.Unlock()
+
 	old := w.value.Load().(wrapper[T]).val
 	w.value.Store(wrapper[T]{val: val})
-	// Snapshot subscriber map under lock.
-	subs := make(map[uint64]func(old, new T), len(w.subscribers))
-	for id, fn := range w.subscribers {
-		subs[id] = fn
+
+	w.mu.Lock()
+	subs := make([]func(old, new T), 0, len(w.subscribers))
+	for _, fn := range w.subscribers {
+		subs = append(subs, fn)
 	}
 	w.mu.Unlock()
 

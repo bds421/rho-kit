@@ -1,15 +1,14 @@
 // Package pgx wraps jackc/pgx with the kit's lifecycle and TLS
-// conventions. Use it when a service needs Postgres features that
-// `database/sql` (the default infra/sqldb path) cannot expose:
+// conventions. v2 made pgx the single supported Postgres driver — GORM
+// and MySQL/MariaDB are gone. Use the pgxpool directly for queries, or
+// reach for sqlc when typed query generation is preferred.
+//
+// Postgres features available natively through pgx:
 //
 //   - LISTEN/NOTIFY for low-latency in-cluster pub/sub.
 //   - COPY for bulk-loading 100k+ rows in one round trip.
 //   - Batched pipelines (multiple statements per network RTT).
 //   - Custom binary type encoding for jsonb / arrays.
-//
-// For ordinary CRUD against Postgres, prefer infra/sqldb/gormdb/gormpostgres.
-// pgx and the gorm driver are mutually exclusive in app.Builder — pick one
-// per service.
 //
 // TLS: Connect always rejects sslmode=disable. Pass an explicit
 // sslmode in the DSN — `require`, `verify-ca`, or `verify-full`.
@@ -54,7 +53,7 @@ type Config struct {
 	// reviewer cannot miss it.
 	AllowPlaintextLoopbackForTests bool
 
-	// MaxConns caps the pool. Default: 25 (mirrors gormpostgres).
+	// MaxConns caps the pool. Default: 25.
 	MaxConns int32
 	// MinConns floor — connections kept warm. Default: 2.
 	MinConns int32
@@ -246,7 +245,18 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 	go func() {
 		defer close(out)
 		defer close(errCh)
-		defer conn.Release()
+		defer func() {
+			// UNLISTEN before releasing the connection back to the
+			// pool. Without this, the next pool acquirer reuses a
+			// connection that is still subscribed to our channels and
+			// receives stray notifications. Use a fresh background ctx
+			// because the parent ctx is typically cancelled at this
+			// point.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, _ = conn.Exec(cleanupCtx, "UNLISTEN *")
+			cancel()
+			conn.Release()
+		}()
 		for {
 			n, waitErr := conn.Conn().WaitForNotification(ctx)
 			if waitErr != nil {

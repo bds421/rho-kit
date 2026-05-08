@@ -48,7 +48,13 @@ type SLO struct {
 	// Percentile is used only for TypeLatency SLOs (e.g. 0.99 for p99).
 	Percentile float64
 
-	// Window is the evaluation time window.
+	// Window is metadata describing the time window the SLO targets
+	// (e.g. 7d for an availability SLO). The in-process [Checker] does
+	// NOT enforce window-bounded math — it computes ratios over the
+	// lifetime of process counters since startup. For true
+	// window-bounded evaluation, query Prometheus directly with
+	// rate(...) over the desired range; use this field for
+	// dashboards/alerts to label the SLO context.
 	Window time.Duration
 
 	// MetricName overrides the default Prometheus metric name used for evaluation.
@@ -59,7 +65,8 @@ type SLO struct {
 
 	// ErrorLabelFilter specifies the label name and value that identifies error
 	// responses. Only used for ErrorRate and SuccessRate types.
-	// Defaults to code=~"5.." if empty.
+	// Defaults to status=~"5.." if empty (matches what
+	// observability/redmetrics emits on http_requests_total).
 	ErrorLabelFilter LabelFilter
 
 	// LatencyLabelFilter restricts which histogram label combinations
@@ -303,7 +310,11 @@ func evaluateErrorRate(s SLO, families map[string]*dto.MetricFamily) float64 {
 
 	errorFilter := s.ErrorLabelFilter
 	if errorFilter.Name == "" {
-		errorFilter = LabelFilter{Name: "code", Pattern: "5.."}
+		// Match the label that observability/redmetrics emits on
+		// http_requests_total. Earlier versions used "code", but no
+		// kit-emitted metric carries that label, so the default SLO
+		// silently always returned 0% errors.
+		errorFilter = LabelFilter{Name: "status", Pattern: "5.."}
 	}
 
 	total, errors := sumCountersByLabel(mf, errorFilter)
@@ -364,6 +375,19 @@ func histogramPercentile(mf *dto.MetricFamily, percentile float64) float64 {
 
 	buckets := sortedBuckets(bucketMap)
 
+	// Enforce monotonic non-decreasing cumulative counts. When metrics
+	// in the same family use mismatched bucket boundaries (which the
+	// Prometheus convention forbids but a custom registration could
+	// produce), summing CumulativeCount per upper-bound gives a sparse
+	// distribution that breaks linear interpolation. Walk in ascending
+	// bound order and propagate max(prev, current) so the cumulative
+	// invariant is restored before the percentile loop runs.
+	for i := 1; i < len(buckets); i++ {
+		if buckets[i].cumulativeCount < buckets[i-1].cumulativeCount {
+			buckets[i].cumulativeCount = buckets[i-1].cumulativeCount
+		}
+	}
+
 	target := percentile * float64(totalCount)
 	var prevCount float64
 	var prevBound float64
@@ -383,9 +407,13 @@ func histogramPercentile(mf *dto.MetricFamily, percentile float64) float64 {
 		prevBound = b.upperBound
 	}
 
-	// If we didn't find a bucket, return the last upper bound.
+	// Target lies in the +Inf bucket — i.e. samples exceed every finite
+	// bucket's upper bound. Return +Inf so callers comparing against a
+	// latency threshold correctly observe a breach. Earlier versions
+	// returned the largest finite bound, which silently underreported
+	// tail-latency violations.
 	if len(buckets) > 0 {
-		return buckets[len(buckets)-1].upperBound
+		return math.Inf(1)
 	}
 	return math.NaN()
 }

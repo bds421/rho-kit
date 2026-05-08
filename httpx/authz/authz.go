@@ -139,26 +139,6 @@ func SubjectFromUntrustedHeader(header string) SubjectFunc {
 	}
 }
 
-// SubjectFromHeader returns a SubjectFunc that reads a header value.
-//
-// Deprecated: SubjectFromHeader trusts a request header that any client can
-// spoof. Use [SubjectFromTrustedHeader] (with a trusted-proxy CIDR list) or
-// [SubjectFromContext] (with an auth-middleware extractor) instead. This
-// function is kept as a thin alias of [SubjectFromUntrustedHeader] and emits
-// a WARN log on every construction so the misuse is visible in operator
-// log streams (not just once per process — the previous sync.Once gate was
-// too quiet, since operators reading logs would only ever see one entry
-// regardless of how many spoof-able subject extractors the service had
-// wired). Construct this function from a one-off init() and the warning
-// fires once; construct it from a per-request hot path and the warning
-// fires per-request.
-func SubjectFromHeader(header string) SubjectFunc {
-	slog.Warn("authz: SubjectFromHeader is deprecated and trusts a spoofable header; use SubjectFromTrustedHeader or SubjectFromContext",
-		"header", header,
-	)
-	return SubjectFromUntrustedHeader(header)
-}
-
 // SubjectFromTrustedHeader returns a SubjectFunc that reads a header value
 // only when r.RemoteAddr falls within the supplied trustedProxies CIDR list.
 // When the request did not arrive via a trusted proxy, the extractor returns

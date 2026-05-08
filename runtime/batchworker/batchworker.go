@@ -132,10 +132,14 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 // Implements the lifecycle.Component interface.
 func (w *Worker) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	// Set cancel + started together under a single lock so a concurrent
+	// Stop sees both as a unit. Without this, Stop could observe
+	// started=false right after Start has set it, then later Start would
+	// install a cancel that nothing ever invokes.
 	w.mu.Lock()
 	w.cancel = cancel
-	w.mu.Unlock()
 	w.started.Store(true)
+	w.mu.Unlock()
 	defer cancel()
 
 	w.logger.Info("batch worker started", "name", w.name, "interval", w.interval)
@@ -173,13 +177,14 @@ func (w *Worker) Start(ctx context.Context) error {
 // in-flight batch may still be running until the per-batch timeout completes.
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
-	if !w.started.Load() {
+	w.mu.Lock()
+	started := w.started.Load()
+	cancel := w.cancel
+	w.mu.Unlock()
+	if !started {
 		w.doneOnce.Do(func() { close(w.done) })
 		return nil
 	}
-	w.mu.Lock()
-	cancel := w.cancel
-	w.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
@@ -237,6 +242,17 @@ func (w *Worker) nextDelay() time.Duration {
 	if maxJitter <= 0 {
 		return w.interval
 	}
-	jitterDuration := time.Duration(rand.Int64N(int64(maxJitter)))
-	return w.interval + jitterDuration
+	// Symmetric jitter centered on interval: distribute uniformly across
+	// [-maxJitter, +maxJitter]. Earlier versions only added jitter
+	// (interval ≥ true), which prevents thundering-herd on the upper edge
+	// but lets the cluster drift later than the configured interval.
+	span := int64(maxJitter) * 2
+	offset := time.Duration(rand.Int64N(span)) - maxJitter
+	d := w.interval + offset
+	if d <= 0 {
+		// Pathological case: jitter > 100% can produce a non-positive
+		// interval. Floor to 1ns so the timer fires immediately.
+		return time.Nanosecond
+	}
+	return d
 }

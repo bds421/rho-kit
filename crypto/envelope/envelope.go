@@ -44,12 +44,13 @@ package envelope
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/tink-crypto/tink-go/v2/aead/subtle"
+	"github.com/tink-crypto/tink-go/v2/tink"
 )
 
 // blobMagic is the 3-byte header prefix that identifies an envelope blob.
@@ -146,23 +147,24 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 
 	header := buildHeader(keyID, wrapped)
 
-	nonce := make([]byte, nonceLen)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("envelope: read nonce: %w", err)
-	}
-
-	gcm, err := newGCM(dek)
+	bodyAEAD, err := newBodyAEAD(dek)
 	if err != nil {
 		return nil, err
 	}
 
-	combined := combineAAD(aad)
-	ct := gcm.Seal(nil, nonce, plaintext, combined)
+	// Tink's Encrypt prepends a fresh 12-byte IV to its output, so
+	// the returned slice already has the layout the envelope stores
+	// in its body segment ("iv ‖ ct ‖ tag"). No separate nonce write
+	// is needed — the format on disk is identical to the pre-Tink
+	// implementation that called gcm.Seal(nonce, …).
+	sealed, err := bodyAEAD.Encrypt(plaintext, combineAAD(aad))
+	if err != nil {
+		return nil, fmt.Errorf("envelope: seal body: %w", err)
+	}
 
-	out := make([]byte, 0, len(header)+nonceLen+len(ct))
+	out := make([]byte, 0, len(header)+len(sealed))
 	out = append(out, header...)
-	out = append(out, nonce...)
-	out = append(out, ct...)
+	out = append(out, sealed...)
 	return out, nil
 }
 
@@ -177,8 +179,6 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 	if len(body) < nonceLen {
 		return nil, ErrTruncated
 	}
-	nonce := body[:nonceLen]
-	ct := body[nonceLen:]
 
 	dek, err := e.kek.Unwrap(ctx, keyID, wrapped)
 	if err != nil {
@@ -189,13 +189,16 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 		return nil, fmt.Errorf("envelope: DEK length %d != %d", len(dek), dekLen)
 	}
 
-	gcm, err := newGCM(dek)
+	bodyAEAD, err := newBodyAEAD(dek)
 	if err != nil {
 		return nil, err
 	}
-	combined := combineAAD(aad)
 
-	pt, err := gcm.Open(nil, nonce, ct, combined)
+	// body has the layout Tink expects ("iv ‖ ct ‖ tag"). Decrypt
+	// fails closed on tampered ciphertext, swapped wrap headers
+	// (wrong DEK), or AAD mismatch — see package doc for the
+	// rationale on why the wrap header is excluded from the body AAD.
+	pt, err := bodyAEAD.Decrypt(body, combineAAD(aad))
 	if err != nil {
 		return nil, ErrAuthFailed
 	}
@@ -320,14 +323,14 @@ func zeroBytes(b []byte) {
 	}
 }
 
-func newGCM(key []byte) (cipher.AEAD, error) {
-	block, err := aes.NewCipher(key)
+// newBodyAEAD returns a Tink-backed AES-256-GCM primitive over the
+// supplied DEK. Tink uses RFC 5116 §5.1 layout with a 12-byte IV and
+// 16-byte tag — byte-identical to stdlib cipher.AEAD output, so blobs
+// produced by the pre-Tink implementation decrypt unchanged.
+func newBodyAEAD(dek []byte) (tink.AEAD, error) {
+	a, err := subtle.NewAESGCM(dek)
 	if err != nil {
-		return nil, fmt.Errorf("envelope: aes new cipher: %w", err)
+		return nil, fmt.Errorf("envelope: build AEAD: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("envelope: gcm new: %w", err)
-	}
-	return gcm, nil
+	return a, nil
 }

@@ -8,4 +8,6 @@
 //	handler := cors.New(cors.Options{
 //	    AllowedOrigins: []string{"https://example.com"},
 //	})(myHandler)
+//
+// asvs: V13.2.1
 package cors

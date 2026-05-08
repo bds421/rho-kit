@@ -10,23 +10,34 @@ import (
 )
 
 // Load reads a JSON-encoded value from path. Returns the zero value of T
-// if the file does not exist (first run).
-func Load[T any](path string) (T, error) {
-	var zero T
+// if the file does not exist (first run). The existence flag lets
+// callers distinguish "file missing" from "file present and decoded as
+// zero-value" (e.g. an integer counter that was legitimately persisted
+// as 0).
+//
+// Use [LoadOrZero] when the distinction is irrelevant.
+func Load[T any](path string) (value T, exists bool, err error) {
+	data, readErr := os.ReadFile(path)
+	if errors.Is(readErr, os.ErrNotExist) {
+		return value, false, nil
+	}
+	if readErr != nil {
+		return value, false, fmt.Errorf("read state file: %w", readErr)
+	}
 
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return zero, nil
+	if uErr := json.Unmarshal(data, &value); uErr != nil {
+		var zero T
+		return zero, false, fmt.Errorf("unmarshal state: %w", uErr)
 	}
-	if err != nil {
-		return zero, fmt.Errorf("read state file: %w", err)
-	}
+	return value, true, nil
+}
 
-	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
-		return zero, fmt.Errorf("unmarshal state: %w", err)
-	}
-	return v, nil
+// LoadOrZero is the convenience wrapper that drops the exists flag.
+// Use this when "missing" and "decoded zero-value" are interchangeable
+// for your caller.
+func LoadOrZero[T any](path string) (T, error) {
+	v, _, err := Load[T](path)
+	return v, err
 }
 
 // Save persists a JSON-encoded value to path using atomic write
@@ -48,10 +59,22 @@ func Save[T any](path string, v T) error {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 
+	// Refuse to follow a symlink at the destination. An attacker with
+	// write access to the parent dir could otherwise plant a symlink
+	// at `path` pointing at a sensitive target (e.g. /etc/passwd) and
+	// trick Save into clobbering it. lstat does not follow links, so
+	// this catches the case before we open the temp file.
+	if info, lerr := os.Lstat(path); lerr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlink at %s", path)
+		}
+	}
+
 	// Capture existing mode before we replace it. Missing target is fine —
-	// new files will use the temp-file default (0600).
+	// new files will use the temp-file default (0600). Use Lstat so we
+	// inspect the path itself, not a symlink target.
 	var preserveMode os.FileMode
-	if info, statErr := os.Stat(path); statErr == nil {
+	if info, statErr := os.Lstat(path); statErr == nil {
 		preserveMode = info.Mode().Perm()
 	}
 

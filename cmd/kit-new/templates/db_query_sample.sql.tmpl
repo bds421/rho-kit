@@ -1,0 +1,29 @@
+-- Sample sqlc queries for {{.ServiceName}}. Replace with your own.
+--
+-- Each query annotation (`-- name: Foo :one|:many|:exec`) maps to a
+-- generated method on the queries struct. `:one` returns a single
+-- struct, `:many` returns a slice, `:exec` returns nothing useful.
+--
+-- Parameters use Postgres positional placeholders ($1, $2, ...). sqlc
+-- types them based on the schema; mismatched types fail at generate
+-- time, not at first query.
+
+-- name: GetUser :one
+SELECT id, email, created_at
+FROM users
+WHERE id = $1;
+
+-- name: ListUsers :many
+SELECT id, email, created_at
+FROM users
+ORDER BY created_at DESC
+LIMIT $1
+OFFSET $2;
+
+-- name: CreateUser :one
+INSERT INTO users (id, email, created_at)
+VALUES ($1, $2, NOW())
+RETURNING id, email, created_at;
+
+-- name: DeleteUser :exec
+DELETE FROM users WHERE id = $1;

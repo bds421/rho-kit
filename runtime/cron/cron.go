@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -21,9 +22,10 @@ type Scheduler struct {
 	logger  *slog.Logger
 	metrics *metrics
 
-	mu     sync.RWMutex // protects ctx and cancel against the Start/Stop/wrapJob race
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu      sync.RWMutex // protects ctx and cancel against the Start/Stop/wrapJob race
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started bool // set under mu inside Start; rejects re-entry
 
 	jobTimeouts map[string]time.Duration // per-job timeout; nil/missing = inherit scheduler ctx
 
@@ -132,8 +134,18 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 
 // Start begins running scheduled jobs and blocks until ctx is cancelled.
 // Implements the lifecycle.Component interface.
+//
+// Returns an error if Start has already been called on this Scheduler.
+// A Scheduler is intentionally one-shot: a second Start would race the
+// previous Start's still-live context against in-progress wrapJob
+// closures that captured the old ctx pointer.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("cron: Scheduler already started")
+	}
+	s.started = true
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	startedCtx := s.ctx
 	s.mu.Unlock()

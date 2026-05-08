@@ -118,6 +118,12 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		}
 	}
 
+	// User-uploaded content is served back with the metadata-recorded
+	// Content-Type. Force browsers to honor that type instead of sniffing —
+	// a polyglot upload (PNG header + JS payload) served as image/png
+	// would otherwise be sniffed-and-executed by older browsers.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	// If the reader supports seeking, use http.ServeContent for Range support.
 	// http.ServeContent handles If-Modified-Since and Range internally.
 	if rs, ok := rc.(io.ReadSeeker); ok {

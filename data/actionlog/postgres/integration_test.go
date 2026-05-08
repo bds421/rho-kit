@@ -8,14 +8,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	gormpostgres "gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/bds421/rho-kit/data/actionlog"
 )
@@ -39,26 +38,34 @@ func startPostgres(t *testing.T) string {
 	return dsn
 }
 
-func openAndMigrate(t *testing.T, dsn string) *gorm.DB {
+func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
-	db, err := gorm.Open(gormpostgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
-	require.NoError(t, err)
+	ctx := context.Background()
 
-	sqlDB, err := db.DB()
+	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	// goose runs against *sql.DB; pgx exposes a sql.DB-compatible adapter
+	// via stdlib.OpenDBFromPool. We use it only for the migration step,
+	// then drop the *sql.DB handle. The pgxpool below remains the live
+	// connection pool used by the store.
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
 	sub, err := fs.Sub(Migrations, "migrations")
 	require.NoError(t, err)
 	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, sub)
 	require.NoError(t, err)
-	_, err = provider.Up(context.Background())
+	_, err = provider.Up(ctx)
 	require.NoError(t, err)
-	return db
+	return pool
 }
 
 func TestPostgres_Live_RoundTrip(t *testing.T) {
 	dsn := startPostgres(t)
-	db := openAndMigrate(t, dsn)
-	store := New(db)
+	pool := openAndMigrate(t, dsn)
+	store := New(pool)
 	logger := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))
@@ -80,8 +87,8 @@ func TestPostgres_Live_RoundTrip(t *testing.T) {
 
 func TestPostgres_Live_TamperDetected(t *testing.T) {
 	dsn := startPostgres(t)
-	db := openAndMigrate(t, dsn)
-	store := New(db)
+	pool := openAndMigrate(t, dsn)
+	store := New(pool)
 	log := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))
@@ -93,10 +100,13 @@ func TestPostgres_Live_TamperDetected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reach in with raw SQL — DBA-with-edit-rights model.
-	require.NoError(t, db.Exec(
-		"UPDATE action_log_entries SET actor = ? WHERE id = ?",
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = sqlDB.Close() }()
+	_, err = sqlDB.Exec(
+		"UPDATE action_log_entries SET actor = $1 WHERE id = $2",
 		"impostor", written.ID,
-	).Error)
+	)
+	require.NoError(t, err)
 
 	_, err = log.Get(context.Background(), written.ID)
 	assert.ErrorIs(t, err, actionlog.ErrSignatureInvalid)
@@ -110,8 +120,8 @@ func TestPostgres_Live_TamperDetected(t *testing.T) {
 // AppendChained makes the build+persist atomic from the first row on.
 func TestPostgres_Live_ConcurrentFirstAppend(t *testing.T) {
 	dsn := startPostgres(t)
-	db := openAndMigrate(t, dsn)
-	store := New(db)
+	pool := openAndMigrate(t, dsn)
+	store := New(pool)
 	log := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))

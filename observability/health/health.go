@@ -1,3 +1,4 @@
+// asvs: V8.2.2, V14.1.1
 package health
 
 import (
@@ -49,6 +50,13 @@ type DependencyCheck struct {
 
 	// Critical means an unhealthy result triggers HTTP 503.
 	Critical bool
+
+	// Timeout caps how long Check may run. Zero/negative falls back to
+	// [defaultCheckTimeout] (3s). Tune lower for fast in-cluster
+	// dependencies (Redis, Postgres) so kubelet probes don't queue,
+	// higher for cross-region calls. The check goroutine receives a
+	// cancelled context when the timeout fires.
+	Timeout time.Duration
 }
 
 // Response is the standard health endpoint JSON envelope.
@@ -266,7 +274,11 @@ const defaultCheckTimeout = 3 * time.Second
 // well-behaved checks to abort. The goroutine is cleaned up by GC once it
 // returns.
 func runCheck(ctx context.Context, dc DependencyCheck) string {
-	checkCtx, cancel := context.WithTimeout(ctx, defaultCheckTimeout)
+	timeout := dc.Timeout
+	if timeout <= 0 {
+		timeout = defaultCheckTimeout
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	done := make(chan string, 1)
@@ -284,7 +296,7 @@ func runCheck(ctx context.Context, dc DependencyCheck) string {
 	case s := <-done:
 		return s
 	case <-checkCtx.Done():
-		slog.Warn("health check timed out", "check", dc.Name, "timeout", defaultCheckTimeout)
+		slog.Warn("health check timed out", "check", dc.Name, "timeout", timeout)
 		return StatusUnhealthy
 	}
 }

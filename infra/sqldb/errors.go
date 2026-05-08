@@ -6,14 +6,15 @@ import (
 	"strings"
 )
 
-// ErrorClassifier provides driver-specific error classification.
-// Each database provider package (gormdb/gormpostgres, gormdb/gormmysql)
-// implements this interface using the native driver error types for
-// precise matching without string-based heuristics.
+// ErrorClassifier provides PostgreSQL-specific error classification.
+// The pgx adapter implements this interface using native pgconn.PgError
+// SQLSTATE codes for precise matching without string-based heuristics.
 //
-// Services that want exact error classification should use the classifier
-// returned by their provider package. The package-level Is*Error functions
-// use string-based fallback that works without any driver import.
+// Services that want exact error classification should obtain the
+// classifier from their pgx provider. The package-level Is*Error
+// functions use string-based fallback that works without any driver
+// import — useful for tests and for callers wrapping pgx errors at
+// the boundary.
 type ErrorClassifier interface {
 	IsDuplicateKey(err error) bool
 	IsForeignKey(err error) bool
@@ -21,20 +22,19 @@ type ErrorClassifier interface {
 	IsSerialization(err error) bool
 }
 
-// IsDuplicateKeyError returns true if the error represents a unique constraint
-// violation. Uses string-based heuristics that work for both PostgreSQL and MySQL
-// without importing driver packages.
+// IsDuplicateKeyError returns true if the error represents a unique
+// constraint violation. Uses string-based heuristics so it works
+// without importing pgx.
 //
-// WARNING: String matching is locale-sensitive — non-English database installations
-// may return different error messages. For production use, prefer the typed
-// [ErrorClassifier] from gormdb/gormpostgres or gormdb/gormmysql which matches
-// on native error codes (SQLSTATE / MySQL error numbers).
+// WARNING: String matching is locale-sensitive — non-English Postgres
+// installations may return different error messages. For production
+// use, prefer the typed [ErrorClassifier] from the pgx provider which
+// matches on SQLSTATE codes (23505 for unique violation).
 func IsDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
-	return strings.Contains(s, "duplicate key") || strings.Contains(s, "Duplicate entry")
+	return strings.Contains(err.Error(), "duplicate key")
 }
 
 // IsForeignKeyError returns true if the error represents a foreign key
@@ -46,8 +46,8 @@ func IsForeignKeyError(err error) bool {
 	return strings.Contains(err.Error(), "foreign key constraint")
 }
 
-// IsNotNullError returns true if the error represents a NOT NULL constraint
-// violation.
+// IsNotNullError returns true if the error represents a NOT NULL
+// constraint violation.
 func IsNotNullError(err error) bool {
 	if err == nil {
 		return false
@@ -55,14 +55,14 @@ func IsNotNullError(err error) bool {
 	return strings.Contains(err.Error(), "not-null constraint")
 }
 
-// IsSerializationError returns true if the error represents a transaction
-// serialization failure that should be retried.
+// IsSerializationError returns true if the error represents a
+// transaction serialization failure that should be retried
+// (Postgres SQLSTATE 40001).
 func IsSerializationError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
-	return strings.Contains(s, "serialization failure") || strings.Contains(s, "Deadlock found")
+	return strings.Contains(err.Error(), "serialization failure")
 }
 
 // IsNotFound returns true if the error is sql.ErrNoRows.

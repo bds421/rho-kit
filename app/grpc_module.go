@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/bds421/rho-kit/grpcx"
@@ -24,10 +26,20 @@ type grpcModule struct {
 	registrar func(*grpc.Server)
 	addr      string
 	opts      []grpcx.ServerOption
+	tlsConfig *tls.Config // injected by Builder.Run when the kit's serverTLS is non-nil
 
 	// initialized during Init
 	server *grpc.Server
 	logger *slog.Logger
+}
+
+// setTLSConfig is called by [Builder.Run] when the kit-level TLS
+// configuration is active. The module prepends the credentials option
+// onto the caller-supplied opts so the gRPC server inherits the same
+// TLS surface as the HTTP server — services that set TLS_CERT/TLS_KEY
+// don't silently run plaintext gRPC.
+func (m *grpcModule) setTLSConfig(cfg *tls.Config) {
+	m.tlsConfig = cfg
 }
 
 // NewGRPCModule creates a module that runs a gRPC server.
@@ -59,7 +71,16 @@ func newGRPCModule(registrar func(*grpc.Server), addr string, opts []grpcx.Serve
 func (m *grpcModule) Init(_ context.Context, mc ModuleContext) error {
 	m.logger = mc.Logger
 
-	m.server = grpcx.NewServer(m.opts...)
+	opts := m.opts
+	if m.tlsConfig != nil {
+		// Prepend the credentials option so caller overrides still win
+		// (the last grpc.Creds applied is what gRPC uses).
+		creds := credentials.NewTLS(m.tlsConfig)
+		opts = append([]grpcx.ServerOption{grpcx.WithGRPCServerOptions(grpc.Creds(creds))}, m.opts...)
+		mc.Logger.Info("gRPC server TLS auto-wired from kit serverTLS")
+	}
+
+	m.server = grpcx.NewServer(opts...)
 	m.registrar(m.server)
 
 	mc.Logger.Info("gRPC server configured", "addr", m.addr)

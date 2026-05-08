@@ -9,6 +9,8 @@
 //
 // Place this middleware as the OUTERMOST layer in the chain so that panics
 // in any subsequent middleware are caught. stack.Default does this for you.
+//
+// asvs: V7.1.1, V14.4.1
 package recover
 
 import (

@@ -6,7 +6,7 @@ import "context"
 type requestID string
 
 // ridKey is the context key for request IDs.
-var ridKey Key[requestID]
+var ridKey = NewKey[requestID]("request_id")
 
 // SetRequestID stores a request ID in the context.
 func SetRequestID(ctx context.Context, id string) context.Context {

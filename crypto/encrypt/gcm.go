@@ -1,51 +1,50 @@
 package encrypt
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"errors"
 	"fmt"
-	"io"
+
+	"github.com/tink-crypto/tink-go/v2/aead/subtle"
+	"github.com/tink-crypto/tink-go/v2/tink"
 )
 
-// NewGCM creates an AES-256-GCM cipher from a 32-byte key.
-// This is the shared primitive used by both [FieldEncryptor] (string-level)
-// and storage encryption (byte-level).
+// AEAD is the kit's authenticated-encryption interface — a thin
+// re-export of [tink.AEAD] so callers don't need to import Tink to
+// hold an encryptor. The type identity is the same as Tink's, so a
+// value returned by [NewGCM] satisfies any function signature that
+// expects either form.
 //
-// The key slice is copied internally. The internal copy is zeroed after
-// the cipher is created; the caller's original is not modified.
-func NewGCM(key []byte) (cipher.AEAD, error) {
+// Encrypt(plaintext, associatedData) returns "iv ‖ ciphertext ‖ tag"
+// in RFC 5116 §5.1 layout. Decrypt expects the same layout. There is
+// no Tink output prefix — the on-disk format is byte-identical to the
+// stdlib cipher.AEAD layout the kit shipped before v2.
+type AEAD = tink.AEAD
+
+// NewGCM creates an AES-256-GCM AEAD primitive from a 32-byte key,
+// backed by Google Tink. The wire format ("iv ‖ ct ‖ tag", 12-byte
+// IV, 16-byte tag) matches the stdlib cipher.AEAD output the kit
+// shipped before v2 — existing ciphertext decrypts unchanged.
+//
+// The caller's key slice is copied internally; the caller may zero
+// or reuse its slice immediately after this call returns.
+func NewGCM(key []byte) (AEAD, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("encrypt: key must be 32 bytes, got %d", len(key))
 	}
-	// Copy the key so zeroing the internal copy doesn't affect the caller.
-	keyCopy := make([]byte, 32)
-	copy(keyCopy, key)
-
-	block, err := aes.NewCipher(keyCopy)
+	a, err := subtle.NewAESGCM(key)
 	if err != nil {
-		zeroBytes(keyCopy)
-		return nil, fmt.Errorf("encrypt: create AES cipher: %w", err)
+		return nil, fmt.Errorf("encrypt: create AES-256-GCM: %w", err)
 	}
-	// Zero the copy — the AES block cipher has already expanded the key
-	// into its internal round-key schedule.
-	zeroBytes(keyCopy)
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt: create GCM: %w", err)
-	}
-	return gcm, nil
+	return a, nil
 }
 
-// NewGCMAndZeroKey creates an AES-256-GCM cipher and zeros the caller's key
-// slice after copying it internally. Use this when the caller does not need
-// to retain the key material after creating the cipher.
-func NewGCMAndZeroKey(key []byte) (cipher.AEAD, error) {
-	gcm, err := NewGCM(key)
+// NewGCMAndZeroKey creates an AES-256-GCM AEAD and zeros the
+// caller's key slice after Tink has copied it internally. Use this
+// when the caller does not need to retain the key material after
+// constructing the cipher.
+func NewGCMAndZeroKey(key []byte) (AEAD, error) {
+	a, err := NewGCM(key)
 	zeroBytes(key)
-	return gcm, err
+	return a, err
 }
 
 // zeroBytes overwrites a byte slice with zeros.
@@ -55,45 +54,37 @@ func zeroBytes(b []byte) {
 }
 
 // SealBytes encrypts plaintext using AES-256-GCM and returns
-// [nonce || ciphertext+tag]. A fresh random nonce is generated for each call.
+// "iv ‖ ciphertext ‖ tag". A fresh random IV is generated per call.
 // Equivalent to [SealBytesAAD] with nil AAD.
-func SealBytes(gcm cipher.AEAD, plaintext []byte) ([]byte, error) {
-	return SealBytesAAD(gcm, plaintext, nil)
+func SealBytes(a AEAD, plaintext []byte) ([]byte, error) {
+	return SealBytesAAD(a, plaintext, nil)
 }
 
-// SealBytesAAD encrypts plaintext using AES-256-GCM with associated data
-// (AAD). The AAD is authenticated but not encrypted — it must be supplied
+// SealBytesAAD encrypts plaintext with associated data (AAD). The
+// AAD is authenticated but not encrypted — it must be supplied
 // identically at Open time. Use this to bind ciphertext to a stable
-// out-of-band identifier (e.g. row primary key, tenant ID, file path) so a
-// ciphertext copy-pasted into a different row fails authentication.
-func SealBytesAAD(gcm cipher.AEAD, plaintext, aad []byte) ([]byte, error) {
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("encrypt: generate nonce: %w", err)
+// out-of-band identifier (row primary key, tenant ID, file path) so
+// a ciphertext copy-pasted into a different row fails authentication.
+func SealBytesAAD(a AEAD, plaintext, aad []byte) ([]byte, error) {
+	out, err := a.Encrypt(plaintext, aad)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt: seal: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, plaintext, aad), nil
+	return out, nil
 }
 
 // OpenBytes decrypts ciphertext produced by [SealBytes].
-// Expects the format [nonce || ciphertext+tag].
 // Equivalent to [OpenBytesAAD] with nil AAD.
-func OpenBytes(gcm cipher.AEAD, ciphertext []byte) ([]byte, error) {
-	return OpenBytesAAD(gcm, ciphertext, nil)
+func OpenBytes(a AEAD, ciphertext []byte) ([]byte, error) {
+	return OpenBytesAAD(a, ciphertext, nil)
 }
 
-// OpenBytesAAD decrypts ciphertext produced by [SealBytesAAD]. The AAD must
-// match the value supplied at Seal time exactly; mismatch produces an
-// authentication error indistinguishable from a tampered ciphertext.
-func OpenBytesAAD(gcm cipher.AEAD, ciphertext, aad []byte) ([]byte, error) {
-	nonceSize := gcm.NonceSize()
-	// Ciphertext must contain at least nonce + authentication tag (overhead).
-	// Without this, gcm.Open would receive an empty or too-short ciphertext
-	// and return a generic decryption error instead of a clear size check.
-	minLen := nonceSize + gcm.Overhead()
-	if len(ciphertext) < minLen {
-		return nil, errors.New("encrypt: ciphertext too short")
-	}
-	plaintext, err := gcm.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], aad)
+// OpenBytesAAD decrypts ciphertext produced by [SealBytesAAD]. The
+// AAD must match the value supplied at Seal time exactly; mismatch
+// produces an authentication error indistinguishable from a tampered
+// ciphertext.
+func OpenBytesAAD(a AEAD, ciphertext, aad []byte) ([]byte, error) {
+	plaintext, err := a.Decrypt(ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: decrypt: %w", err)
 	}

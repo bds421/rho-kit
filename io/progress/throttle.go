@@ -20,21 +20,17 @@ import (
 // This means the first chunk after idle may be delivered at full speed before
 // the throttle kicks in. This is by design to prevent accumulated credit.
 //
-// For context-cancellation-aware throttling, use [NewThrottledReaderContext].
+// Equivalent to [NewThrottledReaderContext] with [context.Background],
+// but the throttle's internal sleep still uses a context-aware timer so
+// programs that depend on interrupting reads should pass an explicit
+// ctx via [NewThrottledReaderContext].
 //
 // Usage:
 //
 //	tr := progress.NewThrottledReader(reader, 1<<20) // 1 MiB/s
 //	io.Copy(dst, tr)
 func NewThrottledReader(r io.Reader, bytesPerSecond int64) io.Reader {
-	if bytesPerSecond <= 0 {
-		return r
-	}
-	return &throttledReader{
-		r:              r,
-		bytesPerSecond: bytesPerSecond,
-		lastTime:       time.Now(),
-	}
+	return NewThrottledReaderContext(context.Background(), r, bytesPerSecond)
 }
 
 // NewThrottledReaderContext wraps an io.Reader with rate limiting and context
@@ -109,21 +105,21 @@ func (t *throttledReader) Read(p []byte) (int, error) {
 	}
 
 	if wait := expectedDuration - elapsed; wait > 0 {
-		if t.ctx != nil {
-			timer := time.NewTimer(wait)
-			select {
-			case <-t.ctx.Done():
-				timer.Stop()
-				// Preserve the upstream error (e.g. io.EOF) when it's already set.
-				// Without this, callers never see EOF and may spin on the next Read.
-				if err != nil {
-					return n, err
-				}
-				return n, t.ctx.Err()
-			case <-timer.C:
+		ctx := t.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			// Preserve the upstream error (e.g. io.EOF) when it's already set.
+			// Without this, callers never see EOF and may spin on the next Read.
+			if err != nil {
+				return n, err
 			}
-		} else {
-			time.Sleep(wait)
+			return n, ctx.Err()
+		case <-timer.C:
 		}
 	}
 

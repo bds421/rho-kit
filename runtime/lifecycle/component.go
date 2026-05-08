@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 )
@@ -53,14 +54,23 @@ type FuncComponent struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when StartFn returns
+	started bool          // set under mu; rejects re-entry
 }
 
 func (f *FuncComponent) Start(ctx context.Context) error {
 	if f.StartFn == nil {
 		panic("lifecycle: FuncComponent.StartFn must not be nil")
 	}
-	ctx, cancel := context.WithCancel(ctx)
 	f.mu.Lock()
+	if f.started {
+		f.mu.Unlock()
+		// Re-Start would overwrite f.done, breaking any concurrent Stop
+		// awaiting the previous run's completion. FuncComponent is
+		// intentionally one-shot.
+		return errors.New("lifecycle: FuncComponent already started")
+	}
+	f.started = true
+	ctx, cancel := context.WithCancel(ctx)
 	f.cancel = cancel
 	f.done = make(chan struct{})
 	f.mu.Unlock()

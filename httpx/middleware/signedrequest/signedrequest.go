@@ -17,6 +17,8 @@
 // Replay protection requires a [NonceStore]. The middleware refuses
 // to start without one: replay-vulnerable signing is worse than no
 // signing because operators assume protection that isn't there.
+//
+// asvs: V13.1.1, V13.2.3, V11.1.2
 package signedrequest
 
 import (

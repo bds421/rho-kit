@@ -6,7 +6,7 @@ import "context"
 type correlationID string
 
 // cidKey is the context key for correlation IDs.
-var cidKey Key[correlationID]
+var cidKey = NewKey[correlationID]("correlation_id")
 
 // SetCorrelationID stores a correlation ID in the context.
 func SetCorrelationID(ctx context.Context, id string) context.Context {

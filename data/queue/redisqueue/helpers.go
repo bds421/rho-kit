@@ -85,6 +85,62 @@ func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) (bool
 	return n == 1, nil
 }
 
+// retryAndRemoveScript atomically RPUSHes the retry payload onto the
+// queue and tombstones the original from the processing list. The
+// previous (non-atomic) Go-side sequence opened a window where the
+// retry copy could land on the queue while the original lingered in
+// processing — a peer reaper could then re-handle the original,
+// producing a duplicate.
+//
+//	KEYS[1] = queue (re-enqueue target)
+//	KEYS[2] = processing list (where original lives)
+//	ARGV[1] = retry payload bytes (already attempt+1)
+//	ARGV[2] = message ID to tombstone
+var retryAndRemoveScript = goredis.NewScript(`
+redis.call('RPUSH', KEYS[1], ARGV[1])
+local items = redis.call('LRANGE', KEYS[2], 0, -1)
+for i = 1, #items do
+	local ok, decoded = pcall(cjson.decode, items[i])
+	if ok and type(decoded) == 'table' and decoded.id == ARGV[2] then
+		local sentinel = '__rho-tombstone__:' .. KEYS[2] .. ':' .. ARGV[2] .. ':' .. tostring(i)
+		redis.call('LSET', KEYS[2], i - 1, sentinel)
+		redis.call('LREM', KEYS[2], 1, sentinel)
+		return 1
+	end
+end
+return 0
+`)
+
+// deadLetterAndRemoveScript atomically LPUSHes the message onto the
+// dead-letter queue, applies the LTRIM cap (when configured), and
+// tombstones the original from the processing list — eliminating the
+// window where a peer reaper could re-handle the original after the
+// dead-letter LPUSH but before the LRem.
+//
+//	KEYS[1] = dead-letter queue
+//	KEYS[2] = processing list
+//	ARGV[1] = payload bytes
+//	ARGV[2] = message ID
+//	ARGV[3] = max dead-letter list size (0 to disable LTRIM)
+var deadLetterAndRemoveScript = goredis.NewScript(`
+redis.call('LPUSH', KEYS[1], ARGV[1])
+local maxLen = tonumber(ARGV[3])
+if maxLen and maxLen > 0 then
+	redis.call('LTRIM', KEYS[1], 0, maxLen - 1)
+end
+local items = redis.call('LRANGE', KEYS[2], 0, -1)
+for i = 1, #items do
+	local ok, decoded = pcall(cjson.decode, items[i])
+	if ok and type(decoded) == 'table' and decoded.id == ARGV[2] then
+		local sentinel = '__rho-tombstone__:' .. KEYS[2] .. ':' .. ARGV[2] .. ':' .. tostring(i)
+		redis.call('LSET', KEYS[2], i - 1, sentinel)
+		redis.call('LREM', KEYS[2], 1, sentinel)
+		return 1
+	end
+end
+return 0
+`)
+
 // handleMessage processes a single queue message: unmarshal, handle, ack.
 // The processing-list entry is removed by message ID after the message is
 // either successfully handled or routed to retry/dead-letter. If post-
@@ -138,20 +194,14 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 
 	if handlerErr != nil {
 		q.metrics.messagesFailed.WithLabelValues(queue).Inc()
-		if !q.handleFailedMessage(ackCtx, queue, deadQ, data, msg, handlerErr) {
-			return // Message left in processing queue — recover on next pass.
-		}
-	} else {
-		q.metrics.messagesProcessed.WithLabelValues(queue).Inc()
+		// handleFailedMessage atomically removes from processing — no
+		// follow-up removeByID needed here.
+		_ = q.handleFailedMessage(ackCtx, queue, deadQ, processingQ, data, msg, handlerErr)
+		return
 	}
+	q.metrics.messagesProcessed.WithLabelValues(queue).Inc()
 
-	// Remove from processing queue only after successful dispatch to
-	// the next destination (success ACK, retry re-enqueue, or dead-letter).
-	//
-	// Note: there is a small crash window between the dispatch (RPUSH/LPUSH)
-	// and this removal. If the process crashes in that window, the message
-	// will exist in both queues and be reprocessed on recovery. This is why
-	// handlers MUST be idempotent (see Process godoc and doc.go).
+	// Remove from processing queue only after successful dispatch.
 	removed, remErr := q.removeByID(ackCtx, processingQ, msg.ID)
 	if remErr != nil {
 		q.logger.Error("failed to remove message from processing queue",
@@ -171,18 +221,25 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 }
 
 // handleFailedMessage routes a failed message to dead-letter or retry.
-// Returns true if the message was successfully routed (and can be removed from
-// the processing queue), false if it should be left for crash recovery.
-// Permanent errors (apperror.PermanentError) are immediately dead-lettered
-// without further retries, matching the stream consumer's behavior.
-func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, data string, msg Message, handlerErr error) bool {
+// Both paths atomically remove the original from the processing list,
+// so the caller MUST NOT also call removeByID — doing so would emit a
+// spurious "ack found no matching entry" warning.
+//
+// Returns true if the message was successfully routed (atomically
+// removed from processing), false if it should be left for crash
+// recovery (e.g. Redis transient error during the routing call).
+//
+// Permanent errors (apperror.PermanentError) are immediately
+// dead-lettered without further retries, matching the stream consumer's
+// behavior.
+func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, processingQ, data string, msg Message, handlerErr error) bool {
 	if apperror.IsPermanent(handlerErr) {
 		q.logger.Error("permanent error, dead-lettering message",
 			"queue", queue,
 			"msg_id", msg.ID,
 			"error", handlerErr,
 		)
-		return q.deadLetter(ctx, queue, deadQ, data, msg.ID)
+		return q.deadLetterAndRemove(ctx, queue, deadQ, processingQ, data, msg.ID)
 	}
 
 	if msg.Attempt >= q.maxRetries {
@@ -192,13 +249,14 @@ func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, data stri
 			"attempt", msg.Attempt,
 			"error", handlerErr,
 		)
-		return q.deadLetter(ctx, queue, deadQ, data, msg.ID)
+		return q.deadLetterAndRemove(ctx, queue, deadQ, processingQ, data, msg.ID)
 	}
 
 	// Re-enqueue to the TAIL of the queue (RPUSH) so other messages are
-	// processed before the retry, providing natural backoff. This prevents
-	// tight retry loops when a message consistently fails — there will always
-	// be at least a full queue cycle between attempts.
+	// processed before the retry, providing natural backoff. RPUSH and
+	// the tombstone-of-the-original are committed atomically by the Lua
+	// script, eliminating the duplicate-processing window the previous
+	// non-atomic Go-side sequence had under cancelled-ctx races.
 	//
 	// Immutable — creates a new struct with incremented attempt count.
 	retryMsg := Message{
@@ -216,34 +274,53 @@ func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, data stri
 		)
 		return false
 	}
-	if retryErr := q.client.RPush(ctx, queue, retryData).Err(); retryErr != nil {
-		q.logger.Error("failed to re-enqueue message, leaving in processing queue",
+	res, runErr := retryAndRemoveScript.Run(ctx, q.client, []string{queue, processingQ}, retryData, msg.ID).Result()
+	if runErr != nil && !errors.Is(runErr, goredis.Nil) {
+		q.logger.Error("retry-and-remove script failed",
 			"queue", queue,
 			"msg_id", msg.ID,
-			"error", retryErr,
+			"error", runErr,
 		)
 		return false
+	}
+	// 1 = original tombstoned (normal); 0 = original not found (peer
+	// already reclaimed it — still safe because the retry RPUSH ran
+	// inside the same atomic script).
+	if n, ok := res.(int64); ok && n == 0 {
+		q.logger.Warn("retry: original not found in processing list (already reclaimed by peer reaper)",
+			"queue", queue,
+			"msg_id", msg.ID,
+		)
 	}
 	q.metrics.messagesRetried.WithLabelValues(queue).Inc()
 	return true
 }
 
-// deadLetter atomically pushes data to the dead-letter queue and trims it.
-// Uses a pipeline for single-roundtrip atomicity, preventing concurrent
-// dead-lettering from silently dropping messages between LPush and LTrim.
-func (q *Queue) deadLetter(ctx context.Context, queue, deadQ, data, msgID string) bool {
-	pipe := q.client.Pipeline()
-	pipe.LPush(ctx, deadQ, data)
-	if q.deadLetterMax > 0 {
-		pipe.LTrim(ctx, deadQ, 0, q.deadLetterMax-1)
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
+// deadLetterAndRemove atomically dead-letters and tombstones the
+// original processing-list entry. Replaces the earlier non-atomic
+// pipeline-LPUSH + Go-side LTrim that left a window where a peer
+// could re-handle the original between the LPUSH and the eventual
+// removeByID.
+func (q *Queue) deadLetterAndRemove(ctx context.Context, queue, deadQ, processingQ, data, msgID string) bool {
+	res, err := deadLetterAndRemoveScript.Run(
+		ctx,
+		q.client,
+		[]string{deadQ, processingQ},
+		data, msgID, q.deadLetterMax,
+	).Result()
+	if err != nil && !errors.Is(err, goredis.Nil) {
 		q.logger.Error("failed to dead-letter message, leaving in processing queue",
 			"queue", queue,
 			"msg_id", msgID,
 			"error", err,
 		)
 		return false
+	}
+	if n, ok := res.(int64); ok && n == 0 {
+		q.logger.Warn("dead-letter: original not found in processing list (already reclaimed by peer reaper)",
+			"queue", queue,
+			"msg_id", msgID,
+		)
 	}
 	q.metrics.messagesDeadLettered.WithLabelValues(queue).Inc()
 	return true
@@ -277,38 +354,60 @@ const reapBatchSize int64 = 100
 const heartbeatRefreshTimeout = 5 * time.Second
 
 // refreshHeartbeat writes the heartbeat key with the configured TTL.
-// Errors are logged but not propagated — heartbeat misses are recoverable
-// (the peer reaper will rediscover us on the next refresh).
-func (q *Queue) refreshHeartbeat(ctx context.Context, heartbeatKey string) {
+// Returns nil on success and the underlying error on failure so the
+// caller can decide whether to keep retrying or escalate (for example,
+// abort processing so a peer can safely reap our processing list once
+// the TTL lapses).
+func (q *Queue) refreshHeartbeat(ctx context.Context, heartbeatKey string) error {
 	hbCtx, cancel := context.WithTimeout(ctx, heartbeatRefreshTimeout)
 	defer cancel()
 	if err := q.client.Set(hbCtx, heartbeatKey, "1", q.heartbeatTTL).Err(); err != nil {
 		// During shutdown the parent ctx may be cancelled; treat as benign.
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		q.logger.Warn("failed to refresh heartbeat",
 			"consumer_id", q.consumerID,
 			"error", err,
 		)
+		return err
 	}
+	return nil
 }
 
+// maxConsecutiveHeartbeatFailures bounds how many heartbeat refreshes
+// may fail in a row before the heartbeat loop stops trying. Once
+// crossed, the local consumer is treated as effectively dead so a peer
+// reaper can safely reclaim our processing list when the TTL lapses.
+const maxConsecutiveHeartbeatFailures = 3
+
 // heartbeatLoop refreshes the heartbeat key at heartbeatInterval. Stops on
-// ctx cancellation. Does NOT delete the key on shutdown — the TTL handles
-// that, and leaving the key alive briefly past shutdown is the correct
-// posture: it gives any in-flight processing-list entries to be re-popped
-// on restart by the same consumer ID (when WithConsumerID is used).
+// ctx cancellation OR after [maxConsecutiveHeartbeatFailures] consecutive
+// errors — at which point the next reaper pass will treat us as dead. Does
+// NOT delete the key on shutdown — the TTL handles that, and leaving the
+// key alive briefly past shutdown is the correct posture.
 func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string) {
 	ticker := time.NewTicker(q.heartbeatInterval)
 	defer ticker.Stop()
 
+	consecutiveFails := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			q.refreshHeartbeat(ctx, heartbeatKey)
+			if err := q.refreshHeartbeat(ctx, heartbeatKey); err != nil {
+				consecutiveFails++
+				if consecutiveFails >= maxConsecutiveHeartbeatFailures {
+					q.logger.Error("heartbeat loop giving up after consecutive failures; peer reaper will reclaim our processing list",
+						"consumer_id", q.consumerID,
+						"failures", consecutiveFails,
+					)
+					return
+				}
+				continue
+			}
+			consecutiveFails = 0
 		}
 	}
 }

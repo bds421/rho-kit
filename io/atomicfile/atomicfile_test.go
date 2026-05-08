@@ -14,7 +14,7 @@ type testState struct {
 }
 
 func TestLoad_MissingFile(t *testing.T) {
-	got, err := Load[testState](filepath.Join(t.TempDir(), "does-not-exist.json"))
+	got, err := LoadOrZero[testState](filepath.Join(t.TempDir(), "does-not-exist.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestLoad_CorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Load[testState](path)
+	_, err := LoadOrZero[testState](path)
 	if err == nil {
 		t.Fatal("expected error for corrupt file")
 	}
@@ -41,7 +41,7 @@ func TestLoad_ValidFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Load[testState](path)
+	got, err := LoadOrZero[testState](path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSave_Overwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Load[testState](path)
+	got, err := LoadOrZero[testState](path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Load[testState](path)
+	got, err := LoadOrZero[testState](path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestLoad_ReadPermissionError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(path, 0o644) }()
 
-	_, err := Load[testState](path)
+	_, err := LoadOrZero[testState](path)
 	if err == nil {
 		t.Fatal("expected error for unreadable file")
 	}
@@ -171,7 +171,7 @@ func TestLoad_EmptyJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Load[testState](path)
+	got, err := LoadOrZero[testState](path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSave_ComplexStruct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Load[nested](path)
+	got, err := LoadOrZero[nested](path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +245,23 @@ func TestSave_RenameFailure(t *testing.T) {
 }
 
 func TestSave_WriteErrorLargePayload(t *testing.T) {
+	// Skipped by default. RLIMIT_FSIZE is process-wide, so while this
+	// test is running it also blocks the Go test harness from writing
+	// to its own testlog.txt — every concurrently-running test in the
+	// same `go test` invocation aborts with "file too large". The
+	// test itself is correct (Save() correctly surfaces EFBIG), but
+	// it is incompatible with the surrounding harness.
+	//
+	// Set RUN_RLIMIT_TESTS=1 to opt in. Run it isolated:
+	//
+	//	RUN_RLIMIT_TESTS=1 go test -run TestSave_WriteErrorLargePayload ./io/atomicfile/...
+	//
+	// TestSave_ReadOnlyDir already covers the "Save handles write
+	// failure" path through a different OS-level mechanism (dir
+	// permissions), so coverage of the error branch is not lost.
+	if os.Getenv("RUN_RLIMIT_TESTS") == "" {
+		t.Skip("set RUN_RLIMIT_TESTS=1 to run; rlimit affects the test harness itself")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("skipping: root ignores rlimit")
 	}
@@ -279,7 +296,7 @@ func TestSave_PrimitiveTypes(t *testing.T) {
 	if err := Save(strPath, "hello world"); err != nil {
 		t.Fatalf("Save string: %v", err)
 	}
-	got, err := Load[string](strPath)
+	got, err := LoadOrZero[string](strPath)
 	if err != nil {
 		t.Fatalf("Load string: %v", err)
 	}
@@ -291,7 +308,7 @@ func TestSave_PrimitiveTypes(t *testing.T) {
 	if err := Save(intPath, 42); err != nil {
 		t.Fatalf("Save int: %v", err)
 	}
-	gotInt, err := Load[int](intPath)
+	gotInt, err := LoadOrZero[int](intPath)
 	if err != nil {
 		t.Fatalf("Load int: %v", err)
 	}
@@ -303,7 +320,7 @@ func TestSave_PrimitiveTypes(t *testing.T) {
 	if err := Save(nilPath, (*testState)(nil)); err != nil {
 		t.Fatalf("Save nil: %v", err)
 	}
-	gotNil, err := Load[*testState](nilPath)
+	gotNil, err := LoadOrZero[*testState](nilPath)
 	if err != nil {
 		t.Fatalf("Load nil: %v", err)
 	}

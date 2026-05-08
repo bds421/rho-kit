@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
@@ -24,7 +25,19 @@ type serverConfig struct {
 	disableRecovery    bool
 	recoveryLogger     *slog.Logger
 	defaultDeadline    time.Duration
+	disableDefaultDL   bool
+	disableLogging     bool
+	loggingLogger      *slog.Logger
+	disableMetrics     bool
+	metricsRegisterer  prometheus.Registerer
 }
+
+// DefaultRPCDeadline is the per-RPC deadline applied automatically by
+// [NewServer] when the caller does not configure one explicitly. It bounds
+// every handler so a streaming RPC or a unary RPC from a crashed client
+// cannot pin a goroutine indefinitely. Override with [WithDefaultDeadline]
+// or opt out with [WithoutDefaultDeadline].
+const DefaultRPCDeadline = 30 * time.Second
 
 const (
 	// defaultMaxRecvMsgSize is 4 MB, matching the gRPC default.
@@ -119,11 +132,11 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 	return func(c *serverConfig) { c.recoveryLogger = l }
 }
 
-// WithDefaultDeadline installs a per-RPC default deadline interceptor
-// (both unary and streaming). The interceptor sets the handler ctx
-// deadline to `now + d` when the inbound RPC has no deadline OR has
-// a deadline further out than `now + d`. Closer deadlines from the
-// caller are preserved.
+// WithDefaultDeadline overrides the [DefaultRPCDeadline] applied by
+// [NewServer] for the per-RPC default-deadline interceptor (both unary and
+// streaming). The interceptor sets the handler ctx deadline to `now + d`
+// when the inbound RPC has no deadline OR has a deadline further out than
+// `now + d`. Closer deadlines from the caller are preserved.
 //
 // Without a server-side cap, a streaming RPC (or a unary RPC from a
 // crashed client) can hold a handler open indefinitely. Goroutines
@@ -131,9 +144,8 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 // — exactly the streaming-RPC exhaustion gap GAP-03 in
 // docs/audit/THREAT_MODEL.md.
 //
-// The interceptor is prepended after recovery so panics still
-// convert to codes.Internal but every request lands with a bounded
-// ctx.
+// The interceptor is prepended after recovery so panics still convert to
+// codes.Internal but every request lands with a bounded ctx.
 //
 // Panics if d is not positive.
 func WithDefaultDeadline(d time.Duration) ServerOption {
@@ -143,21 +155,67 @@ func WithDefaultDeadline(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.defaultDeadline = d }
 }
 
+// WithoutDefaultDeadline opts the server out of the [DefaultRPCDeadline]
+// auto-applied by [NewServer]. Strongly discouraged for production —
+// without a server-side cap a slow client can pin a handler goroutine
+// forever. Reserved for tests asserting raw cancellation behaviour or
+// long-lived bidirectional streams that manage their own lifetimes.
+func WithoutDefaultDeadline() ServerOption {
+	return func(c *serverConfig) { c.disableDefaultDL = true }
+}
+
+// WithLogger overrides the logger passed to the auto-applied logging
+// interceptors. Defaults to slog.Default().
+func WithLogger(l *slog.Logger) ServerOption {
+	return func(c *serverConfig) { c.loggingLogger = l }
+}
+
+// WithoutLogging disables the logging interceptors that NewServer installs
+// by default. Use only for tests asserting on raw handler invocation.
+func WithoutLogging() ServerOption {
+	return func(c *serverConfig) { c.disableLogging = true }
+}
+
+// WithMetricsRegisterer overrides the Prometheus registerer for the
+// auto-applied metrics interceptors. Defaults to
+// prometheus.DefaultRegisterer.
+func WithMetricsRegisterer(reg prometheus.Registerer) ServerOption {
+	return func(c *serverConfig) { c.metricsRegisterer = reg }
+}
+
+// WithoutMetrics disables the metrics interceptors that NewServer installs
+// by default. Use only when an alternative metrics surface (custom
+// interceptor, OTel) is wired manually.
+func WithoutMetrics() ServerOption {
+	return func(c *serverConfig) { c.disableMetrics = true }
+}
+
 // NewServer returns a *grpc.Server with production defaults: keepalive,
-// message size limits, panic-recovery interceptors, and the user-supplied
-// interceptors.
+// message size limits, recovery + logging + metrics interceptors, a
+// per-RPC default deadline, and the user-supplied interceptors.
 //
-// Recovery interceptors are PREPENDED so they wrap every other interceptor
-// and the handler itself: a panic anywhere in the chain converts to
-// codes.Internal with a structured log entry rather than tearing down the
-// connection silently. Disable with [WithoutRecovery] only when tests need
-// to assert raw panic propagation.
+// Final chain order (outermost first):
+//
+//	recovery -> logging -> metrics -> deadline -> caller-supplied -> handler
+//
+// Each auto-applied interceptor has a documented opt-out:
+//   - [WithoutRecovery]
+//   - [WithoutLogging]
+//   - [WithoutMetrics]
+//   - [WithoutDefaultDeadline]
+//
+// These exist so tests can assert on raw behaviour but should be avoided
+// in production. The defaults exist to close real holes — a panicking
+// handler tearing down the connection, an un-bounded streaming RPC
+// pinning a goroutine, missing observability — and disabling them
+// without a replacement is a regression.
 //
 // Options are applied in order; later options override earlier ones.
 func NewServer(opts ...ServerOption) *grpc.Server {
 	cfg := serverConfig{
-		maxRecvMsgSize: defaultMaxRecvMsgSize,
-		maxSendMsgSize: defaultMaxSendMsgSize,
+		maxRecvMsgSize:  defaultMaxRecvMsgSize,
+		maxSendMsgSize:  defaultMaxSendMsgSize,
+		defaultDeadline: DefaultRPCDeadline,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -182,17 +240,27 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 
 	unary := cfg.unaryInterceptors
 	stream := cfg.streamInterceptors
-	// Final chain order (outermost first):
-	//   recovery -> deadline -> caller-supplied interceptors -> handler.
-	// Recovery is prepended last, so it wraps the deadline interceptor
-	// and every caller interceptor: a panic anywhere in the chain
-	// converts to codes.Internal with a structured log entry rather than
-	// tearing down the connection. The deadline interceptor sits inside
-	// recovery, applying its bounded ctx to caller interceptors and the
-	// handler.
-	if cfg.defaultDeadline > 0 {
+
+	// Inner-to-outer prepends so the final order matches the chain
+	// documented above: caller-supplied interceptors stay closest to
+	// the handler; deadline wraps them; metrics wraps deadline;
+	// logging wraps metrics; recovery is the outermost guard.
+	if !cfg.disableDefaultDL && cfg.defaultDeadline > 0 {
 		unary = append([]grpc.UnaryServerInterceptor{interceptor.DeadlineUnary(cfg.defaultDeadline)}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(cfg.defaultDeadline)}, stream...)
+	}
+	if !cfg.disableMetrics {
+		metrics := interceptor.NewGRPCMetrics(cfg.metricsRegisterer)
+		unary = append([]grpc.UnaryServerInterceptor{metrics.UnaryInterceptor()}, unary...)
+		stream = append([]grpc.StreamServerInterceptor{metrics.StreamInterceptor()}, stream...)
+	}
+	if !cfg.disableLogging {
+		logLogger := cfg.loggingLogger
+		if logLogger == nil {
+			logLogger = slog.Default()
+		}
+		unary = append([]grpc.UnaryServerInterceptor{interceptor.LoggingUnary(logLogger)}, unary...)
+		stream = append([]grpc.StreamServerInterceptor{interceptor.LoggingStream(logLogger)}, stream...)
 	}
 	if !cfg.disableRecovery {
 		recLogger := cfg.recoveryLogger

@@ -1,3 +1,4 @@
+// asvs: V13.2.3, V3.4.1
 package csrf
 
 import (
@@ -68,8 +69,15 @@ func WithSecure(secure bool) Option {
 //
 // REQUIRED in any non-development environment (see [New]). Must be at
 // least 32 bytes; passing a shorter slice panics at startup.
+//
+// The secret is defensively copied at construction time, so callers
+// can safely zero or reuse the buffer they pass in.
 func WithSecret(secret []byte) Option {
-	return func(c *config) { c.secret = secret }
+	return func(c *config) {
+		cp := make([]byte, len(secret))
+		copy(cp, secret)
+		c.secret = cp
+	}
 }
 
 // WithDevSecret opts in to per-process random secret generation. Use this
@@ -498,28 +506,6 @@ func HasAPIKey(header string) func(r *http.Request) bool {
 	return func(r *http.Request) bool {
 		return strings.TrimSpace(r.Header.Get(header)) != ""
 	}
-}
-
-// RequireCSRF rejects state-changing requests (POST, PUT, PATCH, DELETE) that
-// don't include the X-Requested-With header. Since custom headers can't be set
-// by cross-origin HTML forms, this prevents CSRF attacks on cookie-based auth.
-// GET/HEAD/OPTIONS requests are exempt.
-//
-// Deprecated: Use [New] for proper double-submit cookie CSRF protection.
-// This function only checks header presence, not a cryptographic token.
-// It is retained for backward compatibility but should not be used for
-// new code.
-func RequireCSRF(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			if r.Header.Get("X-Requested-With") == "" {
-				httpx.WriteError(w, http.StatusForbidden, "missing X-Requested-With header")
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // RequireJSONContentType rejects state-changing requests that carry a body

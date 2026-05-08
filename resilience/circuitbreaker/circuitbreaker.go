@@ -41,6 +41,17 @@ func WithPermanentSuccess() Option {
 	})
 }
 
+// defaultIsSuccessful is the package-level default for the success
+// predicate. It ignores caller-driven cancellation (context.Canceled)
+// because a client aborting an in-flight request is not evidence the
+// downstream is unhealthy.
+func defaultIsSuccessful(err error) bool {
+	if err == nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled)
+}
+
 // WithName sets the breaker name (useful for metrics).
 func WithName(name string) Option {
 	return func(s *gobreaker.Settings) { s.Name = name }
@@ -54,6 +65,60 @@ func WithInterval(d time.Duration) Option {
 // WithMaxRequests sets the number of allowed requests in half-open state.
 func WithMaxRequests(n uint32) Option {
 	return func(s *gobreaker.Settings) { s.MaxRequests = n }
+}
+
+// WithReadyToTrip replaces the trip predicate. The default predicate
+// trips on consecutive failures; use this to install an error-rate
+// window or any other custom signal.
+//
+// Example: trip when more than 50% of at least 20 requests in the
+// current Interval failed.
+//
+//	WithReadyToTrip(func(c circuitbreaker.Counts) bool {
+//	    if c.Requests < 20 { return false }
+//	    return float64(c.TotalFailures)/float64(c.Requests) > 0.5
+//	})
+func WithReadyToTrip(fn func(Counts) bool) Option {
+	if fn == nil {
+		return func(*gobreaker.Settings) {}
+	}
+	return func(s *gobreaker.Settings) {
+		s.ReadyToTrip = func(c gobreaker.Counts) bool {
+			return fn(Counts{
+				Requests:             c.Requests,
+				TotalSuccesses:       c.TotalSuccesses,
+				TotalFailures:        c.TotalFailures,
+				ConsecutiveSuccesses: c.ConsecutiveSuccesses,
+				ConsecutiveFailures:  c.ConsecutiveFailures,
+			})
+		}
+	}
+}
+
+// WithErrorRateThreshold installs a [WithReadyToTrip] predicate that
+// trips when the failure ratio over the current Interval exceeds rate
+// AND the request count is at least minRequests. Pair with
+// [WithInterval] to define the rolling window.
+//
+// rate must be in (0, 1]; minRequests prevents tripping on a single
+// failed request out of one.
+func WithErrorRateThreshold(rate float64, minRequests uint32) Option {
+	return WithReadyToTrip(func(c Counts) bool {
+		if c.Requests < uint32(minRequests) {
+			return false
+		}
+		return float64(c.TotalFailures)/float64(c.Requests) > rate
+	})
+}
+
+// Counts is the kit-stable mirror of gobreaker.Counts. Re-exposed so
+// callers don't need to import gobreaker for [WithReadyToTrip].
+type Counts struct {
+	Requests             uint32
+	TotalSuccesses       uint32
+	TotalFailures        uint32
+	ConsecutiveSuccesses uint32
+	ConsecutiveFailures  uint32
 }
 
 // WithOnStateChange registers a callback invoked when the breaker transitions
@@ -87,6 +152,12 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= uint32(threshold)
 		},
+		// Default success predicate: treat caller-driven cancellation
+		// (context.Canceled) as success so a flood of cancelled requests
+		// from a flaky client cannot trip the circuit and harm
+		// unrelated callers. Server-side timeouts (DeadlineExceeded)
+		// remain failures.
+		IsSuccessful: defaultIsSuccessful,
 	}
 	for _, opt := range opts {
 		opt(&settings)

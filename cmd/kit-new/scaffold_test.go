@@ -41,7 +41,7 @@ func TestScaffold_GeneratesExpectedTree(t *testing.T) {
 	assert.NotContains(t, string(body), "{{.ModulePath}}", "templates must be fully rendered")
 }
 
-func TestScaffold_GeneratedWireUsesKitHTTPServer(t *testing.T) {
+func TestScaffold_GeneratedWireUsesAppBuilder(t *testing.T) {
 	out := t.TempDir()
 	require.NoError(t, scaffold(out, Params{
 		ServiceName: "demo",
@@ -51,12 +51,21 @@ func TestScaffold_GeneratedWireUsesKitHTTPServer(t *testing.T) {
 	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
 	require.NoError(t, err)
 	wire := string(wireBody)
+	// app.Builder is the canonical entry point — it composes
+	// httpx.NewServer under the hood plus the production-safety
+	// validator, signed-request / tenant / budget middleware, and the
+	// auto-applied default stack. Forking the wiring directly to
+	// httpx.NewServer here re-introduces the gaps Builder closes.
 	assert.NotContains(t, wire, "&http.Server{",
-		"generated wire.go must not construct net/http.Server directly — use httpx.NewServer for slowloris timeouts and structured error log")
-	assert.Contains(t, wire, "httpx.NewServer(",
-		"generated wire.go must call httpx.NewServer so the service inherits the kit's HTTP defaults")
-	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx"`,
-		"generated wire.go must import the kit's httpx package")
+		"generated wire.go must not construct net/http.Server directly — use app.Builder")
+	assert.NotContains(t, wire, "httpx.NewServer(",
+		"generated wire.go must not call httpx.NewServer directly — use app.Builder, which calls httpx.NewServer with the kit's middleware chain wired in")
+	assert.Contains(t, wire, `"github.com/bds421/rho-kit/app"`,
+		"generated wire.go must import the kit's app package")
+	assert.Contains(t, wire, "kitapp.New(",
+		"generated wire.go must build the service via app.Builder")
+	assert.Contains(t, wire, "Run()",
+		"generated wire.go must call Builder.Run() so signal handling and lifecycle ordering come from the kit")
 }
 
 func TestScaffold_DefaultGoModHasNoUnpublishablePin(t *testing.T) {
@@ -171,20 +180,33 @@ func runScaffoldBuildTest(t *testing.T, mcp bool) {
 		t.Skipf("httpx local checkout not found at %s: %v", httpxDir, statErr)
 	}
 
-	// Modules transitively required at v0.0.0 by httpx and
-	// httpx/mcp. Until the kit publishes real tags, the in-repo
-	// build test resolves them via local replaces — the same pattern
-	// the workspace uses. The release pipeline strips these
-	// replaces before tagging (see hierarchical-release.sh).
-	internal := []string{"httpx"}
-	if mcp {
-		internal = append(internal,
-			"httpx/mcp",
-			"core/tenant",
-			"core/validate",
-			"data/actionlog",
-			"data/actionlog/memory",
-		)
+	// Modules transitively required at v0.0.0 by httpx, app, and
+	// every consolidated v2 module they pull in. Until the kit
+	// publishes real v2 tags, the in-repo build test resolves them
+	// via local replaces — the same pattern the workspace uses. v2
+	// collapsed the per-package modules into a small set of parents,
+	// listed below.
+	internal := []string{
+		"app",
+		"authz",
+		"core",
+		"crypto",
+		"data",
+		"flags",
+		"httpx",
+		"infra",
+		"io",
+		"observability",
+		"resilience",
+		"runtime",
+		"security",
+		// Adapter modules pulled transitively by app's WithRabbitMQ /
+		// WithNATS / WithRedis / WithPgx wirings. They're optional at
+		// runtime but the import graph reaches them at build time.
+		"infra/messaging/amqpbackend",
+		"infra/messaging/natsbackend",
+		"infra/redis",
+		"infra/sqldb/pgx",
 	}
 	replaceArgs := []string{"mod", "edit"}
 	for _, sub := range internal {
@@ -248,11 +270,12 @@ func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
 	assert.Contains(t, mk, "tools/list",
 		"Makefile smoke-test must call the JSON-RPC tools/list method")
 
-	// With an explicit RhoVersion the generated go.mod pins both
-	// httpx and httpx/mcp to that version.
+	// With an explicit RhoVersion the generated go.mod pins httpx
+	// (which now contains the mcp sub-package after the v2
+	// consolidation) at that version.
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/mcp v2.0.0")
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx v2.0.0")
 }
 
 func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
@@ -273,8 +296,12 @@ func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
 	assert.NotContains(t, string(makefile), "mcp-smoke",
 		"plain Makefile must not include the smoke-test target")
 
-	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	// The plain skeleton's wire.go must not import the mcp
+	// sub-package. After the v2 module consolidation, mcp lives
+	// inside httpx, so we check the import path rather than the
+	// go.mod (which only ever pins parent modules).
+	wireSrc, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(gomod), "httpx/mcp",
-		"plain go.mod must not declare an mcp dependency")
+	assert.NotContains(t, string(wireSrc), "httpx/mcp",
+		"plain wire.go must not import the mcp package")
 }

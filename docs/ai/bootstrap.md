@@ -14,7 +14,7 @@ func main() {
         cfg, err := LoadConfig()
         if err != nil { return err }
         return app.New("my-service", "v1.0.0", cfg.BaseConfig).
-            WithPostgres(cfg.Database, cfg.DatabasePool, &User{}, &Order{}).
+            WithPostgres(cfg.Database, cfg.DatabasePool).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
                 mux.HandleFunc("GET /users", listUsers(infra.DB))
@@ -64,8 +64,8 @@ func LoadConfig() (Config, error) {
     cfg := Config{
         BaseConfig:     base,
         PostgresFields: db,
-        AMQPURL:        envutil.GetSecret("RABBITMQ_URL", ""),
-        TraceEndpoint:  envutil.Get("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+        AMQPURL:        config.GetSecret("RABBITMQ_URL", ""),
+        TraceEndpoint:  config.Get("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
     }
 
     if err := cfg.ValidateBase(); err != nil { return Config{}, err }
@@ -78,8 +78,8 @@ func LoadConfig() (Config, error) {
 
 | Method | What it enables | Requires |
 |---|---|---|
-| `WithMariaDB(cfg, pool, models...)` | GORM MariaDB + auto-migrate + health check | — |
-| `WithPostgres(cfg, pool, models...)` | GORM PostgreSQL + auto-migrate + health check | — |
+| `WithMySQL(cfg, pool)` | GORM MySQL + health check (call `gormdb.AutoMigrate` inside `Router`) | — |
+| `WithPostgres(cfg, pool)` | GORM PostgreSQL + health check (call `gormdb.AutoMigrate` inside `Router`) | — |
 | `WithDBMetrics()` | Prometheus pool metrics every 15s | DB configured |
 | `WithRedis(opts, connOpts...)` | Redis connection + health check + pool metrics | — |
 | `WithRabbitMQ(url)` | Lazy AMQP connection + pre-wired Publisher + Consumer | — |
@@ -110,7 +110,7 @@ type Infrastructure struct {
     Logger         *slog.Logger         // always set
     ClientTLS      *tls.Config          // nil without TLS env vars
     ServerTLS      *tls.Config          // nil without TLS env vars
-    DB             *gorm.DB             // nil without WithMariaDB/WithPostgres
+    DB             *gorm.DB             // nil without WithMySQL/WithPostgres
     Broker         messaging.Connector        // nil without WithRabbitMQ
     Publisher      messaging.MessagePublisher // nil without WithRabbitMQ (pre-wired)
     Consumer       messaging.MessageConsumer  // nil without WithRabbitMQ (pre-wired)
@@ -159,7 +159,7 @@ Database and RabbitMQ support both URL and individual field configuration. URL t
 
 ```go
 app.New(...).
-    WithPostgres(cfg.Database, cfg.DatabasePool, &User{}).
+    WithPostgres(cfg.Database, cfg.DatabasePool).
     WithSeed(func(db *gorm.DB, path string, log *slog.Logger) error {
         var users []User
         if err := app.LoadSeedJSON(path, &users); err != nil { return err }
@@ -223,7 +223,7 @@ Pass both GORM models and goose migrations — the kit auto-selects based on `EN
 var migrationsFS embed.FS
 
 app.New("my-svc", "v1.0.0", cfg).
-    WithPostgres(dbCfg, poolCfg, &User{}, &Order{}).
+    WithPostgres(dbCfg, poolCfg).
     WithMigrations(migrationsFS).
     Router(routerFn).
     Run()
@@ -280,5 +280,5 @@ app.New("my-svc", "v1.0.0", cfg).
 - **Don't** call `Builder.Run()` without `Router()` — there's no default handler.
 - **Don't** use `Infrastructure` fields outside the `RouterFunc` closure — they may not be initialized yet.
 - **Don't** ignore nil checks on optional `Infrastructure` fields (DB, Publisher, etc.).
-- **Don't** use `WithMariaDB` and `WithPostgres` together — mutually exclusive, panics at validation.
+- **Don't** use `WithMySQL` and `WithPostgres` together — mutually exclusive, panics at validation.
 - **Don't** worry about passing both models and migrations — the kit auto-selects AutoMigrate (dev) or goose (prod) based on `ENVIRONMENT`.

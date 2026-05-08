@@ -1,3 +1,5 @@
+// Package postgres is the pgx-backed [actionlog.Store]. v2 dropped GORM
+// and runs sqlc-style hand-written queries against a *pgxpool.Pool.
 package postgres
 
 import (
@@ -5,136 +7,102 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bds421/rho-kit/data/actionlog"
 )
 
 const defaultLimit = 100
 
-// row is the GORM model for the action_log_entries table.
-//
-// Metadata is stored as JSONB. We marshal/unmarshal on the boundary so
-// the store interface can pass map[string]any cleanly; the canonical
-// signing form is the Logger's responsibility, not the store's.
-type row struct {
-	ID             string          `gorm:"primaryKey;size:36"`
-	TenantID       string          `gorm:"size:255;not null;index:idx_action_log_entries_tenant_occurred,priority:1;uniqueIndex:idx_action_log_entries_tenant_seq,priority:1"`
-	Actor          string          `gorm:"size:255;not null;index"`
-	Action         string          `gorm:"size:255;not null;index"`
-	Resource       string          `gorm:"size:500;not null;default:''"`
-	Outcome        string          `gorm:"size:20;not null"`
-	Reason         string          `gorm:"type:text;not null;default:''"`
-	Metadata       json.RawMessage `gorm:"type:jsonb"`
-	OccurredAt     time.Time       `gorm:"not null;index:idx_action_log_entries_tenant_occurred,priority:2,sort:desc"`
-	SignatureKeyID string          `gorm:"size:64;not null;column:signature_key_id"`
-	Seq            int64           `gorm:"not null;default:0;uniqueIndex:idx_action_log_entries_tenant_seq,priority:2"`
-	PrevHash       string          `gorm:"size:64;not null;default:'';column:prev_hash"`
-	Signature      string          `gorm:"size:128;not null"`
-}
+// uniqueViolation is the SQLSTATE code Postgres returns when a unique
+// constraint is violated. Used to translate (tenant_id, seq) collisions
+// from concurrent appends back into a typed error the caller can retry.
+const uniqueViolation = "23505"
 
-func (row) TableName() string { return "action_log_entries" }
-
-// Store is a GORM-backed [actionlog.Store].
+// Store is a pgx-backed [actionlog.Store]. The append path holds a
+// per-tenant advisory lock (pg_advisory_xact_lock) plus SELECT FOR
+// UPDATE on the tenant's latest row so concurrent appends serialise
+// even when the tenant has zero rows yet — the lock is the only thing
+// preventing two concurrent first-appends from both racing to seq=1.
 type Store struct {
-	db *gorm.DB
+	pool *pgxpool.Pool
 }
 
-// New returns a Store. Panics on a nil db — fail fast at startup so
+// New returns a Store. Panics on a nil pool — fail fast at startup so
 // the failure is visible at boot rather than at first append.
-func New(db *gorm.DB) *Store {
-	if db == nil {
-		panic("actionlog/postgres: db must not be nil")
+func New(pool *pgxpool.Pool) *Store {
+	if pool == nil {
+		panic("actionlog/postgres: pool must not be nil")
 	}
-	return &Store{db: db}
+	return &Store{pool: pool}
 }
 
-// AppendChained runs build inside a transaction that holds a
-// per-tenant advisory lock plus SELECT FOR UPDATE on the latest row
-// for tenantID, persisting the resulting entry under the same lock
-// so concurrent appends serialise — including the tenant's first
-// append, where there is no row yet for SELECT FOR UPDATE to lock.
+// AppendChained runs build inside a transaction that holds a per-tenant
+// advisory lock plus SELECT FOR UPDATE on the latest row for tenantID,
+// persisting the resulting entry under the same lock so concurrent
+// appends serialise — including the tenant's first append, where there
+// is no row yet for SELECT FOR UPDATE to lock.
 func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
 	if tenantID == "" {
 		return actionlog.Entry{}, actionlog.ErrInvalidEntry
 	}
-	isPostgres := s.db.Name() == "postgres"
-	var out actionlog.Entry
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// pg_advisory_xact_lock serialises concurrent first-appends for
-		// the same tenant: SELECT FOR UPDATE has nothing to lock when
-		// the tenant has zero rows, so two concurrent first-append calls
-		// would otherwise both build seq=1 and one would fail the
-		// (tenant_id, seq) unique constraint. The lock is released at
-		// commit/rollback, so it never escapes this transaction.
-		// Skipped on non-Postgres dialects (sqlite memdb tests); on
-		// SQLite the connection-level serialisation plus the unique
-		// index keep correctness.
-		if isPostgres {
-			if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", tenantID).Error; err != nil {
-				return fmt.Errorf("actionlog/postgres: advisory lock: %w", err)
-			}
-		}
-		var latest row
-		// SELECT FOR UPDATE the highest-Seq row for this tenant. On
-		// dialects that elide row locking (sqlite via memdb), the
-		// per-tenant unique index on (tenant_id, seq) still prevents
-		// duplicate Seq values — the second concurrent insert fails
-		// the unique constraint and the caller can retry.
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("tenant_id = ?", tenantID).
-			Order("seq DESC").
-			Limit(1).
-			Take(&latest).Error
-		var (
-			prev    actionlog.Entry
-			prevSeq int64
-		)
-		if err == nil {
-			prev, err = fromRow(latest)
-			if err != nil {
-				return err
-			}
-			prevSeq = latest.Seq
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
 
-		entry, err := build(prev, prevSeq)
-		if err != nil {
-			return err
-		}
-		r, err := toRow(entry)
-		if err != nil {
-			return err
-		}
-		if err := tx.Create(&r).Error; err != nil {
-			return fmt.Errorf("actionlog/postgres: append: %w", err)
-		}
-		out = entry
-		return nil
-	})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// pg_advisory_xact_lock serialises concurrent first-appends for the
+	// same tenant: SELECT FOR UPDATE has nothing to lock when the tenant
+	// has zero rows, so two concurrent first-append calls would otherwise
+	// both build seq=1 and one would fail the (tenant_id, seq) unique
+	// constraint. The lock is released at commit/rollback, so it never
+	// escapes this transaction.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", tenantID); err != nil {
+		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: advisory lock: %w", err)
+	}
+
+	prev, prevSeq, err := selectLatestForUpdate(ctx, tx, tenantID)
 	if err != nil {
 		return actionlog.Entry{}, err
 	}
-	return out, nil
+
+	entry, err := build(prev, prevSeq)
+	if err != nil {
+		return actionlog.Entry{}, err
+	}
+
+	if err := insertEntry(ctx, tx, entry); err != nil {
+		return actionlog.Entry{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: commit: %w", err)
+	}
+	return entry, nil
 }
 
-// Get returns the entry by id. Returns [actionlog.ErrNotFound] when
-// no row matches.
+// Get returns the entry by id. Returns [actionlog.ErrNotFound] when no
+// row matches.
 func (s *Store) Get(ctx context.Context, id string) (actionlog.Entry, error) {
-	var r row
-	err := s.db.WithContext(ctx).First(&r, "id = ?", id).Error
+	const q = `
+SELECT id, tenant_id, actor, action, resource, outcome, reason,
+       metadata, occurred_at, signature_key_id, seq, prev_hash, signature
+FROM action_log_entries
+WHERE id = $1`
+	row := s.pool.QueryRow(ctx, q, id)
+	entry, err := scanEntry(row)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return actionlog.Entry{}, actionlog.ErrNotFound
 		}
 		return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: get: %w", err)
 	}
-	return fromRow(r)
+	return entry, nil
 }
 
 // List returns entries matching q, ordered by occurred_at DESC, id DESC.
@@ -144,35 +112,56 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 		limit = defaultLimit
 	}
 
-	tx := s.db.WithContext(ctx).Model(&row{}).Order("occurred_at DESC, id DESC")
+	// Build the WHERE clause incrementally. Using positional placeholders
+	// keeps the parameter list aligned with the SQL string and avoids any
+	// risk of operator-supplied filter values being interpolated.
+	args := make([]any, 0, 5)
+	clauses := make([]string, 0, 5)
+	add := func(expr string, val any) {
+		args = append(args, val)
+		clauses = append(clauses, fmt.Sprintf(expr, len(args)))
+	}
 	if q.TenantID != "" {
-		tx = tx.Where("tenant_id = ?", q.TenantID)
+		add("tenant_id = $%d", q.TenantID)
 	}
 	if q.Actor != "" {
-		tx = tx.Where("actor = ?", q.Actor)
+		add("actor = $%d", q.Actor)
 	}
 	if q.Action != "" {
-		tx = tx.Where("action = ?", q.Action)
+		add("action = $%d", q.Action)
 	}
 	if !q.Since.IsZero() {
-		tx = tx.Where("occurred_at >= ?", q.Since)
+		add("occurred_at >= $%d", q.Since.UTC())
 	}
 	if !q.Until.IsZero() {
-		tx = tx.Where("occurred_at <= ?", q.Until)
+		add("occurred_at <= $%d", q.Until.UTC())
 	}
 
-	var rows []row
-	if err := tx.Limit(limit).Find(&rows).Error; err != nil {
+	sql := `SELECT id, tenant_id, actor, action, resource, outcome, reason,
+       metadata, occurred_at, signature_key_id, seq, prev_hash, signature
+FROM action_log_entries`
+	if len(clauses) > 0 {
+		sql += " WHERE " + joinAnd(clauses)
+	}
+	args = append(args, limit)
+	sql += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
 		return nil, fmt.Errorf("actionlog/postgres: list: %w", err)
 	}
+	defer rows.Close()
 
-	out := make([]actionlog.Entry, 0, len(rows))
-	for _, r := range rows {
-		e, err := fromRow(r)
-		if err != nil {
-			return nil, err
+	out := make([]actionlog.Entry, 0, limit)
+	for rows.Next() {
+		entry, scanErr := scanEntry(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("actionlog/postgres: list scan: %w", scanErr)
 		}
-		out = append(out, e)
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("actionlog/postgres: list iterate: %w", err)
 	}
 	return out, nil
 }
@@ -180,73 +169,123 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 // ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
 // No limit is applied — VerifyChain needs the full chain.
 func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
-	var rows []row
-	err := s.db.WithContext(ctx).
-		Where("tenant_id = ?", tenantID).
-		Order("seq ASC").
-		Find(&rows).Error
+	const q = `
+SELECT id, tenant_id, actor, action, resource, outcome, reason,
+       metadata, occurred_at, signature_key_id, seq, prev_hash, signature
+FROM action_log_entries
+WHERE tenant_id = $1
+ORDER BY seq ASC`
+	rows, err := s.pool.Query(ctx, q, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("actionlog/postgres: list by tenant seq: %w", err)
 	}
-	out := make([]actionlog.Entry, 0, len(rows))
-	for _, r := range rows {
-		e, err := fromRow(r)
-		if err != nil {
-			return nil, err
+	defer rows.Close()
+
+	var out []actionlog.Entry
+	for rows.Next() {
+		entry, scanErr := scanEntry(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("actionlog/postgres: list by tenant seq scan: %w", scanErr)
 		}
-		out = append(out, e)
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("actionlog/postgres: list by tenant seq iterate: %w", err)
 	}
 	return out, nil
 }
 
-func toRow(e actionlog.Entry) (row, error) {
-	var meta json.RawMessage
+// scannable abstracts pgx.Row and pgx.Rows so scanEntry handles both
+// QueryRow (single-row) and Query (multi-row) cleanly.
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+func scanEntry(s scannable) (actionlog.Entry, error) {
+	var (
+		e        actionlog.Entry
+		outcome  string
+		metaRaw  []byte
+		resource string
+		reason   string
+	)
+	if err := s.Scan(
+		&e.ID, &e.TenantID, &e.Actor, &e.Action, &resource, &outcome, &reason,
+		&metaRaw, &e.OccurredAt, &e.SignatureKeyID, &e.Seq, &e.PrevHash, &e.Signature,
+	); err != nil {
+		return actionlog.Entry{}, err
+	}
+	e.Resource = resource
+	e.Outcome = actionlog.Outcome(outcome)
+	e.Reason = reason
+	e.OccurredAt = e.OccurredAt.UTC()
+	if len(metaRaw) > 0 {
+		var meta map[string]any
+		if err := json.Unmarshal(metaRaw, &meta); err != nil {
+			return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: unmarshal metadata: %w", err)
+		}
+		e.Metadata = meta
+	}
+	return e, nil
+}
+
+func selectLatestForUpdate(ctx context.Context, tx pgx.Tx, tenantID string) (actionlog.Entry, int64, error) {
+	const q = `
+SELECT id, tenant_id, actor, action, resource, outcome, reason,
+       metadata, occurred_at, signature_key_id, seq, prev_hash, signature
+FROM action_log_entries
+WHERE tenant_id = $1
+ORDER BY seq DESC
+LIMIT 1
+FOR UPDATE`
+	row := tx.QueryRow(ctx, q, tenantID)
+	entry, err := scanEntry(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return actionlog.Entry{}, 0, nil
+		}
+		return actionlog.Entry{}, 0, fmt.Errorf("actionlog/postgres: select latest: %w", err)
+	}
+	return entry, entry.Seq, nil
+}
+
+func insertEntry(ctx context.Context, tx pgx.Tx, e actionlog.Entry) error {
+	var metaRaw []byte
 	if len(e.Metadata) > 0 {
 		b, err := json.Marshal(e.Metadata)
 		if err != nil {
-			return row{}, fmt.Errorf("actionlog/postgres: marshal metadata: %w", err)
+			return fmt.Errorf("actionlog/postgres: marshal metadata: %w", err)
 		}
-		meta = b
+		metaRaw = b
 	}
-	return row{
-		ID:             e.ID,
-		TenantID:       e.TenantID,
-		Actor:          e.Actor,
-		Action:         e.Action,
-		Resource:       e.Resource,
-		Outcome:        string(e.Outcome),
-		Reason:         e.Reason,
-		Metadata:       meta,
-		OccurredAt:     e.OccurredAt.UTC(),
-		SignatureKeyID: e.SignatureKeyID,
-		Seq:            e.Seq,
-		PrevHash:       e.PrevHash,
-		Signature:      e.Signature,
-	}, nil
+	const q = `
+INSERT INTO action_log_entries
+(id, tenant_id, actor, action, resource, outcome, reason, metadata,
+ occurred_at, signature_key_id, seq, prev_hash, signature)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
+	if _, err := tx.Exec(ctx, q,
+		e.ID, e.TenantID, e.Actor, e.Action, e.Resource, string(e.Outcome), e.Reason, metaRaw,
+		e.OccurredAt.UTC(), e.SignatureKeyID, e.Seq, e.PrevHash, e.Signature,
+	); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+			return fmt.Errorf("actionlog/postgres: append: concurrent seq collision: %w", err)
+		}
+		return fmt.Errorf("actionlog/postgres: append: %w", err)
+	}
+	return nil
 }
 
-func fromRow(r row) (actionlog.Entry, error) {
-	var meta map[string]any
-	if len(r.Metadata) > 0 {
-		if err := json.Unmarshal(r.Metadata, &meta); err != nil {
-			return actionlog.Entry{}, fmt.Errorf("actionlog/postgres: unmarshal metadata: %w", err)
-		}
+func joinAnd(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
 	}
-	// Storing UTC, but a sqlite roundtrip can come back without a
-	// location. Force UTC so signature recomputation matches.
-	return actionlog.Entry{
-		ID:             r.ID,
-		TenantID:       r.TenantID,
-		Actor:          r.Actor,
-		Action:         r.Action,
-		Resource:       r.Resource,
-		Outcome:        actionlog.Outcome(r.Outcome),
-		Reason:         r.Reason,
-		Metadata:       meta,
-		OccurredAt:     r.OccurredAt.UTC(),
-		SignatureKeyID: r.SignatureKeyID,
-		Seq:            r.Seq,
-		PrevHash:       r.PrevHash,
-		Signature:      r.Signature,
-	}, nil
+	out := parts[0]
+	for _, p := range parts[1:] {
+		out += " AND " + p
+	}
+	return out
 }

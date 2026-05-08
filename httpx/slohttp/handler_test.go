@@ -17,7 +17,7 @@ func TestHandler_OK(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(1000)
 
@@ -40,7 +40,7 @@ func TestHandler_Breached(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	total := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
-	}, []string{"code"})
+	}, []string{"status"})
 	reg.MustRegister(total)
 	total.WithLabelValues("200").Add(900)
 	total.WithLabelValues("500").Add(100)

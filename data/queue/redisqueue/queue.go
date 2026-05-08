@@ -598,8 +598,10 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	heartbeatPrefix := queue + ":" + heartbeatSuffix + ":"
 
 	// Write our heartbeat synchronously before starting recovery so that any
-	// peer running recovery against us sees us as alive.
-	q.refreshHeartbeat(ctx, heartbeatKey)
+	// peer running recovery against us sees us as alive. Errors are logged
+	// inside refreshHeartbeat; we keep going either way so a transient
+	// blip on first refresh doesn't block process startup.
+	_ = q.refreshHeartbeat(ctx, heartbeatKey)
 
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	defer bgCancel()

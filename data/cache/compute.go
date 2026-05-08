@@ -31,6 +31,7 @@ type envelope struct {
 type computeConfig struct {
 	staleTTL       time.Duration
 	refreshTimeout time.Duration
+	computeTimeout time.Duration
 	metrics        *ComputeMetrics
 	name           string
 	logger         *slog.Logger
@@ -38,6 +39,12 @@ type computeConfig struct {
 
 // defaultRefreshTimeout is used when no WithRefreshTimeout option is provided.
 const defaultRefreshTimeout = 30 * time.Second
+
+// defaultComputeTimeout caps a foreground compute when the caller's
+// context has no deadline. Without this cap, a slow ComputeFunc on a
+// caller using context.Background blocks every singleflight follower
+// indefinitely.
+const defaultComputeTimeout = 60 * time.Second
 
 // ComputeOption configures a ComputeCache.
 type ComputeOption func(*computeConfig)
@@ -90,6 +97,20 @@ func WithRefreshTimeout(d time.Duration) ComputeOption {
 	}
 }
 
+// WithComputeTimeout caps the duration a foreground compute may run
+// when the caller's context has no deadline. Default 60 seconds —
+// without this cap a slow ComputeFunc invoked from a Background-typed
+// ctx blocks every singleflight follower for the lifetime of the call.
+//
+// Values <= 0 are ignored.
+func WithComputeTimeout(d time.Duration) ComputeOption {
+	return func(cfg *computeConfig) {
+		if d > 0 {
+			cfg.computeTimeout = d
+		}
+	}
+}
+
 // ComputeCache wraps a Cache backend with singleflight deduplication and
 // stale-while-revalidate support. Only one goroutine computes a given key
 // at a time; concurrent callers wait for the in-flight computation.
@@ -131,6 +152,7 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 	cfg := computeConfig{
 		name:           "default",
 		refreshTimeout: defaultRefreshTimeout,
+		computeTimeout: defaultComputeTimeout,
 		logger:         slog.Default(),
 	}
 	for _, o := range opts {
@@ -269,11 +291,16 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 
 	// Detach cancellation so a follower whose context is cancelled does
 	// not abort the shared compute, but keep the original deadline so
-	// long computes still respect the request budget. Without this,
-	// context.WithoutCancel would strip the deadline along with the
-	// cancellation source and let compute run past the budget.
+	// long computes still respect the request budget. When the caller
+	// passed a deadline-less ctx (Background()), apply the
+	// computeTimeout cap so a slow fn cannot block followers forever.
 	computeCtx, cancelCompute := detachCancelKeepDeadline(ctx)
 	defer cancelCompute()
+	if _, hasDeadline := computeCtx.Deadline(); !hasDeadline && cc.cfg.computeTimeout > 0 {
+		var capCancel context.CancelFunc
+		computeCtx, capCancel = context.WithTimeout(computeCtx, cc.cfg.computeTimeout)
+		defer capCancel()
+	}
 	result, err, _ := cc.group.Do(full, func() (interface{}, error) {
 		val, execErr := cc.executeCompute(computeCtx, full, fn)
 		if execErr != nil {

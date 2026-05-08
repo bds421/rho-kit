@@ -7,8 +7,8 @@ import (
 )
 
 // Pinger checks database connectivity without depending on a specific driver.
-// Implementations should apply a short timeout internally.
-// [gormdb.Pinger] satisfies this interface.
+// Implementations should apply a short timeout internally. The pgx adapter
+// (infra/sqldb/pgx) satisfies this interface; *sql.DB does too.
 type Pinger interface {
 	Ping() error
 }

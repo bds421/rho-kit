@@ -173,7 +173,7 @@ func TestRewrap_RewrapsUnderActiveKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Remove v1 — rewrapped must still decrypt under v2.
-	k.RemoveKey("v1")
+	require.NoError(t, k.RemoveKey("v1"))
 	got, err := enc.Decrypt(context.Background(), rewrapped, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("payload"), got)
@@ -205,7 +205,7 @@ func TestRewrap_PreservesAADBinding(t *testing.T) {
 	assert.Equal(t, oldBody, newBody, "Rewrap must not touch nonce+ciphertext")
 
 	// Same AAD still decrypts under the new wrap key.
-	k.RemoveKey("v1")
+	require.NoError(t, k.RemoveKey("v1"))
 	got, err := enc.Decrypt(context.Background(), rewrapped, aad)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("secret"), got)
@@ -238,9 +238,9 @@ func splitForTest(t *testing.T, blob []byte) (magic byte, version byte, header [
 	return blob[0], blob[3], blob[:off], blob[off:]
 }
 
-func TestKEKStatic_RemoveActiveKeyPanics(t *testing.T) {
+func TestKEKStatic_RemoveActiveKeyReturnsError(t *testing.T) {
 	k := newKEK(t, "v1")
-	assert.Panics(t, func() { k.RemoveKey("v1") })
+	require.Error(t, k.RemoveKey("v1"))
 }
 
 func TestKEKStatic_UnknownKeyIDRejected(t *testing.T) {

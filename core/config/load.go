@@ -255,8 +255,8 @@ func setField(fv reflect.Value, val, envName string) error {
 		}
 		fv.SetBool(b)
 
-	case reflect.Float64:
-		f, err := strconv.ParseFloat(val, 64)
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(val, fv.Type().Bits())
 		if err != nil {
 			return fmt.Errorf("config: %s: invalid float %q: %w", envName, val, err)
 		}

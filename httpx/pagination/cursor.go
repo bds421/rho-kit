@@ -27,8 +27,17 @@ type CursorResult[T any] struct {
 	HasMore    bool   `json:"has_more"`
 }
 
+// MaxCursorLen caps the byte length of an incoming cursor query
+// parameter. Real cursors are short (a row ID, a base64-encoded
+// timestamp pair); a multi-megabyte cursor is invariably abuse.
+// Setting a cap protects downstream validators from spending CPU
+// scanning a giant string before they realise it's malformed.
+const MaxCursorLen = 4096
+
 // ParseCursorParams extracts cursor and limit from query parameters.
 // Clamps limit between 1 and maxLimit, defaulting to defaultLimit.
+// Cursors longer than [MaxCursorLen] are silently truncated to empty,
+// which the downstream cursor validator will reject.
 func ParseCursorParams(r *http.Request, defaultLimit, maxLimit int) CursorParams {
 	q := r.URL.Query()
 
@@ -40,8 +49,13 @@ func ParseCursorParams(r *http.Request, defaultLimit, maxLimit int) CursorParams
 		limit = maxLimit
 	}
 
+	cursor := q.Get("cursor")
+	if len(cursor) > MaxCursorLen {
+		cursor = ""
+	}
+
 	return CursorParams{
-		Cursor: q.Get("cursor"),
+		Cursor: cursor,
 		Limit:  limit,
 	}
 }

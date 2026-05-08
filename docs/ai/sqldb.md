@@ -1,50 +1,51 @@
-# Database — MariaDB & PostgreSQL
+# Database — MySQL & PostgreSQL
 
 Packages: `infra/sqldb`, `infra/sqldb/gormdb`
 
 ## When to Use
 
-Every service that needs a relational database uses the `infra/sqldb` package for config loading and `infra/sqldb/gormdb` for GORM setup. The `app.Builder` handles this automatically via `WithMariaDB` or `WithPostgres`.
+Every service that needs a relational database uses the `infra/sqldb` package for config loading and `infra/sqldb/gormdb` for GORM setup. The `app.Builder` handles this automatically via `WithMySQL` or `WithPostgres`. Migrations are NOT auto-run by the Builder — call `gormdb.AutoMigrate` (dev) or wire `WithMigrations(dir)` (prod) to execute schema changes.
 
-## Decision: MariaDB vs PostgreSQL
+## Decision: MySQL vs PostgreSQL
 
-| Factor | MariaDB | PostgreSQL |
+| Factor | MySQL | PostgreSQL |
 |---|---|---|
 | Default port | 3306 | 5432 |
 | SSL mode config | Via TLS env vars | `DB_SSL_MODE` env var |
 | JSON support | Basic | Native JSONB |
 | Full-text search | Built-in | Built-in + advanced |
-| Use when | Existing MariaDB infra | New projects (preferred) |
+| Use when | Existing MySQL infra | New projects (preferred) |
 
-**Rule: `WithMariaDB` and `WithPostgres` are mutually exclusive.** Calling both panics at validation.
+**Rule: `WithMySQL` and `WithPostgres` are mutually exclusive.** Calling both panics at validation.
 
 ## Quick Start
 
 ```go
 type Config struct {
     app.BaseConfig
-    sqldb.PostgresFields // or database.MariaDBFields
+    sqldb.Fields // shared MySQL/Postgres field set
 }
 
 func LoadConfig() (Config, error) {
     base, err := app.LoadBaseConfig(8080)
     if err != nil { return Config{}, err }
 
-    db, err := sqldb.LoadPostgresFields("MYAPP", 10, 100) // prefix, maxIdle, maxOpen
+    db, err := sqldb.LoadFields("MYAPP", "postgres", 10, 100) // prefix, driver, maxIdle, maxOpen
     if err != nil { return Config{}, err }
 
-    cfg := Config{BaseConfig: base, PostgresFields: db}
+    cfg := Config{BaseConfig: base, Fields: db}
     if err := cfg.ValidateBase(); err != nil { return Config{}, err }
-    if err := cfg.ValidatePostgres("MYAPP", cfg.Environment); err != nil { return Config{}, err }
+    if err := cfg.Validate("postgres", cfg.Environment); err != nil { return Config{}, err }
     return cfg, nil
 }
 
 // In main:
 app.New(...).
-    WithPostgres(cfg.Database, cfg.DatabasePool, &User{}, &Order{}).
+    WithPostgres(cfg.Database, cfg.DatabasePool).
     WithDBMetrics(). // optional: Prometheus pool metrics every 15s
     Router(func(infra app.Infrastructure) http.Handler {
         // infra.DB is *gorm.DB, ready to use
+        if err := gormdb.AutoMigrate(infra.DB, &User{}, &Order{}); err != nil { panic(err) }
     })
 ```
 
@@ -60,7 +61,7 @@ type User struct {
 }
 ```
 
-Models passed to `WithPostgres(..., &User{}, &Order{})` are auto-migrated at startup.
+Auto-migration is no longer wired into `WithPostgres`/`WithMySQL`. Call `gormdb.AutoMigrate(infra.DB, &User{}, &Order{})` explicitly inside `Router` for dev, or use `WithMigrations(dir)` to run goose-style SQL migrations on startup.
 
 ## Repository Pattern
 
@@ -139,7 +140,7 @@ In non-development environments:
 
 ```go
 app.New(...).
-    WithPostgres(cfg.Database, cfg.DatabasePool, &User{}).
+    WithPostgres(cfg.Database, cfg.DatabasePool).
     WithSeed(func(db *gorm.DB, path string, log *slog.Logger) error {
         var users []User
         if err := app.LoadSeedJSON(path, &users); err != nil { return err }
@@ -151,7 +152,7 @@ app.New(...).
 
 ## Anti-Patterns
 
-- **Never** call `WithMariaDB` and `WithPostgres` together.
+- **Never** call `WithMySQL` and `WithPostgres` together.
 - **Never** hardcode DB credentials — always use env vars with `{PREFIX}_` naming.
 - **Never** use `DB_LOG_LEVEL=info` in production — it logs every SQL query.
 - **Never** skip `WithContext(ctx)` on GORM queries — breaks tracing and cancellation.

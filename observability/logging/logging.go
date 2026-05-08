@@ -47,15 +47,18 @@ func New(cfg Config) *slog.Logger {
 
 	logger := slog.New(traceHandler)
 
-	// Add service attributes as default group.
+	// Add service attributes using OpenTelemetry semantic-convention keys
+	// (service.name, service.version, deployment.environment.name) so log
+	// data correlates with traces emitted by observability/tracing without
+	// the operator having to remap fields in their pipeline.
 	if cfg.ServiceName != "" {
-		logger = logger.With("service", cfg.ServiceName)
+		logger = logger.With("service.name", cfg.ServiceName)
 	}
 	if cfg.ServiceVersion != "" {
-		logger = logger.With("version", cfg.ServiceVersion)
+		logger = logger.With("service.version", cfg.ServiceVersion)
 	}
 	if cfg.Environment != "" {
-		logger = logger.With("environment", cfg.Environment)
+		logger = logger.With("deployment.environment.name", cfg.Environment)
 	}
 
 	return logger

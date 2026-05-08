@@ -209,12 +209,15 @@ func (g *AllowedLabels) vecName(c prometheus.Collector) string {
 // collector emits. Falls back to "<unknown>" when the collector
 // supplies no descriptor, which would be unusual for the *Vec types
 // this package targets.
+//
+// Uses a buffered channel large enough for the typical fanout (16
+// covers every kit-emitted vec) and runs Describe synchronously, so
+// each cache miss is one allocation rather than one goroutine —
+// previous versions leaked an ephemeral goroutine per first-time vec.
 func describeName(c prometheus.Collector) string {
-	ch := make(chan *prometheus.Desc, 4)
-	go func() {
-		defer close(ch)
-		c.Describe(ch)
-	}()
+	ch := make(chan *prometheus.Desc, 16)
+	c.Describe(ch)
+	close(ch)
 	for d := range ch {
 		// fqNameFromDesc parses the FQName out of *prometheus.Desc's
 		// String form: `Desc{fqName: "X", help: "...", ...}`. We use

@@ -52,4 +52,6 @@
 // cap exists because the body lives in the approval store (postgres
 // JSONB column or a memory map) until the request is decided — an
 // uncapped middleware would happily persist a 5 GiB request body.
+//
+// asvs: V4.2.1, V13.4.1
 package approval

@@ -23,31 +23,52 @@ type Store struct {
 	mu      sync.RWMutex
 	entries []actionlog.Entry
 	byID    map[string]int
-	// tenantMu serialises chain extension per tenant. The build callback
-	// in AppendChained reads the latest entry and the persist runs while
-	// the per-tenant lock is held — without this two concurrent appends
-	// could observe the same prev and produce duplicate Seq values.
-	tenantMu     map[string]*sync.Mutex
-	tenantMuLock sync.Mutex
+	// tenantMu serialises chain extension per tenant. Uses sync.Map +
+	// LoadOrStore so a global lock isn't needed for every Append; entries
+	// are removed in [Store.PruneTenants] to avoid unbounded growth in
+	// long-running test suites with many ephemeral tenants.
+	tenantMu sync.Map // map[string]*sync.Mutex
 }
 
 // New creates an empty Store.
 func New() *Store {
 	return &Store{
-		byID:     make(map[string]int),
-		tenantMu: make(map[string]*sync.Mutex),
+		byID: make(map[string]int),
 	}
 }
 
 func (s *Store) lockFor(tenantID string) *sync.Mutex {
-	s.tenantMuLock.Lock()
-	defer s.tenantMuLock.Unlock()
-	mu, ok := s.tenantMu[tenantID]
-	if !ok {
-		mu = &sync.Mutex{}
-		s.tenantMu[tenantID] = mu
+	if mu, ok := s.tenantMu.Load(tenantID); ok {
+		return mu.(*sync.Mutex)
 	}
-	return mu
+	mu := &sync.Mutex{}
+	actual, _ := s.tenantMu.LoadOrStore(tenantID, mu)
+	return actual.(*sync.Mutex)
+}
+
+// PruneTenants drops the per-tenant locks for tenants that have no
+// entries left in the store. Call this between test runs (or any time
+// you know which tenant IDs are no longer in use) to bound the
+// per-tenant lock map's memory footprint. Without this, the locks
+// accumulate one entry per ever-seen tenant — a slow leak in long-
+// running test suites.
+//
+// Concurrency: callers must guarantee no AppendChained is in flight for
+// the pruned tenants. The store does not synchronise that for them.
+func (s *Store) PruneTenants() {
+	s.mu.RLock()
+	live := make(map[string]struct{}, 16)
+	for _, e := range s.entries {
+		live[e.TenantID] = struct{}{}
+	}
+	s.mu.RUnlock()
+
+	s.tenantMu.Range(func(k, _ any) bool {
+		if _, ok := live[k.(string)]; !ok {
+			s.tenantMu.Delete(k)
+		}
+		return true
+	})
 }
 
 // AppendChained holds the per-tenant lock, reads the previous entry,

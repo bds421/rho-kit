@@ -19,6 +19,8 @@
 // style-src directives of the configured base policy on every request,
 // and stores the raw nonce string in the request context for the
 // handler/templates to consume.
+//
+// asvs: V9.2.1, V14.4.1
 package cspnonce
 
 import (

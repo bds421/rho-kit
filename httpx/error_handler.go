@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/contextutil"
 	"github.com/bds421/rho-kit/httpx/problemdetails"
 	"github.com/bds421/rho-kit/observability/logattr"
 )
@@ -69,7 +70,7 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case apperror.IsUnavailable(err):
 		logAttrs := []any{
 			logattr.Error(err),
-			logattr.RequestID(RequestID(ctx)),
+			logattr.RequestID(contextutil.RequestID(ctx)),
 			logattr.Method(method),
 			logattr.Path(path),
 		}
@@ -89,7 +90,7 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case apperror.IsOperationFailed(err):
 		logger.Error("operation failed",
 			logattr.Error(err),
-			logattr.RequestID(RequestID(ctx)),
+			logattr.RequestID(contextutil.RequestID(ctx)),
 			logattr.Method(method),
 			logattr.Path(path),
 		)
@@ -106,7 +107,7 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	default:
 		logger.Error("unhandled service error",
 			logattr.Error(err),
-			logattr.RequestID(RequestID(ctx)),
+			logattr.RequestID(contextutil.RequestID(ctx)),
 			logattr.Method(method),
 			logattr.Path(path),
 		)
@@ -165,7 +166,7 @@ func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 		}
 		attrs := []any{
 			logattr.Error(err),
-			logattr.RequestID(RequestID(ctx)),
+			logattr.RequestID(contextutil.RequestID(ctx)),
 			logattr.Method(method),
 			logattr.Path(path),
 		}

@@ -18,13 +18,6 @@ func TestIsDuplicateKeyError_PostgresString(t *testing.T) {
 	}
 }
 
-func TestIsDuplicateKeyError_MySQLString(t *testing.T) {
-	err := errors.New("Error 1062: Duplicate entry 'foo' for key")
-	if !IsDuplicateKeyError(err) {
-		t.Fatal("error containing 'Duplicate entry' should match")
-	}
-}
-
 func TestIsDuplicateKeyError_UnrelatedError(t *testing.T) {
 	err := errors.New("connection refused")
 	if IsDuplicateKeyError(err) {
@@ -56,13 +49,6 @@ func TestIsSerializationError_PostgresString(t *testing.T) {
 	err := errors.New("could not serialize access due to concurrent update: serialization failure")
 	if !IsSerializationError(err) {
 		t.Fatal("error containing 'serialization failure' should match")
-	}
-}
-
-func TestIsSerializationError_MySQLString(t *testing.T) {
-	err := errors.New("Deadlock found when trying to get lock")
-	if !IsSerializationError(err) {
-		t.Fatal("error containing 'Deadlock found' should match")
 	}
 }
 

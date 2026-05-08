@@ -24,9 +24,6 @@
 //	    return err
 //	}
 //
-// The legacy stateful [New] / [*Lock.Acquire] form is retained for backward
-// compatibility but is deprecated; it offers no protection against the
-// re-acquire-without-release footgun. Prefer [NewLocker] for new code.
 package redislock
 
 import (
@@ -75,6 +72,7 @@ type options struct {
 	ttl           time.Duration
 	retryInterval time.Duration
 	maxAttempts   int
+	maxWait       time.Duration
 }
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
@@ -92,13 +90,25 @@ func WithRetry(interval time.Duration, maxAttempts int) Option {
 	}
 }
 
+// WithMaxWait caps the total wall-clock time Acquire is willing to
+// spend retrying. Useful when the caller has no ctx deadline and wants
+// to bound retries by elapsed time rather than attempt count alone.
+// Zero (default) disables the cap; only ctx-cancellation and
+// maxAttempts apply.
+func WithMaxWait(d time.Duration) Option {
+	return func(o *options) {
+		if d > 0 {
+			o.maxWait = d
+		}
+	}
+}
+
 // Locker is a long-lived factory for per-key distributed locks. It implements
 // [lock.Locker], so callers depending on the kit-level interface can swap in
 // alternative backends (for example pgadvisorylock).
 //
 // A single Locker is safe for concurrent use; each Acquire produces a fresh
-// Lock handle with its own owner token, eliminating the re-acquire footgun
-// of the legacy stateful API.
+// Lock handle with its own owner token.
 type Locker struct {
 	client redis.UniversalClient
 	opts   options
@@ -127,25 +137,34 @@ func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
 // Returns (nil, false, ctx.Err()) if the context is cancelled while waiting
 // to retry.
 func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
-	handle := &Lock{
+	h := &handle{
 		client: lc.client,
 		key:    key,
 		token:  generateToken(),
 		opts:   lc.opts,
 	}
 
-	ok, err := handle.tryAcquire(ctx)
+	start := time.Now()
+	ok, err := h.tryAcquire(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	if ok {
-		return handle, true, nil
+		return h, true, nil
 	}
 	if lc.opts.maxAttempts == 0 {
 		return nil, false, nil
 	}
 
 	for attempt := 1; attempt < lc.opts.maxAttempts; attempt++ {
+		// Bound by total wall-clock so a long retryInterval × maxAttempts
+		// can't outlast the caller's effective deadline. If the caller's
+		// ctx has its own deadline that fires first, the select below
+		// catches it; this max-elapsed cap protects callers using
+		// context.Background().
+		if lc.opts.maxWait > 0 && time.Since(start) >= lc.opts.maxWait {
+			return nil, false, nil
+		}
 		t := time.NewTimer(lc.opts.retryInterval)
 		select {
 		case <-ctx.Done():
@@ -153,12 +172,12 @@ func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, err
 			return nil, false, ctx.Err()
 		case <-t.C:
 		}
-		ok, err := handle.tryAcquire(ctx)
+		ok, err := h.tryAcquire(ctx)
 		if err != nil {
 			return nil, false, err
 		}
 		if ok {
-			return handle, true, nil
+			return h, true, nil
 		}
 	}
 	return nil, false, nil
@@ -209,192 +228,16 @@ func releaseAndJoin(l lock.Lock, key string, retErr *error) {
 	}
 }
 
-// Lock provides distributed mutual exclusion using Redis. A Lock is safe for
-// use by a single goroutine at a time. Create separate Lock instances (via
-// [Locker.Acquire] — preferred — or the legacy [New]) for concurrent
-// acquisition attempts.
-type Lock struct {
+// handle is the internal lock-state struct that backs the [lock.Lock]
+// returned by [Locker.Acquire]. Each successful Acquire produces a fresh
+// handle with a unique token; the previous public Lock type and its
+// stateful Acquire/Release/Extend methods were removed in v2 because the
+// re-Acquire footgun couldn't be guarded against statically.
+type handle struct {
 	client redis.UniversalClient
 	key    string
 	token  string
 	opts   options
-}
-
-// New creates a stateful Lock for the given key.
-//
-// Deprecated: Use [NewLocker] + [Locker.Acquire]. The stateful pattern allows
-// callers to call Acquire twice on the same handle, which silently orphans
-// the previous Redis lock until TTL expiry. The Locker form returns a fresh
-// handle per Acquire and removes the footgun.
-func New(client redis.UniversalClient, key string, opts ...Option) *Lock {
-	if client == nil {
-		panic("redislock: New requires a non-nil Redis client")
-	}
-	o := options{ttl: 30 * time.Second}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	return &Lock{
-		client: client,
-		key:    key,
-		opts:   o,
-	}
-}
-
-// Acquire attempts to acquire the lock. It returns (true, nil) on success,
-// (false, nil) if the lock is held by another process, and (false, err) on
-// Redis errors. When retry is configured, Acquire polls at the configured
-// interval for up to maxAttempts before giving up.
-//
-// Each call generates a fresh random token to prevent stale-state issues
-// if a previous Release failed silently.
-//
-// WARNING: Do not call Acquire on a lock that is already held — it returns
-// an error rather than silently regenerating the token (which would orphan
-// the previous Redis lock until TTL). Always Release first, or use
-// [NewLocker] / [Locker.Acquire] for the safer per-call-handle pattern.
-//
-// Deprecated: Use [Locker.Acquire].
-func (l *Lock) Acquire(ctx context.Context) (bool, error) {
-	if l.token != "" {
-		return false, fmt.Errorf("lock: already acquired (key %q) — call Release before re-acquiring", l.key)
-	}
-	l.token = generateToken()
-
-	acquired, err := l.tryAcquire(ctx)
-	if err != nil {
-		l.token = ""
-		return false, err
-	}
-	if acquired || l.opts.maxAttempts == 0 {
-		if !acquired {
-			l.token = ""
-		}
-		return acquired, nil
-	}
-
-	for attempt := 1; attempt < l.opts.maxAttempts; attempt++ {
-		t := time.NewTimer(l.opts.retryInterval)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			l.token = ""
-			return false, ctx.Err()
-		case <-t.C:
-		}
-
-		acquired, err = l.tryAcquire(ctx)
-		if err != nil {
-			l.token = ""
-			return false, err
-		}
-		if acquired {
-			return true, nil
-		}
-	}
-
-	l.token = ""
-	return false, nil
-}
-
-// Extend resets the lock's TTL to the configured duration, but only if the
-// caller still owns the lock (token matches). Returns true if the extension
-// succeeded, false if the lock was already released or acquired by another
-// process. Use this to prevent TTL expiry during long-running operations.
-//
-// A typical pattern for long operations:
-//
-//	ticker := time.NewTicker(lock.TTL() / 3)
-//	defer ticker.Stop()
-//	for {
-//	    select {
-//	    case <-ticker.C:
-//	        if ok, _ := lock.Extend(ctx); !ok { return lock.ErrLockLost }
-//	    case <-done:
-//	        return nil
-//	    }
-//	}
-func (l *Lock) Extend(ctx context.Context) (bool, error) {
-	ttlMs := l.opts.ttl.Milliseconds()
-	result, err := extendScript.Run(ctx, l.client, []string{l.key}, l.token, ttlMs).Int64()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return false, fmt.Errorf("lock: extend failed: %w", err)
-	}
-	return result == 1, nil
-}
-
-// TTL returns the configured lock TTL duration.
-func (l *Lock) TTL() time.Duration {
-	return l.opts.ttl
-}
-
-// Release releases the lock. Returns [lock.ErrLockLost] if the lock had
-// already expired or been claimed by another process by the time Release ran
-// — callers performing critical-section work should treat that as "my work
-// may have raced with another holder; reconcile." Returns nil if the lock
-// was successfully released or if no lock was ever acquired on this handle.
-func (l *Lock) Release(ctx context.Context) error {
-	if l.token == "" {
-		// Nothing to release — Acquire failed or was never called.
-		return nil
-	}
-	result, err := releaseScript.Run(ctx, l.client, []string{l.key}, l.token).Int64()
-	l.token = "" // allow re-acquire either way
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return fmt.Errorf("lock: release failed: %w", err)
-	}
-	if result == 0 {
-		return lock.ErrLockLost
-	}
-	return nil
-}
-
-// WithLock acquires the lock, runs fn, and releases the lock. The lock is
-// released even if fn returns an error or panics. If acquisition fails,
-// WithLock returns an error without calling fn.
-//
-// If Release detects the lock was lost mid-fn, [lock.ErrLockLost] is joined
-// with fn's error so callers can inspect both via errors.Is.
-//
-// Release uses a fresh background context (not the caller's ctx) to ensure
-// the lock is released even if fn exhausted a deadline or was cancelled.
-//
-// WARNING: This lock does NOT provide fencing tokens. If fn takes longer
-// than the lock TTL, another process can acquire the lock concurrently.
-// For critical database writes, use SELECT FOR UPDATE or application-layer
-// fencing. See package doc for details.
-//
-// Deprecated: Use [Locker.WithLock].
-func (l *Lock) WithLock(ctx context.Context, fn func(ctx context.Context) error) (retErr error) {
-	acquired, err := l.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("lock: acquire failed: %w", err)
-	}
-	if !acquired {
-		return fmt.Errorf("lock: could not acquire lock %q", l.key)
-	}
-
-	defer releaseAndJoin(l, l.key, &retErr)
-	return fn(ctx)
-}
-
-// WithLockValue acquires the lock, runs fn, and releases the lock, returning
-// the value produced by fn. This is a generic alternative to [Lock.WithLock]
-// that avoids closure variables for callers that need a return value from
-// the critical section.
-//
-// Deprecated: Use [LockerWithValue] with [NewLocker].
-func WithLockValue[T any](ctx context.Context, l *Lock, fn func(context.Context) (T, error)) (value T, retErr error) {
-	acquired, err := l.Acquire(ctx)
-	if err != nil {
-		return value, fmt.Errorf("lock: acquire failed: %w", err)
-	}
-	if !acquired {
-		return value, fmt.Errorf("lock: could not acquire lock %q", l.key)
-	}
-
-	defer releaseAndJoin(l, l.key, &retErr)
-	return fn(ctx)
 }
 
 // LockerWithValue acquires the lock for `key`, runs fn, releases the lock,
@@ -413,7 +256,39 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 	return fn(ctx)
 }
 
-func (l *Lock) tryAcquire(ctx context.Context) (bool, error) {
+// Release releases the lock. Returns [lock.ErrLockLost] if the lock had
+// already expired or been claimed by another process by the time Release
+// ran — callers performing critical-section work should treat that as
+// "my work may have raced with another holder; reconcile."
+func (l *handle) Release(ctx context.Context) error {
+	if l.token == "" {
+		return nil
+	}
+	result, err := releaseScript.Run(ctx, l.client, []string{l.key}, l.token).Int64()
+	l.token = ""
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("lock: release failed: %w", err)
+	}
+	if result == 0 {
+		return lock.ErrLockLost
+	}
+	return nil
+}
+
+// Extend resets the lock's TTL to the configured duration, but only if
+// the caller still owns the lock (token matches). Returns true if the
+// extension succeeded, false if the lock was already released or
+// acquired by another process.
+func (l *handle) Extend(ctx context.Context) (bool, error) {
+	ttlMs := l.opts.ttl.Milliseconds()
+	result, err := extendScript.Run(ctx, l.client, []string{l.key}, l.token, ttlMs).Int64()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return false, fmt.Errorf("lock: extend failed: %w", err)
+	}
+	return result == 1, nil
+}
+
+func (l *handle) tryAcquire(ctx context.Context) (bool, error) {
 	ok, err := l.client.SetNX(ctx, l.key, l.token, l.opts.ttl).Result()
 	if err == nil {
 		return ok, nil
@@ -429,7 +304,12 @@ func (l *Lock) tryAcquire(ctx context.Context) (bool, error) {
 	// Best-effort: probe with a short, ctx-scoped GET. If we see OUR token,
 	// the SET landed and we own the lock. Otherwise the original error is
 	// returned so the caller knows the acquire genuinely failed.
-	probeCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	//
+	// 250ms cap (down from 1s in earlier versions) — if the network was
+	// flaky enough to break SETNX it's also unlikely to recover in time
+	// for a usable probe. Keep the cap tight so a cancelled ctx returns
+	// quickly.
+	probeCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
 	current, getErr := l.client.Get(probeCtx, l.key).Result()
 	if getErr == nil && current == l.token {

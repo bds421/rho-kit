@@ -264,6 +264,11 @@ func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
 
 	switch {
 	case b.cfg.InsecureSkipHostKeyVerify:
+		// Opt-in escape hatch — emit a loud WARN so an operator who
+		// flipped the flag for local testing sees it in production logs
+		// if it leaks into a deployed config.
+		b.logger.Warn("sftp: host-key verification disabled — InsecureSkipHostKeyVerify is set; the connection is vulnerable to MITM",
+			slog.String("host", b.cfg.Host))
 		cfg.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // opt-in via config
 	case b.cfg.KnownHostsFile != "":
 		hostKeyCallback, err := knownhosts.New(b.cfg.KnownHostsFile)

@@ -26,10 +26,15 @@ const (
 )
 
 // FieldError represents a single field-level validation error.
+//
+// Code uses the typed [Code] alphabet so the JSON shape ("NOT_FOUND",
+// "VALIDATION", …) cannot drift between backend and client. Untyped string
+// codes (the v1 form) are not accepted — use one of the documented
+// [Code] constants or define a new one in this package.
 type FieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
-	Code    string `json:"code,omitempty"`
+	Code    Code   `json:"code,omitempty"`
 }
 
 // AppError is the common interface for all application error types.
@@ -249,6 +254,19 @@ func NewDependencyUnavailable(dependency, msg string, cause error) error {
 	return &UnavailableError{
 		Message:    msg,
 		Dependency: dependency,
+		cause:      cause,
+	}
+}
+
+// NewUnavailableWithRetryAfter creates an UnavailableError that surfaces a
+// retry-after hint to the caller. Use this when the service can estimate
+// when it will be ready (config-reload window, scheduled maintenance,
+// dependency reconnect timer) — clients (and HTTP middleware) can honor
+// the hint via Retry-After / Retry-After-style headers.
+func NewUnavailableWithRetryAfter(msg string, retryAfter time.Duration, cause error) error {
+	return &UnavailableError{
+		Message:    msg,
+		RetryAfter: retryAfter,
 		cause:      cause,
 	}
 }

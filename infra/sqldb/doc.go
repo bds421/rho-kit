@@ -1,5 +1,8 @@
-// Package database contains database config helpers and SQL utilities.
+// Package sqldb is the kit's PostgreSQL surface: connection config,
+// pool tuning, error classification, schema-safe column quoting, and
+// the [Pinger] interface used by the readiness probe.
 //
-// It centralizes DSN construction, pooling defaults, and env loading for
-// MariaDB/MySQL and PostgreSQL so services stay consistent and safe by default.
+// v2 dropped MySQL/MariaDB and GORM. The data path is now pgx (driver)
+// + sqlc (typed query generation) + goose (migrations). Heavy SDK
+// adapters live in infra/sqldb/pgx.
 package sqldb

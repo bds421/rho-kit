@@ -3,8 +3,6 @@ module github.com/bds421/rho-kit/data/lock/pgadvisory
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/data/lock v1.1.0
-	github.com/bds421/rho-kit/infra/sqldb v1.3.0
 	github.com/lib/pq v1.12.3
 	github.com/stretchr/testify v1.11.1
 )
@@ -14,8 +12,10 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
-	github.com/bds421/rho-kit/observability/health v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/data v0.0.0
+	github.com/bds421/rho-kit/infra v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -77,3 +77,11 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../../../core
+
+replace github.com/bds421/rho-kit/observability => ../../../observability
+
+replace github.com/bds421/rho-kit/data => ../../../data
+
+replace github.com/bds421/rho-kit/infra => ../../../infra

@@ -7,4 +7,6 @@
 // The middleware requires a [Store] implementation for persistence. Use
 // [NewMemoryStore] for testing and [redis/redisstore.New] for production
 // multi-instance deployments.
+//
+// asvs: V11.1.2
 package idempotency

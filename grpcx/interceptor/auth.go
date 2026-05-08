@@ -31,10 +31,10 @@ type grpcScopes string
 type grpcTrustedS2SMarker struct{}
 
 var (
-	userIDKey      contextutil.Key[grpcUserID]
-	permissionsKey contextutil.Key[grpcPermissions]
-	scopesKey      contextutil.Key[grpcScopes]
-	trustedS2SKey  contextutil.Key[grpcTrustedS2SMarker]
+	userIDKey      = contextutil.NewKey[grpcUserID]("grpcx.auth.user_id")
+	permissionsKey = contextutil.NewKey[grpcPermissions]("grpcx.auth.permissions")
+	scopesKey      = contextutil.NewKey[grpcScopes]("grpcx.auth.scopes")
+	trustedS2SKey  = contextutil.NewKey[grpcTrustedS2SMarker]("grpcx.auth.trusted_s2s")
 )
 
 // xUserIDMetadataKey is the gRPC metadata key carrying the impersonated

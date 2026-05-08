@@ -10,7 +10,7 @@ import (
 	"github.com/bds421/rho-kit/core/contextutil"
 )
 
-var testStringKey contextutil.Key[string]
+var testStringKey = contextutil.NewKey[string]("test-string")
 
 func TestKey_SetGet(t *testing.T) {
 	ctx := testStringKey.Set(context.Background(), "hello")
@@ -27,48 +27,32 @@ func TestKey_Missing(t *testing.T) {
 }
 
 func TestKey_MustGet_Panics(t *testing.T) {
-	assert.PanicsWithValue(t, "contextutil: Key[string] not found in context; ensure the value was set upstream and named types are used to avoid collisions", func() {
+	assert.Panics(t, func() {
 		testStringKey.MustGet(context.Background())
 	})
 }
 
-func TestKey_SameType_SameKey(t *testing.T) {
-	// Two Key[string] variables share the same context slot by design.
-	// Use named types to distinguish values of the same underlying type.
-	var keyA contextutil.Key[string]
-	var keyB contextutil.Key[string]
+func TestKey_SameType_DistinctIdentity(t *testing.T) {
+	// Two NewKey[string] calls produce distinct context keys, even
+	// though they share the same type parameter — this is the v2
+	// guarantee that closes off the cross-package collision footgun.
+	keyA := contextutil.NewKey[string]("A")
+	keyB := contextutil.NewKey[string]("B")
 
 	ctx := keyA.Set(context.Background(), "from-A")
-	ctx = keyB.Set(ctx, "from-B") // overwrites "from-A"
+	ctx = keyB.Set(ctx, "from-B")
 
-	val, ok := keyA.Get(ctx)
-	require.True(t, ok)
-	assert.Equal(t, "from-B", val) // same slot
-}
-
-// Named types provide distinct keys for the same underlying type.
-type userID string
-type sessionID string
-
-func TestKey_NamedTypes_NoCollision(t *testing.T) {
-	var userKey contextutil.Key[userID]
-	var sessionKey contextutil.Key[sessionID]
-
-	ctx := userKey.Set(context.Background(), "user-123")
-	ctx = sessionKey.Set(ctx, "session-456")
-
-	u, uOk := userKey.Get(ctx)
-	s, sOk := sessionKey.Get(ctx)
-
-	require.True(t, uOk)
-	require.True(t, sOk)
-	assert.Equal(t, userID("user-123"), u)
-	assert.Equal(t, sessionID("session-456"), s)
+	a, aOK := keyA.Get(ctx)
+	b, bOK := keyB.Get(ctx)
+	require.True(t, aOK)
+	require.True(t, bOK)
+	assert.Equal(t, "from-A", a)
+	assert.Equal(t, "from-B", b)
 }
 
 func TestKey_DifferentTypes(t *testing.T) {
-	var strKey contextutil.Key[string]
-	var intKey contextutil.Key[int]
+	strKey := contextutil.NewKey[string]("str")
+	intKey := contextutil.NewKey[int]("int")
 
 	ctx := strKey.Set(context.Background(), "text")
 	ctx = intKey.Set(ctx, 42)
@@ -80,4 +64,18 @@ func TestKey_DifferentTypes(t *testing.T) {
 	require.True(t, intOk)
 	assert.Equal(t, "text", strVal)
 	assert.Equal(t, 42, intVal)
+}
+
+func TestKey_ZeroValue_PanicsOnSet(t *testing.T) {
+	var unconstructed contextutil.Key[string]
+	assert.Panics(t, func() {
+		unconstructed.Set(context.Background(), "x")
+	})
+}
+
+func TestKey_ZeroValue_GetReturnsFalse(t *testing.T) {
+	var unconstructed contextutil.Key[string]
+	v, ok := unconstructed.Get(context.Background())
+	assert.False(t, ok)
+	assert.Zero(t, v)
 }

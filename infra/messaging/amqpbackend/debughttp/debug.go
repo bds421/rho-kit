@@ -115,8 +115,21 @@ func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc
 // Request body: { "exchange": "...", "routing_key": "...", "payload": { ... } }
 // Response:     { "ok": true, "message_id": "..." }
 func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
+	// nil allowedExchanges is now treated as "deny all" rather than the
+	// previous "allow all" — a missing allowlist on a publish endpoint
+	// is RCE-equivalent and is the kind of misconfiguration a strict
+	// kit must refuse. Operators that genuinely want every exchange
+	// must pass an explicit "*" entry (handled below).
+	if allowedExchanges == nil {
+		panic("debughttp: PublishHandler requires a non-nil allowedExchanges (use []string{\"*\"} to opt into open-publish, []string{} to deny all)")
+	}
+	allowAny := false
 	allowed := make(map[string]struct{}, len(allowedExchanges))
 	for _, e := range allowedExchanges {
+		if e == "*" {
+			allowAny = true
+			continue
+		}
 		allowed[e] = struct{}{}
 	}
 
@@ -135,7 +148,7 @@ func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, l
 			return
 		}
 
-		if len(allowed) > 0 {
+		if !allowAny {
 			if _, ok := allowed[req.Exchange]; !ok {
 				httpx.WriteError(w, http.StatusBadRequest, "exchange not allowed")
 				return

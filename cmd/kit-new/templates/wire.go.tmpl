@@ -3,16 +3,39 @@
 package app
 
 import (
+{{- if or .MCP .Postgres}}
 	"context"
-	"errors"
+{{- end}}
+{{- if .Postgres}}
+	"embed"
+{{- end}}
+	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	kitapp "github.com/bds421/rho-kit/app"
+{{- if .Postgres}}
+
+	"github.com/bds421/rho-kit/core/config"
+{{- end}}
 {{- if .MCP}}
 
 	"github.com/bds421/rho-kit/httpx/mcp"
 {{- end}}
+{{- if .Postgres}}
+
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
+{{- end}}
 )
+
+{{- if .Postgres}}
+
+// migrationsFS embeds the goose migrations applied at startup. Add
+// .sql files under db/migrations/ — sqlc reads the same directory as
+// its schema source so query types match the live schema.
+//
+//go:embed db/migrations/*.sql
+var migrationsFS embed.FS
+{{- end}}
 
 {{- if .MCP}}
 
@@ -53,33 +76,49 @@ func newMCPServer() *mcp.Server {
 }
 {{- end}}
 
-// Run blocks until ctx cancels or the service errors.
+// Run wires the service via [app.Builder] and blocks until the
+// service exits. The Builder installs the kit's production-safety
+// validator at startup (TLS required, JWT issuer + audience required,
+// internal port loopback-only, no weak postgres sslmode); each check
+// has a documented WithoutXxx opt-out, but production deployments must
+// not use those casually.
 //
-// This skeleton is intentionally minimal — wire your routes and
-// dependencies here. The kit's app.Builder is the recommended
-// starting point; kit-new keeps this file simple so the generated
-// service compiles before the kit modules are added.
-func Run(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-{{- if .MCP}}
-
-	// Mount the MCP JSON-RPC endpoint. Wrap with the kit's
-	// middleware stack (auth, tenant, rate limit) in production —
-	// the Server itself is just an http.Handler so middleware is
-	// composed externally.
-	mux.Handle("/mcp", newMCPServer().HTTP())
-{{- end}}
-
-	srv := httpx.NewServer(":8080", mux)
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-	}()
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+// The router-only skeleton below mounts a single readiness handler.
+// Add Redis / messaging / cache modules with the matching Builder
+// methods (WithRedis, WithRabbitMQ, WithNATS, ...). The Builder
+// composes the middleware chain so adding modules does not change
+// router code.
+func Run(_ *slog.Logger) error {
+	cfg, err := kitapp.LoadBaseConfig(8080)
+	if err != nil {
 		return err
 	}
-	return nil
+
+	b := kitapp.New("{{.ServiceName}}", "", cfg)
+{{- if .Postgres}}
+
+	// Postgres + sqlc + goose is the canonical data path. The pgx pool
+	// surfaces on infra.DB inside the router; query that pool through
+	// the sqlc-generated code in db/sqlc/.
+	dsn := config.MustGetSecret("DATABASE_URL", "")
+	b = b.WithPostgres(pgxbackend.Config{DSN: dsn}).WithMigrations(migrationsFS)
+{{- end}}
+
+	return b.
+		Router(func(_ kitapp.Infrastructure) http.Handler {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+{{- if .MCP}}
+
+			// Mount the MCP JSON-RPC endpoint. Builder.WithJWT /
+			// .WithMultiTenant / .WithTenantBudget add the kit's
+			// auth + tenant + budget middleware around the public
+			// mux automatically — nothing extra to do here.
+			mux.Handle("/mcp", newMCPServer().HTTP())
+{{- end}}
+			return mux
+		}).
+		Run()
 }

@@ -740,7 +740,8 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 
 	p := NewProvider(srv.URL, srv.Client(), 100*time.Millisecond,
 		WithExpectedIssuer("test"),
-		WithAllowAnyAudience())
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -799,7 +800,8 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 
 	p := NewProvider(srv.URL, srv.Client(), time.Hour,
 		WithAllowAnyIssuer(),
-		WithAllowAnyAudience())
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

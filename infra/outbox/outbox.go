@@ -112,17 +112,18 @@ type Writer struct {
 // WriterOption configures the Writer.
 type WriterOption func(*Writer)
 
-// WithRequireTransaction makes Write fail when ctx does not carry an active
-// transaction handle. The check is performed by the supplied predicate so
-// outbox stays decoupled from any specific tx backend (gormdb, pgx, raw
-// database/sql). The predicate should return nil when ctx carries a tx, and
-// a descriptive error otherwise.
+// WithRequireTransaction makes Write fail when ctx does not carry an
+// active transaction handle. The check is performed by the supplied
+// predicate so outbox stays decoupled from any specific tx backend
+// (pgx, sqlc-generated wrappers, raw database/sql). The predicate
+// should return nil when ctx carries a tx, and a descriptive error
+// otherwise.
 //
-// Typical wiring with the gorm-based store:
+// Typical wiring with a pgx-backed store:
 //
-//	import "github.com/bds421/rho-kit/infra/sqldb/gormdb"
+//	import "github.com/jackc/pgx/v5"
 //	w := outbox.NewWriter(store, outbox.WithRequireTransaction(func(ctx context.Context) error {
-//	    if _, ok := gormdb.TxFromContext(ctx); !ok {
+//	    if _, ok := ctx.Value(pgxTxKey).(pgx.Tx); !ok {
 //	        return errors.New("outbox: write outside transaction not allowed")
 //	    }
 //	    return nil

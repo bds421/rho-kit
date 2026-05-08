@@ -1,3 +1,4 @@
+// asvs: V12.1.1, V12.3.1, V13.4.1
 package storagehttp
 
 import (
@@ -101,6 +102,17 @@ func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage
 		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize must be positive or Unlimited (-1), got %d", opts.MaxFileSize)
 	}
 	opts.applyDefaults()
+
+	// Hard transport-level cap before the multipart parser sees a byte.
+	// http.MaxBytesReader cuts the request stream at the configured
+	// limit so a slow attacker streaming gigabytes of bogus data is
+	// stopped at the wire, not after the multipart parser has read
+	// past it. The cap is MaxFileSize plus a generous overhead for
+	// headers + form metadata; cap at MaxFileSize+1MiB.
+	if opts.MaxFileSize > 0 {
+		const overhead = 1 << 20 // 1 MiB
+		r.Body = http.MaxBytesReader(nil, r.Body, opts.MaxFileSize+overhead)
+	}
 
 	mr, err := r.MultipartReader()
 	if err != nil {

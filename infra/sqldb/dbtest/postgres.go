@@ -12,9 +12,10 @@ import (
 	"github.com/bds421/rho-kit/infra/sqldb"
 )
 
-// StartPostgres launches a PostgreSQL container and returns a PostgresConfig for connecting.
-// The container is automatically terminated when the test completes.
-func StartPostgres(t *testing.T, dbName string) sqldb.PostgresConfig {
+// StartPostgres launches a PostgreSQL container and returns a [sqldb.Config]
+// for connecting. The container is automatically terminated when the test
+// completes.
+func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 	t.Helper()
 
 	ctx := context.Background()
@@ -43,12 +44,12 @@ func StartPostgres(t *testing.T, dbName string) sqldb.PostgresConfig {
 		t.Fatalf("get postgres port: %v", err)
 	}
 
-	return sqldb.PostgresConfig{
+	return sqldb.Config{
 		Host:     host,
 		Port:     port.Int(),
 		User:     "test",
 		Password: "test",
 		Name:     dbName,
-		SSLMode:  "disable",
+		Options:  map[string]string{"sslmode": "disable"},
 	}
 }

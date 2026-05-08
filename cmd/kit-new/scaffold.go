@@ -45,7 +45,25 @@ type Params struct {
 	// resolves (proxy, GOPROXY, replaces). Set to a concrete tag
 	// (e.g. "v2.0.0") to lock the scaffold to a known release.
 	RhoVersion string
+	// GoVersion is the minimum-required go version emitted into
+	// go.mod's `go` directive. Empty (the default) renders [DefaultGoVersion],
+	// a bare major.minor line so downstream toolchains pick up patch
+	// updates automatically. Override only when targeting a specific
+	// major.minor floor.
+	GoVersion string
+	// Postgres scaffolds the sqlc + pgx golden path: sqlc.yaml,
+	// db/queries/*.sql, db/sqlc/ output dir, Makefile generate target,
+	// wire.go.tmpl picks up app.Builder.WithPostgres + WithMigrations.
+	// v2 made this the canonical data path; the kit no longer ships a
+	// GORM scaffold.
+	Postgres bool
 }
+
+// DefaultGoVersion is the bare major.minor line emitted into the
+// scaffolded go.mod when [Params.GoVersion] is empty. Tracks the
+// kit's minimum supported toolchain — bumped in a coordinated PR
+// when the kit raises its floor.
+const DefaultGoVersion = "1.26"
 
 // rhoVersionPattern accepts the version specifiers Go accepts in a
 // go.mod require directive: full semver tags ("v2.0.0",
@@ -54,20 +72,34 @@ type Params struct {
 // non-version sentinels would produce a go.mod that does not parse.
 var rhoVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
+// goVersionPattern accepts only major.minor (e.g. "1.26"). Patch
+// versions are deliberately rejected: a `go` directive in go.mod is a
+// minimum-required floor, and pinning to a patch version forces every
+// downstream toolchain to that exact build for no benefit.
+var goVersionPattern = regexp.MustCompile(`^\d+\.\d+$`)
+
 // templateFile maps a template name to its destination path within
 // the generated tree. Add a row to ship a new file from a new
 // template.
 var templateFile = []struct {
 	tmpl string // file under templates/
 	dest string // path relative to output dir; supports {{.ServiceName}}
+	gate string // optional Params field name; row is skipped when the field is false
 }{
-	{"main.go.tmpl", "cmd/{{.ServiceName}}/main.go"},
-	{"wire.go.tmpl", "internal/app/wire.go"},
-	{"go.mod.tmpl", "go.mod"},
-	{"README.md.tmpl", "README.md"},
-	{"Makefile.tmpl", "Makefile"},
-	{"AGENTS.md.tmpl", "AGENTS.md"},
-	{"ci.yml.tmpl", ".github/workflows/ci.yml"},
+	{"main.go.tmpl", "cmd/{{.ServiceName}}/main.go", ""},
+	{"wire.go.tmpl", "internal/app/wire.go", ""},
+	{"go.mod.tmpl", "go.mod", ""},
+	{"README.md.tmpl", "README.md", ""},
+	{"Makefile.tmpl", "Makefile", ""},
+	{"AGENTS.md.tmpl", "AGENTS.md", ""},
+	{"ci.yml.tmpl", ".github/workflows/ci.yml", ""},
+
+	// Postgres + sqlc golden path. Gated on Params.Postgres so a
+	// consumer scaffolding a no-DB service (e.g., a plain HTTP
+	// proxy) doesn't get an unused sqlc.yaml.
+	{"sqlc.yaml.tmpl", "sqlc.yaml", "Postgres"},
+	{"db_query_sample.sql.tmpl", "db/queries/users.sql", "Postgres"},
+	{"db_schema_sample.sql.tmpl", "db/migrations/00001_users.sql", "Postgres"},
 }
 
 // scaffold writes the generated tree into outDir. Returns an error on
@@ -84,6 +116,11 @@ func scaffold(outDir string, p Params) error {
 	if p.RhoVersion != "" && !rhoVersionPattern.MatchString(p.RhoVersion) {
 		return fmt.Errorf("kit-new: RhoVersion %q must be a semver tag like v2.0.0 or a pseudo-version", p.RhoVersion)
 	}
+	if p.GoVersion == "" {
+		p.GoVersion = DefaultGoVersion
+	} else if !goVersionPattern.MatchString(p.GoVersion) {
+		return fmt.Errorf("kit-new: GoVersion %q must be major.minor like 1.26 (no patch, no prefix)", p.GoVersion)
+	}
 
 	absOutDir, err := filepath.Abs(outDir)
 	if err != nil {
@@ -96,6 +133,9 @@ func scaffold(outDir string, p Params) error {
 	prefix := absOutDir + string(filepath.Separator)
 
 	for _, row := range templateFile {
+		if row.gate != "" && !gateActive(p, row.gate) {
+			continue
+		}
 		body, err := fs.ReadFile(templatesFS, "templates/"+row.tmpl)
 		if err != nil {
 			return fmt.Errorf("kit-new: read template %q: %w", row.tmpl, err)
@@ -144,4 +184,18 @@ func renderString(t *template.Template, data any) (string, error) {
 		return "", err
 	}
 	return b.String(), nil
+}
+
+// gateActive reports whether a templateFile row's gate (a Params bool
+// field name like "Postgres" or "MCP") is true. Unknown gate names
+// panic — they indicate a code-side typo, not a runtime user error.
+func gateActive(p Params, gate string) bool {
+	switch gate {
+	case "Postgres":
+		return p.Postgres
+	case "MCP":
+		return p.MCP
+	default:
+		panic("kit-new: unknown template gate " + gate)
+	}
 }

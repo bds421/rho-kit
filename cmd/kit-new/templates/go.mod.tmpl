@@ -1,8 +1,10 @@
 module {{.ModulePath}}
 
-go 1.26.2
+go {{.GoVersion}}
 {{if .RhoVersion}}
-require github.com/bds421/rho-kit/httpx {{.RhoVersion}}
-{{if .MCP}}
-require github.com/bds421/rho-kit/httpx/mcp {{.RhoVersion}}
-{{end}}{{end}}
+require (
+	github.com/bds421/rho-kit/app {{.RhoVersion}}
+	github.com/bds421/rho-kit/httpx {{.RhoVersion}}{{if .Postgres}}
+	github.com/bds421/rho-kit/core {{.RhoVersion}}
+	github.com/bds421/rho-kit/infra {{.RhoVersion}}{{end}}
+){{end}}

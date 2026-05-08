@@ -6,22 +6,25 @@
 //
 //	go run github.com/bds421/rho-kit/cmd/kit-migrate publish --to=./migrations
 //	go run github.com/bds421/rho-kit/cmd/kit-migrate list
+//	go run github.com/bds421/rho-kit/cmd/kit-migrate check --to=./migrations
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/bds421/rho-kit/data/idempotency/pgstore"
-	"github.com/bds421/rho-kit/observability/auditlog/gormstore"
 )
 
-// registry maps kit component names to their embedded migration filesystems.
-// Add new entries here when kit packages provide migrations.
+// registry maps kit component names to their embedded migration
+// filesystems. Add new entries here when kit packages provide
+// migrations. v2 dropped auditlog/gormstore — a pgx-native auditlog
+// store with its own migrations is a follow-up; the actionlog and
+// approval pgx adapters already ship their own.
 var registry = map[string]fs.FS{
-	"auditlog":    gormstore.Migrations,
 	"idempotency": pgstore.Migrations,
 }
 
@@ -36,6 +39,8 @@ func main() {
 		cmdList()
 	case "publish":
 		cmdPublish()
+	case "check":
+		cmdCheck()
 	default:
 		usage()
 		os.Exit(1)
@@ -47,9 +52,10 @@ func usage() {
   kit-migrate list                    List available kit migrations
   kit-migrate publish --to=DIR        Copy kit migrations to DIR
   kit-migrate publish --to=DIR NAME   Copy only named component's migrations
+  kit-migrate check --to=DIR          Detect drift between kit and on-disk migrations
 
 Options:
-  --to=DIR   Target migration directory (required for publish)
+  --to=DIR   Target migration directory (required for publish/check)
 `)
 }
 
@@ -68,9 +74,13 @@ func cmdPublish() {
 	var filterName string
 
 	for _, arg := range os.Args[2:] {
-		if len(arg) > 5 && arg[:5] == "--to=" {
+		switch {
+		case len(arg) > 5 && arg[:5] == "--to=":
 			targetDir = arg[5:]
-		} else if arg[0] != '-' {
+		case arg == "--to":
+			fmt.Fprintf(os.Stderr, "Error: --to requires a value (use --to=DIR)\n")
+			os.Exit(1)
+		case len(arg) > 0 && arg[0] != '-':
 			filterName = arg
 		}
 	}
@@ -87,6 +97,7 @@ func cmdPublish() {
 
 	published := 0
 	skipped := 0
+	drifted := 0
 
 	for name, fsys := range registry {
 		if filterName != "" && name != filterName {
@@ -102,16 +113,25 @@ func cmdPublish() {
 		for _, filename := range files {
 			targetPath := filepath.Join(targetDir, filename)
 
-			// Idempotent: skip if already exists
-			if _, err := os.Stat(targetPath); err == nil {
-				skipped++
-				continue
-			}
-
 			data, err := fs.ReadFile(fsys, "migrations/"+filename)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", filename, err)
 				os.Exit(1)
+			}
+
+			// Detect drift: a kit-published migration that has been
+			// edited locally is a silent forward-compat hazard. The
+			// kit ships a fix, the operator has diverged, the next
+			// publish does nothing — and the bug stays. Compare
+			// bytes; on mismatch, warn but do not overwrite.
+			if existing, statErr := os.ReadFile(targetPath); statErr == nil {
+				if !bytes.Equal(existing, data) {
+					fmt.Fprintf(os.Stderr, "  drift: %s (from %s) — on-disk file differs from kit version; not overwritten\n", filename, name)
+					drifted++
+				} else {
+					skipped++
+				}
+				continue
 			}
 
 			if err := os.WriteFile(targetPath, data, 0o644); err != nil {
@@ -124,13 +144,90 @@ func cmdPublish() {
 		}
 	}
 
-	if published == 0 && skipped > 0 {
+	switch {
+	case published == 0 && skipped > 0 && drifted == 0:
 		fmt.Printf("All migrations already published (%d skipped)\n", skipped)
-	} else if published > 0 {
-		fmt.Printf("Published %d migration(s), %d already existed\n", published, skipped)
-	} else {
+	case published > 0:
+		fmt.Printf("Published %d migration(s), %d already existed, %d drifted\n", published, skipped, drifted)
+	case drifted > 0:
+		fmt.Printf("No new migrations published; %d drifted (see warnings above)\n", drifted)
+		os.Exit(2)
+	default:
 		fmt.Println("No migrations to publish")
 	}
+}
+
+// cmdCheck reports any kit migration whose on-disk copy has diverged
+// from the embedded version, without writing anything. Exits 0 when
+// every kit migration is in sync (or absent), 2 when drift is detected.
+// Designed for CI gates: `kit-migrate check --to=./migrations` is a
+// pre-merge guard that fails the build when a teammate has hand-edited
+// a kit-managed migration.
+func cmdCheck() {
+	var targetDir string
+	var filterName string
+
+	for _, arg := range os.Args[2:] {
+		switch {
+		case len(arg) > 5 && arg[:5] == "--to=":
+			targetDir = arg[5:]
+		case arg == "--to":
+			fmt.Fprintf(os.Stderr, "Error: --to requires a value (use --to=DIR)\n")
+			os.Exit(1)
+		case len(arg) > 0 && arg[0] != '-':
+			filterName = arg
+		}
+	}
+
+	if targetDir == "" {
+		fmt.Fprintf(os.Stderr, "Error: --to=DIR is required\n")
+		os.Exit(1)
+	}
+
+	drifted := 0
+	checked := 0
+
+	for name, fsys := range registry {
+		if filterName != "" && name != filterName {
+			continue
+		}
+
+		files, err := listMigrations(fsys)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading %s migrations: %v\n", name, err)
+			os.Exit(1)
+		}
+
+		for _, filename := range files {
+			targetPath := filepath.Join(targetDir, filename)
+			existing, err := os.ReadFile(targetPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", targetPath, err)
+				os.Exit(1)
+			}
+
+			data, err := fs.ReadFile(fsys, "migrations/"+filename)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading embedded %s: %v\n", filename, err)
+				os.Exit(1)
+			}
+
+			checked++
+			if !bytes.Equal(existing, data) {
+				fmt.Printf("  drift: %s (from %s)\n", filename, name)
+				drifted++
+			}
+		}
+	}
+
+	if drifted > 0 {
+		fmt.Fprintf(os.Stderr, "%d migration(s) have drifted from the kit version\n", drifted)
+		os.Exit(2)
+	}
+	fmt.Printf("OK: %d migration(s) in sync with kit\n", checked)
 }
 
 // listMigrations returns the filenames from the migrations/ subdirectory.

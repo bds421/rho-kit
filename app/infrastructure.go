@@ -7,9 +7,10 @@ import (
 	"net/http"
 
 	"google.golang.org/grpc"
-	"gorm.io/gorm"
 
+	kitauthz "github.com/bds421/rho-kit/authz"
 	"github.com/bds421/rho-kit/crypto/paseto"
+	kitflags "github.com/bds421/rho-kit/flags"
 	"github.com/bds421/rho-kit/data/actionlog"
 	"github.com/bds421/rho-kit/data/approval"
 	"github.com/bds421/rho-kit/data/budget"
@@ -27,13 +28,10 @@ import (
 	"github.com/bds421/rho-kit/security/jwtutil"
 )
 
-// RouterFunc builds the service's HTTP handler from the initialized infrastructure.
-// It is called after all With*() infrastructure is set up but before the server starts.
+// RouterFunc builds the service's HTTP handler from the initialized
+// infrastructure. It is called after all With*() infrastructure is set
+// up but before the server starts.
 type RouterFunc func(infra Infrastructure) http.Handler
-
-// SeedFunc is called when the --seed flag is present. It receives the DB and seed
-// file path. If it returns nil, the process exits cleanly after seeding.
-type SeedFunc func(db *gorm.DB, seedPath string, logger *slog.Logger) error
 
 // Infrastructure is the collection of initialized infrastructure components
 // passed to the RouterFunc. Nil fields indicate the corresponding With*()
@@ -51,10 +49,9 @@ type Infrastructure struct {
 	ClientTLS *tls.Config
 	ServerTLS *tls.Config
 
-	DB       *gorm.DB // nil if no WithMySQL or WithPostgres
-	DBReader *gorm.DB // read replica; falls back to DB when no replica is configured
-
-	Pgx *pgxbackend.Pool // nil if no WithPgx — pgx-native pool
+	// DB is the canonical Postgres pool. v2 dropped MySQL/MariaDB and
+	// GORM; pgx is the only supported driver. Configured via WithPostgres.
+	DB *pgxbackend.Pool
 
 	Broker    messaging.Connector        // nil if no WithRabbitMQ
 	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
@@ -71,6 +68,8 @@ type Infrastructure struct {
 	TenantBudget  budget.Budget    // nil if no WithTenantBudget
 	ActionLog     actionlog.Logger // nil if no WithActionLogger
 	ApprovalStore approval.Store   // nil if no WithApprovalStore
+	Authz         kitauthz.Decider // nil if no WithAuthz
+	Flags         *kitflags.Client // nil if no WithFeatureFlags
 
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit

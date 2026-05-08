@@ -142,6 +142,42 @@ func (s *String) Close() error {
 	return nil
 }
 
+// Equal reports whether s and other carry equal byte sequences. The
+// comparison runs in constant time relative to the secret length, so
+// using Equal does not create a timing side-channel that distinguishes
+// "right secret, wrong length" from "wrong secret, right length".
+//
+// nil and uninitialised Strings are treated as empty; two empty
+// secrets compare equal.
+func (s *String) Equal(other *String) bool {
+	a, b := []byte(nil), []byte(nil)
+	if s != nil && s.inner != nil {
+		s.inner.mu.RLock()
+		a = append(a, s.inner.buf...)
+		s.inner.mu.RUnlock()
+	}
+	if other != nil && other.inner != nil {
+		other.inner.mu.RLock()
+		b = append(b, other.inner.buf...)
+		other.inner.mu.RUnlock()
+	}
+	return constantTimeEqual(a, b)
+}
+
+// constantTimeEqual compares two byte slices in constant time relative
+// to max(len(a), len(b)). Returns true iff a and b have identical
+// length and content.
+func constantTimeEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := 0; i < len(a); i++ {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
+}
+
 // The redaction methods use VALUE receivers so they remain in the method
 // set when the type is used by value. Pointer (*String) automatically
 // satisfies the same interfaces because Go promotes value-receiver

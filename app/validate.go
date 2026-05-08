@@ -1,3 +1,4 @@
+// asvs: V14.1.1, V14.4.1, V9.1.1
 package app
 
 import (
@@ -79,20 +80,8 @@ func (b *Builder) Validate() error {
 		return err
 	}
 
-	if b.dbDriver != nil && b.dbPoolCfg == nil {
-		return fmt.Errorf("database pool config is required when a database is configured")
-	}
-	if b.dbDriver != nil && b.pgxCfg != nil {
-		return fmt.Errorf("WithPgx and WithPostgres/WithMySQL are mutually exclusive — pick one DB driver")
-	}
-	if b.dbMetrics && b.dbDriver == nil {
-		return fmt.Errorf("database metrics require a configured database")
-	}
-	if b.seedFn != nil && b.dbDriver == nil {
-		return fmt.Errorf("seed requires a configured database")
-	}
-	if b.migrationsDir != nil && b.dbDriver == nil && b.pgxCfg == nil {
-		return fmt.Errorf("migrations require a configured database (use WithMySQL, WithPostgres, or WithPgx)")
+	if b.migrationsDir != nil && b.pgxCfg == nil {
+		return fmt.Errorf("WithMigrations requires WithPostgres — migrations need a configured database")
 	}
 	if b.criticalBroker && b.mqURL == "" {
 		return fmt.Errorf("critical broker requires a RabbitMQ URL")
@@ -173,20 +162,11 @@ func (b *Builder) validateProductionSafety() error {
 		return fmt.Errorf("Internal.Host=%q exposes unauthenticated /metrics on all interfaces; bind to a loopback or internal interface, or call WithInternalNonLoopback when network isolation is enforced", b.cfg.Internal.Host)
 	}
 
-	// Postgres: sslmode must be a TLS-enforcing mode.
-	if b.dbDriver != nil && b.dbCfg != nil && isPostgresDriver(b.dbDriver) {
-		mode := strings.ToLower(b.dbCfg.Option("sslmode", ""))
-		switch mode {
-		case "require", "verify-ca", "verify-full":
-			// ok
-		case "":
-			return fmt.Errorf("postgres sslmode must be set (require/verify-ca/verify-full); none configured")
-		case "allow", "prefer", "disable":
-			return fmt.Errorf("postgres sslmode=%q does not fail closed on TLS handshake error; use require/verify-ca/verify-full", mode)
-		default:
-			return fmt.Errorf("postgres sslmode=%q is unrecognized", mode)
-		}
-	}
+	// Postgres TLS validation lives inside the pgx package's Connect — by
+	// the time the pool is opened, the DSN sslmode is checked and the
+	// connection fails closed if it would silently degrade. The Builder
+	// does not pre-parse the DSN here because pgx is the single source
+	// of truth for what counts as a hardened TLS configuration.
 
 	// Tracing: full sampling is a collector-cost foot-gun.
 	if b.tracingCfg != nil && b.tracingCfg.SampleRate > 0.1 {
@@ -196,21 +176,3 @@ func (b *Builder) validateProductionSafety() error {
 	return nil
 }
 
-// isPostgresDriver inspects the driver type without taking a hard
-// dependency on the gormpostgres package's type at the validate
-// layer. The Driver interface's String/Name signature gives us enough
-// disambiguation for both kit-shipped drivers.
-func isPostgresDriver(d any) bool {
-	if d == nil {
-		return false
-	}
-	type named interface{ Name() string }
-	if n, ok := d.(named); ok {
-		return strings.Contains(strings.ToLower(n.Name()), "postgres")
-	}
-	type stringer interface{ String() string }
-	if s, ok := d.(stringer); ok {
-		return strings.Contains(strings.ToLower(s.String()), "postgres")
-	}
-	return strings.Contains(strings.ToLower(fmt.Sprintf("%T", d)), "postgres")
-}

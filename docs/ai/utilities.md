@@ -1,6 +1,6 @@
 # Utilities — Errors, Validation, Pagination, Cache, Lifecycle, Concurrency
 
-Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `core/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
+Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `data/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
 
 ## apperror — Sum-Type Application Errors
 

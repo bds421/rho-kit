@@ -3,19 +3,17 @@ module github.com/bds421/rho-kit/infra/messaging/redisbackend
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/data/stream/redisstream v1.1.0
-	github.com/bds421/rho-kit/infra/messaging v1.2.0
+	github.com/bds421/rho-kit/data/stream/redisstream v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
-	github.com/bds421/rho-kit/infra/redis v1.2.0 // indirect
-	github.com/bds421/rho-kit/io/atomicfile v1.1.0 // indirect
-	github.com/bds421/rho-kit/observability/health v1.1.0 // indirect
-	github.com/bds421/rho-kit/observability/promutil v1.1.0 // indirect
-	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/infra v0.0.0
+	github.com/bds421/rho-kit/infra/redis v0.0.0 // indirect
+	github.com/bds421/rho-kit/io v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/resilience v0.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -40,3 +38,17 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../../../core
+
+replace github.com/bds421/rho-kit/resilience => ../../../resilience
+
+replace github.com/bds421/rho-kit/observability => ../../../observability
+
+replace github.com/bds421/rho-kit/infra => ../../../infra
+
+replace github.com/bds421/rho-kit/io => ../../../io
+
+replace github.com/bds421/rho-kit/data/stream/redisstream => ../../../data/stream/redisstream
+
+replace github.com/bds421/rho-kit/infra/redis => ../../redis

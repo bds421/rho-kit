@@ -59,10 +59,7 @@ func (m *pgxModule) runMigrations(ctx context.Context) error {
 	sqlDB := stdlib.OpenDBFromPool(m.pool.Pool())
 	defer func() { _ = sqlDB.Close() }()
 
-	applied, err := migrate.UpDB(ctx, sqlDB, migrate.Config{
-		Dir:     m.migrationsDir,
-		Dialect: "postgres",
-	})
+	applied, err := migrate.Up(ctx, sqlDB, migrate.Config{Dir: m.migrationsDir})
 	if err != nil {
 		return fmt.Errorf("pgx module: migrations failed: %w", err)
 	}
@@ -90,7 +87,7 @@ func (m *pgxModule) HealthChecks() []health.DependencyCheck {
 }
 
 func (m *pgxModule) Populate(infra *Infrastructure) {
-	infra.Pgx = m.pool
+	infra.DB = m.pool
 }
 
 func (m *pgxModule) Close(_ context.Context) error {

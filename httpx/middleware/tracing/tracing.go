@@ -1,5 +1,7 @@
 // Package tracing provides OpenTelemetry HTTP middleware for span creation
 // and outbound trace context propagation.
+//
+// asvs: V7.1.1
 package tracing
 
 import (

@@ -32,17 +32,20 @@ app.Main("my-service", version, func(logger *slog.Logger) error {
     cfg, err := LoadConfig()
     if err != nil { return err }
     return app.New("my-service", version, cfg.BaseConfig).
-        WithPostgres(cfg.Database, cfg.DatabasePool, &Model{}).
+        WithPostgres(cfg.Database, cfg.DatabasePool).
         WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
         WithRabbitMQ(cfg.AMQPURL).
+        WithJWTAudience("my-service").
         WithJWT(cfg.JWKSURL).
         WithIPRateLimit(100, time.Minute).
         WithTracing(tracingCfg).
         Router(func(infra app.Infrastructure) http.Handler {
+            // Auto-migrate / register repositories using infra.DB here.
             mux := http.NewServeMux()
             // register routes using infra.DB, infra.Publisher, etc.
+            csrfMW := csrf.New(csrf.WithSecret(cfg.CSRFSecret))
             return stack.Default(mux, logger,
-                stack.WithOuter(csrf.RequireCSRF, csrf.RequireJSONContentType),
+                stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
             )
         }).
         Run()
@@ -78,7 +81,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |
 | Task queue (single consumer) | `data/queue/redisqueue` | [redis](docs/ai/redis.md) |
 | Cross-service messaging | `infra/messaging` interfaces + backend | [messaging](docs/ai/messaging.md) |
-| Connect to MariaDB/PostgreSQL | `infra/sqldb`, `infra/sqldb/gormdb` | [database](docs/ai/sqldb.md) |
+| Connect to MySQL/PostgreSQL | `infra/sqldb`, `infra/sqldb/gormdb` | [database](docs/ai/sqldb.md) |
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |
 | Encrypt DB fields | `crypto/encrypt.FieldEncryptor` | [security](docs/ai/security.md) |
@@ -102,6 +105,35 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Test storage backends | `testutil/storagetest` | [testing](docs/ai/testing.md) |
 | In-memory DB for unit tests | `testutil/memdb` | [testing](docs/ai/testing.md) |
 | In-memory broker for unit tests | `messaging/membroker` | [testing](docs/ai/testing.md) |
+| Safe integer cast (no silent overflow) | `core/safecast` | [utilities](docs/ai/utilities.md) |
+| Cryptographically random strings (OTPs, tokens) | `core/randstr` | [utilities](docs/ai/utilities.md) |
+| Zeroizable secret type | `core/secret` | [utilities](docs/ai/utilities.md) |
+| Tenant-aware identity helpers | `core/tenant` | [utilities](docs/ai/utilities.md) |
+| Per-tenant cost / spend ledger | `data/budget` (+ `memory`/`redis` backends) | [redis](docs/ai/redis.md) |
+| Async approval workflows | `data/approval` (+ `memory`/`postgres`) | [utilities](docs/ai/utilities.md) |
+| Append-only chained action log | `data/actionlog` (+ `memory`/`postgres`) | [utilities](docs/ai/utilities.md) |
+| In-memory rate limiter (token bucket) | `data/ratelimit/tokenbucket` | [http](docs/ai/http.md) |
+| In-memory rate limiter (smooth, GCRA) | `data/ratelimit/gcra` | [http](docs/ai/http.md) |
+| Distributed rate limiter (Redis GCRA) | `data/ratelimit/redis` | [redis](docs/ai/redis.md) |
+| Per-tenant cache scoping | `data/cache/tenant` | [redis](docs/ai/redis.md) |
+| Per-tenant idempotency scoping | `data/idempotency/tenant` | [redis](docs/ai/redis.md) |
+| Postgres advisory lock | `data/lock/pgadvisory` | [database](docs/ai/sqldb.md) |
+| MCP-compatible HTTP handlers | `httpx/mcp` | [http](docs/ai/http.md) |
+| HMAC request signing | `httpx/sign`, `httpx/middleware/signedrequest` | [security](docs/ai/security.md) |
+| Safe URL helpers | `httpx/urlutil` | [utilities](docs/ai/utilities.md) |
+| HTTP request budget enforcement | `httpx/budget`, `httpx/middleware/budget` | [http](docs/ai/http.md) |
+| PASETO v4 token issuance / verification | `crypto/paseto` | [security](docs/ai/security.md) |
+| Argon2id password hashing | `crypto/passhash` | [security](docs/ai/security.md) |
+| Envelope encryption (DEK + KEK) | `crypto/envelope`, `crypto/envelope/kekstatic` | [security](docs/ai/security.md) |
+| RED metrics for HTTP/gRPC handlers | `observability/redmetrics` | [observability](docs/ai/observability.md) |
+| Go runtime metrics | `observability/runtimemetrics` | [observability](docs/ai/observability.md) |
+| SLO checker (latency, error/success rate) | `observability/slo` | [observability](docs/ai/observability.md) |
+| pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
+| Service health check binary | `cmd/kit-doctor`, `observability/health.RunHealthCheck` | [observability](docs/ai/observability.md) |
+| Scaffold a new service | `cmd/kit-new` | — |
+| Performance regression gate | `cmd/kit-bench-gate` | — |
+| NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
+| Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
 
 ## Key Conventions
 
@@ -123,7 +155,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Never** embed user IDs or request IDs in Redis/Prometheus metric names — causes cardinality explosion.
 - **Never** use raw client filenames as storage keys — use `storagehttp.UUIDKeyFunc`.
 - **Never** skip `validate.Struct()` on user input — it returns `apperror.ValidationError` with field details.
-- **Never** call `WithMariaDB` and `WithPostgres` together — they are mutually exclusive.
+- **Never** call `WithMySQL` and `WithPostgres` together — they are mutually exclusive.
 - **Never** ACK messages on transient errors — return the error so retry/DLX handles it.
 - **Never** use `idempotency.NewMemoryStore()` in production — it only works on a single instance. Use `redis/redisstore.New()` for multi-instance deployments.
 - **Never** store `SSRFSafeTransport` long-term — the resolved IP may go stale. Create a new transport per request.

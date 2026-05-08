@@ -6,10 +6,10 @@
 //
 //   - infra/leaderelection/pgadvisory — Postgres advisory lock.
 //     Recommended when the service already has a Postgres dependency.
-//   - infra/leaderelection/k8slease (TODO) — coordination.k8s.io
-//     Lease object. Recommended for k8s-native deployments.
-//   - infra/leaderelection/redislock (TODO) — wraps redislock with a
-//     renew loop. Use when neither Postgres nor k8s is in the path.
+//   - infra/leaderelection/redislock — wraps redislock with a renew
+//     loop. Use when Postgres is not in the path.
+//   - infra/leaderelection/k8slease (planned) — coordination.k8s.io
+//     Lease object for k8s-native deployments. Track via the v2 backlog.
 //
 // The contract is: exactly one Run goroutine across all replicas
 // observes its OnAcquired callback at any time. When ctx cancels or

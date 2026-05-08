@@ -2,10 +2,47 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/bds421/rho-kit/infra/storage"
 )
+
+// runShutdownHooks invokes every registered hook synchronously, with
+// individual panic recovery and a per-hook timeout. Each hook gets a
+// fresh 10s context so a misbehaving hook cannot block the rest of the
+// shutdown sequence.
+//
+// Called from the lifecycle.Runner's BeforeStop callback so hooks see
+// live infrastructure connections — DB pools, Redis clients, message
+// brokers are still open at this point. Component teardown runs only
+// after this function returns.
+func runShutdownHooks(_ context.Context, hooks []func(context.Context), logger *slog.Logger) {
+	for i, fn := range hooks {
+		func(idx int, hook func(context.Context)) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.Error("shutdown hook panicked",
+						"hook_index", idx,
+						"panic", rec,
+					)
+				}
+			}()
+			hookCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				hook(hookCtx)
+			}()
+			select {
+			case <-done:
+			case <-hookCtx.Done():
+				logger.Error("shutdown hook timed out", "hook_index", idx)
+			}
+		}(i, fn)
+	}
+}
 
 type storageSpec struct {
 	name    string
@@ -24,19 +61,15 @@ type bgSpec struct {
 }
 
 // buildIntegrationModules converts builder config from the With*() methods
-// (WithMySQL, WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT)
-// into internal modules. The With*() methods are the primary public API;
-// modules are the internal implementation. These modules are prepended to
-// user-registered modules so built-in infrastructure initializes first.
+// (WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT) into
+// internal modules. The With*() methods are the primary public API;
+// modules are the internal implementation. These modules are prepended
+// to user-registered modules so built-in infrastructure initializes first.
 //
-// Registration order matters: tracing -> httpclient -> jwt, because each module
-// depends on the previous one during Init.
-//
-// The returned *databaseModule is non-nil when a database is configured. Run()
-// uses it to check for seed early-exit after module initialization.
-func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
+// Registration order matters: tracing -> httpclient -> jwt, because each
+// module depends on the previous one during Init.
+func (b *Builder) buildIntegrationModules() []Module {
 	var modules []Module
-	var dbMod *databaseModule
 
 	// Tracing must come first -- httpClientModule reads its Active() state.
 	if b.tracingCfg != nil {
@@ -44,10 +77,8 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 	}
 
 	// HTTP client is always created -- other modules and infra need it.
-	// It reads tracing state when a tracing module is registered.
 	modules = append(modules, newHTTPClientModule(b.tracingCfg != nil))
 
-	// JWT depends on httpClientModule for the HTTP client.
 	if b.jwksURL != "" {
 		modules = append(modules, newJWTModule(jwtModuleConfig{
 			jwksURL:        b.jwksURL,
@@ -57,23 +88,12 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		}))
 	}
 
-	// PASETO is independent of httpClientModule — the caller-built
-	// Provider already encapsulates whatever key source it uses.
 	if b.pasetoProvider != nil {
 		modules = append(modules, newPasetoModule(b.pasetoProvider))
 	}
 
-	if b.dbDriver != nil {
-		dbMod = newDatabaseModule(databaseModuleConfig{
-			driver:        b.dbDriver,
-			cfg:           *b.dbCfg,
-			poolCfg:       *b.dbPoolCfg,
-			namespace:     b.dbNamespace,
-			migrationsDir: b.migrationsDir,
-			seedFn:        b.seedFn,
-			metrics:       b.dbMetrics,
-		})
-		modules = append(modules, dbMod)
+	if b.pgxCfg != nil {
+		modules = append(modules, newPgxModule(*b.pgxCfg, b.migrationsDir))
 	}
 
 	if b.redisOpts != nil {
@@ -90,15 +110,11 @@ func (b *Builder) buildIntegrationModules() ([]Module, *databaseModule) {
 		modules = append(modules, newNatsModule(*b.natsCfg))
 	}
 
-	if b.pgxCfg != nil {
-		modules = append(modules, newPgxModule(*b.pgxCfg, b.migrationsDir))
-	}
-
 	if b.leaderElector != nil {
 		modules = append(modules, newLeaderModule(b.leaderElector))
 	}
 
-	return modules, dbMod
+	return modules
 }
 
 // buildStorageManager creates a Manager from the named storage specs.

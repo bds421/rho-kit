@@ -124,21 +124,33 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 		contentType = "application/octet-stream"
 	}
 
+	// A separate cancellable ctx for the writer so we can abort the
+	// resumable upload session cleanly on copy failure. Cancelling the
+	// writer's ctx is the GCS SDK's documented way to abort an in-flight
+	// resumable upload — Close on a half-written session would otherwise
+	// leave the session dangling on the server for hours.
+	writerCtx, cancelWriter := context.WithCancel(ctx)
+
 	obj := b.bucket.Object(key)
-	w := obj.NewWriter(ctx)
+	w := obj.NewWriter(writerCtx)
 	w.ContentType = contentType
 	w.Metadata = meta.Custom
 
 	if _, err := io.Copy(w, validated); err != nil {
+		cancelWriter()
+		// Close after cancel reaps any goroutine the SDK started; we
+		// ignore its error because the upload is intentionally aborted.
 		_ = w.Close()
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("gcsbackend: put %q: write: %w", key, err)
 	}
 
 	if err := w.Close(); err != nil {
+		cancelWriter()
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("gcsbackend: put %q: close: %w", key, err)
 	}
+	cancelWriter()
 
 	return nil
 }

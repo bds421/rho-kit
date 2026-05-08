@@ -14,6 +14,8 @@
 // stored parameters are weaker than the verifier's `target` along
 // any dimension, Verify returns needsRehash=true so the caller can
 // transparently upgrade on next login.
+//
+// asvs: V6.2.1
 package passhash
 
 import (
@@ -31,10 +33,20 @@ import (
 // distinguish parse failures from genuine mismatches.
 var (
 	ErrEmptyPassword     = errors.New("passhash: password must not be empty")
+	ErrPasswordTooLong   = errors.New("passhash: password exceeds maximum length")
 	ErrMalformed         = errors.New("passhash: malformed encoded hash")
 	ErrUnsupportedFormat = errors.New("passhash: unsupported encoded format (only argon2id v=19)")
 	ErrParamsOutOfBounds = errors.New("passhash: stored argon2 params exceed the verifier's accepted bounds")
 )
+
+// MaxPasswordLen caps the password length both Hash and Verify will
+// process. Argon2's prelude streams the password through Blake2b
+// without any length cap of its own, so an unbounded password lets an
+// attacker amplify per-request CPU/memory cost (a 100 MiB "password"
+// turns one login attempt into a multi-second worker stall). 1 KiB is
+// orders of magnitude above any legitimate passphrase and below the
+// pathological-DoS threshold.
+const MaxPasswordLen = 1024
 
 // VerifyLimits caps the cost parameters Verify is willing to accept
 // from a stored hash before invoking argon2. A corrupted database row
@@ -153,6 +165,9 @@ func Hash(password string, p Params) (string, error) {
 	if password == "" {
 		return "", ErrEmptyPassword
 	}
+	if len(password) > MaxPasswordLen {
+		return "", ErrPasswordTooLong
+	}
 	if p.SaltLen == 0 {
 		p.SaltLen = DefaultParams().SaltLen
 	}
@@ -203,6 +218,9 @@ func Hash(password string, p Params) (string, error) {
 func Verify(password, encoded string, target Params, opts ...VerifyOption) (matched bool, needsRehash bool, err error) {
 	if password == "" {
 		return false, false, ErrEmptyPassword
+	}
+	if len(password) > MaxPasswordLen {
+		return false, false, ErrPasswordTooLong
 	}
 
 	cfg := verifyConfig{limits: DefaultVerifyLimits()}

@@ -1,0 +1,166 @@
+// Package gcpkms implements [envelope.KEK] backed by GCP KMS. Wrap
+// calls Encrypt with the configured key resource path; Unwrap calls
+// Decrypt. GCP KMS handles version rotation through key versions
+// scoped under a parent key resource — Wrap returns the
+// version-qualified resource name so Unwrap targets the same
+// version.
+//
+// The adapter assumes the caller has set up GCP credentials
+// (Application Default Credentials) and the KMS key grants:
+//
+//   - cloudkms.cryptoKeyVersions.useToEncrypt for Wrap
+//   - cloudkms.cryptoKeyVersions.useToDecrypt for Unwrap
+//
+// # Transit integrity (CRC32C)
+//
+// Every request sends a CRC32C checksum of the plaintext and AAD
+// (or ciphertext + AAD on decrypt). KMS echoes verification flags
+// confirming Google computed the checksum and it matched on receipt.
+// Every response carries a CRC32C of the value it produced, which
+// the adapter verifies against the bytes it actually received.
+// This catches in-flight bit-flips between the client and Google's
+// edge that would otherwise pass silently — TLS protects against
+// active tampering, but proxies, NICs, and middleboxes occasionally
+// corrupt bytes in ways that survive the TLS frame check (rare but
+// observed). The ChecksumMismatchError surfaces these so callers
+// can retry with a clear signal rather than confused-deputy with
+// the body AEAD layer.
+//
+// asvs: V6.2.1, V6.4.1
+package gcpkms
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/crc32"
+
+	kms "cloud.google.com/go/kms/apiv1"
+	"cloud.google.com/go/kms/apiv1/kmspb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
+	"github.com/bds421/rho-kit/crypto/envelope"
+)
+
+// crc32cTable is the Castagnoli polynomial — what Google KMS uses for
+// its CRC32C field. Allocated once at package load so per-call
+// hash.Sum32 has no allocation overhead.
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
+// ErrChecksumMismatch indicates a CRC32C verification failed on a
+// KMS request or response. Either KMS observed a different checksum
+// than the adapter computed (request corrupted in flight) or the
+// adapter observed a different checksum than KMS computed (response
+// corrupted in flight). Callers should retry on this error — it is
+// distinct from cryptographic auth failure and indicates a transient
+// transport problem.
+var ErrChecksumMismatch = errors.New("gcpkms: CRC32C verification failed; retry the request")
+
+// KEK is the GCP KMS-backed [envelope.KEK].
+type KEK struct {
+	c   *kms.KeyManagementClient
+	key string // full resource path: projects/.../locations/.../keyRings/.../cryptoKeys/...
+	aad []byte
+}
+
+// Config bundles the kit's GCP KMS knobs.
+type Config struct {
+	// KeyResource is the key path. Use the parent key (without
+	// version) so GCP KMS auto-selects the primary version on
+	// Encrypt; Wrap returns the version-qualified resource for
+	// Unwrap.
+	KeyResource string
+
+	// AdditionalAuthenticatedData is the AAD passed on every Wrap
+	// and Unwrap. Best practice: include tenant or table identifier
+	// to prevent ciphertext replay across contexts.
+	AdditionalAuthenticatedData []byte
+}
+
+// New builds a KEK from cfg using the given KMS client. Returns an
+// error if KeyResource is empty.
+func New(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
+	if c == nil {
+		return nil, errors.New("gcpkms: client must not be nil")
+	}
+	if cfg.KeyResource == "" {
+		return nil, errors.New("gcpkms: Config.KeyResource must not be empty")
+	}
+	return &KEK{c: c, key: cfg.KeyResource, aad: cfg.AdditionalAuthenticatedData}, nil
+}
+
+// KeyID implements [envelope.KEK]. Returns the parent key resource
+// — telemetry only.
+func (k *KEK) KeyID() string { return k.key }
+
+// Wrap implements [envelope.KEK]. Calls GCP KMS Encrypt and returns
+// the version-qualified resource name (e.g.
+// "projects/.../cryptoKeyVersions/3") for the envelope header so
+// Unwrap targets that exact version. Sends and verifies CRC32C
+// checksums on both the request (plaintext + AAD) and response
+// (ciphertext) per Google's transit-integrity guidelines.
+func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
+	req := &kmspb.EncryptRequest{
+		Name:                           k.key,
+		Plaintext:                      dek,
+		PlaintextCrc32C:                crc32c(dek),
+		AdditionalAuthenticatedData:    k.aad,
+		AdditionalAuthenticatedDataCrc32C: crc32c(k.aad),
+	}
+	resp, err := k.c.Encrypt(ctx, req)
+	if err != nil {
+		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", err)
+	}
+	if resp.GetName() == "" {
+		return "", nil, errors.New("gcpkms: encrypt response missing Name")
+	}
+	if !resp.GetVerifiedPlaintextCrc32C() {
+		return "", nil, fmt.Errorf("%w: KMS did not verify plaintext CRC32C — request bytes corrupted in flight", ErrChecksumMismatch)
+	}
+	if k.aad != nil && !resp.GetVerifiedAdditionalAuthenticatedDataCrc32C() {
+		return "", nil, fmt.Errorf("%w: KMS did not verify AAD CRC32C — request bytes corrupted in flight", ErrChecksumMismatch)
+	}
+	ciphertext := resp.GetCiphertext()
+	if got, want := crc32.Checksum(ciphertext, crc32cTable), uint32(resp.GetCiphertextCrc32C().GetValue()); got != want {
+		return "", nil, fmt.Errorf("%w: response ciphertext CRC32C mismatch (got=%x want=%x); response bytes corrupted in flight", ErrChecksumMismatch, got, want)
+	}
+	return resp.GetName(), ciphertext, nil
+}
+
+// Unwrap implements [envelope.KEK]. Calls GCP KMS Decrypt with the
+// version-qualified Name pinned at Wrap time. Sends and verifies
+// CRC32C checksums on both the request (ciphertext + AAD) and
+// response (plaintext).
+func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
+	req := &kmspb.DecryptRequest{
+		Name:                              keyID,
+		Ciphertext:                        wrapped,
+		CiphertextCrc32C:                  crc32c(wrapped),
+		AdditionalAuthenticatedData:       k.aad,
+		AdditionalAuthenticatedDataCrc32C: crc32c(k.aad),
+	}
+	resp, err := k.c.Decrypt(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gcpkms: decrypt: %w", err)
+	}
+	plaintext := resp.GetPlaintext()
+	if got, want := crc32.Checksum(plaintext, crc32cTable), uint32(resp.GetPlaintextCrc32C().GetValue()); got != want {
+		return nil, fmt.Errorf("%w: response plaintext CRC32C mismatch (got=%x want=%x); response bytes corrupted in flight", ErrChecksumMismatch, got, want)
+	}
+	return plaintext, nil
+}
+
+// crc32c returns a wrapped Int64 holding the Castagnoli CRC32C of
+// data. Returns nil when data is empty so KMS treats the field as
+// unset (the API rejects zero CRC32C values for non-empty payloads
+// when ForceSendFields is not set; we sidestep that path by omitting
+// the wrapper rather than sending {Value: 0}).
+func crc32c(data []byte) *wrapperspb.Int64Value {
+	if len(data) == 0 {
+		return nil
+	}
+	return wrapperspb.Int64(int64(crc32.Checksum(data, crc32cTable)))
+}
+
+// Compile-time guard.
+var _ envelope.KEK = (*KEK)(nil)

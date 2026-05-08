@@ -68,15 +68,71 @@ func NewSigner(opts ...SignerOption) *Signer {
 
 // Sign computes an HMAC-SHA256 signature using the Signer's clock.
 func (s *Signer) Sign(body []byte, secret []byte) (signature string, timestamp int64, err error) {
+	return s.SignContext(CanonicalContext{}, body, secret)
+}
+
+// CanonicalContext binds additional out-of-band fields into the signed
+// payload so a signature is only valid for the (method, path, domain)
+// triple it was issued for. Use the empty value for legacy contract
+// compatibility (Stripe-webhook-style signing).
+//
+// Recommended usage:
+//
+//	ctx := signing.CanonicalContext{
+//	    Method: "POST",
+//	    Path:   "/v1/webhooks/incoming",
+//	    Domain: "myservice.webhook.v1",
+//	}
+//	sig, ts, err := signer.SignContext(ctx, body, secret)
+//
+// Without a CanonicalContext, a signature for `<ts>.<body>` is portable
+// across any endpoint that accepts the same key — a sloppy KeyResolver
+// can let an attacker replay a signed POST body to a different endpoint.
+type CanonicalContext struct {
+	// Method is the HTTP method ("POST", "PUT", etc.). Empty omits.
+	Method string
+	// Path is the URL path including any query string the receiver
+	// accepts as canonical. Empty omits.
+	Path string
+	// Domain is a free-form domain separator the producer chooses
+	// (typically "<service>.<purpose>.<version>"). Empty omits.
+	Domain string
+}
+
+// SignContext is Sign with an explicit canonical-context binding. See
+// [CanonicalContext] for the recommended fields. Passing the zero
+// CanonicalContext is identical to [Signer.Sign].
+func (s *Signer) SignContext(ctx CanonicalContext, body []byte, secret []byte) (signature string, timestamp int64, err error) {
 	if len(secret) < minSecretLen {
 		return "", 0, ErrEmptySecret
 	}
 	timestamp = s.clock().Unix()
-	payload := fmt.Appendf(nil, "%d.", timestamp)
-	payload = append(payload, body...)
+	payload := buildSignedPayload(ctx, timestamp, body)
 	mac := hmac.New(sha256.New, secret)
 	mac.Write(payload)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil)), timestamp, nil
+}
+
+// buildSignedPayload assembles the bytes to MAC. The format is:
+//   - With empty CanonicalContext:   "<ts>.<body>"  (legacy)
+//   - With any non-empty field:      "v2.<ts>.<method>\n<path>\n<domain>\n<body>"
+//
+// The "v2." prefix prevents cross-version downgrade — a v2 signature can
+// never be misinterpreted as a v1 (legacy) signature because the
+// timestamp bytes do not collide with "v2.".
+func buildSignedPayload(ctx CanonicalContext, ts int64, body []byte) []byte {
+	if ctx.Method == "" && ctx.Path == "" && ctx.Domain == "" {
+		out := fmt.Appendf(nil, "%d.", ts)
+		return append(out, body...)
+	}
+	out := fmt.Appendf(nil, "v2.%d.", ts)
+	out = append(out, ctx.Method...)
+	out = append(out, '\n')
+	out = append(out, ctx.Path...)
+	out = append(out, '\n')
+	out = append(out, ctx.Domain...)
+	out = append(out, '\n')
+	return append(out, body...)
 }
 
 // defaultSigner is the package-level Signer using time.Now as clock source.
@@ -122,6 +178,13 @@ var fallbackMAC [sha256.Size]byte
 //
 // Returns [ErrEmptySecret] if secret is empty.
 func (s *Signer) Verify(secret []byte, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+	return s.VerifyContext(CanonicalContext{}, secret, body, timestamp, signature, maxAge)
+}
+
+// VerifyContext is Verify with an explicit [CanonicalContext]. Pass the
+// same context the producer used in [Signer.SignContext] — a mismatch
+// (e.g. wrong method or path) fails verification.
+func (s *Signer) VerifyContext(ctx CanonicalContext, secret []byte, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
 	if len(secret) < minSecretLen {
 		return false, ErrEmptySecret
 	}
@@ -130,8 +193,7 @@ func (s *Signer) Verify(secret []byte, body []byte, timestamp int64, signature s
 		return false, ErrExpiredSignature
 	}
 
-	payload := fmt.Appendf(nil, "%d.", timestamp)
-	payload = append(payload, body...)
+	payload := buildSignedPayload(ctx, timestamp, body)
 	mac := hmac.New(sha256.New, secret)
 	mac.Write(payload)
 	expectedRaw := mac.Sum(nil)
@@ -158,4 +220,16 @@ func (s *Signer) Verify(secret []byte, body []byte, timestamp int64, signature s
 // Returns [ErrEmptySecret] if secret is empty.
 func Verify(secret []byte, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
 	return defaultSigner.Verify(secret, body, timestamp, signature, maxAge)
+}
+
+// SignContext is the package-level [Signer.SignContext], using the
+// default signer's time.Now clock.
+func SignContext(ctx CanonicalContext, body []byte, secret []byte) (signature string, timestamp int64, err error) {
+	return defaultSigner.SignContext(ctx, body, secret)
+}
+
+// VerifyContext is the package-level [Signer.VerifyContext], using the
+// default signer's time.Now clock.
+func VerifyContext(ctx CanonicalContext, secret []byte, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+	return defaultSigner.VerifyContext(ctx, secret, body, timestamp, signature, maxAge)
 }

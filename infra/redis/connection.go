@@ -258,6 +258,11 @@ func (c *Connection) healthLoop() {
 		select {
 		case <-c.closed:
 			return
+		case <-c.dead:
+			// Permanent failure declared — stop pinging. Earlier
+			// versions kept ticking forever, wasting Redis cycles on
+			// a server the kit had given up on.
+			return
 		case <-ticker.C:
 			c.checkHealth()
 		}

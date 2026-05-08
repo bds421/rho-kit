@@ -1,7 +1,6 @@
 package httpx
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -552,23 +551,6 @@ func TestNewServer_WithWriteTimeout(t *testing.T) {
 	srv := NewServer(":8080", http.NewServeMux(), WithWriteTimeout(0))
 	if srv.WriteTimeout != 0 {
 		t.Fatalf("expected write timeout 0, got %v", srv.WriteTimeout)
-	}
-}
-
-// --- RequestID context ---
-
-func TestRequestID_SetAndGet(t *testing.T) {
-	ctx := SetRequestID(context.Background(), "test-id-123")
-	got := RequestID(ctx)
-	if got != "test-id-123" {
-		t.Fatalf("expected test-id-123, got %q", got)
-	}
-}
-
-func TestRequestID_Missing(t *testing.T) {
-	got := RequestID(context.Background())
-	if got != "" {
-		t.Fatalf("expected empty string, got %q", got)
 	}
 }
 

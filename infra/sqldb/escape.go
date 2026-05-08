@@ -19,33 +19,17 @@ func ValidateColumn(name string) {
 	}
 }
 
-// Dialect controls SQL quoting style for reserved-word escaping.
-type Dialect int
-
-const (
-	// DialectMySQL uses backticks for quoting (MySQL/MariaDB).
-	DialectMySQL Dialect = iota
-	// DialectPostgres uses double quotes for quoting (PostgreSQL).
-	DialectPostgres
-)
-
-// QuoteColumn wraps a column name in the dialect-appropriate quote character.
-// Supports dot-qualified names like "table.column" by quoting each part separately.
-// Escapes embedded quote characters as defense-in-depth, even though ValidateColumn
-// would normally reject names containing them.
-func QuoteColumn(name string, dialect Dialect) string {
-	// Validate to reject multi-dot names ("a.b.c") that would produce
-	// invalid SQL. The safeColumnName regex allows at most one dot.
+// QuoteColumn wraps a column name in PostgreSQL double quotes. Supports
+// dot-qualified names like "table.column" by quoting each part separately.
+// Escapes embedded quote characters as defense-in-depth even though
+// ValidateColumn would normally reject names containing them.
+//
+// v2 dropped the Dialect parameter — kit only supports PostgreSQL now.
+func QuoteColumn(name string) string {
 	ValidateColumn(name)
 
-	q := "`"
-	escape := "``"
-	if dialect == DialectPostgres {
-		q = `"`
-		escape = `""`
-	}
-	// Escape embedded quote characters to prevent SQL injection if
-	// ValidateColumn is somehow bypassed.
+	const q = `"`
+	const escape = `""`
 	name = strings.ReplaceAll(name, q, escape)
 	if strings.Contains(name, ".") {
 		parts := strings.SplitN(name, ".", 2)

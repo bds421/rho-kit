@@ -14,6 +14,8 @@
 // [WithAllowMissingTenantOnSafeMethods] is an explicit opt-out for
 // services that intentionally expose pre-auth GETs through the same
 // router (legacy compatibility).
+//
+// asvs: V4.1.1
 package tenant
 
 import (

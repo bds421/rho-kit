@@ -31,6 +31,11 @@ type MemoryCache struct {
 	// missing" and both write — defeating the whole point of NX.
 	setNXMu sync.Mutex
 
+	// stopSweeper signals the background nxClaims-sweeper goroutine to
+	// exit. Closed by Close.
+	stopSweeper chan struct{}
+	closeOnce   sync.Once
+
 	// nxClaims tracks keys that have been successfully claimed via SetNX.
 	// Ristretto buffers SetWithTTL writes AND its TinyLFU admission policy
 	// may silently reject entries, so a subsequent Get cannot reliably
@@ -197,8 +202,47 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 		return nil, fmt.Errorf("memory cache: init failed: %w", err)
 	}
 	mc.cache = cache
+	mc.stopSweeper = make(chan struct{})
+	go mc.sweepNXClaims()
 
 	return mc, nil
+}
+
+// sweepNXClaims runs a periodic background pass over nxClaims, deleting
+// entries whose recorded expiry has passed. Without this, the map grows
+// unbounded for the process lifetime when callers churn through many
+// distinct SetNX keys (per-user idempotency keys, ephemeral feature
+// flags, etc.) — a slow leak the agent reviewer flagged.
+func (mc *MemoryCache) sweepNXClaims() {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-mc.stopSweeper:
+			return
+		case now := <-t.C:
+			mc.nxClaims.Range(func(k, v any) bool {
+				c, ok := v.(nxClaim)
+				if !ok {
+					return true
+				}
+				if !c.expiresAt.IsZero() && now.After(c.expiresAt) {
+					mc.nxClaims.Delete(k)
+				}
+				return true
+			})
+		}
+	}
+}
+
+// stopBackgroundSweeper closes the nxClaims sweeper. Safe to call
+// multiple times; the existing Close() invokes it.
+func (mc *MemoryCache) stopBackgroundSweeper() {
+	mc.closeOnce.Do(func() {
+		if mc.stopSweeper != nil {
+			close(mc.stopSweeper)
+		}
+	})
 }
 
 // MustNewMemoryCache is like NewMemoryCache but panics on error.
@@ -352,6 +396,7 @@ func (mc *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
 // do so leaks goroutines. In server lifecycle code, register Close as a
 // shutdown hook or use defer.
 func (mc *MemoryCache) Close() error {
+	mc.stopBackgroundSweeper()
 	mc.cache.Close()
 	return nil
 }

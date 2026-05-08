@@ -175,7 +175,7 @@ func TestPublishHandler_Success(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, nil, discardLogger())(rec, req)
+	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -195,7 +195,7 @@ func TestPublishHandler_InvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, nil, discardLogger())(rec, req)
+	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
@@ -208,7 +208,7 @@ func TestPublishHandler_MissingExchange(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, nil, discardLogger())(rec, req)
+	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "exchange is required")
@@ -222,7 +222,7 @@ func TestPublishHandler_MissingRoutingKey(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, nil, discardLogger())(rec, req)
+	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "routing_key is required")
@@ -236,7 +236,7 @@ func TestPublishHandler_PublishError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	PublishHandler(pub, nil, discardLogger())(rec, req)
+	PublishHandler(pub, []string{"*"}, discardLogger())(rec, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 

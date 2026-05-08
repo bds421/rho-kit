@@ -1,3 +1,4 @@
+// asvs: V2.1.5, V2.3.1, V3.2.1, V3.3.1, V4.1.1, V4.1.5
 package auth
 
 import (
@@ -26,11 +27,11 @@ type permissionSet map[string]struct{}
 type trustedS2SMarker struct{}
 
 var (
-	userIDKey      contextutil.Key[authUserID]
-	permissionsKey contextutil.Key[[]string]
-	permSetKey     contextutil.Key[permissionSet]
-	scopesKey      contextutil.Key[authScopes]
-	trustedS2SKey  contextutil.Key[trustedS2SMarker]
+	userIDKey      = contextutil.NewKey[authUserID]("httpx.auth.user_id")
+	permissionsKey = contextutil.NewKey[[]string]("httpx.auth.permissions")
+	permSetKey     = contextutil.NewKey[permissionSet]("httpx.auth.permission_set")
+	scopesKey      = contextutil.NewKey[authScopes]("httpx.auth.scopes")
+	trustedS2SKey  = contextutil.NewKey[trustedS2SMarker]("httpx.auth.trusted_s2s")
 )
 
 // RequireUserWithJWT returns middleware that verifies Oathkeeper-signed JWTs.
@@ -213,6 +214,27 @@ func verifyClientCert(r *http.Request, cfg mtlsIdentityConfig) (bool, string) {
 }
 
 func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, string) {
+	// Refuse CA certificates outright. A CA leaf presented as a client
+	// cert would otherwise bypass the SAN/CN allowlist if the operator's
+	// CA is sloppy enough to issue one with a matching CN.
+	if cert.IsCA {
+		return false, ""
+	}
+	// Require ExtKeyUsage to include ClientAuth. Server-auth-only certs
+	// (or certs with no EKU at all) must not authenticate clients —
+	// this catches mis-issued certs that the operator's CA chained-of-trust
+	// happens to accept.
+	hasClientAuth := false
+	for _, eku := range cert.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+			hasClientAuth = true
+			break
+		}
+	}
+	if !hasClientAuth && len(cert.ExtKeyUsage) > 0 {
+		return false, ""
+	}
+
 	for _, u := range cert.URIs {
 		if u == nil {
 			continue

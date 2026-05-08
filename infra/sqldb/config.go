@@ -12,10 +12,13 @@ import (
 	"github.com/bds421/rho-kit/core/config"
 )
 
-// Config holds database connection settings for any SQL driver.
-// Driver-specific settings (e.g. PostgreSQL sslmode, MySQL charset) go in
-// the Options map. The Driver implementation reads the options it needs
-// and ignores the rest.
+// Config holds PostgreSQL connection settings. v2 dropped MySQL/MariaDB
+// support — pgx + sqlc is the canonical data path now and there is no
+// reason to abstract over a database the kit no longer ships.
+//
+// Driver-specific tuning (sslmode, application_name, statement_timeout)
+// goes in Options. The driver layer reads what it needs and ignores
+// the rest, so adding a new pg-side knob is a one-line key/value pair.
 type Config struct {
 	Host     string
 	Port     int
@@ -23,11 +26,11 @@ type Config struct {
 	Password string
 	Name     string
 	LogLevel string            // "info" for verbose SQL logging, default "warn"
-	Options  map[string]string // driver-specific options (e.g. "sslmode", "charset", "tls")
+	Options  map[string]string // pg-specific options (e.g. "sslmode", "application_name")
 }
 
-// Option returns the value for the given driver-specific option key, or
-// the fallback if not set. Keys are case-sensitive.
+// Option returns the value for the given option key, or the fallback if
+// not set. Keys are case-sensitive.
 func (c Config) Option(key, fallback string) string {
 	if v, ok := c.Options[key]; ok {
 		return v
@@ -35,52 +38,32 @@ func (c Config) Option(key, fallback string) string {
 	return fallback
 }
 
-// IsTLSEnabled reports whether the configured driver options *require* a
-// TLS connection that fails closed on handshake error. Recognised values:
+// IsTLSEnabled reports whether the configured options *require* a TLS
+// connection that fails closed on handshake error: sslmode in
+// {require, verify-ca, verify-full}. "prefer" and "allow" silently
+// degrade to plaintext and are NOT considered enabled.
 //
-//   - PostgreSQL: sslmode in {require, verify-ca, verify-full}
-//   - MySQL/MariaDB: tls in {true, custom-*}
-//
-// "tls=preferred" and "tls=skip-verify" are treated as NOT enabled:
-//   - "preferred" silently degrades to plaintext on handshake failure;
-//   - "skip-verify" accepts any certificate (vulnerable to MITM).
-//
-// Callers in production-validation paths should use this helper rather
-// than parsing Options themselves so the kit stays the single source of
-// truth on what counts as a hardened TLS setup. If you need a softer
-// "TLS attempted" check (e.g. for telemetry), use [Config.IsTLSAttempted]
-// instead.
+// Production-validation paths use this helper so the kit stays the
+// single source of truth for what counts as a hardened TLS setup.
 func (c Config) IsTLSEnabled() bool {
 	switch strings.ToLower(c.Option("sslmode", "")) {
 	case "require", "verify-ca", "verify-full":
-		return true
-	}
-	if strings.ToLower(c.Option("tls", "")) == "true" {
-		return true
-	}
-	// MySQL "custom-*" registered TLS configs always enable TLS with
-	// caller-supplied verification.
-	if v := c.Option("tls", ""); strings.HasPrefix(v, "custom-") {
 		return true
 	}
 	return false
 }
 
 // IsTLSAttempted is a softer companion to [Config.IsTLSEnabled] that
-// also returns true for modes which *attempt* TLS but do not fail closed
-// (Postgres "prefer"/"allow", MySQL "preferred"/"skip-verify"). Use this
-// only for telemetry — never for production gating, because the connection
-// can still end up in plaintext or accept a forged peer.
+// also returns true for modes which *attempt* TLS but do not fail
+// closed (Postgres "prefer" / "allow"). Use only for telemetry — never
+// for production gating, because the connection can still end up in
+// plaintext.
 func (c Config) IsTLSAttempted() bool {
 	if c.IsTLSEnabled() {
 		return true
 	}
 	switch strings.ToLower(c.Option("sslmode", "")) {
 	case "allow", "prefer":
-		return true
-	}
-	switch strings.ToLower(c.Option("tls", "")) {
-	case "preferred", "skip-verify":
 		return true
 	}
 	return false
@@ -97,14 +80,14 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
-// ParsePostgresDSN parses a PostgreSQL connection URI into a [Config].
+// ParseDSN parses a PostgreSQL connection URI into a [Config].
 // Accepted schemes: "postgres", "postgresql".
 // Format: postgres://user:password@host:port/dbname?sslmode=require
 //
-// The password is automatically percent-decoded. Port defaults to 5432 if omitted.
-// The sslmode query parameter is extracted if present.
+// The password is automatically percent-decoded. Port defaults to 5432
+// if omitted. The sslmode query parameter is extracted into Options.
 // LogLevel is not part of the DSN and must be set separately.
-func ParsePostgresDSN(rawURL string) (Config, error) {
+func ParseDSN(rawURL string) (Config, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse DATABASE_URL: %w", err)
@@ -142,62 +125,7 @@ func ParsePostgresDSN(rawURL string) (Config, error) {
 	}, nil
 }
 
-// ParseMySQLDSN parses a MySQL/MariaDB connection URI into a [Config].
-// Format: mysql://user:password@host:port/dbname?tls=true&charset=utf8mb4
-//
-// The password is automatically percent-decoded. Port defaults to 3306 if omitted.
-// LogLevel is not part of the DSN and must be set separately.
-//
-// Recognised query options are preserved into Config.Options so the
-// driver layer can honour them in the constructed go-sql-driver DSN —
-// most importantly "tls". Without preservation, "tls=true" silently
-// degrades to a plaintext connection while [Config.IsTLSEnabled]
-// reports TLS as on.
-func ParseMySQLDSN(rawURL string) (Config, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return Config{}, fmt.Errorf("parse DATABASE_URL: %w", err)
-	}
-	if u.Scheme != "mysql" {
-		return Config{}, fmt.Errorf("DATABASE_URL scheme must be mysql, got %q", u.Scheme)
-	}
-
-	port := 3306
-	if u.Port() != "" {
-		port, err = strconv.Atoi(u.Port())
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid port in DATABASE_URL: %w", err)
-		}
-	}
-
-	var user, password string
-	if u.User != nil {
-		user = u.User.Username()
-		password, _ = u.User.Password()
-	}
-
-	var opts map[string]string
-	for _, key := range []string{"tls", "charset", "loc"} {
-		if v := u.Query().Get(key); v != "" {
-			if opts == nil {
-				opts = make(map[string]string)
-			}
-			opts[key] = v
-		}
-	}
-
-	return Config{
-		Host:     u.Hostname(),
-		Port:     port,
-		User:     user,
-		Password: password,
-		Name:     strings.TrimPrefix(u.Path, "/"),
-		Options:  opts,
-	}, nil
-}
-
-// PoolConfig holds connection pool tuning parameters for *sql.DB.
-// Services create their own GORM/sql setup but share pool sizing via this struct.
+// PoolConfig holds connection pool tuning parameters.
 type PoolConfig struct {
 	MaxIdleConns    int
 	MaxOpenConns    int
@@ -241,39 +169,28 @@ func LoadPool(defaultMaxIdle, defaultMaxOpen int) (PoolConfig, error) {
 }
 
 // Fields holds database connection and pool configuration.
-// Embed this in service configs that use any SQL database.
+// Embed in service configs that use a SQL database.
 type Fields struct {
 	Database     Config
 	DatabasePool PoolConfig
 }
 
-// LoadFields reads database config from environment variables.
+// LoadFields reads PostgreSQL config from environment variables.
 //
 // If DATABASE_URL is set, it is parsed as a connection URI and takes
 // precedence over individual environment variables. Pool config and log
 // level are always read from their own env vars regardless of source.
 //
-// envPrefix determines the per-service env var names: e.g. "BACKEND" reads
-// BACKEND_DB_USER, BACKEND_DB_PASSWORD, BACKEND_DB_NAME.
-// defaultPort is the driver-specific default port (3306 for MySQL, 5432 for
-// Postgres). driver is "mysql" or "postgres" and determines how DATABASE_URL
-// is parsed. defaultMaxIdle and defaultMaxOpen set the pool size defaults.
-func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle, defaultMaxOpen int) (Fields, error) {
+// envPrefix determines the per-service env var names: e.g. "BACKEND"
+// reads BACKEND_DB_USER, BACKEND_DB_PASSWORD, BACKEND_DB_NAME.
+func LoadFields(envPrefix string, defaultMaxIdle, defaultMaxOpen int) (Fields, error) {
 	dbPool, err := LoadPool(defaultMaxIdle, defaultMaxOpen)
 	if err != nil {
 		return Fields{}, err
 	}
 
-	// DATABASE_URL takes precedence when set.
 	if dsnURL := config.MustGetSecret("DATABASE_URL", ""); dsnURL != "" {
-		var cfg Config
-		var parseErr error
-		switch driver {
-		case "mysql":
-			cfg, parseErr = ParseMySQLDSN(dsnURL)
-		default:
-			cfg, parseErr = ParsePostgresDSN(dsnURL)
-		}
+		cfg, parseErr := ParseDSN(dsnURL)
 		if parseErr != nil {
 			return Fields{}, parseErr
 		}
@@ -281,18 +198,15 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 		return Fields{Database: cfg, DatabasePool: dbPool}, nil
 	}
 
-	// Fallback: individual env vars.
 	p := &config.Parser{}
-	dbPort := p.Int("DB_PORT", defaultPort)
+	dbPort := p.Int("DB_PORT", 5432)
 	if err := p.Err(); err != nil {
 		return Fields{}, err
 	}
 
 	opts := make(map[string]string)
-	if driver == "postgres" {
-		if sslMode := config.Get("DB_SSL_MODE", ""); sslMode != "" {
-			opts["sslmode"] = strings.ToLower(sslMode)
-		}
+	if sslMode := config.Get("DB_SSL_MODE", ""); sslMode != "" {
+		opts["sslmode"] = strings.ToLower(sslMode)
 	}
 
 	return Fields{
@@ -309,11 +223,10 @@ func LoadFields(envPrefix string, defaultPort int, driver string, defaultMaxIdle
 	}, nil
 }
 
-// Validate checks that all required database fields are present.
-// In non-development environments, it also rejects weak credentials.
-// driver should be "mysql" or "postgres" for driver-specific validation
-// (e.g. SSLMode validation for Postgres).
-func (f Fields) Validate(envPrefix, environment, driver string) error {
+// Validate checks that all required database fields are present and
+// the postgres-specific TLS setting is hardened. In non-development
+// environments, it also rejects weak credentials.
+func (f Fields) Validate(envPrefix string) error {
 	if err := config.ValidatePort("database", f.Database.Port); err != nil {
 		return err
 	}
@@ -332,29 +245,21 @@ func (f Fields) Validate(envPrefix, environment, driver string) error {
 	if f.Database.Name == "" {
 		return fmt.Errorf("%s_DB_NAME is required", envPrefix)
 	}
-	if driver == "postgres" {
-		sslMode := f.Database.Option("sslmode", "")
-		if err := validatePostgresSSLMode(sslMode); err != nil {
-			return err
-		}
-		// TLS is unconditional. Empty defaults to "disable" inside
-		// buildPostgresDSN; both empty and "disable" are rejected so a
-		// missing DB_SSL_MODE fails loud rather than silently shipping
-		// credentials/queries on the wire.
-		normalized := strings.ToLower(sslMode)
-		if normalized == "" || normalized == "disable" {
-			return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full (got %q)", envPrefix, sslMode)
-		}
-	}
-	if err := config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password); err != nil {
+	sslMode := f.Database.Option("sslmode", "")
+	if err := validatePostgresSSLMode(sslMode); err != nil {
 		return err
 	}
-	_ = environment // accepted for API compatibility; no longer consulted
-	return nil
+	// TLS is unconditional. Empty or "disable" fails loud rather than
+	// silently shipping credentials and queries on the wire.
+	normalized := strings.ToLower(sslMode)
+	if normalized == "" || normalized == "disable" {
+		return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full (got %q)", envPrefix, sslMode)
+	}
+	return config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password)
 }
 
-// validateDatabaseHost rejects host values containing characters that could
-// break DSN parsing (e.g. ')' in MySQL DSN or '\x00' in any DSN).
+// validateDatabaseHost rejects host values containing characters that
+// could break DSN parsing.
 func validateDatabaseHost(host string) error {
 	if net.ParseIP(host) != nil {
 		return nil
@@ -375,16 +280,10 @@ func validatePostgresSSLMode(mode string) error {
 	case "require", "verify-ca", "verify-full":
 		return nil
 	case "disable":
-		// "disable" is also a recognised libpq mode; the caller's
-		// Validate() rejects it separately so this function only
-		// reports recognition. Returning nil here lets the upstream
-		// "must be require/verify-ca/verify-full" message fire with
-		// the right context.
+		// Reported separately by the caller with full context.
 		return nil
 	case "allow", "prefer":
-		// Both modes silently degrade to plaintext on TLS handshake
-		// error. They must not be accepted in the standalone
-		// validation path either — N-4 audit finding.
+		// Both modes silently degrade to plaintext on TLS handshake error.
 		return fmt.Errorf("DB_SSL_MODE=%q admits a plaintext fallback on TLS handshake error; use require, verify-ca, or verify-full", mode)
 	default:
 		return fmt.Errorf("DB_SSL_MODE must be require, verify-ca, or verify-full (got %q)", mode)

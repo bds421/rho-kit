@@ -34,6 +34,13 @@ type Runner struct {
 	logger      *slog.Logger
 	components  []namedComponent
 	stopTimeout time.Duration
+
+	// beforeStop runs synchronously after shutdown is requested but
+	// before any component's Stop is invoked. It is the hook for
+	// "drain external producers" semantics: shutdown hooks added by
+	// app.Builder.OnShutdown run here, with infrastructure
+	// connections still live.
+	beforeStop func(context.Context)
 }
 
 // RunnerOption configures a Runner.
@@ -47,6 +54,19 @@ func WithStopTimeout(d time.Duration) RunnerOption {
 			r.stopTimeout = d
 		}
 	}
+}
+
+// WithBeforeStop registers a callback that runs synchronously after
+// shutdown is requested (ctx cancelled) but before any component's
+// Stop is invoked. Use this for "drain external producers" semantics:
+// publish a final state, finish in-flight work that depends on the
+// DB or message broker, etc. The callback ctx is the same forceCtx
+// stopAll uses, so a second SIGINT cancels it.
+//
+// Multiple calls overwrite — only one beforeStop is supported. Wrap
+// at the caller if multiple actions are needed.
+func WithBeforeStop(fn func(context.Context)) RunnerOption {
+	return func(r *Runner) { r.beforeStop = fn }
 }
 
 // NewRunner creates a Runner with the given logger.
@@ -189,6 +209,23 @@ func (r *Runner) Run(ctx context.Context) error {
 	var stopErr error
 	eg.Go(func() error {
 		<-gCtx.Done()
+		// Run BeforeStop synchronously while components are still
+		// live — hooks rely on DB / broker connections being open.
+		// Any panic is converted to a structured error log so a
+		// misbehaving hook cannot block component teardown.
+		if r.beforeStop != nil {
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						r.logger.Error("BeforeStop panicked",
+							slog.Any("panic", rec),
+							slog.String("stack", string(debug.Stack())),
+						)
+					}
+				}()
+				r.beforeStop(forceCtx)
+			}()
+		}
 		r.logger.Info("shutting down components")
 		stopErr = r.stopAll(forceCtx)
 		return nil
@@ -204,27 +241,44 @@ func (r *Runner) Run(ctx context.Context) error {
 // http.Server.Shutdown is safe to call before ListenAndServe).
 // The parent context allows force-cancellation (second signal) to interrupt
 // all pending stop timeouts immediately.
+//
+// Each component receives a per-component minimum budget so a slow earlier
+// component cannot starve later ones. The total budget is still bounded by
+// stopTimeout, but the per-step budget is min(stopTimeout/N, perStepCap)
+// — within that, every component gets a chance to run.
+//
 // Returns all stop errors joined together.
 func (r *Runner) stopAll(parent context.Context) error {
 	start := time.Now()
 
-	// Apply a single shared deadline for the entire shutdown sequence.
-	// This prevents O(N × stopTimeout) total shutdown time which would
-	// exceed Kubernetes terminationGracePeriodSeconds for multi-component
-	// services. Components are still stopped in reverse order (sequential)
-	// to preserve dependency ordering, but they share one deadline.
 	sharedCtx, sharedCancel := context.WithTimeout(parent, r.stopTimeout)
 	defer sharedCancel()
 
+	// Per-component minimum budget: stopTimeout / componentCount, capped at
+	// 5s. This prevents a slow first component from consuming the entire
+	// budget while still respecting the overall stopTimeout via sharedCtx.
+	n := len(r.components)
+	if n == 0 {
+		return nil
+	}
+	perStep := r.stopTimeout / time.Duration(n)
+	if perStep > 5*time.Second {
+		perStep = 5 * time.Second
+	}
+
 	var errs []error
-	for i := len(r.components) - 1; i >= 0; i-- {
+	for i := n - 1; i >= 0; i-- {
 		if sharedCtx.Err() != nil {
-			errs = append(errs, fmt.Errorf("shutdown deadline exceeded, skipping remaining components"))
-			break
+			r.logger.Warn("shutdown deadline exceeded, skipping remaining component",
+				logattr.Component(r.components[i].name))
+			errs = append(errs, fmt.Errorf("shutdown deadline exceeded; skipped %q", r.components[i].name))
+			continue
 		}
-		if err := r.stopOne(sharedCtx, r.components[i]); err != nil {
+		stepCtx, stepCancel := context.WithTimeout(sharedCtx, perStep)
+		if err := r.stopOne(stepCtx, r.components[i]); err != nil {
 			errs = append(errs, err)
 		}
+		stepCancel()
 	}
 	joinedErr := errors.Join(errs...)
 	r.logger.Info("shutdown complete",

@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
-	"github.com/bds421/rho-kit/infra/sqldb"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
 	"github.com/bds421/rho-kit/infra/storage/membackend"
 	"github.com/bds421/rho-kit/observability/health"
 	"github.com/bds421/rho-kit/observability/tracing"
@@ -145,32 +145,20 @@ func TestBuilder_RunPanicsOnReuse(t *testing.T) {
 	_ = b.Run()
 }
 
-func TestBuilder_WithMySQL(t *testing.T) {
-	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithMySQL(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
-	if b.dbDriver == nil {
-		t.Fatal("driver should be set")
-	}
-	assert.Equal(t, "mysql", b.dbDriver.Name())
-}
-
 func TestBuilder_WithPostgres(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
-	if b.dbDriver == nil {
-		t.Fatal("driver should be set")
+		WithPostgres(pgxbackend.Config{DSN: "postgres://user:pass@localhost:5432/db?sslmode=require"})
+	if b.pgxCfg == nil {
+		t.Fatal("pgx config should be set")
 	}
-	assert.Equal(t, "postgres", b.dbDriver.Name())
 }
 
-func TestBuilder_WithMySQLAndPostgresMutuallyExclusive(t *testing.T) {
+func TestBuilder_WithPostgres_PanicsOnEmptyDSN(t *testing.T) {
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "expected panic for mutually exclusive DB drivers")
+		require.NotNil(t, r, "expected panic for empty DSN")
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).
-		WithMySQL(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{}).
-		WithPostgres(sqldb.Config{Host: "localhost"}, sqldb.PoolConfig{})
+	New("test-svc", "v0.1.0", BaseConfig{}).WithPostgres(pgxbackend.Config{})
 }
 
 func TestTestInfrastructure(t *testing.T) {

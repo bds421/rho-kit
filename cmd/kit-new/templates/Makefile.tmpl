@@ -1,4 +1,4 @@
-.PHONY: build test lint vet doctor{{if .MCP}} mcp-smoke{{end}}
+.PHONY: build test lint vet doctor{{if .Postgres}} sqlc migrate{{end}}{{if .MCP}} mcp-smoke{{end}}
 
 build:
 	go build ./...
@@ -14,8 +14,18 @@ vet:
 	go vet ./...
 
 doctor:
-	go run github.com/bds421/rho-kit/cmd/kit-doctor@latest ./...
-{{if .MCP}}
+	go run github.com/bds421/rho-kit/cmd/kit-doctor@latest .
+{{if .Postgres}}
+# sqlc regenerates db/sqlc/*.go from the .sql files in db/queries/.
+# The generated code is checked in so CI doesn't need sqlc installed.
+sqlc:
+	go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate
+
+# migrate publishes the kit's bundled migrations (idempotency, etc.)
+# into db/migrations/ so goose can run them alongside your own.
+migrate:
+	go run github.com/bds421/rho-kit/cmd/kit-migrate@latest publish --to=./db/migrations
+{{end}}{{if .MCP}}
 # mcp-smoke POSTs a JSON-RPC tools/list call against a locally-running
 # service. Start the service in another terminal first:
 #

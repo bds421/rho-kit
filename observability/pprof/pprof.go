@@ -12,11 +12,36 @@
 package pprof
 
 import (
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"runtime"
 	"strings"
 )
+
+// MountOption configures [MountWith].
+type MountOption func(*mountConfig)
+
+type mountConfig struct {
+	requireLoopback bool
+	authFn          func(*http.Request) bool
+}
+
+// WithRequireLoopback restricts pprof routes to requests originating
+// from a loopback IP (127.0.0.0/8 or ::1). Non-loopback requests get a
+// 404. Use this when pprof is mounted on a port that might be reachable
+// from a non-loopback CIDR by accident.
+func WithRequireLoopback() MountOption {
+	return func(c *mountConfig) { c.requireLoopback = true }
+}
+
+// WithAuth gates every pprof request through fn. fn returns true to
+// admit the request. A typical wiring is to consult auth-middleware
+// context populated upstream, so pprof inherits whatever auth the rest
+// of the service uses.
+func WithAuth(fn func(*http.Request) bool) MountOption {
+	return func(c *mountConfig) { c.authFn = fn }
+}
 
 // Handler returns an http.Handler that serves /debug/pprof/* routes.
 //
@@ -30,9 +55,9 @@ import (
 //
 // Production deployments should also gate this behind an internal
 // network policy or a fleet-wide auth proxy.
-func Handler() http.Handler {
+func Handler(opts ...MountOption) http.Handler {
 	mux := http.NewServeMux()
-	Mount(mux)
+	MountWith(mux, opts...)
 	return mux
 }
 
@@ -49,11 +74,46 @@ func Handler() http.Handler {
 //	/debug/pprof/{name}          — heap, goroutine, allocs, block,
 //	                                mutex, threadcreate (named profiles)
 func Mount(mux *http.ServeMux) {
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	MountWith(mux)
+}
+
+// MountWith installs pprof on mux with optional gating. See
+// [WithRequireLoopback] and [WithAuth].
+func MountWith(mux *http.ServeMux, opts ...MountOption) {
+	cfg := &mountConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	wrap := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if cfg.requireLoopback && !isLoopback(r.RemoteAddr) {
+				http.NotFound(w, r)
+				return
+			}
+			if cfg.authFn != nil && !cfg.authFn(r) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			h(w, r)
+		}
+	}
+	mux.HandleFunc("/debug/pprof/", wrap(pprof.Index))
+	mux.HandleFunc("/debug/pprof/cmdline", wrap(pprof.Cmdline))
+	mux.HandleFunc("/debug/pprof/profile", wrap(pprof.Profile))
+	mux.HandleFunc("/debug/pprof/symbol", wrap(pprof.Symbol))
+	mux.HandleFunc("/debug/pprof/trace", wrap(pprof.Trace))
+}
+
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // EnableMutexBlockProfiling turns on the runtime mutex and block

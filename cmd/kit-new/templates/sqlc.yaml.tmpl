@@ -1,0 +1,25 @@
+# sqlc configuration for {{.ServiceName}}.
+#
+# Run `make sqlc` (or `sqlc generate`) to regenerate db/sqlc/*.go from
+# the .sql files in db/queries/. The generated code is compile-time
+# typed against your live schema — no struct-tag magic, no hidden
+# N+1, no ORM behaviour to debug.
+#
+# v2 made this the canonical data path (GORM was removed). Migrate
+# any existing GORM models to query-and-method generation here.
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "db/queries"
+    schema: "db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "db/sqlc"
+        # pgx/v5 driver — matches what app.Builder.WithPostgres opens.
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_exact_table_names: false
+        emit_empty_slices: true

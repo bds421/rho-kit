@@ -8,14 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	gormpostgres "gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/bds421/rho-kit/data/approval"
 )
@@ -36,25 +35,30 @@ func startPostgres(t *testing.T) string {
 	return dsn
 }
 
-func openAndMigrate(t *testing.T, dsn string) *gorm.DB {
+func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
-	db, err := gorm.Open(gormpostgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
-	sqlDB, err := db.DB()
-	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
 	sub, err := fs.Sub(Migrations, "migrations")
 	require.NoError(t, err)
 	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, sub)
 	require.NoError(t, err)
-	_, err = provider.Up(context.Background())
+	_, err = provider.Up(ctx)
 	require.NoError(t, err)
-	return db
+	return pool
 }
 
 func TestPostgres_Live_Lifecycle(t *testing.T) {
 	dsn := startPostgres(t)
-	db := openAndMigrate(t, dsn)
-	store := New(db)
+	pool := openAndMigrate(t, dsn)
+	store := New(pool)
 
 	r, err := store.Create(context.Background(), approval.Request{
 		ID:        "r1",

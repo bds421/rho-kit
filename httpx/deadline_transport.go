@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"time"
 )
@@ -66,6 +67,13 @@ type deadlineBudgetTransport struct {
 
 // RoundTrip adjusts the request context timeout based on the caller's remaining
 // deadline budget, then delegates to the base transport.
+//
+// The derived ctx must remain alive until the response body is closed —
+// HTTP/2 (and some HTTP/1.1 wrapping transports) tie body Read errors to the
+// request context, so cancelling on RoundTrip return would surface as
+// context.Canceled mid-body. We therefore wrap resp.Body in a closer that
+// cancels only when the caller closes the body. On error paths (no body
+// returned) the cancel runs immediately.
 func (t *deadlineBudgetTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	deadline, ok := req.Context().Deadline()
 	if !ok {
@@ -77,11 +85,32 @@ func (t *deadlineBudgetTransport) RoundTrip(req *http.Request) (*http.Response, 
 		remaining = t.minTimeout
 	}
 
-	// cancel is deferred here and runs after RoundTrip returns (after response
-	// headers are received). This is safe: http.Transport detaches the context
-	// from the connection once headers arrive, so the body remains readable.
 	ctx, cancel := context.WithTimeout(req.Context(), remaining)
-	defer cancel()
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.Body == nil {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
 
-	return t.base.RoundTrip(req.WithContext(ctx))
+// cancelOnCloseBody runs cancel exactly once when the body is closed,
+// keeping the request context alive until the caller is done reading.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.cancel()
+		b.cancel = nil
+	}
+	return err
 }

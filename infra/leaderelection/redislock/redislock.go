@@ -156,7 +156,16 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		holdErr := e.holdLeadership(leaderCtx, handle, cb)
 		leaderCancel()
 		e.leader.Store(false)
-		_ = handle.Release(context.Background())
+		// Bound Release: a hung Redis must not pin this goroutine
+		// indefinitely and starve the elector loop.
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := handle.Release(releaseCtx); err != nil && !errors.Is(err, lock.ErrLockLost) {
+			e.logger.Warn("leader-election: release failed; lock will TTL out",
+				slog.String("key", e.key),
+				slog.Any("error", err),
+			)
+		}
+		releaseCancel()
 
 		if errors.Is(holdErr, context.Canceled) {
 			return ctx.Err()

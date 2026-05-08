@@ -9,9 +9,9 @@
 //   - data/ratelimit/gcra — in-memory GCRA (Generic Cell Rate
 //     Algorithm). Smooth — no edge bursts. Same interface, different
 //     trade-offs.
-//   - data/ratelimit/redis (TODO) — Redis-backed GCRA via Lua, atomic
-//     in a single round trip. Use when limits must be enforced across
-//     replicas. Not shipped in this commit.
+//   - data/ratelimit/redis — Redis-backed GCRA via Lua, atomic in a
+//     single round trip. Use when limits must be enforced across
+//     replicas.
 //
 // All implementations satisfy [Limiter] so the HTTP middleware,
 // gRPC interceptors, and message-consumer guards can swap algorithms

@@ -528,7 +528,7 @@ func (o *BufferedPublisher) load() error {
 		return nil
 	}
 
-	pending, err := atomicfile.Load[[]pendingMessage](o.stateFile)
+	pending, err := atomicfile.LoadOrZero[[]pendingMessage](o.stateFile)
 	if err != nil {
 		return err
 	}

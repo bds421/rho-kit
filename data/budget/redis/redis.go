@@ -91,10 +91,22 @@ return {1, cap - newUsed}
 `)
 
 // peekScript is a non-charging read that returns the current
-// remaining for the active bucket.
+// remaining for the active bucket. It also refreshes the TTL when the
+// counter exists, matching the rate-limit window semantic — a peek
+// is part of the active session and should not let the bucket TTL
+// expire mid-flight under peek-heavy workloads.
+//
+//	KEYS[1] = bucket key
+//	ARGV[1] = cap
+//	ARGV[2] = ttl in seconds (0 to skip refresh)
 var peekScript = goredis.NewScript(`
 local cap = tonumber(ARGV[1])
-local cur = tonumber(redis.call("GET", KEYS[1])) or 0
+local ttl = tonumber(ARGV[2])
+local raw = redis.call("GET", KEYS[1])
+local cur = tonumber(raw) or 0
+if raw ~= false and ttl > 0 then
+  redis.call("EXPIRE", KEYS[1], ttl)
+end
 local rem = cap - cur
 if rem < 0 then rem = 0 end
 return rem
@@ -267,6 +279,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 		rem, perr := peekScript.Run(ctx, b.client,
 			[]string{b.bucketKey(key, periodID)},
 			b.cap,
+			b.ttlSeconds(),
 		).Int64()
 		if perr != nil {
 			return false, 0, 0, fmt.Errorf("budget/redis: script: %w", perr)
@@ -346,6 +359,7 @@ func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
 	res, err := peekScript.Run(ctx, b.client,
 		[]string{b.bucketKey(key, periodID)},
 		b.cap,
+		b.ttlSeconds(),
 	).Result()
 	if err != nil {
 		return 0, fmt.Errorf("budget/redis: script: %w", err)

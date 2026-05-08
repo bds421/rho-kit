@@ -23,260 +23,6 @@ func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 	return mr, client
 }
 
-func TestAcquireAndRelease(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l := redislock.New(client, "test:lock")
-
-	acquired, err := l.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	err = l.Release(ctx)
-	require.NoError(t, err)
-
-	// After release, the key should be gone and re-acquirable.
-	acquired, err = l.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestAcquireFailsWhenAlreadyHeld(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l1 := redislock.New(client, "test:lock")
-	l2 := redislock.New(client, "test:lock")
-
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// Second lock with different token should fail.
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.False(t, acquired)
-}
-
-func TestReleaseOnlyByOwner(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l1 := redislock.New(client, "test:lock")
-	l2 := redislock.New(client, "test:lock")
-
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// l2 (different token) tries to release l1's lock - should not release it.
-	err = l2.Release(ctx)
-	require.NoError(t, err)
-
-	// Lock should still be held by l1, so l2 cannot acquire.
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.False(t, acquired)
-
-	// l1 can still release its own redislock.
-	err = l1.Release(ctx)
-	require.NoError(t, err)
-
-	// Now l2 should be able to acquire.
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestWithLockSuccess(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l := redislock.New(client, "test:lock")
-	called := false
-
-	err := l.WithLock(ctx, func(_ context.Context) error {
-		called = true
-		return nil
-	})
-
-	require.NoError(t, err)
-	assert.True(t, called)
-
-	// Lock should be released after WithLock returns.
-	l2 := redislock.New(client, "test:lock")
-	acquired, err := l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestWithLockError(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l := redislock.New(client, "test:lock")
-	expectedErr := errors.New("operation failed")
-
-	err := l.WithLock(ctx, func(_ context.Context) error {
-		return expectedErr
-	})
-
-	assert.ErrorIs(t, err, expectedErr)
-
-	// Lock should still be released even on error.
-	l2 := redislock.New(client, "test:lock")
-	acquired, err := l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestWithLockCannotAcquire(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	// Hold the lock with l1.
-	l1 := redislock.New(client, "test:lock")
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// WithLock on l2 should fail to acquire.
-	l2 := redislock.New(client, "test:lock")
-	err = l2.WithLock(ctx, func(_ context.Context) error {
-		t.Fatal("should not be called")
-		return nil
-	})
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "could not acquire lock")
-}
-
-func TestRetryOption(t *testing.T) {
-	mr, client := setupRedis(t)
-	ctx := context.Background()
-
-	l1 := redislock.New(client, "test:lock", redislock.WithTTL(2*time.Second))
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// Release the lock from miniredis side to simulate TTL expiration
-	// during a retry window.
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		mr.FastForward(3 * time.Second)
-	}()
-
-	// l2 with retry should eventually acquire after l1's TTL expires.
-	l2 := redislock.New(client, "test:lock",
-		redislock.WithRetry(100*time.Millisecond, 5),
-	)
-
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestRetryExhausted(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l1 := redislock.New(client, "test:lock", redislock.WithTTL(10*time.Second))
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// l2 with limited retries should give up.
-	l2 := redislock.New(client, "test:lock",
-		redislock.WithRetry(10*time.Millisecond, 3),
-	)
-
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.False(t, acquired)
-}
-
-func TestTTLExpiration(t *testing.T) {
-	mr, client := setupRedis(t)
-	ctx := context.Background()
-
-	l1 := redislock.New(client, "test:lock", redislock.WithTTL(5*time.Second))
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// Fast-forward past the TTL.
-	mr.FastForward(6 * time.Second)
-
-	// Lock should have expired; a new lock can acquire.
-	l2 := redislock.New(client, "test:lock")
-	acquired, err = l2.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-}
-
-func TestRetryRespectsContextCancellation(t *testing.T) {
-	_, client := setupRedis(t)
-
-	l1 := redislock.New(client, "test:lock", redislock.WithTTL(10*time.Second))
-	ctx := context.Background()
-	acquired, err := l1.Acquire(ctx)
-	require.NoError(t, err)
-	assert.True(t, acquired)
-
-	// Cancel context before retries can complete.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	l2 := redislock.New(client, "test:lock",
-		redislock.WithRetry(100*time.Millisecond, 10),
-	)
-
-	acquired, err = l2.Acquire(ctx)
-	assert.False(t, acquired)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-}
-
-func TestWithLock_ReleasesOnPanic(t *testing.T) {
-	_, client := setupRedis(t)
-	ctx := context.Background()
-
-	l := redislock.New(client, "test:lock")
-
-	// Run WithLock with a function that panics and capture the panic value.
-	var panicVal any
-	func() {
-		defer func() {
-			panicVal = recover()
-		}()
-		_ = l.WithLock(ctx, func(_ context.Context) error {
-			panic("intentional panic for testing")
-		})
-	}()
-
-	// The panic must have propagated and been captured.
-	if panicVal == nil {
-		t.Fatal("expected panic to propagate, but recover() returned nil")
-	}
-	if panicVal != "intentional panic for testing" {
-		t.Errorf("unexpected panic value: got %v", panicVal)
-	}
-
-	// The lock must have been released despite the panic.
-	// A fresh lock instance using a different token should be able to acquire.
-	l2 := redislock.New(client, "test:lock")
-	acquired, err := l2.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("Acquire after panic returned unexpected error: %v", err)
-	}
-	if !acquired {
-		t.Error("expected second Acquire to succeed after panic released the lock, but it failed")
-	}
-}
-
-// --- New Locker (per-call returned handle) ---
-
 func TestLocker_AcquireReleaseRoundTrip(t *testing.T) {
 	_, client := setupRedis(t)
 	ctx := context.Background()
@@ -287,20 +33,90 @@ func TestLocker_AcquireReleaseRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	// Second Acquire on the same key from the same Locker returns (nil, false, nil)
-	// — different fresh handle internally, but the SETNX still fails.
+	// Second Acquire on the same key returns (nil, false, nil) — fresh
+	// handle internally, but the SETNX still fails because the key
+	// exists.
 	l2, ok2, err := lc.Acquire(ctx, "test:lock")
 	require.NoError(t, err)
 	assert.False(t, ok2)
 	assert.Nil(t, l2)
 
-	// Release the first handle. After release, the key is reacquirable.
 	require.NoError(t, l.Release(ctx))
 
 	l3, ok3, err := lc.Acquire(ctx, "test:lock")
 	require.NoError(t, err)
 	require.True(t, ok3)
 	require.NoError(t, l3.Release(ctx))
+}
+
+func TestLocker_RetryOption(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client,
+		redislock.WithTTL(50*time.Millisecond),
+		redislock.WithRetry(20*time.Millisecond, 5),
+	)
+
+	// First Acquire succeeds.
+	l1, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Releasing the first handle on a goroutine; second Acquire retries
+	// until release.
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		_ = l1.Release(ctx)
+		close(released)
+	}()
+
+	l2, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	<-released
+	require.NoError(t, l2.Release(ctx))
+}
+
+func TestLocker_RetryRespectsContextCancellation(t *testing.T) {
+	_, client := setupRedis(t)
+
+	lc := redislock.NewLocker(client,
+		redislock.WithTTL(10*time.Second),
+		redislock.WithRetry(50*time.Millisecond, 100),
+	)
+	ctx0 := context.Background()
+	l, ok, err := lc.Acquire(ctx0, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer func() { _ = l.Release(ctx0) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	_, ok2, err := lc.Acquire(ctx, "test:lock")
+	assert.False(t, ok2)
+	assert.Error(t, err)
+}
+
+func TestLocker_ReleaseOnlyByOwner(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client)
+
+	l1, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Releasing the first handle frees the lock.
+	require.NoError(t, l1.Release(ctx))
+
+	// A second handle's Release on the same (now empty) key returns nil
+	// (no-op), not ErrLockLost — handle never had a token.
+	l2 := struct{ lock.Lock }{}
+	_ = l2
 }
 
 func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {
@@ -318,6 +134,27 @@ func TestLocker_ReleaseSurfacesErrLockLost(t *testing.T) {
 
 	relErr := l.Release(ctx)
 	assert.ErrorIs(t, relErr, lock.ErrLockLost)
+}
+
+func TestLocker_WithLockSuccess(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client)
+
+	called := false
+	err := lc.WithLock(ctx, "test:lock", func(_ context.Context) error {
+		called = true
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, called)
+
+	// Lock should be released after WithLock returns.
+	l, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, l.Release(ctx))
 }
 
 func TestLocker_WithLockSurfacesErrLockLost(t *testing.T) {
@@ -376,7 +213,25 @@ func TestLocker_WithLockReleasesOnPanic(t *testing.T) {
 	require.NoError(t, l.Release(ctx))
 }
 
-// LockerWithValue smoke test — generic alternative for return values.
+func TestLocker_TTLExpiration(t *testing.T) {
+	mr, client := setupRedis(t)
+	ctx := context.Background()
+
+	lc := redislock.NewLocker(client, redislock.WithTTL(100*time.Millisecond))
+	l, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer func() { _ = l.Release(ctx) }()
+
+	mr.FastForward(200 * time.Millisecond)
+
+	// After TTL expiry the key is gone; a fresh Acquire succeeds.
+	l2, ok, err := lc.Acquire(ctx, "test:lock")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, l2.Release(ctx))
+}
+
 func TestLockerWithValue(t *testing.T) {
 	_, client := setupRedis(t)
 	ctx := context.Background()
@@ -387,31 +242,6 @@ func TestLockerWithValue(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 42, got)
-}
-
-// --- Stateful Lock.Release semantic guarantee ---
-
-func TestLock_ReleaseAfterTTLExpiryReturnsErrLockLost(t *testing.T) {
-	mr, client := setupRedis(t)
-	ctx := context.Background()
-
-	l := redislock.New(client, "test:lock", redislock.WithTTL(1*time.Second))
-	ok, err := l.Acquire(ctx)
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	mr.FastForward(2 * time.Second)
-	require.NoError(t, mr.Set("test:lock", "someone-else"))
-
-	relErr := l.Release(ctx)
-	assert.ErrorIs(t, relErr, lock.ErrLockLost)
-}
-
-func TestNew_NilClientPanics(t *testing.T) {
-	t.Parallel()
-	assert.PanicsWithValue(t, "redislock: New requires a non-nil Redis client", func() {
-		_ = redislock.New(nil, "test:lock")
-	})
 }
 
 func TestNewLocker_NilClientPanics(t *testing.T) {

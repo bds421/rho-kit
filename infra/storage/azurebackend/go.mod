@@ -4,15 +4,15 @@ go 1.26.2
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
-	github.com/bds421/rho-kit/core/config v1.2.0
-	github.com/bds421/rho-kit/infra/storage v1.1.0
 	go.opentelemetry.io/otel v1.42.0
 )
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
-	github.com/bds421/rho-kit/io/progress v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/infra v0.0.0
+	github.com/bds421/rho-kit/io v0.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
@@ -25,3 +25,9 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../../../core
+
+replace github.com/bds421/rho-kit/infra => ../../../infra
+
+replace github.com/bds421/rho-kit/io => ../../../io

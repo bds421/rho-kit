@@ -28,13 +28,18 @@ import (
 func main() {
 	strict := flag.String("strict", "high", "exit-1 floor: critical|high|warning|info")
 	format := flag.String("format", "text", "output format: text|json")
+	asvsMode := flag.Bool("asvs", false, "scan for ASVS annotations and emit a coverage report instead of running the rule set")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: kit-doctor [-strict=...] [-format=...] PATH")
+		fmt.Fprintln(os.Stderr, "usage: kit-doctor [-strict=...] [-format=...] [-asvs] PATH")
 		os.Exit(2)
 	}
 	path := flag.Arg(0)
+
+	if *asvsMode {
+		os.Exit(runASVS(path, *format))
+	}
 
 	floor, err := parseSeverity(*strict)
 	if err != nil {

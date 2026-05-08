@@ -70,6 +70,28 @@ type Config struct {
 	// slog.Default (level=Warn). Useful for surfacing the fallback to
 	// custom telemetry (e.g. an audit log entry).
 	OnInitFallback func(err error)
+
+	// Headers are static gRPC metadata sent on every OTLP export. Use
+	// for managed-collector authentication (Honeycomb, Lightstep,
+	// Grafana Cloud OTLP).
+	Headers map[string]string
+
+	// Compression enables gRPC payload compression on the OTLP export.
+	// Accepts "gzip" (the only standard scheme); empty disables.
+	Compression string
+
+	// BatchTimeout is the maximum time to buffer spans before exporting.
+	// Default 5s. Lower this for low-traffic services where 5s of
+	// buffering means most spans land on the same export tick; raise it
+	// to amortise per-export overhead under heavy load.
+	BatchTimeout time.Duration
+
+	// MaxQueueSize bounds the in-memory span queue. Default 2048.
+	MaxQueueSize int
+
+	// MaxExportBatchSize caps how many spans are exported per batch.
+	// Default 512.
+	MaxExportBatchSize int
 }
 
 // Provider wraps a TracerProvider and its shutdown function.
@@ -117,6 +139,12 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	if cfg.Insecure {
 		opts = append(opts, otlptracegrpc.WithInsecure())
 	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, otlptracegrpc.WithHeaders(cfg.Headers))
+	}
+	if cfg.Compression == "gzip" {
+		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
+	}
 
 	dialCtx := ctx
 	var dialCancel context.CancelFunc
@@ -150,10 +178,22 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))
 
+	batchTimeout := cfg.BatchTimeout
+	if batchTimeout <= 0 {
+		batchTimeout = 5 * time.Second
+	}
+	batcherOpts := []sdktrace.BatchSpanProcessorOption{
+		sdktrace.WithBatchTimeout(batchTimeout),
+	}
+	if cfg.MaxQueueSize > 0 {
+		batcherOpts = append(batcherOpts, sdktrace.WithMaxQueueSize(cfg.MaxQueueSize))
+	}
+	if cfg.MaxExportBatchSize > 0 {
+		batcherOpts = append(batcherOpts, sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize))
+	}
+
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter,
-			sdktrace.WithBatchTimeout(5*time.Second),
-		),
+		sdktrace.WithBatcher(exporter, batcherOpts...),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	)

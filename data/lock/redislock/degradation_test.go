@@ -26,68 +26,63 @@ func setupDegradedRedis(t *testing.T) (*miniredis.Miniredis, *redis.Connection) 
 	return mr, conn
 }
 
-func TestDegradedLock_AcquireAndRelease_Healthy(t *testing.T) {
+func TestDegradedLocker_AcquireAndRelease_Healthy(t *testing.T) {
 	_, conn := setupDegradedRedis(t)
 	ctx := context.Background()
 
-	dl := redislock.NewDegraded(conn, "test:degraded", redis.FailFastPolicy{})
+	dl := redislock.NewDegradedLocker(conn, redis.FailFastPolicy{})
 
-	acquired, err := dl.Acquire(ctx)
+	l, ok, err := dl.Acquire(ctx, "test:degraded")
 	require.NoError(t, err)
-	assert.True(t, acquired)
+	assert.True(t, ok)
 
-	err = dl.Release(ctx)
-	require.NoError(t, err)
+	require.NoError(t, l.Release(ctx))
 
 	// Should be re-acquirable after release.
-	acquired, err = dl.Acquire(ctx)
+	l2, ok, err := dl.Acquire(ctx, "test:degraded")
 	require.NoError(t, err)
-	assert.True(t, acquired)
+	assert.True(t, ok)
+	require.NoError(t, l2.Release(ctx))
 }
 
-func TestDegradedLock_FailFast_WhenUnhealthy(t *testing.T) {
+func TestDegradedLocker_FailFast_WhenUnhealthy(t *testing.T) {
 	mr, conn := setupDegradedRedis(t)
 	ctx := context.Background()
 
-	dl := redislock.NewDegraded(conn, "test:degraded:failfast", redis.FailFastPolicy{})
+	dl := redislock.NewDegradedLocker(conn, redis.FailFastPolicy{})
 
-	// Stop Redis to make connection unhealthy.
 	mr.Close()
-	// Wait for health check to detect the failure.
 	require.Eventually(t, func() bool {
 		return !conn.Healthy()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	acquired, err := dl.Acquire(ctx)
-	assert.False(t, acquired)
+	_, ok, err := dl.Acquire(ctx, "test:degraded:failfast")
+	assert.False(t, ok)
 	assert.ErrorIs(t, err, redislock.ErrUnavailable)
 }
 
-func TestDegradedLock_Passthrough_WhenUnhealthy(t *testing.T) {
+func TestDegradedLocker_Passthrough_WhenUnhealthy(t *testing.T) {
 	mr, conn := setupDegradedRedis(t)
 	ctx := context.Background()
 
-	dl := redislock.NewDegraded(conn, "test:degraded:passthrough", redis.PassthroughPolicy{})
+	dl := redislock.NewDegradedLocker(conn, redis.PassthroughPolicy{})
 
-	// Stop Redis.
 	mr.Close()
 	require.Eventually(t, func() bool {
 		return !conn.Healthy()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// With passthrough, the operation is delegated to the underlying lock,
-	// which will fail with a Redis connection error (not ErrUnavailable).
-	acquired, err := dl.Acquire(ctx)
-	assert.False(t, acquired)
+	_, ok, err := dl.Acquire(ctx, "test:degraded:passthrough")
+	assert.False(t, ok)
 	assert.Error(t, err)
 	assert.NotErrorIs(t, err, redislock.ErrUnavailable)
 }
 
-func TestDegradedLock_WithLock_FailFast(t *testing.T) {
+func TestDegradedLocker_WithLock_FailFast(t *testing.T) {
 	mr, conn := setupDegradedRedis(t)
 	ctx := context.Background()
 
-	dl := redislock.NewDegraded(conn, "test:degraded:withlock", redis.FailFastPolicy{})
+	dl := redislock.NewDegradedLocker(conn, redis.FailFastPolicy{})
 
 	mr.Close()
 	require.Eventually(t, func() bool {
@@ -95,7 +90,7 @@ func TestDegradedLock_WithLock_FailFast(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	called := false
-	err := dl.WithLock(ctx, func(_ context.Context) error {
+	err := dl.WithLock(ctx, "test:degraded:withlock", func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -104,14 +99,14 @@ func TestDegradedLock_WithLock_FailFast(t *testing.T) {
 	assert.False(t, called, "fn should not be called when Redis is unavailable")
 }
 
-func TestDegradedLock_WithLock_Healthy(t *testing.T) {
+func TestDegradedLocker_WithLock_Healthy(t *testing.T) {
 	_, conn := setupDegradedRedis(t)
 	ctx := context.Background()
 
-	dl := redislock.NewDegraded(conn, "test:degraded:withlock:healthy", redis.FailFastPolicy{})
+	dl := redislock.NewDegradedLocker(conn, redis.FailFastPolicy{})
 
 	called := false
-	err := dl.WithLock(ctx, func(_ context.Context) error {
+	err := dl.WithLock(ctx, "test:degraded:withlock:healthy", func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -120,64 +115,16 @@ func TestDegradedLock_WithLock_Healthy(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestDegradedLock_Extend_FailFast(t *testing.T) {
-	mr, conn := setupDegradedRedis(t)
-	ctx := context.Background()
-
-	dl := redislock.NewDegraded(conn, "test:degraded:extend", redis.FailFastPolicy{})
-
-	acquired, err := dl.Acquire(ctx)
-	require.NoError(t, err)
-	require.True(t, acquired)
-
-	mr.Close()
-	require.Eventually(t, func() bool {
-		return !conn.Healthy()
-	}, 5*time.Second, 10*time.Millisecond)
-
-	_, err = dl.Extend(ctx)
-	assert.ErrorIs(t, err, redislock.ErrUnavailable)
-}
-
-func TestDegradedLock_Release_FailFast(t *testing.T) {
-	mr, conn := setupDegradedRedis(t)
-	ctx := context.Background()
-
-	dl := redislock.NewDegraded(conn, "test:degraded:release", redis.FailFastPolicy{})
-
-	acquired, err := dl.Acquire(ctx)
-	require.NoError(t, err)
-	require.True(t, acquired)
-
-	mr.Close()
-	require.Eventually(t, func() bool {
-		return !conn.Healthy()
-	}, 5*time.Second, 10*time.Millisecond)
-
-	err = dl.Release(ctx)
-	assert.ErrorIs(t, err, redislock.ErrUnavailable)
-}
-
-func TestDegradedLock_TTL(t *testing.T) {
-	_, conn := setupDegradedRedis(t)
-
-	dl := redislock.NewDegraded(conn, "test:ttl", redis.FailFastPolicy{},
-		redislock.WithTTL(15*time.Second),
-	)
-
-	assert.Equal(t, 15*time.Second, dl.TTL())
-}
-
-func TestNewDegraded_PanicsOnNilConnection(t *testing.T) {
+func TestNewDegradedLocker_PanicsOnNilConnection(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for nil connection")
 		}
 	}()
-	redislock.NewDegraded(nil, "key", redis.FailFastPolicy{})
+	redislock.NewDegradedLocker(nil, redis.FailFastPolicy{})
 }
 
-func TestNewDegraded_PanicsOnNilPolicy(t *testing.T) {
+func TestNewDegradedLocker_PanicsOnNilPolicy(t *testing.T) {
 	_, conn := setupDegradedRedis(t)
 
 	defer func() {
@@ -185,5 +132,5 @@ func TestNewDegraded_PanicsOnNilPolicy(t *testing.T) {
 			t.Fatal("expected panic for nil policy")
 		}
 	}()
-	redislock.NewDegraded(conn, "key", nil)
+	redislock.NewDegradedLocker(conn, nil)
 }

@@ -1,7 +1,8 @@
 // Package kekstatic provides an in-memory [envelope.KEK] implementation
 // suitable for tests and development. Each named key wraps DEKs with
-// AES-256-GCM. Production deployments must use a cloud KMS subpackage
-// (kekaws/kekgcp/kekvault — TODO).
+// AES-256-GCM. Production deployments must implement a thin KEK adapter
+// against their cloud provider's KMS SDK; this kit deliberately ships
+// only the static reference implementation.
 //
 // Static KEKs are NOT a substitute for a KMS:
 //
@@ -84,15 +85,20 @@ func (k *KEK) Rotate(keyID string) error {
 }
 
 // RemoveKey deletes the named key. Use only after every blob written
-// under it has been rewrapped. RemoveKey panics if asked to remove the
-// active key — that is unrecoverable.
-func (k *KEK) RemoveKey(keyID string) {
+// under it has been rewrapped. Returns an error if asked to remove the
+// active key (the caller is expected to rotate first).
+//
+// Earlier versions panicked on active-key removal, which crashed any
+// config-reload diff that compared old and new keysets and called
+// RemoveKey on each removed entry without first rotating.
+func (k *KEK) RemoveKey(keyID string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.current == keyID {
-		panic("kekstatic: cannot remove the active keyID; rotate first")
+		return fmt.Errorf("kekstatic: cannot remove the active keyID %q; rotate to a different active key first", keyID)
 	}
 	delete(k.keys, keyID)
+	return nil
 }
 
 // KeyID returns the active key identifier.
@@ -117,15 +123,17 @@ func (k *KEK) KeyID() string {
 // rotation race that would record a header keyID different from the
 // one bound as AAD.
 func (k *KEK) Wrap(_ context.Context, dek []byte) (string, []byte, error) {
+	// Build the GCM under the lock so a concurrent RemoveKey or future
+	// zero-on-removal hardening cannot mutate the slice while we use it.
 	k.mu.RLock()
 	keyID := k.current
 	master := k.keys[keyID]
-	k.mu.RUnlock()
 	if master == nil {
+		k.mu.RUnlock()
 		return "", nil, errors.New("kekstatic: no active key")
 	}
-
 	gcm, err := newGCM(master)
+	k.mu.RUnlock()
 	if err != nil {
 		return "", nil, err
 	}

@@ -12,7 +12,9 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	kitauthz "github.com/bds421/rho-kit/authz"
 	"github.com/bds421/rho-kit/crypto/paseto"
+	kitflags "github.com/bds421/rho-kit/flags"
 	"github.com/bds421/rho-kit/data/actionlog"
 	"github.com/bds421/rho-kit/data/approval"
 	"github.com/bds421/rho-kit/data/budget"
@@ -21,15 +23,12 @@ import (
 	httpxbudget "github.com/bds421/rho-kit/httpx/middleware/budget"
 	mwrl "github.com/bds421/rho-kit/httpx/middleware/ratelimit"
 	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/slohttp"
 	"github.com/bds421/rho-kit/infra/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
 	kitredis "github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/infra/sqldb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormmysql"
-	"github.com/bds421/rho-kit/infra/sqldb/gormdb/gormpostgres"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
 	"github.com/bds421/rho-kit/infra/storage"
 	"github.com/bds421/rho-kit/observability/auditlog"
@@ -83,16 +82,8 @@ type Builder struct {
 	cfg     BaseConfig
 	logger  *slog.Logger
 
-	// DB
-	dbDriver    gormdb.Driver
-	dbCfg       *sqldb.Config
-	dbPoolCfg   *sqldb.PoolConfig
-	dbMetrics   bool
-	dbNamespace string
-
-	// pgx-native Postgres (alternative to WithPostgres). Validate
-	// rejects the combination — the two represent different drivers
-	// against the same DB and would race on connection state.
+	// Postgres (pgx-native). v2 dropped GORM and MySQL/MariaDB; pgx is
+	// the single supported driver.
 	pgxCfg *pgxbackend.Config
 
 	// Redis
@@ -140,6 +131,16 @@ type Builder struct {
 	// Approval store (optional). Exposed via Infrastructure.
 	astore approval.Store
 
+	// Authorization decider (optional). Exposed via Infrastructure
+	// for handler-level RequirePermission wiring.
+	authz kitauthz.Decider
+
+	// Feature-flag provider (optional). The Builder constructs a
+	// flags.Client around it at Run time and exposes the client on
+	// Infrastructure.Flags so handlers can call infra.Flags.Bool /
+	// .String / .Int / .Float without per-handler SDK setup.
+	flagsProvider kitflags.Provider
+
 	// Production-safety opt-outs. Each one is a deliberate, documented
 	// escape hatch from a specific always-on tightening. The validator
 	// requires an explicit per-relaxation acknowledgement rather than a
@@ -168,17 +169,19 @@ type Builder struct {
 	cronOpts    []kitcron.Option
 	cronEnabled bool
 
-	// Migrations
+	// Migrations applied during pgxModule Init via goose. Optional —
+	// services that manage migrations out-of-band leave this nil.
 	migrationsDir fs.FS
-
-	// Seed
-	seedFn SeedFunc
 
 	// Tracing
 	tracingCfg *tracing.Config
 
 	// Server options
 	serverOpts []httpx.ServerOption
+
+	// Public-mux default stack
+	disableDefaultStack bool
+	stackOpts           []stack.Option
 
 	// Health checks
 	healthChecks    []health.DependencyCheck
@@ -255,58 +258,20 @@ func (b *Builder) WithoutJWTAudience() *Builder {
 	return b
 }
 
-// WithMySQL configures a MariaDB connection.
-// Panics if WithPostgres was already called — the two are mutually exclusive.
-// Use [WithMigrations] to apply goose schema migrations.
-func (b *Builder) WithMySQL(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder {
-	if b.dbDriver != nil {
-		panic("app.Builder: WithMySQL and WithPostgres are mutually exclusive")
-	}
-	b.dbDriver = gormmysql.MySQLDriver{}
-	b.dbCfg = &cfg
-	b.dbPoolCfg = &pool
-	b.dbNamespace = b.name
-	return b
-}
-
-// WithPostgres configures a PostgreSQL connection.
-// Panics if WithMySQL was already called — the two are mutually exclusive.
-// Use [WithMigrations] to apply goose schema migrations.
-func (b *Builder) WithPostgres(cfg sqldb.Config, pool sqldb.PoolConfig) *Builder {
-	if b.dbDriver != nil {
-		panic("app.Builder: WithPostgres and WithMySQL are mutually exclusive")
-	}
-	b.dbDriver = gormpostgres.PostgresDriver{}
-	b.dbCfg = &cfg
-	b.dbPoolCfg = &pool
-	b.dbNamespace = b.name
-	return b
-}
-
-// WithPgx configures a pgx-native Postgres pool. Use this when the
-// service needs LISTEN/NOTIFY, COPY, or pipelined queries that
-// `database/sql` (the WithPostgres path) cannot expose.
+// WithPostgres configures a pgx-native PostgreSQL pool. v2 dropped
+// MySQL/MariaDB and GORM — pgx is the single supported driver, with
+// LISTEN/NOTIFY, COPY, and pipelined queries available natively.
 //
-// WithPgx and [WithPostgres] are mutually exclusive — both target
-// Postgres but with different drivers, and configuring both
-// simultaneously would create two pools competing for the same
-// database with different lifecycle semantics. Validate rejects the
-// combination at startup.
+// Use [WithMigrations] to attach goose-managed migrations.
 //
-// Panics if cfg.DSN is empty. TLS rules mirror WithPostgres: in
-// non-dev, sslmode must be require/verify-ca/verify-full (enforced
-// inside the pgx package's Connect).
-func (b *Builder) WithPgx(cfg pgxbackend.Config) *Builder {
+// Panics if cfg.DSN is empty. In non-dev, sslmode must be
+// require/verify-ca/verify-full (enforced inside the pgx package's
+// Connect).
+func (b *Builder) WithPostgres(cfg pgxbackend.Config) *Builder {
 	if cfg.DSN == "" {
-		panic("app: WithPgx requires a non-empty DSN")
+		panic("app: WithPostgres requires a non-empty DSN")
 	}
 	b.pgxCfg = &cfg
-	return b
-}
-
-// WithDBMetrics enables Prometheus pool metrics exported every 15s.
-func (b *Builder) WithDBMetrics() *Builder {
-	b.dbMetrics = true
 	return b
 }
 
@@ -393,9 +358,19 @@ func (b *Builder) WithJWTIssuer(iss string) *Builder {
 }
 
 // WithJWTAudience sets the expected `aud` claim. Tokens whose audience
-// does not match are rejected. Empty audience accepts any.
+// does not match are rejected.
+//
+// Empty input panics — call [Builder.WithoutJWTAudience] explicitly to
+// opt out of audience enforcement instead. Earlier versions silently
+// accepted "" and degraded to the same "any audience" behavior, which
+// hid mis-templated env vars (`WithJWTAudience(os.Getenv("AUD"))` with
+// AUD unset) under the same code path as a deliberate opt-out.
 func (b *Builder) WithJWTAudience(aud string) *Builder {
+	if aud == "" {
+		panic("app: WithJWTAudience requires a non-empty audience (use WithoutJWTAudience to opt out)")
+	}
 	b.jwtAudience = aud
+	b.jwtAllowAnyAudience = false
 	return b
 }
 
@@ -556,12 +531,58 @@ func (b *Builder) WithApprovalStore(s approval.Store) *Builder {
 	return b
 }
 
-// WithIPRateLimit configures a per-IP rate limiter.
+// WithAuthz registers an [authz.Decider] (the kit's vendor-neutral
+// authorization seam — OpenFGA, Cedar, Casbin, or the in-memory
+// adapter for tests). The decider is exposed on
+// [Infrastructure.Authz] so handlers can build per-route policies via
+// [httpx/authz.FromDecider] and [httpx/authz.RequirePermission].
+//
+// The Builder does NOT auto-apply authz to the public mux because
+// authorization needs per-route subject + resource extractors that
+// depend on the route's parameter shape. The middleware lives at the
+// route level, not the mux level.
+//
+// Panics if `d` is nil.
+func (b *Builder) WithAuthz(d kitauthz.Decider) *Builder {
+	if d == nil {
+		panic("app: WithAuthz requires a non-nil Decider")
+	}
+	b.authz = d
+	return b
+}
+
+// WithFeatureFlags registers an OpenFeature-compatible provider
+// (LaunchDarkly, flagd, GrowthBook, or the kit's in-memory adapter
+// for tests). The Builder wraps it in a [flags.Client] at Run time
+// and exposes the client on [Infrastructure.Flags] so handlers can
+// gate on feature flags without per-handler SDK setup.
+//
+// The client auto-populates evaluation context from
+// [tenant.FromContext] and [contextutil.CorrelationID], so per-tenant
+// flag rollouts work without extra boilerplate at every flag check.
+//
+// Panics if `p` is nil.
+func (b *Builder) WithFeatureFlags(p kitflags.Provider) *Builder {
+	if p == nil {
+		panic("app: WithFeatureFlags requires a non-nil Provider")
+	}
+	b.flagsProvider = p
+	return b
+}
+
+// WithIPRateLimit configures a per-IP rate limiter and auto-applies
+// its middleware to the public mux. The limiter sits between
+// stack.Default and signedrequest in the inbound chain — cheap-reject
+// hostile clients before the signed-request crypto verification runs.
 //
 // Lifecycle note: the limiter's background sweeper runs via
 // runner.AddFunc. A panic inside that goroutine kills the entire service
 // via the lifecycle Runner — there is no per-component supervision.
 // Monitor the "goroutine_panicked" log event if you need an early signal.
+//
+// The limiter is also exposed on Infrastructure.RateLimiter for
+// per-route overrides — e.g. tightening the limit on /admin while the
+// auto-applied limiter handles the public mux baseline.
 func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
 	b.ipRateRequests = requests
 	b.ipRateWindow = window
@@ -678,22 +699,16 @@ func (b *Builder) WithEventBusPool(size int) *Builder {
 	return b
 }
 
-// WithMigrations configures goose SQL migrations. Requires WithMySQL or
-// WithPostgres — panics at Run() if neither is configured.
+// WithMigrations configures goose SQL migrations. Requires WithPostgres
+// — the migrations run via the pgx pool inside the pgx module's Init.
 //
-// Goose migrations always run regardless of environment. This ensures
-// dev, staging, and production use the same schema migration path.
+// Migrations always run regardless of environment. This ensures dev,
+// staging, and production use the same schema migration path.
 func (b *Builder) WithMigrations(dir fs.FS) *Builder {
 	if dir == nil {
 		panic("app: WithMigrations requires a non-nil fs.FS")
 	}
 	b.migrationsDir = dir
-	return b
-}
-
-// WithSeed enables the --seed flag for database seeding.
-func (b *Builder) WithSeed(fn SeedFunc) *Builder {
-	b.seedFn = fn
 	return b
 }
 
@@ -730,6 +745,27 @@ func (b *Builder) WithCustomReadiness(h http.Handler) *Builder {
 	return b
 }
 
+// WithStackOptions appends options forwarded to [stack.Default] when the
+// Builder wraps the public mux. Examples: [stack.WithQuietPaths],
+// [stack.WithoutTimeout], [stack.WithRecoverMetrics]. The Builder always
+// supplies a logger derived from the slog default; pass [stack.WithLogger]
+// here to override it.
+func (b *Builder) WithStackOptions(opts ...stack.Option) *Builder {
+	b.stackOpts = append(b.stackOpts, opts...)
+	return b
+}
+
+// WithoutDefaultStack disables the auto-applied public-mux middleware
+// stack (recover, security headers, metrics, request ID, correlation ID,
+// tracing, logging, timeout, request logger). Use only when the service
+// supplies its own equivalent chain — services that omit this without a
+// replacement run without panic recovery, structured logs, or per-request
+// timeouts. Reserved for tests and bespoke transports.
+func (b *Builder) WithoutDefaultStack() *Builder {
+	b.disableDefaultStack = true
+	return b
+}
+
 // Background registers a managed goroutine that starts before the router.
 // If fn returns a non-nil error, the entire service shuts down.
 func (b *Builder) Background(name string, fn func(ctx context.Context) error) *Builder {
@@ -737,9 +773,16 @@ func (b *Builder) Background(name string, fn func(ctx context.Context) error) *B
 	return b
 }
 
-// OnShutdown registers a hook called when SIGINT/SIGTERM is received,
-// before workers are drained. The context carries a per-hook deadline
-// (10 seconds by default) so hooks can respect shutdown timeouts.
+// OnShutdown registers a hook called when SIGINT/SIGTERM is received.
+// Hooks run synchronously BEFORE any component's Stop is invoked, so
+// DB / Redis / message-broker connections are still live when hooks
+// execute. Each hook gets its own 10-second deadline; hooks that
+// exceed it are abandoned without blocking the rest of the shutdown.
+//
+// Hooks run in registration order. Use this for "publish a final
+// state" semantics: emit a goodbye message, persist last in-flight
+// work, drain external producers. Closing the actual infrastructure
+// is the Builder's job — don't manually close DB/Redis here.
 func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	b.shutdownHooks = append(b.shutdownHooks, fn)
 	return b
@@ -804,7 +847,7 @@ func (b *Builder) Run() error {
 
 	// 0. Convert builder config to modules. Modules created from With*()
 	// config are prepended so they initialize before user-registered modules.
-	builtinModules, dbMod := b.buildIntegrationModules()
+	builtinModules := b.buildIntegrationModules()
 	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
 	allModules = append(allModules, builtinModules...)
 	allModules = append(allModules, b.modules...)
@@ -824,7 +867,15 @@ func (b *Builder) Run() error {
 	}
 
 	// 2. Lifecycle Runner -- manages all long-running goroutines.
-	runner := lifecycle.NewRunner(logger)
+	// Shutdown hooks fire from BeforeStop — synchronously after ctx
+	// cancellation but BEFORE any component's Stop runs, so hooks see
+	// live DB / broker / cache connections.
+	runnerOpts := []lifecycle.RunnerOption{
+		lifecycle.WithBeforeStop(func(ctx context.Context) {
+			runShutdownHooks(ctx, b.shutdownHooks, logger)
+		}),
+	}
+	runner := lifecycle.NewRunner(logger, runnerOpts...)
 
 	// 2.5. EventBus pool lifecycle -- register after runner creation.
 	if b.eventBusPoolSize > 0 {
@@ -875,6 +926,21 @@ func (b *Builder) Run() error {
 	}
 
 	// 8. Modules — initialize in registration order, close in reverse on shutdown.
+	//
+	// Pre-Init pass: inject the kit-level serverTLS into the gRPC
+	// module so its grpc.Server is constructed with the same TLS
+	// surface as the HTTP server. Without this, services that set
+	// TLS_CERT/TLS_KEY would silently run plaintext gRPC alongside
+	// TLS HTTP — an authentication bypass for any service relying on
+	// "if I'm in mTLS mode, peers are authenticated".
+	if serverTLS != nil {
+		for _, m := range allModules {
+			if gm, ok := m.(*grpcModule); ok {
+				gm.setTLSConfig(serverTLS)
+				break
+			}
+		}
+	}
 	if len(allModules) > 0 {
 		moduleCleanup, moduleErr := initModules(
 			context.Background(),
@@ -896,12 +962,6 @@ func (b *Builder) Run() error {
 		for _, m := range allModules {
 			b.healthChecks = append(b.healthChecks, m.HealthChecks()...)
 		}
-	}
-
-	// 9. Seed early exit — if WithSeed was configured and --seed was passed,
-	// the database module completed seeding during Init. Exit cleanly now.
-	if dbMod != nil && dbMod.SeedExit() {
-		return nil
 	}
 
 	// 10. Router — build HTTP handler with all infrastructure available.
@@ -926,6 +986,8 @@ func (b *Builder) Run() error {
 		TenantBudget:   b.budgetSpecStore(),
 		ActionLog:      b.actionLogger(),
 		ApprovalStore:  b.approvalStore(),
+		Authz:          b.authz,
+		Flags:          b.flagsClient(),
 		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			lateBgsMu.Lock()
@@ -969,8 +1031,16 @@ func (b *Builder) Run() error {
 	//   1. budget — charges per-tenant; furthest from the network
 	//      so rejections still see tenant ctx populated.
 	//   2. tenant — extracts tenant ID into ctx for budget + handler.
-	//   3. signedrequest — outermost; unsigned requests get rejected
-	//      before any tenant or budget work runs.
+	//   3. signedrequest — applied next; unsigned requests get rejected
+	//      before tenant or budget work runs.
+	//   4. ratelimit (per-IP) — cheap reject hostile clients before
+	//      the signedrequest crypto verification runs. Auto-applied
+	//      iff WithIPRateLimit was configured.
+	//   5. stack.Default — outermost; recover, security headers, metrics,
+	//      request ID, correlation ID, tracing, logging, timeout, request
+	//      logger. This means panics anywhere downstream still convert to
+	//      500 + structured log, and every request lands with a bounded
+	//      ctx, observability headers, and a scoped logger.
 	if mw := b.budgetMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
 	}
@@ -979,6 +1049,12 @@ func (b *Builder) Run() error {
 	}
 	if mw := b.signedRequestMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
+	}
+	if rl != nil {
+		httpHandler = rl.Middleware(httpHandler)
+	}
+	if !b.disableDefaultStack {
+		httpHandler = stack.Default(httpHandler, slog.Default(), b.stackOpts...)
 	}
 
 	// Freeze late background registration — any calls after routerFn returns
@@ -1058,42 +1134,11 @@ func (b *Builder) Run() error {
 		}
 	})
 
-	// 12. Shutdown hooks — run when the Runner's context is cancelled.
-	// Each hook runs with individual panic recovery and a per-hook timeout
-	// to prevent a single misbehaving hook from blocking the entire shutdown.
-	// WARNING: Infrastructure connections (DB, Redis, Broker) may already be
-	// closed when hooks execute — hooks run concurrently with component
-	// shutdown. Do not rely on infrastructure being available in hooks.
-	if len(b.shutdownHooks) > 0 {
-		runner.AddFunc("shutdown-hooks", func(ctx context.Context) error {
-			<-ctx.Done()
-			for i, fn := range b.shutdownHooks {
-				func(idx int, hook func(context.Context)) {
-					defer func() {
-						if rec := recover(); rec != nil {
-							logger.Error("shutdown hook panicked",
-								"hook_index", idx,
-								"panic", rec,
-							)
-						}
-					}()
-					hookCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					done := make(chan struct{})
-					go func() {
-						defer close(done)
-						hook(hookCtx)
-					}()
-					select {
-					case <-done:
-					case <-hookCtx.Done():
-						logger.Error("shutdown hook timed out", "hook_index", idx)
-					}
-				}(i, fn)
-			}
-			return nil
-		})
-	}
+	// 12. Shutdown hooks fire from the Runner's BeforeStop callback (wired in
+	// step 2) — synchronously after ctx cancels but BEFORE any component
+	// Stop runs. Hooks see live DB / broker / cache connections; the
+	// previous design ran them concurrently with stopAll which silently
+	// observed closed connections.
 
 	// 13. gRPC server — added before the public HTTP server so it is
 	// stopped after HTTP during graceful shutdown (reverse order).

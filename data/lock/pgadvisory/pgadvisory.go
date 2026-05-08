@@ -28,9 +28,10 @@ package pgadvisory
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 
 	"github.com/bds421/rho-kit/data/lock"
 )
@@ -128,11 +129,17 @@ func (s *sessionLock) Extend(_ context.Context) (bool, error) {
 }
 
 // keyToInt64 hashes the caller's string key into the int8 advisory
-// lock space. FNV-1a is deterministic across processes — two services
-// hashing the same key get the same lock id, which is the property the
-// API depends on.
+// lock space using the leading 8 bytes of SHA-256. SHA-256 is
+// cryptographically collision-resistant against adversarial inputs;
+// FNV-1a is not, so a previous version was vulnerable to attacker-chosen
+// keys colliding into the same advisory-lock id and silently breaking
+// mutual exclusion. SHA-256 is deterministic across processes, so the
+// shared-key contract is preserved.
+//
+// Note: int64 still has 64-bit space, so birthday-paradox collision is
+// possible at ~2^32 distinct keys — for adversarially-chosen keys the
+// attacker has to brute-force SHA-256, which is infeasible.
 func keyToInt64(key string) int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(key))
-	return int64(h.Sum64())
+	sum := sha256.Sum256([]byte(key))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
 }

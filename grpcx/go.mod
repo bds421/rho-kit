@@ -3,10 +3,6 @@ module github.com/bds421/rho-kit/grpcx
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.2.0
-	github.com/bds421/rho-kit/core/contextutil v1.2.0
-	github.com/bds421/rho-kit/observability/health v1.1.0
-	github.com/bds421/rho-kit/security/jwtutil v1.1.0
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -15,8 +11,10 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core/config v1.2.0 // indirect
-	github.com/bds421/rho-kit/resilience/retry v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/resilience v0.0.0
+	github.com/bds421/rho-kit/security v0.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -53,3 +51,11 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../core
+
+replace github.com/bds421/rho-kit/resilience => ../resilience
+
+replace github.com/bds421/rho-kit/observability => ../observability
+
+replace github.com/bds421/rho-kit/security => ../security

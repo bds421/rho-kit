@@ -1,0 +1,15 @@
+-- +goose Up
+-- +goose StatementBegin
+CREATE TABLE IF NOT EXISTS users (
+    id          UUID PRIMARY KEY,
+    email       TEXT NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS users_created_at_idx ON users (created_at DESC);
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE IF EXISTS users;
+-- +goose StatementEnd

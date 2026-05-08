@@ -3,11 +3,6 @@ module github.com/bds421/rho-kit/infra/messaging/amqpbackend
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.2.0
-	github.com/bds421/rho-kit/core/config v1.2.0
-	github.com/bds421/rho-kit/infra/messaging v1.2.0
-	github.com/bds421/rho-kit/observability/health v1.1.0
-	github.com/bds421/rho-kit/resilience/retry v1.1.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.40.0
@@ -20,7 +15,11 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/bds421/rho-kit/io/atomicfile v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/infra v0.0.0
+	github.com/bds421/rho-kit/io v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/resilience v0.0.0
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -72,3 +71,13 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../../../core
+
+replace github.com/bds421/rho-kit/resilience => ../../../resilience
+
+replace github.com/bds421/rho-kit/observability => ../../../observability
+
+replace github.com/bds421/rho-kit/infra => ../../../infra
+
+replace github.com/bds421/rho-kit/io => ../../../io

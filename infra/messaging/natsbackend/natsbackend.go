@@ -44,6 +44,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/bds421/rho-kit/core/apperror"
 	"github.com/bds421/rho-kit/infra/messaging"
 )
 
@@ -400,8 +401,12 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messaging.Handler) {
 	defer func() {
 		if r := recover(); r != nil {
-			_ = jm.Nak()
-			c.logger.Error("natsbackend: handler panicked",
+			// Term, not Nak: a panic is a poison-pill — re-running the
+			// same payload through the same handler will panic again,
+			// burning the entire MaxDeliver budget for nothing. Term
+			// hands it straight to the JetStream DLQ.
+			_ = jm.Term()
+			c.logger.Error("natsbackend: handler panicked — terminating message",
 				slog.Any("panic", r),
 			)
 		}
@@ -443,6 +448,19 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	}
 
 	if err := handler(ctx, delivery); err != nil {
+		// Permanent errors (apperror.PermanentError) get Term'd so
+		// JetStream stops redelivering immediately, mirroring the
+		// AMQP backend's poison-pill handling. Without this every
+		// permanent failure burns the entire MaxDeliver budget.
+		if apperror.IsPermanent(err) {
+			c.logger.Error("natsbackend: permanent error — terminating message",
+				slog.String("subject", subject),
+				slog.String("msg_id", msg.ID),
+				slog.Any("error", err),
+			)
+			_ = jm.Term()
+			return
+		}
 		c.logger.Warn("natsbackend: handler returned error — nacking",
 			slog.String("subject", subject),
 			slog.String("msg_id", msg.ID),

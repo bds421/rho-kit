@@ -121,7 +121,14 @@ type transport struct {
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	body, err := readBody(req, t.cfg.bodyMaxSize)
+	// http.RoundTripper contract: do not mutate the input request.
+	// Clone first so signature headers and body-buffering touch the
+	// clone, leaving the caller's request untouched. Without this,
+	// retry middleware that re-reads req.Body sees an empty body the
+	// second time around (because we drained the original).
+	clone := req.Clone(req.Context())
+
+	body, err := readBody(clone, t.cfg.bodyMaxSize)
 	if err != nil {
 		return nil, err
 	}
@@ -129,16 +136,20 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ts := strconv.FormatInt(t.cfg.now().UTC().Unix(), 10)
 	nonce := t.cfg.nonceFn()
 
-	req.Header.Set(signedrequest.HeaderTimestamp, ts)
-	req.Header.Set(signedrequest.HeaderNonce, nonce)
-	req.Header.Set(signedrequest.HeaderKeyID, t.cfg.keyID)
+	clone.Header.Set(signedrequest.HeaderTimestamp, ts)
+	clone.Header.Set(signedrequest.HeaderNonce, nonce)
+	clone.Header.Set(signedrequest.HeaderKeyID, t.cfg.keyID)
 
-	sig := signedrequest.SignCanonical(t.secret, req, ts, nonce, body, t.cfg.includeHeaders)
-	req.Header.Set(signedrequest.HeaderSignature, sig)
+	sig := signedrequest.SignCanonical(t.secret, clone, ts, nonce, body, t.cfg.includeHeaders)
+	clone.Header.Set(signedrequest.HeaderSignature, sig)
 
-	return t.base.RoundTrip(req)
+	return t.base.RoundTrip(clone)
 }
 
+// readBody buffers the request body up to max bytes and rewinds the
+// clone's Body so RoundTrip and SignCanonical both see the same bytes.
+// Operates on the clone — the caller's original request is left
+// untouched.
 func readBody(req *http.Request, max int64) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil

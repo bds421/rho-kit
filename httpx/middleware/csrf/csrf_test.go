@@ -485,83 +485,6 @@ func TestNew_SkipCheck_ComposedPredicates(t *testing.T) {
 	})
 }
 
-// --- Legacy RequireCSRF tests ---
-
-func TestRequireCSRF_GET_NoHeader(t *testing.T) {
-	handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET without header should pass, got %d", rec.Code)
-	}
-}
-
-func TestRequireCSRF_HEAD_NoHeader(t *testing.T) {
-	handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodHead, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("HEAD without header should pass, got %d", rec.Code)
-	}
-}
-
-func TestRequireCSRF_OPTIONS_NoHeader(t *testing.T) {
-	handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("OPTIONS without header should pass, got %d", rec.Code)
-	}
-}
-
-func TestRequireCSRF_POST_WithoutHeader(t *testing.T) {
-	called := false
-	handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("POST without X-Requested-With should be 403, got %d", rec.Code)
-	}
-	if called {
-		t.Error("next handler should not be called")
-	}
-}
-
-func TestRequireCSRF_POST_WithHeader(t *testing.T) {
-	handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST with X-Requested-With should pass, got %d", rec.Code)
-	}
-}
-
 // --- RequireJSONContentType tests ---
 
 func TestRequireJSONContentType_POST_WithJSON(t *testing.T) {
@@ -782,41 +705,6 @@ func TestRequireJSONContentType_OPTIONS_Passes(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("OPTIONS should pass, got %d", rec.Code)
-	}
-}
-
-func TestRequireCSRF_StateChangingMethods(t *testing.T) {
-	methods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
-
-	for _, method := range methods {
-		t.Run(method+"_blocked", func(t *testing.T) {
-			handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-
-			req := httptest.NewRequest(method, "/", nil)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("%s without header should be 403, got %d", method, rec.Code)
-			}
-		})
-
-		t.Run(method+"_allowed", func(t *testing.T) {
-			handler := RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-
-			req := httptest.NewRequest(method, "/", nil)
-			req.Header.Set("X-Requested-With", "fetch")
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("%s with header should pass, got %d", method, rec.Code)
-			}
-		})
 	}
 }
 

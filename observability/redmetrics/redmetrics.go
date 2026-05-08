@@ -164,21 +164,42 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 
 			rec := newStatusRecorder(w)
 			start := time.Now()
+
+			// Always record metrics, even on panic. A panicking handler
+			// without this recover would skip Requests/Duration/Errors
+			// entirely, hiding the worst-quality outcomes from
+			// dashboards. We re-panic so upstream recover middleware
+			// can still log and respond.
+			defer func() {
+				rr := recover()
+				route := routeFor(r)
+				if route == "" {
+					route = "unknown"
+				}
+				method := r.Method
+				status := rec.status
+				if rr != nil {
+					// If headers were not yet written, force a 500 for
+					// the metric. Don't write to w — leave that to the
+					// outer recover middleware.
+					if !rec.wrote {
+						status = http.StatusInternalServerError
+					}
+				}
+
+				elapsed := time.Since(start)
+				m.Requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
+				m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
+				if status >= 400 {
+					m.Errors.WithLabelValues(route, method, statusClass(status)).Inc()
+				}
+
+				if rr != nil {
+					panic(rr)
+				}
+			}()
+
 			next.ServeHTTP(rec, r)
-			elapsed := time.Since(start)
-
-			route := routeFor(r)
-			if route == "" {
-				route = "unknown"
-			}
-			method := r.Method
-			status := rec.status
-
-			m.Requests.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
-			m.Duration.WithLabelValues(route, method).Observe(elapsed.Seconds())
-			if status >= 400 {
-				m.Errors.WithLabelValues(route, method, statusClass(status)).Inc()
-			}
 		})
 	}
 }

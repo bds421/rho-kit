@@ -1,12 +1,15 @@
+// asvs: V7.1.1, V7.4.1, V4.1.5
 package auditlog
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -45,12 +48,38 @@ type Filter struct {
 
 // Logger wraps a Store with convenience methods and automatic field population.
 type Logger struct {
-	store  Store
-	logger *slog.Logger
+	store     Store
+	logger    *slog.Logger
+	dropped   prometheus.Counter
+	dropTotal atomic.Uint64
+	onDrop    func(ctx context.Context, event Event, err error)
 }
 
 // Option configures a Logger.
 type Option func(*Logger)
+
+// WithDroppedCounter registers a Prometheus counter that is incremented
+// each time the underlying Store fails to persist an event. Without
+// this, drops are only visible in the slog stream — operators who alert
+// on counter rates miss compliance-affecting drops entirely.
+func WithDroppedCounter(c prometheus.Counter) Option {
+	return func(l *Logger) { l.dropped = c }
+}
+
+// WithOnDrop registers a callback invoked each time the underlying
+// Store returns an error from Append. The callback runs in the calling
+// goroutine; keep it fast or schedule its own goroutine. Use this to
+// hand-off to a fallback sink (file, in-memory ring buffer, alerter).
+func WithOnDrop(fn func(ctx context.Context, event Event, err error)) Option {
+	return func(l *Logger) { l.onDrop = fn }
+}
+
+// DroppedCount returns the process-local count of drop events. Useful
+// in tests; in production use the Prometheus counter from
+// [WithDroppedCounter].
+func (l *Logger) DroppedCount() uint64 {
+	return l.dropTotal.Load()
+}
 
 // WithLogger sets the slog logger for error reporting. A nil logger is
 // normalized to [slog.Default] so test wiring stays ergonomic; the audit
@@ -99,6 +128,13 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 			"event_id", event.ID,
 			"action", event.Action,
 		)
+		l.dropTotal.Add(1)
+		if l.dropped != nil {
+			l.dropped.Inc()
+		}
+		if l.onDrop != nil {
+			l.onDrop(ctx, event, err)
+		}
 	}
 }
 

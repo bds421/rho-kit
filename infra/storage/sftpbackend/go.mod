@@ -3,10 +3,6 @@ module github.com/bds421/rho-kit/infra/storage/sftpbackend
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/core/config v1.2.0
-	github.com/bds421/rho-kit/infra/storage v1.1.0
-	github.com/bds421/rho-kit/observability/health v1.1.0
-	github.com/bds421/rho-kit/observability/promutil v1.1.0
 	github.com/pkg/sftp v1.13.10
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -15,7 +11,10 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/io/progress v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/infra v0.0.0
+	github.com/bds421/rho-kit/io v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -37,3 +36,11 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bds421/rho-kit/core => ../../../core
+
+replace github.com/bds421/rho-kit/observability => ../../../observability
+
+replace github.com/bds421/rho-kit/infra => ../../../infra
+
+replace github.com/bds421/rho-kit/io => ../../../io

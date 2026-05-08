@@ -3,25 +3,16 @@ module github.com/bds421/rho-kit/examples/agentic-service
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/data/actionlog v0.0.0
-	github.com/bds421/rho-kit/data/actionlog/memory v0.0.0
-	github.com/bds421/rho-kit/data/approval v0.0.0
-	github.com/bds421/rho-kit/data/approval/memory v0.0.0
-	github.com/bds421/rho-kit/data/budget v0.0.0
-	github.com/bds421/rho-kit/data/budget/memory v0.0.0
-	github.com/bds421/rho-kit/httpx v0.0.0
-	github.com/bds421/rho-kit/httpx/mcp v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
-	github.com/bds421/rho-kit/core/apperror v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/contextutil v1.2.0 // indirect
-	github.com/bds421/rho-kit/core/validate v1.1.0 // indirect
-	github.com/bds421/rho-kit/observability/logattr v1.1.0 // indirect
-	github.com/bds421/rho-kit/observability/logging v1.1.0 // indirect
-	github.com/bds421/rho-kit/resilience/circuitbreaker v1.1.0 // indirect
+	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/data v0.0.0
+	github.com/bds421/rho-kit/httpx v0.0.0
+	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/resilience v0.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -47,11 +38,16 @@ require (
 
 replace (
 	github.com/bds421/rho-kit/data/actionlog => ../../data/actionlog
-	github.com/bds421/rho-kit/data/actionlog/memory => ../../data/actionlog/memory
 	github.com/bds421/rho-kit/data/approval => ../../data/approval
-	github.com/bds421/rho-kit/data/approval/memory => ../../data/approval/memory
 	github.com/bds421/rho-kit/data/budget => ../../data/budget
-	github.com/bds421/rho-kit/data/budget/memory => ../../data/budget/memory
-	github.com/bds421/rho-kit/httpx => ../../httpx
-	github.com/bds421/rho-kit/httpx/mcp => ../../httpx/mcp
 )
+
+replace github.com/bds421/rho-kit/core => ../../core
+
+replace github.com/bds421/rho-kit/resilience => ../../resilience
+
+replace github.com/bds421/rho-kit/observability => ../../observability
+
+replace github.com/bds421/rho-kit/data => ../../data
+
+replace github.com/bds421/rho-kit/httpx => ../../httpx

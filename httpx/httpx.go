@@ -57,6 +57,14 @@ func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
 	if tlsConfig != nil {
 		transport.TLSClientConfig = tlsConfig
 	}
+	// Enforce a TLS 1.2 floor on the outbound client. An empty
+	// &tls.Config{} otherwise defaults to TLS 1.0, which is below the
+	// modern compliance baseline. Caller-set higher floors are honored.
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else if transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		transport.TLSClientConfig.MinVersion = tls.VersionTLS12
+	}
 	if cfg.idleConnTimeout > 0 {
 		transport.IdleConnTimeout = cfg.idleConnTimeout
 	}

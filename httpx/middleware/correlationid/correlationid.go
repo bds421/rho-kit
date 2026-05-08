@@ -1,6 +1,8 @@
 // Package correlationid provides HTTP middleware for propagating correlation IDs
 // across service boundaries. A correlation ID groups related requests that belong
 // to the same logical operation, unlike a request ID which is unique per request.
+//
+// asvs: V7.1.1
 package correlationid
 
 import (

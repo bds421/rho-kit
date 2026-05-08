@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
@@ -68,15 +69,47 @@ type KeySet struct {
 }
 
 // ParseKeySet parses a JWKS JSON document into a KeySet.
+//
+// Symmetric (HMAC / kty=oct) keys are rejected to prevent the classic
+// alg-confusion attack, where a token signed with HS256 is accepted by a
+// verifier that holds an EC/RSA public key — by treating the public key
+// bytes as the HMAC secret. Trusted JWKS endpoints (Oathkeeper, Auth0, …)
+// do not publish symmetric keys; if you have a legitimate use for shared
+// secrets, pass them outside the JWKS surface.
 func ParseKeySet(data []byte) (*KeySet, error) {
 	set, err := jwk.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("parse jwks: %w", err)
 	}
-	if set.Len() == 0 {
-		return nil, errors.New("jwks contains no usable keys")
+	filtered := jwk.NewSet()
+	for i := 0; i < set.Len(); i++ {
+		key, ok := set.Key(i)
+		if !ok {
+			continue
+		}
+		if isSymmetricKey(key) {
+			// Skip silently rather than returning an error: a JWKS may
+			// legitimately mix algorithms over time, and rejecting the
+			// whole set on a single oct key would break liveness.
+			continue
+		}
+		if err := filtered.AddKey(key); err != nil {
+			return nil, fmt.Errorf("filter jwks: %w", err)
+		}
 	}
-	return &KeySet{set: set}, nil
+	if filtered.Len() == 0 {
+		return nil, errors.New("jwks contains no usable asymmetric keys")
+	}
+	return &KeySet{set: filtered}, nil
+}
+
+// isSymmetricKey reports whether k is an HMAC-style (kty=oct) key. Such
+// keys cannot safely be combined with [jws.WithInferAlgorithmFromKey],
+// because the inferred algorithm is HS*, which lets an attacker forge
+// tokens against any other key in the set whose public bytes can be
+// borrowed as the HMAC secret.
+func isSymmetricKey(k jwk.Key) bool {
+	return k.KeyType() == jwa.OctetSeq()
 }
 
 // ParseKeySetFromPEM parses a PEM-encoded public key into a KeySet with a
@@ -235,6 +268,7 @@ type Provider struct {
 	expectedAudience string
 	allowAnyIssuer   bool
 	allowAnyAudience bool
+	allowInsecureURL bool
 	maxStale         time.Duration
 	clock            func() time.Time
 
@@ -317,6 +351,81 @@ func withClock(fn func() time.Time) ProviderOption {
 	return func(p *Provider) { p.clock = fn }
 }
 
+// WithAllowInsecureURL permits a non-https JWKS URL. Required for tests
+// using httptest.NewServer or for service-mesh deployments where the JWKS
+// endpoint is reached over a localhost or sidecar-secured channel. Never
+// use over an untrusted network — a plaintext JWKS is a token-forgery
+// vector via key injection.
+func WithAllowInsecureURL() ProviderOption {
+	return func(p *Provider) { p.allowInsecureURL = true }
+}
+
+// isHTTPSURL reports whether u begins with "https://" (case-insensitive).
+// Avoids importing net/url for a tiny prefix check.
+func isHTTPSURL(u string) bool {
+	const prefix = "https://"
+	if len(u) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := u[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// isJSONContentType reports whether ct (a Content-Type header value)
+// designates a JSON-family payload. Accepts the JWKS-specific
+// application/jwk-set+json as well as plain application/json. Strips
+// charset / boundary parameters before comparing.
+func isJSONContentType(ct string) bool {
+	// Take the media type up to ';'.
+	for i := 0; i < len(ct); i++ {
+		if ct[i] == ';' {
+			ct = ct[:i]
+			break
+		}
+	}
+	// Trim spaces.
+	for len(ct) > 0 && ct[0] == ' ' {
+		ct = ct[1:]
+	}
+	for len(ct) > 0 && ct[len(ct)-1] == ' ' {
+		ct = ct[:len(ct)-1]
+	}
+	// Lowercase compare.
+	const a = "application/json"
+	const b = "application/jwk-set+json"
+	if eqIgnoreCase(ct, a) || eqIgnoreCase(ct, b) {
+		return true
+	}
+	return false
+}
+
+func eqIgnoreCase(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ac, bc := a[i], b[i]
+		if ac >= 'A' && ac <= 'Z' {
+			ac += 'a' - 'A'
+		}
+		if bc >= 'A' && bc <= 'Z' {
+			bc += 'a' - 'A'
+		}
+		if ac != bc {
+			return false
+		}
+	}
+	return true
+}
+
 // NewProvider creates a JWKS provider that fetches public keys from the given URL.
 // The refresh interval controls how often keys are re-fetched in the background.
 // If httpClient is nil, a default client with a 5s timeout is used.
@@ -347,6 +456,12 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	// Enforce https:// for JWKS unless the caller has explicitly opted into
+	// http (e.g. for service-mesh sidecar localhost). A plaintext JWKS lets
+	// any on-path attacker inject signing keys, fully forging tokens.
+	if url != "" && !p.allowInsecureURL && !isHTTPSURL(url) {
+		panic("jwtutil: NewProvider requires https:// JWKS URL (or explicit WithAllowInsecureURL opt-in)")
 	}
 	if p.clock == nil {
 		p.clock = time.Now
@@ -550,6 +665,11 @@ func (p *Provider) fetch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Tell the JWKS endpoint we expect JSON. Servers behind captive portals
+	// or misconfigured proxies that return text/html still pass our 200
+	// check otherwise; the explicit Accept makes the contract loud and
+	// gives well-behaved servers a chance to negotiate properly.
+	req.Header.Set("Accept", "application/jwk-set+json, application/json")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -561,9 +681,21 @@ func (p *Provider) fetch(ctx context.Context) error {
 		return fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB limit
+	// Reject non-JSON content types — e.g. captive-portal HTML responses.
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !isJSONContentType(ct) {
+		return fmt.Errorf("jwks endpoint returned unexpected content-type %q", ct)
+	}
+
+	// 64 KiB is well above any realistic JWKS document (<4 KiB typical)
+	// and far below the parse-time DoS threshold of the previous 1 MiB cap.
+	const maxJWKSBytes = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxJWKSBytes {
+		return fmt.Errorf("jwks body exceeds %d bytes", maxJWKSBytes)
 	}
 
 	ks, err := ParseKeySet(body)

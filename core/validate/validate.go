@@ -2,9 +2,12 @@
 // converting validation errors into apperror.ValidationError with field-level
 // details. It uses JSON tag names for field references so error messages match
 // the API contract.
+//
+// asvs: V5.1.3
 package validate
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -47,6 +50,12 @@ func get() *validator.Validate {
 
 // Struct validates a struct using go-playground/validator tags.
 // Returns nil on success or an *apperror.ValidationError with field-level details.
+//
+// A non-struct or nil-pointer input is a programming bug (the validator
+// would otherwise return InvalidValidationError, which the v1 wrapper
+// surfaced as a 400 ValidationError to the client). v2 returns
+// apperror.NewOperationFailedWithCause for that case so misuse shows up
+// as a server error rather than user input being blamed.
 func Struct(s any) error {
 	// Acquire regMu so a concurrent RegisterValidation cannot mutate the
 	// validator's tag-function map while we're reading it. The mutex is
@@ -62,6 +71,11 @@ func Struct(s any) error {
 		return nil
 	}
 
+	var invalid *validator.InvalidValidationError
+	if errors.As(err, &invalid) {
+		return apperror.NewOperationFailedWithCause("validate: invalid input passed to Struct (programming error)", invalid)
+	}
+
 	validationErrors, ok := err.(validator.ValidationErrors)
 	if !ok {
 		return apperror.NewValidation(err.Error())
@@ -75,6 +89,23 @@ func Struct(s any) error {
 		})
 	}
 	return apperror.NewFieldValidation(fields...)
+}
+
+// New constructs an isolated *validator.Validate for callers that need
+// independent instances (e.g. tests with conflicting custom tags). The
+// returned validator does not share the singleton's frozen state, but
+// it also does not get the singleton's pre-registered JSON tag-name
+// hook — wire that up explicitly if needed.
+func New() *validator.Validate {
+	v := validator.New()
+	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
+		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+		if name == "-" || name == "" {
+			return fld.Name
+		}
+		return name
+	})
+	return v
 }
 
 // RegisterValidation registers a custom validation tag on the shared validator.

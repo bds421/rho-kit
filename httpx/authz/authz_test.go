@@ -24,8 +24,8 @@ func TestRequirePermission_PanicsOnNilDeps(t *testing.T) {
 		resource ResourceFunc
 		subject  SubjectFunc
 	}{
-		{"nil policy", nil, StaticResource("r"), SubjectFromHeader("X-User-ID")},
-		{"nil resource", AllowAll(), nil, SubjectFromHeader("X-User-ID")},
+		{"nil policy", nil, StaticResource("r"), SubjectFromUntrustedHeader("X-User-ID")},
+		{"nil resource", AllowAll(), nil, SubjectFromUntrustedHeader("X-User-ID")},
 		{"nil subject", AllowAll(), StaticResource("r"), nil},
 	}
 	for _, tc := range cases {
@@ -44,7 +44,7 @@ func TestRequirePermission_Allowed(t *testing.T) {
 	mw := RequirePermission(
 		AllowAll(), "read",
 		StaticResource("users"),
-		SubjectFromHeader("X-User-ID"),
+		SubjectFromUntrustedHeader("X-User-ID"),
 	)
 
 	handler := mw(okHandler())
@@ -60,7 +60,7 @@ func TestRequirePermission_Denied(t *testing.T) {
 	mw := RequirePermission(
 		DenyAll(), "delete",
 		StaticResource("users"),
-		SubjectFromHeader("X-User-ID"),
+		SubjectFromUntrustedHeader("X-User-ID"),
 	)
 
 	handler := mw(okHandler())
@@ -81,7 +81,7 @@ func TestRequirePermission_PolicyError(t *testing.T) {
 	mw := RequirePermission(
 		errPolicy, "read",
 		StaticResource("users"),
-		SubjectFromHeader("X-User-ID"),
+		SubjectFromUntrustedHeader("X-User-ID"),
 	)
 
 	handler := mw(okHandler())
@@ -98,7 +98,7 @@ func TestRequirePermission_EmptySubject(t *testing.T) {
 	mw := RequirePermission(
 		AllowAll(), "read",
 		StaticResource("users"),
-		SubjectFromHeader("X-User-ID"),
+		SubjectFromUntrustedHeader("X-User-ID"),
 	)
 
 	handler := mw(okHandler())
@@ -130,7 +130,7 @@ func TestResourceFromPath(t *testing.T) {
 	mw := RequirePermission(
 		AllowAll(), "read",
 		ResourceFromPath("id"),
-		SubjectFromHeader("X-User-ID"),
+		SubjectFromUntrustedHeader("X-User-ID"),
 	)
 	mux.Handle("GET /users/{id}", mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = r.PathValue("id")

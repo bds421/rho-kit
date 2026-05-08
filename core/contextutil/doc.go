@@ -1,16 +1,13 @@
 // Package contextutil provides type-safe, generic context keys.
 //
-// Each [Key] type parameter forms a unique context key, preventing collisions
-// without manually defining sentinel types:
+// Each [Key] is constructed with [NewKey] and given a unique identity, so
+// two independently-constructed Key[string] values never collide as
+// context keys — even across packages.
 //
-//	var UserKey contextutil.Key[User]
+//	var UserKey = contextutil.NewKey[User]("user")
 //	ctx = UserKey.Set(ctx, currentUser)
 //	user, ok := UserKey.Get(ctx)
 //
-// If multiple values of the same underlying type are needed, define named types:
-//
-//	type UserID string
-//	type SessionID string
-//	var userIDKey contextutil.Key[UserID]
-//	var sessionIDKey contextutil.Key[SessionID]
+// The zero value of Key is intentionally not usable; calling Set on an
+// unconstructed Key panics. Use NewKey, never `var k Key[T]`.
 package contextutil

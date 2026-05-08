@@ -3,6 +3,7 @@ package encrypt
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"testing"
 )
 
@@ -30,8 +31,8 @@ func TestFieldEncryptor_RoundTrip(t *testing.T) {
 	if ciphertext == original {
 		t.Fatal("ciphertext should differ from plaintext")
 	}
-	if ciphertext[:8] != "\x00enc:v2:" {
-		t.Fatalf("expected v2 prefix, got %q", ciphertext[:8])
+	if ciphertext[:7] != "enc:v3:" {
+		t.Fatalf("expected v2 prefix, got %q", ciphertext[:7])
 	}
 
 	decrypted, err := enc.Decrypt(ciphertext)
@@ -66,27 +67,24 @@ func TestFieldEncryptor_EmptyString(t *testing.T) {
 	}
 }
 
-func TestFieldEncryptor_PlaintextPassthrough(t *testing.T) {
+func TestFieldEncryptor_PlaintextRejectedByDefault(t *testing.T) {
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatalf("new encryptor: %v", err)
 	}
 
-	plaintext := "old-plaintext-password"
-	decrypted, err := enc.Decrypt(plaintext)
-	if err != nil {
-		t.Fatalf("decrypt plaintext: %v", err)
-	}
-	if decrypted != plaintext {
-		t.Fatalf("expected %q, got %q", plaintext, decrypted)
+	if _, err := enc.Decrypt("old-plaintext-password"); err == nil {
+		t.Fatal("expected ErrPlaintextNotAllowed; got nil")
+	} else if !errors.Is(err, ErrPlaintextNotAllowed) {
+		t.Fatalf("expected ErrPlaintextNotAllowed, got %v", err)
 	}
 }
 
 func TestFieldEncryptor_DoubleEncryptYieldsDifferentCiphertext(t *testing.T) {
-	// Renamed + flipped: the previous "idempotent re-encrypt" behaviour was a
-	// security footgun (any user value starting with "enc:v1:" or
-	// "\x00enc:v2:" was stored verbatim). Encrypt now always encrypts; the
-	// safe idempotent path is EncryptIfPlain, which AEAD-verifies.
+	// Encrypt always produces fresh ciphertext, even when the input
+	// already looks like a previous Encrypt output. The safe
+	// idempotent path is EncryptIfPlain, which AEAD-verifies before
+	// passing through.
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatalf("new encryptor: %v", err)
@@ -125,17 +123,18 @@ func TestFieldEncryptor_EncryptIfPlain_PassesThroughValidCiphertext(t *testing.T
 }
 
 func TestFieldEncryptor_EncryptIfPlain_RejectsAttackerControlledPrefix(t *testing.T) {
-	// The attack we're defending against: previously, an input like
-	// "enc:v1:not-real" was treated as already-encrypted and stored verbatim.
-	// EncryptIfPlain must AEAD-verify before passing through, so a bogus
-	// prefix gets re-encrypted (and the original attacker value never reaches
-	// storage in plaintext).
+	// The attack we're defending against: an attacker who can submit
+	// values into an encrypted field crafts a string that begins with
+	// the v2 prefix in hopes of being passed through verbatim.
+	// EncryptIfPlain must AEAD-verify before passing through, so a
+	// bogus prefix gets re-encrypted (and the original attacker value
+	// never reaches storage in plaintext).
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatalf("new encryptor: %v", err)
 	}
 
-	attackerInput := "enc:v1:" + base64.StdEncoding.EncodeToString([]byte("not-real-ciphertext"))
+	attackerInput := "enc:v3:" + base64.StdEncoding.EncodeToString([]byte("not-real-ciphertext"))
 	out, err := enc.EncryptIfPlain(attackerInput)
 	if err != nil {
 		t.Fatalf("encrypt-if-plain: %v", err)
@@ -208,7 +207,7 @@ func TestFieldEncryptor_Decrypt_InvalidBase64(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = enc.Decrypt("\x00enc:v2:not-valid-base64!!!")
+	_, err = enc.Decrypt("enc:v2:not-valid-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
@@ -220,9 +219,99 @@ func TestFieldEncryptor_Decrypt_TooShort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = enc.Decrypt("\x00enc:v2:AQID")
+	_, err = enc.Decrypt("enc:v2:AQID")
 	if err == nil {
 		t.Fatal("expected error for too-short ciphertext")
+	}
+}
+
+func TestFieldEncryptor_DecryptsLegacyV2Format(t *testing.T) {
+	// v3 format dropped the leading "\x00" of v2 because Postgres
+	// TEXT columns reject NUL bytes. The body (base64 of nonce ‖ ct ‖
+	// tag) is identical between v2 and v3, so legacy v2 ciphertext
+	// must continue to decrypt unchanged after the prefix swap.
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	original := "alice@example.com"
+	v3Ciphertext, err := enc.Encrypt(original)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	// Reframe the v3 ciphertext as legacy v2 by swapping the prefix.
+	// The payload bytes are unchanged — only the framing differs.
+	body := v3Ciphertext[len("enc:v3:"):]
+	legacyV2Ciphertext := "\x00enc:v2:" + body
+
+	got, err := enc.Decrypt(legacyV2Ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt legacy v2: %v", err)
+	}
+	if got != original {
+		t.Fatalf("legacy v2 decrypt: got %q, want %q", got, original)
+	}
+}
+
+func TestFieldEncryptor_DecryptRejectsNoNullV2Format(t *testing.T) {
+	// A "v2 without the leading null byte" prefix is the format we
+	// briefly considered but rejected because it overlaps with the
+	// deleted enc:v1: namespace and the same-shape-as-legacy-v2 is
+	// confusing. Decrypt must reject it so operators don't accidentally
+	// roll a hand-rolled migration that mints rows in a third format.
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	v3Ciphertext, err := enc.Encrypt("payload")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	body := v3Ciphertext[len("enc:v3:"):]
+	bogus := "enc:v2:" + body
+	if _, err := enc.Decrypt(bogus); err == nil {
+		t.Fatal("Decrypt must reject the no-NUL enc:v2: shape (only enc:v3: and \\x00enc:v2: are recognised)")
+	}
+}
+
+func TestFieldEncryptor_CiphertextIsPostgresTextSafe(t *testing.T) {
+	// Regression: the prior format used a leading "\x00" defence-in-depth
+	// byte that broke Postgres TEXT/VARCHAR inserts ("invalid byte
+	// sequence for encoding UTF8: 0x00"). The output must stay within
+	// the printable-ASCII range that TEXT columns accept without any
+	// per-byte escaping. Run against a variety of plaintext shapes so
+	// we catch any byte that leaks through outside the base64 body.
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	inputs := []string{
+		"",
+		"a",
+		"alice@example.com",
+		"line one\nline two",
+		"emoji \xf0\x9f\x94\x92 inside",
+		string(make([]byte, 1024)), // 1 KiB of plaintext NULs — the encryptor input may contain NULs even when its output must not
+	}
+	for _, in := range inputs {
+		out, err := enc.Encrypt(in)
+		if err != nil {
+			t.Fatalf("encrypt %q: %v", in, err)
+		}
+		for i := 0; i < len(out); i++ {
+			b := out[i]
+			if b == 0x00 {
+				t.Fatalf("ciphertext[%d] = 0x00; Postgres TEXT/VARCHAR rejects null bytes", i)
+			}
+			// printable ASCII (space..tilde) plus base64's '+/=' is
+			// the maximum range we expect — anything else suggests
+			// the prefix or base64 alphabet drifted.
+			if b < 0x20 || b > 0x7E {
+				t.Fatalf("ciphertext[%d] = 0x%02x; expected printable ASCII for safe text-column storage", i, b)
+			}
+		}
 	}
 }
 
@@ -264,7 +353,7 @@ func TestEncryptOptional_WithEncryptor(t *testing.T) {
 	if got == "secret-value" {
 		t.Fatal("expected encrypted value to differ from plaintext")
 	}
-	if len(got) < 7 || got[:8] != "\x00enc:v2:" {
+	if len(got) < 7 || got[:7] != "enc:v3:" {
 		t.Fatalf("expected v2 prefix, got %q", got)
 	}
 }
