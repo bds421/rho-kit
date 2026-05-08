@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )

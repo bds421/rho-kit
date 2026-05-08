@@ -39,7 +39,7 @@ import (
 	"cloud.google.com/go/kms/apiv1/kmspb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bds421/rho-kit/crypto/envelope"
+	"github.com/bds421/rho-kit/crypto/v2/envelope"
 )
 
 // crc32cTable is the Castagnoli polynomial — what Google KMS uses for

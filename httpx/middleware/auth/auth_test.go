@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/security/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jwt"

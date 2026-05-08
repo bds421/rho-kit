@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	sharedcache "github.com/bds421/rho-kit/data/cache"
+	sharedcache "github.com/bds421/rho-kit/data/v2/cache"
 )
 
 func newTestClient(t *testing.T) goredis.UniversalClient {

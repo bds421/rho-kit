@@ -24,8 +24,8 @@ import (
 	"strconv"
 	"time"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/cache"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/cache"
 )
 
 // keyPrefix is the namespace placed in front of every wrapped key. It

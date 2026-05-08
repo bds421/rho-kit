@@ -4,9 +4,9 @@
 //
 // Usage:
 //
-//	go run github.com/bds421/rho-kit/cmd/kit-migrate publish --to=./migrations
-//	go run github.com/bds421/rho-kit/cmd/kit-migrate list
-//	go run github.com/bds421/rho-kit/cmd/kit-migrate check --to=./migrations
+//	go run github.com/bds421/rho-kit/cmd/kit-migrate/v2 publish --to=./migrations
+//	go run github.com/bds421/rho-kit/cmd/kit-migrate/v2 list
+//	go run github.com/bds421/rho-kit/cmd/kit-migrate/v2 check --to=./migrations
 package main
 
 import (
@@ -16,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/bds421/rho-kit/data/idempotency/pgstore"
+	"github.com/bds421/rho-kit/data/idempotency/pgstore/v2"
 )
 
 // registry maps kit component names to their embedded migration

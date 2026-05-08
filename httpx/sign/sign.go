@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 // minSecretLen matches HMAC-SHA256 output size and the floor enforced by

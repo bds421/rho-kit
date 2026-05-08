@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/budget"
-	budgetredis "github.com/bds421/rho-kit/data/budget/redis"
+	"github.com/bds421/rho-kit/data/v2/budget"
+	budgetredis "github.com/bds421/rho-kit/data/budget/redis/v2"
 )
 
 func newTestClient(t *testing.T) (goredis.UniversalClient, *miniredis.Miniredis) {

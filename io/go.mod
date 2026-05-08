@@ -2,6 +2,6 @@
 // (atomic file rename) and progress (rate-limited progress callbacks).
 // Both are paired and stdlib-only, so collapsing them removes module
 // sprawl without changing dep weight. See AGENTS.md "Module shape".
-module github.com/bds421/rho-kit/io
+module github.com/bds421/rho-kit/io/v2
 
 go 1.26

@@ -3,7 +3,7 @@ package grpcx
 import (
 	"context"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"

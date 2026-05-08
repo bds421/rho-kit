@@ -3,7 +3,7 @@ package storage
 import (
 	"io"
 
-	"github.com/bds421/rho-kit/io/progress"
+	"github.com/bds421/rho-kit/io/v2/progress"
 )
 
 // ProgressFunc is called periodically during Put/Get to report progress.

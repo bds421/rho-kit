@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 )
 
 // newTestBuilder constructs a Builder with the always-on

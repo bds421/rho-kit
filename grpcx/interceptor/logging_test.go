@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/grpcx/interceptor"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 func TestLoggingUnary_LogsMethod(t *testing.T) {

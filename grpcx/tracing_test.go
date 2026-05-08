@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bds421/rho-kit/grpcx"
+	"github.com/bds421/rho-kit/grpcx/v2"
 )
 
 func TestWithTracingStatsHandler_ReturnsOption(t *testing.T) {

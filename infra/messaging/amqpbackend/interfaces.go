@@ -1,6 +1,6 @@
 package amqpbackend
 
-import "github.com/bds421/rho-kit/infra/messaging"
+import "github.com/bds421/rho-kit/infra/v2/messaging"
 
 // Compile-time interface checks.
 var (

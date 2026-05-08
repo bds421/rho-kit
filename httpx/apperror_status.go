@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // defaultHTTPStatus maps error codes to HTTP status codes.

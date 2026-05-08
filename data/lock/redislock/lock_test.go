@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/lock"
-	redislock "github.com/bds421/rho-kit/data/lock/redislock"
+	"github.com/bds421/rho-kit/data/v2/lock"
+	redislock "github.com/bds421/rho-kit/data/lock/redislock/v2"
 )
 
 func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {

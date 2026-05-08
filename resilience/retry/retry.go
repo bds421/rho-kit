@@ -10,7 +10,7 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // Policy configures retry behaviour.

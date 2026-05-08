@@ -2,7 +2,7 @@
 // are tiny and always paired so callers building "retry with
 // breaker" don't import two modules to get the obvious composition.
 // See AGENTS.md "Module shape" for the consolidation map.
-module github.com/bds421/rho-kit/resilience
+module github.com/bds421/rho-kit/resilience/v2
 
 go 1.26
 
@@ -13,7 +13,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -23,4 +23,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core

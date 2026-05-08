@@ -14,8 +14,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // messageIDPattern bounds Message.ID to a safe character set: ASCII letters,

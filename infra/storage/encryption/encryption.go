@@ -8,8 +8,8 @@ import (
 	"iter"
 	"runtime"
 
-	"github.com/bds421/rho-kit/crypto/encrypt"
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/crypto/v2/encrypt"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // KeyProvider supplies the encryption key. Implementations can fetch

@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // errIterStopped is a sentinel error used to signal that the consumer

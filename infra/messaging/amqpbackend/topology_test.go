@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/rabbitmqtest"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2/rabbitmqtest"
 )
 
 func TestDeclareTopology_Direct(t *testing.T) {

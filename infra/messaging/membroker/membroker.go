@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // SubscriptionID identifies a subscription returned by [Broker.Subscribe]

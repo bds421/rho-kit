@@ -14,8 +14,8 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/httpx/middleware/clientip"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
 
 const numShards = 16

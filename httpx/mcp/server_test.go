@@ -17,11 +17,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/actionlog"
-	actionlogmemory "github.com/bds421/rho-kit/data/actionlog/memory"
-	"github.com/bds421/rho-kit/httpx/mcp"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
+	actionlogmemory "github.com/bds421/rho-kit/data/v2/actionlog/memory"
+	"github.com/bds421/rho-kit/httpx/v2/mcp"
 )
 
 type echoIn struct {

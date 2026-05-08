@@ -9,7 +9,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/bds421/rho-kit/runtime/temporal"
+	"github.com/bds421/rho-kit/runtime/temporal/v2"
 )
 
 func TestConfig_ClientOptionsCarriesFields(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/httpx/openapi"
+	"github.com/bds421/rho-kit/httpx/v2/openapi"
 )
 
 func TestMount_PassesThroughHandler(t *testing.T) {

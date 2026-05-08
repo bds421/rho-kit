@@ -8,7 +8,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 // Compile-time assertion that *RedisNonceStore implements the

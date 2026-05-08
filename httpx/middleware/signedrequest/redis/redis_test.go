@@ -10,7 +10,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	signedredis "github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis"
+	signedredis "github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2"
 )
 
 // redisAddr resolves the Redis address for the test run. REDIS_ADDR

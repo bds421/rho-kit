@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/bds421/rho-kit/data/approval"
+	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
 // DefaultMaxBodyBytes is the default cap on the size of a request body

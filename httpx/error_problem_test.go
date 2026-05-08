@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/httpx/problemdetails"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/httpx/v2/problemdetails"
 )
 
 func TestWriteServiceProblem_NotFound(t *testing.T) {

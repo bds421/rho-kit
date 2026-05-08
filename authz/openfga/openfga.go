@@ -22,7 +22,7 @@ import (
 
 	"github.com/openfga/go-sdk/client"
 
-	"github.com/bds421/rho-kit/authz"
+	"github.com/bds421/rho-kit/authz/v2"
 )
 
 // Decider is the OpenFGA-backed [authz.Decider]. Construct via

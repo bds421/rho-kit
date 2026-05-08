@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 )
 
 // correlationIDHeaderName is the HTTP header used to propagate correlation IDs.

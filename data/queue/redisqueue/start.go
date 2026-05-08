@@ -6,7 +6,7 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/infra/redis/v2"
 )
 
 // Binding pairs a queue name with its handler.

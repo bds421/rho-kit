@@ -44,8 +44,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 const (

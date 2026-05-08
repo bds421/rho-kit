@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // ErrUnavailable is returned by FailFastPolicy when Redis is unavailable.

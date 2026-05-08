@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
 
 func okHandler(t *testing.T, want coretenant.ID) http.Handler {

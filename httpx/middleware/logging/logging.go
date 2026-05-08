@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx/middleware"
-	"github.com/bds421/rho-kit/httpx/middleware/clientip"
+	"github.com/bds421/rho-kit/httpx/v2/middleware"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
 
 // LoggerOption configures the access-log middleware.

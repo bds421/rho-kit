@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/outbox"
+	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
 
 // fakePublisher records published entries and can simulate errors.

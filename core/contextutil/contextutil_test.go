@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 )
 
 var testStringKey = contextutil.NewKey[string]("test-string")

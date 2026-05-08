@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bds421/rho-kit/cmd/kit-doctor/rules"
+	"github.com/bds421/rho-kit/cmd/kit-doctor/v2/rules"
 )
 
 // generatedHeaderRE matches the canonical generated-code header

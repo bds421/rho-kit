@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // RedisMetrics holds all Prometheus collectors for Redis command and connection monitoring.

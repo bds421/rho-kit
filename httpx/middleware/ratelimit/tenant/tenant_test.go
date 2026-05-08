@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
 
 // fakeLimiter counts calls per key and denies once a per-key cap is

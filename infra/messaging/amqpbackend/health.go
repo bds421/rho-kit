@@ -3,7 +3,7 @@ package amqpbackend
 import (
 	"context"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // HealthCheck returns a non-critical [health.DependencyCheck] for the AMQP broker.

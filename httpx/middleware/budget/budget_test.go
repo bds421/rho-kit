@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/tenant"
-	databudget "github.com/bds421/rho-kit/data/budget"
-	mw "github.com/bds421/rho-kit/httpx/middleware/budget"
+	"github.com/bds421/rho-kit/core/v2/tenant"
+	databudget "github.com/bds421/rho-kit/data/v2/budget"
+	mw "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
 )
 
 // fakeBudget is a hand-rolled stub so the middleware tests don't

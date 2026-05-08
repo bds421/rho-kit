@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/approval"
-	"github.com/bds421/rho-kit/data/approval/memory"
+	"github.com/bds421/rho-kit/data/v2/approval"
+	"github.com/bds421/rho-kit/data/v2/approval/memory"
 )
 
 const (

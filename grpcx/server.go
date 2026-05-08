@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/bds421/rho-kit/grpcx/interceptor"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 // ServerOption configures the gRPC server returned by NewServer.

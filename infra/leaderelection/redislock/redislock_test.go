@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	rlock "github.com/bds421/rho-kit/data/lock/redislock"
-	"github.com/bds421/rho-kit/infra/leaderelection"
+	rlock "github.com/bds421/rho-kit/data/lock/redislock/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 // fakeLockHandle is the minimal lock.Lock used for tests. We can't drive

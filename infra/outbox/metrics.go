@@ -1,7 +1,7 @@
 package outbox
 
 import (
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

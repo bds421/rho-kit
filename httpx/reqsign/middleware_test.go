@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/crypto/signing"
+	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
 
 func TestMiddleware(t *testing.T) {

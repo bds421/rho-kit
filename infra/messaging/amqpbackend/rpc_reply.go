@@ -7,7 +7,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // ChannelProvider provides raw AMQP channels. Connection implements this.

@@ -11,8 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // defaultStreamMaxPayloadSize is the default max payload size for stream messages (1 MiB).

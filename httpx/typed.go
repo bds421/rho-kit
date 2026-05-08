@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/validate"
+	"github.com/bds421/rho-kit/core/v2/validate"
 )
 
 // JSON returns an http.Handler that decodes a JSON request body,

@@ -11,7 +11,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/bds421/rho-kit/infra/storage/sftpbackend"
+	"github.com/bds421/rho-kit/infra/storage/sftpbackend/v2"
 )
 
 var (

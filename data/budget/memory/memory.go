@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/data/budget"
+	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
 // defaultSweepInterval is the period between background passes that

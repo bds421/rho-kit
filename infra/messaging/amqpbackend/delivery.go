@@ -3,7 +3,7 @@ package amqpbackend
 import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // fromAMQPDelivery creates a messaging.Delivery from a raw AMQP delivery

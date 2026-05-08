@@ -8,8 +8,8 @@ import (
 	"iter"
 	"time"
 
-	"github.com/bds421/rho-kit/infra/storage"
-	kitcb "github.com/bds421/rho-kit/resilience/circuitbreaker"
+	"github.com/bds421/rho-kit/infra/v2/storage"
+	kitcb "github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is in the open state.

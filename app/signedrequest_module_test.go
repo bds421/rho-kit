@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 func TestWithSignedRequests_PanicsOnNilResolver(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bds421/rho-kit/crypto/encrypt"
+	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
 // DecryptAndMaskURL decrypts the URL (if encryptor is non-nil) then masks it,

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/observability/tracing"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
 
 // tracingModule implements the Module interface for OpenTelemetry tracing.

@@ -10,9 +10,9 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/infra/messaging"
-	"github.com/bds421/rho-kit/resilience/retry"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
+	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 // DeadLetterPublisher sends pre-serialized message bytes to a dead-letter

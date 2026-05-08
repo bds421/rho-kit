@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/bds421/rho-kit/core/config"
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/observability/logging"
+	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/logging"
 )
 
 // Main is the standard entry point that replaces the identical main() function

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/google/uuid"
 )
 

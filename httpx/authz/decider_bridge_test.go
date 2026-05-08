@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	kitauthz "github.com/bds421/rho-kit/authz"
-	httpxauthz "github.com/bds421/rho-kit/httpx/authz"
+	kitauthz "github.com/bds421/rho-kit/authz/v2"
+	httpxauthz "github.com/bds421/rho-kit/httpx/v2/authz"
 )
 
 func TestFromDecider_NilPanics(t *testing.T) {

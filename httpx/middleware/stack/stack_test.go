@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
+	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
 )
 
 func TestDefault_OrderWithOuterInner(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 func TestNewMessage_UUIDv7(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
 // Worker runs a batch function periodically with jitter, metrics, and

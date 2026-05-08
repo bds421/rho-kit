@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // RabbitMQConfig holds AMQP connection settings.

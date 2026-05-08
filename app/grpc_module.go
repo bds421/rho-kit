@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/bds421/rho-kit/grpcx"
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/grpcx/v2"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // grpcModule implements the Module interface for gRPC server lifecycle.

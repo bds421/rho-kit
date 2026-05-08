@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/data/lock"
-	pgalock "github.com/bds421/rho-kit/data/lock/pgadvisory"
-	"github.com/bds421/rho-kit/infra/leaderelection"
+	"github.com/bds421/rho-kit/data/v2/lock"
+	pgalock "github.com/bds421/rho-kit/data/lock/pgadvisory/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 // Elector is a [leaderelection.Elector] backed by a Postgres advisory

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
+	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 )
 
 func TestNewNatsModule_PanicsOnEmptyURL(t *testing.T) {

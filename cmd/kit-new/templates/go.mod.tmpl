@@ -3,8 +3,8 @@ module {{.ModulePath}}
 go {{.GoVersion}}
 {{if .RhoVersion}}
 require (
-	github.com/bds421/rho-kit/app {{.RhoVersion}}
-	github.com/bds421/rho-kit/httpx {{.RhoVersion}}{{if .Postgres}}
-	github.com/bds421/rho-kit/core {{.RhoVersion}}
-	github.com/bds421/rho-kit/infra {{.RhoVersion}}{{end}}
+	github.com/bds421/rho-kit/app/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/httpx/v2 {{.RhoVersion}}{{if .Postgres}}
+	github.com/bds421/rho-kit/core/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/infra/v2 {{.RhoVersion}}{{end}}
 ){{end}}

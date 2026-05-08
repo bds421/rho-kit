@@ -19,10 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
-	"github.com/bds421/rho-kit/infra/storage/membackend"
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/observability/tracing"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
 
 func TestBuilder_FluentChaining(t *testing.T) {

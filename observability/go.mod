@@ -8,7 +8,7 @@
 // auditlog is the interface only; backend adapters
 // (auditlog/postgres etc.) stay split because they pull pgx and
 // their own migration sets. See AGENTS.md "Module shape".
-module github.com/bds421/rho-kit/observability
+module github.com/bds421/rho-kit/observability/v2
 
 go 1.26
 

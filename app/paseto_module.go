@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/bds421/rho-kit/crypto/paseto"
+	"github.com/bds421/rho-kit/crypto/v2/paseto"
 )
 
 // pasetoModule wires a [paseto.Provider] into the lifecycle so its

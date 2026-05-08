@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bds421/rho-kit/grpcx/interceptor"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 func TestUserID_EmptyWithoutAuth(t *testing.T) {

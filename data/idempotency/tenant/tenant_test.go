@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/idempotency"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 func ctxWith(tenantID string) context.Context {

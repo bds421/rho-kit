@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx/middleware/clientip"
-	"github.com/bds421/rho-kit/observability/auditlog"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
+	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
 // Option configures the audit middleware.

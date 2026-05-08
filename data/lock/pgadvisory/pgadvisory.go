@@ -33,7 +33,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/bds421/rho-kit/data/lock"
+	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
 // Locker is a [lock.Locker] backed by Postgres advisory locks.

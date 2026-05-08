@@ -7,7 +7,7 @@ import (
 	"math"
 	"net/http"
 
-	"github.com/bds421/rho-kit/observability/slo"
+	"github.com/bds421/rho-kit/observability/v2/slo"
 )
 
 // StatusResponse is the JSON envelope for the /slo endpoint.

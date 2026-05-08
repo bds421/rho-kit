@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // RequireScope returns middleware that enforces API key scope authorization.

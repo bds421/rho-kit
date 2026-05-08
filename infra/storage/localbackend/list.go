@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // Compile-time interface compliance check.

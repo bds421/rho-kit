@@ -3,8 +3,8 @@ package redisbackend
 import (
 	"strconv"
 
-	stream "github.com/bds421/rho-kit/data/stream/redisstream"
-	"github.com/bds421/rho-kit/infra/messaging"
+	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // toStreamMessage converts a messaging.Message to a stream.Message.

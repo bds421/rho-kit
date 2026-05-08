@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	sharedcache "github.com/bds421/rho-kit/data/cache"
-	"github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/infra/redis/redistest"
+	sharedcache "github.com/bds421/rho-kit/data/v2/cache"
+	"github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/infra/redis/v2/redistest"
 )
 
 type testUser struct {

@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/grpcx"
+	"github.com/bds421/rho-kit/grpcx/v2"
 )
 
 func TestNewServer_DefaultsDoNotPanic(t *testing.T) {

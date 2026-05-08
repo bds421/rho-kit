@@ -6,14 +6,14 @@
 //
 // Heavy: pulls aws-sdk-go-v2 + KMS service. Stays in its own module
 // so consumers using GCP KMS or Vault Transit don't pull AWS deps.
-module github.com/bds421/rho-kit/crypto/envelope/awskms
+module github.com/bds421/rho-kit/crypto/envelope/awskms/v2
 
 go 1.26
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.4
 	github.com/aws/aws-sdk-go-v2/service/kms v1.45.6
-	github.com/bds421/rho-kit/crypto v0.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 )
 
 require (
@@ -22,4 +22,4 @@ require (
 	github.com/aws/smithy-go v1.23.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/crypto => ../../
+replace github.com/bds421/rho-kit/crypto/v2 => ../../

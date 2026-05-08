@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/flags"
+	"github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/flags/v2"
 )
 
 func TestNew_PanicsOnNilProvider(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // RedisConfig holds Redis connection settings.

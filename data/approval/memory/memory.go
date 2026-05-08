@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bds421/rho-kit/data/approval"
+	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
 // requestIDPattern mirrors the package-level rule in data/approval. The

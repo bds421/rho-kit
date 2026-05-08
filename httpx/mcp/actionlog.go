@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 // defaultTenantExtractor reads the tenant id from context using the

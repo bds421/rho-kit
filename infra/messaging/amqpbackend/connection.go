@@ -12,7 +12,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/bds421/rho-kit/resilience/retry"
+	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 // Connection manages an AMQP connection with automatic reconnection.

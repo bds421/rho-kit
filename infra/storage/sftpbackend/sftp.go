@@ -24,7 +24,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 const tracerName = "kit/storage/sftp"

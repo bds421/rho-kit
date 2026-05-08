@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/ratelimit"
+	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
 func TestImplementsLimiter(t *testing.T) {

@@ -3,7 +3,7 @@ package sqldb
 import (
 	"context"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // Pinger checks database connectivity without depending on a specific driver.

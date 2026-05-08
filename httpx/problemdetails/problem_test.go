@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 func TestProblem_MarshalJSON_OmitsEmpty(t *testing.T) {

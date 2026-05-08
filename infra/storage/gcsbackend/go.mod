@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/infra/storage/gcsbackend
+module github.com/bds421/rho-kit/infra/storage/gcsbackend/v2
 
 go 1.26.2
 
@@ -19,9 +19,9 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/infra v0.0.0
-	github.com/bds421/rho-kit/io v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/v2 v2.0.0
+	github.com/bds421/rho-kit/io/v2 v2.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.36.0 // indirect
@@ -60,8 +60,8 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../../core
 
-replace github.com/bds421/rho-kit/infra => ../../../infra
+replace github.com/bds421/rho-kit/infra/v2 => ../../../infra
 
-replace github.com/bds421/rho-kit/io => ../../../io
+replace github.com/bds421/rho-kit/io/v2 => ../../../io

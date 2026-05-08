@@ -6,13 +6,13 @@
 // Heavy: pulls cloud.google.com/go/kms + grpc + auth. Stays in its
 // own module so consumers using AWS KMS or Vault Transit don't pull
 // GCP deps.
-module github.com/bds421/rho-kit/crypto/envelope/gcpkms
+module github.com/bds421/rho-kit/crypto/envelope/gcpkms/v2
 
 go 1.26
 
 require (
 	cloud.google.com/go/kms v1.23.0
-	github.com/bds421/rho-kit/crypto v0.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 )
 
 require (
@@ -49,4 +49,4 @@ require (
 	google.golang.org/protobuf v1.36.7 // indirect
 )
 
-replace github.com/bds421/rho-kit/crypto => ../../
+replace github.com/bds421/rho-kit/crypto/v2 => ../../

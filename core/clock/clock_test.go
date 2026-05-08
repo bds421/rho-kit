@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/core/clock"
+	"github.com/bds421/rho-kit/core/v2/clock"
 )
 
 func TestSystem_ReturnsRealTime(t *testing.T) {

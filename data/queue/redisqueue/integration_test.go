@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/infra/redis/redistest"
+	"github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/infra/redis/v2/redistest"
 )
 
 func redisClient(t *testing.T) goredis.UniversalClient {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bds421/rho-kit/infra/leaderelection"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 // stubElector is a no-op Elector that reports a fixed leader state.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 type basicReq struct {

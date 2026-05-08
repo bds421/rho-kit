@@ -8,8 +8,8 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/stretchr/testify/assert"
 
-	kitqueue "github.com/bds421/rho-kit/data/queue"
-	"github.com/bds421/rho-kit/data/queue/riverqueue"
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
+	"github.com/bds421/rho-kit/data/queue/riverqueue/v2"
 )
 
 func TestNewPublisher_PanicsOnNil(t *testing.T) {

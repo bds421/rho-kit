@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/lock"
-	"github.com/bds421/rho-kit/data/lock/pgadvisory"
-	"github.com/bds421/rho-kit/infra/sqldb/dbtest"
+	"github.com/bds421/rho-kit/data/v2/lock"
+	"github.com/bds421/rho-kit/data/lock/pgadvisory/v2"
+	"github.com/bds421/rho-kit/infra/v2/sqldb/dbtest"
 )
 
 func newTestDB(t *testing.T) *sql.DB {

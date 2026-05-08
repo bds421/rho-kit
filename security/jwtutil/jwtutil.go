@@ -23,7 +23,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
-	"github.com/bds421/rho-kit/resilience/retry"
+	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 // uuidPattern is the canonical UUID matcher shared by httpx and grpcx auth

@@ -18,7 +18,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/bds421/rho-kit/data/idempotency"
+	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 // validTableName matches safe SQL identifiers: alphanumeric + underscore,

@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx/problemdetails"
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2/problemdetails"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
 // serviceErrorContext returns logging-safe request attributes regardless of

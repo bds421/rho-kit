@@ -3,7 +3,7 @@ package grpcx
 import (
 	"errors"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

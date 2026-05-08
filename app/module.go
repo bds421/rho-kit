@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/runtime/lifecycle"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // Module is a self-contained unit of infrastructure that can be registered

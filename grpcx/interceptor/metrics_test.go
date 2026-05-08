@@ -13,7 +13,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/grpcx/interceptor"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 func TestGRPCMetrics_RecordsRequestMetrics(t *testing.T) {

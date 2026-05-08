@@ -14,7 +14,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	"go.opentelemetry.io/otel/trace"
 
-	mw "github.com/bds421/rho-kit/httpx/middleware"
+	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
 )
 
 const httpTracerName = "kit/http"

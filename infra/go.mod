@@ -10,15 +10,15 @@
 // (go-redis), storage/{s3,gcs,azure,sftp}backend, leaderelection/
 // {pgadvisory,redislock}, storage/storagetest. See AGENTS.md "Module
 // shape" for the full split.
-module github.com/bds421/rho-kit/infra
+module github.com/bds421/rho-kit/infra/v2
 
 go 1.26.0
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/crypto v0.0.0
-	github.com/bds421/rho-kit/observability v0.0.0
-	github.com/bds421/rho-kit/resilience v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0
 	github.com/gabriel-vasile/mimetype v1.4.12
 	github.com/glebarez/go-sqlite v1.22.0
 	github.com/google/uuid v1.6.0
@@ -34,7 +34,7 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/bds421/rho-kit/io v0.0.0
+	github.com/bds421/rho-kit/io/v2 v2.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -109,12 +109,12 @@ require (
 	modernc.org/sqlite v1.46.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core
 
-replace github.com/bds421/rho-kit/crypto => ../crypto
+replace github.com/bds421/rho-kit/crypto/v2 => ../crypto
 
-replace github.com/bds421/rho-kit/observability => ../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../observability
 
-replace github.com/bds421/rho-kit/resilience => ../resilience
+replace github.com/bds421/rho-kit/resilience/v2 => ../resilience
 
-replace github.com/bds421/rho-kit/io => ../io
+replace github.com/bds421/rho-kit/io/v2 => ../io

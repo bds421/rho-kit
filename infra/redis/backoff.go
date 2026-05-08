@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/resilience/retry"
+	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 // RunWithBackoff runs fn in a loop, restarting with exponential backoff on

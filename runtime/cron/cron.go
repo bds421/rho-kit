@@ -12,7 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	robcron "github.com/robfig/cron/v3"
 
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
 // Scheduler runs periodic jobs on cron schedules. It wraps robfig/cron/v3 with
@@ -58,7 +58,7 @@ func WithRegistry(reg prometheus.Registerer) Option {
 // `cron_job_skipped_not_leader_total` counter is incremented and a
 // debug log line emitted) but the schedule keeps ticking.
 //
-// Use this with [github.com/bds421/rho-kit/infra/leaderelection]:
+// Use this with [github.com/bds421/rho-kit/infra/v2/leaderelection]:
 // `WithLeaderGate(elector.IsLeader)` ensures cron jobs run only on
 // the elected leader replica without each job needing its own gate.
 //

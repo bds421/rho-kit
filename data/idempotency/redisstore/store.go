@@ -25,7 +25,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/data/idempotency"
+	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 // setIfLockedScript atomically replaces the lock value with the cached

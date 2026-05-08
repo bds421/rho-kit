@@ -1,6 +1,6 @@
 // Package reqsign provides HTTP request signing and verification for
 // inter-service authentication. It delegates all HMAC-SHA256 operations to
-// the [github.com/bds421/rho-kit/crypto/signing] package, adding an
+// the [github.com/bds421/rho-kit/crypto/v2/signing] package, adding an
 // HTTP-aware layer on top.
 //
 // # Canonical String

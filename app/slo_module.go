@@ -5,8 +5,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/observability/slo"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/slo"
 )
 
 // sloModule implements the Module interface for SLO monitoring.

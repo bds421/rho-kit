@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // CursorListOpts configures a cursor-list handler.

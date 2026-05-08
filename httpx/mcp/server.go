@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/core/validate"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/validate"
 )
 
 // JSON-RPC 2.0 error codes. The MCP spec piggybacks on the standard

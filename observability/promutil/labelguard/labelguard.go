@@ -23,7 +23,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // rejectedMetricName is the Prometheus name for the dropped-

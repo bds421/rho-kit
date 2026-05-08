@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // HealthCheck returns a non-critical DependencyCheck for SFTP.

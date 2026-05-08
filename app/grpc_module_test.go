@@ -18,8 +18,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/runtime/lifecycle"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func TestNewGRPCModule_ReturnsModule(t *testing.T) {

@@ -37,7 +37,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/data/lock"
+	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
 // releaseScript atomically releases the lock only if the caller still owns it.

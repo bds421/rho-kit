@@ -7,7 +7,7 @@
 // Future heavy KEK adapters (cloud KMS implementations) live in their
 // own modules — kekstatic stays inside this one because it is
 // stdlib-only.
-module github.com/bds421/rho-kit/crypto
+module github.com/bds421/rho-kit/crypto/v2
 
 go 1.26
 

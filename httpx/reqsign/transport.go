@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/bds421/rho-kit/crypto/signing"
+	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
 
 // SigningTransport wraps an http.RoundTripper to sign all outbound requests.

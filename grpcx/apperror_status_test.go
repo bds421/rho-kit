@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
 
-	"github.com/bds421/rho-kit/core/apperror"
-	"github.com/bds421/rho-kit/grpcx"
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/grpcx/v2"
 )
 
 func TestGRPCCode_MapsAppErrors(t *testing.T) {

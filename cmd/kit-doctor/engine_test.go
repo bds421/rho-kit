@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/cmd/kit-doctor/rules"
+	"github.com/bds421/rho-kit/cmd/kit-doctor/v2/rules"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -261,7 +261,7 @@ func TestScan_AcceptsHTTPxNewServer(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "server.go", `package svc
 
-import "github.com/bds421/rho-kit/httpx"
+import "github.com/bds421/rho-kit/httpx/v2"
 
 func wire() {
 	srv := httpx.NewServer(":8080", handler, httpx.WithErrorLog(l))
@@ -298,7 +298,7 @@ func wire() {
 func TestScan_ExemptsKitFactoryHTTPServerByModulePath(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "httpx"), 0o700))
-	writeFile(t, dir, "httpx/go.mod", "module github.com/bds421/rho-kit/httpx\n\ngo 1.26.2\n")
+	writeFile(t, dir, "httpx/go.mod", "module github.com/bds421/rho-kit/httpx/v2\n\ngo 1.26.2\n")
 	writeFile(t, dir, "httpx/httpx.go", `package httpx
 
 import "net/http"
@@ -310,7 +310,7 @@ func NewServer(addr string, h http.Handler) *http.Server {
 	findings, err := scan(dir, rules.Registered())
 	require.NoError(t, err)
 	assert.False(t, hasRule(findings, "http-server-direct-construction"),
-		"file in github.com/bds421/rho-kit/httpx must be exempt, got %+v", findings)
+		"file in github.com/bds421/rho-kit/httpx/v2 must be exempt, got %+v", findings)
 }
 
 // TestScan_FlagsHTTPServerOutsideKitFactory verifies that the same

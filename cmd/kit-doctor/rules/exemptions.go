@@ -19,16 +19,16 @@ import (
 // safe factory the rule exists to recommend.
 var kitFactoryExemptions = map[string]map[string]struct{}{
 	"http-server-direct-construction": {
-		"github.com/bds421/rho-kit/httpx": {},
+		"github.com/bds421/rho-kit/httpx/v2": {},
 	},
 	"default-http-client": {
-		"github.com/bds421/rho-kit/httpx":            {},
-		"github.com/bds421/rho-kit/httpx/budget":     {},
-		"github.com/bds421/rho-kit/httpx/sign":       {},
-		"github.com/bds421/rho-kit/security/jwtutil": {},
+		"github.com/bds421/rho-kit/httpx/v2":            {},
+		"github.com/bds421/rho-kit/httpx/v2/budget":     {},
+		"github.com/bds421/rho-kit/httpx/v2/sign":       {},
+		"github.com/bds421/rho-kit/security/v2/jwtutil": {},
 	},
 	"http-server-error-log": {
-		"github.com/bds421/rho-kit/app": {},
+		"github.com/bds421/rho-kit/app/v2": {},
 	},
 }
 

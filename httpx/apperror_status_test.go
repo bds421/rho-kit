@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/stretchr/testify/assert"
 )
 

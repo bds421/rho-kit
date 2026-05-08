@@ -7,12 +7,12 @@
 // Heavy: pulls the OpenFGA Go SDK + grpc. Stays in its own module
 // so consumers using the in-memory adapter (or a different engine
 // later) don't pay the SDK cost.
-module github.com/bds421/rho-kit/authz/openfga
+module github.com/bds421/rho-kit/authz/openfga/v2
 
 go 1.26
 
 require (
-	github.com/bds421/rho-kit/authz v0.0.0
+	github.com/bds421/rho-kit/authz/v2 v2.0.0
 	github.com/openfga/go-sdk v0.7.4
 )
 
@@ -30,6 +30,6 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 )
 
-replace github.com/bds421/rho-kit/authz => ../
+replace github.com/bds421/rho-kit/authz/v2 => ../
 
-replace github.com/bds421/rho-kit/core => ../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../core

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/tracing"
+	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
 
 func TestJWTModule_Name(t *testing.T) {

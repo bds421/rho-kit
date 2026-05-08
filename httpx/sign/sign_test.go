@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 const (

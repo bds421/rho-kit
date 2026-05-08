@@ -20,8 +20,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/budget"
+	"github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
 // Header names attached to rejection responses. Kept exported so

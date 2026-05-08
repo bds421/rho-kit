@@ -7,8 +7,8 @@ import (
 	"iter"
 	"time"
 
-	"github.com/bds421/rho-kit/infra/storage"
-	kitretry "github.com/bds421/rho-kit/resilience/retry"
+	"github.com/bds421/rho-kit/infra/v2/storage"
+	kitretry "github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
 // ShouldRetryFunc determines whether an error is retryable.

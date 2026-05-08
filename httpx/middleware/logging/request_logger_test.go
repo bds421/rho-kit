@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 func TestWithRequestLogger_InjectsLogger(t *testing.T) {

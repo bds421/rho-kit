@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/infra/storage/s3backend
+module github.com/bds421/rho-kit/infra/storage/s3backend/v2
 
 go 1.26.2
 
@@ -30,11 +30,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7 // indirect
 	github.com/aws/smithy-go v1.24.1 // indirect
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/crypto v0.0.0
-	github.com/bds421/rho-kit/infra v0.0.0
-	github.com/bds421/rho-kit/io v0.0.0
-	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/v2 v2.0.0
+	github.com/bds421/rho-kit/io/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -55,12 +55,12 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../../core
 
-replace github.com/bds421/rho-kit/observability => ../../../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../../../observability
 
-replace github.com/bds421/rho-kit/crypto => ../../../crypto
+replace github.com/bds421/rho-kit/crypto/v2 => ../../../crypto
 
-replace github.com/bds421/rho-kit/infra => ../../../infra
+replace github.com/bds421/rho-kit/infra/v2 => ../../../infra
 
-replace github.com/bds421/rho-kit/io => ../../../io
+replace github.com/bds421/rho-kit/io/v2 => ../../../io

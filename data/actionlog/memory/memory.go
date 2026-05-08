@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 // ErrDuplicateID is returned by [Store.AppendChained] when an entry id

@@ -8,7 +8,7 @@
 // have no third-party deps; engine adapters live in subdirectories
 // (authz/openfga, future authz/cedar) so consumers pull only the
 // engine they actually use.
-module github.com/bds421/rho-kit/authz
+module github.com/bds421/rho-kit/authz/v2
 
 go 1.26
 
@@ -23,4 +23,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core

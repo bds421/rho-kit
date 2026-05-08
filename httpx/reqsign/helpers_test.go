@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bds421/rho-kit/crypto/signing"
+	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper.

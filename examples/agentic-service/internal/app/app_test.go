@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/actionlog"
-	actionlogmem "github.com/bds421/rho-kit/data/actionlog/memory"
-	"github.com/bds421/rho-kit/data/approval"
-	approvalmem "github.com/bds421/rho-kit/data/approval/memory"
-	budgetmem "github.com/bds421/rho-kit/data/budget/memory"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
+	actionlogmem "github.com/bds421/rho-kit/data/v2/actionlog/memory"
+	"github.com/bds421/rho-kit/data/v2/approval"
+	approvalmem "github.com/bds421/rho-kit/data/v2/approval/memory"
+	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
 )
 
 func newTestLogger(t *testing.T) actionlog.Logger {

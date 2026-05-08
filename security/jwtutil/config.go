@@ -3,7 +3,7 @@ package jwtutil
 import (
 	"time"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // JWTFields holds the JWKS URL for JWT verification via Oathkeeper.

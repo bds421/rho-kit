@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 	"golang.org/x/sync/errgroup"
 )
 

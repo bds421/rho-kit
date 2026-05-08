@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/security/jwtutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
 // Named types for type-safe, collision-free context keys via contextutil.Key.

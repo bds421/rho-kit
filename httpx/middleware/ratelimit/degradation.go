@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // HealthIndicator reports whether a dependency is healthy.

@@ -3,8 +3,8 @@ package httpx_test
 import (
 	"testing"
 
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/httpx/middleware/correlationid"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
 )
 
 // TestCorrelationIDHeaderMatchesMiddleware asserts that the private header

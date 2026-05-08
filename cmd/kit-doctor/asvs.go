@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bds421/rho-kit/security/asvs"
+	"github.com/bds421/rho-kit/security/v2/asvs"
 )
 
 // runASVS scans path for ASVS annotations and prints a coverage

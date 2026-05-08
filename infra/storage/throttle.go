@@ -3,7 +3,7 @@ package storage
 import (
 	"io"
 
-	"github.com/bds421/rho-kit/io/progress"
+	"github.com/bds421/rho-kit/io/v2/progress"
 )
 
 // NewThrottledReader wraps an io.Reader and limits read throughput to the

@@ -35,7 +35,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/data/ratelimit"
+	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
 // gcraScript is the atomic GCRA evaluation.

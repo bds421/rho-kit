@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/crypto/paseto"
+	"github.com/bds421/rho-kit/crypto/v2/paseto"
 )
 
 func mustPASETOProvider(t *testing.T) *paseto.Provider {

@@ -17,9 +17,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/http/httpguts"
 
-	idem "github.com/bds421/rho-kit/data/idempotency"
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/observability/promutil"
+	idem "github.com/bds421/rho-kit/data/v2/idempotency"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // Option configures the idempotency middleware.

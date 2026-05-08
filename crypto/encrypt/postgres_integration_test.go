@@ -23,7 +23,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/bds421/rho-kit/crypto/encrypt"
+	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
 func startPostgres(t *testing.T) string {

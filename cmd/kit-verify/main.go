@@ -35,7 +35,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/bds421/rho-kit/security/asvs"
+	"github.com/bds421/rho-kit/security/v2/asvs"
 )
 
 func main() {

@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/cache"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/cache"
 )
 
 // fakeCache is a minimal in-memory cache for isolating the wrapper's

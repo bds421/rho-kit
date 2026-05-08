@@ -12,7 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // Handler wraps a [health.Checker] as an [http.Handler].

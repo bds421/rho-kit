@@ -4,7 +4,7 @@
 // `http_requests_in_flight`.
 //
 // New services should prefer
-// [github.com/bds421/rho-kit/observability/redmetrics] which:
+// [github.com/bds421/rho-kit/observability/v2/redmetrics] which:
 //
 //   - Spells the route label `route` (USE-method conventions and
 //     matching the kit's observability/dashboards/grafana/http-red.json
@@ -28,7 +28,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	mw "github.com/bds421/rho-kit/httpx/middleware"
+	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
 )
 
 // HTTPMetrics holds Prometheus collectors for HTTP request monitoring.

@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // ContentType is the RFC 7807 media type.

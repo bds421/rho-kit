@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 // AnonymousActor is the actor id recorded when no authenticated identity

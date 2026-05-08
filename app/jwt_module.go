@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bds421/rho-kit/security/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
 // jwtModuleConfig captures the JWT module options resolved from the Builder.

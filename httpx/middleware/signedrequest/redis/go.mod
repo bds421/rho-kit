@@ -1,13 +1,13 @@
-module github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis
+module github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2
 
 go 1.26.2
 
 require github.com/redis/go-redis/v9 v9.18.0
 
-replace github.com/bds421/rho-kit/httpx/middleware/signedrequest => ../
+replace github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest => ../
 
 require (
-	github.com/bds421/rho-kit/httpx v0.0.0
+	github.com/bds421/rho-kit/httpx/v2 v2.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
@@ -16,4 +16,4 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 )
 
-replace github.com/bds421/rho-kit/httpx => ../../../../httpx
+replace github.com/bds421/rho-kit/httpx/v2 => ../../../../httpx

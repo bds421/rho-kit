@@ -8,8 +8,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	kitredis "github.com/bds421/rho-kit/infra/redis"
-	"github.com/bds421/rho-kit/observability/health"
+	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // redisModule implements the Module interface for Redis connections.

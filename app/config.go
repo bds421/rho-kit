@@ -3,8 +3,8 @@ package app
 import (
 	"fmt"
 
-	"github.com/bds421/rho-kit/core/config"
-	"github.com/bds421/rho-kit/security/netutil"
+	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // ServerConfig holds HTTP server settings.

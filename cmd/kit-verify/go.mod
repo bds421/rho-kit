@@ -12,14 +12,14 @@
 // kit-verify is INTENTIONALLY a separate command from kit-doctor:
 // kit-doctor analyses source, kit-verify probes a running binary.
 // Different inputs, different failure modes.
-module github.com/bds421/rho-kit/cmd/kit-verify
+module github.com/bds421/rho-kit/cmd/kit-verify/v2
 
 go 1.26
 
-require github.com/bds421/rho-kit/security v0.0.0
+require github.com/bds421/rho-kit/security/v2 v2.0.0
 
-replace github.com/bds421/rho-kit/core => ../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../core
 
-replace github.com/bds421/rho-kit/resilience => ../../resilience
+replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
 
-replace github.com/bds421/rho-kit/security => ../../security
+replace github.com/bds421/rho-kit/security/v2 => ../../security

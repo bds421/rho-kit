@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/grpcx/interceptor"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
 
 const bufSize = 1024 * 1024

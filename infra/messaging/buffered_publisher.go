@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/io/atomicfile"
+	"github.com/bds421/rho-kit/io/v2/atomicfile"
 )
 
 const (

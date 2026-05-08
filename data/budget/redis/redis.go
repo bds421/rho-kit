@@ -38,7 +38,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/data/budget"
+	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
 // budgetScript is the atomic Consume evaluation.

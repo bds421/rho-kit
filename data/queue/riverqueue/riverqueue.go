@@ -29,7 +29,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
-	kitqueue "github.com/bds421/rho-kit/data/queue"
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
 
 // Publisher enqueues kit [kitqueue.Message]s as River jobs. The

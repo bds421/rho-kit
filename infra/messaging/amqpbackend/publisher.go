@@ -10,7 +10,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // Publisher sends messages to AMQP exchanges.

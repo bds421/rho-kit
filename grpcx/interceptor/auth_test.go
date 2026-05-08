@@ -23,8 +23,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/grpcx/interceptor"
-	"github.com/bds421/rho-kit/security/jwtutil"
+	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
+	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
 // testKeyAndProvider creates a jwtutil.Provider with a generated ECDSA key

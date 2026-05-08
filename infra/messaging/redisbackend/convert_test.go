@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	stream "github.com/bds421/rho-kit/data/stream/redisstream"
-	"github.com/bds421/rho-kit/infra/messaging"
+	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 func TestToStreamMessage(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/bds421/rho-kit/crypto/encrypt"
+	"github.com/bds421/rho-kit/crypto/v2/encrypt"
 )
 
 func TestMaskString(t *testing.T) {

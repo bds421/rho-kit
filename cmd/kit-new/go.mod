@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/cmd/kit-new
+module github.com/bds421/rho-kit/cmd/kit-new/v2
 
 go 1.26.2
 

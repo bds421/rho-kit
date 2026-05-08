@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/redis/redistest"
+	"github.com/bds421/rho-kit/infra/redis/v2/redistest"
 )
 
 func redisOpts(t *testing.T) *goredis.Options {

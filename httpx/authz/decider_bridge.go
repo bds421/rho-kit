@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	kitauthz "github.com/bds421/rho-kit/authz"
+	kitauthz "github.com/bds421/rho-kit/authz/v2"
 )
 
 // FromDecider adapts a [kitauthz.Decider] (the kit's vendor-neutral

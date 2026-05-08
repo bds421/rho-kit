@@ -12,12 +12,12 @@
 // Heavy: pulls riverqueue/river + pgx + driver. Stays in its own
 // module so consumers that don't need durable jobs don't pull the
 // SDK transitively.
-module github.com/bds421/rho-kit/data/queue/riverqueue
+module github.com/bds421/rho-kit/data/queue/riverqueue/v2
 
 go 1.26
 
 require (
-	github.com/bds421/rho-kit/data v0.0.0
+	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/riverqueue/river v0.30.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.30.0
@@ -91,6 +91,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../../core
 
-replace github.com/bds421/rho-kit/data => ../../../data
+replace github.com/bds421/rho-kit/data/v2 => ../../../data

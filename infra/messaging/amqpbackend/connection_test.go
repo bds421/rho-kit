@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/rabbitmqtest"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2/rabbitmqtest"
 )
 
 func TestDial_Success(t *testing.T) {

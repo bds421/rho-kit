@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // DepthCheck returns a health.DependencyCheck that monitors the queue depth.

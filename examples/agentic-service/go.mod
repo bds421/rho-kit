@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/examples/agentic-service
+module github.com/bds421/rho-kit/examples/agentic-service/v2
 
 go 1.26.2
 
@@ -8,11 +8,11 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/data v0.0.0
-	github.com/bds421/rho-kit/httpx v0.0.0
-	github.com/bds421/rho-kit/observability v0.0.0
-	github.com/bds421/rho-kit/resilience v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/data/v2 v2.0.0
+	github.com/bds421/rho-kit/httpx/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -37,17 +37,17 @@ require (
 )
 
 replace (
-	github.com/bds421/rho-kit/data/actionlog => ../../data/actionlog
-	github.com/bds421/rho-kit/data/approval => ../../data/approval
-	github.com/bds421/rho-kit/data/budget => ../../data/budget
+	github.com/bds421/rho-kit/data/v2/actionlog => ../../data/actionlog
+	github.com/bds421/rho-kit/data/v2/approval => ../../data/approval
+	github.com/bds421/rho-kit/data/v2/budget => ../../data/budget
 )
 
-replace github.com/bds421/rho-kit/core => ../../core
+replace github.com/bds421/rho-kit/core/v2 => ../../core
 
-replace github.com/bds421/rho-kit/resilience => ../../resilience
+replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
 
-replace github.com/bds421/rho-kit/observability => ../../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../../observability
 
-replace github.com/bds421/rho-kit/data => ../../data
+replace github.com/bds421/rho-kit/data/v2 => ../../data
 
-replace github.com/bds421/rho-kit/httpx => ../../httpx
+replace github.com/bds421/rho-kit/httpx/v2 => ../../httpx

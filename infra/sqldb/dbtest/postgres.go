@@ -9,7 +9,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/bds421/rho-kit/infra/sqldb"
+	"github.com/bds421/rho-kit/infra/v2/sqldb"
 )
 
 // StartPostgres launches a PostgreSQL container and returns a [sqldb.Config]

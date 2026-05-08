@@ -3,7 +3,7 @@ package app
 import (
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx/middleware/signedrequest"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 // signedRequestSpec captures everything WithSignedRequests passes

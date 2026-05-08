@@ -23,8 +23,8 @@ import (
 	"net/http"
 	"strconv"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/ratelimit"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
 // scopeHeader names the response header that disambiguates *which*

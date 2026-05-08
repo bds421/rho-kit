@@ -60,7 +60,7 @@ func TestScaffold_GeneratedWireUsesAppBuilder(t *testing.T) {
 		"generated wire.go must not construct net/http.Server directly — use app.Builder")
 	assert.NotContains(t, wire, "httpx.NewServer(",
 		"generated wire.go must not call httpx.NewServer directly — use app.Builder, which calls httpx.NewServer with the kit's middleware chain wired in")
-	assert.Contains(t, wire, `"github.com/bds421/rho-kit/app"`,
+	assert.Contains(t, wire, `"github.com/bds421/rho-kit/app/v2"`,
 		"generated wire.go must import the kit's app package")
 	assert.Contains(t, wire, "kitapp.New(",
 		"generated wire.go must build the service via app.Builder")
@@ -98,7 +98,7 @@ func TestScaffold_RhoVersionFlagWritesRequire(t *testing.T) {
 
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx v2.0.0",
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/v2 v2.0.0",
 		"generated go.mod must pin to the requested version when RhoVersion is set")
 }
 
@@ -193,6 +193,7 @@ func runScaffoldBuildTest(t *testing.T, mcp bool) {
 		"crypto",
 		"data",
 		"flags",
+		"grpcx",
 		"httpx",
 		"infra",
 		"io",
@@ -215,7 +216,7 @@ func runScaffoldBuildTest(t *testing.T, mcp bool) {
 			t.Skipf("local checkout not found at %s: %v", dir, statErr)
 		}
 		replaceArgs = append(replaceArgs,
-			"-replace=github.com/bds421/rho-kit/"+sub+"="+dir,
+			"-replace=github.com/bds421/rho-kit/"+sub+"/v2="+dir,
 		)
 	}
 	replaceCmd := exec.Command("go", replaceArgs...)
@@ -255,7 +256,7 @@ func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
 	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
 	require.NoError(t, err)
 	wire := string(wireBody)
-	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx/mcp"`,
+	assert.Contains(t, wire, `"github.com/bds421/rho-kit/httpx/v2/mcp"`,
 		"MCP scaffold must import the mcp package")
 	assert.Contains(t, wire, "mcp.Register[EchoIn, EchoOut]",
 		"MCP scaffold must call mcp.Register")
@@ -275,7 +276,7 @@ func TestScaffold_MCPFlag_ScaffoldsToolRegistration(t *testing.T) {
 	// consolidation) at that version.
 	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx v2.0.0")
+	assert.Contains(t, string(gomod), "github.com/bds421/rho-kit/httpx/v2 v2.0.0")
 }
 
 func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {

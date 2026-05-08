@@ -26,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 
-	"github.com/bds421/rho-kit/crypto/envelope"
+	"github.com/bds421/rho-kit/crypto/v2/envelope"
 )
 
 // KEK is the AWS KMS-backed [envelope.KEK].

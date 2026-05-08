@@ -7,7 +7,7 @@ import (
 
 	"github.com/sony/gobreaker/v2"
 
-	"github.com/bds421/rho-kit/core/apperror"
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is open and the call is

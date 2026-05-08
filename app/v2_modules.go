@@ -3,12 +3,12 @@ package app
 import (
 	"net/http"
 
-	"github.com/bds421/rho-kit/data/actionlog"
-	"github.com/bds421/rho-kit/data/approval"
-	"github.com/bds421/rho-kit/data/budget"
-	kitflags "github.com/bds421/rho-kit/flags"
-	httpxbudget "github.com/bds421/rho-kit/httpx/middleware/budget"
-	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
+	"github.com/bds421/rho-kit/data/v2/approval"
+	"github.com/bds421/rho-kit/data/v2/budget"
+	kitflags "github.com/bds421/rho-kit/flags/v2"
+	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
+	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
 // tenantSpec captures everything WithMultiTenant configures so the

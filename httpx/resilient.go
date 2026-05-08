@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bds421/rho-kit/resilience/circuitbreaker"
+	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 )
 
 // ResilientOption configures a resilient HTTP client.

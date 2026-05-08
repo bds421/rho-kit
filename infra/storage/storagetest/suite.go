@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // testPrefix returns a unique prefix for each test run to avoid collisions

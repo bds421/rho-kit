@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/budget"
-	"github.com/bds421/rho-kit/data/budget/memory"
+	"github.com/bds421/rho-kit/data/v2/budget"
+	"github.com/bds421/rho-kit/data/v2/budget/memory"
 )
 
 func TestNew_PanicsOnZeroCap(t *testing.T) {

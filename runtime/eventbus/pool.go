@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
 // asyncTask represents a single async handler invocation queued for execution.

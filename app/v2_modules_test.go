@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/data/actionlog"
-	"github.com/bds421/rho-kit/data/approval"
-	httpxtenant "github.com/bds421/rho-kit/httpx/middleware/tenant"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
+	"github.com/bds421/rho-kit/data/v2/approval"
+	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
 // stubBudget records calls; used to verify the Builder wires the

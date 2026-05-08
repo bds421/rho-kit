@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // httpClientModule implements the Module interface for creating an HTTP client.

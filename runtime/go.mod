@@ -3,7 +3,7 @@
 // lifecycle. Every consumer of app.Builder pulls these transitively
 // so consolidation reduces module sprawl without changing dep
 // footprint. See AGENTS.md "Module shape" for the consolidation map.
-module github.com/bds421/rho-kit/runtime
+module github.com/bds421/rho-kit/runtime/v2
 
 go 1.26
 
@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -34,4 +34,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/observability => ../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../observability

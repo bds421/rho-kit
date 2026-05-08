@@ -22,8 +22,8 @@ import (
 	"errors"
 	"net/http"
 
-	coretenant "github.com/bds421/rho-kit/core/tenant"
-	"github.com/bds421/rho-kit/httpx"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // Extractor pulls a tenant ID from a request.

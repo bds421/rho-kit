@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/core/config"
-	"github.com/bds421/rho-kit/crypto/masking"
+	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/crypto/v2/masking"
 )
 
 // S3Config holds AWS S3 connection settings.

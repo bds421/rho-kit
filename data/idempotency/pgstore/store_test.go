@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/bds421/rho-kit/data/idempotency"
+	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 // testDB returns a test database connection, or skips the test if unavailable.

@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // runShutdownHooks invokes every registered hook synchronously, with

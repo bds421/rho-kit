@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bds421/rho-kit/data/ratelimit"
+	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
 // defaultSweepInterval is the period between background passes that

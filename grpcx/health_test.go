@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/bds421/rho-kit/grpcx"
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/grpcx/v2"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 const bufSize = 1024 * 1024

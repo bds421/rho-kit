@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/bds421/rho-kit/data/approval"
+	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
 // requestIDPattern mirrors the package-level rule in data/approval. The

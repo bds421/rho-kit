@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/storage"
-	"github.com/bds421/rho-kit/infra/storage/membackend"
+	"github.com/bds421/rho-kit/infra/v2/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 )
 
 func TestMigrate_CopiesAllObjects(t *testing.T) {

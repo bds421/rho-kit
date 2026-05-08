@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bds421/rho-kit/observability/auditlog"
+	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
 // recordingStore captures emitted events so tests can assert on them.

@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/data/ratelimit/redis
+module github.com/bds421/rho-kit/data/ratelimit/redis/v2
 
 go 1.26.2
 
@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/data v0.0.0
+	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
@@ -22,6 +22,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/data/ratelimit => ../
+replace github.com/bds421/rho-kit/data/v2/ratelimit => ../
 
-replace github.com/bds421/rho-kit/data => ../../../data
+replace github.com/bds421/rho-kit/data/v2 => ../../../data

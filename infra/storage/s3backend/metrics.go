@@ -5,7 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // S3Metrics holds Prometheus collectors for S3 storage operation monitoring.

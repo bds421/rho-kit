@@ -1,4 +1,4 @@
-module github.com/bds421/rho-kit/infra/sqldb/pgx
+module github.com/bds421/rho-kit/infra/sqldb/pgx/v2
 
 go 1.26.2
 

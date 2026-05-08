@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	idem "github.com/bds421/rho-kit/data/idempotency"
+	idem "github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 func newTestHandler(body string, status int) http.Handler {

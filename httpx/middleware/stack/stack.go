@@ -5,15 +5,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	mwcorrelationid "github.com/bds421/rho-kit/httpx/middleware/correlationid"
-	mwlogging "github.com/bds421/rho-kit/httpx/middleware/logging"
-	mwmetrics "github.com/bds421/rho-kit/httpx/middleware/metrics"
-	mwrecover "github.com/bds421/rho-kit/httpx/middleware/recover"
-	mwrequestid "github.com/bds421/rho-kit/httpx/middleware/requestid"
-	"github.com/bds421/rho-kit/httpx/middleware/secheaders"
-	mwtimeout "github.com/bds421/rho-kit/httpx/middleware/timeout"
-	mwtracing "github.com/bds421/rho-kit/httpx/middleware/tracing"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
+	mwlogging "github.com/bds421/rho-kit/httpx/v2/middleware/logging"
+	mwmetrics "github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
+	mwrecover "github.com/bds421/rho-kit/httpx/v2/middleware/recover"
+	mwrequestid "github.com/bds421/rho-kit/httpx/v2/middleware/requestid"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/secheaders"
+	mwtimeout "github.com/bds421/rho-kit/httpx/v2/middleware/timeout"
+	mwtracing "github.com/bds421/rho-kit/httpx/v2/middleware/tracing"
 )
 
 // Config controls the default middleware stack.

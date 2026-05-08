@@ -31,8 +31,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	kitqueue "github.com/bds421/rho-kit/data/queue"
-	"github.com/bds421/rho-kit/data/queue/riverqueue"
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
+	"github.com/bds421/rho-kit/data/queue/riverqueue/v2"
 )
 
 func startPostgres(t *testing.T) string {

@@ -7,7 +7,7 @@
 // Heavy: pulls go.temporal.io/sdk + protobuf + grpc. Stays in its
 // own module so consumers that don't run workflows don't pay the SDK
 // cost.
-module github.com/bds421/rho-kit/runtime/temporal
+module github.com/bds421/rho-kit/runtime/temporal/v2
 
 go 1.26
 
@@ -41,4 +41,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/observability => ../../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../../observability

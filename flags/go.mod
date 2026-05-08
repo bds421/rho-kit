@@ -7,12 +7,12 @@
 // Heavy: pulls the OpenFeature SDK (~stdlib + small deps). Stays in
 // its own module so consumers that don't flag-gate code don't pull
 // the SDK transitively.
-module github.com/bds421/rho-kit/flags
+module github.com/bds421/rho-kit/flags/v2
 
 go 1.26
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/open-feature/go-sdk v1.16.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -27,4 +27,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core

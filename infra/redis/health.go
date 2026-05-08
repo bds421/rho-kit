@@ -3,7 +3,7 @@ package redis
 import (
 	"context"
 
-	"github.com/bds421/rho-kit/observability/health"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // HealthCheck returns a critical DependencyCheck for Redis.

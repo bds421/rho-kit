@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 const defaultLimit = 100

@@ -3,8 +3,8 @@ package redisbackend
 import (
 	"context"
 
-	stream "github.com/bds421/rho-kit/data/stream/redisstream"
-	"github.com/bds421/rho-kit/infra/messaging"
+	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // Publisher wraps a stream.Producer to satisfy messaging.MessagePublisher.

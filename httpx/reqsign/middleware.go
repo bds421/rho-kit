@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/bds421/rho-kit/crypto/signing"
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/crypto/v2/signing"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // RequireSignedRequest returns middleware that verifies request signatures.

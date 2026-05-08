@@ -3,7 +3,7 @@ package localbackend
 import (
 	"fmt"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // LocalConfig holds configuration for the local filesystem backend.

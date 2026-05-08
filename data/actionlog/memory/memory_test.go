@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 func newTestSecrets(t *testing.T) *actionlog.StaticSecrets {

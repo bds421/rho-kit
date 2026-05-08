@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/crypto/envelope"
-	"github.com/bds421/rho-kit/crypto/envelope/kekstatic"
+	"github.com/bds421/rho-kit/crypto/v2/envelope"
+	"github.com/bds421/rho-kit/crypto/v2/envelope/kekstatic"
 )
 
 func newKEK(t *testing.T, keyID string) *kekstatic.KEK {

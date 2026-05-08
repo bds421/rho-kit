@@ -48,7 +48,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/bds421/rho-kit/examples/agentic-service/internal/app"
+	"github.com/bds421/rho-kit/examples/agentic-service/v2/internal/app"
 )
 
 func main() {

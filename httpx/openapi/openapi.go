@@ -33,11 +33,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx/middleware/correlationid"
-	"github.com/bds421/rho-kit/httpx/middleware/logging"
-	"github.com/bds421/rho-kit/httpx/middleware/recover"
-	"github.com/bds421/rho-kit/httpx/middleware/requestid"
-	"github.com/bds421/rho-kit/httpx/problemdetails"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/logging"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/recover"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/requestid"
+	"github.com/bds421/rho-kit/httpx/v2/problemdetails"
 )
 
 // Options configure [Mount].

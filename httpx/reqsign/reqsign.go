@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bds421/rho-kit/crypto/signing"
+	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/logattr"
+	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
 // OnFullPolicy controls what async dispatch does when the worker pool queue

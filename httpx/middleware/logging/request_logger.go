@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // WithRequestLogger returns middleware that injects a *slog.Logger into the

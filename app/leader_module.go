@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/infra/leaderelection"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 // leaderModule runs a [leaderelection.Elector] under the lifecycle

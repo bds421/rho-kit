@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/observability/slo"
+	"github.com/bds421/rho-kit/observability/v2/slo"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

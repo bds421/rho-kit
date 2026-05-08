@@ -3,8 +3,8 @@ package requestid
 import (
 	"net/http"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/httpx/middleware/internal/idutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/internal/idutil"
 )
 
 // Header is the canonical HTTP header name for request IDs.

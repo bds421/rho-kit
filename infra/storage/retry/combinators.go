@@ -5,7 +5,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/bds421/rho-kit/infra/storage"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // composeRetry returns a [storage.Storage] whose dynamic type implements the

@@ -16,7 +16,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/bds421/rho-kit/data/actionlog"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
 
 // startPostgres mirrors the kit's other integration tests

@@ -40,15 +40,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/bds421/rho-kit/data/actionlog"
-	actionlogmem "github.com/bds421/rho-kit/data/actionlog/memory"
-	"github.com/bds421/rho-kit/data/approval"
-	approvalmem "github.com/bds421/rho-kit/data/approval/memory"
-	"github.com/bds421/rho-kit/data/budget"
-	budgetmem "github.com/bds421/rho-kit/data/budget/memory"
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/httpx/mcp"
-	"github.com/bds421/rho-kit/httpx/middleware/tenant"
+	"github.com/bds421/rho-kit/data/v2/actionlog"
+	actionlogmem "github.com/bds421/rho-kit/data/v2/actionlog/memory"
+	"github.com/bds421/rho-kit/data/v2/approval"
+	approvalmem "github.com/bds421/rho-kit/data/v2/approval/memory"
+	"github.com/bds421/rho-kit/data/v2/budget"
+	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/mcp"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
 // Run starts the HTTP server with the agentic-service stack.

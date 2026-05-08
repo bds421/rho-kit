@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // Config holds PostgreSQL connection settings. v2 dropped MySQL/MariaDB

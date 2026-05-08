@@ -3,7 +3,7 @@ package cache
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // ComputeMetrics holds Prometheus collectors for ComputeCache monitoring.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/infra/messaging/natsbackend"
+	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 )
 
 // natsModule wires a [natsbackend.Connection] and an associated

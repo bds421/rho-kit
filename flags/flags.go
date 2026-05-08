@@ -19,8 +19,8 @@ import (
 
 	"github.com/open-feature/go-sdk/openfeature"
 
-	"github.com/bds421/rho-kit/core/contextutil"
-	"github.com/bds421/rho-kit/core/tenant"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/tenant"
 )
 
 // Provider is the OpenFeature provider interface. Adapters

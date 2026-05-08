@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"github.com/google/uuid"
 )
 

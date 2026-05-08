@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bds421/rho-kit/core/config"
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // TLSConfig holds paths to TLS certificate files for mTLS.

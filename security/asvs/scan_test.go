@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/security/asvs"
+	"github.com/bds421/rho-kit/security/v2/asvs"
 )
 
 func TestScanDir_FindsAnnotations(t *testing.T) {

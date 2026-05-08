@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/tracing"
-	"github.com/bds421/rho-kit/security/netutil"
+	"github.com/bds421/rho-kit/observability/v2/tracing"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // newSafeBuilder returns a Builder with the always-on production-safety

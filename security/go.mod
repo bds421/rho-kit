@@ -4,13 +4,13 @@
 // netutil (TLS config + IP allowlists). v2 collapsed these from
 // per-package modules; the dep cluster (jwx + x/crypto) is shared
 // across them. See AGENTS.md "Module shape".
-module github.com/bds421/rho-kit/security
+module github.com/bds421/rho-kit/security/v2
 
 go 1.26
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/resilience v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0
 	github.com/lestrrat-go/jwx/v3 v3.0.13
 	github.com/stretchr/testify v1.11.1
 )
@@ -35,6 +35,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core
 
-replace github.com/bds421/rho-kit/resilience => ../resilience
+replace github.com/bds421/rho-kit/resilience/v2 => ../resilience

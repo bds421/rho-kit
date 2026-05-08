@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/health"
-	"github.com/bds421/rho-kit/runtime/lifecycle"
+	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 // stubModule is a test double for the Module interface.

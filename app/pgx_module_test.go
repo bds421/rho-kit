@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx"
+	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 )
 
 func TestNewPgxModule_PanicsOnEmptyDSN(t *testing.T) {

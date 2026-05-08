@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx"
-	securitycsrf "github.com/bds421/rho-kit/security/csrf"
+	"github.com/bds421/rho-kit/httpx/v2"
+	securitycsrf "github.com/bds421/rho-kit/security/v2/csrf"
 )
 
 const (

@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	databudget "github.com/bds421/rho-kit/data/budget"
-	"github.com/bds421/rho-kit/httpx/budget"
+	databudget "github.com/bds421/rho-kit/data/v2/budget"
+	"github.com/bds421/rho-kit/httpx/v2/budget"
 )
 
 // scriptedBudget is a hand-rolled stub. Each Consume/Refund call

@@ -1,23 +1,23 @@
-module github.com/bds421/rho-kit/app
+module github.com/bds421/rho-kit/app/v2
 
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/authz v0.0.0
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/crypto v0.0.0
-	github.com/bds421/rho-kit/data v0.0.0
-	github.com/bds421/rho-kit/flags v0.0.0
-	github.com/bds421/rho-kit/grpcx v0.0.0
-	github.com/bds421/rho-kit/httpx v0.0.0
-	github.com/bds421/rho-kit/infra v0.0.0
-	github.com/bds421/rho-kit/infra/messaging/amqpbackend v0.0.0
-	github.com/bds421/rho-kit/infra/messaging/natsbackend v0.0.0
-	github.com/bds421/rho-kit/infra/redis v0.0.0
-	github.com/bds421/rho-kit/infra/sqldb/pgx v0.0.0
-	github.com/bds421/rho-kit/observability v0.0.0
-	github.com/bds421/rho-kit/runtime v0.0.0
-	github.com/bds421/rho-kit/security v0.0.0
+	github.com/bds421/rho-kit/authz/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+	github.com/bds421/rho-kit/data/v2 v2.0.0
+	github.com/bds421/rho-kit/flags/v2 v2.0.0
+	github.com/bds421/rho-kit/grpcx/v2 v2.0.0
+	github.com/bds421/rho-kit/httpx/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/runtime/v2 v2.0.0
+	github.com/bds421/rho-kit/security/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
@@ -28,8 +28,8 @@ require (
 require (
 	aidanwoods.dev/go-paseto v1.6.0 // indirect
 	aidanwoods.dev/go-result v0.3.1 // indirect
-	github.com/bds421/rho-kit/io v0.0.0 // indirect
-	github.com/bds421/rho-kit/resilience v0.0.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -103,36 +103,36 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/authz => ../authz
+replace github.com/bds421/rho-kit/authz/v2 => ../authz
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core
 
-replace github.com/bds421/rho-kit/crypto => ../crypto
+replace github.com/bds421/rho-kit/crypto/v2 => ../crypto
 
-replace github.com/bds421/rho-kit/data => ../data
+replace github.com/bds421/rho-kit/data/v2 => ../data
 
-replace github.com/bds421/rho-kit/flags => ../flags
+replace github.com/bds421/rho-kit/flags/v2 => ../flags
 
-replace github.com/bds421/rho-kit/grpcx => ../grpcx
+replace github.com/bds421/rho-kit/grpcx/v2 => ../grpcx
 
-replace github.com/bds421/rho-kit/httpx => ../httpx
+replace github.com/bds421/rho-kit/httpx/v2 => ../httpx
 
-replace github.com/bds421/rho-kit/infra => ../infra
+replace github.com/bds421/rho-kit/infra/v2 => ../infra
 
-replace github.com/bds421/rho-kit/infra/messaging/amqpbackend => ../infra/messaging/amqpbackend
+replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 => ../infra/messaging/amqpbackend
 
-replace github.com/bds421/rho-kit/infra/messaging/natsbackend => ../infra/messaging/natsbackend
+replace github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 => ../infra/messaging/natsbackend
 
-replace github.com/bds421/rho-kit/infra/redis => ../infra/redis
+replace github.com/bds421/rho-kit/infra/redis/v2 => ../infra/redis
 
-replace github.com/bds421/rho-kit/infra/sqldb/pgx => ../infra/sqldb/pgx
+replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../infra/sqldb/pgx
 
-replace github.com/bds421/rho-kit/io => ../io
+replace github.com/bds421/rho-kit/io/v2 => ../io
 
-replace github.com/bds421/rho-kit/observability => ../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../observability
 
-replace github.com/bds421/rho-kit/resilience => ../resilience
+replace github.com/bds421/rho-kit/resilience/v2 => ../resilience
 
-replace github.com/bds421/rho-kit/runtime => ../runtime
+replace github.com/bds421/rho-kit/runtime/v2 => ../runtime
 
-replace github.com/bds421/rho-kit/security => ../security
+replace github.com/bds421/rho-kit/security/v2 => ../security

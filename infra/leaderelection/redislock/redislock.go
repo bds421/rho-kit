@@ -33,9 +33,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/bds421/rho-kit/data/lock"
-	rlock "github.com/bds421/rho-kit/data/lock/redislock"
-	"github.com/bds421/rho-kit/infra/leaderelection"
+	"github.com/bds421/rho-kit/data/v2/lock"
+	rlock "github.com/bds421/rho-kit/data/lock/redislock/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 // Elector is a [leaderelection.Elector] backed by a Redis SET-NX lock.

@@ -18,7 +18,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/bds421/rho-kit/httpx"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // Policy decides whether a subject may perform an action on a resource.

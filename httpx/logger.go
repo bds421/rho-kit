@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/observability/logging"
+	"github.com/bds421/rho-kit/observability/v2/logging"
 )
 
 // contextKey is a private string type for the logger context key.

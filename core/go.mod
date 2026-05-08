@@ -4,7 +4,7 @@
 // one because the dependency footprint is uniformly stdlib-only or
 // near-stdlib, and every consumer ends up importing several of them
 // regardless. See AGENTS.md "Module shape" for the consolidation map.
-module github.com/bds421/rho-kit/core
+module github.com/bds421/rho-kit/core/v2
 
 go 1.26
 

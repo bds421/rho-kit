@@ -3,7 +3,7 @@ package storagetest
 import (
 	"testing"
 
-	"github.com/bds421/rho-kit/infra/storage/localbackend"
+	"github.com/bds421/rho-kit/infra/v2/storage/localbackend"
 )
 
 // NewLocalBackend creates a LocalBackend in t.TempDir().

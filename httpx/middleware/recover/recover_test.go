@@ -13,7 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 )
 
 func newCapturingLogger() (*slog.Logger, *bytes.Buffer) {

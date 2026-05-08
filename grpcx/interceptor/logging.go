@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bds421/rho-kit/core/contextutil"
+	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"

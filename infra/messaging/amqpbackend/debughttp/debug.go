@@ -18,8 +18,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/bds421/rho-kit/httpx"
-	"github.com/bds421/rho-kit/infra/messaging"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 type consumeRequest struct {

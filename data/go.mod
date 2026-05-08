@@ -11,13 +11,13 @@
 // cache/rediscache, idempotency/pgstore, idempotency/redisstore,
 // lock/pgadvisory, lock/redislock, queue/redisqueue, ratelimit/redis,
 // stream/redisstream.
-module github.com/bds421/rho-kit/data
+module github.com/bds421/rho-kit/data/v2
 
 go 1.26
 
 require (
-	github.com/bds421/rho-kit/core v0.0.0
-	github.com/bds421/rho-kit/observability v0.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/dgraph-io/ristretto/v2 v2.4.0
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.23.2
@@ -42,6 +42,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/bds421/rho-kit/core => ../core
+replace github.com/bds421/rho-kit/core/v2 => ../core
 
-replace github.com/bds421/rho-kit/observability => ../observability
+replace github.com/bds421/rho-kit/observability/v2 => ../observability

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/bds421/rho-kit/data/lock"
-	"github.com/bds421/rho-kit/infra/redis"
+	"github.com/bds421/rho-kit/data/v2/lock"
+	"github.com/bds421/rho-kit/infra/redis/v2"
 )
 
 // ErrUnavailable is returned when the lock cannot be acquired because Redis

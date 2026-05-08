@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/authz"
+	"github.com/bds421/rho-kit/authz/v2"
 )
 
 func TestMemory_GrantThenAllow(t *testing.T) {

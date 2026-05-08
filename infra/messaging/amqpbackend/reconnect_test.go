@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
 
-	"github.com/bds421/rho-kit/infra/messaging/amqpbackend"
+	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 )
 
 // startDedicatedRabbitMQ starts a standalone RabbitMQ container for reconnection

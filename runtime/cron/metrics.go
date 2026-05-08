@@ -5,7 +5,7 @@
 //   - cron_job_skipped_not_leader_total{name}
 //
 // These metric names predate the kit's general-purpose
-// [github.com/bds421/rho-kit/observability/redmetrics] BatchMetrics
+// [github.com/bds421/rho-kit/observability/v2/redmetrics] BatchMetrics
 // which uses `cron_runs_total` / `cron_run_duration_seconds`. The two
 // are intentionally NOT unified: existing services have dashboards
 // pinned to `cron_job_*`, and the BatchMetrics shape is exposed as a
@@ -17,7 +17,7 @@ package cron
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bds421/rho-kit/observability/promutil"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 type metrics struct {
