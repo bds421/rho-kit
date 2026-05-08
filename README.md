@@ -71,7 +71,9 @@ _ = c.Set(ctx, "user:123", []byte("..."), time.Minute)
 ## Usage
 
 ```bash
-go get github.com/bds421/rho-kit
+# Each module ships independently and uses Go's /v2 path suffix.
+go get github.com/bds421/rho-kit/app/v2
+go get github.com/bds421/rho-kit/httpx/v2
 ```
 
 ## Package map

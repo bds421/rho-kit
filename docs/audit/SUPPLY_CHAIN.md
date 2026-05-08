@@ -113,12 +113,16 @@ that points at the local relative path:
 
 ```go
 // httpx/go.mod
-module github.com/bds421/rho-kit/httpx
+module github.com/bds421/rho-kit/httpx/v2
 
-require github.com/bds421/rho-kit/core/secret v0.5.0
+require github.com/bds421/rho-kit/core/v2 v2.0.0
 
-replace github.com/bds421/rho-kit/core/secret => ../core/secret
+replace github.com/bds421/rho-kit/core/v2 => ../core
 ```
+
+Note: with v2.x.y releases, modules use Go's Semantic Import Versioning
+path suffix (`/v2`). Subpackages live under the suffix
+(`core/v2/secret`, not `core/secret/v2`).
 
 `go.work` aggregates all modules so during local development and
 CI, every dependency resolves to the in-tree code.
@@ -131,8 +135,8 @@ kit would silently pull unreleased code. They would not, for the
 following reasons:
 
 1. **`replace` directives only apply locally.** When a downstream
-   service imports `github.com/bds421/rho-kit/httpx`, Go resolves
-   `httpx`'s declared `require` line against the *module proxy*,
+   service imports `github.com/bds421/rho-kit/httpx/v2`, Go resolves
+   `httpx/v2`'s declared `require` line against the *module proxy*,
    not against any path declared inside `httpx/go.mod`. The
    `replace` directive lives in the kit's repo and is invisible
    to downstream consumers — Go's module resolution intentionally
@@ -141,8 +145,8 @@ following reasons:
 2. **All intra-repo modules ship via tagged releases on merge to
    main.** NX Release bumps versions, regenerates `go.sum`, and
    pushes one tag per module per release commit. Once a downstream
-   service pulls `httpx@v1.6.0`, the only `core/secret` it can
-   resolve is the tagged version that `httpx@v1.6.0` declared.
+   service pulls `httpx/v2@v2.0.0`, the only `core/v2` it can
+   resolve is the tagged version that `httpx/v2@v2.0.0` declared.
 
 3. **Tagged releases on `main` are the trust anchor.** Branch
    protection on `main` requires PR review and successful CI; CI

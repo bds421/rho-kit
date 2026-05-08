@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Module:** `github.com/bds421/rho-kit`
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, ~50 Go modules at `/v2` path suffix)
 **Go:** 1.26+ | **License:** Proprietary
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.

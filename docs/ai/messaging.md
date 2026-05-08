@@ -177,7 +177,7 @@ pub.Publish(ctx, "orders", "order.created", msg)
 For development/staging environments, `amqpbackend/debughttp` provides HTTP handlers to test messaging flows without a RabbitMQ client. Import the optional `debughttp` package:
 
 ```go
-import "github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp"
+import "github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2"
 
 // Dispatch a message directly to a consumer handler (bypasses RabbitMQ):
 mux.HandleFunc("POST /debug/consume", debughttp.ConsumeHandler(handlers, logger))

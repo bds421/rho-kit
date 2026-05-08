@@ -273,7 +273,7 @@ tr := progress.NewThrottledReader(reader, 1<<20) // 1 MiB/s
 Standard `slog.Attr` constructors for consistent field names across the kit:
 
 ```go
-import "github.com/bds421/rho-kit/observability/logattr"
+import "github.com/bds421/rho-kit/observability/v2/logattr"
 
 logger.Error("request failed",
     logattr.Error(err),
