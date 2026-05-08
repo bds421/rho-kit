@@ -42,6 +42,9 @@ func (r httpServerDirectConstructionRule) Run(fset *token.FileSet, file *ast.Fil
 				return true
 			}
 			p := fset.Position(node.Pos())
+			if isExempt(fset, file, r.Name(), p.Filename, p.Line) {
+				return true
+			}
 			findings = append(findings, Finding{
 				Rule:       r.Name(),
 				Severity:   High,
@@ -63,6 +66,9 @@ func (r httpServerDirectConstructionRule) Run(fset *token.FileSet, file *ast.Fil
 				return true
 			}
 			p := fset.Position(node.Pos())
+			if isExempt(fset, file, r.Name(), p.Filename, p.Line) {
+				return true
+			}
 			findings = append(findings, Finding{
 				Rule:       r.Name(),
 				Severity:   High,

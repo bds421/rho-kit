@@ -36,6 +36,31 @@ func TestRegister_NilRegistererIsNoop(t *testing.T) {
 	Register(nil)
 }
 
+func TestRegister_IdempotentOnSameRegistry(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	require.NotPanics(t, func() { Register(reg) })
+	require.NotPanics(t, func() { Register(reg) })
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	seen := make(map[string]int)
+	for _, f := range families {
+		seen[f.GetName()]++
+	}
+	for _, name := range []string{
+		"go_goroutines",
+		"go_threads",
+		"go_heap_alloc_bytes",
+		"go_heap_sys_bytes",
+		"go_gc_pause_seconds_sum",
+		"go_gc_count_total",
+	} {
+		assert.Equal(t, 1, seen[name], "metric %q must appear exactly once after duplicate Register", name)
+	}
+}
+
 func TestCollect_ProducesPositiveValues(t *testing.T) {
 	c := newCollector()
 	ch := make(chan prometheus.Metric, 16)

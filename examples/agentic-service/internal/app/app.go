@@ -94,6 +94,7 @@ func Run(ctx context.Context) error {
 	// MaxHeaderBytes) and a slog-backed ErrorLog. The Builder uses
 	// the same helper internally; the example calls it directly so it
 	// stays dependency-light without forking those defaults by hand.
+	// kit-doctor:allow http-server-error-log reason="default slog ErrorLog is sufficient for the example"
 	srv := httpx.NewServer(":8080", mux)
 	go func() {
 		<-ctx.Done()

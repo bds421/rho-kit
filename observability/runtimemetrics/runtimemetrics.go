@@ -21,6 +21,8 @@ import (
 	"runtime"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/bds421/rho-kit/observability/promutil"
 )
 
 // Register registers the curated runtime collector with reg. Pass nil
@@ -33,8 +35,7 @@ func Register(reg prometheus.Registerer) {
 	if reg == nil {
 		return
 	}
-	c := newCollector()
-	reg.MustRegister(c)
+	promutil.RegisterCollector(reg, newCollector())
 }
 
 // collector implements prometheus.Collector by reading runtime stats

@@ -27,6 +27,9 @@ func (r httpServerMissingErrorLogRule) Run(fset *token.FileSet, file *ast.File) 
 		// argument list directly (no fluent chain to walk).
 		if !callHasOption(call, "WithErrorLog") {
 			pos := fset.Position(call.Pos())
+			if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
+				return true
+			}
 			findings = append(findings, Finding{
 				Rule:       r.Name(),
 				Severity:   Warning,

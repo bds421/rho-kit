@@ -291,6 +291,130 @@ func wire() {
 		"raw http.Server in _test.go must not be flagged, got %+v", findings)
 }
 
+// TestScan_ExemptsKitFactoryHTTPServerByModulePath verifies that the
+// canonical kit factory file (the one implementing httpx.NewServer)
+// is exempt from http-server-direct-construction so kit-doctor stays
+// clean against rho-kit itself.
+func TestScan_ExemptsKitFactoryHTTPServerByModulePath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "httpx"), 0o700))
+	writeFile(t, dir, "httpx/go.mod", "module github.com/bds421/rho-kit/httpx\n\ngo 1.26.2\n")
+	writeFile(t, dir, "httpx/httpx.go", `package httpx
+
+import "net/http"
+
+func NewServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h}
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "http-server-direct-construction"),
+		"file in github.com/bds421/rho-kit/httpx must be exempt, got %+v", findings)
+}
+
+// TestScan_FlagsHTTPServerOutsideKitFactory verifies that the same
+// pattern in any other module is still flagged.
+func TestScan_FlagsHTTPServerOutsideKitFactory(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mypkg"), 0o700))
+	writeFile(t, dir, "mypkg/go.mod", "module example.com/mypkg\n\ngo 1.26.2\n")
+	writeFile(t, dir, "mypkg/foo.go", `package mypkg
+
+import "net/http"
+
+func New() *http.Server {
+	return &http.Server{Addr: ":8080"}
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-direct-construction"),
+		"non-kit module must still be flagged, got %+v", findings)
+}
+
+// TestScan_InlineSuppressionAllowsHTTPServer verifies the per-line
+// suppression marker. Service repos use this to mark exceptional
+// adapter code.
+func TestScan_InlineSuppressionAllowsHTTPServer(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mypkg"), 0o700))
+	writeFile(t, dir, "mypkg/go.mod", "module example.com/mypkg\n\ngo 1.26.2\n")
+	writeFile(t, dir, "mypkg/foo.go", `package mypkg
+
+import "net/http"
+
+func New() *http.Server {
+	return &http.Server{Addr: ":8080"} // kit-doctor:allow http-server-direct-construction reason="legacy adapter"
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "http-server-direct-construction"),
+		"inline suppression must skip finding, got %+v", findings)
+}
+
+// TestScan_InlineSuppressionAboveLineAllowsHTTPServer verifies the
+// suppression marker placed on the line above the offending code.
+func TestScan_InlineSuppressionAboveLineAllowsHTTPServer(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mypkg"), 0o700))
+	writeFile(t, dir, "mypkg/go.mod", "module example.com/mypkg\n\ngo 1.26.2\n")
+	writeFile(t, dir, "mypkg/foo.go", `package mypkg
+
+import "net/http"
+
+func New() *http.Server {
+	// kit-doctor:allow http-server-direct-construction reason="legacy adapter"
+	return &http.Server{Addr: ":8080"}
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "http-server-direct-construction"),
+		"suppression on the line above must skip finding, got %+v", findings)
+}
+
+// TestScan_InlineSuppressionForWrongRuleStillFlags verifies that
+// suppression names a single rule and does not silence other findings.
+func TestScan_InlineSuppressionForWrongRuleStillFlags(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mypkg"), 0o700))
+	writeFile(t, dir, "mypkg/go.mod", "module example.com/mypkg\n\ngo 1.26.2\n")
+	writeFile(t, dir, "mypkg/foo.go", `package mypkg
+
+import "net/http"
+
+func New() *http.Server {
+	return &http.Server{Addr: ":8080"} // kit-doctor:allow some-other-rule
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "http-server-direct-construction"),
+		"unrelated suppression must not silence the rule, got %+v", findings)
+}
+
+// TestScan_DefaultHTTPClientSkipsTestFiles verifies the rule no
+// longer flags _test.go usage of http.DefaultTransport (tests swap
+// it deliberately to assert helpers stay panic-free).
+func TestScan_DefaultHTTPClientSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "client_test.go", `package svc
+
+import "net/http"
+
+func wire() {
+	c := http.DefaultClient
+	_ = c
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "default-http-client"),
+		"_test.go must not be flagged for default-http-client, got %+v", findings)
+}
+
 func TestScan_FlagsHTTPServerMissingErrorLog(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "server.go", `package svc

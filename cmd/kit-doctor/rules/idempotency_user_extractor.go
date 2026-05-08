@@ -30,6 +30,9 @@ func (r idempotencyMissingUserExtractorRule) Run(fset *token.FileSet, file *ast.
 			return true
 		}
 		pos := fset.Position(call.Pos())
+		if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
+			return true
+		}
 		findings = append(findings, Finding{
 			Rule:       r.Name(),
 			Severity:   Critical,

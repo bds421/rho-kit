@@ -3,6 +3,7 @@ package rules
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 )
 
 // defaultHTTPClientRule flags direct use of `http.DefaultClient` and
@@ -14,6 +15,15 @@ type defaultHTTPClientRule struct{}
 func (defaultHTTPClientRule) Name() string { return "default-http-client" }
 
 func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Finding {
+	if file == nil {
+		return nil
+	}
+	// Tests routinely swap http.DefaultTransport to assert the kit
+	// helpers stay panic-free under custom RoundTrippers; that is not
+	// the production-wiring path this rule guards.
+	if strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go") {
+		return nil
+	}
 	// Resolve which local identifiers actually refer to net/http so an
 	// alias (`nethttp "net/http"`) is flagged and a local variable
 	// named http is not.
@@ -42,6 +52,9 @@ func (r defaultHTTPClientRule) Run(fset *token.FileSet, file *ast.File) []Findin
 		switch sel.Sel.Name {
 		case "DefaultClient", "DefaultTransport":
 			pos := fset.Position(sel.Pos())
+			if isExempt(fset, file, r.Name(), pos.Filename, pos.Line) {
+				return true
+			}
 			findings = append(findings, Finding{
 				Rule:       r.Name(),
 				Severity:   High,
