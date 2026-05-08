@@ -108,3 +108,68 @@ func TestAsPresigned_NotFound(t *testing.T) {
 	_, ok := AsPresigned(backend)
 	assert.False(t, ok)
 }
+
+// opaqueWrapper simulates a semantic decorator that must NOT be bypassed
+// by capability discovery. It implements OpaqueDecorator but no optional
+// interfaces.
+type opaqueWrapper struct {
+	stubStorage
+	inner Storage
+}
+
+func (w *opaqueWrapper) Unwrap() Storage           { return w.inner }
+func (w *opaqueWrapper) OpaqueStorageDecorator() {}
+
+// opaqueListerWrapper is an OpaqueDecorator that DOES implement Lister.
+// As* should find Lister on the wrapper itself but still treat it as
+// opaque for other capabilities (Copier, Presigned, PublicURLer).
+type opaqueListerWrapper struct {
+	stubStorage
+	inner Storage
+}
+
+func (w *opaqueListerWrapper) Unwrap() Storage           { return w.inner }
+func (w *opaqueListerWrapper) OpaqueStorageDecorator() {}
+func (w *opaqueListerWrapper) List(_ context.Context, _ string, _ ListOptions) iter.Seq2[ObjectInfo, error] {
+	return func(yield func(ObjectInfo, error) bool) {}
+}
+
+func TestAsLister_BlockedByOpaqueDecorator(t *testing.T) {
+	backend := &listerStorage{}
+	wrapped := &opaqueWrapper{inner: backend}
+	_, ok := AsLister(wrapped)
+	assert.False(t, ok, "opaque decorator must block AsLister from reaching underlying Lister")
+}
+
+func TestAsCopier_BlockedByOpaqueDecorator(t *testing.T) {
+	backend := &copierStorage{}
+	wrapped := &opaqueWrapper{inner: backend}
+	_, ok := AsCopier(wrapped)
+	assert.False(t, ok, "opaque decorator must block AsCopier from reaching underlying Copier")
+}
+
+func TestAsPresigned_BlockedByOpaqueDecorator(t *testing.T) {
+	backend := &presignedStorage{}
+	wrapped := &opaqueWrapper{inner: backend}
+	_, ok := AsPresigned(wrapped)
+	assert.False(t, ok, "opaque decorator must block AsPresigned from reaching underlying PresignedStore")
+}
+
+func TestAsLister_OpaqueWrapperWithListerStillResolves(t *testing.T) {
+	// When the opaque decorator itself implements Lister, As* must
+	// return the decorator (not unwrap further).
+	backend := &listerStorage{}
+	wrapped := &opaqueListerWrapper{inner: backend}
+	l, ok := AsLister(wrapped)
+	assert.True(t, ok)
+	// The lister returned must be the wrapper, not the inner backend.
+	assert.NotEqual(t, Lister(backend), l, "AsLister must return the wrapper, not unwrap past it")
+}
+
+func TestAsCopier_OpaqueListerWrapperBlocksCopier(t *testing.T) {
+	// Wrapper implements Lister but is opaque to Copier discovery.
+	backend := &copierStorage{}
+	wrapped := &opaqueListerWrapper{inner: backend}
+	_, ok := AsCopier(wrapped)
+	assert.False(t, ok, "opaque decorator that does not implement Copier must block discovery")
+}

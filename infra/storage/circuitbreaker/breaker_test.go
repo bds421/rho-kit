@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"testing"
 	"time"
 
@@ -159,6 +160,153 @@ func TestCircuitBreaker_WithShouldTripNil_PreservesDefault(t *testing.T) {
 	_, err := cb.Exists(ctx, "missing")
 	assert.NoError(t, err)
 	assert.Equal(t, StateClosed, cb.State())
+}
+
+func TestCircuitBreaker_New_PanicsOnZeroResetTimeout(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/circuitbreaker: reset timeout must be positive", func() {
+		_ = WithResetTimeout(0)
+	})
+}
+
+func TestCircuitBreaker_New_PanicsOnNegativeResetTimeout(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/circuitbreaker: reset timeout must be positive", func() {
+		_ = WithResetTimeout(-time.Second)
+	})
+}
+
+func TestCircuitBreaker_New_PanicsOnZeroThreshold(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/circuitbreaker: threshold must be >= 1", func() {
+		_ = WithThreshold(0)
+	})
+}
+
+// presignedListerCBBackend implements the four optional interfaces with
+// hooks so we can verify circuit breaker forwards capabilities and that
+// open circuits block them.
+type presignedListerCBBackend struct {
+	*membackend.MemBackend
+	failPresign func() error
+	failURL     func() error
+}
+
+func (b *presignedListerCBBackend) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
+	if b.failPresign != nil {
+		if err := b.failPresign(); err != nil {
+			return "", err
+		}
+	}
+	return "https://signed/" + key, nil
+}
+
+func (b *presignedListerCBBackend) PresignPutURL(_ context.Context, key string, _ time.Duration, _ storage.ObjectMeta) (string, error) {
+	if b.failPresign != nil {
+		if err := b.failPresign(); err != nil {
+			return "", err
+		}
+	}
+	return "https://signed-put/" + key, nil
+}
+
+func (b *presignedListerCBBackend) URL(_ context.Context, key string) (string, error) {
+	if b.failURL != nil {
+		if err := b.failURL(); err != nil {
+			return "", err
+		}
+	}
+	return "https://public/" + key, nil
+}
+
+func TestAsPresigned_ReachesUnderlyingThroughCircuitBreaker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &presignedListerCBBackend{MemBackend: membackend.New()}
+	cb := New(backend)
+
+	ps, ok := storage.AsPresigned(cb)
+	require.True(t, ok, "circuit breaker must expose Presigned when underlying has it")
+
+	url, err := ps.PresignGetURL(ctx, "key", time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, "https://signed/key", url)
+}
+
+func TestAsPresigned_CircuitBreakerDoesNotClaimWhenBackendLacks(t *testing.T) {
+	t.Parallel()
+	cb := New(membackend.New())
+	_, ok := storage.AsPresigned(cb)
+	assert.False(t, ok, "circuit breaker must not expose Presigned when underlying lacks it")
+}
+
+func TestAsLister_CircuitBreakerBlocksOpenCircuit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// MemBackend implements Lister. Trip the circuit using Get failures,
+	// then assert that List operations are blocked by the open circuit.
+	failing := &alwaysFailBackend{err: errors.New("down")}
+	cb := New(failing, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	// Trip the breaker via a Get failure.
+	_, _, _ = cb.Get(ctx, "key")
+	assert.Equal(t, StateOpen, cb.State())
+
+	// failing does not implement Lister, so AsLister returns false (no
+	// underlying capability) — verify that path:
+	_, ok := storage.AsLister(cb)
+	assert.False(t, ok, "underlying lacks Lister so CB should not claim it")
+
+	// Now wrap a Lister-capable backend and re-test that an open circuit
+	// blocks List dispatch.
+	backend := &presignedListerCBBackend{MemBackend: membackend.New()}
+	cb2 := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	// Trip the breaker on cb2.
+	_, _, _ = cb2.Get(ctx, "missing")
+	// MemBackend.Get returns ErrObjectNotFound which the default
+	// ShouldTrip filters out — so we must use a different trip path.
+	// Force a trip with a custom backend instead.
+	tripping := &alwaysFailListerBackend{err: errors.New("down")}
+	cb3 := New(tripping, WithThreshold(1), WithResetTimeout(time.Hour))
+	_, _, _ = cb3.Get(ctx, "key") // trips
+	assert.Equal(t, StateOpen, cb3.State())
+
+	lister, ok := storage.AsLister(cb3)
+	require.True(t, ok)
+
+	// Iterating the list should yield ErrCircuitOpen.
+	var seenErr error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+		if err != nil {
+			seenErr = err
+			break
+		}
+	}
+	require.Error(t, seenErr)
+	assert.ErrorIs(t, seenErr, ErrCircuitOpen, "list must be blocked by open circuit")
+}
+
+// alwaysFailListerBackend is alwaysFailBackend that ALSO implements Lister.
+type alwaysFailListerBackend struct {
+	err error
+}
+
+func (b *alwaysFailListerBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	return b.err
+}
+func (b *alwaysFailListerBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, b.err
+}
+func (b *alwaysFailListerBackend) Delete(context.Context, string) error         { return b.err }
+func (b *alwaysFailListerBackend) Exists(context.Context, string) (bool, error) { return false, b.err }
+
+func (b *alwaysFailListerBackend) List(_ context.Context, _ string, _ storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		yield(storage.ObjectInfo{}, b.err)
+	}
 }
 
 // alwaysFailBackend returns the same error for all operations.

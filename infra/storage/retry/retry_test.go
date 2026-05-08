@@ -141,6 +141,146 @@ func TestRetryStorage_WithShouldRetryNil_PreservesDefault(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestRetryStorage_New_PanicsOnZeroMaxAttempts(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: max attempts must be >= 1", func() {
+		_ = WithMaxAttempts(0)
+	})
+}
+
+func TestRetryStorage_New_PanicsOnNegativeMaxAttempts(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: max attempts must be >= 1", func() {
+		_ = WithMaxAttempts(-1)
+	})
+}
+
+func TestRetryStorage_New_PanicsOnZeroMaxDelay(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: max delay must be positive", func() {
+		_ = WithMaxDelay(0)
+	})
+}
+
+func TestRetryStorage_New_PanicsOnNegativeMaxDelay(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: max delay must be positive", func() {
+		_ = WithMaxDelay(-time.Second)
+	})
+}
+
+func TestRetryStorage_New_PanicsOnZeroBaseDelay(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: base delay must be positive", func() {
+		_ = WithBaseDelay(0)
+	})
+}
+
+// presignedListerBackend implements the four optional interfaces with
+// hooks so we can verify retry forwards capabilities and applies retry
+// policy.
+type presignedListerBackend struct {
+	*membackend.MemBackend
+	presignCalls atomic.Int32
+	urlCalls     atomic.Int32
+	failPresign  func() error
+	failURL      func() error
+}
+
+func (b *presignedListerBackend) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
+	b.presignCalls.Add(1)
+	if b.failPresign != nil {
+		if err := b.failPresign(); err != nil {
+			return "", err
+		}
+	}
+	return "https://signed/" + key, nil
+}
+
+func (b *presignedListerBackend) PresignPutURL(_ context.Context, key string, _ time.Duration, _ storage.ObjectMeta) (string, error) {
+	b.presignCalls.Add(1)
+	if b.failPresign != nil {
+		if err := b.failPresign(); err != nil {
+			return "", err
+		}
+	}
+	return "https://signed-put/" + key, nil
+}
+
+func (b *presignedListerBackend) URL(_ context.Context, key string) (string, error) {
+	b.urlCalls.Add(1)
+	if b.failURL != nil {
+		if err := b.failURL(); err != nil {
+			return "", err
+		}
+	}
+	return "https://public/" + key, nil
+}
+
+func TestAsPresigned_ReachesUnderlyingThroughRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &presignedListerBackend{MemBackend: membackend.New()}
+	r := New(backend, WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
+
+	ps, ok := storage.AsPresigned(r)
+	require.True(t, ok, "retry must expose Presigned when underlying has it")
+
+	url, err := ps.PresignGetURL(ctx, "key", time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, "https://signed/key", url)
+}
+
+func TestAsPresigned_RetryDoesNotClaimWhenBackendLacks(t *testing.T) {
+	t.Parallel()
+	r := New(membackend.New())
+	_, ok := storage.AsPresigned(r)
+	assert.False(t, ok, "retry must not expose Presigned when underlying lacks it")
+}
+
+func TestAsLister_RetryRetriesUnderlyingErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Inject a transient failure on the FIRST presign attempt; retry
+	// must reissue and succeed.
+	var attempts atomic.Int32
+	backend := &presignedListerBackend{
+		MemBackend: membackend.New(),
+		failPresign: func() error {
+			if attempts.Add(1) == 1 {
+				return storage.NewTransientError("presign", "key", errors.New("timeout"))
+			}
+			return nil
+		},
+	}
+
+	r := New(backend, WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
+	ps, ok := storage.AsPresigned(r)
+	require.True(t, ok)
+
+	url, err := ps.PresignGetURL(ctx, "key", time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, "https://signed/key", url)
+	assert.Equal(t, int32(2), backend.presignCalls.Load(), "retry should have made 2 calls")
+}
+
+func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &presignedListerBackend{MemBackend: membackend.New()}
+	r := New(backend, WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
+
+	urler, ok := storage.AsPublicURLer(r)
+	require.True(t, ok)
+
+	url, err := urler.URL(ctx, "key")
+	require.NoError(t, err)
+	assert.Equal(t, "https://public/key", url)
+}
+
 // failingBackend wraps MemBackend but can inject errors per-operation.
 type failingBackend struct {
 	underlying *membackend.MemBackend

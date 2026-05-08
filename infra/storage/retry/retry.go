@@ -2,15 +2,14 @@ package retry
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/bds421/rho-kit/infra/storage"
 	kitretry "github.com/bds421/rho-kit/resilience/retry"
 )
-
-// Compile-time interface compliance check.
-var _ storage.Storage = (*RetryStorage)(nil)
 
 // ShouldRetryFunc determines whether an error is retryable.
 // The default uses [storage.IsTransient].
@@ -36,12 +35,13 @@ type Config struct {
 type Option func(*Config)
 
 // WithMaxAttempts sets the total number of attempts. Default is 3.
+// Panics if n < 1 — there is no sensible fallback for an attempt count of
+// zero, and silently ignoring the value masks misconfiguration.
 func WithMaxAttempts(n int) Option {
-	return func(c *Config) {
-		if n > 0 {
-			c.MaxAttempts = n
-		}
+	if n < 1 {
+		panic("storage/retry: max attempts must be >= 1")
 	}
+	return func(c *Config) { c.MaxAttempts = n }
 }
 
 // WithBaseDelay sets the initial retry delay. Default is 100ms.
@@ -54,7 +54,11 @@ func WithBaseDelay(d time.Duration) Option {
 }
 
 // WithMaxDelay caps the maximum delay between retries. Default is 5s.
+// Panics if d is zero or negative — a zero/negative cap collapses backoff.
 func WithMaxDelay(d time.Duration) Option {
+	if d <= 0 {
+		panic("storage/retry: max delay must be positive")
+	}
 	return func(c *Config) { c.MaxDelay = d }
 }
 
@@ -71,6 +75,14 @@ func WithShouldRetry(fn ShouldRetryFunc) Option {
 
 // RetryStorage wraps a [storage.Storage] with retry logic backed by
 // [kitretry.DoWith] from the kit/retry package.
+//
+// Optional capabilities (Lister, Copier, PresignedStore, PublicURLer) are
+// forwarded through the retry policy when the underlying backend supports
+// them. The [New] factory returns a [storage.Storage] whose dynamic type
+// implements the same subset of optional interfaces as the underlying
+// backend; callers should detect support via [storage.AsLister] etc. Direct
+// type assertions to *RetryStorage still work for callers that hold the
+// concrete value, but they will not see optional methods.
 type RetryStorage struct {
 	backend storage.Storage
 	cfg     Config
@@ -79,11 +91,22 @@ type RetryStorage struct {
 // Unwrap returns the underlying storage backend.
 func (r *RetryStorage) Unwrap() storage.Storage { return r.backend }
 
+// OpaqueStorageDecorator marks RetryStorage as an [storage.OpaqueDecorator]
+// so capability discovery via storage.As* cannot bypass the retry policy by
+// reaching the underlying backend's optional interfaces directly.
+func (r *RetryStorage) OpaqueStorageDecorator() {}
+
 // New wraps backend with retry logic using exponential backoff + jitter.
+//
+// The returned value's dynamic type forwards the optional interfaces the
+// underlying chain exposes (via [storage.AsLister] etc, which honor opaque
+// decorators). For example, wrapping a backend that implements
+// [storage.Lister] returns a value that also implements Lister — list calls
+// are retried under the same policy as the core methods.
 //
 // Panics if backend is nil. A nil backend would otherwise only surface as a
 // confusing nil-pointer panic on the first storage operation.
-func New(backend storage.Storage, opts ...Option) *RetryStorage {
+func New(backend storage.Storage, opts ...Option) storage.Storage {
 	if backend == nil {
 		panic("storage/retry: backend must not be nil")
 	}
@@ -99,7 +122,27 @@ func New(backend storage.Storage, opts ...Option) *RetryStorage {
 	if cfg.ShouldRetry == nil {
 		panic("storage/retry: ShouldRetry must not be nil")
 	}
-	return &RetryStorage{backend: backend, cfg: cfg}
+	if cfg.MaxAttempts < 1 {
+		panic("storage/retry: MaxAttempts must be >= 1")
+	}
+	if cfg.BaseDelay <= 0 {
+		panic("storage/retry: BaseDelay must be positive")
+	}
+	if cfg.MaxDelay <= 0 {
+		panic("storage/retry: MaxDelay must be positive")
+	}
+	r := &RetryStorage{backend: backend, cfg: cfg}
+
+	// Detect which optional interfaces the underlying chain exposes. The
+	// As* helpers honor [storage.OpaqueDecorator], so a deeper opaque
+	// decorator (e.g. encryption blocking presigned) correctly hides that
+	// capability from the retry layer too.
+	_, hasLister := storage.AsLister(backend)
+	_, hasCopier := storage.AsCopier(backend)
+	_, hasPresigned := storage.AsPresigned(backend)
+	_, hasURLer := storage.AsPublicURLer(backend)
+
+	return composeRetry(r, hasLister, hasCopier, hasPresigned, hasURLer)
 }
 
 // policy converts the storage Config to a kit/retry Policy.
@@ -196,12 +239,77 @@ func (r *RetryStorage) Exists(ctx context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-// Note: Optional storage interfaces (Lister, Copier, PresignedStore, PublicURLer)
-// are intentionally NOT implemented on RetryStorage. When callers use
-// storage.AsLister(rs), the Unwrap chain resolves to the underlying backend,
-// bypassing retry logic for List/Copy/Presign/URL operations.
+// --- Optional capability forwarding helpers ---
 //
-// This is a deliberate trade-off to avoid the 2^4 = 16 combinatorial wrapper
-// types. The core Storage operations (Put, Get, Delete, Exists) are the most
-// likely to encounter transient failures that benefit from retry. If retry
-// for List is needed, wrap the List call site with kit/retry.DoWith directly.
+// Each helper resolves the capability through the underlying chain (via
+// storage.As*, which honors opaque-decorator markers) and applies the retry
+// policy to the call. Mid-iteration retries are deliberately not attempted
+// for List — restarting iteration would duplicate already-yielded items.
+
+func (r *RetryStorage) listImpl(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	lister, ok := storage.AsLister(r.backend)
+	if !ok {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("storage/retry: underlying backend does not implement storage.Lister"))
+		}
+	}
+	return lister.List(ctx, prefix, opts)
+}
+
+func (r *RetryStorage) copyImpl(ctx context.Context, srcKey, dstKey string) error {
+	copier, ok := storage.AsCopier(r.backend)
+	if !ok {
+		return fmt.Errorf("storage/retry: underlying backend does not implement storage.Copier")
+	}
+	return kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		return copier.Copy(ctx, srcKey, dstKey)
+	})
+}
+
+func (r *RetryStorage) presignGetImpl(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	ps, ok := storage.AsPresigned(r.backend)
+	if !ok {
+		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PresignedStore")
+	}
+	var url string
+	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		var perr error
+		url, perr = ps.PresignGetURL(ctx, key, ttl)
+		return perr
+	})
+	return url, err
+}
+
+func (r *RetryStorage) presignPutImpl(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
+	ps, ok := storage.AsPresigned(r.backend)
+	if !ok {
+		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PresignedStore")
+	}
+	var url string
+	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		var perr error
+		url, perr = ps.PresignPutURL(ctx, key, ttl, meta)
+		return perr
+	})
+	return url, err
+}
+
+func (r *RetryStorage) urlImpl(ctx context.Context, key string) (string, error) {
+	urler, ok := storage.AsPublicURLer(r.backend)
+	if !ok {
+		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PublicURLer")
+	}
+	var url string
+	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
+		var uerr error
+		url, uerr = urler.URL(ctx, key)
+		return uerr
+	})
+	return url, err
+}
+
+// Compile-time interface compliance check.
+var (
+	_ storage.Storage         = (*RetryStorage)(nil)
+	_ storage.OpaqueDecorator = (*RetryStorage)(nil)
+)

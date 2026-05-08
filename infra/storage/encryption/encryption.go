@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"runtime"
 
 	"github.com/bds421/rho-kit/crypto/encrypt"
@@ -49,8 +50,24 @@ func (s *StaticKeyProvider) EncryptionKey(context.Context) ([]byte, error) {
 	return out, nil
 }
 
-// Compile-time interface compliance.
-var _ storage.Storage = (*EncryptedStorage)(nil)
+// Compile-time interface compliance. EncryptedStorage itself implements
+// Storage and Copier (via Get+Put through the encryption layer). Lister is
+// forwarded only when the underlying backend supports it; see [New] for
+// the dispatch.
+var (
+	_ storage.Storage         = (*EncryptedStorage)(nil)
+	_ storage.OpaqueDecorator = (*EncryptedStorage)(nil)
+	_ storage.Copier          = (*EncryptedStorage)(nil)
+)
+
+// EncryptedStorage intentionally does NOT implement storage.PresignedStore:
+// presigned URLs would bypass the encryption layer entirely (clients upload
+// plaintext directly to the bucket, or download raw ciphertext). There is
+// no safe in-band semantics for presigned access to encrypted-at-rest data.
+//
+// EncryptedStorage intentionally does NOT implement storage.PublicURLer:
+// the public URL would serve raw ciphertext as if it were the original
+// object.
 
 // EncryptedStorage wraps a [storage.Storage] with AES-256-GCM encryption.
 // Data is encrypted before Put and decrypted after Get. The encryption
@@ -91,13 +108,30 @@ func WithMaxConcurrentEncryptions(n int) Option {
 // Unwrap returns the underlying storage backend.
 func (e *EncryptedStorage) Unwrap() storage.Storage { return e.backend }
 
+// OpaqueStorageDecorator marks EncryptedStorage as an [storage.OpaqueDecorator].
+// Capability discovery via storage.As* must NOT walk past this wrapper to
+// the underlying backend's optional interfaces. The encryption layer makes
+// presigned URLs (caller uploads plaintext) and public URLs (would serve
+// ciphertext) unsafe; callers must opt in to forwarded capabilities that
+// the wrapper itself implements with safe semantics (Copier, Lister).
+func (e *EncryptedStorage) OpaqueStorageDecorator() {}
+
 // New wraps backend with client-side AES-256-GCM encryption.
+//
+// The returned value always implements [storage.Copier] (via internal
+// Get+Put — backend Copier is bypassed because AAD is key-bound). It
+// implements [storage.Lister] only when the underlying backend supports
+// listing. It deliberately does NOT implement [storage.PresignedStore] or
+// [storage.PublicURLer]: those would bypass encryption entirely. Callers
+// should detect support via [storage.AsLister] etc — these helpers honor
+// the opaque-decorator marker on EncryptedStorage and will not unwrap past
+// it for the unsafe capabilities.
 //
 // Panics if backend or keys is nil — both are required dependencies and
 // nil values would only surface as a confusing nil-pointer panic on the
 // first Put/Get. Failing fast at construction makes misconfiguration a
 // startup error.
-func New(backend storage.Storage, keys KeyProvider, opts ...Option) *EncryptedStorage {
+func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Storage {
 	if backend == nil {
 		panic("encryption: backend must not be nil")
 	}
@@ -112,7 +146,24 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) *EncryptedSt
 	for _, opt := range opts {
 		opt(e)
 	}
+
+	// Forward Lister only when the underlying chain exposes it. AsLister
+	// honors opaque-decorator markers in the underlying chain.
+	if _, ok := storage.AsLister(backend); ok {
+		return &encryptedLister{e}
+	}
 	return e
+}
+
+// encryptedLister wraps EncryptedStorage to expose the conditional Lister
+// capability — instantiated by [New] when the underlying backend supports
+// [storage.Lister]. The List method is on this type rather than on
+// EncryptedStorage directly so the unconditional method-set does not
+// claim Lister when the underlying chain cannot satisfy it.
+type encryptedLister struct{ *EncryptedStorage }
+
+func (w *encryptedLister) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return w.list(ctx, prefix, opts)
 }
 
 // aadForKey returns the AEAD associated data that binds ciphertext to its
@@ -280,3 +331,67 @@ func (e *EncryptedStorage) Exists(ctx context.Context, key string) (bool, error)
 func zeroBytes(b []byte) {
 	clear(b)
 }
+
+// list forwards to the underlying backend's [storage.Lister]. It is exposed
+// as a method on the *encryptedLister combinator only when the underlying
+// chain supports listing. Listing is safe through encryption because keys
+// are not encrypted — only object content is. Tenant-scoped key prefixes
+// still work as expected.
+//
+// The iterator rewrites Size to subtract GCM overhead (nonce + tag) so
+// callers see plaintext size, matching what Get returns.
+func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	lister, ok := storage.AsLister(e.backend)
+	if !ok {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: underlying backend does not implement storage.Lister"))
+		}
+	}
+	const gcmOverhead = 12 + 16
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		for info, err := range lister.List(ctx, prefix, opts) {
+			if err == nil && info.Size >= gcmOverhead {
+				info.Size -= gcmOverhead
+			}
+			if !yield(info, err) {
+				return
+			}
+		}
+	}
+}
+
+// Copy duplicates an object via Get+Put through the encryption layer. This
+// decrypts under the source AAD and re-encrypts under the destination AAD,
+// rebinding ciphertext to its new storage key.
+//
+// A native backend Copy would preserve the source AAD on the destination
+// object, making it undecryptable at the destination key — see [aadForKey].
+// We deliberately do NOT use the backend's Copier; correctness requires
+// going through Get/Put.
+func (e *EncryptedStorage) Copy(ctx context.Context, srcKey, dstKey string) error {
+	if err := storage.ValidateKey(srcKey); err != nil {
+		return fmt.Errorf("encryption: invalid source key: %w", err)
+	}
+	if err := storage.ValidateKey(dstKey); err != nil {
+		return fmt.Errorf("encryption: invalid destination key: %w", err)
+	}
+
+	rc, meta, err := e.Get(ctx, srcKey)
+	if err != nil {
+		return fmt.Errorf("encryption: copy get %q: %w", srcKey, err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	putMeta := storage.ObjectMeta{
+		ContentType: meta.ContentType,
+		Size:        meta.Size,
+		Custom:      meta.Custom,
+	}
+	if err := e.Put(ctx, dstKey, rc, putMeta); err != nil {
+		return fmt.Errorf("encryption: copy put %q: %w", dstKey, err)
+	}
+	return nil
+}
+
+// Compile-time interface compliance for the encryptedLister combinator.
+var _ storage.Lister = (*encryptedLister)(nil)
