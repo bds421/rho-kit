@@ -68,6 +68,11 @@ func WithRequireClientCert() ServerTLSOption {
 // Use [WithRequireClientCert] to enforce that ALL clients present a valid
 // certificate (tls.RequireAndVerifyClientCert).
 //
+// Note: callers using [github.com/bds421/rho-kit/app] do not need to pass
+// this option directly — the Builder enables [WithRequireClientCert] by
+// default and exposes [Builder.WithOptionalClientCertificates] for
+// gateway-fronted services (audit FR-014).
+//
 // Returns nil if TLS is not enabled.
 func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
 	if !c.Enabled() {

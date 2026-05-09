@@ -38,6 +38,7 @@ import (
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
@@ -148,6 +149,7 @@ type Builder struct {
 	allowInternalNonLoopback bool // C-1: lets Internal.Host == "0.0.0.0" pass.
 	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
 	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
+	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
 
 	// Rate limiters
 	ipRateRequests int
@@ -241,6 +243,46 @@ func (b *Builder) WithInternalNonLoopback() *Builder {
 // escape hatch.
 func (b *Builder) WithoutTLS() *Builder {
 	b.allowPlaintext = true
+	return b
+}
+
+// serverTLSOptions returns the netutil.ServerTLSOption set the
+// builder will apply when constructing the public server's
+// *tls.Config. FR-014 [HIGH]: the default is mTLS
+// (tls.RequireAndVerifyClientCert) so the kit's "TLS env enables
+// global mTLS" convention holds. [Builder.WithOptionalClientCertificates]
+// flips this back to VerifyClientCertIfGiven for services fronted by
+// an external TLS terminator.
+//
+// Exposed (lowercase) for the unit test that pins the contract; not
+// part of the public Builder surface.
+func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
+	if b.tlsOptionalClientCert {
+		return nil
+	}
+	return []netutil.ServerTLSOption{netutil.WithRequireClientCert()}
+}
+
+// WithOptionalClientCertificates opts the public TLS server out of
+// the kit's default of requiring a client certificate from every
+// caller (mTLS). After this call the listener verifies any presented
+// client certificate but does NOT reject anonymous clients
+// (tls.VerifyClientCertIfGiven).
+//
+// Audit FR-014 [HIGH]: pre-fix the Builder constructed every TLS
+// listener with VerifyClientCertIfGiven by default, contradicting
+// the kit's documented "TLS env enables global mTLS" convention.
+// Now mTLS is enforced unless the operator explicitly downgrades —
+// a deliberate, documented escape hatch matching the [WithoutTLS]
+// shape.
+//
+// Use this only for services genuinely fronted by an external TLS
+// terminator (Oathkeeper, ALB, ingress controller) that re-encrypts
+// to the cluster *without* presenting a client certificate. Internal
+// service-to-service listeners should never use this option — the
+// verifier is the kit's only authentication layer for those callers.
+func (b *Builder) WithOptionalClientCertificates() *Builder {
+	b.tlsOptionalClientCert = true
 	return b
 }
 
@@ -861,7 +903,7 @@ func (b *Builder) Run() error {
 
 	// 1. TLS -- server TLS is still needed here for the public server.
 	// Client TLS is now handled by the httpClientModule.
-	serverTLS, err := b.cfg.TLS.ServerTLS()
+	serverTLS, err := b.cfg.TLS.ServerTLS(b.serverTLSOptions()...)
 	if err != nil {
 		return fmt.Errorf("build server TLS config: %w", err)
 	}

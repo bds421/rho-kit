@@ -1,8 +1,17 @@
 package app
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -298,6 +307,84 @@ func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
 		WithoutJWTAudience()
 	require.NoError(t, b.Validate(),
 		"WithoutJWTAudience must satisfy the audience check")
+}
+
+// --- FR-014: Builder TLS defaults to mTLS ---
+
+// TestBuilder_PublicTLSDefaultsToMutualAuth pins the FR-014 [HIGH]
+// fix: the Builder's default for the public listener must be
+// tls.RequireAndVerifyClientCert. Pre-fix, ServerTLS was called
+// without options and produced VerifyClientCertIfGiven, contradicting
+// the kit's documented "TLS env enables global mTLS" convention.
+func TestBuilder_PublicTLSDefaultsToMutualAuth(t *testing.T) {
+	tlsCfg := realTLSForTest(t)
+	cfg := validBaseConfig()
+	cfg.TLS = tlsCfg
+	b := New("svc", "v1", cfg).WithoutJWTAudience()
+
+	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, tls.RequireAndVerifyClientCert, got.ClientAuth,
+		"public TLS server must require client certificates by default (FR-014)")
+}
+
+// TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven
+// covers the documented escape hatch for gateway-fronted services.
+func TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven(t *testing.T) {
+	tlsCfg := realTLSForTest(t)
+	cfg := validBaseConfig()
+	cfg.TLS = tlsCfg
+	b := New("svc", "v1", cfg).
+		WithoutJWTAudience().
+		WithOptionalClientCertificates()
+
+	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, tls.VerifyClientCertIfGiven, got.ClientAuth,
+		"WithOptionalClientCertificates must opt out of mTLS")
+}
+
+// realTLSForTest writes a self-signed CA + leaf certificate to temp
+// files so tls.LoadX509KeyPair succeeds and the resulting *tls.Config
+// reflects the ClientAuth choice we want to assert.
+func realTLSForTest(t *testing.T) netutil.TLSConfig {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IsCA:         true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	caPath := dir + "/ca.pem"
+	certPath := dir + "/cert.pem"
+	keyPath := dir + "/key.pem"
+	writePEM(t, caPath, "CERTIFICATE", der)
+	writePEM(t, certPath, "CERTIFICATE", der)
+	writePEM(t, keyPath, "EC PRIVATE KEY", keyDER)
+	return netutil.TLSConfig{CACert: caPath, Cert: certPath, Key: keyPath}
+}
+
+func writePEM(t *testing.T, path, typ string, der []byte) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	require.NoError(t, pem.Encode(f, &pem.Block{Type: typ, Bytes: der}))
 }
 
 // validTLSForTest returns a TLSConfig backed by readable temp files so
