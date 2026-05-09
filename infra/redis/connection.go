@@ -378,11 +378,14 @@ func (c *Connection) fireOnReconnect() {
 				}
 			}
 		case <-ctx.Done():
-			c.logger.Error("redis onReconnect callback timed out or connection closed",
+			c.logger.Error("redis onReconnect callback timed out — abandoning waiter",
 				"timeout", onReconnectTimeout)
-			// Wait for the callback goroutine to finish — ctx cancellation
-			// propagates to the callback, which should return promptly.
-			<-done
+			// FR-078 [MED]: do NOT block on <-done. A misbehaving
+			// callback that ignores ctx would otherwise pin this
+			// goroutine forever. The callback's goroutine leaks for
+			// its own lifetime, but the orchestrator returns
+			// promptly so subsequent reconnects can proceed and
+			// shutdown is not blocked.
 		}
 	}()
 }

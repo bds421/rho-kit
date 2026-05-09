@@ -23,6 +23,11 @@ type RedisConfig struct {
 	Port     int
 	Password string
 	DB       int
+	// AllowPlaintext opts a deployment out of the FR-077 production-
+	// safety check. Without it, ValidateRedis rejects `redis://` URLs
+	// and credential-less connections. Set REDIS_ALLOW_PLAINTEXT=true
+	// only for genuinely trusted local-dev fixtures.
+	AllowPlaintext bool `env:"REDIS_ALLOW_PLAINTEXT"`
 }
 
 // RedisURL returns the resolved Redis connection URL. If URL is set directly,
@@ -126,11 +131,29 @@ func LoadRedisFields() (RedisFields, error) {
 // (see docs/RELEASE_NOTES_v2.md). Production-safe defaults are
 // unconditional. Tests against fixture instances should provide
 // password-bearing URLs via REDIS_URL or set REDIS_PASSWORD.
+//
+// FR-077 [MED]: rejects passwordless URLs and the plaintext `redis://`
+// scheme unless [Redis.AllowPlaintext] is set. Production deployments
+// must use `rediss://` and supply a credential; the explicit opt-out
+// keeps local-dev fixtures working while making the unsafe path
+// loud.
 func (f RedisFields) ValidateRedis(environment string) error {
 	_ = environment // accepted for API compatibility; not consulted
 	resolved := f.Redis.RedisURL()
 	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {
 		return err
+	}
+	if !f.Redis.AllowPlaintext {
+		if u, err := url.Parse(resolved); err == nil {
+			if u.Scheme == "redis" {
+				return fmt.Errorf("REDIS_URL uses plaintext scheme \"redis://\"; set REDIS_ALLOW_PLAINTEXT=true to permit (FR-077)")
+			}
+			if u.User == nil || u.User.Username() == "" {
+				if pw, _ := u.User.Password(); pw == "" && f.Redis.Password == "" {
+					return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
+				}
+			}
+		}
 	}
 	if f.Redis.Password == "" && f.Redis.URL == "" {
 		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")
