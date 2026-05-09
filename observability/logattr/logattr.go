@@ -115,18 +115,34 @@ func URL(u string) slog.Attr {
 // Secret returns a redaction-safe attribute for sensitive values
 // (Authorization headers, JWTs, API keys, password fields, etc.).
 //
-// The value is replaced by "<redacted N bytes sha256:abc12345>", where:
-//   - N is the original byte length (so log volume changes are still
-//     visible);
-//   - sha256:... is the first 8 hex chars of the SHA-256 digest, allowing
-//     correlation across log lines without revealing the value.
+// FR-085 [LOW]: by default the rendering is "<redacted N bytes>" —
+// no digest. Pre-fix the value carried the first 8 hex chars of
+// SHA-256, which is brute-forceable for low-entropy secrets like
+// 6-digit OTPs or short reset codes. Operators that need
+// across-line correlation (and accept the brute-force cost) can use
+// [SecretWithDigest], which still emits a SHA-256 prefix.
 //
 // An empty value emits "<redacted empty>".
 //
 // Use Secret instead of slog.String for any field that must never appear
 // verbatim in logs — slog.String has no awareness of secrecy.
 func Secret(key, value string) slog.Attr {
+	return slog.String(key, redactedValueNoDigest(value))
+}
+
+// SecretWithDigest is the legacy correlation-friendly redaction.
+// The first 8 hex chars of SHA-256 leak ~32 bits — fine for a
+// 32-byte JWT, brute-forceable for a 6-digit OTP. Use only for
+// high-entropy secrets.
+func SecretWithDigest(key, value string) slog.Attr {
 	return slog.String(key, redactedValue(value))
+}
+
+func redactedValueNoDigest(value string) string {
+	if value == "" {
+		return "<redacted empty>"
+	}
+	return fmt.Sprintf("<redacted %d bytes>", len(value))
 }
 
 // Email returns a redacted "email" attribute that masks the local part

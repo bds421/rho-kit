@@ -40,6 +40,10 @@ func TestAttrValues(t *testing.T) {
 }
 
 func TestSecret_RedactsValue(t *testing.T) {
+	// FR-085 [LOW]: Secret no longer carries a SHA-256 prefix —
+	// brute-forceable for low-entropy values. Tests update to the
+	// length-only redaction; correlation-friendly behaviour moved
+	// to SecretWithDigest.
 	const value = "Bearer eyJhbGc.foo.bar"
 	attr := Secret("authorization", value)
 	assert.Equal(t, "authorization", attr.Key)
@@ -48,15 +52,15 @@ func TestSecret_RedactsValue(t *testing.T) {
 	assert.NotContains(t, got, "eyJhbGc")
 	assert.Contains(t, got, "redacted")
 	assert.Contains(t, got, "22 bytes")
-	assert.Contains(t, got, "sha256:")
+	assert.NotContains(t, got, "sha256:")
 }
 
-func TestSecret_StableHashAcrossCalls(t *testing.T) {
-	a := Secret("k", "secret-value-1234").Value.String()
-	b := Secret("k", "secret-value-1234").Value.String()
+func TestSecretWithDigest_StableHashAcrossCalls(t *testing.T) {
+	a := SecretWithDigest("k", "secret-value-1234").Value.String()
+	b := SecretWithDigest("k", "secret-value-1234").Value.String()
 	assert.Equal(t, a, b, "same value must hash to the same digest")
 
-	c := Secret("k", "secret-value-1235").Value.String()
+	c := SecretWithDigest("k", "secret-value-1235").Value.String()
 	assert.NotEqual(t, a, c, "different values must differ")
 }
 

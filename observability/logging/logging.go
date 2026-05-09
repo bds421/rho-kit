@@ -65,14 +65,21 @@ func New(cfg Config) *slog.Logger {
 }
 
 // WithContext stores the logger in the context. Retrieve with FromContext.
+//
+// FR-084 [LOW]: nil loggers are normalised to slog.Default() so a
+// caller who accidentally stores nil cannot trigger a request-time
+// nil-deref on a downstream FromContext().With(...).
 func WithContext(ctx context.Context, logger *slog.Logger) context.Context {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return context.WithValue(ctx, contextKey{}, logger)
 }
 
 // FromContext retrieves the logger from the context. Returns slog.Default()
-// if no logger was stored.
+// if no logger was stored or if a nil was stored (FR-084).
 func FromContext(ctx context.Context) *slog.Logger {
-	if l, ok := ctx.Value(contextKey{}).(*slog.Logger); ok {
+	if l, ok := ctx.Value(contextKey{}).(*slog.Logger); ok && l != nil {
 		return l
 	}
 	return slog.Default()

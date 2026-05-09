@@ -25,6 +25,17 @@ type MountOption func(*mountConfig)
 type mountConfig struct {
 	requireLoopback bool
 	authFn          func(*http.Request) bool
+	allowPublic     bool
+}
+
+// WithUnsafePublicMount opts a caller out of the FR-086 default
+// loopback/auth requirement. Use only for environments where the
+// service truly is reachable only through a trusted internal
+// network. Do not use on public-facing servers — pprof endpoints
+// expose heap, goroutine, and CPU profile data and can be used as
+// DoS amplifiers.
+func WithUnsafePublicMount() MountOption {
+	return func(c *mountConfig) { c.allowPublic = true }
 }
 
 // WithRequireLoopback restricts pprof routes to requests originating
@@ -61,8 +72,12 @@ func Handler(opts ...MountOption) http.Handler {
 	return mux
 }
 
-// Mount installs the pprof routes onto mux at /debug/pprof/. Used when
-// the caller already owns a mux and wants to attach pprof to it.
+// Mount installs the pprof routes onto mux at /debug/pprof/.
+//
+// FR-086 [MED]: Mount is now an alias for
+// MountWith(mux, WithRequireLoopback()) — pre-fix it admitted
+// arbitrary remote callers. Switch to MountWith with explicit
+// gating for non-loopback deployments.
 //
 // Routes installed:
 //
@@ -74,15 +89,25 @@ func Handler(opts ...MountOption) http.Handler {
 //	/debug/pprof/{name}          — heap, goroutine, allocs, block,
 //	                                mutex, threadcreate (named profiles)
 func Mount(mux *http.ServeMux) {
-	MountWith(mux)
+	MountWith(mux, WithRequireLoopback())
 }
 
 // MountWith installs pprof on mux with optional gating. See
 // [WithRequireLoopback] and [WithAuth].
+//
+// FR-086 [MED]: by default the mount requires loopback OR auth.
+// Pre-fix MountWith(mux) on a public mux silently exposed
+// goroutine/heap/CPU profile endpoints. The constructor now panics
+// when neither WithRequireLoopback nor WithAuth is supplied; opt
+// out with [WithUnsafePublicMount] for the genuine "everyone is on
+// the internal network" scenario.
 func MountWith(mux *http.ServeMux, opts ...MountOption) {
 	cfg := &mountConfig{}
 	for _, o := range opts {
 		o(cfg)
+	}
+	if !cfg.requireLoopback && cfg.authFn == nil && !cfg.allowPublic {
+		panic("pprof: MountWith requires WithRequireLoopback or WithAuth — pass WithUnsafePublicMount to opt out (FR-086)")
 	}
 	wrap := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

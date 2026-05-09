@@ -10,7 +10,7 @@ import (
 )
 
 func TestHandler_ServesIndex(t *testing.T) {
-	srv := httptest.NewServer(Handler())
+	srv := httptest.NewServer(Handler(WithUnsafePublicMount()))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/debug/pprof/")
@@ -20,7 +20,7 @@ func TestHandler_ServesIndex(t *testing.T) {
 }
 
 func TestHandler_ServesNamedProfile(t *testing.T) {
-	srv := httptest.NewServer(Handler())
+	srv := httptest.NewServer(Handler(WithUnsafePublicMount()))
 	defer srv.Close()
 
 	// "goroutine" is a named profile that returns the running goroutines.

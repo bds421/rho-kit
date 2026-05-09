@@ -111,7 +111,22 @@ func New(store Store, opts ...Option) *Logger {
 
 // Log appends an audit event. Auto-populates ID, Timestamp, and TraceID if empty.
 // Errors are logged but not returned — audit logging must not break the caller.
+//
+// FR-083 [MED]: services that need fail-on-drop semantics (compliance
+// audit trails, financial events) should use [Logger.LogE] instead.
+// LogE returns the underlying store error so callers can refuse the
+// originating action when persistence fails. The fire-and-forget Log
+// remains the right primitive for high-volume best-effort logging.
 func (l *Logger) Log(ctx context.Context, event Event) {
+	_ = l.LogE(ctx, event)
+}
+
+// LogE appends an audit event and returns the underlying store
+// error. Use this when persistence is part of the request's success
+// criterion — e.g. financial / compliance events that must not
+// silently drop. The drop hook + counter still fire on failure so
+// monitoring stays in place.
+func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if event.ID == "" {
 		event.ID = uuid.Must(uuid.NewV7()).String()
 	}
@@ -135,7 +150,9 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 		if l.onDrop != nil {
 			l.onDrop(ctx, event, err)
 		}
+		return err
 	}
+	return nil
 }
 
 // LogAction is a convenience method for logging simple events without metadata.
