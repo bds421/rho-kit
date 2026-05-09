@@ -509,3 +509,29 @@ func TestNewStaticSecrets_PanicsOnShortKey(t *testing.T) {
 		NewStaticSecrets("v1", map[string][]byte{"v1": []byte("too-short")})
 	})
 }
+
+// TestNewStaticSecrets_PanicsOnEmptyCurrent regression-tests FR-050:
+// pre-fix, NewStaticSecrets accepted currentKeyID="" if the keys map
+// also had an "" entry. The signed entry's SignatureKeyID would then
+// be "" — and Verify treats "" as ErrSignatureInvalid, so the entry
+// could never verify. Empty-string IDs slip through with no warning
+// from the type system.
+func TestNewStaticSecrets_PanicsOnEmptyCurrent(t *testing.T) {
+	assert.Panics(t, func() {
+		NewStaticSecrets("", map[string][]byte{"": make([]byte, 32)})
+	})
+}
+
+// TestNewStaticSecrets_PanicsOnEmptyKeyIDInMap covers the case where
+// currentKeyID is non-empty but some other map entry has an empty key.
+// That entry could never be selected as current, but a key-rotation
+// flow that swaps in the "next" id might accidentally promote "" if
+// the loader never validated.
+func TestNewStaticSecrets_PanicsOnEmptyKeyIDInMap(t *testing.T) {
+	assert.Panics(t, func() {
+		NewStaticSecrets("v1", map[string][]byte{
+			"v1": make([]byte, 32),
+			"":   make([]byte, 32),
+		})
+	})
+}

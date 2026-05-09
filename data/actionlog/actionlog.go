@@ -290,15 +290,26 @@ type StaticSecrets struct {
 }
 
 // NewStaticSecrets builds a [StaticSecrets] with the given current key
-// id and key map. Panics if currentKeyID is not present in keys, or
-// if any key is shorter than 32 bytes (HMAC-SHA256 requires at least
-// the hash output size to retain its security guarantees).
+// id and key map. Panics if:
+//   - currentKeyID is empty (audit FR-050: empty key IDs persisted as
+//     SignatureKeyID="" produce entries that fail [Verify] forever
+//     because Verify treats "" as ErrSignatureInvalid).
+//   - currentKeyID is not present in keys.
+//   - any key id is empty (same forge-protection rationale).
+//   - any key is shorter than 32 bytes (HMAC-SHA256 requires at least
+//     the hash output size to retain its security guarantees).
 func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecrets {
+	if currentKeyID == "" {
+		panic("actionlog: NewStaticSecrets: currentKeyID must not be empty (would persist unverifiable entries)")
+	}
 	if _, ok := keys[currentKeyID]; !ok {
 		panic("actionlog: NewStaticSecrets: currentKeyID is not in keys map")
 	}
 	dup := make(map[string][]byte, len(keys))
 	for id, k := range keys {
+		if id == "" {
+			panic("actionlog: NewStaticSecrets: empty key id is not allowed")
+		}
 		if len(k) < 32 {
 			panic("actionlog: NewStaticSecrets: secret for key id " + id + " must be at least 32 bytes")
 		}
@@ -395,6 +406,13 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 	e.OccurredAt = e.OccurredAt.UTC()
 
 	keyID := l.secrets.CurrentKeyID()
+	if keyID == "" {
+		// FR-050 [HIGH] belt-and-suspenders: NewStaticSecrets panics
+		// on empty current key id, but a custom Secrets implementation
+		// could still return "". Reject here so we never persist an
+		// entry whose SignatureKeyID Verify will reject permanently.
+		return Entry{}, fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
+	}
 	secret, ok := l.secrets.Resolve(keyID)
 	if !ok {
 		return Entry{}, fmt.Errorf("actionlog: current key id %q not resolvable: %w", keyID, ErrUnknownKeyID)
