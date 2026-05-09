@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComposeSubject_RoutingKeyOptional(t *testing.T) {
@@ -112,7 +113,7 @@ func TestConnect_RespectsCancelledContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:4222"})
+	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:4222", AllowInsecure: true})
 	elapsed := time.Since(start)
 
 	assert.Error(t, err, "cancelled ctx must abort Connect")
@@ -130,12 +131,56 @@ func TestConnect_DerivesTimeoutFromDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:1"})
+	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:1", AllowInsecure: true})
 	elapsed := time.Since(start)
 
 	assert.Error(t, err)
 	assert.Less(t, elapsed, time.Second,
 		"ctx deadline must drive nats.Timeout; got %s", elapsed)
+}
+
+// FR-073 [HIGH] regression: the kit must refuse to dial a plaintext
+// NATS endpoint with no authentication. Pre-fix the Config exposed
+// only URL/Name/ack/reconnect, so production deployments commonly
+// shipped with no auth configured.
+func TestConnect_RejectsPlaintextWithoutAuth(t *testing.T) {
+	_, err := Connect(t.Context(), Config{URL: "nats://broker:4222"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FR-073")
+}
+
+// Companion: the explicit opt-out must work so legitimate single-host
+// dev setups can still connect.
+func TestConnect_AllowsInsecureWhenOptedIn(t *testing.T) {
+	// We don't actually expect a successful dial — the broker isn't
+	// running. The point is the validation MUST pass before the dial,
+	// and the only way to observe that is to see a dial-side error
+	// (not the FR-073 sentinel).
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:1", AllowInsecure: true})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "FR-073")
+}
+
+// TLS scheme satisfies the FR-073 check even without an explicit
+// *tls.Config — nats.go falls back to the system trust store, but
+// the connection is still encrypted.
+func TestConnect_TLSSchemeSatisfiesAuthCheck(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := Connect(ctx, Config{URL: "tls://127.0.0.1:1"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "FR-073")
+}
+
+// Username-based auth satisfies the FR-073 check.
+func TestConnect_UsernamePasswordSatisfiesAuthCheck(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:1", Username: "u", Password: "p"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "FR-073")
 }
 
 // fakeJetstreamMsg is a minimal jetstream.Msg implementation used by the

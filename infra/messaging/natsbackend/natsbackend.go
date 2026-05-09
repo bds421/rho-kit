@@ -33,6 +33,7 @@ package natsbackend
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,6 +80,75 @@ type Config struct {
 	// ReconnectWait is the back-off between reconnect attempts.
 	// Default: 2s.
 	ReconnectWait time.Duration
+
+	// TLS, when non-nil, configures TLS for the connection. Provide a
+	// fully-formed *tls.Config — the typical kit construction is
+	// netutil.TLSConfig{...}.ClientTLS(). If TLS is nil but the URL
+	// scheme is "tls" or "wss", the NATS client uses its own default
+	// system trust store.
+	TLS *tls.Config
+
+	// Username and Password configure plaintext NATS user/password
+	// authentication. Use either these or Token / Credentials / NKey,
+	// not multiple at once.
+	Username string
+	Password string
+
+	// Token configures NATS bearer-token authentication.
+	Token string
+
+	// CredentialsFile points to a NATS `.creds` JWT-NKey credentials
+	// file (the standard format produced by `nsc add user`). Honoured
+	// when non-empty.
+	CredentialsFile string
+
+	// NKeyFile points to a seed file for NKey authentication. Honoured
+	// when non-empty. Takes precedence over Username/Password/Token if
+	// multiple are set, matching the nats.go option order.
+	NKeyFile string
+
+	// AllowInsecure opts the connection out of the FR-073 production
+	// safety check. Without TLS or any auth method (Username, Token,
+	// CredentialsFile, NKeyFile), [Connect] refuses to dial because a
+	// plaintext+no-auth NATS connection on a multi-tenant network is
+	// effectively unauthenticated message ingress. Set this to true
+	// for genuinely trusted single-host development setups, or any
+	// case where the operator has independently confirmed the NATS
+	// server requires no authentication and runs on a private
+	// network.
+	AllowInsecure bool
+
+	// ExtraOptions are raw nats.Option values appended after the
+	// kit-derived options. The escape hatch covers anything the typed
+	// fields do not — custom error handlers, custom dialers,
+	// per-message inbox prefixes, etc. Applied last so callers can
+	// override defaults the kit installs.
+	ExtraOptions []nats.Option
+}
+
+// validateAuth enforces the FR-073 safety contract: a NATS connection
+// must use TLS, some form of authentication, or AllowInsecure. The
+// check runs before any DNS or socket activity so a misconfigured
+// service fails fast at startup rather than silently shipping
+// unauthenticated traffic.
+func (c Config) validateAuth() error {
+	if c.AllowInsecure {
+		return nil
+	}
+	if c.TLS != nil {
+		return nil
+	}
+	if c.Username != "" || c.Token != "" || c.CredentialsFile != "" || c.NKeyFile != "" {
+		return nil
+	}
+	if strings.HasPrefix(c.URL, "tls://") || strings.HasPrefix(c.URL, "wss://") {
+		// URL scheme requests TLS even when no *tls.Config is
+		// supplied; nats.go falls back to the system trust store. The
+		// connection is still encrypted, so we accept this as the
+		// "TLS is configured" signal.
+		return nil
+	}
+	return errors.New("natsbackend: connect requires TLS, authentication (Username/Token/CredentialsFile/NKeyFile), or explicit AllowInsecure (audit FR-073)")
 }
 
 // Connection holds an open nats.Conn and its JetStream context. Use
@@ -92,9 +162,17 @@ type Connection struct {
 // Connect dials NATS and returns a Connection. The connection
 // auto-reconnects on transient failures; callers do not need to wrap
 // it in a retry loop.
+//
+// Audit FR-073 [HIGH]: Connect refuses to dial a plaintext NATS
+// endpoint with no authentication. Configure TLS, Username/Password,
+// Token, CredentialsFile, or NKeyFile — or set AllowInsecure for
+// genuinely trusted single-host setups.
 func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if cfg.URL == "" {
 		return nil, errors.New("natsbackend: URL must not be empty")
+	}
+	if err := cfg.validateAuth(); err != nil {
+		return nil, err
 	}
 	if cfg.Name == "" {
 		cfg.Name = "rho-kit"
@@ -115,6 +193,28 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		// also force-closes if the goroutine itself does not return.
 		nats.DrainTimeout(closeDrainTimeout),
 	}
+	if cfg.TLS != nil {
+		opts = append(opts, nats.Secure(cfg.TLS))
+	}
+	if cfg.Username != "" {
+		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
+	}
+	if cfg.Token != "" {
+		opts = append(opts, nats.Token(cfg.Token))
+	}
+	if cfg.CredentialsFile != "" {
+		opts = append(opts, nats.UserCredentials(cfg.CredentialsFile))
+	}
+	if cfg.NKeyFile != "" {
+		nkeyOpt, err := nats.NkeyOptionFromSeed(cfg.NKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("natsbackend: load NKey seed: %w", err)
+		}
+		opts = append(opts, nkeyOpt)
+	}
+	// ExtraOptions go last so callers can override anything the kit
+	// installed by default.
+	opts = append(opts, cfg.ExtraOptions...)
 	// Honour ctx deadline for the dial. nats.Connect itself does not
 	// accept a context, so we derive a finite Timeout from the deadline
 	// when present. Without this, a cancelled ctx would not abort the
