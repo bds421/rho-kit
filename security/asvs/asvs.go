@@ -12,9 +12,19 @@
 // How it's used:
 //
 //   - Each kit middleware/helper carries a Go-comment annotation:
-//     `// asvs: V2.1.5, V3.4.1, V13.2.3`
-//   - kit-doctor scans imports and aggregates the union of controls
-//     a service satisfies vs. those still missing.
+//     `// asvs: V2.1.5, V3.4.1, V13.2.3`. These annotations are kit-
+//     internal *documentation* — they are not, and must not be,
+//     trusted as compliance evidence by themselves (audit FR-007).
+//   - The kit also maintains a hand-curated [PackageRegistry] mapping
+//     each kit import path to the controls it satisfies. kit-doctor's
+//     [ScanImports] resolves a service's imports against this
+//     registry to produce *trustworthy* import-evidence — the
+//     service literally imports the package, which cannot be forged
+//     by editing comments.
+//   - Controls carry an [Evidence] class — Capability, BuilderEnforced,
+//     or RuntimeVerified — so kit-doctor reports can distinguish
+//     "kit ships the helper" from "Builder.Validate refuses startup
+//     without it" from "kit-verify probed a running service".
 //   - kit-verify (the runtime conformance tool) probes a running
 //     service to verify the annotated controls actually behave as
 //     claimed (e.g., that secheaders truly emits CSP).

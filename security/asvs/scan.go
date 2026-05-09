@@ -36,6 +36,13 @@ type ScanReport struct {
 // kit's claim is "production code on the request path satisfies
 // this control"; tests are documentation, not enforcement.
 //
+// FR-007 [HIGH]: ScanDir's output is DOCUMENTATION-ONLY and MUST
+// NOT be used as compliance evidence. A service author can claim
+// any control by typing the annotation; the scanner does not check
+// whether the surrounding code actually implements the control.
+// Use [ScanImports] for trustworthy evidence — it resolves real
+// import statements against the kit's hand-curated [PackageRegistry].
+//
 // Returns a [ScanReport] suitable for kit-doctor rendering. An error
 // is returned only on filesystem failure; an annotation pointing at
 // an unknown ID is reported via ScanReport.Unknown, not an error,
