@@ -211,18 +211,21 @@ func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {
 	}, time.Second, 5*time.Millisecond, "job context should hit DeadlineExceeded")
 }
 
-func TestScheduler_SetJobTimeout_NoOpForZero(t *testing.T) {
+func TestScheduler_SetJobTimeout_PanicsOnNonPositive(t *testing.T) {
+	// FR-094 [LOW]: SetJobTimeout used to silently no-op on
+	// non-positive durations, leaving the job unbounded. It now
+	// panics so the wiring bug surfaces.
 	reg := prometheus.NewRegistry()
 	s := New(nil, WithRegistry(reg))
-	s.SetJobTimeout("ignored", 0)
-	s.SetJobTimeout("ignored2", -1*time.Second)
+	assert.Panics(t, func() { s.SetJobTimeout("zero", 0) })
+	assert.Panics(t, func() { s.SetJobTimeout("neg", -1*time.Second) })
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if _, ok := s.jobTimeouts["ignored"]; ok {
+	if _, ok := s.jobTimeouts["zero"]; ok {
 		t.Fatal("zero duration should not be stored")
 	}
-	if _, ok := s.jobTimeouts["ignored2"]; ok {
+	if _, ok := s.jobTimeouts["neg"]; ok {
 		t.Fatal("negative duration should not be stored")
 	}
 }

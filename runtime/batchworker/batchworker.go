@@ -11,6 +11,7 @@ package batchworker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"runtime/debug"
@@ -53,22 +54,30 @@ type config struct {
 // WithJitter sets the jitter fraction (0.0–1.0) applied to each interval.
 // For example, WithJitter(0.1) on a 60s interval adds 0–6s of random delay.
 // Default: 0.1 (10%).
+//
+// FR-092 [LOW]: panics on fractions outside [0, 1] so a typo
+// surfaces at startup rather than silently keeping the default.
 func WithJitter(fraction float64) Option {
+	if fraction < 0 || fraction > 1 {
+		panic(fmt.Sprintf("batchworker: WithJitter requires 0 <= fraction <= 1 (got %v)", fraction))
+	}
 	return func(c *config) {
-		if fraction >= 0 && fraction <= 1 {
-			c.jitter = fraction
-		}
+		c.jitter = fraction
 	}
 }
 
 // WithTimeout sets the maximum duration for each batch execution.
 // If the batch function exceeds this timeout, its context is cancelled.
 // Default: 2 minutes.
+//
+// FR-092 [LOW]: panics on d <= 0 so an unbounded-batch wiring error
+// surfaces at startup.
 func WithTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic(fmt.Sprintf("batchworker: WithTimeout requires d > 0 (got %s)", d))
+	}
 	return func(c *config) {
-		if d > 0 {
-			c.timeout = d
-		}
+		c.timeout = d
 	}
 }
 

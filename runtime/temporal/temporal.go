@@ -7,6 +7,25 @@
 // soon" workloads the lighter [data/queue/riverqueue] adapter is
 // almost always the better fit.
 //
+// # Scope of guarantees
+//
+// FR-096 [LOW]: this package is a thin adapter, NOT a hardened
+// production profile. The kit ships:
+//
+//   - lifecycle.Component wiring (Init/Start/Stop) so Temporal joins
+//     the kit's startup/shutdown sequence.
+//   - Identity + namespace defaults from [Config].
+//   - A pass-through to [client.Options] so callers can plug in any
+//     SDK feature.
+//
+// The kit does NOT take opinions on TLS, auth (mTLS / API key /
+// OIDC), retry policy, worker concurrency, namespace creation, or
+// task-queue isolation. Services targeting Temporal Cloud or any
+// production cluster MUST configure these via the standard SDK
+// options surfaced through [Config.ClientOptions] and
+// [Config.WorkerOptions]; the kit's defaults are appropriate only
+// for local-dev and integration tests against a permissive cluster.
+//
 // asvs: V11.1.1
 package temporal
 

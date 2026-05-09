@@ -78,9 +78,13 @@ func newWorkerPool(
 // panic). The event is dropped and counted.
 func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context.Context) (ok bool, err error) {
 	if !p.started.Load() {
-		p.logger.Warn("eventbus: submit called before pool started, event may be buffered or lost",
-			slog.String("event", task.eventName),
-		)
+		// FR-090 [MED]: pre-fix the pool buffered events before
+		// Start() and dropped them on stop without ever running. The
+		// new behaviour is to refuse submit-before-Start outright so
+		// the wiring bug surfaces at the call site rather than
+		// silently losing async events.
+		releaseTask(task)
+		return false, ErrQueueFull
 	}
 
 	if p.stopped.Load() {

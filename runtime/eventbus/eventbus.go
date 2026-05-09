@@ -117,7 +117,10 @@ func WithOnFull(p OnFullPolicy) Option {
 	default:
 		panic(fmt.Sprintf("eventbus: WithOnFull: unknown policy %d", int(p)))
 	}
-	return func(b *Bus) { b.onFull = p }
+	return func(b *Bus) {
+		b.onFull = p
+		b.policySet = true
+	}
 }
 
 // HandlerOption configures a single handler registration.
@@ -179,6 +182,12 @@ type Bus struct {
 	pool     *workerPool
 	poolCfg  *poolConfig // nil = no pool (backward compat)
 	onFull   OnFullPolicy
+	policySet      bool // FR-091: distinguishes "default" from "explicitly set to OnFullDrop"
+	unboundedAsync bool // FR-089: opts out of the default bounded worker pool
+	// defaultPoolCtx / Cancel control the auto-started default
+	// pool's lifecycle (FR-089). Stop() cancels the ctx.
+	defaultPoolCtx    context.Context
+	defaultPoolCancel context.CancelFunc
 	nextID   atomic.Uint64
 }
 
@@ -186,6 +195,15 @@ type Bus struct {
 //
 // When [WithWorkerPool] is used, the pool is constructed eagerly but workers
 // are not started until [Bus.Start] is called.
+//
+// FR-089/FR-091 [MED]: when no [WithWorkerPool] is supplied, New now
+// installs [defaultEventBusWorkers] workers and the [OnFullError]
+// saturation policy. Pre-fix the default was unbounded goroutine
+// per async dispatch (memory exhaustion risk on event spikes) AND
+// silent drop on saturation (lost domain events). Opt out via the
+// new [WithUnboundedAsync] for "every async dispatch spawns a
+// goroutine" semantics, or pick [WithFullPolicy] explicitly to
+// keep the OnFullDrop default.
 func New(opts ...Option) *Bus {
 	b := &Bus{
 		handlers: make(map[string][]registeredHandler),
@@ -194,6 +212,14 @@ func New(opts ...Option) *Bus {
 	for _, opt := range opts {
 		opt(b)
 	}
+	defaultPool := false
+	if !b.unboundedAsync && b.poolCfg == nil {
+		b.poolCfg = &poolConfig{workers: defaultEventBusWorkers}
+		defaultPool = true
+	}
+	if !b.policySet {
+		b.onFull = OnFullError
+	}
 	if b.poolCfg != nil && b.poolCfg.workers > 0 {
 		bufSize := b.poolCfg.bufSize
 		if bufSize <= 0 {
@@ -201,8 +227,35 @@ func New(opts ...Option) *Bus {
 		}
 		m := newPoolMetrics(b.poolCfg.registerer)
 		b.pool = newWorkerPool(b.poolCfg.workers, bufSize, b.logger, b.onError, m)
+		if defaultPool {
+			// Auto-start the FR-089 default pool so callers that don't
+			// run a lifecycle (tests, scripts, simple programs) keep
+			// working without manual Start. Explicitly-configured pools
+			// still require Start so submit-before-Start surfaces as an
+			// error per FR-090.
+			//
+			// Set started eagerly so submit() called immediately after
+			// New() does not race the goroutine that calls start().
+			b.pool.started.Store(true)
+			b.defaultPoolCtx, b.defaultPoolCancel = context.WithCancel(context.Background())
+			go b.pool.start(b.defaultPoolCtx)
+		}
 	}
 	return b
+}
+
+// defaultEventBusWorkers is the worker count used when no
+// [WithWorkerPool] option is supplied. 8 is enough to absorb modest
+// async-event spikes while keeping the goroutine ceiling visible
+// (audit FR-089).
+const defaultEventBusWorkers = 8
+
+// WithUnboundedAsync opts a Bus out of the FR-089 default worker
+// pool. Async dispatches spawn one goroutine each — the legacy
+// behaviour. Use only when an external mechanism bounds event
+// volume, otherwise a publish spike will OOM the service.
+func WithUnboundedAsync() Option {
+	return func(b *Bus) { b.unboundedAsync = true }
 }
 
 // Subscribe registers a typed handler for events of type E and returns a

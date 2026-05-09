@@ -242,10 +242,12 @@ func (r *Runner) Run(ctx context.Context) error {
 // The parent context allows force-cancellation (second signal) to interrupt
 // all pending stop timeouts immediately.
 //
-// Each component receives a per-component minimum budget so a slow earlier
-// component cannot starve later ones. The total budget is still bounded by
-// stopTimeout, but the per-step budget is min(stopTimeout/N, perStepCap)
-// — within that, every component gets a chance to run.
+// Each component receives a per-component MINIMUM budget so a slow
+// earlier component cannot starve later ones (audit FR-095). The
+// total budget is still bounded by stopTimeout, but the per-step
+// budget is max(perStepMinimum, min(stopTimeout/N, perStepCap)) —
+// every component gets at least perStepMinimum unless the global
+// budget is exhausted.
 //
 // Returns all stop errors joined together.
 func (r *Runner) stopAll(parent context.Context) error {
@@ -254,16 +256,23 @@ func (r *Runner) stopAll(parent context.Context) error {
 	sharedCtx, sharedCancel := context.WithTimeout(parent, r.stopTimeout)
 	defer sharedCancel()
 
-	// Per-component minimum budget: stopTimeout / componentCount, capped at
-	// 5s. This prevents a slow first component from consuming the entire
-	// budget while still respecting the overall stopTimeout via sharedCtx.
+	// Per-component budget. The previous formula returned tiny per-step
+	// budgets when N was large (e.g. 100 components × 30s budget = 300ms
+	// each, capped at 5s). FR-095 [LOW] introduces perStepMinimum so
+	// every component gets at least 1s of stop time, with the overall
+	// stopTimeout still acting as the global cap via sharedCtx.
 	n := len(r.components)
 	if n == 0 {
 		return nil
 	}
+	const perStepMinimum = 1 * time.Second
+	const perStepCap = 5 * time.Second
 	perStep := r.stopTimeout / time.Duration(n)
-	if perStep > 5*time.Second {
-		perStep = 5 * time.Second
+	if perStep > perStepCap {
+		perStep = perStepCap
+	}
+	if perStep < perStepMinimum {
+		perStep = perStepMinimum
 	}
 
 	var errs []error

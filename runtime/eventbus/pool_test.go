@@ -24,8 +24,19 @@ func waitForWorkers(t *testing.T, bus *Bus) {
 		close(done)
 		return nil
 	}, WithAsync(), WithName("warmup-canary"))
-	err := Publish(bus, context.Background(), otherEvent{Value: 0})
-	require.NoError(t, err)
+	// FR-090 [MED]: submit-before-Start now returns ErrQueueFull
+	// rather than buffering. Retry the canary publish until Start
+	// has begun running workers — this loop replaces the previous
+	// "publish-then-wait" pattern that relied on buffered events
+	// surviving past Start.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := Publish(bus, context.Background(), otherEvent{Value: 0})
+		if err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -493,7 +504,9 @@ func TestBus_StopRespectsContextDeadline(t *testing.T) {
 	close(blocker)
 }
 
-func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
+func TestWorkerPool_SubmitBeforeStartReturnsErrQueueFull(t *testing.T) {
+	// FR-090 [MED]: explicitly-configured pools refuse submits
+	// before Start so the wiring bug surfaces at the call site.
 	reg := prometheus.NewRegistry()
 	bus := New(
 		WithWorkerPool(2),
@@ -501,20 +514,16 @@ func TestWorkerPool_SubmitBeforeStartLogsWarning(t *testing.T) {
 		WithRegisterer(reg),
 	)
 
-	// Submit before start must not panic; event may be buffered.
-	assert.NotPanics(t, func() {
-		ok, err := bus.pool.submit(&asyncTask{
-			ctx:       context.Background(),
-			eventName: "test.event",
-			handler:   registeredHandler{name: "early"},
-			event:     testEvent{ID: "early"},
-		}, OnFullDrop, context.Background())
-		// The event should be buffered in the channel since pool is not stopped.
-		assert.True(t, ok)
-		assert.NoError(t, err)
-	})
+	ok, err := bus.pool.submit(&asyncTask{
+		ctx:       context.Background(),
+		eventName: "test.event",
+		handler:   registeredHandler{name: "early"},
+		event:     testEvent{ID: "early"},
+	}, OnFullDrop, context.Background())
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, ErrQueueFull)
 
-	// Start and drain.
+	// Start and drain so the goroutine does not leak.
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = bus.Start(ctx) }()
 	waitForWorkers(t, bus)
@@ -641,11 +650,14 @@ func TestBus_StartContextCancellation_StopsWorkers(t *testing.T) {
 		"workers should be torn down when Start's ctx is cancelled, even without an explicit Stop call")
 }
 
-func TestPublish_OnFullDrop_DefaultBehavior(t *testing.T) {
+func TestPublish_OnFullDrop_ExplicitOptIn(t *testing.T) {
+	// FR-091 [MED]: drop semantics are no longer the default — set
+	// explicitly via WithOnFull(OnFullDrop).
 	reg := prometheus.NewRegistry()
 	bus := New(
 		WithWorkerPool(1),
 		WithWorkerPoolBuffer(1),
+		WithOnFull(OnFullDrop),
 		WithRegisterer(reg),
 	)
 
@@ -667,7 +679,7 @@ func TestPublish_OnFullDrop_DefaultBehavior(t *testing.T) {
 	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
 	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
 
-	// Default = OnFullDrop: Publish never returns an error, dropped events
+	// With OnFullDrop: Publish never returns an error, dropped events
 	// are visible only via the metric.
 	for range 10 {
 		err := Publish(bus, context.Background(), testEvent{ID: "x"})

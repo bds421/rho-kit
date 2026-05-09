@@ -15,6 +15,13 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
+// defaultJobTimeout caps any cron job that has no explicit
+// SetJobTimeout (audit FR-093). 30 minutes is generous for typical
+// scheduled work — index rebuilds, data exports — and bounds the
+// "forever-stuck job" failure mode that causes SkipIfStillRunning
+// to skip every future tick.
+const defaultJobTimeout = 30 * time.Minute
+
 // Scheduler runs periodic jobs on cron schedules. It wraps robfig/cron/v3 with
 // structured logging, Prometheus metrics, and context-based lifecycle.
 type Scheduler struct {
@@ -98,14 +105,18 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 // WithJobTimeout configures a per-run timeout for the named job. The job's
 // context is derived from the scheduler ctx with WithTimeout(d), so a
 // long-running job that ignores cancellation will see ctx.Err() == context
-// .DeadlineExceeded after d. Default: no timeout (job runs until done or
-// scheduler stops).
+// .DeadlineExceeded after d.
+//
+// FR-094 [LOW]: panics on d <= 0 — pre-fix the call silently
+// returned without configuring a timeout, leaving the job
+// unbounded. Pass [defaultJobTimeout] explicitly when no per-job
+// override is needed.
 //
 // Call AFTER Add — the timeout takes effect on the next tick. Repeated
 // calls override the previous timeout.
 func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 	if d <= 0 {
-		return
+		panic(fmt.Sprintf("cron: SetJobTimeout requires d > 0 (got %s)", d))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,12 +209,18 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 			return
 		}
 
-		ctx := baseCtx
-		var cancel context.CancelFunc
-		if timeout > 0 {
-			ctx, cancel = context.WithTimeout(baseCtx, timeout)
-			defer cancel()
+		// FR-093 [MED]: install [defaultJobTimeout] when the job
+		// has no explicit timeout. A job that blocks forever would
+		// otherwise interact badly with SkipIfStillRunning (every
+		// future tick is skipped) and survive past shutdown until
+		// it returns of its own accord. Override per-job via
+		// [Scheduler.SetJobTimeout]; opt out by passing a generous
+		// duration (e.g. 24h) for legitimately long-running jobs.
+		if timeout <= 0 {
+			timeout = defaultJobTimeout
 		}
+		ctx, cancel := context.WithTimeout(baseCtx, timeout)
+		defer cancel()
 
 		start := time.Now()
 		status := "success"
