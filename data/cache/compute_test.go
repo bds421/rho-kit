@@ -200,32 +200,32 @@ func TestComputeCache_ErrorNotCached(t *testing.T) {
 }
 
 func TestComputeCache_ContextCancellation(t *testing.T) {
-	// With the WithoutCancel fix, cancelling the caller's context does NOT
-	// propagate into the compute function. The compute function runs to
-	// completion so that other singleflight waiters are not affected.
+	// FR-048 [MED] contract: a cancelled caller returns ctx.Err()
+	// promptly instead of blocking behind a slow compute. The
+	// underlying compute still runs to completion (on a detached
+	// context) so other waiters benefit from the work.
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "ctx:")
 	require.NoError(t, err)
 	defer func() { _ = cc.Close() }()
 
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		// The compute context is detached, so ctx.Done() should not fire.
-		select {
-		case <-ctx.Done():
-			return "", 0, ctx.Err()
-		default:
-		}
+	var calls int32
+	fn := func(_ context.Context) (string, time.Duration, error) {
+		atomic.AddInt32(&calls, 1)
 		return "ok", 5 * time.Minute, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel before calling GetOrCompute
+	cancel()
 
-	// Despite the cancelled parent context, the compute should succeed
-	// because WithoutCancel detaches the compute context.
 	val, err := cc.GetOrCompute(ctx, "cancelled", fn)
-	require.NoError(t, err)
-	assert.Equal(t, "ok", val)
+	assert.ErrorIs(t, err, context.Canceled, "cancelled caller must return ctx.Err()")
+	assert.Equal(t, "", val)
+
+	// Give the detached compute a moment to land in the backend.
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&calls) >= 1
+	}, time.Second, 5*time.Millisecond, "compute did not run on the detached context")
 }
 
 func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T) {
@@ -276,10 +276,11 @@ func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T)
 	close(proceed)
 	wg.Wait()
 
-	// Both callers should get the result because WithoutCancel protects the compute.
-	require.NoError(t, err1, "caller 1 should succeed despite context cancellation")
-	assert.Equal(t, "result", val1)
-	require.NoError(t, err2, "caller 2 should not be affected by caller 1's cancellation")
+	// FR-048 [MED]: caller 1's cancellation aborts ITS wait but the
+	// compute continues so caller 2 still gets the result.
+	assert.ErrorIs(t, err1, context.Canceled, "cancelled caller must return ctx.Err()")
+	assert.Equal(t, "", val1)
+	require.NoError(t, err2, "uncancelled caller must receive the leader's result")
 	assert.Equal(t, "result", val2)
 }
 
@@ -605,9 +606,10 @@ func TestComputeCache_ForegroundComputeRespectsDeadline(t *testing.T) {
 		"compute returned in %v; deadline should have fired well before fn's 2s timer", elapsed)
 }
 
-// TestComputeCache_ForegroundComputeIsolatesCancellation verifies that
-// when the parent context has no deadline, cancelling it does not abort
-// the compute (the singleflight guarantee).
+// TestComputeCache_ForegroundComputeIsolatesCancellation verifies the
+// FR-048 contract: a cancelled caller returns ctx.Err() while the
+// compute itself runs to completion on a detached context (the
+// singleflight guarantee for OTHER waiters).
 func TestComputeCache_ForegroundComputeIsolatesCancellation(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "isolate:")
@@ -615,21 +617,17 @@ func TestComputeCache_ForegroundComputeIsolatesCancellation(t *testing.T) {
 	defer func() { _ = cc.Close() }()
 
 	computed := make(chan struct{})
-	fn := func(ctx context.Context) (string, time.Duration, error) {
-		select {
-		case <-ctx.Done():
-			return "", 0, ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-			close(computed)
-			return "ok", time.Minute, nil
-		}
+	fn := func(_ context.Context) (string, time.Duration, error) {
+		// Compute runs on the detached context — we don't observe ctx.Done().
+		time.Sleep(50 * time.Millisecond)
+		close(computed)
+		return "ok", time.Minute, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	val, err := cc.GetOrCompute(ctx, "isolate-key", fn)
-	require.NoError(t, err, "cancelled-but-no-deadline parent must not abort compute")
-	assert.Equal(t, "ok", val)
-	<-computed
+	_, err = cc.GetOrCompute(ctx, "isolate-key", fn)
+	assert.ErrorIs(t, err, context.Canceled, "cancelled caller must return ctx.Err()")
+	<-computed // compute still runs for the next caller
 }

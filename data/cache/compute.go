@@ -131,6 +131,12 @@ type ComputeCache[T any] struct {
 	// with Close's Wait — sync.WaitGroup explicitly forbids Add called in
 	// parallel with Wait and may panic or skip the goroutine entirely.
 	bgMu sync.Mutex
+
+	// refreshing tracks per-key in-flight background refreshes
+	// (audit FR-049). singleflight deduplicates the *compute* but
+	// not the goroutines waiting on its result; without this map a
+	// hot stale key could spawn a goroutine on every stale hit.
+	refreshing sync.Map // map[string]struct{}
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
@@ -301,17 +307,31 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		computeCtx, capCancel = context.WithTimeout(computeCtx, cc.cfg.computeTimeout)
 		defer capCancel()
 	}
-	result, err, _ := cc.group.Do(full, func() (interface{}, error) {
+	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
+	// follower can exit promptly instead of waiting for the leader's
+	// long compute to finish. The leader's compute itself runs under
+	// computeCtx (deadline preserved, cancellation detached) so an
+	// abandoned follower does not abort the shared work.
+	resCh := cc.group.DoChan(full, func() (interface{}, error) {
 		val, execErr := cc.executeCompute(computeCtx, full, fn)
 		if execErr != nil {
-			// Record once per group execution rather than keying off the
-			// shared flag. singleflight returns shared=true to the leader
-			// when followers joined, so the previous shared==false guard
-			// dropped errors whenever any contention existed.
 			cc.recordError()
 		}
 		return val, execErr
 	})
+	var (
+		result interface{}
+		err    error
+	)
+	select {
+	case res := <-resCh:
+		result, err = res.Val, res.Err
+	case <-ctx.Done():
+		// Follower aborted — leader continues. Surface the caller's
+		// cancel reason so the request boundary maps to a 499/context
+		// error rather than a generic "cache compute" error.
+		return zero, ctx.Err()
+	}
 	if err != nil {
 		return zero, err
 	}
@@ -379,7 +399,17 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 }
 
 // triggerBackgroundRefresh starts an async refresh using singleflight.DoChan.
+//
+// FR-049 [LOW]: only one refresh waiter goroutine per key — additional
+// stale hits while a refresh is already in flight return immediately
+// instead of stacking goroutines. The atomic LoadOrStore in
+// `refreshing` provides the same exactly-once semantics the
+// singleflight call gives the compute itself, but at the goroutine
+// layer.
 func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[T]) {
+	if _, loaded := cc.refreshing.LoadOrStore(full, struct{}{}); loaded {
+		return
+	}
 	// Hold bgMu across the closed-load and bgWg.Add so a concurrent Close
 	// (which acquires bgMu before reading closed) cannot race the Add with
 	// its own Wait. Once closed is observed true, no further Add is issued —
@@ -387,6 +417,7 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 	cc.bgMu.Lock()
 	if cc.closed.Load() {
 		cc.bgMu.Unlock()
+		cc.refreshing.Delete(full)
 		return
 	}
 	cc.bgWg.Add(1)
@@ -407,6 +438,7 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 
 	go func() {
 		defer cc.bgWg.Done()
+		defer cc.refreshing.Delete(full)
 		<-ch
 	}()
 }
