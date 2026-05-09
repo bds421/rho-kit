@@ -83,10 +83,20 @@ func New(db *sql.DB, opts ...Option) *PgStore {
 
 // Get returns a cached response for the key, applying fingerprint comparison
 // when a non-nil fingerprint is supplied.
+//
+// The "is this row cached?" discriminator is `status_code IS NOT NULL`,
+// not `response_body IS NOT NULL` (audit FR-030). pgx maps a Go `nil`
+// []byte to SQL NULL, so a handler that legitimately responded with an
+// empty body (HTTP 204 No Content, 304 Not Modified, an empty 200) used
+// to look identical to "still locked, no response yet" — Get returned
+// (nil, false, nil) and the middleware would re-execute the handler
+// instead of replaying. status_code is only ever set by [PgStore.Set]
+// and cleared back to NULL by [PgStore.TryLock] (ON CONFLICT branch),
+// so it is the correct cache-vs-lock signal.
 func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	query := fmt.Sprintf(
 		`SELECT status_code, headers, response_body, fingerprint FROM %s
-		 WHERE key = $1 AND response_body IS NOT NULL AND expires_at > now()`,
+		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
 
@@ -231,9 +241,15 @@ func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, t
 // Unlock releases the processing lock. Best-effort: token mismatch is a
 // silent no-op (returns nil) because Unlock runs in panic-cleanup paths
 // where surfacing lock-loss would mask the original panic.
+//
+// We delete only "still locked" rows — discriminated by
+// `status_code IS NULL`, matching the symmetric check in Get
+// (audit FR-030). Using `response_body IS NULL` here would mean
+// Unlock could destroy a successfully-cached empty-body response
+// (HTTP 204) on a panic-during-second-request path.
 func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
 	query := fmt.Sprintf(
-		`DELETE FROM %s WHERE key = $1 AND owner_token = $2 AND response_body IS NULL`,
+		`DELETE FROM %s WHERE key = $1 AND owner_token = $2 AND status_code IS NULL`,
 		s.table,
 	)
 	_, err := s.db.ExecContext(ctx, query, key, token)

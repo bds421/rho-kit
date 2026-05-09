@@ -260,17 +260,24 @@ func TestPgStore_DeleteExpired(t *testing.T) {
 	store := New(db)
 	ctx := context.Background()
 
-	// Acquire + Set with very short TTL.
-	token, _, _, err := store.TryLock(ctx, "expire-key", nil, time.Millisecond)
+	// Acquire + Set with the minimum TTL the API accepts.
+	token, _, _, err := store.TryLock(ctx, "expire-key", nil, time.Second)
 	if err != nil {
 		t.Fatalf("TryLock: %v", err)
 	}
 	cached := idempotency.CachedResponse{StatusCode: 200, Body: []byte("test")}
-	// Set will fail because the lock TTL is already expired by the time we get here;
-	// in that case the row is already in a "done" state (just locked-then-expired).
-	_ = store.Set(ctx, "expire-key", token, cached, time.Millisecond)
-
-	time.Sleep(10 * time.Millisecond)
+	if err := store.Set(ctx, "expire-key", token, cached, time.Second); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// Force the row past expiry without sleeping — intervalSeconds rounds
+	// sub-second TTLs up to 1s, so a millisecond sleep would not actually
+	// age the row in PostgreSQL's clock.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE idempotency_keys SET expires_at = now() - interval '1 minute' WHERE key = $1`,
+		"expire-key",
+	); err != nil {
+		t.Fatalf("force-expire: %v", err)
+	}
 
 	deleted, err := store.DeleteExpired(ctx)
 	if err != nil {
@@ -278,5 +285,86 @@ func TestPgStore_DeleteExpired(t *testing.T) {
 	}
 	if deleted < 1 {
 		t.Errorf("expected at least 1 deleted, got %d", deleted)
+	}
+}
+
+// FR-030 [HIGH]: Set/Get must round-trip an empty-body response.
+// Pre-fix the IS NOT NULL filter on response_body excluded the row
+// (pgx maps Go nil []byte to SQL NULL), so an HTTP 204 cached
+// response was never replayed and the handler re-executed.
+func TestPgStore_GetReplaysEmptyBodyResponse(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+	fp := []byte("body-hash-204")
+
+	token, _, ok, err := store.TryLock(ctx, "empty-key", fp, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: err=%v ok=%v", err, ok)
+	}
+
+	cached := idempotency.CachedResponse{
+		StatusCode: 204, // No Content — empty body is the whole point
+		Headers:    map[string][]string{"X-Request-Id": {"abc"}},
+		Body:       nil, // explicit: handler wrote nothing
+	}
+	if err := store.Set(ctx, "empty-key", token, cached, time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	got, mismatch, err := store.Get(ctx, "empty-key", fp)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mismatch {
+		t.Fatal("unexpected fingerprint mismatch on empty-body replay")
+	}
+	if got == nil {
+		t.Fatal("expected cached response for empty-body 204, got nil (FR-030 regression)")
+	}
+	if got.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", got.StatusCode)
+	}
+	if len(got.Body) != 0 {
+		t.Errorf("expected empty body, got %d bytes (%q)", len(got.Body), got.Body)
+	}
+	if got.Headers["X-Request-Id"][0] != "abc" {
+		t.Errorf("expected headers to round-trip, got %v", got.Headers)
+	}
+}
+
+// FR-030 [HIGH] companion: Unlock must NOT remove a row that has
+// already been Set with an empty body. Pre-fix the
+// `response_body IS NULL` predicate on Unlock would treat the
+// successfully-cached 204 as "still locked" and DELETE it, freeing
+// the slot so the next caller would re-run the handler.
+func TestPgStore_UnlockDoesNotDeleteEmptyBodyCachedRow(t *testing.T) {
+	db := testDB(t)
+	store := New(db)
+	ctx := context.Background()
+	fp := []byte("body-hash-204")
+
+	token, _, _, err := store.TryLock(ctx, "empty-key", fp, time.Minute)
+	if err != nil {
+		t.Fatalf("TryLock: %v", err)
+	}
+	cached := idempotency.CachedResponse{StatusCode: 204, Body: nil}
+	if err := store.Set(ctx, "empty-key", token, cached, time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// Now an Unlock for the same token (panic-cleanup path) — must NOT
+	// destroy the cached row.
+	if err := store.Unlock(ctx, "empty-key", token); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	got, _, err := store.Get(ctx, "empty-key", fp)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Unlock destroyed cached empty-body row (FR-030 regression)")
+	}
+	if got.StatusCode != 204 {
+		t.Errorf("status = %d, want 204", got.StatusCode)
 	}
 }
