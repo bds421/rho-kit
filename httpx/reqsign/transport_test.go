@@ -129,3 +129,77 @@ func TestSigningTransport_NilBase(t *testing.T) {
 		t.Error("expected default transport when nil base passed")
 	}
 }
+
+// FR-024 [HIGH] regression: SigningTransport used to drain the
+// caller's request body via the shallow Clone, so outer retry
+// middleware re-reading the original request saw an empty body. The
+// fix buffers once and restores fresh independent readers on both
+// the caller's req and the clone.
+func TestSigningTransport_PreservesCallerBodyAfterRoundTrip(t *testing.T) {
+	store := testStore()
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		// Drain the clone — what a real transport would do.
+		_, _ = io.ReadAll(req.Body)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})
+	transport := NewSigningTransport(base, store)
+
+	payload := []byte(`{"data":"intact"}`)
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/api", bytes.NewReader(payload))
+
+	if _, err := transport.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+
+	// Caller's body MUST still be readable. Pre-fix this returned 0 bytes.
+	if req.Body == nil {
+		t.Fatal("req.Body is nil after RoundTrip")
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read req.Body: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("caller body drained — got %q, want %q (FR-024 regression)", got, payload)
+	}
+	if req.ContentLength != int64(len(payload)) {
+		t.Errorf("ContentLength = %d, want %d", req.ContentLength, len(payload))
+	}
+}
+
+// FR-024 follow-up: clone.GetBody must be set so net/http redirect
+// and 100-Continue replay paths can replay the body.
+func TestSigningTransport_CloneGetBodyEnablesReplay(t *testing.T) {
+	store := testStore()
+	var captured *http.Request
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		captured = req
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})
+	transport := NewSigningTransport(base, store)
+
+	payload := []byte("retryable")
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/x", bytes.NewReader(payload))
+	if _, err := transport.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("base RoundTripper not invoked")
+	}
+	first, _ := io.ReadAll(captured.Body)
+	if !bytes.Equal(first, payload) {
+		t.Errorf("first read body = %q, want %q", first, payload)
+	}
+	if captured.GetBody == nil {
+		t.Fatal("clone.GetBody must be set so redirects replay the body")
+	}
+	rc, err := captured.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	second, _ := io.ReadAll(rc)
+	if !bytes.Equal(second, payload) {
+		t.Errorf("replay body = %q, want %q", second, payload)
+	}
+}

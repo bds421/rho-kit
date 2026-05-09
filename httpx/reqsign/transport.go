@@ -44,27 +44,34 @@ func NewSigningTransport(base http.RoundTripper, store signing.KeyStore, opts ..
 	}
 }
 
-// RoundTrip clones the request, reads the body (if present), signs the clone,
-// and delegates to the wrapped transport. The original request is never mutated,
-// in accordance with the http.RoundTripper contract.
+// RoundTrip buffers the request body, signs the clone, and delegates to
+// the wrapped transport.
+//
+// FR-024 [HIGH]: http.Request.Clone is shallow on Body — clone.Body
+// and req.Body share the same io.ReadCloser pointer. Reading clone.Body
+// drained the caller's req.Body too, so outer retry/auth middleware
+// that re-reads the original saw an empty body. The fix buffers the
+// body once, then restores independent fresh readers on BOTH req and
+// clone and sets GetBody on the clone so net/http's redirect /
+// 100-Continue replay path works without consuming the caller's
+// reader.
 func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := bufferBody(req, t.maxBodySize)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+	}
+
 	clone := req.Clone(req.Context())
-
-	var body []byte
-
-	if clone.Body != nil && clone.Body != http.NoBody {
-		// Close the original cloned body after reading; clone.Body is
-		// replaced with a fresh NopCloser reader below before RoundTrip.
-		defer func() { _ = clone.Body.Close() }()
-		var err error
-		body, err = io.ReadAll(io.LimitReader(clone.Body, t.maxBodySize+1))
-		if err != nil {
-			return nil, fmt.Errorf("reqsign: reading request body: %w", err)
-		}
-		if int64(len(body)) > t.maxBodySize {
-			return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", t.maxBodySize)
-		}
+	if body != nil {
 		clone.Body = io.NopCloser(bytes.NewReader(body))
+		clone.ContentLength = int64(len(body))
+		clone.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 	}
 
 	if err := SignRequest(clone, body, t.store, t.opts...); err != nil {
@@ -72,4 +79,27 @@ func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	return t.base.RoundTrip(clone)
+}
+
+// bufferBody drains the request body into memory (up to max bytes) and
+// closes the original reader. Returns (nil, nil) for bodyless requests.
+// Returns an error if the body exceeds max — silently truncating would
+// let the signed payload diverge from what the server eventually
+// receives.
+func bufferBody(req *http.Request, max int64) ([]byte, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+	buf, err := io.ReadAll(io.LimitReader(req.Body, max+1))
+	closeErr := req.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reqsign: reading request body: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("reqsign: closing request body: %w", closeErr)
+	}
+	if int64(len(buf)) > max {
+		return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", max)
+	}
+	return buf, nil
 }
