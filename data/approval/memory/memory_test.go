@@ -192,19 +192,35 @@ func TestList_Filters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, t1, 2)
 
-	pending, err := store.List(context.Background(), approval.Query{State: approval.StatePending})
+	// Cross-tenant listings (no TenantID) need AllTenants=true after FR-053.
+	pending, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
 	require.NoError(t, err)
 	assert.Len(t, pending, 3)
 
 	_, err = store.Decide(context.Background(), "r1", "approver-1", "ok", true)
 	require.NoError(t, err)
-	pending, err = store.List(context.Background(), approval.Query{State: approval.StatePending})
+	pending, err = store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
 	require.NoError(t, err)
 	assert.Len(t, pending, 2)
 
-	approved, err := store.List(context.Background(), approval.Query{State: approval.StateApproved})
+	approved, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StateApproved})
 	require.NoError(t, err)
 	assert.Len(t, approved, 1)
+}
+
+func TestList_RejectsEmptyTenantWithoutAllTenants(t *testing.T) {
+	// FR-053 [HIGH]: a handler that forgets to set TenantID must NOT
+	// silently leak across tenants. The store rejects ambiguous queries.
+	store := New()
+	_, err := store.List(context.Background(), approval.Query{State: approval.StatePending})
+	require.ErrorIs(t, err, approval.ErrQueryTenantRequired)
+}
+
+func TestQuery_Validate(t *testing.T) {
+	assert.ErrorIs(t, (approval.Query{}).Validate(), approval.ErrQueryTenantRequired)
+	assert.ErrorIs(t, (approval.Query{State: approval.StatePending}).Validate(), approval.ErrQueryTenantRequired)
+	assert.NoError(t, (approval.Query{TenantID: "t1"}).Validate())
+	assert.NoError(t, (approval.Query{AllTenants: true}).Validate())
 }
 
 func TestGet_NotFound(t *testing.T) {

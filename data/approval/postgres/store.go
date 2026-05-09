@@ -102,8 +102,14 @@ WHERE id = $1`
 	return out, nil
 }
 
-// List returns matching requests newest-first.
+// List returns matching requests newest-first. Returns
+// [approval.ErrQueryTenantRequired] when the caller did not set
+// [approval.Query.TenantID] or opt into AllTenants — see audit
+// FR-053 for why cross-tenant listings must be explicit.
 func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	limit := q.Limit
 	if limit <= 0 {
 		limit = defaultLimit

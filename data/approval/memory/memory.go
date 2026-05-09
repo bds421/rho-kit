@@ -91,8 +91,14 @@ func (s *Store) Get(_ context.Context, id string) (approval.Request, error) {
 	return r, nil
 }
 
-// List returns matching requests newest-first by CreatedAt.
+// List returns matching requests newest-first by CreatedAt. Returns
+// [approval.ErrQueryTenantRequired] when the caller did not set
+// [approval.Query.TenantID] or opt into AllTenants — see audit
+// FR-053 for why cross-tenant listings must be explicit.
 func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

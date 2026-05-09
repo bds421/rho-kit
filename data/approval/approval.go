@@ -78,15 +78,47 @@ func (s State) IsTerminal() bool {
 	return s == StateExecuted || s == StateExpired
 }
 
-// Query controls which requests [Store.List] returns.
+// ErrQueryTenantRequired is returned by Store.List when the caller
+// passes a [Query] with no [Query.TenantID] and has not opted into
+// [Query.AllTenants]. Cross-tenant approval listings are valid for
+// admin / forensics tooling but must be opt-in (audit FR-053).
+var ErrQueryTenantRequired = errors.New("approval: query requires TenantID or AllTenants=true")
+
+// Query controls which requests [Store.List] returns. Filters compose
+// with AND semantics; an empty filter field is unconstrained. The
+// caller MUST set either [Query.TenantID] (single-tenant query) or
+// [Query.AllTenants]=true (explicit cross-tenant query); a zero
+// query is rejected with [ErrQueryTenantRequired].
 type Query struct {
+	// TenantID restricts to a single tenant. Required unless
+	// AllTenants is true.
 	TenantID string
-	Actor    string
-	Action   string
-	State    State
-	Since    time.Time
-	Until    time.Time
-	Limit    int
+
+	// AllTenants opts into a cross-tenant listing. Set this only on
+	// admin / forensics tooling that genuinely needs to see approval
+	// requests across customers — it bypasses the tenant scoping
+	// that the rest of the kit enforces. Ignored when TenantID is
+	// set. Audit FR-053 [HIGH]: pre-2.0, the absence of this flag
+	// meant a handler that forgot to set TenantID silently leaked
+	// approval requests across tenants.
+	AllTenants bool
+
+	Actor  string
+	Action string
+	State  State
+	Since  time.Time
+	Until  time.Time
+	Limit  int
+}
+
+// Validate enforces the tenant-scoping contract documented above.
+// Implementations of [Store.List] MUST call this before issuing the
+// underlying query.
+func (q Query) Validate() error {
+	if q.TenantID == "" && !q.AllTenants {
+		return ErrQueryTenantRequired
+	}
+	return nil
 }
 
 // Store is the persistence interface implemented by data/approval/memory
