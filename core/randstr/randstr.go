@@ -27,15 +27,24 @@ const (
 	Numeric = "0123456789"
 )
 
+// MaxLength caps how many runes a single RuneSequence call may
+// generate (audit FR-043). 1 MiB worth of runes is well above any
+// realistic token size and prevents user-influenced lengths from
+// exhausting memory or saturating crypto/rand.
+const MaxLength = 1 << 20
+
 // RuneSequence returns a length-rune string drawn uniformly from charset.
 // It returns an error from [crypto/rand.Int] when the OS RNG is unavailable;
 // callers that treat that case as fatal should use [MustString] instead.
 //
-// Length must be non-negative and charset must be non-empty; otherwise an
-// error is returned.
+// Length must be non-negative and at most [MaxLength]; charset must be
+// non-empty; otherwise an error is returned.
 func RuneSequence(length int, charset string) (string, error) {
 	if length < 0 {
 		return "", fmt.Errorf("randstr: length must be non-negative, got %d", length)
+	}
+	if length > MaxLength {
+		return "", fmt.Errorf("randstr: length %d exceeds MaxLength %d", length, MaxLength)
 	}
 	runes := []rune(charset)
 	if len(runes) == 0 {

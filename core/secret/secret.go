@@ -27,6 +27,7 @@ package secret
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -167,15 +168,34 @@ func (s *String) Equal(other *String) bool {
 // constantTimeEqual compares two byte slices in constant time relative
 // to max(len(a), len(b)). Returns true iff a and b have identical
 // length and content.
+//
+// FR-041 [LOW]: pre-fix this returned early on length mismatch,
+// observable by timing. The current implementation runs the XOR
+// loop over max(len(a), len(b)), substituting zero bytes for the
+// shorter side, and folds the length comparison into the result so
+// "right secret, wrong length" cannot be distinguished from "wrong
+// secret, right length" via timing.
 func constantTimeEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
+	maxLen := len(a)
+	if len(b) > maxLen {
+		maxLen = len(b)
 	}
 	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
+	for i := 0; i < maxLen; i++ {
+		var ai, bi byte
+		if i < len(a) {
+			ai = a[i]
+		}
+		if i < len(b) {
+			bi = b[i]
+		}
+		v |= ai ^ bi
 	}
-	return v == 0
+	// Fold length equality in: if lengths differ, lenDelta != 0 and
+	// the OR with v keeps the result non-zero even on an all-zero
+	// XOR run.
+	lenDelta := byte(len(a) ^ len(b))
+	return (v | lenDelta) == 0
 }
 
 // The redaction methods use VALUE receivers so they remain in the method
@@ -209,7 +229,17 @@ func (s String) MarshalText() ([]byte, error) {
 
 // LogValue implements [log/slog.LogValuer] so structured logs that pass
 // the String as a value (slog.Any) emit the redacted literal.
-func (s String) LogValue() any { return redacted }
+//
+// FR-042 [LOW]: returns slog.Value (not any) so the slog SDK
+// recognises this as the LogValuer contract and recurses into it
+// when formatting. Pre-fix the method returned `any`, which compiled
+// but failed slog's type assertion — the redaction worked only
+// because the other String formatters (Format/MarshalJSON) covered
+// the typical print paths.
+func (s String) LogValue() slog.Value { return slog.StringValue(redacted) }
+
+// Compile-time assertion that String satisfies slog.LogValuer.
+var _ slog.LogValuer = String{}
 
 // Format implements fmt.Formatter so all %v/%+v/%s/%q/%q variants emit
 // the redacted literal.

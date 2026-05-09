@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"reflect"
@@ -9,6 +10,14 @@ import (
 	"strings"
 	"time"
 )
+
+// maxSecretFileSize caps the bytes read from a _FILE secret source
+// (audit FR-039). 1 MiB is comfortably above any realistic
+// credential — JWTs, API tokens, certs, and passwords all fit inside
+// 64 KiB; 1 MiB leaves margin for unusual deployment shapes (e.g.
+// a multi-cert PEM bundle) without permitting accidental reads of
+// large log files.
+const maxSecretFileSize int64 = 1 << 20
 
 // Load reads environment variables into a struct T using struct tags.
 //
@@ -29,6 +38,16 @@ import (
 func Load[T any]() (T, error) {
 	var cfg T
 	v := reflect.ValueOf(&cfg).Elem()
+	// FR-040 [LOW]: reject pointer T early — hasEnvTags accepts
+	// pointer receivers, but the loader assumes a struct and would
+	// panic on .NumField() during nested-struct traversal. A typed
+	// error makes the caller-facing failure mode obvious.
+	if v.Kind() == reflect.Ptr {
+		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type, not a pointer (got %s)", v.Type())
+	}
+	if v.Kind() != reflect.Struct {
+		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type (got %s)", v.Type())
+	}
 	if !hasEnvTags(v.Type()) {
 		return cfg, fmt.Errorf("config: type %s has no env struct tags — fields will be zero-valued", v.Type().Name())
 	}
@@ -192,9 +211,20 @@ func resolveWithSource(envName string, isSecret bool) (val string, fromEnv bool,
 	if filePath == "" {
 		return "", false, nil
 	}
-	data, err := os.ReadFile(filePath)
+	// FR-039 [MED]: cap the read at maxSecretFileSize so a
+	// misconfigured _FILE path (e.g. pointing at /var/log/system.log)
+	// cannot pull arbitrary bytes into memory at startup.
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", false, fmt.Errorf("config: failed to open secret file for %s from %q: %w", envName, filePath, err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxSecretFileSize+1))
 	if err != nil {
 		return "", false, fmt.Errorf("config: failed to read secret file for %s from %q: %w", envName, filePath, err)
+	}
+	if int64(len(data)) > maxSecretFileSize {
+		return "", false, fmt.Errorf("config: secret file for %s exceeds %d bytes", envName, maxSecretFileSize)
 	}
 	// Trim only trailing line terminators that secret-mounting tools add
 	// (Docker, Kubernetes, Vault all append a single \n). strings.TrimSpace
