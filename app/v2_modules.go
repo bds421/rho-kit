@@ -63,11 +63,16 @@ func (b *Builder) approvalStore() approval.Store { return b.astore }
 // registered. Callers receive a fresh client per Builder.Run because
 // the client wraps an OpenFeature SDK client whose lifecycle is tied
 // to the service process.
+//
+// Provider initialization failures (auth, network, malformed config)
+// are converted to a Builder.Validate / Run error chain via panic
+// — the Builder lifecycle is fail-fast on configuration errors, and
+// callers see the wrapped fmt.Errorf message.
 func (b *Builder) flagsClient() *kitflags.Client {
 	if b.flagsProvider == nil {
 		return nil
 	}
-	return kitflags.New(b.name, b.flagsProvider)
+	return kitflags.MustNew(b.name, b.flagsProvider)
 }
 
 // budgetSpecStore returns the registered budget store or nil. The

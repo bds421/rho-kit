@@ -16,6 +16,7 @@ package flags
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/open-feature/go-sdk/openfeature"
 
@@ -35,15 +36,43 @@ type Client struct {
 	inner *openfeature.Client
 }
 
-// New returns a Client backed by the given Provider. Panics on a nil
-// provider — flag wiring is startup-time configuration, not runtime
-// state.
-func New(name string, p Provider) *Client {
+// New returns a Client backed by the given Provider. The provider is
+// installed against an OpenFeature DOMAIN keyed by `name`, NOT the
+// global default — so multiple kit Clients in the same process (e.g.
+// a test harness, a service that talks to two flag systems, an
+// orchestrator embedding sub-services) do not clobber each other.
+//
+// Audit FR-033 [HIGH]: pre-2.0 this called openfeature.SetProvider
+// (the global) and ignored its error. Two `flags.New(...)` calls in
+// the same process — common across tests — silently overwrote one
+// another's provider, and a provider-init failure (auth issue, SDK
+// load) was swallowed.
+//
+// Returns an error when SetNamedProviderAndWait reports a provider
+// initialization failure. Panics only on programmer errors (nil
+// provider, empty name).
+func New(name string, p Provider) (*Client, error) {
 	if p == nil {
 		panic("flags: provider must not be nil")
 	}
-	openfeature.SetProvider(p) //nolint:errcheck // SDK swallows nil-provider errors which we just rejected.
-	return &Client{inner: openfeature.NewClient(name)}
+	if name == "" {
+		panic("flags: domain name must not be empty")
+	}
+	if err := openfeature.SetNamedProviderAndWait(name, p); err != nil {
+		return nil, fmt.Errorf("flags: install provider on domain %q: %w", name, err)
+	}
+	return &Client{inner: openfeature.NewClient(name)}, nil
+}
+
+// MustNew is the panic-on-error variant of [New] for startup wiring
+// where provider failure is fatal anyway. Prefer New from anywhere
+// that can plumb the error to a structured boot failure.
+func MustNew(name string, p Provider) *Client {
+	c, err := New(name, p)
+	if err != nil {
+		panic(err)
+	}
+	return c
 }
 
 // Bool evaluates a boolean flag, returning fallback on any error.
