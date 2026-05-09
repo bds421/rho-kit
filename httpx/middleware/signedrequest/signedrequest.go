@@ -61,9 +61,44 @@ var (
 	ErrTimestampInvalid = errors.New("signedrequest: timestamp invalid or out of skew")
 	ErrSignatureInvalid = errors.New("signedrequest: signature did not verify")
 	ErrNonceReplayed    = errors.New("signedrequest: nonce replayed")
+	ErrNonceInvalid     = errors.New("signedrequest: nonce malformed or wrong length")
 	ErrBodyTooLarge     = errors.New("signedrequest: body exceeds maximum")
 	ErrSecretTooShort   = errors.New("signedrequest: resolved secret is shorter than the 32-byte HMAC-SHA256 minimum")
 )
+
+// nonceMaxLen caps the wire-level nonce header. The kit's signing
+// transport produces base64-RawURL of 16 random bytes (22 chars); a
+// few extra characters of slack tolerate legitimate cross-runtime
+// encodings while still preventing pathological key sizes downstream
+// (audit FR-026).
+const nonceMaxLen = 64
+
+// validNonce checks the wire-format constraint: 16 random bytes
+// rendered in any of the standard base64 alphabets (StdEncoding with
+// padding, RawStdEncoding, URLEncoding with padding, RawURLEncoding).
+// The kit's own signer uses StdEncoding with padding (24 chars); we
+// accept the URL-safe variants too so callers in browser/JWT
+// pipelines do not need a separate transport.
+//
+// Audit FR-026: bounding length and demanding a canonical decode
+// prevents an attacker from inflating nonce-store keys with arbitrary
+// strings or smuggling unprintable bytes via Redis.
+func validNonce(nonce string) bool {
+	if len(nonce) == 0 || len(nonce) > nonceMaxLen {
+		return false
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if decoded, err := enc.DecodeString(nonce); err == nil && len(decoded) == 16 {
+			return true
+		}
+	}
+	return false
+}
 
 // KeyResolver returns the HMAC secret bytes for the given key ID.
 // Callers typically read from a config/secret store. Returns an
@@ -192,6 +227,15 @@ func verify(r *http.Request, cfg *config) error {
 	if ts == "" || nonce == "" || keyID == "" || sig == "" {
 		return ErrMissingHeaders
 	}
+	// FR-026 [MED]: validate nonce format/length before it can become
+	// a Redis key. The wire contract is "16 random bytes,
+	// base64-RawURL-encoded" which is exactly 22 ASCII characters.
+	// Capping length and demanding the canonical encoding prevents an
+	// attacker from inflating nonce-store keys to pathological sizes
+	// or smuggling unprintable bytes into Redis.
+	if !validNonce(nonce) {
+		return ErrNonceInvalid
+	}
 	for _, h := range cfg.requiredHeaders {
 		if r.Header.Get(h) == "" {
 			return fmt.Errorf("%w (required header %q)", ErrMissingHeaders, h)
@@ -252,7 +296,7 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrBodyTooLarge):
 		http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
-	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid):
+	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid), errors.Is(err, ErrNonceInvalid):
 		http.Error(w, "bad request", http.StatusBadRequest)
 	case errors.Is(err, ErrSignatureInvalid), errors.Is(err, ErrNonceReplayed):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

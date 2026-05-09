@@ -2,6 +2,8 @@ package signedrequest
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -50,6 +52,14 @@ func signRequest(t *testing.T, method, target, body string, ts time.Time, nonce 
 	return req
 }
 
+// makeNonce returns a deterministic 16-byte nonce, base64-encoded,
+// derived from the seed string. Tests need real wire-format nonces
+// because verify() now validates the nonce shape (audit FR-026).
+func makeNonce(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	return base64.StdEncoding.EncodeToString(h[:16])
+}
+
 func newBody(s string) *fakeReadCloser { return &fakeReadCloser{Reader: bytes.NewReader([]byte(s))} }
 
 type fakeReadCloser struct{ *bytes.Reader }
@@ -68,7 +78,7 @@ func TestVerify_RoundTrip(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := signRequest(t, "POST", "/api/x", "hello", time.Now(), "nonce-1", nil, nil)
+	req := signRequest(t, "POST", "/api/x", "hello", time.Now(), makeNonce("nonce-1"), nil, nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -81,12 +91,12 @@ func TestVerify_RejectsReplayedNonce(t *testing.T) {
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	now := time.Now()
-	r1 := signRequest(t, "POST", "/x", "body", now, "same-nonce", nil, nil)
+	r1 := signRequest(t, "POST", "/x", "body", now, makeNonce("same-nonce"), nil, nil)
 	rr1 := httptest.NewRecorder()
 	h.ServeHTTP(rr1, r1)
 	require.Equal(t, http.StatusOK, rr1.Code)
 
-	r2 := signRequest(t, "POST", "/x", "body", now, "same-nonce", nil, nil)
+	r2 := signRequest(t, "POST", "/x", "body", now, makeNonce("same-nonce"), nil, nil)
 	rr2 := httptest.NewRecorder()
 	h.ServeHTTP(rr2, r2)
 	assert.Equal(t, http.StatusUnauthorized, rr2.Code)
@@ -98,7 +108,7 @@ func TestVerify_RejectsExpiredTimestamp(t *testing.T) {
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	old := time.Now().Add(-time.Hour)
-	r := signRequest(t, "POST", "/x", "", old, "nonce-old", nil, nil)
+	r := signRequest(t, "POST", "/x", "", old, makeNonce("nonce-old"), nil, nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
@@ -109,7 +119,7 @@ func TestVerify_RejectsModifiedBody(t *testing.T) {
 	mw := Middleware(newResolver(t), store)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
-	r := signRequest(t, "POST", "/x", "original", time.Now(), "nonce-mod", nil, nil)
+	r := signRequest(t, "POST", "/x", "original", time.Now(), makeNonce("nonce-mod"), nil, nil)
 	// Tamper after signing.
 	r.Body = newBody("tampered")
 	r.ContentLength = int64(len("tampered"))
@@ -136,13 +146,13 @@ func TestVerify_RequiredHeaderEnforced(t *testing.T) {
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	// With required header — round-trip succeeds.
-	rOK := signRequest(t, "POST", "/x", "", time.Now(), "n1", []string{"x-tenant-id"}, map[string]string{"X-Tenant-ID": "acme"})
+	rOK := signRequest(t, "POST", "/x", "", time.Now(), makeNonce("n1"), []string{"x-tenant-id"}, map[string]string{"X-Tenant-ID": "acme"})
 	rrOK := httptest.NewRecorder()
 	h.ServeHTTP(rrOK, rOK)
 	assert.Equal(t, http.StatusOK, rrOK.Code)
 
 	// Same signing, but the header is dropped after signing → MAC mismatch.
-	rBad := signRequest(t, "POST", "/x", "", time.Now(), "n2", []string{"x-tenant-id"}, map[string]string{"X-Tenant-ID": "acme"})
+	rBad := signRequest(t, "POST", "/x", "", time.Now(), makeNonce("n2"), []string{"x-tenant-id"}, map[string]string{"X-Tenant-ID": "acme"})
 	rBad.Header.Del("X-Tenant-ID")
 	rrBad := httptest.NewRecorder()
 	h.ServeHTTP(rrBad, rBad)
@@ -168,7 +178,7 @@ func TestVerify_RejectsShortResolvedSecret(t *testing.T) {
 	mw := Middleware(resolver, store)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
-	r := signRequest(t, "POST", "/x", "body", time.Now(), "nonce-short", nil, nil)
+	r := signRequest(t, "POST", "/x", "body", time.Now(), makeNonce("nonce-short"), nil, nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, r)
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
@@ -185,9 +195,9 @@ func TestVerify_AcceptsExactly32ByteResolvedSecret(t *testing.T) {
 	body := "hello"
 	req := httptest.NewRequest("POST", "/api/x", strings.NewReader(body))
 	req.Header.Set(HeaderTimestamp, formatUnix(tsUnix))
-	req.Header.Set(HeaderNonce, "n-32-exact")
+	req.Header.Set(HeaderNonce, makeNonce("n-32-exact"))
 	req.Header.Set(HeaderKeyID, keyID)
-	req.Header.Set(HeaderSignature, SignCanonical(exact, req, formatUnix(tsUnix), "n-32-exact", []byte(body), nil))
+	req.Header.Set(HeaderSignature, SignCanonical(exact, req, formatUnix(tsUnix), makeNonce("n-32-exact"), []byte(body), nil))
 	req.Body = newBody(body)
 	req.ContentLength = int64(len(body))
 

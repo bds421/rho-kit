@@ -40,9 +40,25 @@ type Option func(*RedisNonceStore)
 // `signedrequest:nonce:`. Use a per-environment or per-audience
 // prefix when the same Redis is shared by independent services so
 // a nonce observed by one cannot reject a fresh request to another.
+//
+// Panics if the prefix is empty or longer than [maxKeyPrefixLen]
+// (audit FR-027) — pathological prefixes inflate every Redis key
+// and have caused production OOMs in our incident history.
 func WithKeyPrefix(p string) Option {
+	if p == "" {
+		panic("signedrequest/redis: WithKeyPrefix requires a non-empty prefix")
+	}
+	if len(p) > maxKeyPrefixLen {
+		panic(fmt.Sprintf("signedrequest/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+	}
 	return func(s *RedisNonceStore) { s.prefix = p }
 }
+
+// maxKeyPrefixLen caps Redis key prefixes so a misconfigured /
+// attacker-influenced prefix cannot create pathologically long
+// Redis keys. 128 bytes is generous for a "namespace:env:audience:"
+// shape and well below Redis's hard cap.
+const maxKeyPrefixLen = 128
 
 // WithCallTimeout bounds the per-call context used for the Redis
 // round trip. Default: 2 seconds. Set tighter for latency-sensitive
@@ -101,9 +117,16 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 //   - (false, nil) when Redis already held the nonce — replay.
 //   - (false, err) on any Redis-side failure. The middleware
 //     translates this into a 500; the package does NOT fail open.
+//
+// FR-027 [LOW]: rejects nonces longer than the verifier's wire
+// limit so a caller bypassing the middleware (e.g. test harness)
+// cannot construct unbounded Redis keys.
 func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
 	if nonce == "" {
 		return false, errors.New("signedrequest/redis: empty nonce")
+	}
+	if len(nonce) > maxNonceLen {
+		return false, fmt.Errorf("signedrequest/redis: nonce length %d exceeds %d", len(nonce), maxNonceLen)
 	}
 	ctx, cancel := s.ctx()
 	defer cancel()
@@ -114,6 +137,12 @@ func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
 	}
 	return ok, nil
 }
+
+// maxNonceLen caps the wire-level nonce length we are willing to
+// accept as a Redis key suffix. Mirrors the verifier's cap (audit
+// FR-026 / FR-027); the redis store independently enforces this so
+// direct callers cannot bypass it.
+const maxNonceLen = 64
 
 func (s *RedisNonceStore) key(nonce string) string {
 	return s.prefix + nonce

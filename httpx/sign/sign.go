@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
+
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
@@ -44,7 +46,17 @@ type config struct {
 // signing string. The names are also passed to the verifier via the
 // matching WithRequiredHeaders option — the two MUST agree, otherwise
 // every request fails verification.
+//
+// Panics on an invalid HTTP header field name (audit FR-028) — the
+// verifier rejects invalid names at construction, so accepting them
+// here would silently produce a signature profile no production
+// verifier accepts.
 func WithIncludeHeaders(names ...string) Option {
+	for _, n := range names {
+		if !httpguts.ValidHeaderFieldName(n) {
+			panic(fmt.Sprintf("sign: WithIncludeHeaders requires a valid HTTP header field name (got %q)", n))
+		}
+	}
 	return func(c *config) {
 		for _, n := range names {
 			c.includeHeaders = append(c.includeHeaders, strings.ToLower(n))
