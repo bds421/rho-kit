@@ -697,3 +697,71 @@ func TestBufferedPublisher_PersistFailureAfterDirectPublishFail(t *testing.T) {
 	}
 }
 
+// TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError pins
+// the FR-068 [HIGH] fix: when drain successfully publishes a batch
+// to the broker but the subsequent state-file save fails, the
+// publisher must surface the error via OnSaveError and LastSaveError
+// instead of silently swallowing it. Pre-fix `_ = o.saveLocked()`
+// in drain hid disk-full / EROFS / quota conditions, leaving the
+// on-disk pending list stale and creating a duplicate-replay risk
+// on the next process crash.
+func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	var saveErrors atomic.Int32
+	var lastErr atomic.Pointer[error]
+	metrics := &BufferedPublisherMetrics{
+		OnSaveError: func(err error) {
+			saveErrors.Add(1)
+			lastErr.Store(&err)
+		},
+	}
+
+	fp := &fakePublisher{}
+	healthy := &atomic.Bool{}
+	pub := testBufferedPublisherWithHealthPtr(fp, healthy,
+		WithBufferedStateFile(stateFile),
+		WithBufferedMetrics(metrics),
+	)
+
+	// Buffer two messages while the broker is unhealthy. These calls
+	// successfully save (dir is writable).
+	for i := range 2 {
+		msg, _ := NewMessage("test.event", fmt.Sprintf("m%d", i))
+		if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if pub.Pending() != 2 {
+		t.Fatalf("expected 2 pending, got %d", pub.Pending())
+	}
+
+	// Now break the directory so saveLocked() fails — atomicfile.Save
+	// writes a temp file in the same dir and renames; chmod 0500
+	// prevents temp-file creation.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	// Become healthy and drain. publishFn succeeds (in-memory
+	// fakePublisher), then saveLocked fails because the dir is locked
+	// down.
+	healthy.Store(true)
+	pub.drain(context.Background())
+
+	if got := fp.callCount(); got != 2 {
+		t.Errorf("expected 2 broker publishes, got %d", got)
+	}
+	if got := saveErrors.Load(); got != 1 {
+		t.Errorf("OnSaveError fired %d times, want 1 (FR-068 regression)", got)
+	}
+	if pub.LastSaveError() == nil {
+		t.Error("LastSaveError() must reflect the post-drain save failure")
+	}
+	if errPtr := lastErr.Load(); errPtr == nil || *errPtr == nil {
+		t.Error("OnSaveError invoked with nil error")
+	}
+}
+

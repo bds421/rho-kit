@@ -38,6 +38,16 @@ type pendingMessage struct {
 // inconsistency. For true transactional guarantees, write messages to a
 // database outbox table within the same transaction and poll/CDC them to
 // the broker.
+//
+// Duplicate-on-restart risk (audit FR-068): the drain loop publishes a
+// batch to the broker, then writes the new (smaller) pending list to
+// disk. If the disk write fails (full disk, EROFS, quota, fsync error)
+// AND the process crashes before the next successful save, the
+// already-published messages are still on disk and will be replayed
+// when the publisher restarts. Consumers MUST be idempotent on
+// [Message.ID]. Wire [BufferedPublisherMetrics.OnSaveError] to a
+// Prometheus counter / alert so a stuck disk surfaces before the crash
+// — [LastSaveError] is the in-process probe for the same condition.
 type BufferedPublisher struct {
 	logger            *slog.Logger
 	mu                sync.Mutex
@@ -98,6 +108,14 @@ type BufferedPublisherMetrics struct {
 	OnDrop func()
 	// OnPendingGauge is called with the current buffer depth after changes.
 	OnPendingGauge func(count int)
+	// OnSaveError fires when a state-file save fails. Audit FR-068:
+	// drain previously discarded the save-error from saveLocked, so a
+	// disk-full / EROFS / quota condition could go unnoticed and cause
+	// duplicate publishes after a crash+restart (the on-disk pending
+	// list still carries messages that have already been delivered to
+	// the broker). Wire this hook to a Prometheus counter / alert so
+	// such conditions surface before the next crash.
+	OnSaveError func(err error)
 }
 
 // BufferedPublisherOption configures a BufferedPublisher.
@@ -450,6 +468,7 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 	o.mu.Lock()
 	o.directInFlight = false
 
+	var saveErr error
 	if published > 0 {
 		// Compact the slice to allow the backing array to be GC'd.
 		// Without this, o.pending[published:] retains the original array
@@ -458,10 +477,24 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		compacted := make([]pendingMessage, remaining)
 		copy(compacted, o.pending[published:])
 		o.pending = compacted
-		_ = o.saveLocked()
+		// FR-068 [HIGH]: surface the save error instead of swallowing
+		// it. On disk-full / EROFS / quota the on-disk pending list
+		// still contains the messages we just delivered to the broker,
+		// so a crash before the next successful save would replay them.
+		// LastSaveError() is the kit-internal probe; OnSaveError is the
+		// metrics-side hook that pages someone before the next crash.
+		saveErr = o.saveLocked()
 		o.reportPending()
 	}
 	o.mu.Unlock()
+
+	if saveErr != nil {
+		o.logger.Error("buffered publisher state save failed AFTER successful broker publishes; restart-replay risk until next save succeeds",
+			"error", saveErr, "published", published)
+		if o.metrics != nil && o.metrics.OnSaveError != nil {
+			o.metrics.OnSaveError(saveErr)
+		}
+	}
 
 	if published > 0 {
 		if o.metrics != nil && o.metrics.OnDrain != nil {
