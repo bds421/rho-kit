@@ -35,9 +35,14 @@ const (
 type Option func(*config)
 
 type config struct {
-	cookieName       string
-	headerName       string
+	cookieName string
+	headerName string
+	// secure controls Cookie.Secure on the CSRF cookie. Default
+	// (when secureSet is false) is TRUE — see [New]. WithSecure
+	// flips secureSet so callers can explicitly opt out for local
+	// plain-HTTP development.
 	secure           bool
+	secureSet        bool
 	secret           []byte // HMAC key for token signing
 	sameSite         http.SameSite
 	path             string
@@ -58,10 +63,17 @@ func WithHeaderName(name string) Option {
 	return func(c *config) { c.headerName = name }
 }
 
-// WithSecure sets the Secure flag on the CSRF cookie. Default: false.
-// Set to true in production (HTTPS).
+// WithSecure overrides the Secure flag on the CSRF cookie.
+// Default: TRUE — production-safe. Pre-2.0 the default was false, which
+// allowed CSRF cookies to ride along plaintext same-host requests
+// (audit FR-020 [HIGH]). Set to false ONLY for local plain-HTTP
+// development; pair with [WithDevSecret] so the unsafe-default
+// posture is explicit at the call site.
 func WithSecure(secure bool) Option {
-	return func(c *config) { c.secure = secure }
+	return func(c *config) {
+		c.secure = secure
+		c.secureSet = true
+	}
 }
 
 // WithSecret sets the HMAC secret for token signing. This ensures the token
@@ -209,6 +221,14 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	// FR-020 [HIGH]: default Secure to true. Pre-fix the default was
+	// false, so production users that only configured the secret
+	// emitted CSRF cookies without Secure and rode along plain-HTTP
+	// same-host requests. WithSecure(false) is now an explicit local-
+	// development opt-out (and should be paired with WithDevSecret).
+	if !cfg.secureSet {
+		cfg.secure = true
 	}
 
 	if cfg.secret == nil {

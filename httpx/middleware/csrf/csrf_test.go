@@ -826,11 +826,28 @@ func TestNew_PanicsOnSameSiteNoneWithoutSecure(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("expected panic for SameSite=None without Secure")
+			t.Fatal("expected panic for SameSite=None with explicit Secure=false")
 		}
 		assert.Contains(t, r.(string), "SameSite=None requires Secure=true")
 	}()
-	_ = New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode))
+	// FR-020: Secure now defaults to true. Have to explicitly opt out
+	// to trigger the SameSite=None+!Secure panic.
+	_ = New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithSecure(false))
+}
+
+func TestNew_DefaultsSecureToTrue(t *testing.T) {
+	// FR-020 [HIGH]: pre-fix the default was Secure=false, so the
+	// production-safe default required users to know to call
+	// WithSecure(true). Now Secure=true is the default; you have to
+	// explicitly opt out for local plaintext development.
+	mw := New(WithSecret(testSecret()))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	mw(okHandler()).ServeHTTP(rec, req)
+
+	cookies := rec.Result().Cookies()
+	require.NotEmpty(t, cookies, "CSRF middleware must set a cookie on first GET")
+	assert.True(t, cookies[0].Secure, "CSRF cookie must be Secure by default (FR-020)")
 }
 
 func TestNew_SameSiteNoneWithSecureIsAllowed(t *testing.T) {
