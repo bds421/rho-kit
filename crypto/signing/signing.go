@@ -201,10 +201,16 @@ func (s *Signer) VerifyContext(ctx CanonicalContext, secret []byte, body []byte,
 	// Always decode and compare in a single code path regardless of format
 	// errors. This eliminates timing differences between format errors and
 	// HMAC mismatches.
+	//
+	// FR-047 [LOW]: hmac.Equal returns immediately on length mismatch,
+	// so a "valid hex of the wrong length" signature would short-circuit
+	// the comparison. Force the comparison input to exactly sha256.Size
+	// bytes — using fallbackMAC for any decoded value of a different
+	// length — so every input takes the same code path.
 	const prefix = "sha256="
 	gotRaw := fallbackMAC[:]
 	if len(signature) >= len(prefix) && signature[:len(prefix)] == prefix {
-		if decoded, err := hex.DecodeString(signature[len(prefix):]); err == nil {
+		if decoded, err := hex.DecodeString(signature[len(prefix):]); err == nil && len(decoded) == sha256.Size {
 			gotRaw = decoded
 		}
 	}

@@ -177,6 +177,27 @@ func Hash(password string, p Params) (string, error) {
 	if p.Memory == 0 || p.Iterations == 0 || p.Parallelism == 0 {
 		return "", fmt.Errorf("passhash: Memory/Iterations/Parallelism must be > 0")
 	}
+	// FR-045 [MED]: also cap hashing parameters with the same
+	// VerifyLimits ceiling. A typo or attacker-influenced Params
+	// could otherwise allocate multi-GiB memory or pin a CPU on
+	// every Hash call. Reuse [DefaultVerifyLimits] so a single set
+	// of bounds applies to both Hash and Verify.
+	hashLimits := DefaultVerifyLimits()
+	if p.Memory > hashLimits.MaxMemory {
+		return "", fmt.Errorf("passhash: Memory %d exceeds limit %d", p.Memory, hashLimits.MaxMemory)
+	}
+	if p.Iterations > hashLimits.MaxIterations {
+		return "", fmt.Errorf("passhash: Iterations %d exceeds limit %d", p.Iterations, hashLimits.MaxIterations)
+	}
+	if p.Parallelism > hashLimits.MaxParallelism {
+		return "", fmt.Errorf("passhash: Parallelism %d exceeds limit %d", p.Parallelism, hashLimits.MaxParallelism)
+	}
+	if p.SaltLen > hashLimits.MaxSaltLen {
+		return "", fmt.Errorf("passhash: SaltLen %d exceeds limit %d", p.SaltLen, hashLimits.MaxSaltLen)
+	}
+	if p.KeyLen > hashLimits.MaxKeyLen {
+		return "", fmt.Errorf("passhash: KeyLen %d exceeds limit %d", p.KeyLen, hashLimits.MaxKeyLen)
+	}
 
 	salt := make([]byte, p.SaltLen)
 	if _, err := rand.Read(salt); err != nil {

@@ -117,7 +117,12 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	if !resp.GetVerifiedPlaintextCrc32C() {
 		return "", nil, fmt.Errorf("%w: KMS did not verify plaintext CRC32C — request bytes corrupted in flight", ErrChecksumMismatch)
 	}
-	if k.aad != nil && !resp.GetVerifiedAdditionalAuthenticatedDataCrc32C() {
+	// FR-044 [MED]: only assert AAD verification when the AAD is
+	// actually present. An empty []byte AAD is semantically equivalent
+	// to nil — both produce a nil CRC wrapper via crc32c() — but a
+	// length check on `len(k.aad) > 0` is the correct gate so callers
+	// who supply []byte{} do not get every wrap rejected.
+	if len(k.aad) > 0 && !resp.GetVerifiedAdditionalAuthenticatedDataCrc32C() {
 		return "", nil, fmt.Errorf("%w: KMS did not verify AAD CRC32C — request bytes corrupted in flight", ErrChecksumMismatch)
 	}
 	ciphertext := resp.GetCiphertext()

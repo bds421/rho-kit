@@ -39,10 +39,34 @@ type Provider struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+
+	// rootCtx is cancelled by Stop so an in-flight refresh exits
+	// promptly instead of running to completion at p.interval (audit
+	// FR-046). fetchTimeout caps each refresh independently of the
+	// poll interval.
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+	fetchTimeout time.Duration
 }
+
+// defaultFetchTimeout caps each refresh independently of the
+// poll interval (audit FR-046). 10s is large enough for a slow JWKS
+// endpoint and small enough that Stop returns within seconds even
+// when a refresh is in flight.
+const defaultFetchTimeout = 10 * time.Second
 
 // ProviderOption configures a [Provider].
 type ProviderOption func(*Provider)
+
+// WithFetchTimeout overrides the per-refresh deadline. Useful when
+// the upstream key source is genuinely slow.
+func WithFetchTimeout(d time.Duration) ProviderOption {
+	return func(p *Provider) {
+		if d > 0 {
+			p.fetchTimeout = d
+		}
+	}
+}
 
 // WithVerifyOptions passes Verify-time options through to each
 // rebuilt [V4Public]. Typical use: pin issuer/audience, set clock
@@ -75,11 +99,15 @@ func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duratio
 	if interval <= 0 {
 		return nil, errors.New("paseto: refresh interval must be > 0")
 	}
+	rootCtx, rootCancel := context.WithCancel(context.Background())
 	p := &Provider{
-		src:      src,
-		interval: interval,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		src:          src,
+		interval:     interval,
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+		rootCtx:      rootCtx,
+		rootCancel:   rootCancel,
+		fetchTimeout: defaultFetchTimeout,
 	}
 	for _, o := range opts {
 		o(p)
@@ -112,6 +140,9 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 func (p *Provider) Stop() {
 	p.stopOnce.Do(func() {
 		close(p.stop)
+		if p.rootCancel != nil {
+			p.rootCancel()
+		}
 	})
 	<-p.done
 }
@@ -125,7 +156,13 @@ func (p *Provider) loop() {
 		case <-p.stop:
 			return
 		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), p.interval)
+			// FR-046 [MED]: derive each refresh from rootCtx (cancelled
+			// by Stop) so a Stop in flight aborts the network call
+			// instead of waiting for the per-refresh timeout. The
+			// per-refresh timeout uses fetchTimeout — independent of
+			// p.interval — so a long polling cadence does not also
+			// translate into a long shutdown delay.
+			ctx, cancel := context.WithTimeout(p.rootCtx, p.fetchTimeout)
 			err := p.refresh(ctx)
 			cancel()
 			if err != nil && p.onRefreshErr != nil {
