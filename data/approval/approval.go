@@ -8,12 +8,26 @@ import (
 	"time"
 )
 
+// MaxIDLen caps Request.ID length (audit FR-055). The Postgres schema
+// declares id VARCHAR(36) — UUIDs (36 chars), shorter ULIDs (26),
+// nanoid (21), and hex IDs all fit. Pre-fix the package allowed up to
+// 255 characters and the database surfaced the failure late.
+const MaxIDLen = 36
+
+// MaxPayloadSize caps Request.Payload bytes (audit FR-056). Approval
+// payloads carry a copy of the original verb body and persist
+// indefinitely until decided + executed; without a cap a misuse can
+// retain multi-megabyte JSON for hours and amplify privacy/storage
+// risk. 64 KiB is comfortably above any realistic API payload while
+// preventing accidental large persistence.
+const MaxPayloadSize = 64 * 1024
+
 // requestIDPattern bounds Request.ID to a safe character set: ASCII
 // letters, digits, hyphen, and underscore. UUIDs (with hyphens), ULIDs,
 // and hex IDs all fit. Same policy used by data/queue/redisqueue.Message.ID
 // — caller-supplied IDs that survive into log lines, metric labels, and
 // downstream key paths must be tokens, not free text.
-var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // State is the lifecycle position of a [Request].
 type State string
@@ -180,7 +194,10 @@ func validate(r Request, now time.Time) error {
 	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
 		return ErrInvalidRequest
 	}
-	if !requestIDPattern.MatchString(r.ID) {
+	if len(r.ID) > MaxIDLen || !requestIDPattern.MatchString(r.ID) {
+		return ErrInvalidRequest
+	}
+	if len(r.Payload) > MaxPayloadSize {
 		return ErrInvalidRequest
 	}
 	if r.State != "" && r.State != StatePending {

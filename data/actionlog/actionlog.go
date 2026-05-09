@@ -543,7 +543,11 @@ func (l *signedLogger) Verify(e Entry) error {
 	if err != nil {
 		return err
 	}
-	got, err := hex.DecodeString(e.Signature)
+	// FR-052 [LOW]: hmac.Equal short-circuits on length mismatch.
+	// Force the decoded got to a fixed sha256.Size buffer so a
+	// valid-hex but wrong-length signature does not take a faster
+	// code path than a same-length forgery attempt.
+	gotRaw, err := hex.DecodeString(e.Signature)
 	if err != nil {
 		return ErrSignatureInvalid
 	}
@@ -551,16 +555,39 @@ func (l *signedLogger) Verify(e Entry) error {
 	if err != nil {
 		return ErrSignatureInvalid
 	}
-	if !hmac.Equal(got, want) {
+	var got [sha256.Size]byte
+	if len(gotRaw) == sha256.Size {
+		copy(got[:], gotRaw)
+	}
+	// Equal compares fixed-size buffers regardless of decoded length;
+	// length difference folds into the result via the zeroed got.
+	if !hmac.Equal(got[:], want) {
 		return ErrSignatureInvalid
 	}
 	return nil
 }
 
+// MaxIDLen is the inclusive upper bound on Entry.ID accepted by the
+// memory and Postgres stores (audit FR-051). The Postgres schema
+// declares id VARCHAR(36) — the kit validates at the package
+// boundary rather than letting the database surface the failure
+// late and make integration tests harder to debug. Same cap applies
+// to the other identifier-shaped fields so the API contract matches
+// the schema for every store.
+const MaxIDLen = 36
+
 // validate enforces required-field invariants before signing.
+//
+// FR-051 [MED]: ID length is capped at [MaxIDLen] (36, matching the
+// VARCHAR(36) declared in the Postgres migration). Pre-fix only
+// emptiness was checked, so a too-long ID would pass the in-memory
+// store and fail at INSERT time in Postgres with a low-value error.
 func validate(e Entry) error {
 	if e.ID == "" || e.TenantID == "" || e.Actor == "" || e.Action == "" {
 		return ErrInvalidEntry
+	}
+	if len(e.ID) > MaxIDLen {
+		return fmt.Errorf("%w: ID length %d exceeds %d", ErrInvalidEntry, len(e.ID), MaxIDLen)
 	}
 	switch e.Outcome {
 	case OutcomeSuccess, OutcomeFailure, OutcomeDenied:
