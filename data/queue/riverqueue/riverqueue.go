@@ -43,7 +43,8 @@ import (
 // service uses the kit's [kitqueue.Publisher] surface and a Postgres
 // is already available.
 type Publisher struct {
-	client *river.Client[pgx.Tx]
+	client     *river.Client[pgx.Tx]
+	uniqueByID bool
 }
 
 // NewPublisher builds a Publisher backed by an already-running River
@@ -53,17 +54,32 @@ type Publisher struct {
 //
 // The kit's data/queue.Publisher signature only enqueues; consume is
 // done by registering River workers directly against the client.
-func NewPublisher(client *river.Client[pgx.Tx]) *Publisher {
+//
+// Default: dedupe by (queue, args) for messages whose Message.ID is
+// non-empty (audit FR-059). Pass [WithoutUniqueByID] for "every
+// Enqueue executes" semantics.
+func NewPublisher(client *river.Client[pgx.Tx], opts ...PublisherOption) *Publisher {
 	if client == nil {
 		panic("riverqueue: client must not be nil")
 	}
-	return &Publisher{client: client}
+	p := &Publisher{client: client, uniqueByID: true}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 // Enqueue implements [kitqueue.Publisher]. The queue argument maps
 // to River's queue field (River uses string queue names natively).
 // Returns ErrEmptyQueue when queue is empty so the caller doesn't
 // silently default to River's "default" queue.
+//
+// FR-059 [MED]: when [Publisher.WithUniqueByID] is in effect (the
+// default), River is configured to dedupe by (queue, kind, args)
+// for jobs that share a Message.ID — a second Enqueue with the same
+// ID is a no-op rather than a duplicate execution. Callers who want
+// classic "every Enqueue executes" semantics can opt out via
+// [WithoutUniqueByID].
 func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Message) error {
 	if queue == "" {
 		return errors.New("riverqueue: queue must not be empty")
@@ -73,11 +89,28 @@ func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Mess
 		Type:    msg.Type,
 		Payload: msg.Payload,
 	}
-	if _, err := p.client.Insert(ctx, job, &river.InsertOpts{Queue: queue}); err != nil {
+	opts := &river.InsertOpts{Queue: queue}
+	if p.uniqueByID && msg.ID != "" {
+		opts.UniqueOpts = river.UniqueOpts{
+			ByArgs:   true,
+			ByQueue:  true,
+		}
+	}
+	if _, err := p.client.Insert(ctx, job, opts); err != nil {
 		return fmt.Errorf("riverqueue: insert: %w", err)
 	}
 	return nil
 }
+
+// WithoutUniqueByID opts out of the FR-059 deduplication-by-args
+// behaviour. Use only when the caller's Message.ID is *not* an
+// idempotency token and re-enqueues should always run.
+func WithoutUniqueByID() PublisherOption {
+	return func(p *Publisher) { p.uniqueByID = false }
+}
+
+// PublisherOption configures a [Publisher] at construction time.
+type PublisherOption func(*Publisher)
 
 // envelopeArgs is the River job payload for kit-mediated messages.
 // River requires args to implement Kind() and JSON-serialise.

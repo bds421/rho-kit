@@ -85,19 +85,21 @@ func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) (bool
 	return n == 1, nil
 }
 
-// retryAndRemoveScript atomically RPUSHes the retry payload onto the
-// queue and tombstones the original from the processing list. The
-// previous (non-atomic) Go-side sequence opened a window where the
-// retry copy could land on the queue while the original lingered in
-// processing — a peer reaper could then re-handle the original,
-// producing a duplicate.
+// retryAndRemoveScript atomically tombstones the original from the
+// processing list AND THEN RPUSHes the retry payload onto the queue.
+//
+// FR-061 [MED]: pre-fix the script enqueued first and then scanned —
+// if a reaper had already moved the original (so the scan failed),
+// the retry copy was still on the queue, producing a duplicate.
+// The new order proves the original existed (returns 1) before
+// enqueueing; on race-with-reaper (returns 0) the retry is NOT
+// enqueued and the caller treats the message as already-reclaimed.
 //
 //	KEYS[1] = queue (re-enqueue target)
 //	KEYS[2] = processing list (where original lives)
 //	ARGV[1] = retry payload bytes (already attempt+1)
 //	ARGV[2] = message ID to tombstone
 var retryAndRemoveScript = goredis.NewScript(`
-redis.call('RPUSH', KEYS[1], ARGV[1])
 local items = redis.call('LRANGE', KEYS[2], 0, -1)
 for i = 1, #items do
 	local ok, decoded = pcall(cjson.decode, items[i])
@@ -105,17 +107,20 @@ for i = 1, #items do
 		local sentinel = '__rho-tombstone__:' .. KEYS[2] .. ':' .. ARGV[2] .. ':' .. tostring(i)
 		redis.call('LSET', KEYS[2], i - 1, sentinel)
 		redis.call('LREM', KEYS[2], 1, sentinel)
+		redis.call('RPUSH', KEYS[1], ARGV[1])
 		return 1
 	end
 end
 return 0
 `)
 
-// deadLetterAndRemoveScript atomically LPUSHes the message onto the
-// dead-letter queue, applies the LTRIM cap (when configured), and
-// tombstones the original from the processing list — eliminating the
-// window where a peer reaper could re-handle the original after the
-// dead-letter LPUSH but before the LRem.
+// deadLetterAndRemoveScript atomically tombstones the original from
+// the processing list AND THEN LPUSHes the message onto the dead-
+// letter queue, applying the LTRIM cap.
+//
+// FR-061 [MED]: pre-fix the LPUSH happened before the scan, so a
+// race with a reaper produced a duplicate dead-letter entry. The
+// new order skips the DLQ write when the original is gone.
 //
 //	KEYS[1] = dead-letter queue
 //	KEYS[2] = processing list
@@ -123,11 +128,6 @@ return 0
 //	ARGV[2] = message ID
 //	ARGV[3] = max dead-letter list size (0 to disable LTRIM)
 var deadLetterAndRemoveScript = goredis.NewScript(`
-redis.call('LPUSH', KEYS[1], ARGV[1])
-local maxLen = tonumber(ARGV[3])
-if maxLen and maxLen > 0 then
-	redis.call('LTRIM', KEYS[1], 0, maxLen - 1)
-end
 local items = redis.call('LRANGE', KEYS[2], 0, -1)
 for i = 1, #items do
 	local ok, decoded = pcall(cjson.decode, items[i])
@@ -135,6 +135,11 @@ for i = 1, #items do
 		local sentinel = '__rho-tombstone__:' .. KEYS[2] .. ':' .. ARGV[2] .. ':' .. tostring(i)
 		redis.call('LSET', KEYS[2], i - 1, sentinel)
 		redis.call('LREM', KEYS[2], 1, sentinel)
+		redis.call('LPUSH', KEYS[1], ARGV[1])
+		local maxLen = tonumber(ARGV[3])
+		if maxLen and maxLen > 0 then
+			redis.call('LTRIM', KEYS[1], 0, maxLen - 1)
+		end
 		return 1
 	end
 end

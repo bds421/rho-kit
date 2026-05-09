@@ -371,12 +371,39 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // deterministic tests and for operators that want to give pods stable
 // identities (e.g. derived from the pod name) so abandoned processing
 // lists can be identified after a permanent crash.
+//
+// FR-060 [MED]: panics on IDs longer than [maxConsumerIDLen] or
+// containing characters outside [A-Za-z0-9_-]. Long IDs inflate every
+// processing-list key; ':' and other delimiters confuse the reaper's
+// suffix-stripping logic.
 func WithConsumerID(id string) Option {
+	if id != "" && !validConsumerID(id) {
+		panic(fmt.Sprintf("redisqueue: WithConsumerID requires a token of [A-Za-z0-9_-]{1,%d} (got %q)", maxConsumerIDLen, id))
+	}
 	return func(q *Queue) {
 		if id != "" {
 			q.consumerID = id
 		}
 	}
+}
+
+const maxConsumerIDLen = 64
+
+// validConsumerID enforces the FR-060 character set + length cap.
+func validConsumerID(id string) bool {
+	if id == "" || len(id) > maxConsumerIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !((c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // WithHeartbeatTTL sets the lifetime of the per-consumer heartbeat key
