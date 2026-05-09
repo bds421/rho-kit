@@ -769,6 +769,13 @@ func WithSemanticHeaders(names ...string) Option {
 //
 // Header names are matched after http.CanonicalHeaderKey normalisation.
 func WithPreserveHeaders(names ...string) Option {
+	// FR-032 [LOW]: validate header names at construction so a typo
+	// or invalid character does not silently no-op at request time.
+	for _, n := range names {
+		if !httpguts.ValidHeaderFieldName(n) {
+			panic(fmt.Sprintf("idempotency: WithPreserveHeaders requires a valid HTTP header field name (got %q)", n))
+		}
+	}
 	return func(c *config) {
 		if c.preserveHeaders == nil {
 			c.preserveHeaders = make(map[string]bool, len(names))

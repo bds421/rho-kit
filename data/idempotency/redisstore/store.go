@@ -68,9 +68,28 @@ type Option func(*RedisStore)
 
 // WithKeyPrefix sets the key prefix for all stored entries.
 // Default: "idempotency:".
+//
+// Panics on empty or >maxKeyPrefixLen prefixes (audit FR-031) so a
+// misconfiguration cannot inflate every Redis key.
 func WithKeyPrefix(prefix string) Option {
+	if prefix == "" {
+		panic("redisstore: WithKeyPrefix requires a non-empty prefix")
+	}
+	if len(prefix) > maxKeyPrefixLen {
+		panic(fmt.Sprintf("redisstore: WithKeyPrefix prefix length %d exceeds %d", len(prefix), maxKeyPrefixLen))
+	}
 	return func(s *RedisStore) { s.prefix = prefix }
 }
+
+// maxKeyPrefixLen / maxRawKeyLen cap Redis key components so direct
+// callers and middleware-bypassing harnesses cannot create
+// pathologically long keys (audit FR-031). The middleware itself
+// hashes idempotency keys to a fixed-length hex string, so production
+// traffic stays well below these limits.
+const (
+	maxKeyPrefixLen = 128
+	maxRawKeyLen    = 256
+)
 
 // RedisStore implements idempotency.Store using Redis. Safe for concurrent
 // use across processes.
@@ -97,6 +116,21 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 }
 
 func (s *RedisStore) k(key string) string { return s.prefix + key }
+
+// validateKey enforces a length cap on raw idempotency keys (audit
+// FR-031). The HTTP middleware hashes its keys to fixed-length hex,
+// but direct store callers (test harnesses, custom signers) might
+// pass a raw value; capping here prevents pathological Redis-side
+// storage costs.
+func validateKey(key string) error {
+	if key == "" {
+		return errors.New("redisstore: key must not be empty")
+	}
+	if len(key) > maxRawKeyLen {
+		return fmt.Errorf("redisstore: key length %d exceeds %d", len(key), maxRawKeyLen)
+	}
+	return nil
+}
 
 // ttlMillisRoundUp converts a duration to milliseconds, rounding sub-ms
 // values up to 1ms. Redis PX accepts integer milliseconds; without rounding,
@@ -160,6 +194,9 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 // Get returns a cached response and applies fingerprint comparison if a
 // non-nil fingerprint is supplied.
 func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	if err := validateKey(key); err != nil {
+		return nil, false, err
+	}
 	data, err := s.client.Get(ctx, s.k(key)).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
@@ -198,6 +235,9 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 // [idempotency.ErrInvalidTTL] when ttl <= 0 — Redis SET NX with EX 0 would
 // otherwise create a permanent lock.
 func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if err := validateKey(key); err != nil {
+		return "", false, false, err
+	}
 	if ttl <= 0 {
 		return "", false, false, idempotency.ErrInvalidTTL
 	}
@@ -251,6 +291,9 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 // requiring that the caller still holds the lock. Returns
 // [idempotency.ErrInvalidTTL] when ttl <= 0.
 func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	if ttl <= 0 {
 		return idempotency.ErrInvalidTTL
 	}
@@ -296,6 +339,9 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 // Unlock releases the processing lock under the caller's token. Token
 // mismatch is silently ignored (best-effort cleanup, e.g. on handler panic).
 func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
 	// We don't know the fingerprint here — but the lock value encoding is
 	// "lock:token:b64fp", so we read once to recover the original value.
 	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
