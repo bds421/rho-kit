@@ -38,6 +38,12 @@ type Decider interface {
 // to distinguish from infra errors.
 var ErrDenied = errors.New("authz: denied")
 
+// ErrNoDecider is returned by [Allow] when the supplied Decider is
+// nil. Audit FR-036: this used to panic, which gave handlers a 500
+// instead of failing closed. Returning a typed error lets handlers
+// distinguish wiring errors from authorization denials.
+var ErrNoDecider = errors.New("authz: no decider configured")
+
 // Request bundles the inputs to a [Decider.Allow] call into a
 // struct-shaped form. Useful for callers that build requests
 // dynamically (e.g., from a route descriptor) and pass them down
@@ -51,6 +57,14 @@ type Request struct {
 // Allow is a convenience wrapper that calls d.Allow with the fields
 // of req. Behaves identically to [Decider.Allow]; provided for
 // readability at call sites that already have a Request value.
+//
+// FR-036 [MED]: returns [ErrNoDecider] (not a panic) when d is nil.
+// Handlers using optional infrastructure get a typed configuration
+// error they can translate into a 503/500 instead of a panic-bound
+// 500 with no recovery information.
 func Allow(ctx context.Context, d Decider, req Request) error {
+	if d == nil {
+		return ErrNoDecider
+	}
 	return d.Allow(ctx, req.Subject, req.Action, req.Resource)
 }

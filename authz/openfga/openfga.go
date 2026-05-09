@@ -19,8 +19,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/openfga/go-sdk/client"
+	"github.com/openfga/go-sdk/credentials"
 
 	"github.com/bds421/rho-kit/authz/v2"
 )
@@ -37,10 +39,20 @@ type Decider struct {
 // StoreID is required; ModelID is recommended in production so the
 // service pins to a known model version (otherwise OpenFGA uses the
 // store's latest).
+//
+// FR-037 [MED]: Credentials, HTTPClient, and DefaultHeaders are
+// pass-throughs to the OpenFGA SDK so production deployments can
+// authenticate (API token, OIDC client credentials), customise the
+// outbound HTTP client (timeouts, mTLS, tracing), and inject required
+// headers without bypassing the kit wrapper.
 type Config struct {
-	APIURL  string
-	StoreID string
-	ModelID string
+	APIURL         string
+	StoreID        string
+	ModelID        string
+	Credentials    *credentials.Credentials
+	HTTPClient     *http.Client
+	DefaultHeaders map[string]string
+	UserAgent      string
 }
 
 // New builds a Decider from cfg. Returns an error if the SDK client
@@ -56,6 +68,10 @@ func New(cfg Config) (*Decider, error) {
 		ApiUrl:               cfg.APIURL,
 		StoreId:              cfg.StoreID,
 		AuthorizationModelId: cfg.ModelID,
+		Credentials:          cfg.Credentials,
+		HTTPClient:           cfg.HTTPClient,
+		DefaultHeaders:       cfg.DefaultHeaders,
+		UserAgent:            cfg.UserAgent,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openfga: build client: %w", err)
@@ -67,7 +83,16 @@ func New(cfg Config) (*Decider, error) {
 // against the configured store/model. Returns nil on Allowed=true,
 // [authz.ErrDenied] on Allowed=false, or a wrapped SDK error on
 // engine failure.
+//
+// FR-038 [LOW]: rejects empty subject/action/resource locally
+// without making the network call. Empty fields cannot represent a
+// real authorization question and would otherwise reach the engine
+// as ambiguous or default-allowed checks.
 func (d *Decider) Allow(ctx context.Context, subject, action, resource string) error {
+	if subject == "" || action == "" || resource == "" {
+		return fmt.Errorf("openfga: subject/action/resource must be non-empty (got %q/%q/%q): %w",
+			subject, action, resource, authz.ErrDenied)
+	}
 	body := client.ClientCheckRequest{
 		User:     subject,
 		Relation: action,
