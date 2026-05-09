@@ -72,7 +72,14 @@ func AllowedMIMETypes(allowed ...string) Validator {
 // If meta.Size is set and already exceeds maxBytes, the error is returned
 // immediately without reading any content. Otherwise, a limit-enforcing
 // reader wraps the stream so the limit is checked during consumption.
+//
+// FR-080 [MED]: panics on maxBytes <= 0 — a zero or negative limit
+// would either reject every upload or behave unpredictably under
+// direct use of [limitReader].
 func MaxFileSize(maxBytes int64) Validator {
+	if maxBytes <= 0 {
+		panic(fmt.Sprintf("storage: MaxFileSize requires maxBytes > 0 (got %d)", maxBytes))
+	}
 	return func(r io.Reader, meta *ObjectMeta) (io.Reader, error) {
 		if meta.Size > 0 && meta.Size > maxBytes {
 			return nil, fmt.Errorf("%w: declared size %d exceeds max %d bytes",

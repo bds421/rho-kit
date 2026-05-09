@@ -382,10 +382,20 @@ func (e *EncryptedStorage) Copy(ctx context.Context, srcKey, dstKey string) erro
 	}
 	defer func() { _ = rc.Close() }()
 
+	// FR-081 [LOW]: deep-copy custom metadata so the destination Put
+	// cannot mutate the source's map.
+	custom := meta.Custom
+	if custom != nil {
+		clone := make(map[string]string, len(custom))
+		for k, v := range custom {
+			clone[k] = v
+		}
+		custom = clone
+	}
 	putMeta := storage.ObjectMeta{
 		ContentType: meta.ContentType,
 		Size:        meta.Size,
-		Custom:      meta.Custom,
+		Custom:      custom,
 	}
 	if err := e.Put(ctx, dstKey, rc, putMeta); err != nil {
 		return fmt.Errorf("encryption: copy put %q: %w", dstKey, err)

@@ -53,9 +53,14 @@ type MigrateResult struct {
 // For large migrations, consider running with OnProgress to track the last
 // successfully copied key.
 func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (MigrateResult, error) {
-	lister, ok := src.(Lister)
+	// FR-082 [LOW]: use AsLister so decorated backends (encryption,
+	// metrics, retry) that wrap a Lister-implementing inner expose
+	// the capability via Unwrap. The pre-fix `src.(Lister)` cast
+	// failed for all decorators and caused Migrate to refuse
+	// otherwise-supported sources.
+	lister, ok := AsLister(src)
 	if !ok {
-		return MigrateResult{}, fmt.Errorf("storage.Migrate: source backend does not implement Lister")
+		return MigrateResult{}, fmt.Errorf("storage.Migrate: source backend does not implement Lister (even via Unwrap)")
 	}
 
 	if opts.Prefix != "" {
@@ -140,10 +145,12 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 
 // MigrateCount counts the number of objects matching the prefix in src.
 // Useful for showing a progress bar before starting Migrate.
+//
+// FR-082 [LOW]: uses AsLister so decorated backends are supported.
 func MigrateCount(ctx context.Context, src Storage, prefix string) (int64, error) {
-	lister, ok := src.(Lister)
+	lister, ok := AsLister(src)
 	if !ok {
-		return 0, fmt.Errorf("storage.MigrateCount: source backend does not implement Lister")
+		return 0, fmt.Errorf("storage.MigrateCount: source backend does not implement Lister (even via Unwrap)")
 	}
 
 	var count int64

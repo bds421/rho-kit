@@ -74,14 +74,34 @@ func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, d
 
 	// Pass through metadata from the source. Size is preserved so backends
 	// can set Content-Length on the destination object.
+	//
+	// FR-081 [LOW]: deep-copy meta.Custom so destination validators or
+	// backends mutating the map cannot corrupt the source's view —
+	// the same fix already applied in the encryption + migration copy
+	// paths, brought to the generic Copy.
 	putMeta := ObjectMeta{
 		ContentType: meta.ContentType,
 		Size:        meta.Size,
-		Custom:      meta.Custom,
+		Custom:      cloneCustomMeta(meta.Custom),
 	}
 
 	if err := dst.Put(ctx, dstKey, io.Reader(rc), putMeta); err != nil {
 		return fmt.Errorf("put destination %q: %w", dstKey, err)
 	}
 	return nil
+}
+
+// cloneCustomMeta returns a shallow copy of the custom-metadata map
+// (audit FR-081). Storage copy paths previously aliased the source's
+// map, so a destination validator/backend mutating it would also
+// corrupt the source's view and make retries order-dependent.
+func cloneCustomMeta(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
