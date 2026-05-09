@@ -195,6 +195,12 @@ type Builder struct {
 	// Shutdown hooks
 	shutdownHooks []func(context.Context)
 
+	// startupTimeout caps how long module initialization may take
+	// (FR-013). Zero means [defaultStartupTimeout]. Override via
+	// [Builder.WithStartupTimeout] for services with genuinely slow
+	// boot dependencies (e.g. Postgres warmup, KMS key fetch).
+	startupTimeout time.Duration
+
 	// Modules
 	modules []Module
 
@@ -825,7 +831,32 @@ func (b *Builder) Background(name string, fn func(ctx context.Context) error) *B
 // state" semantics: emit a goodbye message, persist last in-flight
 // work, drain external producers. Closing the actual infrastructure
 // is the Builder's job — don't manually close DB/Redis here.
+// defaultStartupTimeout caps module initialization time so a hung
+// module cannot block startup forever (FR-013). 60 seconds is a
+// generous default — tighten via [Builder.WithStartupTimeout] for
+// services with strict cold-start budgets.
+const defaultStartupTimeout = 60 * time.Second
+
+// WithStartupTimeout caps module initialization time. Pass <=0 to
+// fall back to [defaultStartupTimeout].
+//
+// FR-013 [MED]: pre-fix module Init ran with context.Background, so
+// a module that hung during initialization (KMS DNS, broker connect)
+// blocked startup forever. The deadline now triggers a typed error
+// from the affected module's Init.
+func (b *Builder) WithStartupTimeout(d time.Duration) *Builder {
+	b.startupTimeout = d
+	return b
+}
+
 func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
+	if fn == nil {
+		// FR-012 [LOW]: a nil hook would otherwise panic at shutdown
+		// time, well after the configuration error could be surfaced.
+		// Fail fast at registration so the wiring bug is caught at
+		// startup.
+		panic("app: OnShutdown requires a non-nil hook function")
+	}
 	b.shutdownHooks = append(b.shutdownHooks, fn)
 	return b
 }
@@ -984,13 +1015,21 @@ func (b *Builder) Run() error {
 		}
 	}
 	if len(allModules) > 0 {
+		// FR-013 [MED]: bound module Init so a module that hangs
+		// (KMS DNS, broker connect) cannot block startup forever.
+		startupTimeout := b.startupTimeout
+		if startupTimeout <= 0 {
+			startupTimeout = defaultStartupTimeout
+		}
+		initCtx, initCancel := context.WithTimeout(context.Background(), startupTimeout)
 		moduleCleanup, moduleErr := initModules(
-			context.Background(),
+			initCtx,
 			allModules,
 			logger,
 			runner,
 			b.cfg,
 		)
+		initCancel()
 		if moduleErr != nil {
 			return moduleErr
 		}
@@ -1096,7 +1135,11 @@ func (b *Builder) Run() error {
 		httpHandler = rl.Middleware(httpHandler)
 	}
 	if !b.disableDefaultStack {
-		httpHandler = stack.Default(httpHandler, slog.Default(), b.stackOpts...)
+		// FR-009 [MED]: pass the resolved logger so the request stack uses
+		// the same logger as infrastructure setup. Pre-fix this hardcoded
+		// slog.Default(), so [Builder.WithLogger] silently failed to take
+		// effect on the public middleware chain.
+		httpHandler = stack.Default(httpHandler, logger, b.stackOpts...)
 	}
 
 	// Freeze late background registration — any calls after routerFn returns

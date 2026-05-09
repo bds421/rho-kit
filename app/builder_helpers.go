@@ -8,16 +8,24 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
+// shutdownHookTimeout caps how long any single hook may take. Each
+// hook still derives from the parent shutdown context (FR-011), so a
+// runner-level force cancellation also propagates.
+const shutdownHookTimeout = 10 * time.Second
+
 // runShutdownHooks invokes every registered hook synchronously, with
-// individual panic recovery and a per-hook timeout. Each hook gets a
-// fresh 10s context so a misbehaving hook cannot block the rest of the
-// shutdown sequence.
+// individual panic recovery and a per-hook timeout. Hook contexts are
+// derived from parent so a runner-level force cancellation propagates
+// to in-flight hooks (audit FR-011).
 //
 // Called from the lifecycle.Runner's BeforeStop callback so hooks see
 // live infrastructure connections — DB pools, Redis clients, message
 // brokers are still open at this point. Component teardown runs only
 // after this function returns.
-func runShutdownHooks(_ context.Context, hooks []func(context.Context), logger *slog.Logger) {
+func runShutdownHooks(parent context.Context, hooks []func(context.Context), logger *slog.Logger) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	for i, fn := range hooks {
 		func(idx int, hook func(context.Context)) {
 			defer func() {
@@ -28,7 +36,7 @@ func runShutdownHooks(_ context.Context, hooks []func(context.Context), logger *
 					)
 				}
 			}()
-			hookCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			hookCtx, cancel := context.WithTimeout(parent, shutdownHookTimeout)
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
@@ -38,7 +46,7 @@ func runShutdownHooks(_ context.Context, hooks []func(context.Context), logger *
 			select {
 			case <-done:
 			case <-hookCtx.Done():
-				logger.Error("shutdown hook timed out", "hook_index", idx)
+				logger.Error("shutdown hook timed out", "hook_index", idx, "cause", context.Cause(hookCtx))
 			}
 		}(i, fn)
 	}
