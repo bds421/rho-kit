@@ -1,0 +1,16 @@
+// Package migrations exposes the goose migrations under
+// db/migrations/*.sql to the rest of the service. The embed.FS lives
+// here (not in internal/app) because go:embed paths are resolved
+// relative to the SOURCE FILE'S directory — keeping the FS next to
+// the .sql files keeps the embed path natural and prevents a
+// silently-empty FS when migrations move.
+package migrations
+
+import "embed"
+
+// FS is the goose-compatible filesystem of SQL migrations applied at
+// startup. internal/app/wire.go imports this package and passes FS
+// into app.Builder.WithMigrations.
+//
+//go:embed *.sql
+var FS embed.FS

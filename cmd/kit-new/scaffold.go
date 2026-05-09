@@ -96,10 +96,14 @@ var templateFile = []struct {
 
 	// Postgres + sqlc golden path. Gated on Params.Postgres so a
 	// consumer scaffolding a no-DB service (e.g., a plain HTTP
-	// proxy) doesn't get an unused sqlc.yaml.
+	// proxy) doesn't get an unused sqlc.yaml. The migrations package
+	// owns the embed.FS so go:embed resolves relative to the .sql
+	// files, not relative to internal/app/wire.go (which would search
+	// for the wrong directory — audit FR-003).
 	{"sqlc.yaml.tmpl", "sqlc.yaml", "Postgres"},
 	{"db_query_sample.sql.tmpl", "db/queries/users.sql", "Postgres"},
 	{"db_schema_sample.sql.tmpl", "db/migrations/00001_users.sql", "Postgres"},
+	{"db_migrations_pkg.go.tmpl", "db/migrations/migrations.go", "Postgres"},
 }
 
 // scaffold writes the generated tree into outDir. Returns an error on

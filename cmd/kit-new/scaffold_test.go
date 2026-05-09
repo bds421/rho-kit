@@ -144,20 +144,34 @@ func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 }
 
 func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
-	runScaffoldBuildTest(t, false)
+	runScaffoldBuildTest(t, Params{})
 }
 
 func TestScaffold_MCPGeneratedTreeBuildsAndPasses(t *testing.T) {
-	runScaffoldBuildTest(t, true)
+	runScaffoldBuildTest(t, Params{MCP: true})
+}
+
+// TestScaffold_PostgresGeneratedTreeBuildsAndPasses regression-tests
+// FR-002 + FR-003: the -postgres scaffold variant must compile after
+// `go mod tidy`. Pre-fix this never ran from the CLI (no -postgres
+// flag), and the embed.FS in wire.go.tmpl pointed at the wrong
+// directory, so the generated service failed to build with "no
+// matching files found" before any code path could be exercised.
+func TestScaffold_PostgresGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, Params{Postgres: true})
+}
+
+func TestScaffold_PostgresAndMCPGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, Params{Postgres: true, MCP: true})
 }
 
 // runScaffoldBuildTest scaffolds a fresh tree, points the kit
 // require at the local checkout (the only practical way to run a
 // downstream-style build before the kit publishes a tag), then runs
-// `go mod tidy && go build && go vet`. Covers both the default
-// scaffold and the MCP variant so the MCP path has the same compile
-// guarantee as the default.
-func runScaffoldBuildTest(t *testing.T, mcp bool) {
+// `go mod tidy && go build && go vet`. Covers every scaffold variant
+// so default / MCP / Postgres / Postgres+MCP all have the same
+// compile guarantee.
+func runScaffoldBuildTest(t *testing.T, opts Params) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("self-test invokes go build / go test")
@@ -170,7 +184,8 @@ func runScaffoldBuildTest(t *testing.T, mcp bool) {
 	require.NoError(t, scaffold(out, Params{
 		ServiceName: "demo",
 		ModulePath:  "example.com/demo",
-		MCP:         mcp,
+		MCP:         opts.MCP,
+		Postgres:    opts.Postgres,
 	}))
 
 	repoRoot, err := filepath.Abs("../..")

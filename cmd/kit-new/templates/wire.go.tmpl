@@ -3,11 +3,8 @@
 package app
 
 import (
-{{- if or .MCP .Postgres}}
+{{- if .MCP}}
 	"context"
-{{- end}}
-{{- if .Postgres}}
-	"embed"
 {{- end}}
 	"log/slog"
 	"net/http"
@@ -24,18 +21,10 @@ import (
 {{- if .Postgres}}
 
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+
+	"{{.ModulePath}}/db/migrations"
 {{- end}}
 )
-
-{{- if .Postgres}}
-
-// migrationsFS embeds the goose migrations applied at startup. Add
-// .sql files under db/migrations/ — sqlc reads the same directory as
-// its schema source so query types match the live schema.
-//
-//go:embed db/migrations/*.sql
-var migrationsFS embed.FS
-{{- end}}
 
 {{- if .MCP}}
 
@@ -101,7 +90,7 @@ func Run(_ *slog.Logger) error {
 	// surfaces on infra.DB inside the router; query that pool through
 	// the sqlc-generated code in db/sqlc/.
 	dsn := config.MustGetSecret("DATABASE_URL", "")
-	b = b.WithPostgres(pgxbackend.Config{DSN: dsn}).WithMigrations(migrationsFS)
+	b = b.WithPostgres(pgxbackend.Config{DSN: dsn}).WithMigrations(migrations.FS)
 {{- end}}
 
 	return b.
