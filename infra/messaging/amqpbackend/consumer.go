@@ -51,7 +51,15 @@ type ConsumerOption func(*Consumer)
 // WithPrefetch sets the AMQP QoS prefetch count (default 10).
 // Lower values are appropriate for slow handlers; higher values
 // improve throughput for fast handlers.
+//
+// FR-070 [MED]: panics on n <= 0 — RabbitMQ interprets prefetch 0
+// as "unlimited", which removes consumer backpressure entirely. A
+// typo there would let one slow consumer hold the entire queue
+// in-flight.
 func WithPrefetch(n int) ConsumerOption {
+	if n <= 0 {
+		panic(fmt.Sprintf("amqpbackend: WithPrefetch requires n > 0 (got %d); RabbitMQ treats 0 as unlimited prefetch", n))
+	}
 	return func(c *Consumer) { c.prefetch = n }
 }
 
@@ -282,7 +290,7 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, h
 
 	handlerErr := c.invokeHandler(ctx, handler, d, msg, b.Queue)
 	if handlerErr != nil {
-		c.handleFailure(delivery, msg, b, handlerErr)
+		c.handleFailure(ctx, delivery, msg, b, handlerErr)
 		return
 	}
 
@@ -322,7 +330,7 @@ func unmarshal(delivery amqp.Delivery) (messaging.Message, error) {
 	return msg, nil
 }
 
-func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error) {
+func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error) {
 	// Permanent errors (e.g. structurally invalid messages) will never
 	// succeed on retry. Audit FR-071 [HIGH]: route them to the dead
 	// exchange when configured so a poison message lands in a
@@ -337,7 +345,7 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 				"id", msg.ID,
 				"type", msg.Type,
 			)
-			c.routeToDeadExchange(delivery, msg, b, handlerErr, 0)
+			c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr,0)
 			return
 		}
 		c.logger.Warn("permanent handler error, discarding message (no dead exchange configured)",
@@ -381,7 +389,7 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 			"type", msg.Type,
 			"retries", retryCount,
 		)
-		c.routeToDeadExchange(delivery, msg, b, handlerErr, retryCount)
+		c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr,retryCount)
 
 	case actionRetry:
 		c.logger.Warn("handler failed, nacking for DLX retry",
@@ -430,8 +438,15 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 // retryCount is reported through OnDeadLetter for observability;
 // pass 0 for permanent-error routings (audit FR-071) where the
 // message never made it to a retry attempt.
-func (c *Consumer) routeToDeadExchange(delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) {
-	deadCtx, deadCancel := context.WithTimeout(context.Background(), deadLetterPublishTimeout)
+func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) {
+	// FR-072 [MED]: derive from the caller's ctx so trace values
+	// and shutdown deadlines propagate to the DLE publish, while
+	// still capping per-publish runtime via deadLetterPublishTimeout.
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	deadCtx, deadCancel := context.WithTimeout(parent, deadLetterPublishTimeout)
 	pubErr := c.publisher.PublishRaw(deadCtx, b.DeadExchange, b.Queue, delivery.Body, msg.ID)
 	deadCancel()
 	if pubErr != nil {

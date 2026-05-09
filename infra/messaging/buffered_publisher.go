@@ -123,8 +123,24 @@ type BufferedPublisherOption func(*BufferedPublisher)
 
 // WithBufferedMaxSize sets the maximum number of buffered messages.
 // When the buffer is full, Publish returns an error (back-pressure).
+//
+// FR-069 [LOW]: panics on n <= 0 — pre-fix any non-positive value
+// silently disabled the cap and allowed unbounded memory growth
+// during broker outages. Use [WithUnlimitedBufferedBuffer] when an
+// unbounded buffer is genuinely intended.
 func WithBufferedMaxSize(n int) BufferedPublisherOption {
+	if n <= 0 {
+		panic(fmt.Sprintf("messaging: WithBufferedMaxSize requires n > 0 (got %d); use WithUnlimitedBufferedBuffer to opt out", n))
+	}
 	return func(o *BufferedPublisher) { o.maxSize = n }
+}
+
+// WithUnlimitedBufferedBuffer opts out of the per-buffer cap. Use
+// only when an external mechanism (disk persistence, downstream rate
+// limit) bounds memory growth — otherwise a long broker outage will
+// OOM the service.
+func WithUnlimitedBufferedBuffer() BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.maxSize = -1 }
 }
 
 // WithBufferedStateFile enables persistent storage. Messages are written to

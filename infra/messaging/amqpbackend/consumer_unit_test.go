@@ -187,7 +187,7 @@ func TestConsumer_HandleFailure_PermanentError_AcksAndDiscards(t *testing.T) {
 	// No DeadExchange configured — fall back to ack-discard.
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
-	c.handleFailure(delivery, msg, binding, apperror.NewPermanent("bad data"))
+	c.handleFailure(context.Background(), delivery, msg, binding, apperror.NewPermanent("bad data"))
 
 	assert.True(t, ack.acked, "permanent errors should be acked when no DLE configured")
 	assert.True(t, discardCalled)
@@ -214,7 +214,7 @@ func TestConsumer_HandleFailure_PermanentError_DeadLettersWhenDLEConfigured(t *t
 		DeadExchange: "test-exchange.dead",
 	}
 
-	c.handleFailure(delivery, msg, binding, apperror.NewPermanent("bad data"))
+	c.handleFailure(context.Background(), delivery, msg, binding, apperror.NewPermanent("bad data"))
 
 	assert.True(t, dlPub.called, "permanent error must publish to dead exchange when configured (FR-071)")
 	assert.True(t, ack.acked, "delivery must be acked after successful DLE publish")
@@ -232,7 +232,7 @@ func TestConsumer_HandleFailure_NoRetryConfig_Discards(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
-	c.handleFailure(delivery, msg, binding, errors.New("transient error"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient error"))
 
 	assert.True(t, ack.acked, "no retry config should ack to prevent unexpected DLX routing")
 	assert.True(t, discardCalled)
@@ -254,7 +254,7 @@ func TestConsumer_HandleFailure_Retry_Nacks(t *testing.T) {
 		},
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("transient"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
 
 	assert.True(t, ack.nacked)
 	assert.True(t, retryCalled)
@@ -296,7 +296,7 @@ func TestConsumer_HandleFailure_DeadLetter_PublishesAndAcks(t *testing.T) {
 		DeadExchange: "test-exchange.dead",
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("too many retries"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
 
 	assert.True(t, dlPub.called, "should publish to dead-letter exchange")
 	assert.True(t, ack.acked, "should ack after dead-letter publish")
@@ -335,7 +335,7 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_Nacks(t *testing.T) {
 		DeadExchange: "test-exchange.dead",
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("too many retries"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
 
 	assert.True(t, dlPub.called)
 	assert.True(t, ack.nacked, "should nack when dead-letter publish fails")
@@ -376,7 +376,7 @@ func TestConsumer_HandleFailure_ForceDiscard_AcksAndDiscards(t *testing.T) {
 		},
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("stuck"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("stuck"))
 
 	assert.True(t, ack.acked, "force discard should ack")
 	assert.True(t, discardCalled)
@@ -406,7 +406,7 @@ func TestConsumer_HandleFailure_PermanentError_AckFailure(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
-	c.handleFailure(delivery, msg, binding, apperror.NewPermanent("bad"))
+	c.handleFailure(context.Background(), delivery, msg, binding, apperror.NewPermanent("bad"))
 	assert.True(t, ack.acked)
 }
 
@@ -419,7 +419,7 @@ func TestConsumer_HandleFailure_Retry_NackFailure(t *testing.T) {
 		BindingSpec: messaging.BindingSpec{Queue: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("transient"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
 	assert.True(t, ack.nacked)
 }
 
@@ -430,7 +430,7 @@ func TestConsumer_HandleFailure_Discard_AckFailure(t *testing.T) {
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
-	c.handleFailure(delivery, msg, binding, errors.New("transient"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
 	assert.True(t, ack.acked)
 }
 
@@ -453,7 +453,7 @@ func TestConsumer_HandleFailure_ForceDiscard_AckFailure(t *testing.T) {
 		BindingSpec: messaging.BindingSpec{Queue: "test-queue", RoutingKey: "test.event", Retry: &messaging.RetryPolicy{MaxRetries: 3}},
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("stuck"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("stuck"))
 	assert.True(t, ack.acked)
 }
 
@@ -478,7 +478,7 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_NackFailure(t *testing.T
 		DeadExchange: "test-exchange.dead",
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("too many retries"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
 	assert.True(t, ack.nacked)
 }
 
@@ -503,7 +503,7 @@ func TestConsumer_HandleFailure_DeadLetter_AckFailure(t *testing.T) {
 		DeadExchange: "test-exchange.dead",
 	}
 
-	c.handleFailure(delivery, msg, binding, errors.New("too many retries"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
 	assert.True(t, dlPub.called)
 	assert.True(t, ack.acked, "ack attempted even when it fails")
 }
@@ -567,7 +567,7 @@ func TestConsumer_HandleFailure_NilHooks_DoNotPanic(t *testing.T) {
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
 	// No hooks set, should not panic.
-	c.handleFailure(delivery, msg, binding, errors.New("err"))
+	c.handleFailure(context.Background(), delivery, msg, binding, errors.New("err"))
 }
 
 // --- NewConsumer nil-dependency guards ---

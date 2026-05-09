@@ -370,7 +370,23 @@ func (c *Connection) NewPublisher(opts ...PublisherOption) *Publisher {
 // JetStream broker confirms storage, so a non-nil return guarantees the
 // message will not be lost to a broker crash.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
+	// FR-076 [MED]: reject empty subject components at the kit
+	// boundary. Pre-fix composeSubject("","") returned "" and the
+	// failure surfaced as an opaque "no subject" error from the
+	// JetStream client, far from the misconfiguration.
+	if exchange == "" {
+		return errors.New("natsbackend: exchange must not be empty")
+	}
 	subject := composeSubject(exchange, routingKey)
+	if subject == "" {
+		return errors.New("natsbackend: composed subject is empty")
+	}
+	// FR-075 [MED]: validate header names + per-value bounds before
+	// they reach NATS. Invalid names corrupt the wire frame; oversize
+	// values blow past JetStream's per-message header budget.
+	if err := validateMessageHeaders(msg.Headers); err != nil {
+		return err
+	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("natsbackend: marshal message: %w", err)
@@ -579,11 +595,77 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 // `X-Exchange` / `X-Routing-Key` headers — never the subject — so a
 // dotted exchange like `orders.v1` paired with routing-key `created`
 // is preserved exactly even though the subject is `orders.v1.created`.
+// maxHeaderValueLen caps the size of any single header value (audit
+// FR-075). NATS does not enforce a per-header cap explicitly, but the
+// connection's max_payload limit (default 1 MiB) covers the whole
+// frame. Capping a single value prevents one runaway header from
+// monopolising that budget.
+const maxHeaderValueLen = 8 * 1024
+
+// validateMessageHeaders rejects header names that fail HTTP-style
+// validation and values exceeding [maxHeaderValueLen] (audit FR-075).
+func validateMessageHeaders(h map[string]string) error {
+	for k, v := range h {
+		if k == "" {
+			return errors.New("natsbackend: header name must not be empty")
+		}
+		for i := 0; i < len(k); i++ {
+			c := k[i]
+			if c <= 0x20 || c == 0x7f || c == ':' {
+				return fmt.Errorf("natsbackend: header name %q contains invalid character", k)
+			}
+		}
+		if len(v) > maxHeaderValueLen {
+			return fmt.Errorf("natsbackend: header %q value length %d exceeds %d", k, len(v), maxHeaderValueLen)
+		}
+		for i := 0; i < len(v); i++ {
+			c := v[i]
+			if c == 0 || c == '\r' || c == '\n' {
+				return fmt.Errorf("natsbackend: header %q value contains invalid character", k)
+			}
+		}
+	}
+	return nil
+}
+
+// composeSubject builds the NATS subject for a (exchange, routingKey)
+// pair. Exchange and routing-key tokens may not contain wildcards
+// (`*`, `>`), whitespace, or characters NATS reserves; dots are
+// URL-encoded so the segment boundary is unambiguous (audit FR-074).
+//
+// Per the doc-comment contract, this used to claim sanitisation that
+// the body did not implement. The fix preserves the documented
+// behaviour: original values ride as headers, the wire subject uses
+// the encoded form so a `.`-bearing exchange like
+// "billing.invoices" cannot collide with a wildcard subscription.
 func composeSubject(exchange, routingKey string) string {
 	if routingKey == "" {
-		return exchange
+		return encodeSubjectToken(exchange)
 	}
-	return exchange + "." + routingKey
+	return encodeSubjectToken(exchange) + "." + encodeSubjectToken(routingKey)
+}
+
+// encodeSubjectToken URL-encodes characters that NATS reserves —
+// '.', '*', '>', whitespace — within a single subject token.
+func encodeSubjectToken(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '.':
+			b.WriteString("%2E")
+		case c == '*':
+			b.WriteString("%2A")
+		case c == '>':
+			b.WriteString("%3E")
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			b.WriteString(fmt.Sprintf("%%%02X", c))
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // splitSubject is the legacy splitter used only for messages that

@@ -13,8 +13,12 @@ import (
 )
 
 func TestComposeSubject_RoutingKeyOptional(t *testing.T) {
+	// FR-074 [MED]: dots inside individual segments are URL-encoded
+	// so "events" + "user.created" composes to a NATS subject with
+	// exactly two dots (one boundary). Pre-fix the contract claimed
+	// sanitisation but composeSubject just concatenated.
 	assert.Equal(t, "events", composeSubject("events", ""))
-	assert.Equal(t, "events.user.created", composeSubject("events", "user.created"))
+	assert.Equal(t, "events.user%2Ecreated", composeSubject("events", "user.created"))
 }
 
 func TestSplitSubject_RoundTripsCompose(t *testing.T) {
