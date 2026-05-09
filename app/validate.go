@@ -7,58 +7,57 @@ import (
 	"strings"
 )
 
-// isUnspecifiedHost reports whether host names an "all-interfaces"
-// bind. Catches every form net.Listen accepts as the IPv4 / IPv6
-// wildcard, by going through the same address parser net.Listen uses
-// internally — net.ResolveTCPAddr.
+// isLoopbackHost reports whether host resolves exclusively to
+// loopback (127.0.0.0/8 or ::1). Used by the production-safety
+// validator to enforce that the internal ops port (which serves
+// /metrics, /healthz, /ready without authentication) binds only to
+// the loopback interface unless [Builder.WithInternalNonLoopback]
+// has been called.
 //
-// Forms confirmed to be flagged:
+// FR-010 [HIGH]: pre-2.0 the validator only rejected unspecified
+// (wildcard) hosts, so INTERNAL_HOST=10.0.0.5 (or any other reachable
+// interface) passed silently and exposed /metrics on the network.
+// The new contract is: only loopback binds pass the default check;
+// everything else — wildcard, private-network, public IP, or
+// hostname that resolves outside loopback — requires
+// WithInternalNonLoopback.
 //
-//   - Canonical IPv4 0.0.0.0
-//   - Short / leading-zero IPv4: "0", "0.0", "0.0.0", "00.00.00.00",
-//     "000.000.000.000", "0.00.00.00"
-//   - Hex / octal IPv4: "0x0", "0X00000000", "0x0.0x0.0x0.0x0",
-//     "00", "000"
-//   - Single-segment numeric overflow that cgo's getaddrinfo truncates
-//     to zero: "4294967296" (2^32), "0x100000000", "040000000000"
-//     (audit finding N-9 — the previous implementation walked numeric
-//     segments with strconv.ParseUint and missed this class because
-//     the value before truncation is non-zero)
-//   - IPv6 [::], ::, 0:0:0:0:0:0:0:0 in canonical and bracket-wrapped form
-//   - IPv6-mapped IPv4 wildcard ::ffff:0.0.0.0
+// Empty host counts as loopback because [InternalConfig.Addr]
+// defaults empty to "127.0.0.1" at listen time. Bracket-only IPv6
+// forms ("[]", "[", "]") collapse to empty after stripping but DO
+// resolve to the IPv6 wildcard at listen time, so they're flagged
+// as non-loopback.
 //
-// Empty host is NOT flagged because [InternalConfig.Addr] defaults
-// empty to "127.0.0.1" — an unset INTERNAL_HOST resolves to loopback
-// at listen time.
-//
-// net.ResolveTCPAddr does NOT do DNS lookup for numeric host strings;
-// it only invokes the resolver when the input is a hostname, in which
-// case the validator (run once at boot) is the right place to do it
-// anyway — a hostname that happens to resolve to 0.0.0.0 IS exposing
-// /metrics on all interfaces and should be flagged.
-func isUnspecifiedHost(host string) bool {
+// net.ResolveTCPAddr does NOT do DNS lookup for numeric host
+// strings; it only invokes the resolver when the input is a
+// hostname, in which case the validator (run once at boot) is the
+// right place to do it — a hostname that resolves to a non-loopback
+// IS exposing /metrics on the network and should be flagged.
+func isLoopbackHost(host string) bool {
 	if host == "" {
-		return false
-	}
-	// Strip square brackets that may wrap an IPv6 literal — net.JoinHostPort
-	// docs explicitly say "host does not contain square brackets", and
-	// passing "[::]" produces "[[::]]:0" which fails to parse.
-	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-	// Bracket-only forms ("[]", "[", "]") strip down to an empty
-	// string. net.Listen accepts "[]:port" as the IPv6 wildcard and
-	// binds [::]:port — exposing /metrics on every interface (audit
-	// finding N-10). The original empty-host branch above does NOT
-	// catch this because the operator DID set the field, just to
-	// brackets-only. Treat post-strip empty as wildcard so the
-	// validator rejects it.
-	if stripped == "" {
+		// Empty defaults to 127.0.0.1 in the listener config.
 		return true
+	}
+	// Strip square brackets that may wrap an IPv6 literal —
+	// net.JoinHostPort docs explicitly say "host does not contain
+	// square brackets", and passing "[::]" produces "[[::]]:0"
+	// which fails to parse.
+	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	if stripped == "" {
+		// Bracket-only forms ("[]", "[", "]") strip to empty BUT
+		// net.Listen accepts "[]:port" as the IPv6 wildcard and binds
+		// [::]:port — that's a non-loopback exposure (audit finding
+		// N-10). Treat post-strip empty as non-loopback so the
+		// default validator rejects it.
+		return false
 	}
 	addr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(stripped, "0"))
 	if err != nil {
+		// Resolution failed (typo, unresolvable hostname) — fail
+		// closed: not provably loopback.
 		return false
 	}
-	return addr.IP != nil && addr.IP.IsUnspecified()
+	return addr.IP != nil && addr.IP.IsLoopback()
 }
 
 // Validate checks for common configuration mistakes before startup.
@@ -153,13 +152,15 @@ func (b *Builder) validateProductionSafety() error {
 		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
-	// C-1: the internal ops port exposes /metrics without authentication.
-	// Binding to any unspecified address (0.0.0.0, [::], "") leaks
-	// Prometheus labels (route patterns, tenant IDs) to anyone on the
-	// network. Operators with strict network isolation must opt in
-	// explicitly via WithInternalNonLoopback.
-	if isUnspecifiedHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host=%q exposes unauthenticated /metrics on all interfaces; bind to a loopback or internal interface, or call WithInternalNonLoopback when network isolation is enforced", b.cfg.Internal.Host)
+	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,
+	// /healthz, /ready without authentication. Pre-fix, the validator
+	// only rejected wildcard binds (0.0.0.0, [::]), so any specific
+	// non-loopback IP (10.0.0.5, a hostname that resolves to a
+	// routable interface, etc.) silently passed. Now the default
+	// requires loopback; non-loopback binds — wildcard, private,
+	// public — all need explicit WithInternalNonLoopback.
+	if !isLoopbackHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
+		return fmt.Errorf("Internal.Host=%q is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call WithInternalNonLoopback when network isolation is enforced", b.cfg.Internal.Host)
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by

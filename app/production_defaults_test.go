@@ -106,6 +106,45 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
 }
 
+// TestBuilder_Validates_RejectsSpecificNonLoopbackInternal regression-tests
+// FR-010 [HIGH]: pre-fix, the validator only rejected wildcard hosts
+// (0.0.0.0, [::]). A specific non-loopback IP like 10.0.0.5 — or any
+// hostname that resolves to a routable interface — slipped through
+// silently and exposed unauthenticated /metrics on the network.
+// The fix flipped the contract from "reject unspecified" to "require
+// loopback".
+func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
+	for _, host := range []string{"10.0.0.5", "192.168.1.1", "172.16.0.1", "8.8.8.8"} {
+		t.Run(host, func(t *testing.T) {
+			cfg := BaseConfig{
+				Server:   ServerConfig{Port: 8080},
+				Internal: InternalConfig{Host: host, Port: 9090},
+				TLS:      validTLSForTest(t),
+			}
+			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			err := b.Validate()
+			require.Errorf(t, err, "Internal.Host=%q must be rejected without WithInternalNonLoopback", host)
+			assert.Contains(t, err.Error(), "not loopback")
+			assert.Contains(t, err.Error(), "WithInternalNonLoopback")
+		})
+	}
+}
+
+func TestBuilder_Validates_AcceptsLoopbackVariants(t *testing.T) {
+	for _, host := range []string{"", "127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost"} {
+		t.Run(host, func(t *testing.T) {
+			cfg := BaseConfig{
+				Server:   ServerConfig{Port: 8080},
+				Internal: InternalConfig{Host: host, Port: 9090},
+				TLS:      validTLSForTest(t),
+			}
+			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			err := b.Validate()
+			require.NoErrorf(t, err, "Internal.Host=%q is loopback and must pass", host)
+		})
+	}
+}
+
 // TestBuilder_Validates_RejectsIPv6Wildcard pins the M-A audit fix:
 // the C-1 check used to compare the literal string "0.0.0.0", missing
 // the IPv6 wildcard [::] (and other unspecified-address forms).
