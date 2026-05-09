@@ -155,9 +155,26 @@ type Option func(*Budget)
 // Default: "budget:". Pick a unique prefix per logical budget so two
 // budgets with different (cap, period) configurations on the same
 // Redis can't collide.
+//
+// Audit FR-057: panics on empty or >maxKeyPrefixLen prefix so a
+// misconfigured / attacker-influenced prefix cannot inflate every
+// Redis key.
 func WithKeyPrefix(p string) Option {
+	if p == "" {
+		panic("budget/redis: WithKeyPrefix requires a non-empty prefix")
+	}
+	if len(p) > maxKeyPrefixLen {
+		panic(fmt.Sprintf("budget/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+	}
 	return func(b *Budget) { b.prefix = p }
 }
+
+// maxKeyPrefixLen / maxRawKeyLen cap Redis key components (audit
+// FR-057) to prevent pathological key sizes.
+const (
+	maxKeyPrefixLen = 128
+	maxRawKeyLen    = 256
+)
 
 // WithKeyTTL overrides the per-bucket expiration. Default:
 // `period + 1m` to keep cold buckets from accumulating in Redis.
@@ -254,7 +271,7 @@ func (b *Budget) ttlSeconds() int64 {
 
 // Consume implements [budget.Budget].
 func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
-	if key == "" {
+	if key == "" || len(key) > maxRawKeyLen {
 		return false, 0, 0, budget.ErrInvalidKey
 	}
 	if amount < 0 {
@@ -321,7 +338,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 // clamps at the cap (`used` floors at zero) so refunds never
 // inflate the budget above its configured limit.
 func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
-	if key == "" {
+	if key == "" || len(key) > maxRawKeyLen {
 		return 0, budget.ErrInvalidKey
 	}
 	if amount < 0 {
@@ -347,7 +364,7 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 
 // Peek implements [budget.Budget].
 func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
-	if key == "" {
+	if key == "" || len(key) > maxRawKeyLen {
 		return 0, budget.ErrInvalidKey
 	}
 	now, err := b.now(ctx)

@@ -84,9 +84,25 @@ type Option func(*Limiter)
 // "ratelimit:gcra:". Pick a unique prefix per logical limiter so two
 // limiters with different (period, burst) configurations on the same
 // Redis can't collide.
+//
+// Audit FR-058: panics on empty or >maxKeyPrefixLen prefix so a
+// misconfigured prefix cannot inflate every Redis key.
 func WithKeyPrefix(p string) Option {
+	if p == "" {
+		panic("ratelimit/redis: WithKeyPrefix requires a non-empty prefix")
+	}
+	if len(p) > maxKeyPrefixLen {
+		panic(fmt.Sprintf("ratelimit/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+	}
 	return func(l *Limiter) { l.prefix = p }
 }
+
+// maxKeyPrefixLen / maxRawKeyLen cap Redis key components (audit
+// FR-058) to prevent pathological key sizes.
+const (
+	maxKeyPrefixLen = 128
+	maxRawKeyLen    = 256
+)
 
 // WithKeyTTL overrides the per-key expiration. Default: max(period,
 // 60s). Bounding TTL keeps cold keys from accumulating in Redis.
@@ -170,7 +186,7 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 // Allow reports whether key's next event is permitted. retryAfter is
 // the time-until-next-allowed when denied.
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
-	if key == "" {
+	if key == "" || len(key) > maxRawKeyLen {
 		return false, 0, ratelimit.ErrInvalidKey
 	}
 	now, err := l.now(ctx)
