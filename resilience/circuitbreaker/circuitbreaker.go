@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
@@ -102,9 +103,19 @@ func WithReadyToTrip(fn func(Counts) bool) Option {
 //
 // rate must be in (0, 1]; minRequests prevents tripping on a single
 // failed request out of one.
+//
+// FR-088 [LOW]: panics on rate outside (0, 1] or minRequests == 0.
+// rate > 1 made the breaker un-trippable; minRequests == 0 made it
+// trip on the very first failure.
 func WithErrorRateThreshold(rate float64, minRequests uint32) Option {
+	if rate <= 0 || rate > 1 {
+		panic(fmt.Sprintf("circuitbreaker: WithErrorRateThreshold requires 0 < rate <= 1 (got %v)", rate))
+	}
+	if minRequests == 0 {
+		panic("circuitbreaker: WithErrorRateThreshold requires minRequests >= 1")
+	}
 	return WithReadyToTrip(func(c Counts) bool {
-		if c.Requests < uint32(minRequests) {
+		if c.Requests < minRequests {
 			return false
 		}
 		return float64(c.TotalFailures)/float64(c.Requests) > rate

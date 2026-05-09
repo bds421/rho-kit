@@ -5,6 +5,7 @@ package retry
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -109,13 +110,40 @@ type Option func(*Policy)
 func WithMaxRetries(n int) Option { return func(p *Policy) { p.MaxRetries = n } }
 
 // WithBaseDelay sets the initial backoff delay.
-func WithBaseDelay(d time.Duration) Option { return func(p *Policy) { p.BaseDelay = d } }
+//
+// FR-087 [MED]: panics on d <= 0. A zero base delay turns the
+// retry loop into a tight CPU-burning spin; a negative one is
+// always a wiring bug.
+func WithBaseDelay(d time.Duration) Option {
+	if d <= 0 {
+		panic(fmt.Sprintf("retry: WithBaseDelay requires d > 0 (got %s)", d))
+	}
+	return func(p *Policy) { p.BaseDelay = d }
+}
 
 // WithMaxDelay sets the maximum backoff delay.
-func WithMaxDelay(d time.Duration) Option { return func(p *Policy) { p.MaxDelay = d } }
+//
+// FR-087 [MED]: panics on d <= 0. A non-positive cap silently
+// disables the cap and lets exponential backoff exceed any sane
+// bound.
+func WithMaxDelay(d time.Duration) Option {
+	if d <= 0 {
+		panic(fmt.Sprintf("retry: WithMaxDelay requires d > 0 (got %s)", d))
+	}
+	return func(p *Policy) { p.MaxDelay = d }
+}
 
 // WithFactor sets the exponential backoff multiplier.
-func WithFactor(f float64) Option { return func(p *Policy) { p.Factor = f } }
+//
+// FR-087 [MED]: panics on f < 1. A factor below 1 produces a
+// shrinking series (the second retry sleeps less than the first),
+// which defeats the backoff and is always a wiring bug.
+func WithFactor(f float64) Option {
+	if f < 1 {
+		panic(fmt.Sprintf("retry: WithFactor requires f >= 1 (got %v)", f))
+	}
+	return func(p *Policy) { p.Factor = f }
+}
 
 // WithMaxElapsedTime aborts retries once cumulative wall-clock time
 // reaches d. Zero disables the cap.
