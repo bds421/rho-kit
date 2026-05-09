@@ -184,12 +184,42 @@ func TestConsumer_HandleFailure_PermanentError_AcksAndDiscards(t *testing.T) {
 	})
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
+	// No DeadExchange configured — fall back to ack-discard.
 	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
 
 	c.handleFailure(delivery, msg, binding, apperror.NewPermanent("bad data"))
 
-	assert.True(t, ack.acked, "permanent errors should be acked")
+	assert.True(t, ack.acked, "permanent errors should be acked when no DLE configured")
 	assert.True(t, discardCalled)
+}
+
+// FR-071 [HIGH] regression: when a DeadExchange is configured a
+// permanent handler error must be routed to the DLE, not silently
+// discarded. Pre-fix the consumer always ack-discarded permanent
+// errors regardless of binding configuration, so poison messages
+// vanished without a broker-visible audit trail.
+func TestConsumer_HandleFailure_PermanentError_DeadLettersWhenDLEConfigured(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	dlPub := &fakeDeadLetterPublisher{}
+	var deadLetterCalled bool
+	var discardCalled bool
+	c := newTestConsumer(dlPub, ConsumerHooks{
+		OnDeadLetter: func(_, _, _ string, _ int) { deadLetterCalled = true },
+		OnDiscard:    func(_, _, _ string) { discardCalled = true },
+	})
+	msg, _ := messaging.NewMessage("test.event", "payload")
+	delivery := makeAMQPDelivery(ack, msg)
+	binding := messaging.Binding{
+		BindingSpec: messaging.BindingSpec{Queue: "test-queue", RoutingKey: "test.event"},
+		DeadExchange: "test-exchange.dead",
+	}
+
+	c.handleFailure(delivery, msg, binding, apperror.NewPermanent("bad data"))
+
+	assert.True(t, dlPub.called, "permanent error must publish to dead exchange when configured (FR-071)")
+	assert.True(t, ack.acked, "delivery must be acked after successful DLE publish")
+	assert.True(t, deadLetterCalled, "OnDeadLetter hook must fire for permanent-error DLE routing")
+	assert.False(t, discardCalled, "OnDiscard must NOT fire when message is dead-lettered")
 }
 
 func TestConsumer_HandleFailure_NoRetryConfig_Discards(t *testing.T) {

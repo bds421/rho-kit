@@ -323,10 +323,24 @@ func unmarshal(delivery amqp.Delivery) (messaging.Message, error) {
 }
 
 func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error) {
-	// Permanent errors (e.g. structurally invalid messages) will never succeed
-	// on retry. Ack immediately to avoid wasting retry budget.
+	// Permanent errors (e.g. structurally invalid messages) will never
+	// succeed on retry. Audit FR-071 [HIGH]: route them to the dead
+	// exchange when configured so a poison message lands in a
+	// broker-visible DLQ instead of vanishing. When no dead exchange
+	// is configured, fall back to the original ack-discard behaviour
+	// so callers that opted out of DLQ infrastructure still get
+	// retry-budget protection from poison messages.
 	if apperror.IsPermanent(handlerErr) {
-		c.logger.Warn("permanent handler error, discarding message",
+		if b.DeadExchange != "" {
+			c.logger.Warn("permanent handler error, dead-lettering message",
+				"error", handlerErr,
+				"id", msg.ID,
+				"type", msg.Type,
+			)
+			c.routeToDeadExchange(delivery, msg, b, handlerErr, 0)
+			return
+		}
+		c.logger.Warn("permanent handler error, discarding message (no dead exchange configured)",
 			"error", handlerErr,
 			"id", msg.ID,
 			"type", msg.Type,
@@ -367,51 +381,7 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 			"type", msg.Type,
 			"retries", retryCount,
 		)
-
-		// Publish original bytes to dead exchange BEFORE acking. Uses PublishRaw
-		// to avoid re-serialization round-trip — the body is exactly what the
-		// producer sent.
-		//
-		// On publish failure we'd normally nack-discard so the message re-enters
-		// the retry cycle, but a PERMANENTLY broken dead exchange (typo, missing
-		// binding) would bounce each message MaxRetries × safetyMaxBounceMultiplier
-		// times against the failing exchange. After defaultMaxDLQConsecutiveFailures
-		// consecutive failures we flip to force-discard with a loud log line so
-		// operators can fix the DLE config rather than thrashing forever. Any
-		// successful publish resets the counter.
-		deadCtx, deadCancel := context.WithTimeout(context.Background(), deadLetterPublishTimeout)
-		pubErr := c.publisher.PublishRaw(deadCtx, b.DeadExchange, b.Queue, delivery.Body, msg.ID)
-		deadCancel()
-		if pubErr != nil {
-			fails := c.dlqConsecutiveFail.Add(1)
-			capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
-			if capped {
-				c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
-					"error", pubErr, "id", msg.ID, "consecutive_failures", fails,
-					"cap", c.maxDLQConsecutiveFail)
-				if ackErr := delivery.Ack(false); ackErr != nil {
-					c.logger.Error("ack failed during DLE-force-discard", "error", ackErr)
-				}
-				if c.hooks.OnDiscard != nil {
-					c.hooks.OnDiscard(msg.ID, msg.Type, b.Queue)
-				}
-				return
-			}
-			c.logger.Error("dead-letter publish failed, nacking to retry",
-				"error", pubErr, "id", msg.ID, "consecutive_failures", fails)
-			if nackErr := delivery.Nack(false, false); nackErr != nil {
-				c.logger.Error("nack failed after dead-letter publish failure", "error", nackErr)
-			}
-			return
-		}
-		c.dlqConsecutiveFail.Store(0)
-
-		if ackErr := delivery.Ack(false); ackErr != nil {
-			c.logger.Error("ack failed after dead-letter publish", "error", ackErr, "id", msg.ID)
-		}
-		if c.hooks.OnDeadLetter != nil {
-			c.hooks.OnDeadLetter(msg.ID, msg.Type, b.Queue, retryCount)
-		}
+		c.routeToDeadExchange(delivery, msg, b, handlerErr, retryCount)
 
 	case actionRetry:
 		c.logger.Warn("handler failed, nacking for DLX retry",
@@ -441,6 +411,57 @@ func (c *Consumer) handleFailure(delivery amqp.Delivery, msg messaging.Message, 
 		if c.hooks.OnDiscard != nil {
 			c.hooks.OnDiscard(msg.ID, msg.Type, b.Queue)
 		}
+	}
+}
+
+// routeToDeadExchange publishes the original delivery bytes to the
+// configured dead exchange and acks on success, with safeguards
+// against a misconfigured DLE bouncing messages forever.
+//
+// On publish failure we'd normally nack-discard so the message
+// re-enters the retry cycle, but a PERMANENTLY broken dead exchange
+// (typo, missing binding) would bounce each message
+// MaxRetries × safetyMaxBounceMultiplier times against the failing
+// exchange. After defaultMaxDLQConsecutiveFailures consecutive
+// failures we flip to force-discard with a loud log line so operators
+// can fix the DLE config rather than thrashing forever. Any
+// successful publish resets the counter.
+//
+// retryCount is reported through OnDeadLetter for observability;
+// pass 0 for permanent-error routings (audit FR-071) where the
+// message never made it to a retry attempt.
+func (c *Consumer) routeToDeadExchange(delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) {
+	deadCtx, deadCancel := context.WithTimeout(context.Background(), deadLetterPublishTimeout)
+	pubErr := c.publisher.PublishRaw(deadCtx, b.DeadExchange, b.Queue, delivery.Body, msg.ID)
+	deadCancel()
+	if pubErr != nil {
+		fails := c.dlqConsecutiveFail.Add(1)
+		capped := c.maxDLQConsecutiveFail > 0 && int(fails) > c.maxDLQConsecutiveFail
+		if capped {
+			c.logger.Error("dead-letter publish has failed repeatedly, force-discarding to break the loop — fix the dead exchange",
+				"error", pubErr, "id", msg.ID, "consecutive_failures", fails,
+				"cap", c.maxDLQConsecutiveFail, "handler_error", handlerErr)
+			if ackErr := delivery.Ack(false); ackErr != nil {
+				c.logger.Error("ack failed during DLE-force-discard", "error", ackErr)
+			}
+			if c.hooks.OnDiscard != nil {
+				c.hooks.OnDiscard(msg.ID, msg.Type, b.Queue)
+			}
+			return
+		}
+		c.logger.Error("dead-letter publish failed, nacking to retry",
+			"error", pubErr, "id", msg.ID, "consecutive_failures", fails, "handler_error", handlerErr)
+		if nackErr := delivery.Nack(false, false); nackErr != nil {
+			c.logger.Error("nack failed after dead-letter publish failure", "error", nackErr)
+		}
+		return
+	}
+	c.dlqConsecutiveFail.Store(0)
+	if ackErr := delivery.Ack(false); ackErr != nil {
+		c.logger.Error("ack failed after dead-letter publish", "error", ackErr, "id", msg.ID)
+	}
+	if c.hooks.OnDeadLetter != nil {
+		c.hooks.OnDeadLetter(msg.ID, msg.Type, b.Queue, retryCount)
 	}
 }
 
