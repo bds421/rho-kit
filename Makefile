@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable
+.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
@@ -84,9 +84,16 @@ clean:
 	rm -f $(COVERAGE_FILE)
 	go clean -cache -testcache
 
-## ci: Run the full CI pipeline locally (lint + test + build)
-ci: lint test-race build
+## ci: Run the full CI pipeline locally (lint + test + build + tracked-binaries check)
+ci: check-no-binaries lint test-race build
 
 ## check-publishable: Static pre-tag gate — fail if any go.mod still pins internal modules at v0.0.0
 check-publishable:
 	@bash tools/nx-release/check-no-internal-v0.sh
+
+## check-no-binaries: Reject tracked binary artifacts outside fixture dirs.
+# Audit FR-001: prevents Mach-O / ELF / Windows PE executables and >1MB binary
+# blobs from being committed unless under explicitly allow-listed test fixture
+# directories. Run as part of `make ci` and pre-commit.
+check-no-binaries:
+	@bash tools/check-no-binaries.sh
