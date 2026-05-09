@@ -16,10 +16,24 @@ type Option func(*options)
 
 type options struct {
 	allowPrivateIPs bool
+	requestTimeout  time.Duration
+	minTLSVersion   uint16
 }
 
 func collectOptions(opts []Option) options {
-	var o options
+	o := options{
+		// FR-016 [MED]: default whole-request budget so a hostile
+		// upstream cannot stream bytes forever to callers that
+		// forgot to set their own deadline. 30s is generous for any
+		// legitimate small-payload outbound request; raise via
+		// [WithRequestTimeout].
+		requestTimeout: 30 * time.Second,
+		// FR-017 [LOW]: TLS 1.2 is the realistic floor for arbitrary
+		// public HTTPS endpoints. Internal mTLS still pins TLS 1.3
+		// in its own profiles. Callers that want a strict TLS-1.3
+		// SSRF profile can set [WithMinTLSVersion](tls.VersionTLS13).
+		minTLSVersion: tls.VersionTLS12,
+	}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -37,6 +51,27 @@ func WithAllowPrivateIPs() Option {
 	return func(o *options) {
 		o.allowPrivateIPs = true
 	}
+}
+
+// WithRequestTimeout overrides the whole-request deadline applied to
+// SSRF-safe clients (audit FR-016). Pass <=0 to disable; the default
+// is 30s.
+//
+// The dial / handshake / response-header timeouts on the transport
+// already cap connection setup, but a hostile upstream can still
+// stream bytes forever during body read. The whole-request timeout
+// closes that gap for callers that forgot to set their own context
+// deadline.
+func WithRequestTimeout(d time.Duration) Option {
+	return func(o *options) { o.requestTimeout = d }
+}
+
+// WithMinTLSVersion overrides the minimum TLS version on the SSRF
+// transport (audit FR-017). Pass [tls.VersionTLS13] for strict
+// kit-internal-style outbound calls; pass [tls.VersionTLS12] (the
+// default) for compatibility with public TLS-1.2-only upstreams.
+func WithMinTLSVersion(v uint16) Option {
+	return func(o *options) { o.minTLSVersion = v }
 }
 
 // DNSResolver abstracts DNS lookups for testability.
@@ -177,6 +212,7 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 	if err != nil {
 		return nil, "", err
 	}
+	cfg := collectOptions(opts)
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			_, port, err := net.SplitHostPort(addr)
@@ -187,12 +223,7 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: host,
-			// Default to TLS 1.3 to match the kit's internal mTLS profile.
-			// The previous TLS 1.2 default for outbound calls to user-supplied
-			// URLs was strictly weaker than the rest of the kit. Callers with
-			// legacy interop needs can wrap the returned transport and lower
-			// MinVersion explicitly.
-			MinVersion: tls.VersionTLS13,
+			MinVersion: cfg.minTLSVersion,
 		},
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
@@ -210,8 +241,10 @@ func SSRFSafeClient(ctx context.Context, host string, resolver DNSResolver, opts
 	if err != nil {
 		return nil, "", err
 	}
+	cfg := collectOptions(opts)
 	return &http.Client{
 		Transport: transport,
+		Timeout:   cfg.requestTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -306,8 +339,7 @@ func SSRFSafeDynamicTransport(resolver DNSResolver, opts ...Option) *http.Transp
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
 		},
 		TLSClientConfig: &tls.Config{
-			// Default to TLS 1.3 to match the kit's internal mTLS profile.
-			MinVersion: tls.VersionTLS13,
+			MinVersion: collectOptions(opts).minTLSVersion,
 			// ServerName intentionally left empty — Go's http.Transport
 			// derives it from the request URL, which is correct for
 			// dynamic / redirect-following clients.
@@ -332,8 +364,10 @@ func SSRFSafeClientFollowRedirects(maxHops int, resolver DNSResolver, opts ...Op
 	if maxHops <= 0 {
 		panic("ssrf: SSRFSafeClientFollowRedirects requires maxHops > 0")
 	}
+	cfg := collectOptions(opts)
 	return &http.Client{
 		Transport: SSRFSafeDynamicTransport(resolver, opts...),
+		Timeout:   cfg.requestTimeout,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= maxHops {
 				return fmt.Errorf("ssrf: redirect chain exceeded %d hops", maxHops)

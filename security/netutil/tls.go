@@ -24,10 +24,23 @@ func (c TLSConfig) Enabled() bool {
 }
 
 // Validate checks that the configured TLS files exist and are readable.
-// Returns nil if TLS is not enabled.
+// Returns nil if TLS is fully disabled (all three paths empty).
+//
+// FR-015 [MED]: a partial configuration (one or two of the three
+// paths set) used to validate as disabled, so a typo silently ran
+// the service plaintext. Now Validate rejects partial configs with
+// a typed error so the wiring bug surfaces at startup. Use
+// [TLSConfig.Enabled] when callers genuinely want the "all-or-
+// nothing" boolean for branching.
 func (c TLSConfig) Validate() error {
-	if !c.Enabled() {
+	set, missing := tlsConfigStatus(c)
+	if len(set) == 0 {
+		// Fully disabled — caller's choice; the [Builder] enforces TLS
+		// or [Builder.WithoutTLS] elsewhere.
 		return nil
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("netutil: partial TLS configuration — set fields %v but missing %v; either set all of TLS_CA_CERT, TLS_CERT, TLS_KEY or none", set, missing)
 	}
 	for _, entry := range []struct{ name, path string }{
 		{"TLS_CA_CERT", c.CACert},
@@ -41,6 +54,24 @@ func (c TLSConfig) Validate() error {
 		_ = f.Close()
 	}
 	return nil
+}
+
+// tlsConfigStatus returns the names of populated and missing TLS
+// fields. Used by Validate to distinguish "fully off" from "partially
+// on".
+func tlsConfigStatus(c TLSConfig) (set []string, missing []string) {
+	for _, entry := range []struct{ name, path string }{
+		{"TLS_CA_CERT", c.CACert},
+		{"TLS_CERT", c.Cert},
+		{"TLS_KEY", c.Key},
+	} {
+		if entry.path != "" {
+			set = append(set, entry.name)
+		} else {
+			missing = append(missing, entry.name)
+		}
+	}
+	return set, missing
 }
 
 // ServerTLSOption configures server-side TLS behavior.

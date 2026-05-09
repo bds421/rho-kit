@@ -88,7 +88,16 @@ func WithCacheControl(value string) Option {
 // trust decisions agree. Pass nil or an empty slice to revert to the
 // strict r.TLS-only check.
 func WithTrustedProxiesForProto(proxies []*net.IPNet) Option {
-	return func(c *config) { c.trustedProxies = proxies }
+	// FR-019 [LOW]: filter nil entries at construction so the
+	// per-request loop is panic-safe even if a future caller
+	// reconstructs the slice manually.
+	cleaned := make([]*net.IPNet, 0, len(proxies))
+	for _, p := range proxies {
+		if p != nil {
+			cleaned = append(cleaned, p)
+		}
+	}
+	return func(c *config) { c.trustedProxies = cleaned }
 }
 
 // WithForceHSTS enables HSTS unconditionally on every response, regardless
@@ -196,6 +205,11 @@ func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
 		return false
 	}
 	for _, cidr := range trusted {
+		// FR-019 [LOW]: skip nil entries — a nil CIDR in the
+		// configured slice would otherwise panic on every request.
+		if cidr == nil {
+			continue
+		}
 		if cidr.Contains(ip) {
 			return true
 		}

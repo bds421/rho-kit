@@ -33,8 +33,13 @@ type Config struct {
 	Timeout             time.Duration
 	FrameOption         secheaders.FrameOption
 	RecoverMetrics      *mwrecover.Metrics
-	Outer               []func(http.Handler) http.Handler
-	Inner               []func(http.Handler) http.Handler
+	// SecHeadersOptions forwards arbitrary options to [secheaders.New]
+	// (audit FR-018). Use this to wire trusted-proxy CIDRs, force
+	// HSTS, or any other secheaders option that the stack does not
+	// surface as a typed field.
+	SecHeadersOptions []secheaders.Option
+	Outer             []func(http.Handler) http.Handler
+	Inner             []func(http.Handler) http.Handler
 }
 
 // Option mutates the Config.
@@ -127,10 +132,14 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = mwmetrics.Metrics(h)
 	}
 	if cfg.EnableSecHeaders {
-		var shOpts []secheaders.Option
+		shOpts := make([]secheaders.Option, 0, 1+len(cfg.SecHeadersOptions))
 		if cfg.FrameOption != "" {
 			shOpts = append(shOpts, secheaders.WithFrameOption(cfg.FrameOption))
 		}
+		// FR-018 [MED]: forward caller-supplied secheaders options
+		// (trusted-proxy CIDRs, force HSTS, etc.) AFTER the typed
+		// FrameOption so callers can override defaults.
+		shOpts = append(shOpts, cfg.SecHeadersOptions...)
 		h = secheaders.New(shOpts...)(h)
 	}
 	if cfg.EnableRecover {
@@ -232,6 +241,16 @@ func WithRecoverMetrics(m *mwrecover.Metrics) Option {
 // Use [secheaders.SameOrigin] for services that need iframe embedding.
 func WithFrameOption(opt secheaders.FrameOption) Option {
 	return func(cfg *Config) { cfg.FrameOption = opt }
+}
+
+// WithSecHeadersOptions forwards arbitrary options to [secheaders.New]
+// (audit FR-018). Use this to configure trusted-proxy CIDRs for HSTS
+// behind TLS-terminating ingress, force HSTS unconditionally, or any
+// other secheaders option not surfaced as a typed stack field.
+func WithSecHeadersOptions(opts ...secheaders.Option) Option {
+	return func(cfg *Config) {
+		cfg.SecHeadersOptions = append(cfg.SecHeadersOptions, opts...)
+	}
 }
 
 // WithOuter appends middleware that wraps the full stack.
