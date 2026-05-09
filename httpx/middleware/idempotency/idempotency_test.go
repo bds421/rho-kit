@@ -244,8 +244,9 @@ func TestFirstRequestPassesThroughAndCaches(t *testing.T) {
 		t.Errorf("body = %q, want %q", rec.Body.String(), `{"ok":true}`)
 	}
 
-	// The store key is fingerprinted with method+path, so look up the hashed key.
-	storeKey := fingerprintKey(http.MethodPost, "/orders", "key-1", "")
+	// The store key is fingerprinted with method+path+query+key, so look up the hashed key.
+	keyReq := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	storeKey := fingerprintKey(keyReq, "key-1", "", nil)
 	cached, _, err := store.Get(context.Background(), storeKey, nil)
 	if err != nil {
 		t.Fatalf("store.Get error: %v", err)
@@ -632,7 +633,8 @@ func TestPanicInHandlerReleasesLock(t *testing.T) {
 
 	// The lock should have been released, allowing a new TryLock.
 	// Use the fingerprinted key that the middleware actually stores.
-	storeKey := fingerprintKey(http.MethodPost, "/", "panic-key", "")
+	keyReq := httptest.NewRequest(http.MethodPost, "/", nil)
+	storeKey := fingerprintKey(keyReq, "panic-key", "", nil)
 	_, _, locked, err := store.TryLock(context.Background(), storeKey, nil, time.Minute)
 	if err != nil {
 		t.Fatalf("TryLock error: %v", err)
@@ -1004,5 +1006,169 @@ func TestResponseCapture_ForwardsHijack(t *testing.T) {
 	}
 	if !tracked.called.Load() {
 		t.Error("Hijack was not forwarded to the underlying ResponseWriter")
+	}
+}
+
+// FR-029 [HIGH]: Two requests sharing the same Idempotency-Key and
+// body but differing in query string MUST NOT collide on the same
+// cache slot. Pre-fix, only method+path+rawKey participated, so
+// /pay?dry_run=true and /pay?dry_run=false would replay each other.
+func TestFingerprintKey_QueryStringDistinguishesRequests(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodPost, "/pay?dry_run=true", nil)
+	r2 := httptest.NewRequest(http.MethodPost, "/pay?dry_run=false", nil)
+
+	k1 := fingerprintKey(r1, "key-1", "user-a", nil)
+	k2 := fingerprintKey(r2, "key-1", "user-a", nil)
+	if k1 == k2 {
+		t.Fatal("expected distinct fingerprints for differing query strings")
+	}
+}
+
+// FR-029 [HIGH]: query parameter ORDER must not change the
+// fingerprint — ?b=1&a=2 and ?a=2&b=1 are semantically identical
+// and must hash to the same slot, otherwise legitimate retries from
+// clients that re-serialise their query strings would be treated
+// as new operations.
+func TestFingerprintKey_QueryStringOrderingEquivalent(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodPost, "/orders?b=1&a=2", nil)
+	r2 := httptest.NewRequest(http.MethodPost, "/orders?a=2&b=1", nil)
+
+	k1 := fingerprintKey(r1, "key-1", "user-a", nil)
+	k2 := fingerprintKey(r2, "key-1", "user-a", nil)
+	if k1 != k2 {
+		t.Fatalf("expected identical fingerprints for query reorderings, got %s vs %s", k1, k2)
+	}
+}
+
+// FR-029 [HIGH]: when the operator opts a header into the
+// fingerprint, two requests differing only in that header MUST hash
+// to distinct slots. Reverse direction: the same header value (and
+// header omitted entirely) must not invent collisions on its own.
+func TestFingerprintKey_SemanticHeadersDistinguishRequests(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r1.Header.Set("X-Tenant-Id", "tenant-a")
+	r2 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r2.Header.Set("X-Tenant-Id", "tenant-b")
+
+	headers := []string{"X-Tenant-Id"}
+	k1 := fingerprintKey(r1, "key-1", "", headers)
+	k2 := fingerprintKey(r2, "key-1", "", headers)
+	if k1 == k2 {
+		t.Fatal("expected distinct fingerprints for differing X-Tenant-Id values")
+	}
+
+	// Same value across two requests: same fingerprint.
+	r3 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r3.Header.Set("X-Tenant-Id", "tenant-a")
+	k3 := fingerprintKey(r3, "key-1", "", headers)
+	if k1 != k3 {
+		t.Fatalf("expected identical fingerprints for same X-Tenant-Id, got %s vs %s", k1, k3)
+	}
+}
+
+// Header name matching is case-insensitive on the wire — confirm
+// that the configured "X-Tenant-Id" matches a request that sent
+// "x-tenant-id".
+func TestFingerprintKey_SemanticHeadersAreCaseInsensitive(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r.Header.Set("x-tenant-id", "tenant-a") // lowercased
+	headers := []string{"X-Tenant-Id"}      // mixed
+	k := fingerprintKey(r, "key-1", "", headers)
+
+	rRef := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	rRef.Header.Set("X-Tenant-Id", "tenant-a")
+	kRef := fingerprintKey(rRef, "key-1", "", headers)
+
+	if k != kRef {
+		t.Fatalf("expected case-insensitive header match, got %s vs %s", k, kRef)
+	}
+}
+
+// End-to-end: when WithSemanticHeaders is configured, a second
+// request with a different tenant header MUST NOT be served from
+// the first request's cache. This is the practical attack the
+// audit flagged: a tenant-A reply leaking into a tenant-B request.
+func TestMiddleware_SemanticHeaders_PreventsCrossTenantReplay(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"tenant":"` + r.Header.Get("X-Tenant-Id") + `"}`))
+	})
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithoutBodyFingerprint(),
+		WithSemanticHeaders("X-Tenant-Id"),
+	)(inner)
+
+	// Tenant A request.
+	r1 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r1.Header.Set("Idempotency-Key", "shared-key")
+	r1.Header.Set("X-Tenant-Id", "tenant-a")
+	w1 := httptest.NewRecorder()
+	handler.ServeHTTP(w1, r1)
+	if got := w1.Body.String(); got != `{"tenant":"tenant-a"}` {
+		t.Fatalf("first response body = %q, want tenant-a payload", got)
+	}
+
+	// Tenant B request, same idempotency key — must NOT replay tenant A.
+	r2 := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	r2.Header.Set("Idempotency-Key", "shared-key")
+	r2.Header.Set("X-Tenant-Id", "tenant-b")
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, r2)
+	if got := w2.Body.String(); got != `{"tenant":"tenant-b"}` {
+		t.Fatalf("second response body = %q, want tenant-b payload (cross-tenant replay regression)", got)
+	}
+	if calls != 2 {
+		t.Errorf("inner handler called %d times, expected 2 (one per tenant)", calls)
+	}
+}
+
+// Without WithSemanticHeaders, the kit's default is conservative:
+// only method/path/query/raw-key/user participate. This is the
+// behaviour the audit flagged as unsafe for multi-tenant routing
+// headers — the regression test exists so we don't accidentally
+// ALSO regress the opt-in default to "everything goes in the key".
+func TestMiddleware_NoSemanticHeaders_DoesNotAccidentallyDifferentiate(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	handler := Middleware(store, WithAllowSharedKeys(), WithoutBodyFingerprint())(inner)
+
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/orders", nil)
+		r.Header.Set("Idempotency-Key", "shared-key")
+		// Header that is NOT configured as semantic — must not
+		// participate in fingerprint, second request should replay.
+		r.Header.Set("X-Whatever", "different-value")
+		handler.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	if calls != 1 {
+		t.Errorf("inner handler called %d times, expected 1 (cache should replay)", calls)
+	}
+}
+
+func TestWithSemanticHeaders_PanicsOnInvalid(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on invalid header name")
+		}
+	}()
+	_ = WithSemanticHeaders("not a valid header name with spaces")
+}
+
+func TestWithSemanticHeaders_EmptyNamesIgnored(t *testing.T) {
+	cfg := defaultConfig()
+	WithSemanticHeaders("", "X-Tenant-Id", "")(&cfg)
+	if len(cfg.semanticHeaders) != 1 || cfg.semanticHeaders[0] != "X-Tenant-Id" {
+		t.Fatalf("expected single canonicalised header, got %v", cfg.semanticHeaders)
 	}
 }

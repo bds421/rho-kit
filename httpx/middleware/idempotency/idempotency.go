@@ -12,6 +12,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -97,6 +100,13 @@ type config struct {
 	allowSharedKeys    bool
 	preserveHeaders    map[string]bool // optional override of identityResponseHeaders
 	postHandlerTimeout time.Duration
+	// semanticHeaders are HTTP headers folded into the fingerprint
+	// key (audit FR-029). Use this for headers whose value affects
+	// the request semantics in ways the kit cannot infer — typically
+	// X-Tenant-Id, X-Org-Id, or any custom routing header.
+	// Default empty: only method, path, query, raw key, and user ID
+	// participate. Configure via [WithSemanticHeaders].
+	semanticHeaders []string
 }
 
 // identityResponseHeaders are stripped from cached responses before replay.
@@ -321,7 +331,11 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					return
 				}
 			}
-			key := fingerprintKey(r.Method, r.URL.Path, rawKey, userID)
+			// FR-029 [HIGH]: include canonical query string and any
+			// configured semantic headers in the fingerprint so two
+			// requests that differ on query/header (e.g., dry_run=true vs
+			// false) do not collide on the same body+key.
+			key := fingerprintKey(r, rawKey, userID, cfg.semanticHeaders)
 
 			var bodyFingerprint []byte
 			if cfg.fingerprintBody {
@@ -498,18 +512,68 @@ func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
 	return digest[:], body, nil
 }
 
-func fingerprintKey(method, path, rawKey, userID string) string {
+// fingerprintKey builds the cache key from the dimensions that
+// MUST be the same across two requests for them to share an
+// idempotent reply: method, path, canonical query string, the raw
+// idempotency-key header, the resolved user ID, and any configured
+// semantic headers (audit FR-029).
+//
+// The canonicalization rules:
+//   - Query parameters are sorted by name and re-serialised so that
+//     ?b=1&a=2 and ?a=2&b=1 (semantically identical) hash equally.
+//   - Configured semantic header values are joined with "," in the
+//     order configured (NOT sorted) so the operator can choose
+//     whether two requests with the same set of values but different
+//     orderings should collide.
+//
+// Components are separated by NUL bytes — the byte that cannot
+// appear in HTTP method/path/key tokens — so concatenation can never
+// alias one input into another.
+func fingerprintKey(r *http.Request, rawKey, userID string, semanticHeaders []string) string {
 	h := sha256.New()
-	_, _ = io.WriteString(h, method)
+	_, _ = io.WriteString(h, r.Method)
 	_, _ = io.WriteString(h, "\x00")
-	_, _ = io.WriteString(h, path)
+	_, _ = io.WriteString(h, r.URL.Path)
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = io.WriteString(h, canonicalQuery(r.URL.Query()))
 	_, _ = io.WriteString(h, "\x00")
 	_, _ = io.WriteString(h, rawKey)
 	if userID != "" {
 		_, _ = io.WriteString(h, "\x00")
 		_, _ = io.WriteString(h, userID)
 	}
+	for _, name := range semanticHeaders {
+		_, _ = io.WriteString(h, "\x00")
+		// Header name is case-insensitive on the wire — fold to
+		// canonical so the configured "X-Tenant-Id" matches
+		// http.Header's normalized form.
+		canonical := http.CanonicalHeaderKey(name)
+		_, _ = io.WriteString(h, canonical)
+		_, _ = io.WriteString(h, "=")
+		// strings.Join over Values to preserve cardinality (multiple
+		// header values of the same name).
+		_, _ = io.WriteString(h, strings.Join(r.Header.Values(canonical), ","))
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// canonicalQuery serializes a url.Values with deterministic key
+// ordering. Two requests whose query strings differ only in
+// parameter order produce identical canonical forms.
+func canonicalQuery(v url.Values) string {
+	if len(v) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := url.Values{}
+	for _, k := range keys {
+		out[k] = v[k]
+	}
+	return out.Encode()
 }
 
 func replay(w http.ResponseWriter, cached *idem.CachedResponse) {
@@ -658,6 +722,40 @@ func WithUserExtractor(fn func(*http.Request) string) Option {
 // response is impossible by construction.
 func WithAllowSharedKeys() Option {
 	return func(c *config) { c.allowSharedKeys = true }
+}
+
+// WithSemanticHeaders folds the named request headers into the
+// idempotency fingerprint so two requests with the same body and key
+// but different header values do NOT collide on the same cache slot.
+// The audit (FR-029) flagged this for headers like X-Tenant-Id,
+// X-Org-Id, X-Region, or X-Dry-Run where the value materially changes
+// the request's effect. Without this option the middleware would
+// happily replay a tenant-A response for a tenant-B request that
+// happens to share the same Idempotency-Key — a cross-tenant data leak.
+//
+// Header names are case-insensitive and folded to canonical form on
+// match. Pass each header that affects request semantics; do NOT pass
+// auth headers (Authorization, Cookie) — those should be reflected
+// through [WithUserExtractor] instead so the fingerprint stays stable
+// across token rotations for the same identity.
+//
+// Configured order is preserved (not sorted) when joining values for
+// the digest, so the operator decides whether to treat
+// X-Tenant-Id: a vs X-Tenant-Id: a,b as distinct.
+func WithSemanticHeaders(names ...string) Option {
+	canonical := make([]string, 0, len(names))
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if !httpguts.ValidHeaderFieldName(n) {
+			panic(fmt.Sprintf("idempotency: WithSemanticHeaders requires a valid HTTP header field name (got %q)", n))
+		}
+		canonical = append(canonical, http.CanonicalHeaderKey(n))
+	}
+	return func(c *config) {
+		c.semanticHeaders = append(c.semanticHeaders, canonical...)
+	}
 }
 
 // WithPreserveHeaders adds headers to the allowlist of response headers that
