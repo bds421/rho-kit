@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
@@ -137,15 +138,40 @@ func WithPath(path string) Option {
 // has an origin outside the allowlist, the middleware returns 403 with
 // "untrusted origin".
 func WithAllowedOrigins(origins ...string) Option {
-	return func(c *config) {
-		c.allowedOrigins = make(map[string]struct{}, len(origins))
-		for _, o := range origins {
-			normalised := strings.ToLower(strings.TrimSpace(o))
-			if normalised == "" {
-				continue
-			}
-			c.allowedOrigins[normalised] = struct{}{}
+	// FR-021 [LOW]: parse and canonicalise origins at construction so a
+	// pathful or malformed entry (https://app.example.com/, ftp://...)
+	// is rejected at startup rather than failing every state-changing
+	// request silently at runtime. The runtime origin normalisation
+	// strips path/query/fragment, so allowlist entries that include
+	// any of those would never match.
+	canonical := make(map[string]struct{}, len(origins))
+	for _, o := range origins {
+		trimmed := strings.TrimSpace(o)
+		if trimmed == "" {
+			continue
 		}
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			panic(fmt.Sprintf("csrf: WithAllowedOrigins parse %q: %v", o, err))
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+		default:
+			panic(fmt.Sprintf("csrf: WithAllowedOrigins requires http/https scheme (got %q)", o))
+		}
+		if u.Host == "" {
+			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q is missing host", o))
+		}
+		if u.Path != "" && u.Path != "/" {
+			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q must not include a path", o))
+		}
+		if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q must not include query, fragment, or userinfo", o))
+		}
+		canonical[strings.ToLower(u.Scheme+"://"+u.Host)] = struct{}{}
+	}
+	return func(c *config) {
+		c.allowedOrigins = canonical
 	}
 }
 

@@ -65,12 +65,21 @@ func TestVerify_TamperedTokenRejected(t *testing.T) {
 }
 
 func TestVerify_WrongSessionRejected(t *testing.T) {
+	// FR-022 [MED]: post-fix, the verifier checks the HMAC first. A
+	// token minted for user-A presented as user-B has both a wrong
+	// MAC (because computeMAC binds sessionID) AND a wrong session
+	// prefix; the verifier returns the conservative ErrTokenInvalid
+	// rather than ErrSessionMismatch so it does not act as a
+	// session-prefix oracle. ErrSessionMismatch is reserved for the
+	// pathological case where a caller has somehow produced a token
+	// whose MAC matches but whose prefix does not (only reachable by
+	// an attacker already in possession of the secret).
 	i := newTestIssuer(t)
 	tok, err := i.Issue("user-A")
 	require.NoError(t, err)
 
 	err = i.Verify(tok, "user-B")
-	assert.ErrorIs(t, err, ErrSessionMismatch)
+	assert.ErrorIs(t, err, ErrTokenInvalid)
 }
 
 func TestVerify_ExpiredTokenRejected(t *testing.T) {

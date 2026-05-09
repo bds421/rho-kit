@@ -166,14 +166,23 @@ func (i *Issuer) Verify(t Token, sessionID string) error {
 	nonce := raw[sessionPrefixLen+8 : sessionPrefixLen+8+nonceLen]
 	mac := raw[sessionPrefixLen+8+nonceLen:]
 
-	expectedPrefix := sessionPrefix(sessionID)
-	if subtle.ConstantTimeCompare(prefix, expectedPrefix) != 1 {
-		return ErrSessionMismatch
-	}
-
+	// FR-022 [MED]: verify the HMAC FIRST, then the session prefix.
+	// Pre-fix the prefix check returned ErrSessionMismatch before the
+	// HMAC ran, exposing a session-prefix oracle to a caller that
+	// could distinguish the two error returns or measure timing.
+	// Computing the MAC unconditionally folds the session-prefix
+	// signal into the HMAC's constant-time check.
 	expectedMAC := computeMAC(i.secret, sessionID, iat, nonce)
-	if !hmac.Equal(mac, expectedMAC) {
+	macOK := hmac.Equal(mac, expectedMAC)
+
+	expectedPrefix := sessionPrefix(sessionID)
+	prefixOK := subtle.ConstantTimeCompare(prefix, expectedPrefix) == 1
+
+	if !macOK {
 		return ErrTokenInvalid
+	}
+	if !prefixOK {
+		return ErrSessionMismatch
 	}
 
 	now := i.now().UTC().Unix()
