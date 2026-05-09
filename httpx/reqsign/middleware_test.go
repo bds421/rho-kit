@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -106,8 +107,12 @@ func TestMiddleware(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Each subtest gets its own nonce store so the
+			// "valid signature" cases do not race a replay.
+			nonceStore := signedrequest.NewMemoryNonceStore(10 * time.Minute)
+			opts := append([]VerifyOption{WithNonceStore(nonceStore)}, tt.opts...)
 			var downstreamBody []byte
-			handler := RequireSignedRequest(store, tt.opts...)(
+			handler := RequireSignedRequest(store, opts...)(
 				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					downstreamBody, _ = io.ReadAll(r.Body)
 					w.WriteHeader(http.StatusOK)

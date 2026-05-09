@@ -5,7 +5,16 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
+
+// freshNonceStoreOpt returns a VerifyOption that wires a brand-new
+// in-memory nonce store. Tests use this so each subtest is isolated
+// from replays in earlier subtests. 10 minutes is comfortably larger
+// than the test fixtures' clock skew.
+func freshNonceStoreOpt() VerifyOption {
+	return WithNonceStore(signedrequest.NewMemoryNonceStore(10 * time.Minute))
+}
 
 // roundTripFunc adapts a function to http.RoundTripper.
 type roundTripFunc func(*http.Request) (*http.Response, error)

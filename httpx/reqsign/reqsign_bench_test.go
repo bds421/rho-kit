@@ -37,7 +37,7 @@ func BenchmarkVerifyRequest(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = VerifyRequest(req, body, store, WithVerifySigner(signer))
+		_ = VerifyRequest(req, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
 	}
 }
 
@@ -46,6 +46,6 @@ func BenchmarkCanonicalBytes(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = canonicalBytes(http.MethodPost, "/api/deploy?env=prod&region=us-east-1", body)
+		_ = canonicalBytes(http.MethodPost, "/api/deploy?env=prod&region=us-east-1", body, "abc123nonce==")
 	}
 }

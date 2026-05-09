@@ -24,10 +24,21 @@
 //
 // # Headers
 //
-// Three headers carry the signature:
+// Four headers carry the signature:
 //   - X-Signature: the HMAC-SHA256 signature (sha256=hex)
 //   - X-Signature-Timestamp: Unix timestamp (decimal string)
 //   - X-Signature-KeyID: which key was used (supports rotation)
+//   - X-Signature-Nonce: per-request random token used for replay
+//     protection (audit FR-025); see [WithNonceStore]
+//
+// # Replay Protection
+//
+// Verification requires a [NonceStore] (see [WithNonceStore]) so that
+// a captured signed request cannot be replayed inside the maxAge
+// window — the prior behaviour. The nonce store records every accepted
+// nonce until the window closes; duplicates are rejected with
+// [ErrReplay]. Multi-instance deployments must use a shared backend
+// (Redis, etc.) so a replay caught by one replica is rejected by all.
 //
 // # Key Rotation
 //

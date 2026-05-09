@@ -31,6 +31,7 @@ func TestVerifyWithCustomMaxAge(t *testing.T) {
 	err := VerifyRequest(req, body, store,
 		WithVerifySigner(verifySigner),
 		WithMaxAge(1*time.Minute),
+		freshNonceStoreOpt(),
 	)
 	if err == nil {
 		t.Fatal("expected error for custom maxAge exceeded, got nil")
@@ -57,6 +58,7 @@ func TestWithMaxAgeZeroFallsBackToDefault(t *testing.T) {
 	err := VerifyRequest(req, body, store,
 		WithVerifySigner(verifySigner),
 		WithMaxAge(0),
+		freshNonceStoreOpt(),
 	)
 	if err != nil {
 		t.Fatalf("expected WithMaxAge(0) to fall back to default 5min, got error: %v", err)
@@ -83,6 +85,7 @@ func TestWithMaxAgeNegativeFallsBackToDefault(t *testing.T) {
 	err := VerifyRequest(req, body, store,
 		WithVerifySigner(verifySigner),
 		WithMaxAge(-1*time.Second),
+		freshNonceStoreOpt(),
 	)
 	if err != nil {
 		t.Fatalf("expected WithMaxAge(-1s) to fall back to default 5min, got error: %v", err)
@@ -160,6 +163,7 @@ func TestWithVerifyMaxBodySize_RejectsOversizedBody(t *testing.T) {
 	handler := RequireSignedRequest(store,
 		WithVerifySigner(signer),
 		WithVerifyMaxBodySize(100),
+		freshNonceStoreOpt(),
 	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -184,6 +188,7 @@ func TestWithVerifyMaxBodySize_AcceptsFittingBody(t *testing.T) {
 	handler := RequireSignedRequest(store,
 		WithVerifySigner(signer),
 		WithVerifyMaxBodySize(100),
+		freshNonceStoreOpt(),
 	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusOK)
@@ -225,6 +230,7 @@ func TestWithVerifySignerNilUsesDefault(t *testing.T) {
 	err := VerifyRequest(req, body, store,
 		WithVerifySigner(nil),
 		WithVerifySigner(clockSigner),
+		freshNonceStoreOpt(),
 	)
 	if err != nil {
 		t.Fatalf("VerifyRequest should succeed when nil signer is followed by valid signer: %v", err)
@@ -265,6 +271,7 @@ func TestVerifyRequest_RejectsOversizedBody(t *testing.T) {
 	err := VerifyRequest(req, oversized, store,
 		WithVerifySigner(signer),
 		WithVerifyMaxBodySize(100),
+		freshNonceStoreOpt(),
 	)
 	if err == nil {
 		t.Fatal("expected ErrBodyTooLarge for oversized body during verify, got nil")

@@ -13,6 +13,11 @@ import (
 // Requests with missing or invalid signatures receive a 401 Unauthorized response.
 // The request body is read, verified, and then replaced so downstream handlers
 // can still read it.
+//
+// FR-025 [HIGH]: a non-nil NonceStore is REQUIRED. Without it, a
+// captured signed request can be replayed up to maxAge later. Pass the
+// store via [WithNonceStore]; the constructor panics on nil so wiring
+// errors are caught at startup, not after exposure to the network.
 func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(http.Handler) http.Handler {
 	if store == nil {
 		panic(nilKeyStoreMsg)
@@ -27,6 +32,9 @@ func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(htt
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.nonceStore == nil {
+		panic(nilNonceStoreMsg)
 	}
 
 	return func(next http.Handler) http.Handler {
