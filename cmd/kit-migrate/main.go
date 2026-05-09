@@ -16,16 +16,20 @@ import (
 	"os"
 	"path/filepath"
 
+	actionlogpostgres "github.com/bds421/rho-kit/data/actionlog/postgres/v2"
+	approvalpostgres "github.com/bds421/rho-kit/data/approval/postgres/v2"
 	"github.com/bds421/rho-kit/data/idempotency/pgstore/v2"
 )
 
 // registry maps kit component names to their embedded migration
-// filesystems. Add new entries here when kit packages provide
-// migrations. v2 dropped auditlog/gormstore — a pgx-native auditlog
-// store with its own migrations is a follow-up; the actionlog and
-// approval pgx adapters already ship their own.
+// filesystems. FR-006 [MED]: actionlog and approval pgx adapters
+// also ship migrations; pre-fix only idempotency was registered, so
+// services using those stores had no kit-tool way to discover and
+// publish their schemas.
 var registry = map[string]fs.FS{
 	"idempotency": pgstore.Migrations,
+	"actionlog":   actionlogpostgres.Migrations,
+	"approval":    approvalpostgres.Migrations,
 }
 
 func main() {
