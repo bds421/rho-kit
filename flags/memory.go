@@ -2,6 +2,8 @@ package flags
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/open-feature/go-sdk/openfeature"
@@ -66,10 +68,37 @@ func (p *MemoryProvider) SetFloat(key string, v float64) {
 }
 
 // SetObject registers an opaque-shape value for key.
+//
+// FR-035 [LOW]: the value is JSON-marshalled and re-unmarshalled
+// on store so callers cannot mutate provider-held state outside the
+// provider lock. Non-marshallable values (channels, funcs) panic at
+// SetObject so the configuration error surfaces at startup.
 func (p *MemoryProvider) SetObject(key string, v any) {
+	frozen, err := deepCopyJSON(v)
+	if err != nil {
+		panic(fmt.Sprintf("flags/memory: SetObject(%q): %v", key, err))
+	}
 	p.mu.Lock()
-	p.objs[key] = v
+	p.objs[key] = frozen
 	p.mu.Unlock()
+}
+
+// deepCopyJSON round-trips v through JSON so the stored copy shares
+// no references with the caller's input. Used by SetObject to enforce
+// provider-side immutability (audit FR-035).
+func deepCopyJSON(v any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Metadata implements [openfeature.FeatureProvider].
@@ -113,13 +142,23 @@ func (p *MemoryProvider) IntEvaluation(_ context.Context, flag string, fallback 
 }
 
 // ObjectEvaluation implements [openfeature.FeatureProvider].
+//
+// FR-035 [LOW]: returns a fresh JSON-decoded copy on every read so
+// callers cannot mutate provider-held state.
 func (p *MemoryProvider) ObjectEvaluation(_ context.Context, flag string, fallback any, _ openfeature.FlattenedContext) openfeature.InterfaceResolutionDetail {
 	p.mu.RLock()
 	v, ok := p.objs[flag]
 	p.mu.RUnlock()
 	out := fallback
 	if ok {
-		out = v
+		// Best-effort re-clone — if the deep-copy fails (only
+		// possible if the stored value is non-marshallable, which
+		// SetObject prevents), fall back to the stored reference.
+		if cloned, err := deepCopyJSON(v); err == nil {
+			out = cloned
+		} else {
+			out = v
+		}
 	}
 	return openfeature.InterfaceResolutionDetail{Value: out, ProviderResolutionDetail: detail(ok)}
 }

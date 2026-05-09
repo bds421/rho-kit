@@ -16,7 +16,9 @@ package flags
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/open-feature/go-sdk/openfeature"
 
@@ -33,7 +35,8 @@ type Provider = openfeature.FeatureProvider
 // auto-populates the evaluation context from request context (tenant,
 // user, correlation ID).
 type Client struct {
-	inner *openfeature.Client
+	inner   *openfeature.Client
+	errHook atomic.Pointer[func(key, message string, err error)]
 }
 
 // New returns a Client backed by the given Provider. The provider is
@@ -76,34 +79,120 @@ func MustNew(name string, p Provider) *Client {
 }
 
 // Bool evaluates a boolean flag, returning fallback on any error.
+//
+// Audit FR-034: provider/evaluation errors are silently swallowed in
+// the convenience getters. Use [Client.BoolE] (and the matching
+// String/Int/Float/Object error variants) when an upstream outage,
+// malformed flag value, or kill-switch misconfiguration must be
+// surfaced. Wire [Client.OnEvalError] to a Prometheus counter / alert
+// to detect provider regressions in production.
 func (c *Client) Bool(ctx context.Context, key string, fallback bool) bool {
-	v, _ := c.inner.BooleanValue(ctx, key, fallback, evalCtx(ctx))
+	v, _ := c.BoolE(ctx, key, fallback)
 	return v
+}
+
+// BoolE returns the evaluated bool plus any provider error.
+func (c *Client) BoolE(ctx context.Context, key string, fallback bool) (bool, error) {
+	d, err := c.inner.BooleanValueDetails(ctx, key, fallback, evalCtx(ctx))
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return d.Value, err
 }
 
 // String evaluates a string flag.
 func (c *Client) String(ctx context.Context, key, fallback string) string {
-	v, _ := c.inner.StringValue(ctx, key, fallback, evalCtx(ctx))
+	v, _ := c.StringE(ctx, key, fallback)
 	return v
+}
+
+// StringE returns the evaluated string plus any provider error.
+func (c *Client) StringE(ctx context.Context, key, fallback string) (string, error) {
+	d, err := c.inner.StringValueDetails(ctx, key, fallback, evalCtx(ctx))
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return d.Value, err
 }
 
 // Int evaluates an integer flag.
 func (c *Client) Int(ctx context.Context, key string, fallback int64) int64 {
-	v, _ := c.inner.IntValue(ctx, key, fallback, evalCtx(ctx))
+	v, _ := c.IntE(ctx, key, fallback)
 	return v
+}
+
+// IntE returns the evaluated int plus any provider error.
+func (c *Client) IntE(ctx context.Context, key string, fallback int64) (int64, error) {
+	d, err := c.inner.IntValueDetails(ctx, key, fallback, evalCtx(ctx))
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return d.Value, err
 }
 
 // Float evaluates a float64 flag.
 func (c *Client) Float(ctx context.Context, key string, fallback float64) float64 {
-	v, _ := c.inner.FloatValue(ctx, key, fallback, evalCtx(ctx))
+	v, _ := c.FloatE(ctx, key, fallback)
 	return v
+}
+
+// FloatE returns the evaluated float plus any provider error.
+func (c *Client) FloatE(ctx context.Context, key string, fallback float64) (float64, error) {
+	d, err := c.inner.FloatValueDetails(ctx, key, fallback, evalCtx(ctx))
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return d.Value, err
 }
 
 // Object evaluates an opaque-shape flag (typically JSON). Useful for
 // configuration-style flags that ship a struct.
 func (c *Client) Object(ctx context.Context, key string, fallback any) any {
-	v, _ := c.inner.ObjectValue(ctx, key, fallback, evalCtx(ctx))
+	v, _ := c.ObjectE(ctx, key, fallback)
 	return v
+}
+
+// ObjectE returns the evaluated object plus any provider error.
+func (c *Client) ObjectE(ctx context.Context, key string, fallback any) (any, error) {
+	d, err := c.inner.ObjectValueDetails(ctx, key, fallback, evalCtx(ctx))
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return d.Value, err
+}
+
+// SetEvalErrorHook installs a callback fired whenever any flag
+// evaluation reports an error code. Use it to bump a Prometheus
+// counter or push a warning into the kit's audit log so silent
+// provider regressions surface in monitoring (audit FR-034).
+//
+// The hook is called from the evaluation goroutine — keep it
+// non-blocking. Setting nil clears the hook.
+func (c *Client) SetEvalErrorHook(fn func(key, message string, err error)) {
+	c.errHook.Store(&fn)
+}
+
+func (c *Client) observeError(key, msg string, err error) {
+	hookPtr := c.errHook.Load()
+	if hookPtr == nil || *hookPtr == nil {
+		return
+	}
+	(*hookPtr)(key, msg, err)
 }
 
 // evalCtx builds an OpenFeature EvaluationContext from request
