@@ -67,14 +67,21 @@ type Producer struct {
 	// maxPayloadSize is the maximum payload size in bytes. 0 means no limit.
 	maxPayloadSize int
 
+	// unbounded opts out of the FR-062 default retention (7 days).
+	unbounded bool
+
 	metrics *ProducerMetrics
 }
 
 // ProducerOption configures a Producer.
 type ProducerOption func(*Producer)
 
-// WithProducerLogger sets the logger for the producer.
+// WithProducerLogger sets the logger for the producer. Nil is
+// normalised to [slog.Default] (audit FR-063).
 func WithProducerLogger(l *slog.Logger) ProducerOption {
+	if l == nil {
+		l = slog.Default()
+	}
 	return func(p *Producer) { p.logger = l }
 }
 
@@ -130,6 +137,14 @@ func WithProducerRegisterer(reg prometheus.Registerer) ProducerOption {
 // WithProducerMaxPayloadSize. Set to 0 to disable the limit. Panics if
 // client is nil — a miswired producer would otherwise dereference nil on
 // the first Publish.
+//
+// Audit FR-062: a producer constructed without [WithMaxStreamLen]
+// AND without [WithRetention] would let the stream grow forever.
+// Pre-fix this was easy to miss — both options were "if non-zero,
+// apply" with no default. The constructor now installs
+// [defaultStreamRetention] (7 days) when neither is configured;
+// callers that genuinely want unbounded streams must opt in via
+// [WithUnboundedStream].
 func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Producer {
 	if client == nil {
 		panic("redisstream: NewProducer requires a non-nil Redis client")
@@ -143,7 +158,28 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 	for _, o := range opts {
 		o(p)
 	}
+	// FR-063 [MED]: WithProducerLogger silently ignored a nil
+	// argument. Normalise here so a caller passing nil (or omitting
+	// the option entirely) still gets a usable logger.
+	if p.logger == nil {
+		p.logger = slog.Default()
+	}
+	if p.maxLen == 0 && p.retention == 0 && !p.unbounded {
+		p.retention = defaultStreamRetention
+	}
 	return p
+}
+
+// defaultStreamRetention bounds Redis-stream growth when no
+// retention option is set (audit FR-062). 7 days is generous for
+// most event streams and prevents unbounded retention by default.
+const defaultStreamRetention = 7 * 24 * time.Hour
+
+// WithUnboundedStream opts a producer out of the default retention
+// (audit FR-062). Use only for genuinely append-only streams whose
+// growth is bounded by an external lifecycle (e.g. test harnesses).
+func WithUnboundedStream() ProducerOption {
+	return func(p *Producer) { p.unbounded = true }
 }
 
 // Publish writes a message to the given stream. The Redis stream ID is

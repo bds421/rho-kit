@@ -169,8 +169,20 @@ type Consumer struct {
 // ConsumerOption configures a Consumer.
 type ConsumerOption func(*Consumer)
 
+// Group returns the consumer-group name this Consumer was
+// constructed with. Used by the redisbackend wrapper to validate
+// Binding.Queue equality (audit FR-064).
+func (c *Consumer) Group() string { return c.group }
+
 // WithConsumerLogger sets the logger for the consumer.
+//
+// FR-063 [MED]: a nil logger is normalised to slog.Default() so a
+// caller omitting/passing nil cannot trigger a runtime nil-deref
+// later when the consumer logs an error.
 func WithConsumerLogger(l *slog.Logger) ConsumerOption {
+	if l == nil {
+		l = slog.Default()
+	}
 	return func(c *Consumer) { c.logger = l }
 }
 
