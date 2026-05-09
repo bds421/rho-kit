@@ -82,7 +82,7 @@ func (c Config) LogValue() slog.Value {
 
 // ParseDSN parses a PostgreSQL connection URI into a [Config].
 // Accepted schemes: "postgres", "postgresql".
-// Format: postgres://user:password@host:port/dbname?sslmode=require
+// Format: postgres://user:password@host:port/dbname?sslmode=verify-full
 //
 // The password is automatically percent-decoded. Port defaults to 5432
 // if omitted. The sslmode query parameter is extracted into Options.

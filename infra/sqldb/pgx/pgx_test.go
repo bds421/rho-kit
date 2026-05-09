@@ -21,25 +21,60 @@ func parseForTest(t *testing.T, dsn string) *pgxpool.Config {
 	return pcfg
 }
 
+// checkTLS is a tiny helper around requireTLSOnParsedConfig that
+// also passes the DSN so the function can read the raw sslmode (pgx
+// maps require + verify-ca to identical TLSConfig fields, so the
+// raw DSN is the only way to distinguish them).
+func checkTLS(t *testing.T, dsn string, allowRequire bool) error {
+	t.Helper()
+	pcfg := parseForTest(t, dsn)
+	return requireTLSOnParsedConfig(pcfg, dsn, allowRequire)
+}
+
 // requireTLSOnParsedConfig delegates to pgxpool's parser, so the unit
 // tests below assert behaviour through the same path Connect uses.
 
-func TestRequireTLS_AcceptsRequireFamily(t *testing.T) {
-	for _, mode := range []string{"require", "verify-ca", "verify-full"} {
+func TestRequireTLS_AcceptsVerifyModes(t *testing.T) {
+	// FR-079 [HIGH]: only verify-ca / verify-full are accepted by
+	// default. require admits MITM and now needs explicit opt-in.
+	for _, mode := range []string{"verify-ca", "verify-full"} {
 		t.Run(mode, func(t *testing.T) {
-			pcfg := parseForTest(t, "postgres://u:p@h/db?sslmode="+mode)
-			err := requireTLSOnParsedConfig(pcfg)
+			err := checkTLS(t, "postgres://u:p@h/db?sslmode="+mode, false)
 			assert.NoError(t, err, "sslmode=%s must be accepted", mode)
 		})
 	}
 }
 
+func TestRequireTLS_RejectsRequireByDefault(t *testing.T) {
+	// FR-079 [HIGH]: sslmode=require encrypts but does NOT verify the
+	// server's identity. A network attacker with any cert can MITM.
+	// Pre-fix, require was on the accepted list.
+	err := checkTLS(t, "postgres://u:p@h/db?sslmode=require", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sslmode=require admits MITM")
+}
+
+func TestRequireTLS_AcceptsRequireWithExplicitOptIn(t *testing.T) {
+	err := checkTLS(t, "postgres://u:p@h/db?sslmode=require", true)
+	assert.NoError(t, err, "sslmode=require must be accepted when allowRequire=true")
+}
+
 func TestRequireTLS_RejectsLooseModes(t *testing.T) {
 	for _, mode := range []string{"prefer", "allow", "disable"} {
 		t.Run(mode, func(t *testing.T) {
-			pcfg := parseForTest(t, "postgres://u:p@h/db?sslmode="+mode)
-			err := requireTLSOnParsedConfig(pcfg)
+			err := checkTLS(t, "postgres://u:p@h/db?sslmode="+mode, false)
 			assert.Error(t, err, "sslmode=%s must be rejected (admits plaintext)", mode)
+		})
+	}
+}
+
+func TestRequireTLS_RejectsLooseModesEvenWithAllowRequire(t *testing.T) {
+	// AllowSSLModeRequire is a narrow opt-out for `require` only. It
+	// must NOT also unlock prefer/allow/disable.
+	for _, mode := range []string{"prefer", "allow", "disable"} {
+		t.Run(mode, func(t *testing.T) {
+			err := checkTLS(t, "postgres://u:p@h/db?sslmode="+mode, true)
+			assert.Error(t, err, "sslmode=%s must STILL be rejected even with AllowSSLModeRequire", mode)
 		})
 	}
 }
@@ -47,21 +82,34 @@ func TestRequireTLS_RejectsLooseModes(t *testing.T) {
 func TestRequireTLS_RejectsMissing(t *testing.T) {
 	// pgxpool defaults sslmode to "prefer" when unset — which is itself
 	// a plaintext-admitting mode and must be rejected.
-	pcfg := parseForTest(t, "postgres://u:p@h/db")
-	err := requireTLSOnParsedConfig(pcfg)
+	err := checkTLS(t, "postgres://u:p@h/db", false)
 	assert.Error(t, err)
 }
 
 // TestRequireTLS_RejectsLastWinsBypass is the regression test for the
 // N-3 audit finding: the previous extractSSLMode returned the FIRST
-// sslmode= token while pgxpool honours the LAST. A DSN with both
-// sslmode=require AND sslmode=disable used to slip past the kit's
-// hand-rolled extractor while pgxpool actually connected plaintext.
-// The pgxpool-based check sees the same posture pgxpool will use.
+// sslmode= token while pgxpool honours the LAST. The lastSSLMode
+// helper now also honours last-wins so the DSN-string parse and pgx's
+// fallback parse stay aligned.
 func TestRequireTLS_RejectsLastWinsBypass(t *testing.T) {
-	pcfg := parseForTest(t, "host=h user=u dbname=db sslmode=require sslmode=disable")
-	err := requireTLSOnParsedConfig(pcfg)
+	err := checkTLS(t, "host=h user=u dbname=db sslmode=require sslmode=disable", true)
 	assert.Error(t, err, "DSN with sslmode=disable as the last token must be rejected, regardless of earlier sslmode=require")
+}
+
+func TestLastSSLMode(t *testing.T) {
+	cases := []struct {
+		dsn  string
+		want string
+	}{
+		{"postgres://u:p@h/db?sslmode=verify-full", "verify-full"},
+		{"postgres://u:p@h/db?sslmode=require&host=h2", "require"},
+		{"host=h sslmode=verify-ca", "verify-ca"},
+		{"host=h sslmode=require sslmode=verify-full", "verify-full"},
+		{"postgres://u:p@h/db", ""},
+	}
+	for _, c := range cases {
+		assert.Equalf(t, c.want, lastSSLMode(c.dsn), "lastSSLMode(%q)", c.dsn)
+	}
 }
 
 func TestRequireLoopbackHost_AcceptsLoopback(t *testing.T) {

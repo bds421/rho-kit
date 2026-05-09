@@ -10,11 +10,20 @@
 //   - Batched pipelines (multiple statements per network RTT).
 //   - Custom binary type encoding for jsonb / arrays.
 //
-// TLS: Connect always rejects sslmode=disable. Pass an explicit
-// sslmode in the DSN — `require`, `verify-ca`, or `verify-full`.
-// Loose modes (`prefer`, `allow`) are rejected too because they fall
-// back to plaintext on a TLS handshake error. There is no KIT_ENV
-// escape hatch — production-safe defaults are unconditional.
+// TLS: Connect always rejects sslmode=disable, prefer, allow, and —
+// since 2.0 (audit FR-079) — sslmode=require by default. The accepted
+// modes are `verify-ca` and `verify-full`. `require` encrypts but
+// does NOT verify the server's identity, so a network attacker with
+// any certificate can MITM the connection; many cloud providers
+// historically defaulted to it for "easy" TLS at the cost of
+// authentication.
+//
+// Operators on a closed/internal network where verification is
+// genuinely intractable can opt back into `require` via
+// [Config.AllowSSLModeRequire] — the field name is verbose so a
+// reviewer cannot miss it. Loose modes (`prefer`, `allow`) remain
+// unconditionally rejected because they fall back to plaintext on a
+// TLS handshake error.
 package pgx
 
 import (
@@ -52,6 +61,20 @@ type Config struct {
 	// false; the field's name is deliberately verbose so a code
 	// reviewer cannot miss it.
 	AllowPlaintextLoopbackForTests bool
+
+	// AllowSSLModeRequire opts back in to sslmode=require — TLS
+	// without server identity verification. Pre-2.0 the kit accepted
+	// `require` alongside `verify-ca` / `verify-full`; the audit
+	// (FR-079) found that `require` admits MITM with arbitrary
+	// certificates in many network environments, so the default is
+	// now to reject it.
+	//
+	// Set this true ONLY when the network path between the service
+	// and Postgres is under the operator's control (mesh / private
+	// VPC peering / sidecar) AND there is a documented reason why
+	// `verify-ca` cannot be used. The field name is deliberately
+	// verbose so a reviewer cannot miss it.
+	AllowSSLModeRequire bool
 
 	// MaxConns caps the pool. Default: 25.
 	MaxConns int32
@@ -114,7 +137,7 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 			}
 		}
 	} else {
-		if err := requireTLSOnParsedConfig(pcfg); err != nil {
+		if err := requireTLSOnParsedConfig(pcfg, cfg.DSN, cfg.AllowSSLModeRequire); err != nil {
 			return nil, err
 		}
 	}
@@ -348,30 +371,70 @@ func requireLoopbackHost(host string) error {
 }
 
 // requireTLSOnParsedConfig inspects the pgxpool-parsed config for TLS
-// posture and rejects anything that admits a plaintext connection.
-// Production-safe TLS settings are the kit's only mode.
+// posture and rejects anything that admits a plaintext connection or
+// (since 2.0) admits unverified TLS unless the caller explicitly
+// opted in via Config.AllowSSLModeRequire.
 //
-// Detection rules — all derived from pgx's own behaviour:
+// Detection rules — combine pgxpool's parsed config (for plaintext
+// admission) with a DSN-string scan (for distinguishing require vs
+// verify-ca, which pgx maps to identical TLSConfig fields):
 //
 //   - sslmode=disable: pgx sets ConnConfig.TLSConfig to nil. Reject.
-//   - sslmode=require/verify-ca/verify-full: TLSConfig is non-nil and
-//     ConnConfig.Fallbacks is empty. Accept.
+//   - sslmode=verify-ca / sslmode=verify-full: accept.
+//   - sslmode=require: reject unless allowRequire is true (FR-079).
 //   - sslmode=prefer / sslmode=allow: pgx populates Fallbacks with a
-//     plaintext (TLSConfig=nil) entry — the connection silently
-//     downgrades on handshake error. Reject any fallback whose
-//     TLSConfig is nil; in practice this rejects prefer + allow.
+//     plaintext (TLSConfig=nil) entry. Reject.
 //
-// The check operates on pcfg.ConnConfig (not the raw DSN) so it sees
-// the same posture pgxpool will actually use at dial time.
-func requireTLSOnParsedConfig(pcfg *pgxpool.Config) error {
+// Why parse the raw DSN here too: pgx maps both `require` and
+// `verify-ca` to TLSConfig{InsecureSkipVerify:true, VerifyConnection:nil}
+// — there is no field on the parsed config that distinguishes them.
+// Without re-parsing the DSN, the kit cannot enforce a require-vs-
+// verify-ca policy. The plaintext-fallback rejection still uses
+// pcfg.ConnConfig to track what pgx will actually do at dial time
+// (last-wins parsing is honoured by pgxpool itself).
+func requireTLSOnParsedConfig(pcfg *pgxpool.Config, dsn string, allowRequire bool) error {
 	cc := pcfg.ConnConfig
 	if cc.TLSConfig == nil {
-		return errors.New("pgx: DSN does not enable TLS (sslmode=disable or unset); set sslmode=require/verify-ca/verify-full")
+		return errors.New("pgx: DSN does not enable TLS (sslmode=disable or unset); set sslmode=verify-ca/verify-full (require opts in via Config.AllowSSLModeRequire)")
 	}
 	for _, fb := range cc.Fallbacks {
 		if fb.TLSConfig == nil {
-			return errors.New("pgx: DSN admits a plaintext fallback (sslmode=prefer/allow); use require/verify-ca/verify-full to enforce TLS unconditionally")
+			return errors.New("pgx: DSN admits a plaintext fallback (sslmode=prefer/allow); use verify-ca/verify-full to enforce TLS unconditionally")
 		}
 	}
+	mode := lastSSLMode(dsn)
+	if mode == "require" && !allowRequire {
+		return errors.New("pgx: sslmode=require admits MITM (no server identity verification); use sslmode=verify-ca or verify-full, or opt in with Config.AllowSSLModeRequire on a closed network")
+	}
 	return nil
+}
+
+// lastSSLMode returns the LAST sslmode value found in the DSN, or
+// "" if none. Mirrors pgxpool's last-wins semantics for repeated
+// keys. Handles both libpq URL form (?sslmode=...) and keyword form
+// (sslmode=...).
+func lastSSLMode(dsn string) string {
+	const key = "sslmode="
+	last := ""
+	rest := dsn
+	for {
+		i := strings.Index(rest, key)
+		if i < 0 {
+			break
+		}
+		v := rest[i+len(key):]
+		// Stop at the first delimiter pgx recognises:
+		// whitespace (keyword form) or `&` (URL form).
+		end := len(v)
+		for j := 0; j < len(v); j++ {
+			c := v[j]
+			if c == ' ' || c == '\t' || c == '\n' || c == '&' {
+				end = j
+				break
+			}
+		}
+		last = v[:end]
+		rest = v[end:]
+	}
+	return last
 }
