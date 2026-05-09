@@ -79,6 +79,23 @@ type mtlsIdentityConfig struct {
 	allowedCNs     map[string]struct{}
 	allowedSANDNS  map[string]struct{}
 	allowedSANURIs map[string]struct{}
+	// impersonationGuard, when set, is consulted before stamping
+	// the trusted-S2S marker (audit FR-067). Returning an error
+	// rejects the impersonation. Without this hook every allow-listed
+	// service identity may impersonate any UUID.
+	impersonationGuard func(r *http.Request, identity, userID string) error
+}
+
+// WithS2SImpersonationGuard installs a callback that decides whether
+// `identity` is allowed to impersonate `userID`. Returning an error
+// rejects the impersonation; the middleware returns 403.
+//
+// Audit FR-067: without this guard the kit's HTTP mTLS S2S auth
+// treats every allow-listed service identity as omnipotent. Wire a
+// per-service authorization callback so trust scope matches the kit
+// contract.
+func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string) error) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
 
 // WithAllowedSANs authorises peers whose verified client certificate carries
@@ -189,7 +206,7 @@ func s2sHandler(provider *jwtutil.Provider, cfg mtlsIdentityConfig, next http.Ha
 			return
 		}
 
-		requireHeaderUser(w, r, identity, next)
+		requireHeaderUser(w, r, identity, cfg.impersonationGuard, next)
 	})
 }
 
@@ -302,11 +319,25 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // (e.g., a JWT minted without the claim, or a route that was misconfigured
 // to not run JWT verification at all). Without the marker those middlewares
 // fail closed.
-func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, next http.Handler) {
+func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, guard func(*http.Request, string, string) error, next http.Handler) {
 	userID := r.Header.Get("X-User-Id")
 	if userID == "" || !jwtutil.IsUUID(userID) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
+	}
+
+	// FR-067 [MED]: consult the impersonation guard so a service
+	// identity cannot impersonate arbitrary users by default.
+	if guard != nil {
+		if err := guard(r, identity, userID); err != nil {
+			httpx.Logger(r.Context(), slog.Default()).Warn("s2s impersonation rejected by guard",
+				"user_id", userID,
+				"client_identity", identity,
+				"error", err,
+			)
+			httpx.WriteError(w, http.StatusForbidden, "impersonation not permitted")
+			return
+		}
 	}
 
 	httpx.Logger(r.Context(), slog.Default()).Info("s2s user impersonation",

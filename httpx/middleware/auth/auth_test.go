@@ -26,7 +26,7 @@ const testUUID = "550e8400-e29b-41d4-a716-446655440000"
 // without JWT verification.
 func headerOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requireHeaderUser(w, r, "test", next)
+		requireHeaderUser(w, r, "test", nil, next)
 	})
 }
 

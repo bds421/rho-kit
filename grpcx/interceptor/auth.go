@@ -314,6 +314,49 @@ type mtlsIdentityConfig struct {
 	allowedCNs     map[string]struct{}
 	allowedSANDNS  map[string]struct{}
 	allowedSANURIs map[string]struct{}
+	// impersonationGuard, when set, is consulted before stamping
+	// the trusted-S2S marker (audit FR-065). Returning an error
+	// rejects the impersonation attempt; returning nil accepts it.
+	// Without this hook, any allow-listed service identity could
+	// impersonate any UUID — a too-broad default for a kit-level
+	// "trusted" guarantee.
+	impersonationGuard func(ctx context.Context, identity, userID string) error
+	// skipMethods bypasses both JWT and mTLS authentication for the
+	// listed gRPC method names (audit FR-066). Use for unauthenticated
+	// health endpoints under a combined JWT/mTLS interceptor.
+	skipMethods map[string]struct{}
+}
+
+// WithMTLSSkipMethods bypasses authentication for the listed gRPC
+// method names (audit FR-066). Mirrors [WithSkipMethods] for the
+// JWT-only [AuthUnary] / [AuthStream] interceptors so services using
+// the combined JWT + mTLS auth can still expose unauthenticated
+// health endpoints.
+func WithMTLSSkipMethods(methods ...string) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) {
+		if c.skipMethods == nil {
+			c.skipMethods = make(map[string]struct{})
+		}
+		for _, m := range methods {
+			c.skipMethods[m] = struct{}{}
+		}
+	}
+}
+
+// WithS2SImpersonationGuard installs a callback that decides whether
+// `identity` (the verified client certificate's matched SAN/CN) is
+// allowed to impersonate `userID`. Return an error to reject the
+// impersonation; the interceptor returns codes.PermissionDenied to
+// the caller.
+//
+// Audit FR-065: without this guard the kit's mTLS auth treats every
+// allow-listed service identity as omnipotent — any service can
+// impersonate any user. Wire a per-service authorization callback
+// here (e.g. "svc-billing may impersonate any user-of-tenant whose
+// purchase it is reconciling") so the trust scope matches the kit
+// contract.
+func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID string) error) MTLSIdentityOption {
+	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
 
 // WithAllowedSANs authorises peers whose verified client certificate carries
@@ -408,9 +451,12 @@ func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.
 	return func(
 		ctx context.Context,
 		req any,
-		_ *grpc.UnaryServerInfo,
+		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
+			return handler(ctx, req)
+		}
 		newCtx, err := authenticateMTLSOrJWT(ctx, provider, cfg)
 		if err != nil {
 			return nil, err
@@ -433,9 +479,12 @@ func MTLSAuthStream(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc
 	return func(
 		srv any,
 		ss grpc.ServerStream,
-		_ *grpc.StreamServerInfo,
+		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		if _, skip := cfg.skipMethods[info.FullMethod]; skip {
+			return handler(srv, ss)
+		}
 		newCtx, err := authenticateMTLSOrJWT(ss.Context(), provider, cfg)
 		if err != nil {
 			return err
@@ -477,6 +526,19 @@ func authenticateMTLSOrJWT(
 	userID := extractXUserID(ctx)
 	if userID == "" || !jwtutil.IsUUID(userID) {
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
+	}
+
+	// FR-065 [MED]: consult the impersonation guard so a service
+	// identity cannot impersonate arbitrary users by default.
+	if cfg.impersonationGuard != nil {
+		if err := cfg.impersonationGuard(ctx, identity, userID); err != nil {
+			slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
+				slog.String("user_id", userID),
+				slog.String("client_identity", identity),
+				slog.Any("error", err),
+			)
+			return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
+		}
 	}
 
 	slog.InfoContext(ctx, "grpc s2s user impersonation",
