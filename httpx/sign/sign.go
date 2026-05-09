@@ -121,16 +121,28 @@ type transport struct {
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// http.RoundTripper contract: do not mutate the input request.
-	// Clone first so signature headers and body-buffering touch the
-	// clone, leaving the caller's request untouched. Without this,
-	// retry middleware that re-reads req.Body sees an empty body the
-	// second time around (because we drained the original).
-	clone := req.Clone(req.Context())
-
-	body, err := readBody(clone, t.cfg.bodyMaxSize)
+	// FR-023 [HIGH]: http.Request.Clone shares the Body field with the
+	// source request, so reading clone.Body drains req.Body too.
+	// Outer retry/auth middleware that re-reads the original request
+	// would see an empty body. Buffer once, restore independent fresh
+	// readers on BOTH req and clone, and set GetBody on the clone so
+	// the standard library's redirect / 100-Continue replay path works.
+	body, err := bufferBody(req, t.cfg.bodyMaxSize)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+	}
+
+	clone := req.Clone(req.Context())
+	if body != nil {
+		clone.Body = io.NopCloser(bytes.NewReader(body))
+		clone.ContentLength = int64(len(body))
+		clone.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 	}
 
 	ts := strconv.FormatInt(t.cfg.now().UTC().Unix(), 10)
@@ -146,24 +158,30 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(clone)
 }
 
-// readBody buffers the request body up to max bytes and rewinds the
-// clone's Body so RoundTrip and SignCanonical both see the same bytes.
-// Operates on the clone — the caller's original request is left
-// untouched.
-func readBody(req *http.Request, max int64) ([]byte, error) {
+// bufferBody drains the request body into memory (up to max bytes) and
+// closes the original reader. The returned slice is suitable for both
+// signing and constructing fresh independent readers for the caller's
+// request and the clone the wrapper sends downstream.
+//
+// Returns (nil, nil) for bodyless requests (Body == nil or http.NoBody).
+// Returns an error if the body exceeds max bytes — silently truncating
+// would let the signed payload diverge from what the server eventually
+// receives if a downstream wrapper restored more bytes from elsewhere.
+func bufferBody(req *http.Request, max int64) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
 	buf, err := io.ReadAll(io.LimitReader(req.Body, max+1))
+	closeErr := req.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("sign: read request body: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("sign: close request body: %w", closeErr)
 	}
 	if int64(len(buf)) > max {
 		return nil, fmt.Errorf("sign: body exceeds maximum %d bytes", max)
 	}
-	_ = req.Body.Close()
-	req.Body = io.NopCloser(bytes.NewReader(buf))
-	req.ContentLength = int64(len(buf))
 	return buf, nil
 }
 
