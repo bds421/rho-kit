@@ -13,7 +13,7 @@ require (
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
-	github.com/bds421/rho-kit/resilience/v2 v2.0.0
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/security/v2 v2.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

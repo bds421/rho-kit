@@ -13,9 +13,10 @@ type Tags map[string]string
 
 // Tagger is an optional extension for backends that support
 // mutable object tags (e.g. S3 tagging, GCS labels).
-// Check capability via type assertion:
+// Check capability via [AsTagger] so decorators with [Unwrapper] support are
+// handled consistently:
 //
-//	if tagger, ok := backend.(storage.Tagger); ok {
+//	if tagger, ok := storage.AsTagger(backend); ok {
 //	    err := tagger.SetTags(ctx, "doc.pdf", storage.Tags{"env": "prod"})
 //	}
 type Tagger interface {

@@ -2,7 +2,9 @@ package redis_test
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,6 +98,62 @@ func TestNew_PanicsOnZeroTTL(t *testing.T) {
 	signedredis.New(client, 0)
 }
 
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	signedredis.New(client, time.Minute, nil)
+}
+
+func TestWithKeyPrefix_PanicsOnInvalid(t *testing.T) {
+	cases := map[string]string{
+		"empty":        "",
+		"newline":      "tenant\n",
+		"carriage":     "tenant\r",
+		"space":        "tenant key:",
+		"tab":          "tenant\tkey:",
+		"null":         "tenant\x00",
+		"invalid utf8": string([]byte{'p', 0xff}),
+		"too long":     strings.Repeat("a", 129),
+	}
+	for name, prefix := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected panic for prefix %q", prefix)
+				}
+				if name == "too long" {
+					msg, _ := r.(string)
+					if strings.Contains(msg, "128") || strings.Contains(msg, "129") {
+						t.Fatalf("panic leaked prefix lengths: %q", msg)
+					}
+				}
+			}()
+			signedredis.WithKeyPrefix(prefix)
+		})
+	}
+}
+
+func TestRedisNonceStore_InvalidReceiverReturnsError(t *testing.T) {
+	for name, store := range map[string]*signedredis.RedisNonceStore{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, err := store.SeenOrStore("nonce")
+			if ok || !errors.Is(err, signedredis.ErrInvalidStore) {
+				t.Fatalf("SeenOrStore = ok=%v err=%v, want ErrInvalidStore", ok, err)
+			}
+		})
+	}
+}
+
 func TestSeenOrStore_FirstTimeThenReplay(t *testing.T) {
 	client := newTestClient(t)
 	store := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix(uniquePrefix(t)))
@@ -177,6 +235,34 @@ func TestSeenOrStore_EmptyNonceRejected(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("empty nonce must not be admitted")
+	}
+}
+
+func TestSeenOrStore_InvalidNonceRejectedBeforeRedis(t *testing.T) {
+	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store := signedredis.New(client, time.Minute)
+
+	cases := []string{
+		"nonce\nvalue",
+		"nonce\rvalue",
+		"nonce\x00value",
+		"nonce value",
+		"nonce\tvalue",
+		string([]byte{'n', 'o', 0xff}),
+		strings.Repeat("a", 65),
+	}
+	for _, nonce := range cases {
+		ok, err := store.SeenOrStore(nonce)
+		if err == nil {
+			t.Fatalf("expected error for nonce %q", nonce)
+		}
+		if ok {
+			t.Fatalf("invalid nonce %q must not be admitted", nonce)
+		}
+		if len(nonce) > 64 && (strings.Contains(err.Error(), "64") || strings.Contains(err.Error(), "65")) {
+			t.Fatalf("nonce length error leaked limits: %v", err)
+		}
 	}
 }
 

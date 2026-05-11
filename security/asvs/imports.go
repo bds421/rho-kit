@@ -1,10 +1,10 @@
 package asvs
 
 import (
-	"fmt"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,11 +20,11 @@ import (
 //     service still has to wire it correctly — capability evidence is
 //     necessary but not sufficient.
 //
-//   - [EvidenceBuilderEnforced]: the [github.com/bds421/rho-kit/app]
-//     Builder validator refuses to construct a service without this
-//     control configured (e.g. TLS, JWT audience, internal-host
-//     loopback). Calling Builder.Validate() at startup guarantees the
-//     control is in place.
+//   - [EvidenceBuilderEnforced]: a scanner or verifier observed actual
+//     Builder usage on the startup path. The Builder validator refuses
+//     to construct a service without this control configured (e.g. TLS,
+//     JWT audience, internal-host loopback). A plain import alone is
+//     not enough for this class.
 //
 //   - [EvidenceRuntimeVerified]: kit-verify (the runtime conformance
 //     tool) probes a running service and asserts the behaviour. This
@@ -33,9 +33,9 @@ import (
 type Evidence string
 
 const (
-	EvidenceCapability       Evidence = "capability"
-	EvidenceBuilderEnforced  Evidence = "builder"
-	EvidenceRuntimeVerified  Evidence = "runtime"
+	EvidenceCapability      Evidence = "capability"
+	EvidenceBuilderEnforced Evidence = "builder"
+	EvidenceRuntimeVerified Evidence = "runtime"
 )
 
 // PackageClaim records that importing a kit package gives the importing
@@ -55,7 +55,7 @@ type PackageClaim struct {
 	Note string
 }
 
-// PackageRegistry is the kit's manifest of which import paths satisfy
+// packageRegistry is the kit's manifest of which import paths satisfy
 // which ASVS controls. The registry is hand-maintained — adding a new
 // package-level `// asvs: ...` annotation does NOT automatically grant
 // import-evidence to the controls; a matching entry must be added here
@@ -68,7 +68,7 @@ type PackageClaim struct {
 // generator from package comments would let any contributor claim
 // kit-level coverage by typing the annotation, which is the trust
 // failure FR-007 reported.
-var PackageRegistry = []PackageClaim{
+var packageRegistry = []PackageClaim{
 	// Crypto — capability-level: importing the package only proves
 	// the service *can* call the API, not that it does.
 	{"github.com/bds421/rho-kit/crypto/v2/passhash", []ID{"V6.2.1"}, EvidenceCapability,
@@ -98,8 +98,9 @@ var PackageRegistry = []PackageClaim{
 	{"github.com/bds421/rho-kit/observability/v2/health", []ID{"V8.2.2", "V14.1.1"}, EvidenceCapability,
 		"Health endpoints with no-store cache"},
 
-	// HTTP middleware — capability when imported, becomes builder-enforced
-	// when the Builder default-stack installs it.
+	// HTTP middleware — capability when imported. Runtime verification
+	// or startup-path analysis is required before treating it as
+	// enforced.
 	{"github.com/bds421/rho-kit/httpx/v2/middleware/auth", []ID{"V2.1.5", "V2.3.1", "V3.2.1", "V3.3.1", "V4.1.1", "V4.1.5"}, EvidenceCapability,
 		"Authentication + revocation middleware"},
 	{"github.com/bds421/rho-kit/httpx/v2/middleware/csrf", []ID{"V13.2.3", "V3.4.1"}, EvidenceCapability,
@@ -125,12 +126,12 @@ var PackageRegistry = []PackageClaim{
 	{"github.com/bds421/rho-kit/httpx/v2/middleware/recover", []ID{"V7.1.1", "V14.4.1"}, EvidenceCapability,
 		"Panic recovery + structured logging"},
 
-	// Builder — when a service imports app and calls Builder.Validate,
-	// the validator REJECTS configurations missing TLS, audience, etc.
-	// Promote to builder-enforced because validation failures abort
-	// startup.
-	{"github.com/bds421/rho-kit/app/v2", []ID{"V14.1.1", "V14.4.1", "V9.1.1"}, EvidenceBuilderEnforced,
-		"Production-safety validator (TLS / loopback / JWT audience required)"},
+	// Builder — importing app proves the service can use the canonical
+	// Builder API. It is still capability-level evidence here because
+	// an import scan cannot prove the startup path actually calls
+	// Builder.Run or Builder.Validate.
+	{"github.com/bds421/rho-kit/app/v2", []ID{"V14.1.1", "V14.4.1", "V9.1.1"}, EvidenceCapability,
+		"Builder API with production-safety validator (TLS / loopback / JWT audience required when used)"},
 }
 
 // ImportClaim is one resolved entry from a directory scan: the import
@@ -143,10 +144,10 @@ type ImportClaim struct {
 }
 
 // ImportReport is the import-based companion to [ScanReport]. It is
-// the trustworthy view of a service's ASVS posture: every entry is
-// derived from an actual import statement and resolved against the
-// kit's [PackageRegistry], not from comments the service author may
-// have copied.
+// the package-capability view of a service's ASVS posture: every entry
+// is derived from an actual non-blank import statement and resolved
+// against the kit's [PackageRegistry], not from comments the service
+// author may have copied.
 type ImportReport struct {
 	// Imports lists every kit-namespace import found, with its claim.
 	Imports []ImportClaim
@@ -165,23 +166,29 @@ type ImportReport struct {
 // files (skipping vendor, hidden dirs, and _test.go files), resolves
 // each against [PackageRegistry], and returns an [ImportReport].
 //
-// Audit FR-007: this is the trustworthy scanner. Its claims rest on
-// "the service's source code does `import "kit/...""` — a fact that
-// cannot be forged by editing a comment. Use this in kit-doctor when
-// auditing a service.
+// Audit FR-007: this is the import-derived scanner. Its claims rest on
+// "the service's source code does a non-blank import of `kit/...`" —
+// stronger than a comment but still separated by [Evidence] class so
+// package availability is not mistaken for runtime verification.
 func ScanImports(root string) (ImportReport, error) {
 	registry := buildRegistryIndex()
 
 	var imports []ImportClaim
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return asvsFileError("inspect source tree", walkErr)
 		}
 		if d.IsDir() {
+			if filepath.Clean(path) == filepath.Clean(root) {
+				return nil
+			}
 			name := d.Name()
 			if name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -195,15 +202,30 @@ func ScanImports(root string) (ImportReport, error) {
 		return nil
 	})
 	if err != nil {
-		return ImportReport{}, fmt.Errorf("asvs: walk %q: %w", root, err)
+		return ImportReport{}, asvsFileError("walk source tree", err)
 	}
 	return buildImportReport(imports), nil
 }
 
+// PackageRegistry returns a detached copy of the kit's hand-maintained import
+// evidence registry.
+func PackageRegistry() []PackageClaim {
+	out := make([]PackageClaim, len(packageRegistry))
+	for i, claim := range packageRegistry {
+		out[i] = clonePackageClaim(claim)
+	}
+	return out
+}
+
+func clonePackageClaim(claim PackageClaim) PackageClaim {
+	claim.Controls = append([]ID(nil), claim.Controls...)
+	return claim
+}
+
 func buildRegistryIndex() map[string]PackageClaim {
-	out := make(map[string]PackageClaim, len(PackageRegistry))
-	for _, c := range PackageRegistry {
-		out[c.ImportPath] = c
+	out := make(map[string]PackageClaim, len(packageRegistry))
+	for _, c := range packageRegistry {
+		out[c.ImportPath] = clonePackageClaim(c)
 	}
 	return out
 }
@@ -220,6 +242,9 @@ func scanFileImports(path string, registry map[string]PackageClaim) ([]ImportCla
 	}
 	var out []ImportClaim
 	for _, imp := range file.Imports {
+		if imp.Name != nil && imp.Name.Name == "_" {
+			continue
+		}
 		// imp.Path.Value is the literal "github.com/..." with quotes.
 		raw := strings.Trim(imp.Path.Value, `"`)
 		claim, ok := registry[raw]
@@ -246,7 +271,7 @@ func buildImportReport(imports []ImportClaim) ImportReport {
 		}
 	}
 	missing := map[ID]struct{}{}
-	for _, c := range Catalog {
+	for _, c := range catalog {
 		if _, ok := claimedSet[c.ID]; !ok {
 			missing[c.ID] = struct{}{}
 		}

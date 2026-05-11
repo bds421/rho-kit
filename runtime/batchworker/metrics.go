@@ -30,7 +30,7 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Buckets: []float64{0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 		}, []string{"name"}),
 	}
-	promutil.RegisterCollector(reg, m.runs)
-	promutil.RegisterCollector(reg, m.duration)
+	m.runs = promutil.MustRegisterOrGet(reg, m.runs)
+	m.duration = promutil.MustRegisterOrGet(reg, m.duration)
 	return m
 }

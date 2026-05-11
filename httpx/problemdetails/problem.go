@@ -16,10 +16,14 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	coreconfig "github.com/bds421/rho-kit/core/v2/config"
 )
 
 // ContentType is the RFC 7807 media type.
@@ -63,7 +67,7 @@ func (p Problem) MarshalJSON() ([]byte, error) {
 	for k, v := range p.Extensions {
 		switch k {
 		case "type", "title", "status", "detail", "instance":
-			return nil, errors.New("problemdetails: extension key collides with reserved RFC 7807 member: " + k)
+			return nil, errors.New("problemdetails: extension key collides with reserved RFC 7807 member")
 		}
 		out[k] = v
 	}
@@ -85,14 +89,20 @@ func Write(w http.ResponseWriter, p Problem) {
 	}
 	body, err := json.Marshal(p)
 	if err != nil {
-		// Should only happen on extension-key collision.
-		http.Error(w, "problemdetails: marshal: "+err.Error(), http.StatusInternalServerError)
+		writeInternalMarshalError(w)
 		return
 	}
 	w.Header().Set("Content-Type", ContentType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func writeInternalMarshalError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", ContentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`{"title":"Internal Server Error","status":500,"detail":"internal error"}`))
 }
 
 // Option configures [FromError].
@@ -109,12 +119,22 @@ type config struct {
 // "https://errors.example.com/" to point clients at human-readable
 // descriptions.
 func WithBaseURL(s string) Option {
-	return func(c *config) { c.baseURL = strings.TrimRight(s, "/") }
+	return func(c *config) {
+		base, err := validateBaseURL(s)
+		if err != nil {
+			panic("problemdetails: base URL is invalid")
+		}
+		c.baseURL = base
+	}
 }
 
 // WithInstance sets the `instance` URI on the generated Problem.
-// Typically derived from the request: WithInstance(r.URL.RequestURI()).
+// Prefer path-only request-derived values such as r.URL.EscapedPath(); query
+// strings often carry secrets and should not be reflected into error bodies.
 func WithInstance(instance string) Option {
+	if err := validateInstance(instance); err != nil {
+		panic("problemdetails: instance path is invalid")
+	}
 	return func(c *config) { c.instance = instance }
 }
 
@@ -127,8 +147,14 @@ func WithInstance(instance string) Option {
 // Validation errors (apperror.FieldErrors) become an "errors" extension
 // with per-field messages.
 func FromError(err error, opts ...Option) Problem {
+	if err == nil {
+		err = errors.New("internal error")
+	}
 	cfg := config{baseURL: ""}
 	for _, o := range opts {
+		if o == nil {
+			panic("problemdetails: option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -139,7 +165,7 @@ func FromError(err error, opts ...Option) Problem {
 		Type:     resolveType(cfg.baseURL, err, status),
 		Title:    title,
 		Status:   status,
-		Detail:   err.Error(),
+		Detail:   SafeDetail(err),
 		Instance: cfg.instance,
 	}
 
@@ -156,6 +182,106 @@ func FromError(err error, opts ...Option) Problem {
 	}
 
 	return p
+}
+
+// SafeDetail returns the client-facing RFC 7807 detail for err.
+//
+// It deliberately mirrors httpx.WriteServiceError's response policy: validation
+// details preserve the original message, while operation/dependency failures and
+// generic errors collapse to stable generic strings so internal hostnames,
+// ports, SQL text, or wrapped causes do not leak through problem+json responses.
+func SafeDetail(err error) string {
+	if err == nil {
+		return "internal error"
+	}
+	if ve, ok := apperror.AsValidation(err); ok {
+		if ve.Error() != "" {
+			return ve.Error()
+		}
+		return "validation failed"
+	}
+	if apperror.IsRateLimit(err) {
+		return "rate limit exceeded"
+	}
+	if apperror.IsNotFound(err) {
+		return "resource not found"
+	}
+	if apperror.IsConflict(err) {
+		return "resource conflict"
+	}
+	if apperror.IsPermanent(err) {
+		return "operation cannot be completed"
+	}
+	if apperror.IsAuthRequired(err) {
+		return "authentication required"
+	}
+	if apperror.IsForbidden(err) {
+		return "forbidden"
+	}
+	if apperror.IsUnavailable(err) {
+		return "service unavailable"
+	}
+	if apperror.IsOperationFailed(err) {
+		return "internal error"
+	}
+	return "internal error"
+}
+
+func validateBaseURL(raw string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if base == "" {
+		return "", nil
+	}
+	if base != strings.TrimRight(raw, "/") {
+		return "", errors.New("problemdetails: base URL must not contain surrounding whitespace")
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", errors.New("problemdetails: invalid base URL")
+	}
+	if !u.IsAbs() || u.Host == "" {
+		return "", errors.New("problemdetails: base URL must be absolute with a host")
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", errors.New("problemdetails: base URL scheme must be http or https")
+	}
+	if u.User != nil {
+		return "", errors.New("problemdetails: base URL must not contain credentials")
+	}
+	if err := coreconfig.ValidateURLHost("problemdetails: base URL", u); err != nil {
+		return "", err
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("problemdetails: base URL must not contain query or fragment components")
+	}
+	return base, nil
+}
+
+func validateInstance(instance string) error {
+	if instance == "" {
+		return nil
+	}
+	if strings.TrimSpace(instance) != instance {
+		return errors.New("problemdetails: instance must not contain surrounding whitespace")
+	}
+	if !utf8.ValidString(instance) {
+		return errors.New("problemdetails: instance must be valid UTF-8")
+	}
+	if !strings.HasPrefix(instance, "/") || strings.HasPrefix(instance, "//") {
+		return errors.New("problemdetails: instance must be a path-only URI beginning with /")
+	}
+	if strings.ContainsAny(instance, `\?#`) {
+		return errors.New("problemdetails: instance must not contain query, fragment, or backslash components")
+	}
+	for _, r := range instance {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return errors.New("problemdetails: instance must not contain whitespace or control characters")
+		}
+	}
+	if _, err := url.PathUnescape(instance); err != nil {
+		return errors.New("problemdetails: invalid instance path escape")
+	}
+	return nil
 }
 
 func ensureExt(p *Problem) map[string]any {

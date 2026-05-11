@@ -7,8 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/google/uuid"
 )
 
@@ -44,6 +48,10 @@ var (
 	// during incident triage.
 	ErrInvalidOutcome = errors.New("actionlog: outcome must be one of success, failure, denied")
 
+	// ErrInvalidStore is returned when a Store or Logger method is
+	// invoked on a nil or otherwise uninitialized implementation.
+	ErrInvalidStore = errors.New("actionlog: store is not initialized")
+
 	// ErrNotFound is returned by [Get] when the requested ID is not in
 	// the store.
 	ErrNotFound = errors.New("actionlog: entry not found")
@@ -60,6 +68,13 @@ var (
 	// from forgery.
 	ErrUnknownKeyID = errors.New("actionlog: signature key id is not known to the secret source")
 
+	// ErrSecretTooShort is returned when a [SecretSource] resolves an
+	// HMAC key shorter than SHA-256's 32-byte output size. The logger
+	// enforces this for every SecretSource implementation, not only
+	// [StaticSecrets], so custom KMS/config adapters cannot silently
+	// weaken entry signatures.
+	ErrSecretTooShort = errors.New("actionlog: signature secret must be at least 32 bytes")
+
 	// ErrChainBroken is returned by [Logger.VerifyChain] when the
 	// per-tenant hash chain shows a deletion, reordering, or
 	// truncation. Distinct from [ErrSignatureInvalid] (which catches
@@ -73,6 +88,13 @@ var (
 	// but dangerous (admin tooling can inadvertently leak audit data
 	// across customers); the API requires an explicit opt-in.
 	ErrQueryTenantRequired = errors.New("actionlog: query requires TenantID or AllTenants=true")
+
+	// ErrQueryScopeConflict is returned by [Logger.List] when a [Query]
+	// sets both [Query.TenantID] and [Query.AllTenants]. Tenant-scoped
+	// and cross-tenant reads are intentionally mutually exclusive so
+	// privileged callers cannot accidentally hide a wiring bug behind
+	// store-specific filter precedence.
+	ErrQueryScopeConflict = errors.New("actionlog: query must not set both TenantID and AllTenants=true")
 )
 
 // Entry records one agent-attributed action.
@@ -160,20 +182,23 @@ type Entry struct {
 // indistinguishable from a real SHA-256 hash.
 const zeroPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
+const minSignatureSecretLen = sha256.Size
+
 // Query controls which entries [Logger.List] returns. Filters compose
 // with AND semantics; an empty filter field is unconstrained. The
-// caller MUST set either [Query.TenantID] (single-tenant query) or
-// [Query.AllTenants]=true (explicit cross-tenant query); a zero query
-// is rejected with [ErrQueryTenantRequired].
+// caller MUST set exactly one of [Query.TenantID] (single-tenant query)
+// or [Query.AllTenants]=true (explicit cross-tenant query); a zero query
+// is rejected with [ErrQueryTenantRequired], and a query that sets both
+// scope modes is rejected with [ErrQueryScopeConflict].
 type Query struct {
 	// TenantID restricts to a single tenant. Required unless
-	// AllTenants is true.
+	// AllTenants is true. Mutually exclusive with AllTenants.
 	TenantID string
 
 	// AllTenants opts into a cross-tenant listing. Set this only on
 	// admin / forensics tooling that genuinely needs to see audit
 	// data across customers — it bypasses the tenant scoping that
-	// the rest of the kit enforces. Ignored when TenantID is set.
+	// the rest of the kit enforces. Mutually exclusive with TenantID.
 	AllTenants bool
 
 	// Actor restricts to a single principal.
@@ -190,6 +215,30 @@ type Query struct {
 	// Limit caps the number of entries returned. Stores apply a
 	// default of 100 when Limit <= 0 to bound query cost.
 	Limit int
+}
+
+// Validate enforces the tenant-scoping contract documented above.
+// Implementations of [Store.List] MUST call this before issuing the
+// underlying query.
+func (q Query) Validate() error {
+	if q.TenantID != "" && q.AllTenants {
+		return ErrQueryScopeConflict
+	}
+	if q.TenantID == "" && !q.AllTenants {
+		return ErrQueryTenantRequired
+	}
+	return nil
+}
+
+// ValidateStoredEntry enforces the low-level store append contract shared by
+// the bundled stores and custom Store implementations. tenantID is the chain
+// being extended; e.TenantID must match it so a caller cannot take a lock for
+// one tenant and persist an entry under another.
+func ValidateStoredEntry(tenantID string, e Entry) error {
+	if tenantID == "" || e.TenantID != tenantID {
+		return ErrInvalidEntry
+	}
+	return validate(e)
 }
 
 // Logger appends and reads entries, signing on write and verifying on
@@ -310,8 +359,8 @@ func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecret
 		if id == "" {
 			panic("actionlog: NewStaticSecrets: empty key id is not allowed")
 		}
-		if len(k) < 32 {
-			panic("actionlog: NewStaticSecrets: secret for key id " + id + " must be at least 32 bytes")
+		if len(k) < minSignatureSecretLen {
+			panic("actionlog: NewStaticSecrets: secret must be at least 32 bytes")
 		}
 		buf := make([]byte, len(k))
 		copy(buf, k)
@@ -321,13 +370,21 @@ func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecret
 }
 
 // CurrentKeyID returns the configured current key id.
-func (s *StaticSecrets) CurrentKeyID() string { return s.current }
+func (s *StaticSecrets) CurrentKeyID() string {
+	if s == nil {
+		return ""
+	}
+	return s.current
+}
 
 // Resolve returns a defensive copy of the secret for keyID. Returning
 // the underlying slice would let a caller mutate the stored key (and
 // thereby break or forge subsequent verification/signing) — the copy
 // keeps the in-memory map immutable from the outside.
 func (s *StaticSecrets) Resolve(keyID string) ([]byte, bool) {
+	if s == nil || s.keys == nil {
+		return nil, false
+	}
 	k, ok := s.keys[keyID]
 	if !ok {
 		return nil, false
@@ -337,13 +394,27 @@ func (s *StaticSecrets) Resolve(keyID string) ([]byte, bool) {
 	return out, true
 }
 
+func resolveSignatureSecret(source SecretSource, keyID string) ([]byte, error) {
+	if keyID == "" {
+		return nil, ErrUnknownKeyID
+	}
+	secret, ok := source.Resolve(keyID)
+	if !ok {
+		return nil, ErrUnknownKeyID
+	}
+	if len(secret) < minSignatureSecretLen {
+		return nil, ErrSecretTooShort
+	}
+	return secret, nil
+}
+
 // signedLogger is the default [Logger] implementation: a [Store] plus a
 // [SecretSource] plus a clock and id-source for testability.
 type signedLogger struct {
 	store   Store
 	secrets SecretSource
 	clock   func() time.Time
-	newID   func() string
+	newID   func() (string, error)
 }
 
 // LoggerOption configures a [Logger] returned by [New].
@@ -366,6 +437,19 @@ func WithIDFunc(fn func() string) LoggerOption {
 	if fn == nil {
 		panic("actionlog: WithIDFunc: fn must not be nil")
 	}
+	return func(l *signedLogger) {
+		l.newID = func() (string, error) {
+			return fn(), nil
+		}
+	}
+}
+
+// WithIDFuncE overrides the id generator with an error-returning source.
+// Use this when IDs come from a dependency that can fail. Panics on nil.
+func WithIDFuncE(fn func() (string, error)) LoggerOption {
+	if fn == nil {
+		panic("actionlog: WithIDFuncE: fn must not be nil")
+	}
 	return func(l *signedLogger) { l.newID = fn }
 }
 
@@ -383,12 +467,28 @@ func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 		store:   store,
 		secrets: secrets,
 		clock:   time.Now,
-		newID:   func() string { return uuid.Must(uuid.NewV7()).String() },
+		newID: func() (string, error) {
+			id, err := uuid.NewV7()
+			if err != nil {
+				return "", fmt.Errorf("actionlog: generate entry ID: %w", err)
+			}
+			return id.String(), nil
+		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("actionlog: New: option must not be nil")
+		}
 		o(l)
 	}
 	return l
+}
+
+func (l *signedLogger) ready() error {
+	if l == nil || l.store == nil || l.secrets == nil || l.clock == nil || l.newID == nil {
+		return ErrInvalidStore
+	}
+	return nil
 }
 
 // Append validates, signs, and persists the entry. The signature
@@ -397,6 +497,13 @@ func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 // VerifyChain. Concurrent Appends for the same tenant serialise
 // inside the store's per-tenant lock.
 func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
+	if err := l.ready(); err != nil {
+		return Entry{}, err
+	}
+	if !validMetadata(e.Metadata) {
+		return Entry{}, ErrInvalidEntry
+	}
+	e = cloneEntry(e)
 	if e.TenantID == "" {
 		return Entry{}, ErrInvalidEntry
 	}
@@ -413,15 +520,19 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		// entry whose SignatureKeyID Verify will reject permanently.
 		return Entry{}, fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
 	}
-	secret, ok := l.secrets.Resolve(keyID)
-	if !ok {
-		return Entry{}, fmt.Errorf("actionlog: current key id %q not resolvable: %w", keyID, ErrUnknownKeyID)
+	secret, err := resolveSignatureSecret(l.secrets, keyID)
+	if err != nil {
+		return Entry{}, fmt.Errorf("actionlog: current key id: %w", err)
 	}
 
-	return l.store.AppendChained(ctx, e.TenantID, func(prev Entry, prevSeq int64) (Entry, error) {
+	entry, err := l.store.AppendChained(ctx, e.TenantID, func(prev Entry, prevSeq int64) (Entry, error) {
 		entry := e
 		if entry.ID == "" {
-			entry.ID = l.newID()
+			id, err := l.newID()
+			if err != nil {
+				return Entry{}, err
+			}
+			entry.ID = id
 		}
 		entry.SignatureKeyID = keyID
 		entry.Seq = prevSeq + 1
@@ -444,43 +555,60 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		entry.Signature = sig
 		return entry, nil
 	})
+	if err != nil {
+		return Entry{}, err
+	}
+	return cloneEntry(entry), nil
 }
 
 // Get reads and verifies an entry.
 func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
+	if err := l.ready(); err != nil {
+		return Entry{}, err
+	}
 	e, err := l.store.Get(ctx, id)
 	if err != nil {
 		return Entry{}, err
 	}
+	e = cloneEntry(e)
 	if err := l.Verify(e); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
 }
 
-// List reads and verifies a batch of entries. Rejects queries that
-// lack a TenantID and have not opted into AllTenants — see [Query].
-// The first verification failure aborts the call so callers don't
-// get a half-truthful page.
+// List reads and verifies a batch of entries. Rejects queries that lack
+// a TenantID and have not opted into AllTenants, or that specify both
+// scope modes — see [Query]. The first verification failure aborts the
+// call so callers don't get a half-truthful page.
 func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, error) {
-	if q.TenantID == "" && !q.AllTenants {
-		return nil, ErrQueryTenantRequired
+	if err := l.ready(); err != nil {
+		return nil, err
+	}
+	if err := q.Validate(); err != nil {
+		return nil, err
 	}
 	entries, err := l.store.List(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range entries {
+	out := make([]Entry, len(entries))
+	for i, e := range entries {
+		e = cloneEntry(e)
 		if err := l.Verify(e); err != nil {
-			return nil, fmt.Errorf("actionlog: entry %q: %w", e.ID, err)
+			return nil, fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
+		out[i] = e
 	}
-	return entries, nil
+	return out, nil
 }
 
 // VerifyChain walks the entire per-tenant chain and reports any
 // deletion, reordering, truncation, or row tampering.
 func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	if err := l.ready(); err != nil {
+		return err
+	}
 	if tenantID == "" {
 		return ErrQueryTenantRequired
 	}
@@ -491,14 +619,14 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	var prev Entry
 	for i, e := range entries {
 		if err := l.Verify(e); err != nil {
-			return fmt.Errorf("actionlog: entry %q: %w", e.ID, err)
+			return fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		if e.Seq != int64(i+1) {
-			return fmt.Errorf("%w: tenant %q expected seq %d, got %d at id %q", ErrChainBroken, tenantID, i+1, e.Seq, e.ID)
+			return fmt.Errorf("%w: expected seq %d, got %d", ErrChainBroken, i+1, e.Seq)
 		}
 		if i == 0 {
 			if e.PrevHash != zeroPrevHash {
-				return fmt.Errorf("%w: tenant %q first entry must have zero prev_hash", ErrChainBroken, tenantID)
+				return fmt.Errorf("%w: first entry must have zero prev_hash", ErrChainBroken)
 			}
 		} else {
 			expected, err := entryHash(prev)
@@ -506,7 +634,7 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 				return err
 			}
 			if e.PrevHash != expected {
-				return fmt.Errorf("%w: tenant %q seq %d prev_hash mismatch", ErrChainBroken, tenantID, e.Seq)
+				return fmt.Errorf("%w: seq %d prev_hash mismatch", ErrChainBroken, e.Seq)
 			}
 		}
 		prev = e
@@ -517,10 +645,16 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 // Sign computes and returns the canonical signature for an entry
 // without persisting it. Used by off-band verifiers and tests.
 func (l *signedLogger) Sign(e Entry) (string, string, error) {
+	if err := l.ready(); err != nil {
+		return "", "", err
+	}
 	keyID := l.secrets.CurrentKeyID()
-	secret, ok := l.secrets.Resolve(keyID)
-	if !ok {
-		return "", "", fmt.Errorf("actionlog: current key id %q not resolvable: %w", keyID, ErrUnknownKeyID)
+	if keyID == "" {
+		return "", "", fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
+	}
+	secret, err := resolveSignatureSecret(l.secrets, keyID)
+	if err != nil {
+		return "", "", fmt.Errorf("actionlog: current key id: %w", err)
 	}
 	e.SignatureKeyID = keyID
 	sig, err := computeSignature(e, secret)
@@ -532,12 +666,15 @@ func (l *signedLogger) Sign(e Entry) (string, string, error) {
 
 // Verify recomputes the signature and constant-time compares.
 func (l *signedLogger) Verify(e Entry) error {
+	if err := l.ready(); err != nil {
+		return err
+	}
 	if e.SignatureKeyID == "" {
 		return ErrSignatureInvalid
 	}
-	secret, ok := l.secrets.Resolve(e.SignatureKeyID)
-	if !ok {
-		return ErrUnknownKeyID
+	secret, err := resolveSignatureSecret(l.secrets, e.SignatureKeyID)
+	if err != nil {
+		return err
 	}
 	expected, err := computeSignature(e, secret)
 	if err != nil {
@@ -567,14 +704,22 @@ func (l *signedLogger) Verify(e Entry) error {
 	return nil
 }
 
-// MaxIDLen is the inclusive upper bound on Entry.ID accepted by the
-// memory and Postgres stores (audit FR-051). The Postgres schema
-// declares id VARCHAR(36) — the kit validates at the package
-// boundary rather than letting the database surface the failure
-// late and make integration tests harder to debug. Same cap applies
-// to the other identifier-shaped fields so the API contract matches
-// the schema for every store.
+// MaxIDLen is the inclusive upper bound on Entry.ID accepted by Logger.Append
+// (audit FR-051). The Postgres schema declares id VARCHAR(36), so the kit
+// validates at the package boundary rather than letting the database surface
+// the failure late and make integration tests harder to debug.
 const MaxIDLen = 36
+
+// Entry field length caps mirror the Postgres schema so Logger.Append has the
+// same contract regardless of the configured store implementation.
+const (
+	MaxTenantIDLen       = 255
+	MaxActorLen          = 255
+	MaxActionLen         = 255
+	MaxResourceLen       = 500
+	MaxReasonLen         = 4096
+	MaxSignatureKeyIDLen = 64
+)
 
 // validate enforces required-field invariants before signing.
 //
@@ -583,11 +728,18 @@ const MaxIDLen = 36
 // emptiness was checked, so a too-long ID would pass the in-memory
 // store and fail at INSERT time in Postgres with a low-value error.
 func validate(e Entry) error {
-	if e.ID == "" || e.TenantID == "" || e.Actor == "" || e.Action == "" {
+	if e.ID == "" ||
+		!validTenantID(e.TenantID) ||
+		!validTextField(e.Actor, MaxActorLen, true) ||
+		!validTextField(e.Action, MaxActionLen, true) ||
+		!validTextField(e.Resource, MaxResourceLen, false) ||
+		!validTextField(e.SignatureKeyID, MaxSignatureKeyIDLen, true) ||
+		!validReason(e.Reason) ||
+		!validMetadata(e.Metadata) {
 		return ErrInvalidEntry
 	}
 	if len(e.ID) > MaxIDLen {
-		return fmt.Errorf("%w: ID length %d exceeds %d", ErrInvalidEntry, len(e.ID), MaxIDLen)
+		return fmt.Errorf("%w: ID exceeds maximum length", ErrInvalidEntry)
 	}
 	switch e.Outcome {
 	case OutcomeSuccess, OutcomeFailure, OutcomeDenied:
@@ -595,6 +747,36 @@ func validate(e Entry) error {
 		return ErrInvalidOutcome
 	}
 	return nil
+}
+
+func validTenantID(s string) bool {
+	if len(s) > MaxTenantIDLen {
+		return false
+	}
+	return coretenant.ValidateID(s) == nil
+}
+
+func validTextField(s string, maxLen int, required bool) bool {
+	if s == "" {
+		return !required
+	}
+	if len(s) > maxLen || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validFreeText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, '\x00')
+}
+
+func validReason(s string) bool {
+	return len(s) <= MaxReasonLen && validFreeText(s)
 }
 
 // computeSignature builds the canonical form and HMAC-SHA256s it.

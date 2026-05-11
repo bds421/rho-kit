@@ -1,9 +1,12 @@
 package debughttp
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 )
@@ -32,6 +35,9 @@ type Authenticator func(r *http.Request) bool
 // JSON; they MUST be guarded behind both gates before being mounted on any
 // listener that is reachable from outside the operator's debug environment.
 func Guard(environment string, auth Authenticator, h http.Handler) http.Handler {
+	if h == nil {
+		panic("debughttp: Guard requires a non-nil handler")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !config.IsDevelopment(environment) {
 			http.NotFound(w, r)
@@ -55,23 +61,43 @@ func Guard(environment string, auth Authenticator, h http.Handler) http.Handler 
 // Use only over TLS — Basic auth credentials are sent in plaintext over the
 // wire on every request.
 func BasicAuth(credentials map[string]string) Authenticator {
-	// Pre-hash to constant length is overkill for this use; we compare each
-	// candidate with subtle.ConstantTimeCompare and OR the results to make
-	// timing independent of which (if any) entry matched.
+	if len(credentials) == 0 {
+		panic("debughttp: BasicAuth requires at least one credential")
+	}
+	hashed := make([]basicCredential, 0, len(credentials))
+	for user, pass := range credentials {
+		if user == "" {
+			panic("debughttp: BasicAuth username must not be empty")
+		}
+		if pass == "" {
+			panic("debughttp: BasicAuth password must not be empty")
+		}
+		hashed = append(hashed, basicCredential{
+			user: sha256.Sum256([]byte(user)),
+			pass: sha256.Sum256([]byte(pass)),
+		})
+	}
 	return func(r *http.Request) bool {
 		user, pass, ok := r.BasicAuth()
 		if !ok {
 			return false
 		}
+		userHash := sha256.Sum256([]byte(user))
+		passHash := sha256.Sum256([]byte(pass))
 		// Walk every entry so timing doesn't reveal which user exists.
 		match := 0
-		for u, p := range credentials {
-			userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(u))
-			passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(p))
+		for _, c := range hashed {
+			userMatch := subtle.ConstantTimeCompare(userHash[:], c.user[:])
+			passMatch := subtle.ConstantTimeCompare(passHash[:], c.pass[:])
 			match |= userMatch & passMatch
 		}
 		return match == 1
 	}
+}
+
+type basicCredential struct {
+	user [sha256.Size]byte
+	pass [sha256.Size]byte
 }
 
 // AllowFromHeader returns an Authenticator that approves the request when the
@@ -80,12 +106,53 @@ func BasicAuth(credentials map[string]string) Authenticator {
 // headers without an upstream verifier.
 func AllowFromHeader(name, expected string) Authenticator {
 	headerName := strings.TrimSpace(name)
+	if !validHeaderName(headerName) {
+		panic("debughttp: AllowFromHeader requires a valid non-empty header name")
+	}
+	if !validHeaderValue(expected) {
+		panic("debughttp: AllowFromHeader requires a valid non-empty expected value")
+	}
 	want := []byte(expected)
 	return func(r *http.Request) bool {
-		got := []byte(r.Header.Get(headerName))
-		if len(got) == 0 {
+		values := r.Header.Values(headerName)
+		if len(values) != 1 {
 			return false
 		}
+		if !validHeaderValue(values[0]) {
+			return false
+		}
+		got := []byte(values[0])
 		return subtle.ConstantTimeCompare(got, want) == 1
 	}
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validHeaderValue(value string) bool {
+	if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, ",") || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

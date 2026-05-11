@@ -9,4 +9,9 @@
 // [Message], [Delivery], [Binding], [Connector], and [BufferedPublisher] — the
 // types that application code depends on. Backend selection happens at wiring
 // time (app.Builder or manual setup) and is invisible to handlers.
+//
+// Message metadata is a shared transport contract. Use [NewMessage] plus
+// [Message.WithHeader], or call [ValidateMessage] for manually-constructed
+// messages, so IDs, types, payloads, and headers stay portable across AMQP,
+// NATS, Redis, and the in-memory broker.
 package messaging

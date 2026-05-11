@@ -2,12 +2,16 @@ package health
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
 )
+
+var errHealthCheckRedirectBlocked = errors.New("health: readiness redirects are disabled")
 
 // HealthCheckOptions tunes [RunHealthCheckOptions]. Zero values fall back
 // to sensible defaults: localhost host, /ready path, 2-second timeout.
@@ -58,7 +62,7 @@ func RunHealthCheckOptions(opts HealthCheckOptions) {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)
 	}
-	client := &http.Client{Timeout: timeout}
+	client := healthCheckHTTPClient(timeout)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -73,4 +77,34 @@ func RunHealthCheckOptions(opts HealthCheckOptions) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func healthCheckHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     healthCheckTransport(),
+		CheckRedirect: blockHealthCheckRedirect,
+	}
+}
+
+func healthCheckTransport() *http.Transport {
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		return tr.Clone()
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+func blockHealthCheckRedirect(_ *http.Request, _ []*http.Request) error {
+	return errHealthCheckRedirectBlocked
 }

@@ -87,12 +87,42 @@ func TestDegradedCache_WithDegradationPolicy(t *testing.T) {
 	assert.Equal(t, "fail-fast", dc.Policy())
 }
 
-func TestDegradedCache_WithDegradationPolicy_NilIgnored(t *testing.T) {
+func TestDegradedCache_WithDegradationPolicy_PanicsOnNil(t *testing.T) {
 	env := newTestEnv(t)
-	dc := NewDegradedCache(env.primary, env.fallback, env.conn,
-		WithDegradationPolicy(nil),
-	)
-	assert.Equal(t, "passthrough", dc.Policy())
+
+	assert.Panics(t, func() {
+		WithDegradationPolicy(nil)
+	})
+	assert.Panics(t, func() {
+		NewDegradedCache(env.primary, env.fallback, env.conn, nil)
+	})
+}
+
+func TestDegradedCache_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, dc := range map[string]*DegradedCache{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, "invalid", dc.Policy())
+			assert.False(t, dc.Healthy())
+
+			_, err := dc.Get(ctx, "key")
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = dc.Set(ctx, "key", []byte("value"), time.Minute)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = dc.Delete(ctx, "key")
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			exists, err := dc.Exists(ctx, "key")
+			assert.False(t, exists)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+		})
+	}
 }
 
 func TestDegradedCache_Healthy_Get(t *testing.T) {

@@ -225,6 +225,18 @@ func TestFromAMQPDelivery_PreservesMessageID(t *testing.T) {
 	assert.Equal(t, "order.created", d.Message.Type)
 }
 
+func TestFromAMQPDelivery_DetachesMessagePayload(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", map[string]string{"id": "42"})
+	require.NoError(t, err)
+
+	d := fromAMQPDelivery(amqp.Delivery{}, msg)
+	msg.Payload[1] = 'X'
+	d.Message.Payload[2] = 'Y'
+
+	assert.Equal(t, `{Xid":"42"}`, string(msg.Payload))
+	assert.Equal(t, `{"Yd":"42"}`, string(d.Message.Payload))
+}
+
 // --- extractSchemaVersion ---
 
 func TestExtractSchemaVersion_FromInt32Header(t *testing.T) {

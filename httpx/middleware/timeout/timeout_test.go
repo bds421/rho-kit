@@ -26,9 +26,51 @@ func TestTimeout_NormalRequest(t *testing.T) {
 
 func TestTimeout_WebSocketBypass(t *testing.T) {
 	handlerCalled := false
-	handler := Timeout(1 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Timeout(1*time.Millisecond, WithWebSocketUpgradeBypass())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
+		time.Sleep(5 * time.Millisecond)
 		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !handlerCalled {
+		t.Error("handler should be called for websocket upgrades")
+	}
+	if rec.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", rec.Code)
+	}
+}
+
+func TestTimeout_WebSocketBypass_CaseInsensitive(t *testing.T) {
+	handlerCalled := false
+	handler := Timeout(1*time.Millisecond, WithWebSocketUpgradeBypass())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Upgrade", "WebSocket")
+	req.Header.Set("Connection", "keep-alive, upgrade")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !handlerCalled {
+		t.Error("handler should be called for WebSocket (case-insensitive)")
+	}
+}
+
+func TestTimeout_WebSocketBypassRequiresConnectionUpgrade(t *testing.T) {
+	handler := Timeout(1*time.Millisecond, WithWebSocketUpgradeBypass())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		case <-r.Context().Done():
+		}
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
@@ -36,25 +78,29 @@ func TestTimeout_WebSocketBypass(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if !handlerCalled {
-		t.Error("handler should be called for websocket upgrades")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 without Connection: Upgrade", rec.Code)
 	}
 }
 
-func TestTimeout_WebSocketBypass_CaseInsensitive(t *testing.T) {
-	handlerCalled := false
-	handler := Timeout(1 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handlerCalled = true
-		w.WriteHeader(http.StatusOK)
+func TestTimeout_WebSocketBypassRejectsDuplicateUpgradeHeader(t *testing.T) {
+	handler := Timeout(1*time.Millisecond, WithWebSocketUpgradeBypass())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		case <-r.Context().Done():
+		}
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	req.Header.Set("Upgrade", "WebSocket")
+	req.Header.Add("Upgrade", "websocket")
+	req.Header.Add("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if !handlerCalled {
-		t.Error("handler should be called for WebSocket (case-insensitive)")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 with duplicated Upgrade", rec.Code)
 	}
 }
 
@@ -107,6 +153,68 @@ func TestTimeout_ZeroDuration_Panics(t *testing.T) {
 	Timeout(0)
 }
 
+func TestTimeout_NilOption_Panics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected Timeout with nil option to panic, but it did not")
+		}
+	}()
+	Timeout(time.Second, nil)
+}
+
+func TestTimeout_PanicBeforeDeadlinePropagates(t *testing.T) {
+	handler := Timeout(time.Second)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("handler exploded")
+	}))
+
+	defer func() {
+		r := recover()
+		if r != "handler exploded" {
+			t.Fatalf("panic = %v, want handler exploded", r)
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+}
+
+func TestTimeout_InvalidWriteHeaderPanics(t *testing.T) {
+	handler := Timeout(time.Second)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(42)
+	}))
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected invalid WriteHeader code to panic")
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/bad-status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+}
+
+func TestTimeout_PanicAfterReturnIsCaptured(t *testing.T) {
+	releasePanic := make(chan struct{})
+	handler := Timeout(20*time.Millisecond, WithPostTimeoutWait(0))(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		<-releasePanic
+		panic("late panic")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/late-panic", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+
+	close(releasePanic)
+	time.Sleep(20 * time.Millisecond)
+}
+
 func TestTimeout_HardModeReturnsImmediatelyOnDeadline(t *testing.T) {
 	// Hard mode must return BEFORE the slow handler exits.
 	handlerExited := make(chan struct{})
@@ -138,6 +246,48 @@ func TestTimeout_HardModeReturnsImmediatelyOnDeadline(t *testing.T) {
 	}
 	// Wait for the leak so the test doesn't pollute later runs.
 	<-handlerExited
+}
+
+func TestTimeout_DefaultReturnsAfterPostTimeoutWait(t *testing.T) {
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	handlerExited := make(chan struct{})
+
+	handler := Timeout(20 * time.Millisecond)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		close(handlerEntered)
+		<-releaseHandler
+		close(handlerExited)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ignores-context", nil)
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	select {
+	case <-handlerEntered:
+	default:
+		t.Fatal("handler did not start")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("timeout returned after %v; should return after deadline plus bounded grace", elapsed)
+	}
+	select {
+	case <-handlerExited:
+		t.Error("handler exited before release")
+	default:
+	}
+
+	close(releaseHandler)
+	select {
+	case <-handlerExited:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for handler cleanup")
+	}
 }
 
 func TestTimeout_CooperativeModeWaitsForHandler(t *testing.T) {
@@ -177,6 +327,45 @@ func TestTimeout_NegativeDuration_Panics(t *testing.T) {
 		}
 	}()
 	Timeout(-1)
+}
+
+func TestTimeout_WithPostTimeoutWaitPanicsOnNegative(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected WithPostTimeoutWait(-1) to panic, but it did not")
+		}
+	}()
+	WithPostTimeoutWait(-1)
+}
+
+func TestTimeout_WithPostTimeoutWaitZeroReturnsImmediately(t *testing.T) {
+	releaseHandler := make(chan struct{})
+	handlerExited := make(chan struct{})
+
+	handler := Timeout(20*time.Millisecond, WithPostTimeoutWait(0))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-releaseHandler
+		close(handlerExited)
+	}))
+
+	start := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "/slow", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("zero post-timeout wait took %v; should return on deadline", elapsed)
+	}
+	close(releaseHandler)
+	select {
+	case <-handlerExited:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for handler cleanup")
+	}
 }
 
 func TestTimeout_WriteAfterTimeout(t *testing.T) {

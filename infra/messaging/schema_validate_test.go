@@ -51,13 +51,14 @@ func TestValidateMessage_InvalidPayloadFails(t *testing.T) {
 	msg := messaging.Message{
 		ID:            "msg-2",
 		Type:          "user.created",
-		Payload:       json.RawMessage(`{"name":"Alice","age":"not-a-number"}`),
+		Payload:       json.RawMessage(`{"name":"secret-token","age":"not-a-number"}`),
 		SchemaVersion: 1,
 	}
 
 	err := reg.ValidateMessage(msg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "schema validation failed")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestValidateMessage_MissingRequiredFieldFails(t *testing.T) {
@@ -136,9 +137,10 @@ func TestRegister_InvalidJSONSchemaFails(t *testing.T) {
 	reg := messaging.NewInMemorySchemaRegistry()
 	invalidSchema := json.RawMessage(`not valid json`)
 
-	err := reg.Register("user.created", 1, invalidSchema)
+	err := reg.Register("secret-token.created", 1, invalidSchema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "compile schema")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestRegister_InvalidSchemaTypeFails(t *testing.T) {
@@ -146,9 +148,10 @@ func TestRegister_InvalidSchemaTypeFails(t *testing.T) {
 	// "type" must be a string or array of strings, not an integer.
 	badSchema := json.RawMessage(`{"type": 42}`)
 
-	err := reg.Register("user.created", 1, badSchema)
+	err := reg.Register("secret-token.created", 1, badSchema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "compile schema")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 // --- ValidatingHandler tests ---
@@ -192,7 +195,7 @@ func TestValidatingHandler_RejectsInvalidPayload(t *testing.T) {
 		"properties": {"name": {"type": "string"}},
 		"required": ["name"]
 	}`)
-	require.NoError(t, reg.Register("user.created", 1, schema))
+	require.NoError(t, reg.Register("secret-token.created", 1, schema))
 
 	var nextCalled bool
 	next := func(_ context.Context, _ messaging.Delivery) error {
@@ -205,8 +208,8 @@ func TestValidatingHandler_RejectsInvalidPayload(t *testing.T) {
 	d := messaging.Delivery{
 		SchemaVersion: 1,
 		Message: messaging.Message{
-			ID:            "msg-v2",
-			Type:          "user.created",
+			ID:            "secret-token-id",
+			Type:          "secret-token.created",
 			Payload:       json.RawMessage(`{"name": 123}`),
 			SchemaVersion: 1,
 		},
@@ -215,7 +218,7 @@ func TestValidatingHandler_RejectsInvalidPayload(t *testing.T) {
 	err := h(context.Background(), d)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "schema validation failed")
-	assert.Contains(t, err.Error(), "msg-v2")
+	assert.NotContains(t, err.Error(), "secret-token")
 	assert.False(t, nextCalled)
 }
 

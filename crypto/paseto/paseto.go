@@ -5,10 +5,9 @@
 // Compared to JWT, PASETO eliminates algorithm negotiation: every v4
 // token has exactly one signing or encryption algorithm baked into the
 // version+purpose tuple, removing the alg=none and key-confusion attack
-// classes. Use this package for greenfield internal services where
-// Oathkeeper compatibility (which mandates JWT) is not a constraint —
-// security/jwtutil remains the right choice for Oathkeeper-fronted
-// deployments.
+// classes. Use this package for greenfield internal services where JWT
+// ecosystem compatibility is not a constraint. Use security/jwtutil when
+// services must verify tokens from an existing JWKS/JWT issuer.
 //
 // Two purposes are exposed:
 //
@@ -20,6 +19,7 @@
 package paseto
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -31,15 +31,18 @@ import (
 // Sentinel errors. Verify wraps the underlying library error in one of
 // these so callers can branch without parsing strings.
 var (
-	ErrTokenInvalid    = errors.New("paseto: invalid token")
-	ErrTokenExpired    = errors.New("paseto: token expired")
-	ErrTokenNotYet     = errors.New("paseto: token not yet valid")
-	ErrTokenNoExp      = errors.New("paseto: token missing required exp claim")
-	ErrIssuerMismatch  = errors.New("paseto: issuer mismatch")
-	ErrAudienceUnknown = errors.New("paseto: audience mismatch")
-	ErrReservedClaim   = errors.New("paseto: reserved claim name in Custom")
-	ErrNoExpiration    = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
-	ErrMultiAudience   = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
+	ErrTokenInvalid       = errors.New("paseto: invalid token")
+	ErrKeySetUnavailable  = errors.New("paseto: key set unavailable")
+	ErrTokenExpired       = errors.New("paseto: token expired")
+	ErrTokenNotYet        = errors.New("paseto: token not yet valid")
+	ErrTokenNoExp         = errors.New("paseto: token missing required exp claim")
+	ErrIssuerMismatch     = errors.New("paseto: issuer mismatch")
+	ErrAudienceUnknown    = errors.New("paseto: audience mismatch")
+	ErrReservedClaim      = errors.New("paseto: reserved claim name in Custom")
+	ErrNoExpiration       = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
+	ErrMultiAudience      = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
+	ErrInvalidVerifier    = errors.New("paseto: verifier is not initialized")
+	ErrSigningKeyMismatch = errors.New("paseto: signing key does not match configured public keys")
 )
 
 // reservedClaims are the names of standard registered claims that
@@ -136,12 +139,18 @@ func WithoutExpiration() Option {
 // can pin a single lifetime in one place rather than threading it
 // through every Sign call.
 func WithDefaultLifetime(d time.Duration) Option {
+	if d <= 0 {
+		panic("paseto: WithDefaultLifetime requires a positive duration")
+	}
 	return func(c *config) { c.defaultLifetime = d }
 }
 
 func buildConfig(opts []Option) (config, error) {
 	cfg := config{requireExp: true}
 	for _, o := range opts {
+		if o == nil {
+			return cfg, errors.New("paseto: option must not be nil")
+		}
 		o(&cfg)
 	}
 	if !cfg.allowAnyIssuer && cfg.expectedIssuer == "" {
@@ -150,17 +159,16 @@ func buildConfig(opts []Option) (config, error) {
 	if !cfg.allowAnyAudience && cfg.expectedAudience == "" {
 		return cfg, errors.New("paseto: either WithExpectedAudience or WithAllowAnyAudience is required")
 	}
-	if cfg.defaultLifetime < 0 {
-		return cfg, errors.New("paseto: WithDefaultLifetime must be non-negative")
-	}
 	return cfg, nil
 }
 
 // V4Public verifies and signs v4.public tokens (Ed25519).
 type V4Public struct {
-	cfg     config
-	parser  paseto.Parser
-	pubKeys []paseto.V4AsymmetricPublicKey
+	cfg         config
+	parser      paseto.Parser
+	pubKeys     []paseto.V4AsymmetricPublicKey
+	rawPubKeys  []ed25519.PublicKey
+	initialized bool
 }
 
 // NewV4Public constructs a verifier for v4.public tokens with the given
@@ -176,38 +184,42 @@ func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error)
 	}
 
 	wrapped := make([]paseto.V4AsymmetricPublicKey, 0, len(pubKeys))
+	rawPubKeys := make([]ed25519.PublicKey, 0, len(pubKeys))
 	for i, k := range pubKeys {
-		w, kerr := paseto.NewV4AsymmetricPublicKeyFromBytes(k)
+		keyCopy := append(ed25519.PublicKey(nil), k...)
+		w, kerr := paseto.NewV4AsymmetricPublicKeyFromBytes(keyCopy)
 		if kerr != nil {
 			return nil, fmt.Errorf("paseto: invalid Ed25519 public key %d: %w", i, kerr)
 		}
 		wrapped = append(wrapped, w)
+		rawPubKeys = append(rawPubKeys, keyCopy)
 	}
 
 	return &V4Public{
-		cfg:     cfg,
-		parser:  paseto.Parser{},
-		pubKeys: wrapped,
+		cfg:         cfg,
+		parser:      paseto.Parser{},
+		pubKeys:     wrapped,
+		rawPubKeys:  rawPubKeys,
+		initialized: true,
 	}, nil
 }
 
 // Verify parses, authenticates, and validates token's reserved claims
 // against the configured issuer/audience and the supplied now.
 func (v *V4Public) Verify(token string, now time.Time) (*Claims, error) {
-	var (
-		parsed  *paseto.Token
-		lastErr error
-	)
+	if err := v.validateReady(); err != nil {
+		return nil, err
+	}
+	var parsed *paseto.Token
 	for _, k := range v.pubKeys {
 		t, err := v.parser.ParseV4Public(k, token, nil)
 		if err == nil {
 			parsed = t
 			break
 		}
-		lastErr = err
 	}
 	if parsed == nil {
-		return nil, fmt.Errorf("%w: %v", ErrTokenInvalid, lastErr)
+		return nil, fmt.Errorf("%w: authentication failed", ErrTokenInvalid)
 	}
 	return v.validate(parsed, now)
 }
@@ -217,9 +229,16 @@ func (v *V4Public) Verify(token string, now time.Time) (*Claims, error) {
 // claims are populated from the configured defaults if omitted in
 // claims.
 func (v *V4Public) Sign(claims Claims, privateKey ed25519.PrivateKey) (string, error) {
-	priv, err := paseto.NewV4AsymmetricSecretKeyFromBytes(privateKey)
+	if err := v.validateReady(); err != nil {
+		return "", err
+	}
+	keyCopy := append(ed25519.PrivateKey(nil), privateKey...)
+	priv, err := paseto.NewV4AsymmetricSecretKeyFromBytes(keyCopy)
 	if err != nil {
 		return "", fmt.Errorf("paseto: invalid Ed25519 private key: %w", err)
+	}
+	if !v.hasSigningPublicKey(keyCopy) {
+		return "", ErrSigningKeyMismatch
 	}
 	tok, err := buildToken(claims, v.cfg)
 	if err != nil {
@@ -228,41 +247,62 @@ func (v *V4Public) Sign(claims Claims, privateKey ed25519.PrivateKey) (string, e
 	return tok.V4Sign(priv, nil), nil
 }
 
+func (v *V4Public) hasSigningPublicKey(privateKey ed25519.PrivateKey) bool {
+	pub, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return false
+	}
+	for _, configured := range v.rawPubKeys {
+		if bytes.Equal(pub, configured) {
+			return true
+		}
+	}
+	return false
+}
+
 // V4Local verifies and seals v4.local tokens (XChaCha20-Poly1305).
 type V4Local struct {
-	cfg    config
-	parser paseto.Parser
-	key    paseto.V4SymmetricKey
+	cfg         config
+	parser      paseto.Parser
+	key         paseto.V4SymmetricKey
+	initialized bool
 }
 
 // NewV4Local constructs a sealer/verifier for v4.local tokens. The key
 // must be 32 bytes.
 func NewV4Local(key []byte, opts ...Option) (*V4Local, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("paseto: V4Local key must be 32 bytes, got %d", len(key))
+		return nil, fmt.Errorf("paseto: V4Local key must be 32 bytes")
 	}
 	cfg, err := buildConfig(opts)
 	if err != nil {
 		return nil, err
 	}
-	wrapped, err := paseto.V4SymmetricKeyFromBytes(key)
+	keyCopy := append([]byte(nil), key...)
+	wrapped, err := paseto.V4SymmetricKeyFromBytes(keyCopy)
 	if err != nil {
 		return nil, fmt.Errorf("paseto: invalid V4Local key: %w", err)
 	}
-	return &V4Local{cfg: cfg, parser: paseto.NewParser(), key: wrapped}, nil
+	return &V4Local{cfg: cfg, parser: paseto.NewParser(), key: wrapped, initialized: true}, nil
 }
 
 // Verify parses, authenticates, and validates a v4.local token.
 func (v *V4Local) Verify(token string, now time.Time) (*Claims, error) {
+	if err := v.validateReady(); err != nil {
+		return nil, err
+	}
 	parsed, err := v.parser.ParseV4Local(v.key, token, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
+		return nil, fmt.Errorf("%w: authentication failed", ErrTokenInvalid)
 	}
 	return v.validate(parsed, now)
 }
 
 // Seal issues a v4.local token under the configured key.
 func (v *V4Local) Seal(claims Claims) (string, error) {
+	if err := v.validateReady(); err != nil {
+		return "", err
+	}
 	tok, err := buildToken(claims, v.cfg)
 	if err != nil {
 		return "", err
@@ -273,7 +313,7 @@ func (v *V4Local) Seal(claims Claims) (string, error) {
 func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	for k := range c.Custom {
 		if _, reserved := reservedClaims[k]; reserved {
-			return paseto.Token{}, fmt.Errorf("%w: %q", ErrReservedClaim, k)
+			return paseto.Token{}, ErrReservedClaim
 		}
 	}
 	if len(c.Audience) > 1 {
@@ -298,7 +338,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	}
 	if cfg.expectedIssuer != "" {
 		if c.Issuer != "" && c.Issuer != cfg.expectedIssuer {
-			return paseto.Token{}, fmt.Errorf("%w: caller %q want %q", ErrIssuerMismatch, c.Issuer, cfg.expectedIssuer)
+			return paseto.Token{}, ErrIssuerMismatch
 		}
 		t.SetIssuer(cfg.expectedIssuer)
 	} else if c.Issuer != "" {
@@ -306,7 +346,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	}
 	if cfg.expectedAudience != "" {
 		if len(c.Audience) == 1 && c.Audience[0] != cfg.expectedAudience {
-			return paseto.Token{}, fmt.Errorf("%w: caller %q want %q", ErrAudienceUnknown, c.Audience[0], cfg.expectedAudience)
+			return paseto.Token{}, ErrAudienceUnknown
 		}
 		t.SetAudience(cfg.expectedAudience)
 	} else if len(c.Audience) == 1 {
@@ -323,7 +363,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	}
 	for k, v := range c.Custom {
 		if err := t.Set(k, v); err != nil {
-			return paseto.Token{}, fmt.Errorf("paseto: set custom claim %q: %w", k, err)
+			return paseto.Token{}, errors.New("paseto: set custom claim failed")
 		}
 	}
 	return t, nil
@@ -337,7 +377,22 @@ func (v *V4Local) validate(t *paseto.Token, now time.Time) (*Claims, error) {
 	return validate(t, v.cfg, now)
 }
 
+func (v *V4Public) validateReady() error {
+	if v == nil || !v.initialized || len(v.pubKeys) == 0 {
+		return ErrInvalidVerifier
+	}
+	return nil
+}
+
+func (v *V4Local) validateReady() error {
+	if v == nil || !v.initialized {
+		return ErrInvalidVerifier
+	}
+	return nil
+}
+
 func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
+	now = verificationTime(now)
 	c := &Claims{Custom: make(map[string]any)}
 
 	if sub, err := t.GetSubject(); err == nil {
@@ -362,7 +417,7 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 	}
 
 	if !cfg.allowAnyIssuer && c.Issuer != cfg.expectedIssuer {
-		return nil, fmt.Errorf("%w: got %q want %q", ErrIssuerMismatch, c.Issuer, cfg.expectedIssuer)
+		return nil, ErrIssuerMismatch
 	}
 	if !cfg.allowAnyAudience {
 		match := false
@@ -373,7 +428,7 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 			}
 		}
 		if !match {
-			return nil, fmt.Errorf("%w: got %v want %q", ErrAudienceUnknown, c.Audience, cfg.expectedAudience)
+			return nil, ErrAudienceUnknown
 		}
 	}
 
@@ -395,4 +450,11 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 	}
 
 	return c, nil
+}
+
+func verificationTime(now time.Time) time.Time {
+	if now.IsZero() {
+		return time.Now()
+	}
+	return now
 }

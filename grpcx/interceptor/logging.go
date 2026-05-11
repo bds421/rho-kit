@@ -63,16 +63,15 @@ func LoggingStream(logger *slog.Logger) grpc.StreamServerInterceptor {
 }
 
 // maxIDLen is the maximum length for an incoming correlation/request ID
-// metadata value, mirroring httpx/middleware/internal/idutil's caller limit.
-const maxIDLen = 128
+// metadata value.
+const maxIDLen = contextutil.MaxCorrelationIDLen
 
 // extractIDs reads correlation and request IDs from gRPC metadata and stores
-// them in the context. Incoming values are validated with [isValidID]:
-// IDs containing control characters or non-printable bytes (the classic
-// log-injection vector) are treated as absent. When an ID is absent or
-// invalid, a fresh ID is generated via contextutil.NewID so downstream
-// logs always carry a stable identifier rather than the attacker's
-// payload. Mirrors the HTTP correlationid/requestid middleware behaviour.
+// them in the context. Incoming values are treated as absent unless exactly
+// one safe correlation token is present. When an ID is absent or invalid, a
+// fresh ID is generated via contextutil.NewID so downstream logs always carry
+// a stable identifier rather than the attacker's payload. Mirrors the HTTP
+// correlationid/requestid middleware behaviour.
 func extractIDs(ctx context.Context) context.Context {
 	md, _ := metadata.FromIncomingContext(ctx)
 	ctx = adoptOrGenerate(ctx, md, correlationIDKey, contextutil.SetCorrelationID)
@@ -90,7 +89,7 @@ func adoptOrGenerate(
 ) context.Context {
 	id := ""
 	if md != nil {
-		if vals := md.Get(key); len(vals) > 0 {
+		if vals := md.Get(key); len(vals) == 1 {
 			id = vals[0]
 		}
 	}
@@ -100,21 +99,9 @@ func adoptOrGenerate(
 	return setter(ctx, id)
 }
 
-// isValidID returns true if id is non-empty, within length limits, and
-// contains only printable ASCII characters excluding space (0x21..0x7E).
-// Mirrors httpx/middleware/internal/idutil.IsValid so HTTP and gRPC apply
-// the same control-character rejection rule on incoming IDs.
+// isValidID returns true if id is a safe request/correlation token.
 func isValidID(id string) bool {
-	if id == "" || len(id) > maxIDLen {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if c <= 0x20 || c > 0x7E {
-			return false
-		}
-	}
-	return true
+	return contextutil.IsValidCorrelationToken(id, maxIDLen)
 }
 
 // logCall logs a completed RPC call with structured attributes.

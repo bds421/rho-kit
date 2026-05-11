@@ -23,6 +23,30 @@ func newTestTypedCache[T any](t *testing.T, backend Cache, prefix string) *Typed
 	return tc
 }
 
+func TestTypedCache_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, tc := range map[string]*TypedCache[string]{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := tc.Get(ctx, "key")
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = tc.Set(ctx, "key", "value", time.Minute)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = tc.Delete(ctx, "key")
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			exists, err := tc.Exists(ctx, "key")
+			assert.False(t, exists)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+		})
+	}
+}
+
 func TestTypedCache_SetAndGet(t *testing.T) {
 	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[testUser](t, cache, "user:")
@@ -138,15 +162,22 @@ func TestNewTypedCache_InvalidPrefix_NullByte(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
+func TestNewTypedCache_InvalidPrefix_InvalidUTF8(t *testing.T) {
+	_, err := NewTypedCache[string](MustNewMemoryCache(), string([]byte{0xff, 0xfe}))
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+}
+
 func TestNewTypedCache_InvalidPrefix_TooLong(t *testing.T) {
-	longPrefix := strings.Repeat("x", MaxKeyLen/2+1)
+	longPrefix := strings.Repeat("x", MaxKeyPrefixLen+1)
 	_, err := NewTypedCache[string](MustNewMemoryCache(), longPrefix)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
+	assert.NotContains(t, err.Error(), "512")
+	assert.NotContains(t, err.Error(), "513")
 }
 
 func TestNewTypedCache_ValidLongPrefix(t *testing.T) {
-	prefix := strings.Repeat("x", MaxKeyLen/2)
+	prefix := strings.Repeat("x", MaxKeyPrefixLen)
 	_, err := NewTypedCache[string](MustNewMemoryCache(), prefix)
 	assert.NoError(t, err)
 }
@@ -160,10 +191,16 @@ func TestTypedCache_CombinedKeyTooLong(t *testing.T) {
 	longKey := strings.Repeat("k", 625)
 	err := tc.Set(ctx, longKey, "value", time.Minute)
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyTooLong)
 	assert.Contains(t, err.Error(), "with prefix exceeds maximum length")
+	assert.NotContains(t, err.Error(), "400")
+	assert.NotContains(t, err.Error(), "625")
+	assert.NotContains(t, err.Error(), "1024")
+	assert.NotContains(t, err.Error(), "1025")
 
 	_, err = tc.Get(ctx, longKey)
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyTooLong)
 	assert.Contains(t, err.Error(), "with prefix exceeds maximum length")
 
 	err = tc.Delete(ctx, longKey)

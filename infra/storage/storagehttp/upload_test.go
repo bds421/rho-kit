@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,34 @@ func TestParseAndStore(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "backend is required")
+	})
+
+	t.Run("rejects nil context", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("x"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+		var nilContext context.Context
+
+		_, err := ParseAndStore(nilContext, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context is required")
+	})
+
+	t.Run("rejects nil request", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+
+		_, err := ParseAndStore(ctx, nil, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "request is required")
 	})
 
 	t.Run("rejects nil KeyFunc", func(t *testing.T) {
@@ -74,6 +103,7 @@ func TestParseAndStore(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "MaxFileSize must be positive")
+		assert.NotContains(t, err.Error(), "-42")
 	})
 
 	t.Run("uploads file successfully", func(t *testing.T) {
@@ -98,6 +128,113 @@ func TestParseAndStore(t *testing.T) {
 		got, err := io.ReadAll(rc)
 		require.NoError(t, err)
 		assert.Equal(t, []byte("hello world"), got)
+	})
+
+	t.Run("closes upload-validator-owned reader when backend fails before consuming", func(t *testing.T) {
+		t.Parallel()
+		closed := false
+		backendErr := errors.New("backend stopped before reading secret-token")
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("hello world"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, failingPutBackend{err: backendErr}, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+			Validators: []storage.Validator{
+				func(context.Context, io.Reader, *storage.ObjectMeta) (io.Reader, error) {
+					return &uploadTrackingReadCloser{Reader: bytes.NewReader([]byte("validated")), closed: &closed}, nil
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.EqualError(t, err, "storagehttp: store failed")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend stopped")
+		assert.True(t, closed)
+	})
+
+	t.Run("detaches upload validators before execution", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "hello.txt", []byte("hello world"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		validators := make([]storage.Validator, 2)
+		validators[0] = func(_ context.Context, reader io.Reader, _ *storage.ObjectMeta) (io.Reader, error) {
+			validators[1] = func(context.Context, io.Reader, *storage.ObjectMeta) (io.Reader, error) {
+				return nil, errors.New("mutated validator ran")
+			}
+			return reader, nil
+		}
+		validators[1] = func(_ context.Context, reader io.Reader, _ *storage.ObjectMeta) (io.Reader, error) {
+			return reader, nil
+		}
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: Unlimited,
+			Validators:  validators,
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects duplicate file part Content-Type", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", `form-data; name="file"; filename="hello.txt"`)
+		header.Add("Content-Type", "text/plain")
+		header.Add("Content-Type", "application/octet-stream")
+		part, err := w.CreatePart(header)
+		require.NoError(t, err)
+		_, err = part.Write([]byte("hello world"))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+
+		r := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+		r.Header.Set("Content-Type", w.FormDataContentType())
+
+		_, err = ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "multiple Content-Type")
+	})
+
+	t.Run("rejects invalid file part Content-Type before key derivation", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", `form-data; name="file"; filename="hello.txt"`)
+		header.Set("Content-Type", "not-a-media-type")
+		part, err := w.CreatePart(header)
+		require.NoError(t, err)
+		_, err = part.Write([]byte("hello world"))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+
+		r := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+		r.Header.Set("Content-Type", w.FormDataContentType())
+
+		keyFuncCalled := false
+		_, err = ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc: func(_ *http.Request, _ string, _ storage.ObjectMeta) (string, error) {
+				keyFuncCalled = true
+				return "hello.txt", nil
+			},
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, storage.ErrValidation))
+		assert.False(t, keyFuncCalled, "invalid metadata must not reach KeyFunc")
 	})
 
 	t.Run("default MaxFileSize cap rejects oversize", func(t *testing.T) {
@@ -176,12 +313,13 @@ func TestParseAndStore(t *testing.T) {
 		r.Header.Set("Content-Type", contentType)
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
-			FormField:   "file",
+			FormField:   "secret-token",
 			KeyFunc:     passthroughKeyFunc,
 			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no file part")
+		assert.NotContains(t, err.Error(), "secret-token")
 	})
 
 	t.Run("applies validators", func(t *testing.T) {
@@ -205,14 +343,81 @@ func TestParseAndStore(t *testing.T) {
 	t.Run("returns error on invalid multipart", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)
-		r := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader([]byte("not multipart")))
-		r.Header.Set("Content-Type", "text/plain")
+		r := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader([]byte("not multipart secret-token")))
+		r.Header.Set("Content-Type", "text/plain; token=secret-token")
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
 			KeyFunc:     passthroughKeyFunc,
 			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
+		assert.EqualError(t, err, "storagehttp: parse multipart failed")
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns stable error on malformed multipart part", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body := bytes.NewBufferString("--boundary\r\nsecret-token\r\n\r\nx\r\n--boundary--\r\n")
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.EqualError(t, err, "storagehttp: read multipart part failed")
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns stable error for skipped part byte budget", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		part, err := w.CreateFormField("other")
+		require.NoError(t, err)
+		_, err = part.Write([]byte("secret-token"))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+
+		r := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+		r.Header.Set("Content-Type", w.FormDataContentType())
+
+		_, err = ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:              passthroughKeyFunc,
+			MaxFileSize:          1 << 20,
+			MaxTotalSkippedBytes: 3,
+		})
+		require.Error(t, err)
+		assert.EqualError(t, err, "storagehttp: cumulative non-file part bytes exceed limit")
+		assert.NotContains(t, err.Error(), "3")
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns stable error after too many skipped parts", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		for i := 0; i < maxSkippedParts+1; i++ {
+			part, err := w.CreateFormField("other")
+			require.NoError(t, err)
+			_, err = part.Write([]byte("x"))
+			require.NoError(t, err)
+		}
+		require.NoError(t, w.Close())
+
+		r := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+		r.Header.Set("Content-Type", w.FormDataContentType())
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc:     passthroughKeyFunc,
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.EqualError(t, err, "storagehttp: too many non-file parts")
 	})
 
 	t.Run("rejects empty filename", func(t *testing.T) {
@@ -243,19 +448,61 @@ func TestParseAndStore(t *testing.T) {
 	t.Run("returns error when KeyFunc fails", func(t *testing.T) {
 		t.Parallel()
 		backend := newLocalBackend(t)
+		keyErr := errors.New("key derivation failed for secret-token")
 		body, contentType := createMultipartBody(t, "file", "file.txt", []byte("x"))
 		r := httptest.NewRequest(http.MethodPost, "/upload", body)
 		r.Header.Set("Content-Type", contentType)
 
 		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
 			KeyFunc: func(_ *http.Request, _ string, _ storage.ObjectMeta) (string, error) {
-				return "", errors.New("key derivation failed")
+				return "", keyErr
+			},
+			MaxFileSize: 1 << 20,
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, keyErr)
+		assert.EqualError(t, err, "storagehttp: key derivation failed")
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns error when KeyFunc panics", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalBackend(t)
+		body, contentType := createMultipartBody(t, "file", "file.txt", []byte("x"))
+		r := httptest.NewRequest(http.MethodPost, "/upload", body)
+		r.Header.Set("Content-Type", contentType)
+
+		_, err := ParseAndStore(ctx, r, backend, UploadOptions{
+			KeyFunc: func(_ *http.Request, _ string, _ storage.ObjectMeta) (string, error) {
+				panic("key derivation exploded")
 			},
 			MaxFileSize: 1 << 20,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "key derivation")
 	})
+}
+
+func TestPartContentTypeRejectsInvalidRawHeaderValue(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]string{
+		"control":      "text/plain\n",
+		"nul":          "text/plain\x00",
+		"invalid utf8": string([]byte{'t', 'e', 'x', 't', '/', 'p', 'l', 'a', 'i', 'n', 0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			part := &multipart.Part{
+				Header: textproto.MIMEHeader{
+					"Content-Type": {value},
+				},
+			}
+			_, err := partContentType(part)
+			require.Error(t, err)
+		})
+	}
 }
 
 func newLocalBackend(t *testing.T) *localbackend.LocalBackend {
@@ -280,4 +527,34 @@ func createMultipartBody(t *testing.T, fieldName, fileName string, content []byt
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 	return &buf, w.FormDataContentType()
+}
+
+type uploadTrackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r *uploadTrackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
+}
+
+type failingPutBackend struct {
+	err error
+}
+
+func (b failingPutBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	return b.err
+}
+
+func (failingPutBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+}
+
+func (failingPutBackend) Delete(context.Context, string) error {
+	return nil
+}
+
+func (failingPutBackend) Exists(context.Context, string) (bool, error) {
+	return false, nil
 }

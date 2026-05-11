@@ -1,6 +1,13 @@
 package stream
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrInvalidStream is returned when a stream producer/consumer method is
+// invoked on a nil or otherwise uninitialized implementation.
+var ErrInvalidStream = errors.New("stream: stream is not initialized")
 
 // Message represents a stream event.
 type Message struct {

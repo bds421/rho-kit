@@ -138,10 +138,10 @@ func (e *RateLimitError) Error() string   { return e.Message }
 func (e *RateLimitError) ErrorCode() Code { return CodeRateLimit }
 func (e *RateLimitError) Retryable() bool { return true }
 
-// OperationFailedError indicates a server-side failure with a client-safe message.
-// For transient upstream failures, use [UnavailableError] instead.
 // OperationFailedError indicates a server-side failure that is unlikely to
-// resolve on retry.
+// resolve on retry. HTTP adapters log its message but return a generic
+// "internal error" response body; use validation, conflict, permanent, or
+// domain-specific response types for client-correctable failures.
 type OperationFailedError struct {
 	Message string
 	cause   error
@@ -226,7 +226,7 @@ func NewRateLimit(msg string, retryAfter time.Duration) error {
 	return &RateLimitError{Message: msg, RetryAfter: retryAfter}
 }
 
-// NewOperationFailed creates an OperationFailedError with a client-safe message.
+// NewOperationFailed creates an OperationFailedError.
 func NewOperationFailed(msg string) error {
 	return &OperationFailedError{Message: msg}
 }

@@ -94,6 +94,83 @@ func TestNew_CustomExtractor(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestNew_ExtractorPanicReturns500(t *testing.T) {
+	called := false
+	mw := New(WithExtractor(func(*http.Request) (coretenant.ID, error) {
+		panic("extract failed")
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() {
+		handler.ServeHTTP(rec, req)
+	})
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.False(t, called)
+}
+
+func TestNew_CustomExtractorMustReturnValidatedTenantID(t *testing.T) {
+	called := false
+	mw := New(WithExtractor(func(*http.Request) (coretenant.ID, error) {
+		return coretenant.ID("a:b"), nil
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.False(t, called)
+}
+
+func TestNew_DoesNotReflectInvalidTenantDetails(t *testing.T) {
+	mw := New()
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler should not run for invalid tenant ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Tenant-Id", "secret-token/acme")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "tenant: invalid tenant ID")
+	assert.NotContains(t, rec.Body.String(), "secret-token")
+	assert.NotContains(t, rec.Body.String(), "forbidden byte")
+	assert.NotContains(t, rec.Body.String(), "offset")
+}
+
+func TestNew_DoesNotReflectCustomExtractorInvalidDetails(t *testing.T) {
+	mw := New(WithExtractor(func(*http.Request) (coretenant.ID, error) {
+		return "", coretenant.ValidateID("secret-token/acme")
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler should not run for invalid tenant ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "tenant: invalid tenant ID")
+	assert.NotContains(t, rec.Body.String(), "secret-token")
+	assert.NotContains(t, rec.Body.String(), "forbidden byte")
+	assert.NotContains(t, rec.Body.String(), "offset")
+}
+
 func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
 	mw := New()
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -111,6 +188,8 @@ func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
 		"leading space":   " acme",
 		"trailing space":  "acme ",
 		"embedded space":  "ac me",
+		"comma combined":  "acme,evil",
+		"invalid utf8":    string([]byte{0xff}),
 		"only whitespace": "   ",
 	}
 	for name, value := range cases {
@@ -122,6 +201,64 @@ func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 		})
 	}
+}
+
+func TestNew_RejectsDuplicateTenantHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{name: "default required"},
+		{name: "not required", opts: []Option{WithRequired(false)}},
+		{name: "allow missing on safe methods", opts: []Option{WithRequired(true), WithAllowMissingTenantOnSafeMethods()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			mw := New(tt.opts...)
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Add("X-Tenant-Id", "acme")
+			req.Header.Add("X-Tenant-Id", "evil")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.False(t, called)
+		})
+	}
+}
+
+func TestHeaderExtractor_DuplicateErrorDoesNotReflectHeaderName(t *testing.T) {
+	extract := HeaderExtractor("X-Secret-Token")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Add("X-Secret-Token", "acme")
+	req.Header.Add("X-Secret-Token", "other")
+
+	_, err := extract(req)
+	require.Error(t, err)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
+}
+
+func TestNew_RejectsBlankTenantHeaderEvenWhenNotRequired(t *testing.T) {
+	called := false
+	mw := New(WithRequired(false))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Tenant-Id", "")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.False(t, called)
 }
 
 func TestNew_RejectsInvalidEvenOnSafeMethod(t *testing.T) {
@@ -160,12 +297,11 @@ func TestNew_RejectsInvalidEvenWithRequiredFalse(t *testing.T) {
 }
 
 func TestHeaderExtractor_PanicsOnEmpty(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on empty header")
-		}
-	}()
-	HeaderExtractor("")
+	assert.Panics(t, func() { HeaderExtractor("") })
+}
+
+func TestHeaderExtractor_PanicsOnInvalidHeaderName(t *testing.T) {
+	assert.Panics(t, func() { HeaderExtractor("Bad Header") })
 }
 
 func TestNew_PanicsOnNilExtractor(t *testing.T) {
@@ -175,6 +311,15 @@ func TestNew_PanicsOnNilExtractor(t *testing.T) {
 		}
 	}()
 	New(WithExtractor(nil))
+}
+
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	New(nil)
 }
 
 func TestNew_EmptyHeaderTreatedAsMissing(t *testing.T) {

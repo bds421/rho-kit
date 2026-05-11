@@ -18,6 +18,14 @@ func mustEd25519Pair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
+func randomV4LocalKey(t *testing.T) []byte {
+	t.Helper()
+	key := make([]byte, 32)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+	return key
+}
+
 func futureExp() time.Time { return time.Now().Add(time.Hour) }
 
 func TestV4Public_RoundTrip(t *testing.T) {
@@ -68,6 +76,26 @@ func TestV4Public_RejectsExpired(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTokenExpired)
 }
 
+func TestV4Public_ZeroVerifyTimeUsesWallClock(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := v.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: time.Now().Add(-5 * time.Minute),
+	}, priv)
+	require.NoError(t, err)
+
+	_, err = v.Verify(tok, time.Time{})
+	assert.ErrorIs(t, err, ErrTokenExpired)
+}
+
 func TestV4Public_RejectsNotYetValid(t *testing.T) {
 	pub, priv := mustEd25519Pair(t)
 	v, err := NewV4Public(
@@ -101,7 +129,7 @@ func TestV4Public_RejectsIssuerMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	tok, err := signer.Sign(Claims{
-		Issuer:    "wrong",
+		Issuer:    "wrong-secret-token-issuer",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
 	}, priv)
@@ -116,6 +144,8 @@ func TestV4Public_RejectsIssuerMismatch(t *testing.T) {
 
 	_, err = verifier.Verify(tok, time.Now())
 	assert.ErrorIs(t, err, ErrIssuerMismatch)
+	assert.NotContains(t, err.Error(), "wrong-secret-token-issuer")
+	assert.NotContains(t, err.Error(), "svc-A")
 }
 
 func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
@@ -130,7 +160,7 @@ func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
 
 	tok, err := signer.Sign(Claims{
 		Issuer:    "svc-A",
-		Audience:  []string{"svc-Z"},
+		Audience:  []string{"wrong-secret-token-audience"},
 		ExpiresAt: futureExp(),
 	}, priv)
 	require.NoError(t, err)
@@ -144,6 +174,8 @@ func TestV4Public_RejectsAudienceMismatch(t *testing.T) {
 
 	_, err = verifier.Verify(tok, time.Now())
 	assert.ErrorIs(t, err, ErrAudienceUnknown)
+	assert.NotContains(t, err.Error(), "wrong-secret-token-audience")
+	assert.NotContains(t, err.Error(), "svc-B")
 }
 
 func TestV4Public_RejectsTamperedToken(t *testing.T) {
@@ -168,7 +200,61 @@ func TestV4Public_RejectsTamperedToken(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrTokenInvalid))
 }
 
+func TestVerify_InvalidTokenErrorsDoNotReflectTokenMaterial(t *testing.T) {
+	pub, _ := mustEd25519Pair(t)
+	publicVerifier, err := NewV4Public(
+		[]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = publicVerifier.Verify("v4.public.secret-token", time.Now())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTokenInvalid)
+	assert.NotContains(t, err.Error(), "secret-token")
+
+	localVerifier, err := NewV4Local(randomV4LocalKey(t),
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	_, err = localVerifier.Verify("v4.local.secret-token", time.Now())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTokenInvalid)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
 func TestV4Public_RejectsKeyMismatch(t *testing.T) {
+	pubA, _ := mustEd25519Pair(t)
+	pubB, privB := mustEd25519Pair(t)
+
+	v, err := NewV4Public(
+		[]ed25519.PublicKey{pubA},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+	signer, err := NewV4Public(
+		[]ed25519.PublicKey{pubB},
+		WithExpectedIssuer("svc-A"),
+		WithExpectedAudience("svc-B"),
+	)
+	require.NoError(t, err)
+
+	tok, err := signer.Sign(Claims{
+		Issuer:    "svc-A",
+		Audience:  []string{"svc-B"},
+		ExpiresAt: futureExp(),
+	}, privB)
+	require.NoError(t, err)
+
+	_, err = v.Verify(tok, time.Now())
+	assert.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+func TestV4Public_SignRejectsUnconfiguredPrivateKey(t *testing.T) {
 	pubA, _ := mustEd25519Pair(t)
 	_, privB := mustEd25519Pair(t)
 
@@ -179,15 +265,12 @@ func TestV4Public_RejectsKeyMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	tok, err := v.Sign(Claims{
+	_, err = v.Sign(Claims{
 		Issuer:    "svc-A",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
 	}, privB)
-	require.NoError(t, err)
-
-	_, err = v.Verify(tok, time.Now())
-	assert.ErrorIs(t, err, ErrTokenInvalid)
+	assert.ErrorIs(t, err, ErrSigningKeyMismatch)
 }
 
 func TestV4Public_AllowAnyIssuer(t *testing.T) {
@@ -212,8 +295,7 @@ func TestV4Public_AllowAnyIssuer(t *testing.T) {
 }
 
 func TestV4Local_RoundTrip(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -235,10 +317,8 @@ func TestV4Local_RoundTrip(t *testing.T) {
 }
 
 func TestV4Local_RejectsKeyMismatch(t *testing.T) {
-	keyA := make([]byte, 32)
-	_, _ = rand.Read(keyA)
-	keyB := make([]byte, 32)
-	_, _ = rand.Read(keyB)
+	keyA := randomV4LocalKey(t)
+	keyB := randomV4LocalKey(t)
 
 	issuer := WithExpectedIssuer("svc-A")
 	audience := WithExpectedAudience("svc-B")
@@ -283,6 +363,7 @@ func TestNewV4Local_RejectsBadKeyLength(t *testing.T) {
 		WithExpectedAudience("svc-B"),
 	)
 	assert.Error(t, err)
+	assert.NotContains(t, err.Error(), "16")
 }
 
 func TestClockSkew_WithinTolerance(t *testing.T) {
@@ -324,8 +405,7 @@ func TestSign_RejectsMissingExpByDefault(t *testing.T) {
 }
 
 func TestSeal_RejectsMissingExpByDefault(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -353,6 +433,15 @@ func TestSign_DefaultLifetimeApplied(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, claims.ExpiresAt.IsZero())
 	assert.WithinDuration(t, time.Now().Add(15*time.Minute), claims.ExpiresAt, 5*time.Second)
+}
+
+func TestOptions_RejectInvalidInput(t *testing.T) {
+	pub, _ := mustEd25519Pair(t)
+	assert.Panics(t, func() { WithDefaultLifetime(0) })
+	assert.Panics(t, func() { WithDefaultLifetime(-time.Second) })
+
+	_, err := NewV4Public([]ed25519.PublicKey{pub}, nil)
+	assert.Error(t, err)
 }
 
 func TestVerify_RejectsTokenWithoutExp(t *testing.T) {
@@ -473,13 +562,13 @@ func TestSign_RejectsReservedClaimInCustom(t *testing.T) {
 				Custom:    map[string]any{name: "x"},
 			}, priv)
 			assert.ErrorIs(t, err, ErrReservedClaim)
+			assert.NotContains(t, err.Error(), name)
 		})
 	}
 }
 
 func TestSeal_RejectsReservedClaimInCustom(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -493,6 +582,7 @@ func TestSeal_RejectsReservedClaimInCustom(t *testing.T) {
 		Custom:    map[string]any{"exp": "tomorrow"},
 	})
 	assert.ErrorIs(t, err, ErrReservedClaim)
+	assert.NotContains(t, err.Error(), "exp")
 }
 
 func TestSign_AllowsCustomClaimsThatAreNotReserved(t *testing.T) {
@@ -544,8 +634,7 @@ func TestVerify_PreservesCustomClaims(t *testing.T) {
 }
 
 func TestVerify_PreservesCustomClaims_V4Local(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -576,11 +665,13 @@ func TestSign_RejectsCallerIssuerMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = v.Sign(Claims{
-		Issuer:    "svc-B",
+		Issuer:    "wrong-secret-token-issuer",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
 	}, priv)
 	assert.ErrorIs(t, err, ErrIssuerMismatch)
+	assert.NotContains(t, err.Error(), "wrong-secret-token-issuer")
+	assert.NotContains(t, err.Error(), "svc-A")
 }
 
 func TestSign_StampsConfiguredIssuerWhenCallerOmitsIt(t *testing.T) {
@@ -604,8 +695,7 @@ func TestSign_StampsConfiguredIssuerWhenCallerOmitsIt(t *testing.T) {
 }
 
 func TestSeal_RejectsCallerAudienceMismatch(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -614,15 +704,16 @@ func TestSeal_RejectsCallerAudienceMismatch(t *testing.T) {
 
 	_, err = v.Seal(Claims{
 		Issuer:    "svc-A",
-		Audience:  []string{"svc-Z"},
+		Audience:  []string{"wrong-secret-token-audience"},
 		ExpiresAt: futureExp(),
 	})
 	assert.ErrorIs(t, err, ErrAudienceUnknown)
+	assert.NotContains(t, err.Error(), "wrong-secret-token-audience")
+	assert.NotContains(t, err.Error(), "svc-B")
 }
 
 func TestSeal_StampsConfiguredAudienceWhenCallerOmitsIt(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -659,15 +750,15 @@ func TestSign_PropagatesCustomClaimWriteError(t *testing.T) {
 		Issuer:    "svc-A",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
-		Custom:    map[string]any{"bad": func() {}},
+		Custom:    map[string]any{"bad-secret-token-claim": func() {}},
 	}, priv)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `set custom claim "bad"`)
+	assert.Contains(t, err.Error(), "set custom claim")
+	assert.NotContains(t, err.Error(), "bad-secret-token-claim")
 }
 
 func TestSeal_PropagatesCustomClaimWriteError(t *testing.T) {
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	key := randomV4LocalKey(t)
 	v, err := NewV4Local(key,
 		WithExpectedIssuer("svc-A"),
 		WithExpectedAudience("svc-B"),
@@ -678,8 +769,42 @@ func TestSeal_PropagatesCustomClaimWriteError(t *testing.T) {
 		Issuer:    "svc-A",
 		Audience:  []string{"svc-B"},
 		ExpiresAt: futureExp(),
-		Custom:    map[string]any{"bad": make(chan int)},
+		Custom:    map[string]any{"bad-secret-token-claim": make(chan int)},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `set custom claim "bad"`)
+	assert.Contains(t, err.Error(), "set custom claim")
+	assert.NotContains(t, err.Error(), "bad-secret-token-claim")
+}
+
+func TestV4Public_InvalidReceiverReturnsError(t *testing.T) {
+	_, priv := mustEd25519Pair(t)
+	for name, verifier := range map[string]*V4Public{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := verifier.Verify("token", time.Now()); !errors.Is(err, ErrInvalidVerifier) {
+				t.Fatalf("Verify error = %v, want ErrInvalidVerifier", err)
+			}
+			if _, err := verifier.Sign(Claims{ExpiresAt: futureExp()}, priv); !errors.Is(err, ErrInvalidVerifier) {
+				t.Fatalf("Sign error = %v, want ErrInvalidVerifier", err)
+			}
+		})
+	}
+}
+
+func TestV4Local_InvalidReceiverReturnsError(t *testing.T) {
+	for name, verifier := range map[string]*V4Local{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := verifier.Verify("token", time.Now()); !errors.Is(err, ErrInvalidVerifier) {
+				t.Fatalf("Verify error = %v, want ErrInvalidVerifier", err)
+			}
+			if _, err := verifier.Seal(Claims{ExpiresAt: futureExp()}); !errors.Is(err, ErrInvalidVerifier) {
+				t.Fatalf("Seal error = %v, want ErrInvalidVerifier", err)
+			}
+		})
+	}
 }

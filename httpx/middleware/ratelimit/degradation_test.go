@@ -17,6 +17,10 @@ type stubHealth struct {
 
 func (s *stubHealth) Healthy() bool { return s.healthy.Load() }
 
+type panicHealth struct{}
+
+func (panicHealth) Healthy() bool { panic("health failed") }
+
 // passthroughHandler implements DegradationHandler, always returns nil.
 type passthroughHandler struct{}
 
@@ -27,6 +31,12 @@ type failFastHandler struct{}
 
 func (failFastHandler) OnUnavailable(_ context.Context) error {
 	return errors.New("service unavailable")
+}
+
+type panicDegradationHandler struct{}
+
+func (panicDegradationHandler) OnUnavailable(_ context.Context) error {
+	panic("degradation failed")
 }
 
 func TestRateLimiter_Degradation_Passthrough(t *testing.T) {
@@ -73,6 +83,39 @@ func TestRateLimiter_Degradation_FailFast(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
+}
+
+func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
+	t.Run("health", func(t *testing.T) {
+		rl := NewRateLimiter(1, time.Minute,
+			WithDegradation(panicHealth{}, passthroughHandler{}),
+		)
+		handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("got %d, want %d", rec.Code, http.StatusServiceUnavailable)
+		}
+	})
+	t.Run("handler", func(t *testing.T) {
+		health := &stubHealth{}
+		health.healthy.Store(false)
+		rl := NewRateLimiter(1, time.Minute,
+			WithDegradation(health, panicDegradationHandler{}),
+		)
+		handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("got %d, want %d", rec.Code, http.StatusServiceUnavailable)
+		}
+	})
 }
 
 func TestRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {

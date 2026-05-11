@@ -1,6 +1,6 @@
 // Package tenant provides a tenant-scoped wrapper around any
-// [cache.Cache]. Every key passed to the wrapper is rewritten as
-// "tenant:<id>:<key>" before reaching the underlying backend, ensuring
+// [cache.Cache]. Every key passed to the wrapper is rewritten with
+// [coretenant.Key] before reaching the underlying backend, ensuring
 // two tenants that pick identical raw keys still occupy disjoint
 // slots.
 //
@@ -13,25 +13,19 @@
 //     migrated by swapping the cache instance — no per-call edits.
 //
 // The wrapper requires a tenant ID on the request context. Absence is
-// a programming error (the wrapper only makes sense in tenant-scoped
-// code paths) and produces a panic from [tenant.Required] — callers
-// that may legitimately run outside a tenant scope should keep using
-// the bare cache.
+// reported as an error from cache operations — callers that may
+// legitimately run outside a tenant scope should keep using the bare
+// cache.
 package tenant
 
 import (
 	"context"
-	"strconv"
+	"fmt"
 	"time"
 
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/cache"
 )
-
-// keyPrefix is the namespace placed in front of every wrapped key. It
-// is intentionally short to keep the per-entry overhead small while
-// still being grep-able in a Redis MONITOR trace.
-const keyPrefix = "tenant:"
 
 // scoped is the concrete wrapper. It holds the underlying cache and
 // rewrites every key on the way in. Reads that hit ErrCacheMiss bubble
@@ -50,8 +44,8 @@ type scopedBulk struct {
 }
 
 // Wrap returns a [cache.Cache] that prefixes every key with the
-// caller's tenant ID. The returned cache panics on any operation
-// invoked without a tenant ID on ctx — see package doc for rationale.
+// caller's tenant ID. Operations return an error when invoked without
+// a tenant ID on ctx — see package doc for rationale.
 //
 // When inner implements [cache.BulkCache], the returned value also
 // implements BulkCache so MGet/MSet/SetNX are forwarded with tenant
@@ -69,61 +63,95 @@ func Wrap(inner cache.Cache) cache.Cache {
 	return &scoped{inner: inner}
 }
 
-// scopedKey rewrites raw to "tenant:<len(id)>:<id>:<raw>". Panics if
-// ctx carries no tenant ID. The empty-key case is left to the inner
-// backend's own validation so we don't double-validate or skew error
-// semantics.
-//
-// The length prefix is the load-bearing element here. Without it,
-// tenant `"a:b"` with key `"c"` would produce the same scoped key as
-// tenant `"a"` with key `"b:c"` — a silent cross-tenant leak. Encoding
-// the tenant length first makes the parse unambiguous regardless of
-// which bytes appear in the tenant ID.
-//
-// Defence-in-depth: [coretenant.NewID] also rejects ':' in tenant IDs,
-// but the length prefix means we stay safe even if a caller routes a
-// malformed ID through [coretenant.NewIDUnchecked] or constructs
-// `coretenant.ID(s)` directly.
-func scopedKey(ctx context.Context, raw string) string {
+// scopedKey rewrites raw with the kit-canonical tenant key format. It validates
+// the caller-provided key before adding the tenant prefix so empty raw
+// keys cannot be hidden by the wrapper.
+func scopedKey(ctx context.Context, raw string) (string, error) {
+	if err := cache.ValidateKey(raw); err != nil {
+		return "", err
+	}
 	id, err := coretenant.Required(ctx)
 	if err != nil {
-		panic("cache/tenant: " + err.Error())
+		return "", fmt.Errorf("cache/tenant: %w", err)
 	}
-	s := string(id)
-	return keyPrefix + strconv.Itoa(len(s)) + ":" + s + ":" + raw
+	scoped, err := coretenant.KeyFor(id, raw)
+	if err != nil {
+		return "", err
+	}
+	if err := cache.ValidateKey(scoped); err != nil {
+		return "", err
+	}
+	return scoped, nil
 }
 
 // Get rewrites the key and delegates.
 func (s *scoped) Get(ctx context.Context, key string) ([]byte, error) {
-	return s.inner.Get(ctx, scopedKey(ctx, key))
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return s.inner.Get(ctx, scoped)
 }
 
 // Set rewrites the key and delegates. ttl semantics are unchanged.
 func (s *scoped) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	return s.inner.Set(ctx, scopedKey(ctx, key), value, ttl)
+	if err := s.ready(); err != nil {
+		return err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	return s.inner.Set(ctx, scoped, value, ttl)
 }
 
 // Delete rewrites the key and delegates.
 func (s *scoped) Delete(ctx context.Context, key string) error {
-	return s.inner.Delete(ctx, scopedKey(ctx, key))
+	if err := s.ready(); err != nil {
+		return err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	return s.inner.Delete(ctx, scoped)
 }
 
 // Exists rewrites the key and delegates.
 func (s *scoped) Exists(ctx context.Context, key string) (bool, error) {
-	return s.inner.Exists(ctx, scopedKey(ctx, key))
+	if err := s.ready(); err != nil {
+		return false, err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return s.inner.Exists(ctx, scoped)
 }
 
 // MGet rewrites every key and forwards a single bulk read to the inner
 // BulkCache. The result map is rebuilt with the caller's raw keys so
 // scoping is invisible to consumers.
 func (s *scopedBulk) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
+	}
+	if err := cache.ValidateBulkKeys(keys); err != nil {
+		return nil, err
 	}
 	scoped := make([]string, len(keys))
 	rawByScoped := make(map[string]string, len(keys))
 	for i, k := range keys {
-		sk := scopedKey(ctx, k)
+		sk, err := scopedKey(ctx, k)
+		if err != nil {
+			return nil, err
+		}
 		scoped[i] = sk
 		rawByScoped[sk] = k
 	}
@@ -146,12 +174,22 @@ func (s *scopedBulk) MGet(ctx context.Context, keys []string) (map[string][]byte
 // BulkCache, preserving whatever atomicity guarantees that backend
 // provides (Redis pipeline, in-memory single-lock fan-out).
 func (s *scopedBulk) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return nil
 	}
+	if err := cache.ValidateBulkItems(items); err != nil {
+		return err
+	}
 	scoped := make(map[string][]byte, len(items))
 	for k, v := range items {
-		scoped[scopedKey(ctx, k)] = v
+		sk, err := scopedKey(ctx, k)
+		if err != nil {
+			return err
+		}
+		scoped[sk] = v
 	}
 	return s.bulk.MSet(ctx, scoped, ttl)
 }
@@ -161,5 +199,26 @@ func (s *scopedBulk) MSet(ctx context.Context, items map[string][]byte, ttl time
 // this, the [cache.SetNX] free function falls back to a racy
 // Exists+Set sequence.
 func (s *scopedBulk) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
-	return s.bulk.SetNX(ctx, scopedKey(ctx, key), value, ttl)
+	if err := s.ready(); err != nil {
+		return false, err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return s.bulk.SetNX(ctx, scoped, value, ttl)
+}
+
+func (s *scoped) ready() error {
+	if s == nil || s.inner == nil {
+		return cache.ErrInvalidCache
+	}
+	return nil
+}
+
+func (s *scopedBulk) ready() error {
+	if s == nil || s.bulk == nil {
+		return cache.ErrInvalidCache
+	}
+	return s.scoped.ready()
 }

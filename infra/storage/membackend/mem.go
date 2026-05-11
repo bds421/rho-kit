@@ -38,24 +38,30 @@ type MemBackend struct {
 func New(validators ...storage.Validator) *MemBackend {
 	return &MemBackend{
 		objects:    make(map[string]storedObject),
-		validators: validators,
+		validators: storage.CloneValidators(validators...),
 	}
 }
 
 // Put stores content at key. The reader is fully consumed into memory.
-func (b *MemBackend) Put(_ context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *MemBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
+		return err
+	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
 		return err
 	}
 
 	data, err := io.ReadAll(validated)
 	if err != nil {
-		return fmt.Errorf("membackend: read content: %w", err)
+		return storage.WrapSafe("membackend: read content failed", err)
 	}
 
 	b.mu.Lock()
@@ -63,7 +69,7 @@ func (b *MemBackend) Put(_ context.Context, key string, r io.Reader, meta storag
 
 	b.objects[key] = storedObject{
 		data:    data,
-		meta:    storage.ObjectMeta{ContentType: meta.ContentType, Size: int64(len(data)), Custom: meta.Custom},
+		meta:    storage.ObjectMeta{ContentType: meta.ContentType, Size: int64(len(data)), Custom: storage.CloneCustomMeta(meta.Custom)},
 		modTime: time.Now(),
 	}
 	return nil
@@ -80,14 +86,14 @@ func (b *MemBackend) Get(_ context.Context, key string) (io.ReadCloser, storage.
 
 	obj, ok := b.objects[key]
 	if !ok {
-		return nil, storage.ObjectMeta{}, fmt.Errorf("membackend: get %q: %w", key, storage.ErrObjectNotFound)
+		return nil, storage.ObjectMeta{}, fmt.Errorf("membackend: get: %w", storage.ErrObjectNotFound)
 	}
 
 	// Return a copy so callers cannot mutate stored data.
 	buf := make([]byte, len(obj.data))
 	copy(buf, obj.data)
 
-	return io.NopCloser(bytes.NewReader(buf)), obj.meta, nil
+	return io.NopCloser(bytes.NewReader(buf)), storage.CloneObjectMeta(obj.meta), nil
 }
 
 // Delete removes an object. Returns nil if the key does not exist.
@@ -130,25 +136,15 @@ func (b *MemBackend) Copy(_ context.Context, srcKey, dstKey string) error {
 
 	obj, ok := b.objects[srcKey]
 	if !ok {
-		return fmt.Errorf("membackend: copy %q: %w", srcKey, storage.ErrObjectNotFound)
+		return fmt.Errorf("membackend: copy: %w", storage.ErrObjectNotFound)
 	}
 
 	dataCopy := make([]byte, len(obj.data))
 	copy(dataCopy, obj.data)
 
-	metaCopy := storage.ObjectMeta{
-		ContentType: obj.meta.ContentType,
-		Size:        obj.meta.Size,
-	}
-	if len(obj.meta.Custom) > 0 {
-		metaCopy.Custom = make(map[string]string, len(obj.meta.Custom))
-		for k, v := range obj.meta.Custom {
-			metaCopy.Custom[k] = v
-		}
-	}
 	b.objects[dstKey] = storedObject{
 		data:    dataCopy,
-		meta:    metaCopy,
+		meta:    storage.CloneObjectMeta(obj.meta),
 		modTime: time.Now(),
 	}
 	return nil
@@ -157,11 +153,13 @@ func (b *MemBackend) Copy(_ context.Context, srcKey, dstKey string) error {
 // List returns an iterator over objects matching the prefix.
 func (b *MemBackend) List(_ context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
-		if prefix != "" {
-			if err := storage.ValidatePrefix(prefix); err != nil {
-				yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
-				return
-			}
+		if err := storage.ValidatePrefix(prefix); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
+			return
+		}
+		if err := storage.ValidateListOptions(opts); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
+			return
 		}
 
 		b.mu.RLock()

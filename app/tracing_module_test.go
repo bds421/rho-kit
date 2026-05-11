@@ -1,12 +1,17 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
 
@@ -29,9 +34,48 @@ func TestTracingModule_InitNoopEndpoint(t *testing.T) {
 	require.NoError(t, m.Close(context.Background()))
 }
 
+func TestTracingModuleEnabledLogDoesNotExposeEndpoint(t *testing.T) {
+	const endpoint = "collector-secret.internal:4317"
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	mc := testModuleContext(t)
+	mc.Logger = logger
+	m := newTracingModule(tracing.Config{
+		ServiceName: "test",
+		Endpoint:    endpoint,
+		Insecure:    true,
+		InitTimeout: time.Millisecond,
+	})
+
+	err := m.Init(context.Background(), mc)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+
+	rendered := buf.String()
+	for _, forbidden := range []string{endpoint, "collector-secret.internal"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("tracing enabled log leaked %q in %s", forbidden, rendered)
+		}
+	}
+	assert.Contains(t, rendered, "endpoint_configured=true")
+}
+
 func TestTracingModule_ActiveDefaultFalse(t *testing.T) {
 	m := newTracingModule(tracing.Config{})
 	assert.False(t, m.Active(), "Active should be false before Init")
+}
+
+func TestTracingModule_HealthChecksReturnsDetachedSlice(t *testing.T) {
+	m := newTracingModule(tracing.Config{})
+	m.healthChecks_ = []health.DependencyCheck{{Name: "tracing"}}
+
+	checks := m.HealthChecks()
+	require.Len(t, checks, 1)
+	checks[0].Name = "mutated"
+
+	fresh := m.HealthChecks()
+	require.Len(t, fresh, 1)
+	assert.Equal(t, "tracing", fresh[0].Name)
 }
 
 func TestTracingModule_CloseBeforeInit(t *testing.T) {

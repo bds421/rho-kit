@@ -60,10 +60,10 @@ func NewComputeMetrics(reg prometheus.Registerer) *ComputeMetrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.hits)
-	promutil.RegisterCollector(reg, m.misses)
-	promutil.RegisterCollector(reg, m.staleServes)
-	promutil.RegisterCollector(reg, m.errors)
+	m.hits = promutil.MustRegisterOrGet(reg, m.hits)
+	m.misses = promutil.MustRegisterOrGet(reg, m.misses)
+	m.staleServes = promutil.MustRegisterOrGet(reg, m.staleServes)
+	m.errors = promutil.MustRegisterOrGet(reg, m.errors)
 
 	return m
 }

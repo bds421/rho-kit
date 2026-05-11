@@ -30,10 +30,11 @@ type DegradedCacheOption func(*DegradedCache)
 
 // WithDegradationPolicy overrides the default PassthroughPolicy.
 func WithDegradationPolicy(p redis.DegradationPolicy) DegradedCacheOption {
+	if p == nil {
+		panic("rediscache: WithDegradationPolicy requires a non-nil policy")
+	}
 	return func(dc *DegradedCache) {
-		if p != nil {
-			dc.policy = p
-		}
+		dc.policy = p
 	}
 }
 
@@ -64,6 +65,9 @@ func NewDegradedCache(
 		policy:   redis.PassthroughPolicy{},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("rediscache: NewDegradedCache option must not be nil")
+		}
 		o(dc)
 	}
 	return dc
@@ -71,16 +75,25 @@ func NewDegradedCache(
 
 // Policy returns the current degradation policy name.
 func (dc *DegradedCache) Policy() string {
+	if dc == nil || dc.policy == nil {
+		return "invalid"
+	}
 	return dc.policy.Name()
 }
 
 // Healthy reports whether the underlying Redis connection is healthy.
 func (dc *DegradedCache) Healthy() bool {
+	if dc == nil || dc.conn == nil {
+		return false
+	}
 	return dc.conn.Healthy()
 }
 
 // Get retrieves a value. When degraded, returns from fallback or ErrCacheMiss.
 func (dc *DegradedCache) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := dc.ready(); err != nil {
+		return nil, err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return nil, err
 	}
@@ -98,6 +111,9 @@ func (dc *DegradedCache) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Set stores a value. When degraded, delegates to fallback or returns policy error.
 func (dc *DegradedCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := dc.ready(); err != nil {
+		return err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return err
 	}
@@ -115,6 +131,9 @@ func (dc *DegradedCache) Set(ctx context.Context, key string, value []byte, ttl 
 
 // Delete removes a key. When degraded, delegates to fallback or returns policy error.
 func (dc *DegradedCache) Delete(ctx context.Context, key string) error {
+	if err := dc.ready(); err != nil {
+		return err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return err
 	}
@@ -133,6 +152,9 @@ func (dc *DegradedCache) Delete(ctx context.Context, key string) error {
 // Exists checks whether a key exists. When degraded, delegates to fallback
 // or returns false.
 func (dc *DegradedCache) Exists(ctx context.Context, key string) (bool, error) {
+	if err := dc.ready(); err != nil {
+		return false, err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -146,4 +168,14 @@ func (dc *DegradedCache) Exists(ctx context.Context, key string) (bool, error) {
 		return dc.fallback.Exists(ctx, key)
 	}
 	return false, nil
+}
+
+func (dc *DegradedCache) ready() error {
+	if dc == nil || dc.primary == nil || dc.conn == nil || dc.policy == nil {
+		return sharedcache.ErrInvalidCache
+	}
+	if err := dc.primary.ready(); err != nil {
+		return err
+	}
+	return nil
 }

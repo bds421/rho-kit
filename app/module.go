@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
@@ -108,7 +109,7 @@ type ModuleContext struct {
 func (mc ModuleContext) Module(name string) Module {
 	m, ok := mc.modules[name]
 	if !ok {
-		panic(fmt.Sprintf("app: module %q not found (check registration order — modules are init'd in registration order)", name))
+		panic("app: module not found (check registration order — modules are init'd in registration order)")
 	}
 	return m
 }
@@ -130,7 +131,7 @@ func initModules(
 	seen := make(map[string]bool, len(modules))
 	for _, m := range modules {
 		if seen[m.Name()] {
-			panic(fmt.Sprintf("app: duplicate module name %q (builtin + user modules must have unique names)", m.Name()))
+			panic("app: duplicate module name (builtin + user modules must have unique names)")
 		}
 		seen[m.Name()] = true
 	}
@@ -146,11 +147,11 @@ func initModules(
 	}
 
 	for _, m := range modules {
-		logger.Info("initializing module", "module", m.Name())
+		logger.Info("initializing module", redact.String("module", m.Name()))
 		if err := initOneModule(ctx, m, mc); err != nil {
 			// Close already-initialized modules in reverse order.
 			closeModules(ctx, initialized, logger)
-			return nil, fmt.Errorf("module %q init failed: %w", m.Name(), err)
+			return nil, fmt.Errorf("module init failed: %w", err)
 		}
 		initialized = append(initialized, m)
 		moduleMap[m.Name()] = m
@@ -169,7 +170,7 @@ func initModules(
 func initOneModule(ctx context.Context, m Module, mc ModuleContext) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic during init: %v", r)
+			err = fmt.Errorf("panic during init: %s", redact.PanicValue(r))
 		}
 	}()
 	return m.Init(ctx, mc)
@@ -185,16 +186,16 @@ func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Error("module close panicked",
-						"module", m.Name(),
-						"panic", r,
+						redact.String("module", m.Name()),
+						redact.Panic(r),
 					)
 				}
 			}()
-			logger.Info("closing module", "module", m.Name())
+			logger.Info("closing module", redact.String("module", m.Name()))
 			if err := m.Close(ctx); err != nil {
 				logger.Warn("module close error",
-					"module", m.Name(),
-					"error", err,
+					redact.String("module", m.Name()),
+					redact.Error(err),
 				)
 			}
 		}()

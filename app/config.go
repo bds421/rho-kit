@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/security/v2/netutil"
@@ -50,6 +51,23 @@ type BaseConfig struct {
 	Environment string
 	LogLevel    string // "debug", "info", "warn", "error"; default "info"
 	TLS         netutil.TLSConfig
+}
+
+// LogValue implements slog.LogValuer to keep service config logging useful
+// without exposing TLS certificate or private-key file paths.
+func (c BaseConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("server_addr", c.Server.Addr()),
+		slog.String("internal_addr", c.Internal.Addr()),
+		slog.String("environment", c.Environment),
+		slog.String("log_level", c.LogLevel),
+		slog.Group("tls",
+			slog.Bool("enabled", c.TLS.Enabled()),
+			slog.Bool("ca_cert_configured", c.TLS.CACert != ""),
+			slog.Bool("cert_configured", c.TLS.Cert != ""),
+			slog.Bool("key_configured", c.TLS.Key != ""),
+		),
+	)
 }
 
 // LoadBaseConfig reads the universal config fields from environment variables.

@@ -26,6 +26,16 @@ func TestNewProvider_RejectsNilSource(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNewProvider_RejectsNilContext(t *testing.T) {
+	pub, _ := mustGenKey(t)
+	_, err := NewProvider(nilContextForTest(),
+		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
+		time.Second,
+		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+	)
+	require.Error(t, err)
+}
+
 func TestNewProvider_RejectsZeroInterval(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	_, err := NewProvider(context.Background(),
@@ -33,6 +43,31 @@ func TestNewProvider_RejectsZeroInterval(t *testing.T) {
 		0,
 	)
 	require.Error(t, err)
+}
+
+func TestNewProvider_RejectsNilOption(t *testing.T) {
+	pub, _ := mustGenKey(t)
+	_, err := NewProvider(context.Background(),
+		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
+		time.Second,
+		nil,
+	)
+	require.Error(t, err)
+}
+
+func TestWithVerifyOptionsCopiesCallerSlice(t *testing.T) {
+	pub, _ := mustGenKey(t)
+	opts := []Option{WithExpectedIssuer("svc"), WithAllowAnyAudience()}
+	p, err := NewProvider(context.Background(),
+		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
+		time.Hour,
+		WithVerifyOptions(opts...),
+	)
+	require.NoError(t, err)
+	defer p.Stop()
+
+	opts[0] = nil
+	require.NoError(t, p.refresh(context.Background()))
 }
 
 func TestNewProvider_PropagatesInitialLoadFailure(t *testing.T) {
@@ -167,6 +202,50 @@ func TestProvider_KeepsOldKeysOnRefreshFailure(t *testing.T) {
 	assert.NoError(t, err, "previous key set must keep working when refresh fails")
 }
 
+func TestProvider_FailsClosedWhenKeySetStale(t *testing.T) {
+	pub, priv := mustGenKey(t)
+	now := time.Unix(1000, 0)
+
+	p, err := NewProvider(context.Background(),
+		func(_ context.Context) ([]ed25519.PublicKey, error) {
+			return []ed25519.PublicKey{pub}, nil
+		},
+		time.Hour,
+		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+		WithMaxStale(time.Minute),
+		withProviderClock(func() time.Time { return now }),
+	)
+	require.NoError(t, err)
+	defer p.Stop()
+
+	signer, _ := NewV4Public([]ed25519.PublicKey{pub},
+		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	tok, _ := signer.Sign(Claims{
+		Subject: "alice", Issuer: "svc",
+		ExpiresAt: now.Add(time.Hour),
+	}, priv)
+
+	_, err = p.Verify(tok, now)
+	require.NoError(t, err)
+
+	now = now.Add(2 * time.Minute)
+	_, err = p.Verify(tok, now)
+	require.ErrorIs(t, err, ErrKeySetUnavailable)
+}
+
+func TestProviderOptions_RejectNonPositiveDurations(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithFetchTimeout zero":     func() { WithFetchTimeout(0) },
+		"WithFetchTimeout negative": func() { WithFetchTimeout(-time.Second) },
+		"WithMaxStale zero":         func() { WithMaxStale(0) },
+		"WithMaxStale negative":     func() { WithMaxStale(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, fn)
+		})
+	}
+}
+
 func TestProvider_RejectsEmptyKeySetOnRefresh(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	first := true
@@ -191,6 +270,34 @@ func TestProvider_RejectsEmptyKeySetOnRefresh(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assert.Greater(t, refreshErrors.Load(), int32(0), "empty-set refresh must surface as a refresh error, not a silent swap")
+}
+
+func TestProvider_OnRefreshErrorPanicDoesNotCrashLoop(t *testing.T) {
+	pub, _ := mustGenKey(t)
+	var first atomic.Bool
+	first.Store(true)
+	var refreshErrors atomic.Int32
+
+	p, err := NewProvider(context.Background(),
+		func(context.Context) ([]ed25519.PublicKey, error) {
+			if first.CompareAndSwap(true, false) {
+				return []ed25519.PublicKey{pub}, nil
+			}
+			return nil, errors.New("source unavailable")
+		},
+		20*time.Millisecond,
+		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
+		WithOnRefreshError(func(error) {
+			refreshErrors.Add(1)
+			panic("refresh hook exploded")
+		}),
+	)
+	require.NoError(t, err)
+	defer p.Stop()
+
+	require.Eventually(t, func() bool {
+		return refreshErrors.Load() > 0
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestProvider_StopIdempotent(t *testing.T) {
@@ -228,3 +335,19 @@ func TestProvider_StopConcurrentSafe(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestProvider_InvalidReceiverDoesNotPanic(t *testing.T) {
+	var nilProvider *Provider
+	if _, err := nilProvider.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("nil Verify error = %v, want ErrKeySetUnavailable", err)
+	}
+	nilProvider.Stop()
+
+	var zero Provider
+	if _, err := zero.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("zero Verify error = %v, want ErrKeySetUnavailable", err)
+	}
+	zero.Stop()
+}
+
+func nilContextForTest() context.Context { return nil }

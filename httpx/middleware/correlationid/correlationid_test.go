@@ -59,6 +59,27 @@ func TestWithCorrelationID_UsesIncomingHeader(t *testing.T) {
 	}
 }
 
+func TestWithCorrelationID_RejectsDuplicateHeader(t *testing.T) {
+	var capturedID string
+	handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = contextutil.CorrelationID(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add(Header, "trace-abc-123")
+	req.Header.Add(Header, "trace-def-456")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedID == "trace-abc-123" || capturedID == "trace-def-456" {
+		t.Errorf("duplicate correlation ID header should be replaced, got %q", capturedID)
+	}
+	if capturedID == "" {
+		t.Error("a new ID should be generated for duplicated input")
+	}
+}
+
 func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -69,6 +90,11 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 		{"null byte", "id\x00null"},
 		{"tab", "id\twith-tab"},
 		{"space in value", "trace abc"},
+		{"slash path", "/reset/token"},
+		{"email", "alice@example.com"},
+		{"key value", "token=secret"},
+		{"comma list", "trace-a,trace-b"},
+		{"colon", "trace:span"},
 	}
 
 	for _, tt := range tests {
@@ -95,6 +121,26 @@ func TestWithCorrelationID_RejectsInvalidHeader(t *testing.T) {
 				t.Errorf("generated ID length = %d, want 36 (UUID format)", len(capturedID))
 			}
 		})
+	}
+}
+
+func TestWithCorrelationID_DoesNotEchoInvalidHeader(t *testing.T) {
+	var capturedID string
+	handler := WithCorrelationID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = contextutil.CorrelationID(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(Header, "alice@example.com/reset/token=secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedID == "alice@example.com/reset/token=secret" {
+		t.Error("free-form correlation ID should be rejected")
+	}
+	if rec.Header().Get(Header) == "alice@example.com/reset/token=secret" {
+		t.Error("invalid correlation ID should not be echoed in response header")
 	}
 }
 

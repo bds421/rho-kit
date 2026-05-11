@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -43,6 +45,7 @@ type SFTPClient interface {
 	Open(path string) (*sftp.File, error)
 	Remove(path string) error
 	Rename(oldname, newname string) error
+	Lstat(path string) (os.FileInfo, error)
 	Stat(path string) (os.FileInfo, error)
 	MkdirAll(path string) error
 	ReadDir(path string) ([]os.FileInfo, error)
@@ -81,8 +84,8 @@ type Option func(*SFTPBackend)
 // WithInstance sets the Prometheus instance label. Defaults to "default".
 func WithInstance(name string) Option {
 	return func(b *SFTPBackend) {
-		if name == "" {
-			panic("sftpbackend: instance name must not be empty")
+		if err := storage.ValidateInstanceName(name); err != nil {
+			panic("sftpbackend: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -90,8 +93,9 @@ func WithInstance(name string) Option {
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
+	copied := storage.CloneValidators(validators...)
 	return func(b *SFTPBackend) {
-		b.validators = append(b.validators, validators...)
+		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
@@ -126,8 +130,8 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // New creates a new SFTPBackend. By default, it connects eagerly.
 // Use WithLazyConnect to defer connection.
 func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
-	if cfg.Host == "" {
-		panic("sftpbackend: SFTPConfig.Host is required")
+	if err := cfg.Validate(""); err != nil {
+		return nil, err
 	}
 
 	b := &SFTPBackend{
@@ -137,12 +141,15 @@ func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
 		metrics:  defaultSFTPMetrics,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("sftpbackend: option must not be nil")
+		}
 		o(b)
 	}
 
 	if !b.lazyConn {
 		if err := b.connect(); err != nil {
-			return nil, fmt.Errorf("sftpbackend: initial connect: %w", err)
+			return nil, storage.WrapSafe("sftpbackend: initial connect failed", err)
 		}
 	}
 
@@ -154,6 +161,13 @@ func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBacke
 	if client == nil {
 		panic("sftpbackend: NewWithClient requires a non-nil SFTPClient")
 	}
+	if cfg.RootPath == "" {
+		cfg.RootPath = "/"
+	}
+	if !path.IsAbs(cfg.RootPath) {
+		panic("sftpbackend: SFTPConfig.RootPath must be absolute")
+	}
+	cfg.RootPath = path.Clean(cfg.RootPath)
 	b := &SFTPBackend{
 		cfg:       cfg,
 		instance:  "default",
@@ -163,6 +177,9 @@ func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBacke
 		connected: true,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("sftpbackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b
@@ -179,21 +196,21 @@ func (b *SFTPBackend) connect() error {
 
 	sshCfg, err := b.buildSSHConfig()
 	if err != nil {
-		return fmt.Errorf("build SSH config: %w", err)
+		return storage.WrapSafe("build SSH config failed", err)
 	}
 
 	addr := net.JoinHostPort(b.cfg.Host, fmt.Sprintf("%d", b.cfg.Port))
 	conn, err := ssh.Dial("tcp", addr, sshCfg)
 	if err != nil {
 		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-		return fmt.Errorf("SSH dial %s: %w", addr, err)
+		return fmt.Errorf("SSH dial failed")
 	}
 
 	sftpClient, err := sftp.NewClient(conn)
 	if err != nil {
 		_ = conn.Close()
 		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-		return fmt.Errorf("SFTP client from SSH conn: %w", err)
+		return storage.WrapSafe("SFTP client setup failed", err)
 	}
 
 	// Close old connections after replacing to prevent file descriptor leaks.
@@ -247,7 +264,7 @@ func (b *SFTPBackend) connect() error {
 	b.sshConn = conn
 	b.connected = true
 	b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(1)
-	b.logger.Info("SFTP connected", "host", b.cfg.Host, "port", b.cfg.Port)
+	b.logger.Info("SFTP connected", redact.String("host", b.cfg.Host), "port", b.cfg.Port)
 
 	return nil
 }
@@ -262,34 +279,25 @@ func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
 		Timeout: sshConnectTimeout,
 	}
 
-	switch {
-	case b.cfg.InsecureSkipHostKeyVerify:
-		// Opt-in escape hatch — emit a loud WARN so an operator who
-		// flipped the flag for local testing sees it in production logs
-		// if it leaks into a deployed config.
-		b.logger.Warn("sftp: host-key verification disabled — InsecureSkipHostKeyVerify is set; the connection is vulnerable to MITM",
-			slog.String("host", b.cfg.Host))
-		cfg.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // opt-in via config
-	case b.cfg.KnownHostsFile != "":
-		hostKeyCallback, err := knownhosts.New(b.cfg.KnownHostsFile)
-		if err != nil {
-			return nil, fmt.Errorf("load known_hosts %q: %w", b.cfg.KnownHostsFile, err)
-		}
-		cfg.HostKeyCallback = hostKeyCallback
-	default:
-		return nil, fmt.Errorf("SSH host key verification requires KnownHostsFile or InsecureSkipHostKeyVerify=true")
+	if b.cfg.KnownHostsFile == "" {
+		return nil, fmt.Errorf("SSH host key verification requires KnownHostsFile")
 	}
+	hostKeyCallback, err := knownhosts.New(b.cfg.KnownHostsFile)
+	if err != nil {
+		return nil, fmt.Errorf("load known_hosts failed")
+	}
+	cfg.HostKeyCallback = hostKeyCallback
 
 	if b.cfg.Password != "" {
 		cfg.Auth = []ssh.AuthMethod{ssh.Password(b.cfg.Password)}
 	} else {
 		key, err := os.ReadFile(b.cfg.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("read SSH key file %q: %w", b.cfg.KeyFile, err)
+			return nil, fmt.Errorf("read SSH key file failed")
 		}
 		signer, err := ssh.ParsePrivateKey(key)
 		if err != nil {
-			return nil, fmt.Errorf("parse SSH key: %w", err)
+			return nil, fmt.Errorf("parse SSH key failed")
 		}
 		cfg.Auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
 	}
@@ -324,36 +332,148 @@ func (b *SFTPBackend) remotePath(key string) string {
 	return path.Join(b.cfg.RootPath, key)
 }
 
+func (b *SFTPBackend) ensureRemotePathUnderRoot(remotePath string) error {
+	rel, err := relPath(b.cfg.RootPath, remotePath)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	if strings.HasPrefix(rel, "../") || rel == ".." || path.IsAbs(rel) {
+		return fmt.Errorf("remote path escapes root")
+	}
+	return nil
+}
+
+func (b *SFTPBackend) rejectSymlinkAncestors(client SFTPClient, remotePath string) error {
+	if err := b.ensureRemotePathUnderRoot(remotePath); err != nil {
+		return err
+	}
+	rel, err := relPath(b.cfg.RootPath, remotePath)
+	if err != nil {
+		return err
+	}
+
+	cur := path.Clean(b.cfg.RootPath)
+	if err := rejectSFTPSymlinkAt(client, cur); err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+
+	for _, part := range strings.Split(path.Dir(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = path.Join(cur, part)
+		if err := rejectSFTPSymlinkAt(client, cur); err != nil {
+			if isNotExist(err) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *SFTPBackend) rejectSymlinkPath(client SFTPClient, remotePath string) error {
+	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
+		return err
+	}
+	if err := rejectSFTPSymlinkAt(client, remotePath); err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func rejectSFTPSymlinkAt(client SFTPClient, remotePath string) error {
+	info, err := client.Lstat(remotePath)
+	if err != nil {
+		if isNotExist(err) {
+			return err
+		}
+		return sftpRemoteError("inspect remote path", err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("path component is a symlink")
+	}
+	return nil
+}
+
+func sftpRemoteError(op string, err error) error {
+	if errors.Is(err, storage.ErrValidation) {
+		return fmt.Errorf("sftpbackend: %w", err)
+	}
+	return fmt.Errorf("sftpbackend: %s failed", op)
+}
+
 // Put writes content from r to the remote path. Validators run before upload.
 func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Put")
 	defer span.End()
-	span.SetAttributes(attribute.String("storage.key", key))
+	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
 
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
 	client, err := b.getClient()
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: put %q: %w", key, err)
+		opErr := storage.WrapSafe("sftpbackend: put connection failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	remotePath := b.remotePath(key)
-	tmpPath := remotePath + ".tmp-" + randomSuffix()
+	suffix, err := randomSuffix()
+	if err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	tmpPath := remotePath + ".tmp-" + suffix
 
 	// Ensure parent directory exists.
 	dir := path.Dir(remotePath)
+	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
+		opErr := fmt.Errorf("sftpbackend: unsafe parent: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
+	}
 	if err := client.MkdirAll(dir); err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: mkdir %q: %w", dir, err)
+		opErr := sftpRemoteError("mkdir", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
+	}
+	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
+		opErr := fmt.Errorf("sftpbackend: unsafe parent: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
+	}
+	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		opErr := fmt.Errorf("sftpbackend: unsafe target: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	start := now()
@@ -363,30 +483,41 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 	f, err := client.Create(tmpPath)
 	if err != nil {
 		b.metrics.observeOp(b.instance, "put", start, err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: create %q: %w", key, err)
+		opErr := sftpRemoteError("create", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	if _, err := io.Copy(f, validated); err != nil {
 		_ = f.Close()
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: write %q: %w", key, err)
+		opErr := sftpRemoteError("write", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	if err := f.Close(); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: close %q: %w", key, err)
+		opErr := sftpRemoteError("close", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
+	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		_ = client.Remove(tmpPath)
+		b.metrics.observeOp(b.instance, "put", start, err)
+		opErr := fmt.Errorf("sftpbackend: unsafe target: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
+	}
 	if err := client.Rename(tmpPath, remotePath); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: rename %q: %w", key, err)
+		opErr := sftpRemoteError("rename", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	b.metrics.observeOp(b.instance, "put", start, nil)
@@ -397,7 +528,7 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Get")
 	defer span.End()
-	span.SetAttributes(attribute.String("storage.key", key))
+	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
 
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
@@ -405,20 +536,36 @@ func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, stora
 
 	client, err := b.getClient()
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return nil, storage.ObjectMeta{}, fmt.Errorf("sftpbackend: get %q: %w", key, err)
+		opErr := storage.WrapSafe("sftpbackend: get connection failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
+	}
+
+	remotePath := b.remotePath(key)
+	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		if isNotExist(err) {
+			opErr := fmt.Errorf("sftpbackend: get: %w", storage.ErrObjectNotFound)
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+			return nil, storage.ObjectMeta{}, opErr
+		}
+		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	start := now()
-	f, err := client.Open(b.remotePath(key))
+	f, err := client.Open(remotePath)
 	b.metrics.observeOp(b.instance, "get", start, err)
 
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
 		if isNotExist(err) {
-			return nil, storage.ObjectMeta{}, fmt.Errorf("sftpbackend: get %q: %w", key, storage.ErrObjectNotFound)
+			opErr := fmt.Errorf("sftpbackend: get: %w", storage.ErrObjectNotFound)
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+			return nil, storage.ObjectMeta{}, opErr
 		}
-		return nil, storage.ObjectMeta{}, fmt.Errorf("sftpbackend: get %q: %w", key, err)
+		opErr := sftpRemoteError("get", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	meta := storage.ObjectMeta{}
@@ -433,7 +580,7 @@ func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, stora
 func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Delete")
 	defer span.End()
-	span.SetAttributes(attribute.String("storage.key", key))
+	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
 
 	if err := storage.ValidateKey(key); err != nil {
 		return err
@@ -441,20 +588,31 @@ func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 
 	client, err := b.getClient()
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: delete %q: %w", key, err)
+		opErr := storage.WrapSafe("sftpbackend: delete connection failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
+	}
+	remotePath := b.remotePath(key)
+	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	start := now()
-	err = client.Remove(b.remotePath(key))
+	err = client.Remove(remotePath)
 	b.metrics.observeOp(b.instance, "delete", start, err)
 
 	if err != nil {
 		if isNotExist(err) {
 			return nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("sftpbackend: delete %q: %w", key, err)
+		opErr := sftpRemoteError("delete", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -463,7 +621,7 @@ func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Exists")
 	defer span.End()
-	span.SetAttributes(attribute.String("storage.key", key))
+	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
 
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
@@ -471,20 +629,31 @@ func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 
 	client, err := b.getClient()
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return false, fmt.Errorf("sftpbackend: exists %q: %w", key, err)
+		opErr := storage.WrapSafe("sftpbackend: exists connection failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
+	}
+	remotePath := b.remotePath(key)
+	if err := b.rejectSymlinkPath(client, remotePath); err != nil {
+		if isNotExist(err) {
+			return false, nil
+		}
+		opErr := fmt.Errorf("sftpbackend: unsafe path: %w", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
 	}
 
 	start := now()
-	_, err = client.Stat(b.remotePath(key))
+	_, err = client.Stat(remotePath)
 	b.metrics.observeOp(b.instance, "exists", start, err)
 
 	if err != nil {
 		if isNotExist(err) {
 			return false, nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return false, fmt.Errorf("sftpbackend: exists %q: %w", key, err)
+		opErr := sftpRemoteError("exists", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
 	}
 	return true, nil
 }
@@ -498,6 +667,9 @@ func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 // closed sftp.Client returns an error (which correctly makes Healthy return
 // false). Do not rely on Healthy returning meaningful results after Close.
 func (b *SFTPBackend) Healthy() bool {
+	if b == nil {
+		return false
+	}
 	b.mu.RLock()
 	if !b.connected || b.client == nil {
 		b.mu.RUnlock()
@@ -518,9 +690,13 @@ func (b *SFTPBackend) Healthy() bool {
 		b.mu.Lock()
 		if b.client == client {
 			b.connected = false
-			b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-			b.logger.Warn("SFTP health probe failed, marking disconnected",
-				"host", b.cfg.Host, "error", err)
+			if b.metrics != nil {
+				b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
+			}
+			if b.logger != nil {
+				b.logger.Warn("SFTP health probe failed, marking disconnected",
+					redact.String("host", b.cfg.Host), redact.Error(err))
+			}
 		}
 		b.mu.Unlock()
 		return false
@@ -531,6 +707,9 @@ func (b *SFTPBackend) Healthy() bool {
 // Close closes the SFTP and SSH connections and waits for any pending
 // cleanup goroutines from previous reconnections to finish.
 func (b *SFTPBackend) Close() error {
+	if b == nil {
+		return nil
+	}
 	b.mu.Lock()
 
 	var errs []error
@@ -543,7 +722,9 @@ func (b *SFTPBackend) Close() error {
 		b.sshConn = nil
 	}
 	b.connected = false
-	b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
+	if b.metrics != nil {
+		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
+	}
 	b.mu.Unlock()
 
 	// Wait for pending cleanup goroutines outside the lock to avoid blocking
@@ -579,8 +760,10 @@ const sshConnectTimeout = 10 * time.Second
 // randomSuffix returns a crypto-random hex string for unique temp file names.
 // Using crypto/rand avoids collisions that time.Now().UnixNano() can have
 // when concurrent goroutines call Put on the same key.
-func randomSuffix() string {
+func randomSuffix() (string, error) {
 	var buf [8]byte
-	_, _ = rand.Read(buf[:])
-	return hex.EncodeToString(buf[:])
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", storage.WrapSafe("sftpbackend: random temp suffix failed", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
 }

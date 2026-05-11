@@ -3,9 +3,12 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 const (
@@ -15,6 +18,7 @@ const (
 	defaultRetention        = 7 * 24 * time.Hour  // 7 days
 	defaultFailedRetention  = 30 * 24 * time.Hour // 30 days for entries in StatusFailed
 	defaultStaleDuration    = 5 * time.Minute
+	defaultPublishTimeout   = 2 * time.Minute
 	staleRecoveryMultiplier = 10 // recover stale entries every N polls
 
 	// Exponential backoff bounds for IncrementAttempts: delay = baseDelay * 2^attempts,
@@ -44,12 +48,15 @@ type Relay struct {
 	maxAttempts          int
 	maxConcurrentPublish int
 	retention            time.Duration
+	failedRetention      time.Duration
 	staleDuration        time.Duration
 	publishTimeout       time.Duration
 
 	cancel    context.CancelFunc
 	mu        sync.Mutex
 	done      chan struct{}
+	started   bool
+	stopped   bool
 	pollCount int
 }
 
@@ -58,40 +65,56 @@ type RelayOption func(*Relay)
 
 // WithPollInterval sets the polling interval for the relay. Default: 1s.
 func WithPollInterval(d time.Duration) RelayOption {
+	if d <= 0 {
+		panic("outbox: WithPollInterval requires a positive duration")
+	}
 	return func(r *Relay) {
-		if d > 0 {
-			r.pollInterval = d
-		}
+		r.pollInterval = d
 	}
 }
 
 // WithBatchSize sets the maximum number of entries fetched per poll.
 // Default: 100.
 func WithBatchSize(n int) RelayOption {
+	if n <= 0 {
+		panic("outbox: WithBatchSize requires n > 0")
+	}
 	return func(r *Relay) {
-		if n > 0 {
-			r.batchSize = n
-		}
+		r.batchSize = n
 	}
 }
 
 // WithMaxAttempts sets the maximum publish attempts before marking as failed.
 // Default: 10.
 func WithMaxAttempts(n int) RelayOption {
+	if n <= 0 {
+		panic("outbox: WithMaxAttempts requires n > 0")
+	}
 	return func(r *Relay) {
-		if n > 0 {
-			r.maxAttempts = n
-		}
+		r.maxAttempts = n
 	}
 }
 
 // WithRetention sets how long published entries are kept before cleanup.
 // Default: 7 days.
 func WithRetention(d time.Duration) RelayOption {
+	if d <= 0 {
+		panic("outbox: WithRetention requires a positive duration")
+	}
 	return func(r *Relay) {
-		if d > 0 {
-			r.retention = d
-		}
+		r.retention = d
+	}
+}
+
+// WithFailedRetention sets how long failed entries are kept before cleanup.
+// Default: 30 days. Failed rows are useful for investigation, so this should
+// usually be longer than the published-entry retention.
+func WithFailedRetention(d time.Duration) RelayOption {
+	if d <= 0 {
+		panic("outbox: WithFailedRetention requires a positive duration")
+	}
+	return func(r *Relay) {
+		r.failedRetention = d
 	}
 }
 
@@ -108,35 +131,41 @@ func WithMetrics(m *Metrics) RelayOption {
 // staleDuration/3 while a publish is in flight, so legitimate long
 // publishes do not get reset by another relay instance. Operators that
 // know their publisher backend has a tighter or looser tail latency can
-// tune this knob — but [WithPublishTimeout] should always be set strictly
-// below staleDuration so a hung publisher is detected before the row is
-// eligible for stale recovery.
+// tune this knob.
 //
-// Values <= 0 are ignored (default preserved).
+// The duration must be positive.
 func WithStaleDuration(d time.Duration) RelayOption {
+	if d <= 0 {
+		panic("outbox: WithStaleDuration requires a positive duration")
+	}
 	return func(r *Relay) {
-		if d > 0 {
-			r.staleDuration = d
-		}
+		r.staleDuration = d
 	}
 }
 
 // WithPublishTimeout bounds each Publisher.Publish call with a derived
-// context deadline. When zero (the default) the relay does not impose a
-// deadline and a hung publisher pins the row in processing until the
-// stale-recovery timer fires.
+// context deadline. Default: 2 minutes.
 //
-// Setting publishTimeout < staleDuration is REQUIRED for at-most-once
-// duplicate avoidance: if the publisher legitimately exceeds
-// staleDuration, another relay can pick the row up and republish it.
-// The relay logs a startup warning when publishTimeout >= staleDuration.
+// Keep publishTimeout below staleDuration when the publisher honors
+// cancellation promptly; the relay logs a startup warning when the timeout
+// is longer than the stale window because operators should then rely on
+// heartbeat health rather than stale recovery for hung publishes.
 //
-// Values <= 0 are ignored (no timeout applied).
+// The duration must be positive. Use [WithoutPublishTimeout] to opt out.
 func WithPublishTimeout(d time.Duration) RelayOption {
+	if d <= 0 {
+		panic("outbox: WithPublishTimeout requires a positive duration")
+	}
 	return func(r *Relay) {
-		if d > 0 {
-			r.publishTimeout = d
-		}
+		r.publishTimeout = d
+	}
+}
+
+// WithoutPublishTimeout disables the relay's Publisher.Publish deadline.
+// Use only for publishers that enforce their own per-call deadline.
+func WithoutPublishTimeout() RelayOption {
+	return func(r *Relay) {
+		r.publishTimeout = 0
 	}
 }
 
@@ -152,10 +181,11 @@ func WithPublishTimeout(d time.Duration) RelayOption {
 // the same connection — concurrent publish doesn't, and the kit cannot
 // fix that at the relay layer.
 func WithMaxConcurrentPublishes(n int) RelayOption {
+	if n <= 0 {
+		panic("outbox: WithMaxConcurrentPublishes requires n > 0")
+	}
 	return func(r *Relay) {
-		if n > 0 {
-			r.maxConcurrentPublish = n
-		}
+		r.maxConcurrentPublish = n
 	}
 }
 
@@ -184,9 +214,14 @@ func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...Rel
 		batchSize:            defaultBatchSize,
 		maxAttempts:          defaultMaxAttempts,
 		retention:            defaultRetention,
+		failedRetention:      defaultFailedRetention,
 		staleDuration:        defaultStaleDuration,
+		publishTimeout:       defaultPublishTimeout,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("outbox: Relay option must not be nil")
+		}
 		opt(r)
 	}
 	if r.publishTimeout > 0 && r.publishTimeout >= r.staleDuration {
@@ -200,16 +235,29 @@ func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...Rel
 // Start begins polling the outbox table. Blocks until ctx is cancelled.
 // Implements lifecycle.Component.
 func (r *Relay) Start(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
+	if ctx == nil {
+		return errors.New("outbox: Relay.Start requires a non-nil context")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	r.mu.Lock()
+	if r.started {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("outbox: Relay already started")
+	}
+	if r.stopped {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("outbox: Relay already stopped")
+	}
+	r.started = true
 	r.cancel = cancel
-	r.done = make(chan struct{})
+	r.done = done
 	r.mu.Unlock()
 
 	defer func() {
-		r.mu.Lock()
-		close(r.done)
-		r.mu.Unlock()
+		close(done)
 	}()
 
 	r.logger.Info("outbox relay started",
@@ -217,18 +265,24 @@ func (r *Relay) Start(ctx context.Context) error {
 		"batch_size", r.batchSize,
 		"max_attempts", r.maxAttempts,
 		"retention", r.retention,
+		"failed_retention", r.failedRetention,
 		"stale_duration", r.staleDuration,
 		"publish_timeout", r.publishTimeout,
 	)
 
 	// Initial poll immediately on start.
-	r.poll(ctx)
+	r.poll(runCtx)
+	r.cleanup(runCtx)
 
 	ticker := time.NewTicker(r.pollInterval)
 	defer ticker.Stop()
 
 	// Cleanup ticker runs less frequently.
-	cleanupInterval := r.retention / 10
+	cleanupBase := r.retention
+	if r.failedRetention < cleanupBase {
+		cleanupBase = r.failedRetention
+	}
+	cleanupInterval := cleanupBase / 10
 	if cleanupInterval < time.Minute {
 		cleanupInterval = time.Minute
 	}
@@ -237,13 +291,13 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			r.logger.Info("outbox relay stopping")
 			return nil
 		case <-ticker.C:
-			r.poll(ctx)
+			r.poll(runCtx)
 		case <-cleanupTicker.C:
-			r.cleanup(ctx)
+			r.cleanup(runCtx)
 		}
 	}
 }
@@ -251,7 +305,11 @@ func (r *Relay) Start(ctx context.Context) error {
 // Stop cancels the relay context and waits for the poll loop to finish.
 // Implements lifecycle.Component.
 func (r *Relay) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("outbox: Relay.Stop requires a non-nil context")
+	}
 	r.mu.Lock()
+	r.stopped = true
 	cancel := r.cancel
 	done := r.done
 	r.mu.Unlock()
@@ -283,7 +341,7 @@ func (r *Relay) poll(ctx context.Context) {
 
 	entries, err := r.store.FetchPending(ctx, r.batchSize)
 	if err != nil {
-		r.logger.Error("outbox relay: fetch pending failed", "error", err)
+		r.logger.Error("outbox relay: fetch pending failed", redact.Error(err))
 		return
 	}
 
@@ -350,7 +408,7 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 	}
 
 	start := time.Now()
-	err := r.publisher.Publish(publishCtx, entry)
+	err := r.callPublisher(publishCtx, entry)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -369,22 +427,28 @@ func (r *Relay) publishEntry(ctx context.Context, entry Entry) {
 		// stale_duration / publish_timeout.
 		if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
 			r.logger.Error("outbox relay: mark published lost row — likely concurrent stale recovery, possible duplicate publish",
-				"entry_id", entry.ID, "error", markErr)
+				redact.Error(markErr))
 			return
 		}
 		r.logger.Error("outbox relay: mark published failed",
-			"entry_id", entry.ID, "error", markErr)
+			redact.Error(markErr))
 		return
 	}
 
 	r.recordPublished()
 
 	r.logger.Debug("outbox relay: published entry",
-		"entry_id", entry.ID,
-		"message_id", entry.MessageID,
-		"topic", entry.Topic,
-		"routing_key", entry.RoutingKey,
+		"attempts", entry.Attempts,
 	)
+}
+
+func (r *Relay) callPublisher(ctx context.Context, entry Entry) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("outbox relay: publisher panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	return r.publisher.Publish(ctx, entry)
 }
 
 // startHeartbeat refreshes the row's updated_at timestamp on a fixed
@@ -415,7 +479,7 @@ func (r *Relay) startHeartbeat(ctx context.Context, id string) func() {
 			case <-ticker.C:
 				if _, err := r.store.Heartbeat(ctx, []string{id}); err != nil {
 					r.logger.Warn("outbox relay: heartbeat failed",
-						"entry_id", id, "error", err)
+						redact.Error(err))
 				}
 			}
 		}
@@ -429,22 +493,20 @@ func (r *Relay) startHeartbeat(ctx context.Context, id string) func() {
 // handlePublishError increments attempts or marks the entry as failed.
 func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr error) {
 	nextAttempt := entry.Attempts + 1
-	errMsg := publishErr.Error()
+	errMsg := safePublishError(publishErr)
 
 	if nextAttempt >= r.maxAttempts {
 		if markErr := r.store.MarkFailed(ctx, entry.ID.String(), errMsg); markErr != nil {
 			if errors.Is(markErr, ErrStaleState) || errors.Is(markErr, ErrNotFound) {
 				r.logger.Error("outbox relay: mark failed lost row — likely concurrent stale recovery",
-					"entry_id", entry.ID, "error", markErr)
+					redact.Error(markErr))
 			} else {
 				r.logger.Error("outbox relay: mark failed error",
-					"entry_id", entry.ID, "error", markErr)
+					redact.Error(markErr))
 			}
 		}
 		r.recordError()
 		r.logger.Error("outbox relay: entry failed permanently",
-			"entry_id", entry.ID,
-			"message_id", entry.MessageID,
 			"attempts", nextAttempt,
 			"error", errMsg,
 		)
@@ -455,21 +517,26 @@ func (r *Relay) handlePublishError(ctx context.Context, entry Entry, publishErr 
 	if incErr := r.store.IncrementAttempts(ctx, entry.ID.String(), errMsg, nextRetryAt); incErr != nil {
 		if errors.Is(incErr, ErrStaleState) || errors.Is(incErr, ErrNotFound) {
 			r.logger.Error("outbox relay: increment attempts lost row — likely concurrent stale recovery",
-				"entry_id", entry.ID, "error", incErr)
+				redact.Error(incErr))
 		} else {
 			r.logger.Error("outbox relay: increment attempts error",
-				"entry_id", entry.ID, "error", incErr)
+				redact.Error(incErr))
 		}
 	}
 	r.recordError()
 
 	r.logger.Warn("outbox relay: publish failed, will retry",
-		"entry_id", entry.ID,
-		"message_id", entry.MessageID,
 		"attempt", nextAttempt,
 		"max_attempts", r.maxAttempts,
 		"error", errMsg,
 	)
+}
+
+func safePublishError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "publish failed"
 }
 
 // recoverStale resets entries stuck in "processing" status from crashed relays.
@@ -480,7 +547,7 @@ func (r *Relay) recoverStale(ctx context.Context) {
 
 	reset, err := r.store.ResetStaleProcessing(ctx, r.staleDuration)
 	if err != nil {
-		r.logger.Error("outbox relay: recover stale failed", "error", err)
+		r.logger.Error("outbox relay: recover stale failed", redact.Error(err))
 		return
 	}
 
@@ -503,19 +570,19 @@ func (r *Relay) cleanup(ctx context.Context) {
 	publishedCutoff := now.Add(-r.retention)
 	deletedPublished, err := r.store.DeletePublishedBefore(ctx, publishedCutoff)
 	if err != nil {
-		r.logger.Error("outbox relay: cleanup published failed", "error", err)
+		r.logger.Error("outbox relay: cleanup published failed", redact.Error(err))
 	} else if deletedPublished > 0 {
 		r.logger.Info("outbox relay: cleaned up published entries",
 			"deleted", deletedPublished, "retention", r.retention)
 	}
 
-	failedCutoff := now.Add(-defaultFailedRetention)
+	failedCutoff := now.Add(-r.failedRetention)
 	deletedFailed, err := r.store.DeleteFailedBefore(ctx, failedCutoff)
 	if err != nil {
-		r.logger.Error("outbox relay: cleanup failed entries failed", "error", err)
+		r.logger.Error("outbox relay: cleanup failed entries failed", redact.Error(err))
 	} else if deletedFailed > 0 {
 		r.logger.Info("outbox relay: cleaned up failed entries",
-			"deleted", deletedFailed, "retention", defaultFailedRetention)
+			"deleted", deletedFailed, "retention", r.failedRetention)
 	}
 }
 
@@ -546,7 +613,7 @@ func (r *Relay) updatePendingGauge(ctx context.Context) {
 	count, err := r.store.CountPending(ctx)
 	if err != nil {
 		r.logger.Error("outbox relay: count pending for metrics failed",
-			"error", err)
+			redact.Error(err))
 		return
 	}
 	r.metrics.pendingCount.Set(float64(count))

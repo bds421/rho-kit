@@ -10,6 +10,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // removeByIDScript scans the processing list for an entry whose top-level
@@ -47,11 +48,12 @@ return 0
 `)
 
 func (q *Queue) updateProcessingDepth(ctx context.Context, queue, processingQ string) {
+	label := queueMetricLabel(queue)
 	if n, err := q.client.LLen(ctx, processingQ).Result(); err == nil {
-		q.metrics.processingDepth.WithLabelValues(queue).Set(float64(n))
+		q.metrics.processingDepth.WithLabelValues(label).Set(float64(n))
 	}
 	if n, err := q.client.LLen(ctx, queue).Result(); err == nil {
-		q.metrics.queueDepth.WithLabelValues(queue).Set(float64(n))
+		q.metrics.queueDepth.WithLabelValues(label).Set(float64(n))
 	}
 }
 
@@ -83,6 +85,30 @@ func (q *Queue) removeByID(ctx context.Context, processingQ, msgID string) (bool
 		return false, fmt.Errorf("removeByID: unexpected script result type %T", res)
 	}
 	return n == 1, nil
+}
+
+func queueDetachedTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+func (q *Queue) discardProcessingPayload(ctx context.Context, processingQ, queue, data, reason string, err error) {
+	q.logger.Error("discarding invalid queue message",
+		redact.String("queue", queue),
+		"reason", reason,
+		redact.Error(err),
+	)
+	ackCtx, ackCancel := queueDetachedTimeout(ctx, queueAckTimeout)
+	defer ackCancel()
+	if remErr := q.client.LRem(ackCtx, processingQ, 1, data).Err(); remErr != nil {
+		q.logger.Error("failed to remove invalid message from processing queue",
+			redact.String("queue", queue),
+			redact.Error(remErr),
+		)
+	}
+	q.metrics.messagesFailed.WithLabelValues(queueMetricLabel(queue)).Inc()
 }
 
 // retryAndRemoveScript atomically tombstones the original from the
@@ -154,23 +180,11 @@ return 0
 func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, queue, deadQ string, handler Handler) {
 	var msg Message
 	if err := json.Unmarshal([]byte(data), &msg); err != nil {
-		q.logger.Error("failed to unmarshal queue message, discarding",
-			"error", err,
-		)
-		// Use a background context — malformed messages must be removed even
-		// during shutdown. The parent ctx may already be cancelled, which would
-		// make LRem fail immediately and leave garbage in the processing queue.
-		// We don't have an ID to use removeByID here, so fall back to literal
-		// LRem — for a malformed payload, payload-equality is the only handle
-		// we have.
-		ackCtx, ackCancel := context.WithTimeout(context.Background(), queueAckTimeout)
-		defer ackCancel()
-		if remErr := q.client.LRem(ackCtx, processingQ, 1, data).Err(); remErr != nil {
-			q.logger.Error("failed to remove malformed message from processing queue",
-				"error", remErr,
-			)
-		}
-		q.metrics.messagesFailed.WithLabelValues(queue).Inc()
+		q.discardProcessingPayload(ctx, processingQ, queue, data, "failed to unmarshal queue message, discarding", err)
+		return
+	}
+	if err := validateMessage(msg, q.maxPayloadSize); err != nil {
+		q.discardProcessingPayload(ctx, processingQ, queue, data, "invalid queue message from processing queue, discarding", err)
 		return
 	}
 
@@ -181,48 +195,57 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 	var handlerCtx context.Context
 	var handlerCancel context.CancelFunc
 	if ctx.Err() != nil {
-		handlerCtx, handlerCancel = context.WithTimeout(context.Background(), queueHandlerShutdownTimeout)
+		handlerCtx, handlerCancel = queueDetachedTimeout(ctx, queueHandlerShutdownTimeout)
 	} else {
 		handlerCtx, handlerCancel = context.WithTimeout(ctx, queueHandlerShutdownTimeout)
 	}
 	defer handlerCancel()
 
 	start := time.Now()
-	handlerErr := handler(handlerCtx, msg)
+	handlerErr := callHandler(handlerCtx, handler, msg)
 	duration := time.Since(start)
-	q.metrics.processingDuration.WithLabelValues(queue).Observe(duration.Seconds())
+	q.metrics.processingDuration.WithLabelValues(queueMetricLabel(queue)).Observe(duration.Seconds())
 
 	// Use a fresh context for post-handler operations. The handler may have
 	// cancelled the parent context, but acknowledgment must still complete.
-	ackCtx, ackCancel := context.WithTimeout(context.Background(), queueAckTimeout)
+	ackCtx, ackCancel := queueDetachedTimeout(ctx, queueAckTimeout)
 	defer ackCancel()
 
 	if handlerErr != nil {
-		q.metrics.messagesFailed.WithLabelValues(queue).Inc()
+		q.metrics.messagesFailed.WithLabelValues(queueMetricLabel(queue)).Inc()
 		// handleFailedMessage atomically removes from processing — no
 		// follow-up removeByID needed here.
 		_ = q.handleFailedMessage(ackCtx, queue, deadQ, processingQ, data, msg, handlerErr)
 		return
 	}
-	q.metrics.messagesProcessed.WithLabelValues(queue).Inc()
+	q.metrics.messagesProcessed.WithLabelValues(queueMetricLabel(queue)).Inc()
 
 	// Remove from processing queue only after successful dispatch.
 	removed, remErr := q.removeByID(ackCtx, processingQ, msg.ID)
 	if remErr != nil {
 		q.logger.Error("failed to remove message from processing queue",
-			"queue", queue,
-			"msg_id", msg.ID,
-			"error", remErr,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
+			redact.Error(remErr),
 		)
 		return
 	}
 	if !removed {
-		q.metrics.ackNotFound.WithLabelValues(queue).Inc()
+		q.metrics.ackNotFound.WithLabelValues(queueMetricLabel(queue)).Inc()
 		q.logger.Warn("ack found no matching processing-list entry — possible corruption or concurrent reap",
-			"queue", queue,
-			"msg_id", msg.ID,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
 		)
 	}
+}
+
+func callHandler(ctx context.Context, handler Handler, msg Message) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("redisqueue: handler panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	return handler(ctx, msg.Clone())
 }
 
 // handleFailedMessage routes a failed message to dead-letter or retry.
@@ -240,19 +263,19 @@ func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, que
 func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, processingQ, data string, msg Message, handlerErr error) bool {
 	if apperror.IsPermanent(handlerErr) {
 		q.logger.Error("permanent error, dead-lettering message",
-			"queue", queue,
-			"msg_id", msg.ID,
-			"error", handlerErr,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
+			redact.Error(handlerErr),
 		)
 		return q.deadLetterAndRemove(ctx, queue, deadQ, processingQ, data, msg.ID)
 	}
 
 	if msg.Attempt >= q.maxRetries {
 		q.logger.Error("max retries exceeded, dead-lettering message",
-			"queue", queue,
-			"msg_id", msg.ID,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
 			"attempt", msg.Attempt,
-			"error", handlerErr,
+			redact.Error(handlerErr),
 		)
 		return q.deadLetterAndRemove(ctx, queue, deadQ, processingQ, data, msg.ID)
 	}
@@ -263,28 +286,22 @@ func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, processin
 	// script, eliminating the duplicate-processing window the previous
 	// non-atomic Go-side sequence had under cancelled-ctx races.
 	//
-	// Immutable — creates a new struct with incremented attempt count.
-	retryMsg := Message{
-		ID:        msg.ID,
-		Type:      msg.Type,
-		Payload:   msg.Payload,
-		Timestamp: msg.Timestamp,
-		Attempt:   msg.Attempt + 1,
-	}
+	retryMsg := msg.Clone()
+	retryMsg.Attempt++
 	retryData, marshalErr := json.Marshal(retryMsg)
 	if marshalErr != nil {
 		q.logger.Error("failed to marshal retry message, leaving in processing queue",
-			"msg_id", msg.ID,
-			"error", marshalErr,
+			redact.String("msg_id", msg.ID),
+			redact.Error(marshalErr),
 		)
 		return false
 	}
 	res, runErr := retryAndRemoveScript.Run(ctx, q.client, []string{queue, processingQ}, retryData, msg.ID).Result()
 	if runErr != nil && !errors.Is(runErr, goredis.Nil) {
 		q.logger.Error("retry-and-remove script failed",
-			"queue", queue,
-			"msg_id", msg.ID,
-			"error", runErr,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
+			redact.Error(runErr),
 		)
 		return false
 	}
@@ -293,11 +310,11 @@ func (q *Queue) handleFailedMessage(ctx context.Context, queue, deadQ, processin
 	// inside the same atomic script).
 	if n, ok := res.(int64); ok && n == 0 {
 		q.logger.Warn("retry: original not found in processing list (already reclaimed by peer reaper)",
-			"queue", queue,
-			"msg_id", msg.ID,
+			redact.String("queue", queue),
+			redact.String("msg_id", msg.ID),
 		)
 	}
-	q.metrics.messagesRetried.WithLabelValues(queue).Inc()
+	q.metrics.messagesRetried.WithLabelValues(queueMetricLabel(queue)).Inc()
 	return true
 }
 
@@ -315,19 +332,19 @@ func (q *Queue) deadLetterAndRemove(ctx context.Context, queue, deadQ, processin
 	).Result()
 	if err != nil && !errors.Is(err, goredis.Nil) {
 		q.logger.Error("failed to dead-letter message, leaving in processing queue",
-			"queue", queue,
-			"msg_id", msgID,
-			"error", err,
+			redact.String("queue", queue),
+			redact.String("msg_id", msgID),
+			redact.Error(err),
 		)
 		return false
 	}
 	if n, ok := res.(int64); ok && n == 0 {
 		q.logger.Warn("dead-letter: original not found in processing list (already reclaimed by peer reaper)",
-			"queue", queue,
-			"msg_id", msgID,
+			redact.String("queue", queue),
+			redact.String("msg_id", msgID),
 		)
 	}
-	q.metrics.messagesDeadLettered.WithLabelValues(queue).Inc()
+	q.metrics.messagesDeadLettered.WithLabelValues(queueMetricLabel(queue)).Inc()
 	return true
 }
 
@@ -372,8 +389,8 @@ func (q *Queue) refreshHeartbeat(ctx context.Context, heartbeatKey string) error
 			return nil
 		}
 		q.logger.Warn("failed to refresh heartbeat",
-			"consumer_id", q.consumerID,
-			"error", err,
+			redact.String("consumer_id", q.consumerID),
+			redact.Error(err),
 		)
 		return err
 	}
@@ -405,7 +422,7 @@ func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string) {
 				consecutiveFails++
 				if consecutiveFails >= maxConsecutiveHeartbeatFailures {
 					q.logger.Error("heartbeat loop giving up after consecutive failures; peer reaper will reclaim our processing list",
-						"consumer_id", q.consumerID,
+						redact.String("consumer_id", q.consumerID),
 						"failures", consecutiveFails,
 					)
 					return
@@ -472,8 +489,8 @@ func (q *Queue) reapDeadConsumers(
 		if err != nil {
 			if ctx.Err() == nil {
 				q.logger.Warn("processing-list scan failed",
-					"queue", queue,
-					"error", err,
+					redact.String("queue", queue),
+					redact.Error(err),
 				)
 			}
 			return
@@ -491,9 +508,9 @@ func (q *Queue) reapDeadConsumers(
 			if err != nil {
 				if ctx.Err() == nil {
 					q.logger.Warn("heartbeat existence check failed",
-						"queue", queue,
-						"dead_consumer_id", deadConsumerID,
-						"error", err,
+						redact.String("queue", queue),
+						redact.String("dead_consumer_id", deadConsumerID),
+						redact.Error(err),
 					)
 				}
 				continue
@@ -523,9 +540,9 @@ func (q *Queue) reclaimProcessingList(ctx context.Context, queue, deadProcessing
 		if err != nil {
 			if ctx.Err() == nil {
 				q.logger.Warn("dead-list LRange failed",
-					"queue", queue,
-					"dead_consumer_id", deadConsumerID,
-					"error", err,
+					redact.String("queue", queue),
+					redact.String("dead_consumer_id", deadConsumerID),
+					redact.Error(err),
 				)
 			}
 			return
@@ -534,17 +551,17 @@ func (q *Queue) reclaimProcessingList(ctx context.Context, queue, deadProcessing
 			// List is empty — delete it so it doesn't reappear in the next scan.
 			if err := q.client.Del(ctx, deadProcessingQ).Err(); err != nil && ctx.Err() == nil {
 				q.logger.Warn("dead-list cleanup Del failed",
-					"queue", queue,
-					"dead_consumer_id", deadConsumerID,
-					"error", err,
+					redact.String("queue", queue),
+					redact.String("dead_consumer_id", deadConsumerID),
+					redact.Error(err),
 				)
 			}
 			return
 		}
 
 		q.logger.Info("reclaiming entries from dead consumer's processing list",
-			"queue", queue,
-			"dead_consumer_id", deadConsumerID,
+			redact.String("queue", queue),
+			redact.String("dead_consumer_id", deadConsumerID),
 			"count", len(items),
 		)
 
@@ -560,18 +577,18 @@ func (q *Queue) reclaimProcessingList(ctx context.Context, queue, deadProcessing
 			if err := q.client.RPush(ctx, queue, data).Err(); err != nil {
 				if ctx.Err() == nil {
 					q.logger.Warn("RPush to main queue failed during reclaim",
-						"queue", queue,
-						"dead_consumer_id", deadConsumerID,
-						"error", err,
+						redact.String("queue", queue),
+						redact.String("dead_consumer_id", deadConsumerID),
+						redact.Error(err),
 					)
 				}
 				return
 			}
 			if err := q.client.LRem(ctx, deadProcessingQ, 1, data).Err(); err != nil && ctx.Err() == nil {
 				q.logger.Warn("LRem from dead list failed during reclaim",
-					"queue", queue,
-					"dead_consumer_id", deadConsumerID,
-					"error", err,
+					redact.String("queue", queue),
+					redact.String("dead_consumer_id", deadConsumerID),
+					redact.Error(err),
 				)
 				// Don't return — main queue already has the entry; continue
 				// so we don't re-RPUSH the same data infinitely.
@@ -609,8 +626,8 @@ func (q *Queue) recoverProcessing(ctx context.Context, processingQ, queue, deadQ
 		return 0, nil
 	}
 	q.logger.Info("recovering processing list",
-		"queue", queue,
-		"consumer_id", q.consumerID,
+		redact.String("queue", queue),
+		redact.String("consumer_id", q.consumerID),
 		"count", len(items),
 	)
 

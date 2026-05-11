@@ -10,6 +10,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -20,27 +21,92 @@ import (
 // independently. AMQP channels are cheap (multiplexed over a single
 // TCP connection) and designed for per-goroutine use.
 type Publisher struct {
-	conn   Connector
-	logger *slog.Logger
+	conn        Connector
+	logger      *slog.Logger
+	sizeLimiter messaging.MessageSizeLimiter
+}
+
+// PublisherOption configures a Publisher.
+type PublisherOption func(*Publisher)
+
+// WithMessageSizeLimiter replaces the publisher's message-size policy.
+func WithMessageSizeLimiter(l messaging.MessageSizeLimiter) PublisherOption {
+	return func(p *Publisher) { p.sizeLimiter = l }
+}
+
+// WithMaxMessageBytes sets the default serialized message-size limit.
+func WithMaxMessageBytes(maxBytes int) PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithDefaultMaxBytes(maxBytes)
+	}
+}
+
+// WithoutMaxMessageBytes disables the default size limit. Route-specific
+// limits configured with WithRouteMaxMessageBytes still apply.
+func WithoutMaxMessageBytes() PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithoutDefaultMaxBytes()
+	}
+}
+
+// WithRouteMaxMessageBytes overrides the message-size limit for one exact
+// exchange+routing-key pair. routingKey may be empty for fanout-style routes.
+func WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
+	}
 }
 
 // NewPublisher creates a Publisher bound to the given connection. Panics
 // if conn is nil — the publisher dereferences it on every channel open,
 // so accepting nil here would only defer the crash to the first publish.
 // A nil logger is normalized to [slog.Default].
-func NewPublisher(conn Connector, logger *slog.Logger) *Publisher {
+func NewPublisher(conn Connector, logger *slog.Logger, opts ...PublisherOption) *Publisher {
 	if conn == nil {
 		panic("amqpbackend: NewPublisher requires a non-nil Connector")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Publisher{conn: conn, logger: logger}
+	p := &Publisher{
+		conn:        conn,
+		logger:      logger,
+		sizeLimiter: messaging.DefaultMessageSizeLimiter(),
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("amqpbackend: Publisher option must not be nil")
+		}
+		opt(p)
+	}
+	return p
+}
+
+func (p *Publisher) ready() error {
+	if p == nil || p.conn == nil || p.logger == nil {
+		return messaging.ErrInvalidPublisher
+	}
+	return nil
 }
 
 // Publish serializes and sends a Message to the specified exchange with the given routing key.
 // It uses confirm mode to ensure the broker has acknowledged receipt of the message.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
+		return err
+	}
+	if err := messaging.ValidateMessage(msg); err != nil {
+		return err
+	}
+	if err := p.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
+		return err
+	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
@@ -77,10 +143,10 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 
 	p.logger.Debug("message published",
-		"id", msg.ID,
-		"type", msg.Type,
-		"exchange", exchange,
-		"routing_key", routingKey,
+		redact.String("id", msg.ID),
+		redact.String("type", msg.Type),
+		redact.String("exchange", exchange),
+		redact.String("routing_key", routingKey),
 	)
 	return nil
 }
@@ -89,6 +155,23 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 // Use this for dead-letter forwarding where the original body should be
 // preserved exactly (no re-serialization round-trip).
 func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string, body []byte, msgID string) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
+		return err
+	}
+	if maxBytes := p.sizeLimiter.LimitFor(exchange, routingKey); maxBytes > 0 && len(body) > maxBytes {
+		return &messaging.MessageTooLargeError{
+			Exchange:   exchange,
+			RoutingKey: routingKey,
+			Size:       len(body),
+			Limit:      maxBytes,
+		}
+	}
 	if err := p.publishConfirmed(ctx, exchange, routingKey, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
@@ -99,9 +182,9 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 	}
 
 	p.logger.Debug("raw message published",
-		"id", msgID,
-		"exchange", exchange,
-		"routing_key", routingKey,
+		redact.String("id", msgID),
+		redact.String("exchange", exchange),
+		redact.String("routing_key", routingKey),
 	)
 	return nil
 }
@@ -128,7 +211,7 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 	}
 	defer func() {
 		if closeErr := ch.Close(); closeErr != nil {
-			p.logger.Debug("failed to close publisher channel", "error", closeErr)
+			p.logger.Debug("failed to close publisher channel", redact.Error(closeErr))
 		}
 	}()
 
@@ -153,16 +236,15 @@ func (p *Publisher) publishConfirmed(ctx context.Context, exchange, routingKey s
 		return fmt.Errorf("wait for confirm: %w", err)
 	}
 	if !acked {
-		return fmt.Errorf("message %s was nacked by broker", pub.MessageId)
+		return fmt.Errorf("message was nacked by broker")
 	}
 
 	// Non-blocking check: if the broker returned the message as unroutable,
 	// the amqp091-go reader has already delivered it to returnCh by the time
 	// the ack arrives.
 	select {
-	case ret := <-returnCh:
-		return fmt.Errorf("%w: id=%s exchange=%s routing_key=%s reply=%d %s",
-			ErrUnroutable, pub.MessageId, ret.Exchange, ret.RoutingKey, ret.ReplyCode, ret.ReplyText)
+	case <-returnCh:
+		return fmt.Errorf("%w: broker returned message as unroutable", ErrUnroutable)
 	default:
 		return nil
 	}

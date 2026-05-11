@@ -2,7 +2,11 @@
 // request using the wire format expected by
 // httpx/middleware/signedrequest.
 //
-//	client := &http.Client{Transport: sign.Wrap(http.DefaultTransport, secret, "prod-2026")}
+//	base := httpx.NewHTTPClient(10*time.Second, tlsConfig)
+//	client := &http.Client{
+//	    Transport: sign.Wrap(base.Transport, secret, "prod-2026"),
+//	    Timeout:   base.Timeout,
+//	}
 //	resp, err := client.Post(url, "application/json", body)
 //
 // The wrapper reads the request body, computes a SHA-256 hash, signs
@@ -14,6 +18,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +28,7 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
+	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
 
@@ -30,6 +36,13 @@ import (
 // crypto/signing. Sub-32-byte secrets do not provide the security HMAC-SHA256
 // is designed for and are rejected at construction.
 const minSecretLen = 32
+
+// keyIDMaxLen mirrors the verifier-side cap for X-Signature-Key-Id.
+const keyIDMaxLen = 256
+
+// ErrInvalidRequest is returned when the signing transport is asked
+// to sign a structurally invalid HTTP request.
+var ErrInvalidRequest = errors.New("sign: invalid request")
 
 // Option configures the [Wrap] RoundTripper.
 type Option func(*config)
@@ -39,7 +52,29 @@ type config struct {
 	includeHeaders []string
 	bodyMaxSize    int64
 	now            func() time.Time
-	nonceFn        func() string
+	nonceFn        func() (string, error)
+}
+
+var nonceRandReader io.Reader = rand.Reader
+
+type safeCauseError struct {
+	msg   string
+	cause error
+}
+
+func (e safeCauseError) Error() string {
+	return e.msg
+}
+
+func (e safeCauseError) Unwrap() error {
+	return e.cause
+}
+
+func safeWrap(msg string, cause error) error {
+	if cause == nil {
+		return errors.New(msg)
+	}
+	return safeCauseError{msg: msg, cause: cause}
 }
 
 // WithIncludeHeaders pins additional headers into the canonical
@@ -52,15 +87,15 @@ type config struct {
 // here would silently produce a signature profile no production
 // verifier accepts.
 func WithIncludeHeaders(names ...string) Option {
+	canonical := make([]string, 0, len(names))
 	for _, n := range names {
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic(fmt.Sprintf("sign: WithIncludeHeaders requires a valid HTTP header field name (got %q)", n))
+			panic("sign: WithIncludeHeaders requires a valid HTTP header field name")
 		}
+		canonical = append(canonical, strings.ToLower(n))
 	}
 	return func(c *config) {
-		for _, n := range names {
-			c.includeHeaders = append(c.includeHeaders, strings.ToLower(n))
-		}
+		c.includeHeaders = append(c.includeHeaders, canonical...)
 	}
 }
 
@@ -95,7 +130,11 @@ func WithNonceFn(fn func() string) Option {
 	if fn == nil {
 		panic("sign: WithNonceFn requires a non-nil nonce generator")
 	}
-	return func(c *config) { c.nonceFn = fn }
+	return func(c *config) {
+		c.nonceFn = func() (string, error) {
+			return fn(), nil
+		}
+	}
 }
 
 // Wrap returns an http.RoundTripper that adds the kit's signing
@@ -106,13 +145,13 @@ func WithNonceFn(fn func() string) Option {
 // resolver.
 func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) http.RoundTripper {
 	if base == nil {
-		base = http.DefaultTransport
+		base = transportdefaults.New(nil, 0, "httpx/sign: Wrap")
 	}
 	if len(secret) < minSecretLen {
-		panic(fmt.Sprintf("sign: secret must be at least %d bytes for HMAC-SHA256", minSecretLen))
+		panic("sign: secret is too short for HMAC-SHA256")
 	}
-	if keyID == "" {
-		panic("sign: keyID must not be empty")
+	if err := validateKeyID(keyID); err != nil {
+		panic("sign: keyID is invalid")
 	}
 	cfg := config{
 		keyID:       keyID,
@@ -121,9 +160,31 @@ func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) h
 		nonceFn:     defaultNonce,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("sign: Wrap option must not be nil")
+		}
 		o(&cfg)
 	}
 	return &transport{base: base, secret: append([]byte(nil), secret...), cfg: cfg}
+}
+
+func validateKeyID(keyID string) error {
+	if keyID == "" {
+		return fmt.Errorf("sign: keyID must not be empty")
+	}
+	if len(keyID) > keyIDMaxLen {
+		return fmt.Errorf("sign: keyID exceeds maximum length")
+	}
+	if !httpguts.ValidHeaderFieldValue(keyID) {
+		return fmt.Errorf("sign: keyID contains invalid header characters")
+	}
+	if strings.TrimSpace(keyID) != keyID {
+		return fmt.Errorf("sign: keyID must not contain surrounding whitespace")
+	}
+	if strings.Contains(keyID, ",") {
+		return fmt.Errorf("sign: keyID must not contain commas")
+	}
+	return nil
 }
 
 type transport struct {
@@ -133,6 +194,9 @@ type transport struct {
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := validateRequest(req); err != nil {
+		return nil, err
+	}
 	// FR-023 [HIGH]: http.Request.Clone shares the Body field with the
 	// source request, so reading clone.Body drains req.Body too.
 	// Outer retry/auth middleware that re-reads the original request
@@ -149,6 +213,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	clone := req.Clone(req.Context())
+	if clone.Header == nil {
+		clone.Header = make(http.Header)
+	}
 	if body != nil {
 		clone.Body = io.NopCloser(bytes.NewReader(body))
 		clone.ContentLength = int64(len(body))
@@ -158,16 +225,48 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	ts := strconv.FormatInt(t.cfg.now().UTC().Unix(), 10)
-	nonce := t.cfg.nonceFn()
+	nonce, err := t.cfg.nonceFn()
+	if err != nil {
+		return nil, err
+	}
 
 	clone.Header.Set(signedrequest.HeaderTimestamp, ts)
 	clone.Header.Set(signedrequest.HeaderNonce, nonce)
 	clone.Header.Set(signedrequest.HeaderKeyID, t.cfg.keyID)
 
-	sig := signedrequest.SignCanonical(t.secret, clone, ts, nonce, body, t.cfg.includeHeaders)
+	sig, err := signedrequest.SignCanonical(t.secret, clone, ts, nonce, body, t.cfg.includeHeaders)
+	if err != nil {
+		return nil, err
+	}
 	clone.Header.Set(signedrequest.HeaderSignature, sig)
 
 	return t.base.RoundTrip(clone)
+}
+
+func validateRequest(req *http.Request) error {
+	if req == nil {
+		return fmt.Errorf("%w: nil request", ErrInvalidRequest)
+	}
+	if req.URL == nil {
+		return fmt.Errorf("%w: nil URL", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHeaderFieldName(req.Method) {
+		return fmt.Errorf("%w: invalid method", ErrInvalidRequest)
+	}
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	if host == "" {
+		return fmt.Errorf("%w: empty host", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHostHeader(host) {
+		return fmt.Errorf("%w: invalid host", ErrInvalidRequest)
+	}
+	if strings.ContainsAny(req.URL.RequestURI(), "\r\n") {
+		return fmt.Errorf("%w: request URI contains CR/LF", ErrInvalidRequest)
+	}
+	return nil
 }
 
 // bufferBody drains the request body into memory (up to max bytes) and
@@ -186,26 +285,22 @@ func bufferBody(req *http.Request, max int64) ([]byte, error) {
 	buf, err := io.ReadAll(io.LimitReader(req.Body, max+1))
 	closeErr := req.Body.Close()
 	if err != nil {
-		return nil, fmt.Errorf("sign: read request body: %w", err)
+		return nil, safeWrap("sign: read request body failed", err)
 	}
 	if closeErr != nil {
-		return nil, fmt.Errorf("sign: close request body: %w", closeErr)
+		return nil, safeWrap("sign: close request body failed", closeErr)
 	}
 	if int64(len(buf)) > max {
-		return nil, fmt.Errorf("sign: body exceeds maximum %d bytes", max)
+		return nil, errors.New("sign: body exceeds maximum size")
 	}
 	return buf, nil
 }
 
-// defaultNonce returns 16 random bytes base64-encoded. Panics if
-// crypto/rand fails — on a healthy Linux system this never happens, but
-// silently falling back to all-zero bytes would defeat replay
-// protection (every request would carry the same nonce). Better to
-// crash than to ship a forgeable signature.
-func defaultNonce() string {
+// defaultNonce returns 16 random bytes base64-encoded.
+func defaultNonce() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("sign: crypto/rand failed: %v", err))
+	if _, err := io.ReadFull(nonceRandReader, b[:]); err != nil {
+		return "", fmt.Errorf("sign: generate nonce: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(b[:])
+	return base64.StdEncoding.EncodeToString(b[:]), nil
 }

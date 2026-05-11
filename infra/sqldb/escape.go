@@ -15,7 +15,7 @@ var safeColumnName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-z
 // column names, never user input.
 func ValidateColumn(name string) {
 	if !safeColumnName.MatchString(name) {
-		panic("database: unsafe column name: " + name)
+		panic("database: unsafe column name")
 	}
 }
 

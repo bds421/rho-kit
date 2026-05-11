@@ -81,12 +81,13 @@ func TestGenerateSchema_NestedStruct(t *testing.T) {
 }
 
 func TestGenerateSchema_RejectsCycles(t *testing.T) {
-	type cyclic struct {
-		Self *cyclic `json:"self"`
+	type secretTokenCyclic struct {
+		Self *secretTokenCyclic `json:"self"`
 	}
-	_, err := mcp.GenerateSchema(reflect.TypeOf(cyclic{}))
+	_, err := mcp.GenerateSchema(reflect.TypeOf(secretTokenCyclic{}))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, mcp.ErrCyclicSchema), "expected ErrCyclicSchema, got %v", err)
+	assert.NotContains(t, err.Error(), "secretTokenCyclic")
 }
 
 func TestGenerateSchema_RejectsCycles_NestedSlice(t *testing.T) {
@@ -96,6 +97,43 @@ func TestGenerateSchema_RejectsCycles_NestedSlice(t *testing.T) {
 	_, err := mcp.GenerateSchema(reflect.TypeOf(tree{}))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, mcp.ErrCyclicSchema))
+}
+
+func TestGenerateSchema_RejectsCycles_RecursiveSliceType(t *testing.T) {
+	type secretTokenRecursiveSlice []secretTokenRecursiveSlice
+	_, err := mcp.GenerateSchema(reflect.TypeOf(secretTokenRecursiveSlice{}))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mcp.ErrCyclicSchema))
+	assert.NotContains(t, err.Error(), "secretTokenRecursiveSlice")
+}
+
+func TestGenerateSchema_RejectsCycles_RecursiveMapType(t *testing.T) {
+	type secretTokenRecursiveMap map[string]secretTokenRecursiveMap
+	_, err := mcp.GenerateSchema(reflect.TypeOf(secretTokenRecursiveMap{}))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mcp.ErrCyclicSchema))
+	assert.NotContains(t, err.Error(), "secretTokenRecursiveMap")
+}
+
+func TestGenerateSchema_RejectsUnsupportedTypesWithoutReflectingType(t *testing.T) {
+	type secretTokenUnsupported struct {
+		C chan int `json:"c"`
+	}
+	_, err := mcp.GenerateSchema(reflect.TypeOf(secretTokenUnsupported{}))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mcp.ErrUnsupportedType))
+	assert.NotContains(t, err.Error(), "secretTokenUnsupported")
+	assert.NotContains(t, err.Error(), "chan")
+}
+
+func TestGenerateSchema_RejectsNonStringMapKeyWithoutReflectingType(t *testing.T) {
+	type input struct {
+		Lookup map[int]string `json:"lookup"`
+	}
+	_, err := mcp.GenerateSchema(reflect.TypeOf(input{}))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mcp.ErrUnsupportedType))
+	assert.NotContains(t, err.Error(), "int")
 }
 
 func TestGenerateSchema_OptionalPointer(t *testing.T) {

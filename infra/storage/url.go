@@ -6,9 +6,10 @@ import "context"
 // public (non-expiring) URLs for stored objects. This is meaningful for
 // public S3 buckets or CDN-fronted storage.
 //
-// Check capability via type assertion:
+// Check capability via [AsPublicURLer] so decorators with [Unwrapper] support
+// are handled consistently:
 //
-//	if u, ok := backend.(storage.PublicURLer); ok {
+//	if u, ok := storage.AsPublicURLer(backend); ok {
 //	    url, err := u.URL(ctx, "avatars/photo.jpg")
 //	}
 type PublicURLer interface {

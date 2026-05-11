@@ -21,11 +21,7 @@ func serviceErrorContext(r *http.Request) (ctx context.Context, method, path str
 	if r == nil {
 		return context.Background(), "", ""
 	}
-	p := ""
-	if r.URL != nil {
-		p = r.URL.Path
-	}
-	return r.Context(), r.Method, p
+	return r.Context(), r.Method, RequestPath(r)
 }
 
 // WriteServiceError maps service-layer error types to appropriate HTTP status codes
@@ -94,15 +90,7 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 			logattr.Method(method),
 			logattr.Path(path),
 		)
-		// OperationFailedError.Error() is sent to the client as-is.
-		// IMPORTANT: Callers must ensure the message is client-safe and does
-		// not contain internal details (hostnames, ports, stack traces).
-		// When in doubt, use a generic message like "operation failed".
-		msg := "internal error"
-		if opErr, ok := apperror.AsOperationFailed(err); ok && opErr.Error() != "" {
-			msg = opErr.Error()
-		}
-		WriteError(w, http.StatusInternalServerError, msg)
+		WriteError(w, http.StatusInternalServerError, "internal error")
 
 	default:
 		logger.Error("unhandled service error",
@@ -156,10 +144,7 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 // linkable type URIs).
 func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, opts ...problemdetails.Option) {
 	ctx, method, path := serviceErrorContext(r)
-	instance := ""
-	if r != nil && r.URL != nil {
-		instance = r.URL.RequestURI()
-	}
+	instance := serviceProblemInstance(r)
 	logErr := func(msg string) {
 		if logger == nil {
 			return
@@ -194,4 +179,8 @@ func WriteServiceProblem(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 		problemdetails.WithInstance(instance),
 	}, opts...)
 	problemdetails.Write(w, problemdetails.FromError(err, allOpts...))
+}
+
+func serviceProblemInstance(r *http.Request) string {
+	return RequestPath(r)
 }

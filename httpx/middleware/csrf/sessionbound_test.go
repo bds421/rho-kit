@@ -74,6 +74,39 @@ func TestSessionBound_RejectsCrossSessionReplay(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec2.Code)
 }
 
+func TestSessionBound_RejectsDuplicateCSRFHeader(t *testing.T) {
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+	)
+	called := false
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Session", "alice")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	cookies := rec.Result().Cookies()
+	require.Len(t, cookies, 1)
+	token := cookies[0].Value
+	called = false
+
+	post := httptest.NewRequest(http.MethodPost, "/", nil)
+	post.Header.Set("X-Session", "alice")
+	post.AddCookie(cookies[0])
+	post.Header.Add(defaultHeaderName, token)
+	post.Header.Add(defaultHeaderName, token)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, post)
+
+	assert.Equal(t, http.StatusForbidden, rec2.Code)
+	assert.False(t, called)
+}
+
 func TestSessionBound_RejectsTamperedToken(t *testing.T) {
 	mw := New(
 		WithSecret(testSecret()),
@@ -134,4 +167,21 @@ func TestSessionBound_MissingSessionRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, post)
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, rec.Header().Values("Set-Cookie"))
+}
+
+func TestSessionBound_InvalidSessionRejectedBeforeIssuingCookie(t *testing.T) {
+	mw := New(
+		WithSecret(testSecret()),
+		WithSessionExtractor(sessionFromHeader("X-Session")),
+	)
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Session", "alice\nadmin")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, rec.Header().Values("Set-Cookie"))
 }

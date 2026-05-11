@@ -20,10 +20,16 @@ package tenant
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
+	"golang.org/x/net/http/httpguts"
 )
 
 // Extractor pulls a tenant ID from a request.
@@ -43,17 +49,20 @@ import (
 type Extractor func(*http.Request) (coretenant.ID, error)
 
 // HeaderExtractor returns an Extractor that reads `header` from the
-// request and validates the value through [coretenant.NewID]. Invalid
-// values cause the middleware to respond with 400; missing/empty
-// values are reported as absent and handled per [WithRequired].
+// request and validates the value through [coretenant.NewID]. Invalid,
+// empty, or duplicated values cause the middleware to respond with 400;
+// only a fully absent header is handled per [WithRequired].
 func HeaderExtractor(header string) Extractor {
-	if header == "" {
-		panic("tenant: HeaderExtractor header must not be empty")
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("tenant: HeaderExtractor header must be a valid non-empty header name")
 	}
 	return func(r *http.Request) (coretenant.ID, error) {
-		v := r.Header.Get(header)
-		if v == "" {
+		v, present, ok := headerutil.SingletonToken(r.Header, header)
+		if !present {
 			return "", nil
+		}
+		if !ok {
+			return "", fmt.Errorf("%w: header must be a singleton token", coretenant.ErrInvalid)
 		}
 		id, err := coretenant.NewID(v)
 		if err != nil {
@@ -74,6 +83,9 @@ type config struct {
 
 // WithExtractor overrides the default header extractor.
 func WithExtractor(e Extractor) Option {
+	if e == nil {
+		panic("tenant: WithExtractor requires a non-nil extractor")
+	}
 	return func(c *config) { c.extractor = e }
 }
 
@@ -112,6 +124,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		required:  true,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("tenant: option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.extractor == nil {
@@ -119,20 +134,24 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, err := cfg.extractor(r)
+			id, err := safeExtractTenant(cfg.extractor, r)
 			if err != nil {
+				if errors.Is(err, errExtractorPanicked) {
+					httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
 				// Present-but-invalid tenant ID. Reject with 400 so
 				// downstream cache/idempotency/log/metric keys never
-				// see malformed tenant material. Surface ErrInvalid
-				// detail so operators get an actionable message.
-				if errors.Is(err, coretenant.ErrInvalid) {
-					httpx.WriteError(w, http.StatusBadRequest, "tenant: "+err.Error())
-				} else {
-					httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
-				}
+				// see malformed tenant material, without reflecting
+				// validator internals back to the caller.
+				httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
 				return
 			}
 			if !id.IsZero() {
+				if err := coretenant.ValidateID(id.String()); err != nil {
+					httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
+					return
+				}
 				r = r.WithContext(coretenant.WithID(r.Context(), id))
 				next.ServeHTTP(w, r)
 				return
@@ -142,10 +161,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				case http.MethodGet, http.MethodHead, http.MethodOptions:
 					// Explicit opt-out: pre-auth GET/HEAD/OPTIONS
 					// short-circuit through with no tenant on ctx.
-					// Downstream tenant-keyed middleware (budget,
-					// cache) MUST treat absent tenant as a bypass to
-					// stay safe — see httpx/middleware/budget for the
-					// reference behavior.
+					// Downstream tenant-keyed middleware decides its
+					// own missing-key policy; the budget middleware
+					// fails closed by default.
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -157,4 +175,19 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+var errExtractorPanicked = errors.New("tenant: extractor panicked")
+
+func safeExtractTenant(extractor Extractor, r *http.Request) (id coretenant.ID, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("tenant: extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			id, err = "", errExtractorPanicked
+		}
+	}()
+	return extractor(r)
 }

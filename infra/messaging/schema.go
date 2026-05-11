@@ -2,10 +2,8 @@ package messaging
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -73,7 +71,7 @@ func (r *InMemorySchemaRegistry) Register(msgType string, version SchemaVersion,
 	// Compile the JSON schema at registration time (fail-fast).
 	compiled, err := compileJSONSchema(msgType, version, schema)
 	if err != nil {
-		return fmt.Errorf("compile schema for %s v%d: %w", msgType, version, err)
+		return fmt.Errorf("compile schema: %w", err)
 	}
 
 	key := schemaKey{msgType: msgType, version: version}
@@ -82,7 +80,7 @@ func (r *InMemorySchemaRegistry) Register(msgType string, version SchemaVersion,
 	defer r.mu.Unlock()
 
 	if _, exists := r.schemas[key]; exists {
-		return fmt.Errorf("schema already registered for %s v%d", msgType, version)
+		return fmt.Errorf("schema already registered")
 	}
 
 	// Store a copy to prevent external mutation.
@@ -103,7 +101,7 @@ func (r *InMemorySchemaRegistry) Lookup(msgType string, version SchemaVersion) (
 
 	entry, ok := r.schemas[key]
 	if !ok {
-		return nil, fmt.Errorf("no schema found for %s v%d", msgType, version)
+		return nil, fmt.Errorf("no schema found")
 	}
 
 	// Return a copy to prevent external mutation.
@@ -147,13 +145,13 @@ func (r *InMemorySchemaRegistry) ValidateMessage(msg Message) error {
 }
 
 // compileJSONSchema parses and compiles a JSON schema from raw bytes.
-func compileJSONSchema(msgType string, version SchemaVersion, raw json.RawMessage) (*jsonschema.Schema, error) {
+func compileJSONSchema(_ string, version SchemaVersion, raw json.RawMessage) (*jsonschema.Schema, error) {
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	resourceURL := fmt.Sprintf("schema://%s/v%d", msgType, version)
+	resourceURL := fmt.Sprintf("schema://message/v%d", version)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
 		return nil, fmt.Errorf("add resource: %w", err)
@@ -179,27 +177,5 @@ func validatePayload(schema *jsonschema.Schema, payload json.RawMessage) error {
 		return nil
 	}
 
-	return fmt.Errorf("schema validation failed: %s", formatValidationError(err))
-}
-
-// formatValidationError extracts a human-readable message from a validation error.
-func formatValidationError(err error) string {
-	var ve *jsonschema.ValidationError
-	if !errors.As(err, &ve) {
-		return err.Error()
-	}
-
-	output := ve.BasicOutput()
-	msgs := make([]string, 0, len(output.Errors))
-	for _, unit := range output.Errors {
-		if unit.Error != nil {
-			msgs = append(msgs, unit.Error.String())
-		}
-	}
-
-	if len(msgs) == 0 {
-		return err.Error()
-	}
-
-	return strings.Join(msgs, "; ")
+	return fmt.Errorf("schema validation failed")
 }

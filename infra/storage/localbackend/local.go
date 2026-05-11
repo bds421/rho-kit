@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -27,8 +28,9 @@ type Option func(*LocalBackend)
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
+	copied := storage.CloneValidators(validators...)
 	return func(b *LocalBackend) {
-		b.validators = append(b.validators, validators...)
+		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
@@ -38,11 +40,22 @@ func New(dir string, opts ...Option) (*LocalBackend, error) {
 	if dir == "" {
 		panic("localbackend: root directory must not be empty")
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, fmt.Errorf("localbackend: create root dir: %w", err)
+	absRoot, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, localPathError("resolve root dir")
 	}
-	b := &LocalBackend{root: dir}
+	if err := os.MkdirAll(absRoot, 0o750); err != nil {
+		return nil, localFileError("create root dir", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, localFileError("resolve root symlinks", err)
+	}
+	b := &LocalBackend{root: realRoot}
 	for _, o := range opts {
+		if o == nil {
+			panic("localbackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b, nil
@@ -50,52 +63,67 @@ func New(dir string, opts ...Option) (*LocalBackend, error) {
 
 // Put writes content from r to <root>/<key>. Uses atomic write via temp file
 // and rename to prevent partial writes on crash.
-func (b *LocalBackend) Put(_ context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *LocalBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
 		return err
 	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return err
+	}
 
-	path := b.keyPath(key)
+	path, err := b.keyPath(key)
+	if err != nil {
+		return err
+	}
+	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("localbackend: create dirs for %q: %w", key, err)
+		return localFileError("create dirs", err)
+	}
+	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("localbackend: unsafe parent: %w", err)
 	}
 
 	// Atomic write: write to temp file, then rename.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("localbackend: create temp file for %q: %w", key, err)
+		return localFileError("create temp file", err)
 	}
 	tmpPath := tmp.Name()
 
 	if _, err := io.Copy(tmp, validated); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: write %q: %w", key, err)
+		return localFileError("write object", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: sync %q: %w", key, err)
+		return localFileError("sync object", err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: close %q: %w", key, err)
+		return localFileError("close object", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: rename %q: %w", key, err)
+		return localFileError("rename object", err)
 	}
 	// rename(2) on Linux is durable across crashes only if the containing
 	// directory is also fsynced. Without this step a crash after rename but
 	// before the directory entry is flushed can leave the file with stale or
 	// zero contents — silent data loss for an operation that just returned ok.
 	if err := fsyncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("localbackend: fsync dir for %q: %w", key, err)
+		return localFileError("fsync object dir", err)
 	}
 
 	return nil
@@ -122,12 +150,20 @@ func (b *LocalBackend) Get(_ context.Context, key string) (io.ReadCloser, storag
 		return nil, storage.ObjectMeta{}, err
 	}
 
-	f, err := os.Open(b.keyPath(key))
+	path, err := b.existingRegularPath(key)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get %q: %w", key, storage.ErrObjectNotFound)
+			return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get: %w", storage.ErrObjectNotFound)
 		}
-		return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get %q: %w", key, err)
+		return nil, storage.ObjectMeta{}, err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, storage.ObjectMeta{}, fmt.Errorf("localbackend: get: %w", storage.ErrObjectNotFound)
+		}
+		return nil, storage.ObjectMeta{}, localFileError("get object", err)
 	}
 
 	meta := storage.ObjectMeta{}
@@ -144,12 +180,20 @@ func (b *LocalBackend) Delete(_ context.Context, key string) error {
 		return err
 	}
 
-	err := os.Remove(b.keyPath(key))
+	path, err := b.keyPath(key)
+	if err != nil {
+		return err
+	}
+	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+	}
+
+	err = os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("localbackend: delete %q: %w", key, err)
+		return localFileError("delete object", err)
 	}
 	return nil
 }
@@ -160,18 +204,121 @@ func (b *LocalBackend) Exists(_ context.Context, key string) (bool, error) {
 		return false, err
 	}
 
-	_, err := os.Stat(b.keyPath(key))
+	path, err := b.existingRegularPath(key)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("localbackend: exists %q: %w", key, err)
+		return false, err
+	}
+
+	_, err = os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, localFileError("inspect object", err)
 	}
 	return true, nil
 }
 
-// keyPath returns the absolute filesystem path for the given key.
-// filepath.Join cleans ".." traversal attempts.
-func (b *LocalBackend) keyPath(key string) string {
-	return filepath.Join(b.root, filepath.FromSlash(key))
+func (b *LocalBackend) keyPath(key string) (string, error) {
+	path := filepath.Join(b.root, filepath.FromSlash(key))
+	if err := b.ensureContained(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (b *LocalBackend) existingRegularPath(key string) (string, error) {
+	path, err := b.keyPath(key)
+	if err != nil {
+		return "", err
+	}
+	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
+		return "", fmt.Errorf("localbackend: unsafe parent: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", localFileError("inspect object", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("localbackend: refusing symlink object")
+	}
+	return path, nil
+}
+
+func (b *LocalBackend) rejectSymlinkPath(path string) error {
+	if err := b.ensureContained(path); err != nil {
+		return err
+	}
+	rootInfo, err := os.Lstat(b.root)
+	if err != nil {
+		return localFileError("inspect root", err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("root directory is a symlink")
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("root path is not a directory")
+	}
+	rel, err := filepath.Rel(b.root, path)
+	if err != nil {
+		return localPathError("resolve path")
+	}
+	if rel == "." {
+		return nil
+	}
+	cur := b.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return localFileError("inspect path", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component is a symlink")
+		}
+	}
+	return nil
+}
+
+func (b *LocalBackend) ensureContained(path string) error {
+	rel, err := filepath.Rel(b.root, path)
+	if err != nil {
+		return localPathError("resolve path")
+	}
+	if rel == "." {
+		return nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path escapes root directory")
+	}
+	return nil
+}
+
+func localFileError(op string, err error) error {
+	switch {
+	case errors.Is(err, storage.ErrValidation):
+		return fmt.Errorf("localbackend: %w", err)
+	case errors.Is(err, os.ErrPermission):
+		return fmt.Errorf("localbackend: %s: %w", op, os.ErrPermission)
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("localbackend: %s: %w", op, os.ErrNotExist)
+	case errors.Is(err, os.ErrExist):
+		return fmt.Errorf("localbackend: %s: %w", op, os.ErrExist)
+	case errors.Is(err, os.ErrClosed):
+		return fmt.Errorf("localbackend: %s: %w", op, os.ErrClosed)
+	case errors.Is(err, os.ErrInvalid):
+		return fmt.Errorf("localbackend: %s: %w", op, os.ErrInvalid)
+	default:
+		return fmt.Errorf("localbackend: %s failed", op)
+	}
+}
+
+func localPathError(op string) error {
+	return fmt.Errorf("localbackend: %s failed", op)
 }

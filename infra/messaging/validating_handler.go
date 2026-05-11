@@ -34,8 +34,7 @@ func NewValidatingHandler(registry *InMemorySchemaRegistry, next Handler) Handle
 			SchemaVersion: d.SchemaVersion,
 		}
 		if err := registry.ValidateMessage(validationMsg); err != nil {
-			return fmt.Errorf("message %s (type %s, version %d): %w",
-				msg.ID, msg.Type, d.SchemaVersion, err)
+			return fmt.Errorf("message validation failed: %w", err)
 		}
 		return next(ctx, d)
 	}

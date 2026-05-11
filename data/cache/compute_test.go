@@ -1,8 +1,11 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +24,89 @@ func newTestBackend(t *testing.T) *MemoryCache {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mc.Close() })
 	return mc
+}
+
+func TestComputeOptions_PanicOnInvalidDurations(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithStaleTTL negative":        func() { WithStaleTTL(-time.Second) },
+		"WithRefreshTimeout zero":      func() { WithRefreshTimeout(0) },
+		"WithRefreshTimeout negative":  func() { WithRefreshTimeout(-time.Second) },
+		"WithComputeTimeout zero":      func() { WithComputeTimeout(0) },
+		"WithComputeTimeout negative":  func() { WithComputeTimeout(-time.Second) },
+		"WithMetricsRegisterer nil":    func() { WithComputeMetricsRegisterer(nil) },
+		"WithLogger nil":               func() { WithComputeLogger(nil) },
+		"WithComputeName empty":        func() { WithComputeName("") },
+		"WithComputeName newline":      func() { WithComputeName("bad\nname") },
+		"WithComputeName invalid utf8": func() { WithComputeName(string([]byte{0xff})) },
+		"WithComputeName too long":     func() { WithComputeName(strings.Repeat("a", 257)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, fn)
+		})
+	}
+}
+
+func TestNewComputeCache_RejectsNilOption(t *testing.T) {
+	backend := newTestBackend(t)
+
+	_, err := NewComputeCache[string](backend, "nilopt:", nil)
+
+	assert.Error(t, err)
+}
+
+func TestComputeCache_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	fn := func(context.Context) (string, time.Duration, error) {
+		return "value", time.Minute, nil
+	}
+
+	for name, cc := range map[string]*ComputeCache[string]{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := cc.GetOrCompute(ctx, "key", fn)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = cc.Close()
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			assert.NotPanics(t, func() { cc.Wait() })
+		})
+	}
+}
+
+func TestComputeCache_NilComputeFuncReturnsError(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "nilfn:")
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	_, err = cc.GetOrCompute(context.Background(), "key", nil)
+	assert.ErrorIs(t, err, ErrInvalidComputeFunc)
+}
+
+func TestComputeCache_BackendSetLogRedactsKeyAndError(t *testing.T) {
+	backend := &faultyBackend{Cache: newTestBackend(t)}
+	backend.setErr.Store(errors.New("redis rejected tenant-secret-key"))
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+
+	cc, err := NewComputeCache[string](backend, "tenant-prefix:", WithComputeLogger(logger))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cc.Close() })
+
+	got, err := cc.GetOrCompute(context.Background(), "tenant-secret-key", func(context.Context) (string, time.Duration, error) {
+		return "value", time.Minute, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "value", got)
+
+	out := buf.String()
+	assert.Contains(t, out, `"key"`)
+	assert.NotContains(t, out, "tenant-prefix")
+	assert.NotContains(t, out, "tenant-secret-key")
+	assert.NotContains(t, out, "redis rejected")
 }
 
 // faultyBackend wraps a Cache and injects errors for testing.
@@ -199,6 +285,53 @@ func TestComputeCache_ErrorNotCached(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load())
 }
 
+func TestComputeCache_ComputePanicReturnsError(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "panic:")
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	_, err = cc.GetOrCompute(context.Background(), "boom", func(context.Context) (string, time.Duration, error) {
+		panic("compute exploded")
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ComputeFunc panicked")
+	assert.Contains(t, err.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, err.Error(), "compute exploded")
+}
+
+func TestComputeCache_BackgroundRefreshPanicDoesNotCrash(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "bgpanic:",
+		WithStaleTTL(time.Minute),
+		WithRefreshTimeout(time.Second),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	var calls atomic.Int32
+	fn := func(context.Context) (string, time.Duration, error) {
+		if calls.Add(1) == 1 {
+			return "v1", 20 * time.Millisecond, nil
+		}
+		panic("background refresh exploded")
+	}
+
+	val, err := cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+	assert.Equal(t, "v1", val)
+	backend.Sync()
+	time.Sleep(30 * time.Millisecond)
+
+	val, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+	assert.Equal(t, "v1", val)
+
+	cc.Wait()
+	assert.Equal(t, int32(2), calls.Load())
+}
+
 func TestComputeCache_ContextCancellation(t *testing.T) {
 	// FR-048 [MED] contract: a cancelled caller returns ctx.Err()
 	// promptly instead of blocking behind a slow compute. The
@@ -332,6 +465,7 @@ func TestComputeCache_ZeroTTL_Rejected(t *testing.T) {
 	_, err = cc.GetOrCompute(context.Background(), "k", fn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-positive ttl")
+	assert.NotContains(t, err.Error(), "0s")
 }
 
 func TestComputeCache_NegativeTTL_Rejected(t *testing.T) {
@@ -347,6 +481,7 @@ func TestComputeCache_NegativeTTL_Rejected(t *testing.T) {
 	_, err = cc.GetOrCompute(context.Background(), "k", fn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-positive ttl")
+	assert.NotContains(t, err.Error(), "-1s")
 }
 
 func TestNewComputeCache_NilBackend(t *testing.T) {
@@ -363,14 +498,20 @@ func TestComputeCache_PrefixValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid characters")
 
+	_, err = NewComputeCache[string](backend, string([]byte{0xff, 0xfe}))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+
 	// Prefix too long (use 'a' bytes to avoid invalid char check).
-	longBytes := make([]byte, MaxKeyLen/2+1)
+	longBytes := make([]byte, MaxKeyPrefixLen+1)
 	for i := range longBytes {
 		longBytes[i] = 'a'
 	}
 	_, err = NewComputeCache[string](backend, string(longBytes))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
+	assert.NotContains(t, err.Error(), "512")
+	assert.NotContains(t, err.Error(), "513")
 }
 
 func TestComputeCache_KeyValidation(t *testing.T) {

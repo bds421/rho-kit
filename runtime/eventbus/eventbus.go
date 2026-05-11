@@ -12,7 +12,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // OnFullPolicy controls what async dispatch does when the worker pool queue
@@ -115,7 +117,7 @@ func WithOnFull(p OnFullPolicy) Option {
 	switch p {
 	case OnFullDrop, OnFullBlock, OnFullError:
 	default:
-		panic(fmt.Sprintf("eventbus: WithOnFull: unknown policy %d", int(p)))
+		panic("eventbus: WithOnFull: unknown policy")
 	}
 	return func(b *Bus) {
 		b.onFull = p
@@ -144,6 +146,9 @@ func WithAsync() HandlerOption {
 // and error callbacks. Defaults to "anonymous".
 func WithName(name string) HandlerOption {
 	return func(c *handlerConfig) {
+		if err := promutil.ValidateStaticLabelValue("handler name", name); err != nil {
+			panic("eventbus: invalid handler name")
+		}
 		c.name = name
 	}
 }
@@ -175,20 +180,20 @@ type poolConfig struct {
 // Bus dispatches domain events to registered handlers within a single process.
 // It is safe for concurrent use. Create one with [New].
 type Bus struct {
-	mu       sync.RWMutex
-	handlers map[string][]registeredHandler
-	logger   *slog.Logger
-	onError  func(ctx context.Context, eventName string, handlerName string, err error)
-	pool     *workerPool
-	poolCfg  *poolConfig // nil = no pool (backward compat)
-	onFull   OnFullPolicy
-	policySet      bool // FR-091: distinguishes "default" from "explicitly set to OnFullDrop"
-	unboundedAsync bool // FR-089: opts out of the default bounded worker pool
-	// defaultPoolCtx / Cancel control the auto-started default
-	// pool's lifecycle (FR-089). Stop() cancels the ctx.
-	defaultPoolCtx    context.Context
-	defaultPoolCancel context.CancelFunc
-	nextID   atomic.Uint64
+	mu              sync.RWMutex
+	handlers        map[string][]registeredHandler
+	logger          *slog.Logger
+	onError         func(ctx context.Context, eventName string, handlerName string, err error)
+	pool            *workerPool
+	poolCfg         *poolConfig // nil = no pool (backward compat)
+	onFull          OnFullPolicy
+	policySet       bool // FR-091: distinguishes "default" from "explicitly set to OnFullDrop"
+	unboundedAsync  bool // FR-089: opts out of the default bounded worker pool
+	autoStartedPool bool // default pool workers were started by New.
+	nextID          atomic.Uint64
+	startMu         sync.Mutex
+	started         bool
+	stopped         bool
 }
 
 // New creates a [Bus]. The zero value is not usable; always use New.
@@ -210,6 +215,9 @@ func New(opts ...Option) *Bus {
 		logger:   slog.Default(),
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("eventbus: option must not be nil")
+		}
 		opt(b)
 	}
 	defaultPool := false
@@ -233,12 +241,8 @@ func New(opts ...Option) *Bus {
 			// working without manual Start. Explicitly-configured pools
 			// still require Start so submit-before-Start surfaces as an
 			// error per FR-090.
-			//
-			// Set started eagerly so submit() called immediately after
-			// New() does not race the goroutine that calls start().
-			b.pool.started.Store(true)
-			b.defaultPoolCtx, b.defaultPoolCancel = context.WithCancel(context.Background())
-			go b.pool.start(b.defaultPoolCtx)
+			b.pool.startWorkers()
+			b.autoStartedPool = true
 		}
 	}
 	return b
@@ -271,6 +275,9 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 
 	cfg := handlerConfig{name: "anonymous"}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("eventbus: handler option must not be nil")
+		}
 		opt(&cfg)
 	}
 
@@ -281,10 +288,13 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	// reads receiver fields. Instantiate a fresh value of the pointee so
 	// EventName runs against a non-nil receiver.
 	probe := Event(zero)
-	if expectedType.Kind() == reflect.Ptr {
+	if expectedType.Kind() == reflect.Pointer {
 		probe = reflect.New(expectedType.Elem()).Interface().(Event)
 	}
 	eventName := probe.EventName()
+	if err := promutil.ValidateStaticLabelValue("event name", eventName); err != nil {
+		panic("eventbus: invalid event name")
+	}
 
 	id := b.nextID.Add(1)
 	rh := registeredHandler{
@@ -296,8 +306,7 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 		fn: func(ctx context.Context, event any) error {
 			e, ok := event.(E)
 			if !ok {
-				return fmt.Errorf("eventbus: handler %q expects %v but got %T (duplicate EventName?)",
-					cfg.name, expectedType, event)
+				return fmt.Errorf("eventbus: handler received unexpected event type")
 			}
 			return handler(ctx, e)
 		},
@@ -398,6 +407,9 @@ func (b *Bus) maybeCompactLocked(eventName string) {
 // [WithAsync]) to guarantee delivery.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 	eventName := event.EventName()
+	if err := promutil.ValidateStaticLabelValue("event name", eventName); err != nil {
+		return fmt.Errorf("eventbus: invalid event name: %w", err)
+	}
 
 	// Performance note: the handler slice is copied on every Publish call.
 	// For very high publish rates (100K+/sec), consider replacing with
@@ -422,11 +434,11 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 		}
 		if h.async {
 			if err := b.dispatchAsync(ctx, eventName, h, event); err != nil {
-				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler %q: %w", h.name, err))
+				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
 			}
 		} else {
 			if err := callSync(ctx, h, event); err != nil {
-				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler %q: %w", h.name, err))
+				dispatchErrs = append(dispatchErrs, fmt.Errorf("handler failed: %w", err))
 			}
 		}
 	}
@@ -443,7 +455,7 @@ func Publish[E Event](b *Bus, ctx context.Context, event E) error {
 func callSync(ctx context.Context, h registeredHandler, event any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in sync handler: %v", r)
+			err = fmt.Errorf("panic in sync handler: %s", redact.PanicValue(r))
 		}
 	}()
 	return h.fn(ctx, event)
@@ -498,8 +510,27 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 // that drive Start directly (without a separate Stop call) do not leak
 // worker goroutines. Stop remains safe to call afterwards (it is idempotent).
 //
+// Returns an error if Start has already been called or Stop has already
+// permanently stopped the bus. Bus lifecycle is intentionally one-shot: a
+// second Start would race a different context against the shared worker pool.
+//
 // Implements lifecycle.Component.
 func (b *Bus) Start(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("eventbus: Start requires a non-nil context")
+	}
+	b.startMu.Lock()
+	if b.started {
+		b.startMu.Unlock()
+		return errors.New("eventbus: Bus already started")
+	}
+	if b.stopped {
+		b.startMu.Unlock()
+		return errors.New("eventbus: Bus already stopped")
+	}
+	b.started = true
+	b.startMu.Unlock()
+
 	if b.pool == nil {
 		<-ctx.Done()
 		return nil
@@ -509,7 +540,11 @@ func (b *Bus) Start(ctx context.Context) error {
 		slog.Int("workers", b.pool.workers),
 		slog.Int("buffer_size", cap(b.pool.queue)),
 	)
-	b.pool.start(ctx)
+	if b.autoStartedPool {
+		<-ctx.Done()
+	} else {
+		b.pool.start(ctx)
+	}
 	b.pool.stop()
 	return nil
 }
@@ -524,6 +559,13 @@ func (b *Bus) Start(ctx context.Context) error {
 //
 // Implements lifecycle.Component.
 func (b *Bus) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("eventbus: Stop requires a non-nil context")
+	}
+	b.startMu.Lock()
+	b.stopped = true
+	b.startMu.Unlock()
+
 	if b.pool == nil {
 		return nil
 	}
@@ -545,16 +587,14 @@ func (b *Bus) Stop(ctx context.Context) error {
 func (b *Bus) runAsync(ctx context.Context, eventName string, h registeredHandler, event any) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err := fmt.Errorf("panic: %v", rec)
+			err := fmt.Errorf("panic: %s", redact.PanicValue(rec))
 			b.logger.Error("async event handler panicked",
 				slog.String("event", eventName),
 				slog.String("handler", h.name),
-				slog.Any("panic", rec),
+				redact.Panic(rec),
 				slog.String("stack", string(debug.Stack())),
 			)
-			if b.onError != nil {
-				b.onError(ctx, eventName, h.name, err)
-			}
+			callOnError(b.logger, b.onError, ctx, eventName, h.name, err)
 		}
 	}()
 
@@ -564,8 +604,36 @@ func (b *Bus) runAsync(ctx context.Context, eventName string, h registeredHandle
 			slog.String("handler", h.name),
 			logattr.Error(err),
 		)
-		if b.onError != nil {
-			b.onError(ctx, eventName, h.name, err)
-		}
+		callOnError(b.logger, b.onError, ctx, eventName, h.name, err)
 	}
+}
+
+// callOnError invokes the optional async error hook while containing hook
+// panics. Handler panics/errors already represent a subscriber fault; a buggy
+// observability hook must not take down the worker goroutine or process.
+func callOnError(
+	logger *slog.Logger,
+	onError func(context.Context, string, string, error),
+	ctx context.Context,
+	eventName string,
+	handlerName string,
+	err error,
+) {
+	if onError == nil {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error("eventbus onError callback panicked",
+				slog.String("event", eventName),
+				slog.String("handler", handlerName),
+				redact.Panic(rec),
+				slog.String("stack", string(debug.Stack())),
+			)
+		}
+	}()
+	onError(ctx, eventName, handlerName, err)
 }

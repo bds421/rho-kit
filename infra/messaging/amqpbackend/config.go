@@ -54,17 +54,33 @@ func (c RabbitMQConfig) AMQPURL() string {
 }
 
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials
-// embedded in the AMQP URL.
+// or topology embedded in the AMQP URL.
 func (c RabbitMQConfig) LogValue() slog.Value {
-	resolved := c.AMQPURL()
-	if resolved == "" {
-		return slog.StringValue("[NOT CONFIGURED]")
+	urlValid, urlHostConfigured, urlUserConfigured, urlPasswordConfigured, urlVHostConfigured := amqpURLLogState(c.URL)
+	return slog.GroupValue(
+		slog.Bool("url_configured", c.URL != ""),
+		slog.Bool("url_valid", urlValid),
+		slog.Bool("host_configured", c.Host != "" || urlHostConfigured),
+		slog.Int("port", c.Port),
+		slog.Bool("user_configured", c.User != "" || urlUserConfigured),
+		slog.Bool("password_configured", c.Password != "" || urlPasswordConfigured),
+		slog.Bool("vhost_configured", c.VHost != "" || urlVHostConfigured),
+	)
+}
+
+func amqpURLLogState(rawURL string) (valid, hostConfigured, userConfigured, passwordConfigured, vhostConfigured bool) {
+	if rawURL == "" {
+		return true, false, false, false, false
 	}
-	u, err := url.Parse(resolved)
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		return slog.StringValue("[INVALID URL]")
+		return false, false, false, false, false
 	}
-	return slog.StringValue(u.Redacted())
+	passwordConfigured = false
+	if u.User != nil {
+		_, passwordConfigured = u.User.Password()
+	}
+	return true, u.Host != "", u.User != nil && u.User.Username() != "", passwordConfigured, u.EscapedPath() != ""
 }
 
 // RabbitMQFields holds RabbitMQ connection configuration.
@@ -148,17 +164,21 @@ func extractAMQPPassword(rawURL string) string {
 }
 
 // ValidateAMQPURL checks that rawURL is a non-empty, parseable URL with an
-// amqp or amqps scheme. name is used in error messages (e.g. "RABBITMQ_URL").
+// amqp or amqps scheme and a network host. name is used in error messages
+// (e.g. "RABBITMQ_URL").
 func ValidateAMQPURL(name, rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("%s is required", name)
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid %s: %w", name, err)
+		return fmt.Errorf("%s is invalid", name)
 	}
 	if u.Scheme != "amqp" && u.Scheme != "amqps" {
-		return fmt.Errorf("%s scheme must be amqp or amqps, got %q", name, u.Scheme)
+		return fmt.Errorf("%s scheme must be amqp or amqps", name)
+	}
+	if err := config.ValidateURLHost(name, u); err != nil {
+		return err
 	}
 	return nil
 }

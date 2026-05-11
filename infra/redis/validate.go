@@ -2,7 +2,8 @@ package redis
 
 import (
 	"fmt"
-	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -14,8 +15,9 @@ const (
 
 // ValidateName checks that a resource name (stream, queue, cache) is safe for
 // use as a Redis key and as a Prometheus metric label. This prevents:
-//   - Null bytes: can truncate C strings in Redis internals
-//   - Newlines/carriage returns: can break RESP protocol framing
+//   - Invalid UTF-8: corrupts logs and metric/debug output
+//   - Whitespace/control characters: can break logs, CLI tooling, protocol
+//     framing, or label readability
 //   - Empty names: always a programming error
 //   - Excessively long names: waste memory and indicate dynamic data in keys
 func ValidateName(name, kind string) error {
@@ -25,8 +27,20 @@ func ValidateName(name, kind string) error {
 	if len(name) > maxNameLen {
 		return fmt.Errorf("%s name exceeds maximum length of %d bytes", kind, maxNameLen)
 	}
-	if strings.ContainsAny(name, "\x00\n\r") {
-		return fmt.Errorf("%s name contains invalid characters (null byte, newline, or carriage return)", kind)
+	if containsInvalidNameRune(name) {
+		return fmt.Errorf("%s name contains invalid characters (whitespace or control characters)", kind)
 	}
 	return nil
+}
+
+func containsInvalidNameRune(name string) bool {
+	if !utf8.ValidString(name) {
+		return true
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }

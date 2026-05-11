@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     actor       VARCHAR(255) NOT NULL,
     action      VARCHAR(255) NOT NULL,
     resource    VARCHAR(500) NOT NULL DEFAULT '',
-    payload     JSONB,
+    payload     BYTEA,
     state       VARCHAR(20)  NOT NULL,
     decided_by  VARCHAR(255) NOT NULL DEFAULT '',
     -- TIMESTAMPTZ (not TIMESTAMP) so the round-trip preserves UTC

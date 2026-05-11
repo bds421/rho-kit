@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,18 @@ func newTestSecrets(t *testing.T) *actionlog.StaticSecrets {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	require.Len(t, key, 32)
 	return actionlog.NewStaticSecrets("k1", map[string][]byte{"k1": key})
+}
+
+func validStoreEntry(id, tenantID string, metadata map[string]any) actionlog.Entry {
+	return actionlog.Entry{
+		ID:             id,
+		TenantID:       tenantID,
+		Actor:          "agent",
+		Action:         "user.delete",
+		Outcome:        actionlog.OutcomeSuccess,
+		SignatureKeyID: "k1",
+		Metadata:       metadata,
+	}
 }
 
 func TestRoundTrip(t *testing.T) {
@@ -51,6 +64,7 @@ func TestAppend_RejectsDuplicateID(t *testing.T) {
 		TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
 	})
 	assert.ErrorIs(t, err, ErrDuplicateID)
+	assert.NotContains(t, strings.ToLower(err.Error()), "fixed-id")
 }
 
 func TestTamper_DetectedByLogger(t *testing.T) {
@@ -74,6 +88,90 @@ func TestTamper_DetectedByLogger(t *testing.T) {
 
 	_, err = logger.Get(context.Background(), written.ID)
 	assert.ErrorIs(t, err, actionlog.ErrSignatureInvalid)
+}
+
+func TestStore_CopiesMetadataOnPublicBoundaries(t *testing.T) {
+	store := New()
+	metadata := map[string]any{
+		"reason": "original",
+		"nested": map[string]any{"key": "value"},
+	}
+
+	written, err := store.AppendChained(context.Background(), "t", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+		return validStoreEntry("entry-1", "t", metadata), nil
+	})
+	require.NoError(t, err)
+
+	metadata["reason"] = "input-mutated"
+	metadata["nested"].(map[string]any)["key"] = "input-mutated"
+	written.Metadata["reason"] = "return-mutated"
+	written.Metadata["nested"].(map[string]any)["key"] = "return-mutated"
+
+	got, err := store.Get(context.Background(), "entry-1")
+	require.NoError(t, err)
+	assert.Equal(t, "original", got.Metadata["reason"])
+	assert.Equal(t, "value", got.Metadata["nested"].(map[string]any)["key"])
+
+	got.Metadata["reason"] = "get-mutated"
+	got.Metadata["nested"].(map[string]any)["key"] = "get-mutated"
+	gotAgain, err := store.Get(context.Background(), "entry-1")
+	require.NoError(t, err)
+	assert.Equal(t, "original", gotAgain.Metadata["reason"])
+	assert.Equal(t, "value", gotAgain.Metadata["nested"].(map[string]any)["key"])
+
+	listed, err := store.List(context.Background(), actionlog.Query{TenantID: "t"})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	listed[0].Metadata["reason"] = "list-mutated"
+	listed[0].Metadata["nested"].(map[string]any)["key"] = "list-mutated"
+	gotAgain, err = store.Get(context.Background(), "entry-1")
+	require.NoError(t, err)
+	assert.Equal(t, "original", gotAgain.Metadata["reason"])
+	assert.Equal(t, "value", gotAgain.Metadata["nested"].(map[string]any)["key"])
+}
+
+func TestStore_CopiesPreviousEntryPassedToBuild(t *testing.T) {
+	store := New()
+	_, err := store.AppendChained(context.Background(), "t", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+		entry := validStoreEntry("entry-1", "t", map[string]any{
+			"reason": "original",
+			"nested": map[string]any{"key": "value"},
+		})
+		entry.Seq = 1
+		return entry, nil
+	})
+	require.NoError(t, err)
+
+	_, err = store.AppendChained(context.Background(), "t", func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error) {
+		require.Equal(t, int64(1), prevSeq)
+		prev.Metadata["reason"] = "mutated-by-build"
+		prev.Metadata["nested"].(map[string]any)["key"] = "mutated-by-build"
+		entry := validStoreEntry("entry-2", "t", nil)
+		entry.Seq = 2
+		return entry, nil
+	})
+	require.NoError(t, err)
+
+	got, err := store.Get(context.Background(), "entry-1")
+	require.NoError(t, err)
+	assert.Equal(t, "original", got.Metadata["reason"])
+	assert.Equal(t, "value", got.Metadata["nested"].(map[string]any)["key"])
+}
+
+func TestStore_RejectsInvalidBuiltEntryBeforeClone(t *testing.T) {
+	store := New()
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+
+	assert.NotPanics(t, func() {
+		_, err := store.AppendChained(context.Background(), "t", func(actionlog.Entry, int64) (actionlog.Entry, error) {
+			return validStoreEntry("entry-1", "t", cyclic), nil
+		})
+		assert.ErrorIs(t, err, actionlog.ErrInvalidEntry)
+	})
+
+	_, err := store.Get(context.Background(), "entry-1")
+	assert.ErrorIs(t, err, actionlog.ErrNotFound)
 }
 
 func TestList_FiltersAndOrders(t *testing.T) {
@@ -122,6 +220,38 @@ func TestList_FiltersAndOrders(t *testing.T) {
 	assert.Len(t, limited, 1)
 }
 
+func TestStore_ListRejectsZeroQuery(t *testing.T) {
+	store := New()
+	logger := actionlog.New(store, newTestSecrets(t))
+	_, err := logger.Append(context.Background(), actionlog.Entry{
+		TenantID: "t1", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
+	})
+	require.NoError(t, err)
+	_, err = logger.Append(context.Background(), actionlog.Entry{
+		TenantID: "t2", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	_, err = store.List(context.Background(), actionlog.Query{})
+	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+
+	_, err = store.List(context.Background(), actionlog.Query{Actor: "a"})
+	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+
+	_, err = store.List(context.Background(), actionlog.Query{TenantID: "t1", AllTenants: true})
+	assert.ErrorIs(t, err, actionlog.ErrQueryScopeConflict)
+
+	all, err := store.List(context.Background(), actionlog.Query{AllTenants: true})
+	require.NoError(t, err)
+	assert.Len(t, all, 2)
+}
+
+func TestStore_ListByTenantSeqRejectsEmptyTenant(t *testing.T) {
+	store := New()
+	_, err := store.ListByTenantSeq(context.Background(), "")
+	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+}
+
 func TestList_DefaultLimitApplied(t *testing.T) {
 	store := New()
 	logger := actionlog.New(store, newTestSecrets(t))
@@ -136,4 +266,35 @@ func TestList_DefaultLimitApplied(t *testing.T) {
 	all, err := logger.List(context.Background(), actionlog.Query{TenantID: "t"})
 	require.NoError(t, err)
 	assert.Len(t, all, defaultLimit)
+}
+
+func TestStore_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	build := func(_ actionlog.Entry, _ int64) (actionlog.Entry, error) {
+		return actionlog.Entry{ID: "id", TenantID: "t"}, nil
+	}
+	cases := []struct {
+		name  string
+		store *Store
+	}{
+		{"nil", nil},
+		{"zero", &Store{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.store.AppendChained(ctx, "t", build)
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			_, err = tc.store.Get(ctx, "id")
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			_, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			_, err = tc.store.ListByTenantSeq(ctx, "t")
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			assert.NotPanics(t, func() { tc.store.PruneTenants() })
+		})
+	}
 }

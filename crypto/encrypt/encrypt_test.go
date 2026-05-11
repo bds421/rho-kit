@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -31,8 +32,8 @@ func TestFieldEncryptor_RoundTrip(t *testing.T) {
 	if ciphertext == original {
 		t.Fatal("ciphertext should differ from plaintext")
 	}
-	if ciphertext[:7] != "enc:v3:" {
-		t.Fatalf("expected v2 prefix, got %q", ciphertext[:7])
+	if ciphertext[:len(encryptedV3Prefix)] != encryptedV3Prefix {
+		t.Fatalf("expected current prefix, got %q", ciphertext[:len(encryptedV3Prefix)])
 	}
 
 	decrypted, err := enc.Decrypt(ciphertext)
@@ -125,7 +126,7 @@ func TestFieldEncryptor_EncryptIfPlain_PassesThroughValidCiphertext(t *testing.T
 func TestFieldEncryptor_EncryptIfPlain_RejectsAttackerControlledPrefix(t *testing.T) {
 	// The attack we're defending against: an attacker who can submit
 	// values into an encrypted field crafts a string that begins with
-	// the v2 prefix in hopes of being passed through verbatim.
+	// the current prefix in hopes of being passed through verbatim.
 	// EncryptIfPlain must AEAD-verify before passing through, so a
 	// bogus prefix gets re-encrypted (and the original attacker value
 	// never reaches storage in plaintext).
@@ -149,6 +150,42 @@ func TestFieldEncryptor_EncryptIfPlain_RejectsAttackerControlledPrefix(t *testin
 	}
 	if got != attackerInput {
 		t.Fatalf("round-trip mismatch: got %q, want %q", got, attackerInput)
+	}
+}
+
+func TestFieldEncryptor_EncryptIfPlainWithContext_PassesThroughAADBoundCiphertext(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+
+	aad := []byte("users:42:email")
+	first, err := enc.EncryptWithContext("hello", aad)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	again, err := enc.EncryptIfPlainWithContext(first, aad)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain with matching AAD: %v", err)
+	}
+	if again != first {
+		t.Fatal("EncryptIfPlainWithContext must pass through verifiable AAD-bound ciphertext unchanged")
+	}
+
+	wrongAAD := []byte("users:99:email")
+	rewrappedAsPlaintext, err := enc.EncryptIfPlainWithContext(first, wrongAAD)
+	if err != nil {
+		t.Fatalf("encrypt-if-plain with wrong AAD: %v", err)
+	}
+	if rewrappedAsPlaintext == first {
+		t.Fatal("EncryptIfPlainWithContext must not pass through ciphertext bound to different AAD")
+	}
+	got, err := enc.DecryptWithContext(rewrappedAsPlaintext, wrongAAD)
+	if err != nil {
+		t.Fatalf("decrypt re-encrypted value: %v", err)
+	}
+	if got != first {
+		t.Fatalf("mismatched AAD candidate should be encrypted as plaintext: got %q, want %q", got, first)
 	}
 }
 
@@ -199,6 +236,9 @@ func TestNewFieldEncryptor_InvalidKeySize(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for short key")
 	}
+	if strings.Contains(err.Error(), "9") {
+		t.Fatalf("invalid key size error leaked supplied length: %v", err)
+	}
 }
 
 func TestFieldEncryptor_Decrypt_InvalidBase64(t *testing.T) {
@@ -207,7 +247,7 @@ func TestFieldEncryptor_Decrypt_InvalidBase64(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = enc.Decrypt("enc:v2:not-valid-base64!!!")
+	_, err = enc.Decrypt(encryptedV3Prefix + "not-valid-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
@@ -219,7 +259,7 @@ func TestFieldEncryptor_Decrypt_TooShort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = enc.Decrypt("enc:v2:AQID")
+	_, err = enc.Decrypt(encryptedV3Prefix + "AQID")
 	if err == nil {
 		t.Fatal("expected error for too-short ciphertext")
 	}
@@ -317,11 +357,37 @@ func TestFieldEncryptor_CiphertextIsPostgresTextSafe(t *testing.T) {
 
 func TestEncryptOptional_NilEncryptor(t *testing.T) {
 	got, err := EncryptOptional(nil, "plaintext")
+	if !errors.Is(err, ErrInvalidEncryptor) {
+		t.Fatalf("expected ErrInvalidEncryptor, got %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty output on error, got %q", got)
+	}
+}
+
+func TestEncryptOptionalWithContext_BindsAAD(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aad := []byte("tenant:acme:users:42:ssn")
+	got, err := EncryptOptionalWithContext(enc, "secret-value", aad)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "plaintext" {
-		t.Fatalf("expected plaintext unchanged, got %q", got)
+	if got == "secret-value" {
+		t.Fatal("expected encrypted value to differ from plaintext")
+	}
+	if _, err := enc.DecryptWithContext(got, []byte("tenant:evil:users:42:ssn")); err == nil {
+		t.Fatal("DecryptWithContext must reject optional ciphertext under different AAD")
+	}
+	plain, err := enc.DecryptWithContext(got, aad)
+	if err != nil {
+		t.Fatalf("decrypt with matching AAD: %v", err)
+	}
+	if plain != "secret-value" {
+		t.Fatalf("got %q, want secret-value", plain)
 	}
 }
 
@@ -353,7 +419,41 @@ func TestEncryptOptional_WithEncryptor(t *testing.T) {
 	if got == "secret-value" {
 		t.Fatal("expected encrypted value to differ from plaintext")
 	}
-	if len(got) < 7 || got[:7] != "enc:v3:" {
-		t.Fatalf("expected v2 prefix, got %q", got)
+	if len(got) < len(encryptedV3Prefix) || got[:len(encryptedV3Prefix)] != encryptedV3Prefix {
+		t.Fatalf("expected current prefix, got %q", got)
+	}
+}
+
+func TestFieldEncryptor_InvalidReceiverReturnsError(t *testing.T) {
+	var nilEncryptor *FieldEncryptor
+	cases := []struct {
+		name string
+		enc  *FieldEncryptor
+	}{
+		{name: "nil", enc: nilEncryptor},
+		{name: "zero", enc: &FieldEncryptor{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.enc.Encrypt("secret"); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("Encrypt error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := tc.enc.EncryptWithContext("secret", []byte("aad")); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("EncryptWithContext error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := tc.enc.EncryptIfPlain("secret"); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("EncryptIfPlain error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := tc.enc.EncryptIfPlainWithContext("secret", []byte("aad")); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("EncryptIfPlainWithContext error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := tc.enc.Decrypt("enc:v3:AA=="); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("Decrypt error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := tc.enc.DecryptWithContext("enc:v3:AA==", []byte("aad")); !errors.Is(err, ErrInvalidEncryptor) {
+				t.Fatalf("DecryptWithContext error = %v, want ErrInvalidEncryptor", err)
+			}
+		})
 	}
 }

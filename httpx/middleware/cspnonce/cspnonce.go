@@ -29,8 +29,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"strings"
+
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 type ctxKey struct{}
@@ -44,6 +47,8 @@ const nonceLenBytes = 16
 // the same origin, except for inline script/style which are gated on
 // the per-request nonce.
 const defaultBasePolicy = "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+
+var nonceRandReader io.Reader = rand.Reader
 
 // Option configures the middleware.
 type Option func(*config)
@@ -60,6 +65,7 @@ type config struct {
 //
 // Default: "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'".
 func WithBasePolicy(policy string) Option {
+	validateHeaderValue("Content-Security-Policy", policy)
 	return func(c *config) { c.basePolicy = policy }
 }
 
@@ -78,6 +84,9 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 		headerName: "Content-Security-Policy",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("cspnonce: option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -87,7 +96,7 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 			if err != nil {
 				// Fail closed: a missing nonce means the response would
 				// either trip the CSP or render with weakened policy.
-				http.Error(w, "csp nonce generation failed", http.StatusInternalServerError)
+				httpx.WriteError(w, http.StatusInternalServerError, "csp nonce generation failed")
 				return
 			}
 
@@ -127,7 +136,7 @@ func HTMLAttr(ctx context.Context) template.HTMLAttr {
 
 func generateNonce() (string, error) {
 	buf := make([]byte, nonceLenBytes)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := io.ReadFull(nonceRandReader, buf); err != nil {
 		return "", fmt.Errorf("read nonce: %w", err)
 	}
 	return base64.RawStdEncoding.EncodeToString(buf), nil
@@ -155,7 +164,7 @@ func injectNonce(policy, nonce string) string {
 		if d == "" {
 			continue
 		}
-		name, _, _ := strings.Cut(d, " ")
+		name := directiveName(d)
 		switch strings.ToLower(name) {
 		case "script-src":
 			parts[i] = " " + d + " 'nonce-" + nonce + "'"
@@ -172,4 +181,24 @@ func injectNonce(policy, nonce string) string {
 		parts = append(parts, " style-src 'self' 'nonce-"+nonce+"'")
 	}
 	return strings.TrimSpace(strings.Join(parts, ";"))
+}
+
+func directiveName(d string) string {
+	fields := strings.Fields(d)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func validateHeaderValue(name, value string) {
+	if value != "" && strings.TrimSpace(value) != value {
+		panic("cspnonce: header value contains leading or trailing whitespace")
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case 0, '\r', '\n':
+			panic("cspnonce: header value is invalid")
+		}
+	}
 }

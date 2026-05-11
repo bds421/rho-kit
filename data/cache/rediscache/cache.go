@@ -54,8 +54,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.hits)
-	promutil.RegisterCollector(reg, m.misses)
+	m.hits = promutil.MustRegisterOrGet(reg, m.hits)
+	m.misses = promutil.MustRegisterOrGet(reg, m.misses)
 
 	return m
 }
@@ -75,12 +75,13 @@ type CacheOption func(*RedisCache)
 
 // WithCacheMaxValueSize sets the maximum value size in bytes for cache entries.
 // Default is 10 MiB. Set to 0 to disable the limit (use with caution).
-// Negative values are ignored.
+// Negative values panic.
 func WithCacheMaxValueSize(n int) CacheOption {
+	if n < 0 {
+		panic("rediscache: WithCacheMaxValueSize requires n >= 0")
+	}
 	return func(rc *RedisCache) {
-		if n >= 0 {
-			rc.maxValueSize = n
-		}
+		rc.maxValueSize = n
 	}
 }
 
@@ -110,6 +111,9 @@ func NewRedisCache(client goredis.UniversalClient, name string, opts ...CacheOpt
 		metrics:      defaultMetrics,
 	}
 	for _, o := range opts {
+		if o == nil {
+			return nil, fmt.Errorf("rediscache: NewRedisCache option must not be nil")
+		}
 		o(rc)
 	}
 	return rc, nil
@@ -117,6 +121,9 @@ func NewRedisCache(client goredis.UniversalClient, name string, opts ...CacheOpt
 
 // Get retrieves a value from Redis. Returns cache.ErrCacheMiss on redis.Nil.
 func (rc *RedisCache) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := rc.ready(); err != nil {
+		return nil, err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return nil, err
 	}
@@ -135,14 +142,17 @@ func (rc *RedisCache) Get(ctx context.Context, key string) ([]byte, error) {
 // Set stores a value in Redis with the given TTL. Zero TTL means no expiration.
 // Returns an error if TTL is negative or the value exceeds the configured maximum size.
 func (rc *RedisCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := rc.ready(); err != nil {
+		return err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return err
 	}
 	if ttl < 0 {
-		return fmt.Errorf("cache set: TTL must not be negative (got %v)", ttl)
+		return fmt.Errorf("cache set: TTL must not be negative")
 	}
 	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
-		return fmt.Errorf("cache value size %d exceeds max %d", len(value), rc.maxValueSize)
+		return fmt.Errorf("cache value exceeds maximum size")
 	}
 	if err := rc.client.Set(ctx, key, value, ttl).Err(); err != nil {
 		return fmt.Errorf("redis cache set: %w", err)
@@ -152,6 +162,9 @@ func (rc *RedisCache) Set(ctx context.Context, key string, value []byte, ttl tim
 
 // Delete removes a key from Redis.
 func (rc *RedisCache) Delete(ctx context.Context, key string) error {
+	if err := rc.ready(); err != nil {
+		return err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return err
 	}
@@ -163,6 +176,9 @@ func (rc *RedisCache) Delete(ctx context.Context, key string) error {
 
 // Exists checks whether a key exists in Redis.
 func (rc *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
+	if err := rc.ready(); err != nil {
+		return false, err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -176,13 +192,14 @@ func (rc *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 // MGet retrieves multiple values in a single Redis MGET round-trip.
 // Missing keys are silently absent from the returned map.
 func (rc *RedisCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if err := rc.ready(); err != nil {
+		return nil, err
+	}
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
 	}
-	for _, k := range keys {
-		if err := sharedcache.ValidateKey(k); err != nil {
-			return nil, err
-		}
+	if err := sharedcache.ValidateBulkKeys(keys); err != nil {
+		return nil, err
 	}
 	vals, err := rc.client.MGet(ctx, keys...).Result()
 	if err != nil {
@@ -217,18 +234,21 @@ func (rc *RedisCache) MGet(ctx context.Context, keys []string) (map[string][]byt
 // implement their own MULTI/EXEC or Lua-script path; the BulkCache
 // contract documents the same caveat.
 func (rc *RedisCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if err := rc.ready(); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return nil
 	}
 	if ttl < 0 {
-		return fmt.Errorf("cache mset: TTL must not be negative (got %v)", ttl)
+		return fmt.Errorf("cache mset: TTL must not be negative")
 	}
-	for k, v := range items {
-		if err := sharedcache.ValidateKey(k); err != nil {
-			return err
-		}
+	if err := sharedcache.ValidateBulkItems(items); err != nil {
+		return err
+	}
+	for _, v := range items {
 		if rc.maxValueSize > 0 && len(v) > rc.maxValueSize {
-			return fmt.Errorf("cache mset: value for %q size %d exceeds max %d", k, len(v), rc.maxValueSize)
+			return fmt.Errorf("cache mset: value exceeds maximum size")
 		}
 	}
 	pipe := rc.client.Pipeline()
@@ -246,18 +266,28 @@ func (rc *RedisCache) MSet(ctx context.Context, items map[string][]byte, ttl tim
 // a value. Atomic across replicas — use this instead of Exists+Set for
 // cross-process compute-once semantics.
 func (rc *RedisCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if err := rc.ready(); err != nil {
+		return false, err
+	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return false, err
 	}
 	if ttl < 0 {
-		return false, fmt.Errorf("cache setnx: TTL must not be negative (got %v)", ttl)
+		return false, fmt.Errorf("cache setnx: TTL must not be negative")
 	}
 	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
-		return false, fmt.Errorf("cache setnx: value size %d exceeds max %d", len(value), rc.maxValueSize)
+		return false, fmt.Errorf("cache setnx: value exceeds maximum size")
 	}
 	ok, err := rc.client.SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("redis cache setnx: %w", err)
 	}
 	return ok, nil
+}
+
+func (rc *RedisCache) ready() error {
+	if rc == nil || rc.client == nil || rc.name == "" || rc.metrics == nil || rc.metrics.hits == nil || rc.metrics.misses == nil {
+		return sharedcache.ErrInvalidCache
+	}
+	return nil
 }

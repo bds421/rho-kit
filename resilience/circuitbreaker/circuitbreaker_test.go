@@ -89,6 +89,26 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_OnStateChangePanicDoesNotEscape(t *testing.T) {
+	cb := NewCircuitBreaker(1, time.Minute, WithOnStateChange(func(string, State, State) {
+		panic("metrics hook exploded")
+	}))
+
+	assert.NotPanics(t, func() {
+		err := cb.Execute(func() error { return errors.New("down") })
+		assert.Error(t, err)
+	})
+	assert.Equal(t, StateOpen, cb.StateValue())
+
+	called := false
+	err := cb.Execute(func() error {
+		called = true
+		return nil
+	})
+	assert.False(t, called)
+	assert.ErrorIs(t, err, ErrCircuitOpen)
+}
+
 func TestExecuteCtx_AlreadyCancelledShortCircuits(t *testing.T) {
 	cb := NewCircuitBreaker(2, time.Minute)
 
@@ -129,6 +149,18 @@ func TestExecuteCtx_NilReceiverPassesThrough(t *testing.T) {
 	})
 	assert.True(t, called)
 	assert.NoError(t, err)
+}
+
+func TestNewCircuitBreaker_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewCircuitBreaker(1, time.Second, nil)
+	})
+}
+
+func TestWithErrorRateThreshold_PanicDoesNotReflectValue(t *testing.T) {
+	assert.PanicsWithValue(t, "circuitbreaker: WithErrorRateThreshold requires 0 < rate <= 1", func() {
+		WithErrorRateThreshold(1.1, 1)
+	})
 }
 
 func TestExecuteCtx_OpenCircuitReturnsErrCircuitOpen(t *testing.T) {

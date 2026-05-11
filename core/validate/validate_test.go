@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-playground/validator/v10"
@@ -262,11 +263,14 @@ func TestRegisterValidation_afterFreeze(t *testing.T) {
 	// Ensure Struct() has been called (which freezes registrations).
 	_ = Struct(basicReq{Name: "a", Email: "a@b.c", Age: 1})
 
-	err := RegisterValidation("should_fail", func(fl validator.FieldLevel) bool {
+	err := RegisterValidation("should_fail_secret_token", func(fl validator.FieldLevel) bool {
 		return true
 	})
 	if err == nil {
 		t.Fatal("expected error when registering after freeze")
+	}
+	if strings.Contains(err.Error(), "should_fail_secret_token") || strings.Contains(err.Error(), "secret_token") {
+		t.Fatalf("error leaked validation tag: %v", err)
 	}
 }
 

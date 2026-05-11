@@ -1,10 +1,11 @@
 // Package app wires the agentic-service EXAMPLE.
 //
-// SECURITY: this example is illustrative only. It mounts handlers
-// without authentication, rate limiting, or CSRF protection so the
-// demo curl invocations work out of the box. It must NEVER be used as
-// a starting point for production wiring — copy the per-primitive
-// recipes from the doc instead.
+// SECURITY: this example is illustrative only. It requires a strong
+// demo bearer token before it starts, but it still omits production
+// JWT/signed-request auth, rate limiting, CSRF protection for browser
+// flows, persistent stores, and stable secret management. It must
+// NEVER be used as a starting point for production wiring — copy the
+// per-primitive recipes from the doc instead.
 //
 // Production services MUST use app.Builder.WithJWT (paired with
 // WithJWTIssuer + WithJWTAudience) / .WithSignedRequests /
@@ -22,20 +23,24 @@
 //
 //	(in production) signedrequest → tenant → budget → handler
 //
-// In this example only `tenant` is wired (in front of MCP) so the
-// strict-audit gate has a tenant on context. The budget and approval
-// stores are exercised via the /admin/* handlers' direct API access
-// rather than middleware — both forms are documented to consumers.
+// In this example a local demo bearer token gates MCP/admin routes,
+// and `tenant` is wired in front of MCP so the strict-audit gate has
+// a tenant on context. The budget and approval stores are exercised
+// via the /admin/* handlers' direct API access rather than middleware
+// — both forms are documented to consumers.
 package app
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,6 +56,11 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
+const (
+	demoTokenEnv       = "AGENTIC_SERVICE_DEMO_TOKEN"
+	minDemoTokenLength = 32
+)
+
 // Run starts the HTTP server with the agentic-service stack.
 //
 // In a real service this would call app.Builder.WithMultiTenant /
@@ -59,6 +69,11 @@ import (
 // uses a hand-composed mux to keep it dependency-light (no DB, no
 // Redis) while still exercising every primitive.
 func Run(ctx context.Context) error {
+	demoToken, err := demoBearerTokenFromEnv()
+	if err != nil {
+		return err
+	}
+
 	// In-memory backends keep the example self-contained. Production
 	// wiring swaps these for the postgres / redis backends.
 	bud := budgetmem.New(1000 /* cap per period */, time.Minute)
@@ -90,9 +105,9 @@ func Run(ctx context.Context) error {
 	// inspects it. With strict audit on (the v2.0.0 default), MCP
 	// refuses to dispatch a tool when no tenant resolves and an
 	// action logger is configured. See httpx/mcp doc for details.
-	mux.Handle("/mcp", mcpHTTPHandler(mcpServer))
-	mux.HandleFunc("/admin/dangerous-action", dangerousAction(astore))
-	mux.HandleFunc("/admin/budget", budgetStatus(bud))
+	mux.Handle("/mcp", requireDemoBearerToken(demoToken, mcpHTTPHandler(mcpServer)))
+	mux.Handle("/admin/dangerous-action", requireDemoBearerToken(demoToken, dangerousAction(astore)))
+	mux.Handle("/admin/budget", requireDemoBearerToken(demoToken, budgetStatus(bud)))
 
 	// httpx.NewServer wires the kit's slowloris defaults
 	// (ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout,
@@ -111,6 +126,54 @@ func Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func demoBearerTokenFromEnv() ([]byte, error) {
+	token := os.Getenv(demoTokenEnv)
+	if len(token) < minDemoTokenLength {
+		return nil, fmt.Errorf("agentic-service: %s must be set to at least %d bytes", demoTokenEnv, minDemoTokenLength)
+	}
+	return []byte(token), nil
+}
+
+func requireDemoBearerToken(token []byte, next http.Handler) http.Handler {
+	if len(token) < minDemoTokenLength {
+		panic("agentic-service: demo bearer token must be at least 32 bytes")
+	}
+	if next == nil {
+		panic("agentic-service: requireDemoBearerToken requires a non-nil handler")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader, ok := singletonRequestHeader(r, "Authorization")
+		if !ok || !validDemoBearerToken(authHeader, token) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="agentic-service-example"`)
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func singletonRequestHeader(r *http.Request, name string) (string, bool) {
+	values := r.Header.Values(name)
+	if len(values) != 1 {
+		return "", false
+	}
+	value := strings.TrimSpace(values[0])
+	if value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func validDemoBearerToken(header string, want []byte) bool {
+	got, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok || len(got) != len(want) {
+		dummy := make([]byte, len(want))
+		_ = subtle.ConstantTimeCompare(dummy, want)
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), want) == 1
 }
 
 // EchoIn is the input for the sample MCP tool.
@@ -138,7 +201,7 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
 		mcp.WithToolDescription("Echo the input message back to the caller."),
 	); err != nil {
-		panic(fmt.Errorf("mcp register echo: %w", err))
+		panic("agentic-service: MCP tool registration failed")
 	}
 	return srv
 }
@@ -166,22 +229,27 @@ func mcpHTTPHandler(srv *mcp.Server) http.Handler {
 //   - the httpx/middleware/approval middleware which creates the
 //     approval entry from a verified actor automatically.
 //
-// This handler reads X-Tenant-Id from the header, which is acceptable
-// only because the demo has no auth — production must take the tenant
-// from the verified JWT or signed-request claim. The placeholder
-// "demo-actor" actor below is a deliberate non-spoofable string so
-// audit forensics on this example don't accept attacker-controlled
-// values.
+// This handler reads X-Tenant-Id from the header because the demo
+// bearer token is only an edge credential for local exercise.
+// Production must take the tenant from the verified JWT or
+// signed-request claim. The placeholder "demo-actor" actor below is
+// a deliberate non-spoofable string so audit forensics on this
+// example don't accept attacker-controlled values.
 func dangerousAction(s approval.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.Header.Get("X-Tenant-Id")
-		if tenantID == "" {
-			http.Error(w, "missing X-Tenant-Id", http.StatusBadRequest)
+		tenantID, ok := singletonRequestHeader(r, "X-Tenant-Id")
+		if !ok {
+			httpx.WriteError(w, http.StatusBadRequest, "missing X-Tenant-Id")
 			return
 		}
 		now := time.Now()
+		id, err := uuid.NewV7()
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		req, err := s.Create(r.Context(), approval.Request{
-			ID:        uuid.Must(uuid.NewV7()).String(),
+			ID:        id.String(),
 			TenantID:  tenantID,
 			Actor:     "demo-actor",
 			Action:    "admin.dangerous-action",
@@ -191,7 +259,7 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 			ExpiresAt: now.Add(24 * time.Hour),
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -212,14 +280,14 @@ func dangerousAction(s approval.Store) http.HandlerFunc {
 // — this endpoint demonstrates the Peek API for completeness.
 func budgetStatus(b budget.Budget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.Header.Get("X-Tenant-Id")
-		if tenantID == "" {
-			http.Error(w, "missing X-Tenant-Id", http.StatusBadRequest)
+		tenantID, ok := singletonRequestHeader(r, "X-Tenant-Id")
+		if !ok {
+			httpx.WriteError(w, http.StatusBadRequest, "missing X-Tenant-Id")
 			return
 		}
 		remaining, err := b.Peek(r.Context(), tenantID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

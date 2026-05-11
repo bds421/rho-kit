@@ -3,7 +3,6 @@ package cron
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -12,7 +11,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	robcron "github.com/robfig/cron/v3"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // defaultJobTimeout caps any cron job that has no explicit
@@ -33,6 +34,7 @@ type Scheduler struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	started bool // set under mu inside Start; rejects re-entry
+	stopped bool // set under mu inside Stop; rejects Start after Stop-before-Start
 
 	jobTimeouts map[string]time.Duration // per-job timeout; nil/missing = inherit scheduler ctx
 
@@ -51,6 +53,9 @@ type config struct {
 // WithLocation sets the timezone for cron schedule evaluation.
 // Default: time.UTC.
 func WithLocation(loc *time.Location) Option {
+	if loc == nil {
+		panic("cron: WithLocation requires a non-nil location")
+	}
 	return func(c *config) { c.location = loc }
 }
 
@@ -72,6 +77,9 @@ func WithRegistry(reg prometheus.Registerer) Option {
 // The predicate is called once per scheduled tick; it must be
 // non-blocking and concurrency-safe.
 func WithLeaderGate(fn func() bool) Option {
+	if fn == nil {
+		panic("cron: WithLeaderGate requires a non-nil predicate")
+	}
 	return func(c *config) { c.leaderFn = fn }
 }
 
@@ -85,6 +93,9 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 		location: time.UTC,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("cron: option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -116,7 +127,10 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 // calls override the previous timeout.
 func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 	if d <= 0 {
-		panic(fmt.Sprintf("cron: SetJobTimeout requires d > 0 (got %s)", d))
+		panic("cron: SetJobTimeout requires d > 0")
+	}
+	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
+		panic("cron: invalid job name")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,12 +147,15 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 	if name == "" {
 		panic("cron: Scheduler.Add requires a non-empty name")
 	}
+	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
+		panic("cron: invalid job name")
+	}
 	if fn == nil {
 		panic("cron: Scheduler.Add requires a non-nil job function")
 	}
 	wrapped := s.wrapJob(name, fn)
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {
-		panic(fmt.Sprintf("cron: invalid schedule %q for job %q: %v", schedule, name, err))
+		panic("cron: invalid schedule for job")
 	}
 	s.logger.Info("cron job registered", "name", name, "schedule", schedule)
 }
@@ -151,10 +168,17 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 // previous Start's still-live context against in-progress wrapJob
 // closures that captured the old ctx pointer.
 func (s *Scheduler) Start(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("cron: Scheduler.Start requires a non-nil context")
+	}
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
 		return errors.New("cron: Scheduler already started")
+	}
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("cron: Scheduler already stopped")
 	}
 	s.started = true
 	s.ctx, s.cancel = context.WithCancel(ctx)
@@ -173,9 +197,13 @@ func (s *Scheduler) Start(ctx context.Context) error {
 // caller's deadline — the scheduler returns ctx.Err and the job continues in
 // the background until it finishes naturally.
 func (s *Scheduler) Stop(ctx context.Context) error {
-	s.mu.RLock()
+	if ctx == nil {
+		return errors.New("cron: Scheduler.Stop requires a non-nil context")
+	}
+	s.mu.Lock()
 	cancel := s.cancel
-	s.mu.RUnlock()
+	s.stopped = true
+	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
@@ -186,7 +214,7 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		s.logger.Warn("cron scheduler shutdown deadline exceeded; running jobs left in background",
-			"error", ctx.Err())
+			redact.Error(ctx.Err()))
 		return ctx.Err()
 	}
 }
@@ -203,7 +231,7 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 			baseCtx = context.Background()
 		}
 
-		if s.leaderFn != nil && !s.leaderFn() {
+		if s.leaderFn != nil && !s.isLeader(name) {
 			s.metrics.skippedNotLeader.WithLabelValues(name).Inc()
 			s.logger.Debug("cron job skipped (not leader)", "job", name)
 			return
@@ -230,7 +258,7 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 				status = "panic"
 				s.logger.Error("cron job panicked",
 					"name", name,
-					"panic", r,
+					redact.Panic(r),
 					"stack", string(debug.Stack()),
 				)
 			}
@@ -252,6 +280,20 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 			)
 		}
 	}
+}
+
+func (s *Scheduler) isLeader(job string) (leader bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.logger.Error("cron leader gate panicked",
+				"job", job,
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			leader = false
+		}
+	}()
+	return s.leaderFn()
 }
 
 // slogCronLogger adapts slog.Logger to robfig/cron's Logger interface.

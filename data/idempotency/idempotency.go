@@ -10,8 +10,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrLockLost indicates the caller no longer holds the processing lock for a
@@ -28,6 +32,57 @@ var ErrLockLost = errors.New("idempotency: caller no longer holds the lock")
 // the middleware) get a deterministic failure instead of one of three silent
 // failure modes.
 var ErrInvalidTTL = errors.New("idempotency: ttl must be positive")
+
+// ErrInvalidStore is returned when a Store method is invoked on a nil or
+// otherwise uninitialized store implementation.
+var ErrInvalidStore = errors.New("idempotency: store is not initialized")
+
+// ErrInvalidCachedResponse marks a response that cannot be safely stored and
+// replayed by idempotency backends.
+var ErrInvalidCachedResponse = errors.New("idempotency: invalid cached response")
+
+// ErrKeyEmpty is returned when an idempotency key is empty.
+var ErrKeyEmpty = errors.New("idempotency: key must not be empty")
+
+// ErrKeyTooLong is returned when an idempotency key exceeds MaxKeyLen bytes.
+var ErrKeyTooLong = errors.New("idempotency: key exceeds maximum length")
+
+// ErrKeyInvalidChars is returned when an idempotency key contains bytes that
+// can corrupt logs, UTF-8 sinks, or backend protocol framing.
+var ErrKeyInvalidChars = errors.New("idempotency: key contains invalid characters")
+
+// MaxKeyLen bounds raw idempotency keys accepted by Store implementations.
+// HTTP middleware hashes client-supplied keys before storage; this cap protects
+// direct Store callers and custom integrations.
+const MaxKeyLen = 256
+
+var tokenRandReader io.Reader = rand.Reader
+
+// ValidateKey checks that key is safe for all Store backends.
+func ValidateKey(key string) error {
+	if key == "" {
+		return ErrKeyEmpty
+	}
+	if len(key) > MaxKeyLen {
+		return ErrKeyTooLong
+	}
+	if containsInvalidKeyRune(key) {
+		return ErrKeyInvalidChars
+	}
+	return nil
+}
+
+func containsInvalidKeyRune(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // Store persists and retrieves cached responses keyed by idempotency key.
 //
@@ -96,16 +151,112 @@ type CachedResponse struct {
 	Body       []byte              `json:"body"`
 }
 
+const (
+	// MaxCachedBodyBytes matches the HTTP middleware's capture limit. Direct
+	// Store callers get the same safe default instead of persisting unbounded
+	// response bodies into Redis, Postgres, or memory.
+	MaxCachedBodyBytes = 1 << 20
+
+	// MaxCachedHeaders bounds the number of distinct replayed response headers.
+	MaxCachedHeaders = 64
+
+	// MaxCachedHeaderValues bounds repeated values for a single response header.
+	MaxCachedHeaderValues = 64
+
+	// MaxCachedHeaderNameBytes caps each response header field name.
+	MaxCachedHeaderNameBytes = 128
+
+	// MaxCachedHeaderValueBytes caps each response header value.
+	MaxCachedHeaderValueBytes = 8 * 1024
+)
+
+// ValidateCachedResponse checks that resp can be safely stored and replayed as
+// an HTTP response. Backends call this on Set and Get so direct Store callers
+// and corrupted backend rows fail closed instead of replaying invalid status
+// codes, header names, header values, or unbounded bodies.
+func ValidateCachedResponse(resp CachedResponse) error {
+	if resp.StatusCode < 100 || resp.StatusCode > 999 {
+		return fmt.Errorf("%w: status code must be between 100 and 999", ErrInvalidCachedResponse)
+	}
+	if len(resp.Body) > MaxCachedBodyBytes {
+		return fmt.Errorf("%w: body exceeds maximum length", ErrInvalidCachedResponse)
+	}
+	if len(resp.Headers) > MaxCachedHeaders {
+		return fmt.Errorf("%w: header count exceeds maximum", ErrInvalidCachedResponse)
+	}
+	for name, values := range resp.Headers {
+		if err := validateCachedHeaderName(name); err != nil {
+			return err
+		}
+		if len(values) > MaxCachedHeaderValues {
+			return fmt.Errorf("%w: header value count exceeds maximum", ErrInvalidCachedResponse)
+		}
+		for _, value := range values {
+			if err := validateCachedHeaderValue(value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCachedHeaderName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: header name must not be empty", ErrInvalidCachedResponse)
+	}
+	if len(name) > MaxCachedHeaderNameBytes {
+		return fmt.Errorf("%w: header name exceeds maximum length", ErrInvalidCachedResponse)
+	}
+	for i := 0; i < len(name); i++ {
+		if !isCachedHeaderNameByte(name[i]) {
+			return fmt.Errorf("%w: header name contains invalid character", ErrInvalidCachedResponse)
+		}
+	}
+	return nil
+}
+
+func validateCachedHeaderValue(value string) error {
+	if len(value) > MaxCachedHeaderValueBytes {
+		return fmt.Errorf("%w: header value exceeds maximum length", ErrInvalidCachedResponse)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: header value contains invalid UTF-8", ErrInvalidCachedResponse)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: header value contains control character", ErrInvalidCachedResponse)
+		}
+	}
+	return nil
+}
+
+func isCachedHeaderNameByte(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z':
+		return true
+	case 'A' <= c && c <= 'Z':
+		return true
+	case '0' <= c && c <= '9':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
+}
+
 // GenerateToken returns a 32-character hex-encoded random token. Backends use
 // this for the owner-token of an acquired lock; the middleware does not
 // inspect tokens itself — it just round-trips them between TryLock and
 // Set/Unlock.
-func GenerateToken() string {
+func GenerateToken() (string, error) {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("idempotency: failed to generate token: " + err.Error())
+	if _, err := io.ReadFull(tokenRandReader, b); err != nil {
+		return "", fmt.Errorf("idempotency: generate lock token: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // memoryStoreMaxEntries caps the in-memory store before lazy eviction runs.
@@ -116,11 +267,14 @@ const memoryStoreMaxEntries = 10_000
 // MemoryStore is an in-memory Store for testing. Not suitable for production
 // (no cross-process sharing).
 type MemoryStore struct {
-	mu       sync.RWMutex
-	items    map[string]memEntry
-	locks    map[string]memLock
+	mu      sync.RWMutex
+	items   map[string]memEntry
+	locks   map[string]memLock
+	clock   func() time.Time
+	runMu   sync.Mutex
+	started bool
+
 	setCount uint64
-	clock    func() time.Time
 }
 
 // MemoryStoreOption configures a MemoryStore.
@@ -156,6 +310,9 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		clock: time.Now,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("idempotency: NewMemoryStore option must not be nil")
+		}
 		o(m)
 	}
 	return m
@@ -166,6 +323,12 @@ func (m *MemoryStore) now() time.Time { return m.clock() }
 // Get returns a cached response for the key, applying fingerprint comparison
 // if a non-nil fingerprint is supplied.
 func (m *MemoryStore) Get(_ context.Context, key string, fingerprint []byte) (*CachedResponse, bool, error) {
+	if err := m.ready(); err != nil {
+		return nil, false, err
+	}
+	if err := ValidateKey(key); err != nil {
+		return nil, false, err
+	}
 	m.mu.RLock()
 	entry, ok := m.items[key]
 	m.mu.RUnlock()
@@ -182,6 +345,9 @@ func (m *MemoryStore) Get(_ context.Context, key string, fingerprint []byte) (*C
 	}
 	if fingerprint != nil && entry.fingerprint != nil && !bytes.Equal(entry.fingerprint, fingerprint) {
 		return nil, true, nil
+	}
+	if err := ValidateCachedResponse(entry.resp); err != nil {
+		return nil, false, err
 	}
 	return cloneResponse(entry.resp), false, nil
 }
@@ -207,8 +373,17 @@ const sweepInterval = 30 * time.Second
 // the lock for the key has been taken by another caller (or has expired).
 // Returns [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedResponse, ttl time.Duration) error {
+	if err := m.ready(); err != nil {
+		return err
+	}
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	if ttl <= 0 {
 		return ErrInvalidTTL
+	}
+	if err := ValidateCachedResponse(resp); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -242,6 +417,12 @@ func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedRespo
 // TryLock implements the contract from [Store.TryLock]. Returns
 // [ErrInvalidTTL] when ttl <= 0.
 func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if err := m.ready(); err != nil {
+		return "", false, false, err
+	}
+	if err := ValidateKey(key); err != nil {
+		return "", false, false, err
+	}
 	if ttl <= 0 {
 		return "", false, false, ErrInvalidTTL
 	}
@@ -269,7 +450,10 @@ func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte,
 		return "", false, false, nil
 	}
 
-	token := GenerateToken()
+	token, err := GenerateToken()
+	if err != nil {
+		return "", false, false, err
+	}
 	m.locks[key] = memLock{
 		token:       token,
 		fingerprint: cloneBytes(fingerprint),
@@ -281,6 +465,12 @@ func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte,
 // Unlock releases the processing lock if the caller's token still owns it.
 // Best-effort cleanup: token mismatch is silently ignored (returns nil).
 func (m *MemoryStore) Unlock(_ context.Context, key, token string) error {
+	if err := m.ready(); err != nil {
+		return err
+	}
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if l, ok := m.locks[key]; ok && l.token == token {
@@ -325,6 +515,20 @@ func (m *MemoryStore) sweepExpiredLocked(budget int) {
 //
 //	mc.Lifecycle.AddFunc("idem-sweeper", store.Run)
 func (m *MemoryStore) Run(ctx context.Context) error {
+	if err := m.ready(); err != nil {
+		return err
+	}
+	if ctx == nil {
+		return errors.New("idempotency: MemoryStore.Run requires a non-nil context")
+	}
+	m.runMu.Lock()
+	if m.started {
+		m.runMu.Unlock()
+		return errors.New("idempotency: MemoryStore.Run already started")
+	}
+	m.started = true
+	m.runMu.Unlock()
+
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
 	for {
@@ -337,6 +541,13 @@ func (m *MemoryStore) Run(ctx context.Context) error {
 			m.mu.Unlock()
 		}
 	}
+}
+
+func (m *MemoryStore) ready() error {
+	if m == nil || m.items == nil || m.locks == nil || m.clock == nil {
+		return ErrInvalidStore
+	}
+	return nil
 }
 
 func cloneResponse(resp CachedResponse) *CachedResponse {

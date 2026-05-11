@@ -30,6 +30,22 @@ func TestToStreamMessage(t *testing.T) {
 	assert.Equal(t, msgPayload, smPayload)
 }
 
+func TestToStreamMessage_DetachesPayloadAndHeaders(t *testing.T) {
+	msg := messaging.Message{
+		ID:      "msg-id",
+		Type:    "test.event",
+		Payload: json.RawMessage(`{"ok":true}`),
+		Headers: map[string]string{"trace-id": "abc-123"},
+	}
+
+	sm := toStreamMessage(msg)
+	msg.Payload[1] = 'X'
+	msg.Headers["trace-id"] = "changed"
+
+	assert.Equal(t, `{"ok":true}`, string(sm.Payload))
+	assert.Equal(t, "abc-123", sm.Headers["trace-id"])
+}
+
 func TestToStreamMessage_NilHeaders(t *testing.T) {
 	msg := messaging.Message{
 		ID:        "test-id",
@@ -61,6 +77,44 @@ func TestToDelivery(t *testing.T) {
 	assert.Equal(t, "user.updated", d.RoutingKey)
 	assert.Equal(t, "xyz", d.Message.Headers["trace-id"])
 	assert.Equal(t, "xyz", d.Headers["trace-id"])
+}
+
+func TestToDelivery_DetachesPayloadAndHeaders(t *testing.T) {
+	sm := stream.Message{
+		ID:      "msg-id",
+		Type:    "user.updated",
+		Payload: json.RawMessage(`{"ok":true}`),
+		Headers: map[string]string{"trace-id": "xyz"},
+	}
+
+	d := toDelivery(sm, "users-stream")
+	sm.Payload[1] = 'X'
+	sm.Headers["trace-id"] = "changed"
+	assert.Equal(t, `{"ok":true}`, string(d.Message.Payload))
+	assert.Equal(t, "xyz", d.Message.Headers["trace-id"])
+	assert.Equal(t, "xyz", d.Headers["trace-id"])
+
+	d.Message.Payload[1] = 'Y'
+	d.Message.Headers["trace-id"] = "message"
+
+	assert.Equal(t, `{Xok":true}`, string(sm.Payload))
+	assert.Equal(t, "changed", sm.Headers["trace-id"])
+	assert.Equal(t, `{Yok":true}`, string(d.Message.Payload))
+	assert.Equal(t, "message", d.Message.Headers["trace-id"])
+	assert.Equal(t, "xyz", d.Headers["trace-id"])
+}
+
+func TestToDelivery_PrefersRoutingKeyHeader(t *testing.T) {
+	sm := stream.Message{
+		ID:      "msg-id",
+		Type:    "user.updated",
+		Headers: map[string]string{headerRoutingKey: "users.v2.updated"},
+	}
+
+	d := toDelivery(sm, "users-stream")
+
+	assert.Equal(t, "users.v2.updated", d.RoutingKey)
+	assert.Equal(t, "users.v2.updated", d.Headers[headerRoutingKey])
 }
 
 func TestToDelivery_EmptyHeaders(t *testing.T) {

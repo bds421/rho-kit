@@ -1,6 +1,7 @@
 package encrypt
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/tink-crypto/tink-go/v2/aead/subtle"
@@ -19,6 +20,10 @@ import (
 // stdlib cipher.AEAD layout the kit shipped before v2.
 type AEAD = tink.AEAD
 
+// ErrInvalidAEAD is returned when a caller invokes the byte-level
+// helpers without a constructed AEAD primitive.
+var ErrInvalidAEAD = errors.New("encrypt: AEAD must not be nil")
+
 // NewGCM creates an AES-256-GCM AEAD primitive from a 32-byte key,
 // backed by Google Tink. The wire format ("iv ‖ ct ‖ tag", 12-byte
 // IV, 16-byte tag) matches the stdlib cipher.AEAD output the kit
@@ -28,7 +33,7 @@ type AEAD = tink.AEAD
 // or reuse its slice immediately after this call returns.
 func NewGCM(key []byte) (AEAD, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("encrypt: key must be 32 bytes, got %d", len(key))
+		return nil, fmt.Errorf("encrypt: key must be 32 bytes")
 	}
 	a, err := subtle.NewAESGCM(key)
 	if err != nil {
@@ -66,6 +71,9 @@ func SealBytes(a AEAD, plaintext []byte) ([]byte, error) {
 // out-of-band identifier (row primary key, tenant ID, file path) so
 // a ciphertext copy-pasted into a different row fails authentication.
 func SealBytesAAD(a AEAD, plaintext, aad []byte) ([]byte, error) {
+	if a == nil {
+		return nil, ErrInvalidAEAD
+	}
 	out, err := a.Encrypt(plaintext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: seal: %w", err)
@@ -84,6 +92,9 @@ func OpenBytes(a AEAD, ciphertext []byte) ([]byte, error) {
 // produces an authentication error indistinguishable from a tampered
 // ciphertext.
 func OpenBytesAAD(a AEAD, ciphertext, aad []byte) ([]byte, error) {
+	if a == nil {
+		return nil, ErrInvalidAEAD
+	}
 	plaintext, err := a.Decrypt(ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: decrypt: %w", err)

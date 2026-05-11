@@ -3,6 +3,7 @@ package sftpbackend
 import (
 	"fmt"
 	"log/slog"
+	"path"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 )
@@ -17,25 +18,21 @@ type SFTPConfig struct {
 	RootPath string // base path on the remote server
 
 	// KnownHostsFile is the path to an OpenSSH known_hosts file for SSH
-	// host key verification. If empty, InsecureSkipHostKeyVerify must be true.
+	// host key verification.
 	// Example: "/etc/ssh/ssh_known_hosts" or "~/.ssh/known_hosts".
 	KnownHostsFile string
-
-	// InsecureSkipHostKeyVerify disables SSH host key verification.
-	// When false (default), KnownHostsFile must be set.
-	// Set to true only for development/testing environments.
-	InsecureSkipHostKeyVerify bool
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
 func (c SFTPConfig) LogValue() slog.Value {
 	return slog.GroupValue(
-		slog.String("host", c.Host),
+		slog.Bool("host_configured", c.Host != ""),
 		slog.Int("port", c.Port),
-		slog.String("user", c.User),
-		slog.String("password", "[REDACTED]"),
-		slog.String("key_file", c.KeyFile),
-		slog.String("root_path", c.RootPath),
+		slog.Bool("user_configured", c.User != ""),
+		slog.Bool("password_configured", c.Password != ""),
+		slog.Bool("key_file_configured", c.KeyFile != ""),
+		slog.Bool("root_path_configured", c.RootPath != ""),
+		slog.Bool("known_hosts_file_configured", c.KnownHostsFile != ""),
 	)
 }
 
@@ -48,6 +45,7 @@ func (c SFTPConfig) LogValue() slog.Value {
 //   - {envPrefix}_SFTP_PASSWORD (supports _FILE suffix; mutually exclusive with KeyFile)
 //   - STORAGE_SFTP_KEY_FILE (path to SSH private key)
 //   - STORAGE_SFTP_ROOT_PATH (default "/")
+//   - STORAGE_SFTP_KNOWN_HOSTS_FILE (required; OpenSSH known_hosts path)
 func LoadSFTPConfig(envPrefix, environment string) (SFTPConfig, error) {
 	p := &config.Parser{}
 	port := p.Int("STORAGE_SFTP_PORT", 22)
@@ -56,12 +54,13 @@ func LoadSFTPConfig(envPrefix, environment string) (SFTPConfig, error) {
 	}
 
 	cfg := SFTPConfig{
-		Host:     config.Get("STORAGE_SFTP_HOST", ""),
-		Port:     port,
-		User:     config.Get("STORAGE_SFTP_USER", ""),
-		Password: config.MustGetSecret(envPrefix+"_SFTP_PASSWORD", ""),
-		KeyFile:  config.Get("STORAGE_SFTP_KEY_FILE", ""),
-		RootPath: config.Get("STORAGE_SFTP_ROOT_PATH", "/"),
+		Host:           config.Get("STORAGE_SFTP_HOST", ""),
+		Port:           port,
+		User:           config.Get("STORAGE_SFTP_USER", ""),
+		Password:       config.MustGetSecret(envPrefix+"_SFTP_PASSWORD", ""),
+		KeyFile:        config.Get("STORAGE_SFTP_KEY_FILE", ""),
+		RootPath:       config.Get("STORAGE_SFTP_ROOT_PATH", "/"),
+		KnownHostsFile: config.Get("STORAGE_SFTP_KNOWN_HOSTS_FILE", ""),
 	}
 
 	if err := cfg.Validate(environment); err != nil {
@@ -93,8 +92,17 @@ func (c SFTPConfig) Validate(environment string) error {
 			return err
 		}
 	}
-	if c.InsecureSkipHostKeyVerify {
-		return fmt.Errorf("InsecureSkipHostKeyVerify must not be true (host-key verification protects against MITM)")
+	if c.RootPath == "" {
+		return fmt.Errorf("STORAGE_SFTP_ROOT_PATH must not be empty")
+	}
+	if !path.IsAbs(c.RootPath) {
+		return fmt.Errorf("STORAGE_SFTP_ROOT_PATH must be absolute")
+	}
+	if cleaned := path.Clean(c.RootPath); cleaned != c.RootPath {
+		return fmt.Errorf("STORAGE_SFTP_ROOT_PATH must be clean")
+	}
+	if c.KnownHostsFile == "" {
+		return fmt.Errorf("STORAGE_SFTP_KNOWN_HOSTS_FILE is required")
 	}
 	_ = environment // accepted for API compatibility; no longer consulted
 	return nil

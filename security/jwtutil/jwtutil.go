@@ -1,20 +1,21 @@
-// Package jwtutil provides JWT verification for Oathkeeper-signed id_tokens
-// backed by lestrrat-go/jwx/v3.
+// Package jwtutil provides JWT verification backed by lestrrat-go/jwx/v3.
 //
-// It supports ES256 tokens signed by Oathkeeper's id_token mutator. Public
-// keys are fetched from Oathkeeper's JWKS endpoint and cached with periodic
-// background refresh.
+// It verifies JWTs signed with asymmetric keys published through a JWKS
+// endpoint and caches keys with periodic background refresh.
 package jwtutil
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
+	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
@@ -43,10 +47,12 @@ const (
 	defaultRefreshInterval = 10 * time.Minute
 	defaultHTTPTimeout     = 5 * time.Second
 	defaultMaxStale        = 1 * time.Hour
+	minimumTLSVersion      = tls.VersionTLS12
 )
 
-// Claims represents the verified JWT payload from an Oathkeeper id_token.
+// Claims represents the verified JWT payload used by the kit auth middleware.
 type Claims struct {
+	ID          string   `json:"jti"`
 	Subject     string   `json:"sub"`
 	Permissions []string `json:"permissions"`
 	Scopes      string   `json:"scopes"`
@@ -68,13 +74,22 @@ type KeySet struct {
 	ExpectedAudience string
 }
 
+// ErrInvalidKeySet is returned when verification is attempted with a
+// KeySet that was not constructed by ParseKeySet or ParseKeySetFromPEM.
+var ErrInvalidKeySet = errors.New("jwtutil: key set is not initialized")
+
+var (
+	errMalformedPermissionsClaim = errors.New("malformed permissions claim")
+	errMalformedScopesClaim      = errors.New("malformed scopes claim")
+)
+
 // ParseKeySet parses a JWKS JSON document into a KeySet.
 //
 // Symmetric (HMAC / kty=oct) keys are rejected to prevent the classic
 // alg-confusion attack, where a token signed with HS256 is accepted by a
 // verifier that holds an EC/RSA public key — by treating the public key
-// bytes as the HMAC secret. Trusted JWKS endpoints (Oathkeeper, Auth0, …)
-// do not publish symmetric keys; if you have a legitimate use for shared
+// bytes as the HMAC secret. Trusted JWKS endpoints do not publish symmetric
+// keys; if you have a legitimate use for shared
 // secrets, pass them outside the JWKS surface.
 func ParseKeySet(data []byte) (*KeySet, error) {
 	set, err := jwk.Parse(data)
@@ -87,10 +102,14 @@ func ParseKeySet(data []byte) (*KeySet, error) {
 		if !ok {
 			continue
 		}
-		if isSymmetricKey(key) {
+		key, usable, err := verificationKey(key)
+		if err != nil {
+			return nil, err
+		}
+		if !usable {
 			// Skip silently rather than returning an error: a JWKS may
 			// legitimately mix algorithms over time, and rejecting the
-			// whole set on a single oct key would break liveness.
+			// whole set on a single non-verification key would break liveness.
 			continue
 		}
 		if err := filtered.AddKey(key); err != nil {
@@ -103,6 +122,20 @@ func ParseKeySet(data []byte) (*KeySet, error) {
 	return &KeySet{set: filtered}, nil
 }
 
+// verificationKey normalises a JWKS entry into a public signature-verification
+// key. Non-signature or non-verification keys are ignored so a mixed JWKS
+// cannot make this verifier use encryption keys or retain private material.
+func verificationKey(k jwk.Key) (jwk.Key, bool, error) {
+	if isSymmetricKey(k) || !allowsSignatureUse(k) || !allowsVerifyOperation(k) || !allowsSignatureAlgorithm(k) {
+		return nil, false, nil
+	}
+	publicKey, err := k.PublicKey()
+	if err != nil {
+		return nil, false, fmt.Errorf("filter jwks public key: %w", err)
+	}
+	return publicKey, true, nil
+}
+
 // isSymmetricKey reports whether k is an HMAC-style (kty=oct) key. Such
 // keys cannot safely be combined with [jws.WithInferAlgorithmFromKey],
 // because the inferred algorithm is HS*, which lets an attacker forge
@@ -110,6 +143,33 @@ func ParseKeySet(data []byte) (*KeySet, error) {
 // borrowed as the HMAC secret.
 func isSymmetricKey(k jwk.Key) bool {
 	return k.KeyType() == jwa.OctetSeq()
+}
+
+func allowsSignatureUse(k jwk.Key) bool {
+	usage, ok := k.KeyUsage()
+	return !ok || usage == "" || usage == jwk.ForSignature.String()
+}
+
+func allowsVerifyOperation(k jwk.Key) bool {
+	ops, ok := k.KeyOps()
+	if !ok {
+		return true
+	}
+	for _, op := range ops {
+		if op == jwk.KeyOpVerify {
+			return true
+		}
+	}
+	return false
+}
+
+func allowsSignatureAlgorithm(k jwk.Key) bool {
+	alg, ok := k.Algorithm()
+	if !ok {
+		return true
+	}
+	_, ok = jwa.LookupSignatureAlgorithm(alg.String())
+	return ok
 }
 
 // ParseKeySetFromPEM parses a PEM-encoded public key into a KeySet with a
@@ -140,6 +200,9 @@ func ParseKeySetFromPEM(pemData []byte, kid string) (*KeySet, error) {
 // touching these shared fields, which is the safe path when one parsed
 // KeySet is reused across multiple providers.
 func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
+	if ks == nil {
+		return nil, ErrInvalidKeySet
+	}
 	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience)
 }
 
@@ -149,6 +212,10 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 // providers can share one *KeySet without racing on or overwriting each
 // other's iss/aud fields (R4 fix).
 func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (*Claims, error) {
+	if set == nil || set.Len() == 0 {
+		return nil, ErrInvalidKeySet
+	}
+	now = verificationTime(now)
 	parseOpts := []jwt.ParseOption{
 		jwt.WithKeySet(set, jws.WithInferAlgorithmFromKey(true)),
 		jwt.WithValidate(true),
@@ -186,6 +253,9 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 		Issuer:    iss,
 		ExpiresAt: exp.Unix(),
 	}
+	if id, ok := tok.JwtID(); ok {
+		claims.ID = id
+	}
 	if iat, ok := tok.IssuedAt(); ok {
 		claims.IssuedAt = iat.Unix()
 	}
@@ -198,7 +268,7 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 	case err == nil:
 		converted, convErr := toStringSlice(perms)
 		if convErr != nil {
-			return nil, fmt.Errorf("malformed permissions claim: %w", convErr)
+			return nil, errMalformedPermissionsClaim
 		}
 		claims.Permissions = converted
 	case errors.Is(err, jwt.ClaimNotFoundError()):
@@ -211,9 +281,9 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 		// confused-deputy variant of the empty-set problem. Reject instead.
 		slog.Warn("jwt: permissions claim malformed; rejecting token",
 			"claim", "permissions",
-			"err", err,
+			redact.ErrorKey("err", errMalformedPermissionsClaim),
 		)
-		return nil, fmt.Errorf("malformed permissions claim: %w", err)
+		return nil, errMalformedPermissionsClaim
 	}
 	var scopes string
 	switch err := tok.Get("scopes", &scopes); {
@@ -224,12 +294,19 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 	default:
 		slog.Warn("jwt: scopes claim malformed; rejecting token",
 			"claim", "scopes",
-			"err", err,
+			redact.ErrorKey("err", errMalformedScopesClaim),
 		)
-		return nil, fmt.Errorf("malformed scopes claim: %w", err)
+		return nil, errMalformedScopesClaim
 	}
 
 	return claims, nil
+}
+
+func verificationTime(now time.Time) time.Time {
+	if now.IsZero() {
+		return time.Now()
+	}
+	return now
 }
 
 // toStringSlice converts a JSON-decoded value to []string. Returns an error
@@ -266,6 +343,7 @@ type Provider struct {
 	refresh          time.Duration
 	expectedIssuer   string
 	expectedAudience string
+	revocation       RevocationChecker
 	allowAnyIssuer   bool
 	allowAnyAudience bool
 	allowInsecureURL bool
@@ -275,10 +353,30 @@ type Provider struct {
 	mu                  sync.RWMutex
 	keyset              *KeySet
 	lastSuccessfulFetch time.Time
+	runMu               sync.Mutex
+	started             bool
 }
 
 // ProviderOption configures optional Provider behaviour.
 type ProviderOption func(*Provider)
+
+// RevocationChecker reports whether a verified JWT has been revoked. Packages
+// such as security/jwtutil/revocation implement this over a shared cache. The
+// checker is consulted after signature, issuer, audience, and time validation,
+// so it receives trusted claims rather than attacker-controlled JSON.
+type RevocationChecker interface {
+	IsRevoked(ctx context.Context, claims *Claims) (bool, error)
+}
+
+// ErrTokenRevoked is returned by [Provider.VerifyContext] when the configured
+// revocation checker marks the verified token as revoked.
+var ErrTokenRevoked = errors.New("jwtutil: token revoked")
+
+// ErrMissingTokenID is returned when token revocation is enabled but the
+// verified token has no jti claim. A revocation-enabled verifier must fail
+// closed for non-revocable tokens; otherwise logout/admin-revoke semantics are
+// silently bypassed for issuers that omit jti.
+var ErrMissingTokenID = errors.New("jwt revocation: token jti is required")
 
 // WithExpectedIssuer sets the JWT issuer claim that Verify will validate.
 // An empty string is rejected — call [WithAllowAnyIssuer] to opt out.
@@ -300,6 +398,16 @@ func WithExpectedAudience(audience string) ProviderOption {
 		p.expectedAudience = audience
 		p.allowAnyAudience = false
 	}
+}
+
+// WithRevocationChecker configures Provider verification to fail closed for
+// JWTs whose ID is present in a revocation store. Passing nil panics to surface
+// misconfiguration at startup rather than silently disabling revocation.
+func WithRevocationChecker(checker RevocationChecker) ProviderOption {
+	if checker == nil {
+		panic("jwtutil: WithRevocationChecker requires a non-nil checker")
+	}
+	return func(p *Provider) { p.revocation = checker }
 }
 
 // WithAllowAnyIssuer opts into the unsafe behaviour of accepting tokens
@@ -340,10 +448,18 @@ func WithAllowAnyAudience() ProviderOption {
 // every new token". A 1-hour default keeps short blips invisible while
 // surfacing a permanent outage long before key rotation completes.
 //
-// Pass d <= 0 to disable max-stale (cached keys served indefinitely; the
-// pre-Wave-7 behaviour). Default: 1 hour.
+// The duration must be positive. Default: 1 hour.
 func WithMaxStale(d time.Duration) ProviderOption {
+	if d <= 0 {
+		panic("jwtutil: WithMaxStale requires a positive duration")
+	}
 	return func(p *Provider) { p.maxStale = d }
+}
+
+// WithoutMaxStaleLimit disables stale-key expiry. Use only for callers that
+// enforce JWKS freshness through an external health gate.
+func WithoutMaxStaleLimit() ProviderOption {
+	return func(p *Provider) { p.maxStale = 0 }
 }
 
 // withClock overrides the time source. Test-only.
@@ -360,23 +476,37 @@ func WithAllowInsecureURL() ProviderOption {
 	return func(p *Provider) { p.allowInsecureURL = true }
 }
 
-// isHTTPSURL reports whether u begins with "https://" (case-insensitive).
-// Avoids importing net/url for a tiny prefix check.
-func isHTTPSURL(u string) bool {
-	const prefix = "https://"
-	if len(u) < len(prefix) {
-		return false
+func validateJWKSURL(raw string, allowInsecure bool) error {
+	if raw == "" {
+		return nil
 	}
-	for i := 0; i < len(prefix); i++ {
-		c := u[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if c != prefix[i] {
-			return false
-		}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return errors.New("jwtutil: NewProvider JWKS URL is invalid")
 	}
-	return true
+	if u.Scheme == "" || u.Host == "" {
+		return errors.New("jwtutil: NewProvider requires an absolute JWKS URL")
+	}
+	if err := config.ValidateURLHost("jwtutil: NewProvider JWKS URL", u); err != nil {
+		return err
+	}
+	if u.User != nil {
+		return errors.New("jwtutil: NewProvider JWKS URL must not contain credentials")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("jwtutil: NewProvider JWKS URL must not contain query or fragment components")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if allowInsecure {
+			return nil
+		}
+		return errors.New("jwtutil: NewProvider requires https:// JWKS URL (or explicit WithAllowInsecureURL opt-in)")
+	default:
+		return fmt.Errorf("jwtutil: NewProvider JWKS URL scheme must be https, or http with WithAllowInsecureURL")
+	}
 }
 
 // isJSONContentType reports whether ct (a Content-Type header value)
@@ -428,7 +558,10 @@ func eqIgnoreCase(a, b string) bool {
 
 // NewProvider creates a JWKS provider that fetches public keys from the given URL.
 // The refresh interval controls how often keys are re-fetched in the background.
-// If httpClient is nil, a default client with a 5s timeout is used.
+// If httpClient is nil, a default client with a 5s timeout is used. If
+// httpClient has no timeout, no transport, or no redirect policy, NewProvider
+// shallow-copies it and fills the missing safety defaults so JWKS fetches stay
+// bounded and pinned to the configured signer endpoint.
 // If refresh <= 0, it defaults to 10 minutes.
 //
 // Issuer and audience enforcement are required by default: NewProvider panics
@@ -441,9 +574,7 @@ func eqIgnoreCase(a, b string) bool {
 // always-on production-safety validator; standalone callers must opt in
 // explicitly when federation across issuers/audiences is the intended design.
 func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opts ...ProviderOption) *Provider {
-	if httpClient == nil {
-		httpClient = defaultHTTPClient()
-	}
+	httpClient = jwksHTTPClient(httpClient)
 	if refresh <= 0 {
 		refresh = defaultRefreshInterval
 	}
@@ -455,13 +586,16 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 		clock:      time.Now,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("jwtutil: NewProvider option must not be nil")
+		}
 		opt(p)
 	}
 	// Enforce https:// for JWKS unless the caller has explicitly opted into
 	// http (e.g. for service-mesh sidecar localhost). A plaintext JWKS lets
 	// any on-path attacker inject signing keys, fully forging tokens.
-	if url != "" && !p.allowInsecureURL && !isHTTPSURL(url) {
-		panic("jwtutil: NewProvider requires https:// JWKS URL (or explicit WithAllowInsecureURL opt-in)")
+	if err := validateJWKSURL(url, p.allowInsecureURL); err != nil {
+		panic("jwtutil: NewProvider JWKS URL is invalid")
 	}
 	if p.clock == nil {
 		p.clock = time.Now
@@ -497,8 +631,14 @@ func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opt
 // policy into every other provider that aliased the same keyset and could
 // race under concurrent construction or verification (R4 fix).
 func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
+	if ks == nil || ks.set == nil || ks.set.Len() == 0 {
+		panic("jwtutil: NewProviderWithKeySet requires a non-empty KeySet")
+	}
 	p := &Provider{keyset: ks, clock: time.Now}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("jwtutil: NewProviderWithKeySet option must not be nil")
+		}
 		opt(p)
 	}
 	if p.clock == nil {
@@ -515,12 +655,26 @@ func NewProviderWithKeySet(ks *KeySet, opts ...ProviderOption) *Provider {
 
 // Run starts the background JWKS refresh loop. It blocks until ctx is cancelled.
 // Call this in a goroutine before serving requests.
-func (p *Provider) Run(ctx context.Context) {
+func (p *Provider) Run(ctx context.Context) error {
+	if p == nil {
+		return errors.New("jwtutil: Provider.Run requires a non-nil provider")
+	}
+	if ctx == nil {
+		return errors.New("jwtutil: Provider.Run requires a non-nil context")
+	}
+	p.runMu.Lock()
+	if p.started {
+		p.runMu.Unlock()
+		return errors.New("jwtutil: Provider.Run already started")
+	}
+	p.started = true
+	p.runMu.Unlock()
+
 	if p.url == "" {
 		// No JWKS URL configured (e.g. test provider created via NewProviderWithKeySet).
 		// Block until context is cancelled to match the expected lifecycle contract.
 		<-ctx.Done()
-		return
+		return nil
 	}
 
 	// Phase 1: initial fetch with retry until success.
@@ -534,7 +688,10 @@ func (p *Provider) Run(ctx context.Context) {
 		retry.WithJitter(0.25),
 	)
 	if err != nil {
-		return // context cancelled
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return err
 	}
 
 	// Phase 2: periodic refresh — failures are non-fatal (cached keys remain valid).
@@ -544,21 +701,56 @@ func (p *Provider) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 			if err := p.fetch(ctx); err != nil {
-				slog.Warn("jwks periodic refresh failed, using cached keys",
-					"url", p.url, "error", err)
+				p.logRefreshFailure(err)
 			}
 		}
 	}
+}
+
+func (p *Provider) logRefreshFailure(err error) {
+	slog.Warn("jwks periodic refresh failed, using cached keys",
+		"jwks_configured", p != nil && p.url != "",
+		"error_kind", jwksFetchErrorKind(err))
+}
+
+func jwksFetchErrorKind(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, ErrJWKSRedirectBlocked) {
+		return "redirect_blocked"
+	}
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) {
+		return "request_failed"
+	}
+	if strings.Contains(err.Error(), "jwks endpoint returned unexpected content-type") {
+		return "unexpected_content_type"
+	}
+	if strings.Contains(err.Error(), "jwks endpoint returned ") {
+		return "bad_status"
+	}
+	return "fetch_failed"
 }
 
 func defaultHTTPClient() *http.Client {
 	// Clone http.DefaultTransport so we keep its proxy handling, dialer
 	// timeouts, TLS handshake timeout, idle-conn pool, and HTTP/2 attempt
 	// — replacing it wholesale loses every one of those production
-	// defaults. We only tighten one knob:
+	// defaults. We tighten two knobs:
 	//
 	// MaxResponseHeaderBytes caps the JWKS response header size at 64 KB.
 	// The Go default of 0 means "1 MB", plenty for a real JWKS service
@@ -567,10 +759,22 @@ func defaultHTTPClient() *http.Client {
 	// attacker influence. The body cap is enforced separately at fetch
 	// time (1 MB via io.LimitReader).
 	//
+	// TLSClientConfig is cloned and raised to TLS 1.2+ so process-wide
+	// DefaultTransport customisation cannot silently weaken JWKS fetches.
+	//
 	// Processes can replace http.DefaultTransport with a custom RoundTripper
 	// (otelhttp wrappers, test doubles); falling back to a hand-rolled
 	// http.Transport with the standard-library defaults keeps construction
 	// panic-free in those processes.
+	clone := defaultHTTPTransport()
+	return &http.Client{
+		Timeout:       defaultHTTPTimeout,
+		Transport:     clone,
+		CheckRedirect: blockJWKSRedirect,
+	}
+}
+
+func defaultHTTPTransport() *http.Transport {
 	var clone *http.Transport
 	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone = tr.Clone()
@@ -588,11 +792,41 @@ func defaultHTTPClient() *http.Client {
 			ExpectContinueTimeout: 1 * time.Second,
 		}
 	}
+	clone.TLSClientConfig = cloneTLSConfigWithFloor(clone.TLSClientConfig)
 	clone.MaxResponseHeaderBytes = 64 * 1024
-	return &http.Client{
-		Timeout:   defaultHTTPTimeout,
-		Transport: clone,
+	return clone
+}
+
+func jwksHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return defaultHTTPClient()
 	}
+	if client.Timeout > 0 && client.Transport != nil && client.CheckRedirect != nil {
+		return client
+	}
+	cloned := *client
+	if cloned.Timeout <= 0 {
+		cloned.Timeout = defaultHTTPTimeout
+	}
+	if cloned.Transport == nil {
+		cloned.Transport = defaultHTTPTransport()
+	}
+	if cloned.CheckRedirect == nil {
+		cloned.CheckRedirect = blockJWKSRedirect
+	}
+	return &cloned
+}
+
+func blockJWKSRedirect(_ *http.Request, _ []*http.Request) error {
+	return ErrJWKSRedirectBlocked
+}
+
+func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
+	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumTLSVersion)
+	if err != nil {
+		panic("jwtutil: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer")
+	}
+	return cloned
 }
 
 // KeySet returns the current cached key set. Returns nil if keys haven't
@@ -605,13 +839,20 @@ func defaultHTTPClient() *http.Client {
 // already treats nil-keyset as "fail the request closed", so the
 // staleness check participates in that contract automatically.
 func (p *Provider) KeySet() *KeySet {
+	if p == nil {
+		return nil
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.keyset == nil {
 		return nil
 	}
 	if p.maxStale > 0 && !p.lastSuccessfulFetch.IsZero() {
-		if p.clock().Sub(p.lastSuccessfulFetch) > p.maxStale {
+		clock := p.clock
+		if clock == nil {
+			clock = time.Now
+		}
+		if clock().Sub(p.lastSuccessfulFetch) > p.maxStale {
 			return nil
 		}
 	}
@@ -622,6 +863,9 @@ func (p *Provider) KeySet() *KeySet {
 // JWKS fetch, or the zero time if no fetch has succeeded yet. Use for
 // staleness alerting / health checks.
 func (p *Provider) LastSuccessfulFetch() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.lastSuccessfulFetch
@@ -631,11 +875,18 @@ func (p *Provider) LastSuccessfulFetch() time.Time {
 // 0 if no fetch has succeeded. A value greater than the configured
 // max-stale window means [KeySet] now returns nil.
 func (p *Provider) Staleness() time.Duration {
+	if p == nil {
+		return 0
+	}
 	last := p.LastSuccessfulFetch()
 	if last.IsZero() {
 		return 0
 	}
-	return p.clock().Sub(last)
+	clock := p.clock
+	if clock == nil {
+		clock = time.Now
+	}
+	return clock().Sub(last)
 }
 
 // Verify validates a token against the Provider's current key set using
@@ -649,16 +900,54 @@ func (p *Provider) Staleness() time.Duration {
 // provider passes its own policy into the verifier without touching the
 // shared keyset (R4 fix for cross-provider policy bleed).
 func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
+	return p.VerifyContext(context.Background(), token, now)
+}
+
+// VerifyContext validates a token like [Provider.Verify], using ctx for the
+// optional revocation check. Request handlers should prefer this method so a
+// Redis/cache-backed revocation lookup observes request cancellation and
+// deadlines.
+func (p *Provider) VerifyContext(ctx context.Context, token string, now time.Time) (*Claims, error) {
+	if p == nil {
+		return nil, ErrKeySetUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ks := p.KeySet()
 	if ks == nil {
 		return nil, ErrKeySetUnavailable
 	}
-	return verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience)
+	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience)
+	if err != nil {
+		return nil, err
+	}
+	if p.revocation == nil {
+		return claims, nil
+	}
+	if claims.ID == "" {
+		return nil, ErrMissingTokenID
+	}
+	revoked, err := p.revocation.IsRevoked(ctx, claims)
+	if err != nil {
+		return nil, err
+	}
+	if revoked {
+		return nil, ErrTokenRevoked
+	}
+	return claims, nil
 }
 
-// ErrKeySetUnavailable is returned by [Provider.Verify] when the JWKS has
-// not been fetched yet or has gone stale past the max-stale window.
+// ErrKeySetUnavailable is returned by [Provider.Verify] and
+// [Provider.VerifyContext] when the JWKS has not been fetched yet or has gone
+// stale past the max-stale window.
 var ErrKeySetUnavailable = errors.New("jwtutil: key set unavailable")
+
+// ErrJWKSRedirectBlocked is returned by JWKS HTTP clients without an explicit
+// redirect policy when a JWKS endpoint attempts to redirect. Fetches must go
+// only to the configured signer endpoint unless callers deliberately install a
+// custom redirect policy.
+var ErrJWKSRedirectBlocked = errors.New("jwtutil: JWKS redirects are disabled by default")
 
 func (p *Provider) fetch(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
@@ -682,9 +971,12 @@ func (p *Provider) fetch(ctx context.Context) error {
 	}
 
 	// Reject non-JSON content types — e.g. captive-portal HTML responses.
-	ct := resp.Header.Get("Content-Type")
+	ct, err := singletonContentType(resp.Header)
+	if err != nil {
+		return err
+	}
 	if ct != "" && !isJSONContentType(ct) {
-		return fmt.Errorf("jwks endpoint returned unexpected content-type %q", ct)
+		return fmt.Errorf("jwks endpoint returned unexpected content-type")
 	}
 
 	// 64 KiB is well above any realistic JWKS document (<4 KiB typical)
@@ -695,7 +987,7 @@ func (p *Provider) fetch(ctx context.Context) error {
 		return err
 	}
 	if len(body) > maxJWKSBytes {
-		return fmt.Errorf("jwks body exceeds %d bytes", maxJWKSBytes)
+		return fmt.Errorf("jwks body exceeds maximum size")
 	}
 
 	ks, err := ParseKeySet(body)
@@ -708,4 +1000,15 @@ func (p *Provider) fetch(ctx context.Context) error {
 	p.lastSuccessfulFetch = p.clock()
 	p.mu.Unlock()
 	return nil
+}
+
+func singletonContentType(h http.Header) (string, error) {
+	values := h.Values("Content-Type")
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf("jwks endpoint returned multiple content-type headers")
+	}
+	return strings.TrimSpace(values[0]), nil
 }

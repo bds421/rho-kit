@@ -62,16 +62,15 @@ func TestNewVersionedHandler_UnknownVersionError(t *testing.T) {
 	d := messaging.Delivery{
 		SchemaVersion: 99,
 		Message: messaging.Message{
-			ID:   "msg-1",
-			Type: "test.event",
+			ID:   "secret-token",
+			Type: "secret-token.event",
 		},
 	}
 
 	err := h(context.Background(), d)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no handler registered for schema version 99")
-	assert.Contains(t, err.Error(), "test.event")
-	assert.Contains(t, err.Error(), "msg-1")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestNewVersionedHandler_PropagatesHandlerError(t *testing.T) {

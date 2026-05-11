@@ -2,8 +2,11 @@ package ratelimit
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -74,11 +77,20 @@ func handleDegradation(
 	if health == nil {
 		return false, false
 	}
-	if health.Healthy() {
+	healthy, ok := safeHealthy(health)
+	if !ok {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
+		return false, true
+	}
+	if healthy {
 		return false, false
 	}
 
-	err := handler.OnUnavailable(r.Context())
+	err, ok := safeOnUnavailable(handler, r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
+		return false, true
+	}
 	if err == nil {
 		// Passthrough: skip rate limiting, allow request through.
 		return true, false
@@ -87,4 +99,30 @@ func handleDegradation(
 	// Fail-fast: return 503.
 	httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
 	return false, true
+}
+
+func safeHealthy(health HealthIndicator) (healthy bool, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("ratelimit: health indicator panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			healthy, ok = false, false
+		}
+	}()
+	return health.Healthy(), true
+}
+
+func safeOnUnavailable(handler DegradationHandler, ctx context.Context) (err error, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("ratelimit: degradation handler panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			err, ok = nil, false
+		}
+	}()
+	return handler.OnUnavailable(ctx), true
 }

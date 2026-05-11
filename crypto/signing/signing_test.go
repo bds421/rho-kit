@@ -243,6 +243,11 @@ func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
 	assert.True(t, ok)
 }
 
+func TestSignerOptions_PanicOnInvalidInput(t *testing.T) {
+	assert.Panics(t, func() { WithFutureSkew(-time.Second) })
+	assert.Panics(t, func() { NewSigner(nil) })
+}
+
 func TestSigner_Sign_EmptySecret(t *testing.T) {
 	s := NewSigner()
 	_, _, err := s.Sign([]byte("body"), nil)
@@ -253,6 +258,62 @@ func TestSigner_Verify_EmptySecret(t *testing.T) {
 	s := NewSigner()
 	_, err := s.Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrEmptySecret)
+}
+
+func TestSigner_ZeroValueReturnsInvalidSigner(t *testing.T) {
+	var s Signer
+
+	_, _, err := s.Sign([]byte("body"), testSecret)
+	assert.ErrorIs(t, err, ErrInvalidSigner)
+
+	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	assert.ErrorIs(t, err, ErrInvalidSigner)
+}
+
+func TestSigner_NilReceiverReturnsInvalidSigner(t *testing.T) {
+	var s *Signer
+
+	_, _, err := s.Sign([]byte("body"), testSecret)
+	assert.ErrorIs(t, err, ErrInvalidSigner)
+
+	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	assert.ErrorIs(t, err, ErrInvalidSigner)
+}
+
+func TestVerify_RejectsNonPositiveMaxAge(t *testing.T) {
+	s := NewSigner()
+	sig, ts, err := s.Sign([]byte("body"), testSecret)
+	require.NoError(t, err)
+
+	_, err = s.Verify(testSecret, []byte("body"), ts, sig, 0)
+	assert.ErrorIs(t, err, ErrInvalidMaxAge)
+
+	_, err = s.Verify(testSecret, []byte("body"), ts, sig, -time.Second)
+	assert.ErrorIs(t, err, ErrInvalidMaxAge)
+}
+
+func TestSignContext_RejectsAmbiguousContextSeparators(t *testing.T) {
+	s := NewSigner()
+	cases := []CanonicalContext{
+		{Method: "POST\nGET", Path: "/hooks", Domain: "webhook"},
+		{Method: "POST", Path: "/hooks\r\nX", Domain: "webhook"},
+		{Method: "POST", Path: "/hooks", Domain: "webhook\nv2"},
+	}
+
+	for _, ctx := range cases {
+		_, _, err := s.SignContext(ctx, []byte("body"), testSecret)
+		assert.ErrorIs(t, err, ErrInvalidContext)
+	}
+}
+
+func TestVerifyContext_RejectsAmbiguousContextSeparators(t *testing.T) {
+	s := NewSigner()
+	ctx := CanonicalContext{Method: "POST", Path: "/hooks", Domain: "webhook"}
+	sig, ts, err := s.SignContext(ctx, []byte("body"), testSecret)
+	require.NoError(t, err)
+
+	_, err = s.VerifyContext(CanonicalContext{Method: "POST\nGET", Path: "/hooks", Domain: "webhook"}, testSecret, []byte("body"), ts, sig, DefaultSignatureMaxAge)
+	assert.ErrorIs(t, err, ErrInvalidContext)
 }
 
 func TestWithClock_PanicsOnNil(t *testing.T) {

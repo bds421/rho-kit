@@ -20,31 +20,71 @@ type resilientConfig struct {
 	onStateChange     func(from, to circuitbreaker.State)
 	deadlineBudget    bool
 	deadlineBudgetCfg deadlineBudgetConfig
+	checkRedirect     func(*http.Request, []*http.Request) error
+	idleConnTimeout   time.Duration
 }
 
 // WithResilientTimeout sets the HTTP client timeout. Default: 10s.
 func WithResilientTimeout(d time.Duration) ResilientOption {
+	if d <= 0 {
+		panic("httpx: WithResilientTimeout requires a positive duration")
+	}
 	return func(c *resilientConfig) { c.timeout = d }
+}
+
+// WithoutResilientTimeout removes the static http.Client timeout. Use only
+// when every request is bounded by a caller context deadline, typically with
+// [WithDeadlineBudget].
+func WithoutResilientTimeout() ResilientOption {
+	return func(c *resilientConfig) { c.timeout = 0 }
 }
 
 // WithResilientTLS sets the TLS configuration for the transport.
 func WithResilientTLS(cfg *tls.Config) ResilientOption {
-	return func(c *resilientConfig) { c.tlsConfig = cfg }
+	if cfg == nil {
+		panic("httpx: WithResilientTLS requires a non-nil tls.Config")
+	}
+	owned := cloneTLSConfigWithFloor(cfg, "httpx: WithResilientTLS")
+	return func(c *resilientConfig) { c.tlsConfig = cloneTLSConfigWithFloor(owned, "httpx: WithResilientTLS") }
+}
+
+// WithResilientIdleConnTimeout sets the resilient client's idle connection
+// timeout. It mirrors [WithIdleConnTimeout] for clients that also need circuit
+// breaker protection.
+func WithResilientIdleConnTimeout(d time.Duration) ResilientOption {
+	if d < 0 {
+		panic("httpx: WithResilientIdleConnTimeout requires a non-negative duration")
+	}
+	return func(c *resilientConfig) { c.idleConnTimeout = d }
+}
+
+// WithResilientFollowRedirects enables bounded redirect following for
+// resilient HTTP clients. By default redirects are blocked with
+// [ErrRedirectBlocked], matching [NewHTTPClient].
+func WithResilientFollowRedirects(maxHops int) ResilientOption {
+	if maxHops <= 0 {
+		panic("httpx: WithResilientFollowRedirects requires maxHops > 0")
+	}
+	return func(c *resilientConfig) { c.checkRedirect = boundedRedirectPolicy(maxHops) }
 }
 
 // WithCBThreshold sets the consecutive failure count to trip the circuit
 // breaker. Default: 5.
 func WithCBThreshold(n int) ResilientOption {
+	if n <= 0 {
+		panic("httpx: WithCBThreshold requires a positive threshold")
+	}
 	return func(c *resilientConfig) {
-		if n > 0 {
-			c.cbThreshold = n
-		}
+		c.cbThreshold = n
 	}
 }
 
 // WithCBResetTimeout sets how long the circuit stays open before allowing
 // a probe request. Default: 30s.
 func WithCBResetTimeout(d time.Duration) ResilientOption {
+	if d <= 0 {
+		panic("httpx: WithCBResetTimeout requires a positive duration")
+	}
 	return func(c *resilientConfig) { c.cbReset = d }
 }
 
@@ -81,15 +121,19 @@ func WithCBOnStateChange(fn func(from, to circuitbreaker.State)) ResilientOption
 // Note: the static http.Client.Timeout (default 10s) still applies as an
 // upper bound. If the deadline budget exceeds the client timeout, the client
 // timeout wins. To rely solely on deadline budget propagation, use
-// WithResilientTimeout(0).
+// [WithoutResilientTimeout].
 func WithDeadlineBudget(opts ...DeadlineBudgetOption) ResilientOption {
+	copied := append([]DeadlineBudgetOption(nil), opts...)
 	return func(c *resilientConfig) {
 		c.deadlineBudget = true
 		c.deadlineBudgetCfg = deadlineBudgetConfig{
 			safetyMargin: defaultSafetyMargin,
 			minTimeout:   defaultMinTimeout,
 		}
-		for _, o := range opts {
+		for _, o := range copied {
+			if o == nil {
+				panic("httpx: WithDeadlineBudget option must not be nil")
+			}
 			o(&c.deadlineBudgetCfg)
 		}
 	}
@@ -119,18 +163,15 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("httpx: NewResilientHTTPClient option must not be nil")
+		}
 		o(&cfg)
 	}
 
-	var transport *http.Transport
-	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = tr.Clone()
-	} else {
-		transport = newFallbackTransport()
-	}
-	if cfg.tlsConfig != nil {
-		transport.TLSClientConfig = cfg.tlsConfig
-	}
+	transport := newKitTransportWithLabel(cfg.tlsConfig, clientConfig{
+		idleConnTimeout: cfg.idleConnTimeout,
+	}, "httpx: NewResilientHTTPClient")
 
 	var cbOpts []circuitbreaker.Option
 	if cfg.onStateChange != nil {
@@ -162,8 +203,9 @@ func NewResilientHTTPClient(opts ...ResilientOption) *http.Client {
 	}
 
 	return &http.Client{
-		Timeout:   cfg.timeout,
-		Transport: rt,
+		Timeout:       cfg.timeout,
+		Transport:     rt,
+		CheckRedirect: redirectPolicyOrDefault(cfg.checkRedirect),
 	}
 }
 

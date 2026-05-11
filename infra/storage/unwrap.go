@@ -6,7 +6,7 @@ const maxUnwrapDepth = 32
 
 // Unwrapper is implemented by storage decorators that wrap another Storage.
 // This enables walking the wrapper chain to discover optional interfaces
-// (Lister, Copier, PresignedStore) on the underlying backend.
+// on the underlying backend.
 type Unwrapper interface {
 	Unwrap() Storage
 }
@@ -85,4 +85,34 @@ func AsPresigned(s Storage) (PresignedStore, bool) {
 // PublicURLer.
 func AsPublicURLer(s Storage) (PublicURLer, bool) {
 	return asImpl[PublicURLer](s)
+}
+
+// AsBatchDeleter walks the Unwrap chain to find a BatchDeleter
+// implementation. Returns (nil, false) if no backend in the chain implements
+// BatchDeleter, or if traversal hits an [OpaqueDecorator] that does not itself
+// implement BatchDeleter.
+func AsBatchDeleter(s Storage) (BatchDeleter, bool) {
+	return asImpl[BatchDeleter](s)
+}
+
+// AsMultipartUploader walks the Unwrap chain to find a MultipartUploader
+// implementation. Returns (nil, false) if no backend in the chain implements
+// MultipartUploader, or if traversal hits an [OpaqueDecorator] that does not
+// itself implement MultipartUploader.
+func AsMultipartUploader(s Storage) (MultipartUploader, bool) {
+	return asImpl[MultipartUploader](s)
+}
+
+// AsTagger walks the Unwrap chain to find a Tagger implementation. Returns
+// (nil, false) if no backend in the chain implements Tagger, or if traversal
+// hits an [OpaqueDecorator] that does not itself implement Tagger.
+func AsTagger(s Storage) (Tagger, bool) {
+	return asImpl[Tagger](s)
+}
+
+// AsVersioner walks the Unwrap chain to find a Versioner implementation.
+// Returns (nil, false) if no backend in the chain implements Versioner, or if
+// traversal hits an [OpaqueDecorator] that does not itself implement Versioner.
+func AsVersioner(s Storage) (Versioner, bool) {
+	return asImpl[Versioner](s)
 }

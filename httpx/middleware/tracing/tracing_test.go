@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -104,6 +105,68 @@ func TestHTTPMiddleware_setsErrorStatusOn5xx(t *testing.T) {
 	}
 }
 
+func TestHTTPMiddleware_recordsSpanStatusAndRepanicsWhenHandlerPanics(t *testing.T) {
+	recorder := setupTestProvider(t)
+	handlerPanic := assertPanicValue{}
+
+	handler := HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		if got != handlerPanic {
+			t.Fatalf("panic = %#v, want %#v", got, handlerPanic)
+		}
+		spans := recorder.Ended()
+		if len(spans) != 1 {
+			t.Fatalf("expected 1 span, got %d", len(spans))
+		}
+		if spans[0].Name() != "GET /panic" {
+			t.Fatalf("span name = %q, want route pattern", spans[0].Name())
+		}
+		if spans[0].Status().Code != codes.Error {
+			t.Fatalf("span status = %v, want Error", spans[0].Status().Code)
+		}
+		if got := intAttribute(spans[0].Attributes(), "http.response.status_code"); got != http.StatusInternalServerError {
+			t.Fatalf("status attr = %d, want 500", got)
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	req.Pattern = "/panic"
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestHTTPMiddleware_PanicAfterHeaderKeepsWireStatusButMarksError(t *testing.T) {
+	recorder := setupTestProvider(t)
+	handlerPanic := assertPanicValue{}
+
+	handler := HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		if got != handlerPanic {
+			t.Fatalf("panic = %#v, want %#v", got, handlerPanic)
+		}
+		spans := recorder.Ended()
+		if len(spans) != 1 {
+			t.Fatalf("expected 1 span, got %d", len(spans))
+		}
+		if spans[0].Status().Code != codes.Error {
+			t.Fatalf("span status = %v, want Error", spans[0].Status().Code)
+		}
+		if got := intAttribute(spans[0].Attributes(), "http.response.status_code"); got != http.StatusCreated {
+			t.Fatalf("status attr = %d, want 201", got)
+		}
+	}()
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/created", nil))
+}
+
 func TestInjectHTTPHeaders(t *testing.T) {
 	setupTestProvider(t)
 
@@ -117,4 +180,25 @@ func TestInjectHTTPHeaders(t *testing.T) {
 	if req.Header.Get("traceparent") == "" {
 		t.Error("expected traceparent header after inject")
 	}
+}
+
+func TestInjectHTTPHeaders_NilRequestNoops(t *testing.T) {
+	setupTestProvider(t)
+
+	tracer := otel.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "outgoing-call")
+	defer span.End()
+
+	InjectHTTPHeaders(ctx, nil)
+}
+
+type assertPanicValue struct{}
+
+func intAttribute(attrs []attribute.KeyValue, key string) int {
+	for _, attr := range attrs {
+		if string(attr.Key) == key {
+			return int(attr.Value.AsInt64())
+		}
+	}
+	return 0
 }

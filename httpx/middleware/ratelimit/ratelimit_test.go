@@ -2,11 +2,22 @@ package ratelimit
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestCleanupInterval_SaturatesOnLargeWindow(t *testing.T) {
+	if got := cleanupInterval(time.Second); got != 2*time.Second {
+		t.Fatalf("cleanupInterval(time.Second)=%v, want 2s", got)
+	}
+	if got := cleanupInterval(maxDurationValue); got != maxDurationValue {
+		t.Fatalf("cleanupInterval(maxDuration)=%v, want %v", got, maxDurationValue)
+	}
+}
 
 func TestRateLimiterAllow(t *testing.T) {
 	rl := NewRateLimiter(3, time.Minute)
@@ -23,6 +34,21 @@ func TestRateLimiterAllow(t *testing.T) {
 
 	if allowed, _ := rl.allow("5.6.7.8"); !allowed {
 		t.Fatal("different IP should be allowed")
+	}
+}
+
+func TestRateLimiterAllowRejectsEmptyIPWithoutStoring(t *testing.T) {
+	rl := NewRateLimiter(1, time.Minute)
+
+	allowed, remaining := rl.allow("")
+	if allowed {
+		t.Fatal("empty IP should not be allowed")
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining = %s, want 0 for invalid IP", remaining)
+	}
+	if got := rateLimiterEntryCount(rl); got != 0 {
+		t.Fatalf("empty IP was stored; entries = %d", got)
 	}
 }
 
@@ -98,6 +124,30 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	retryAfter := w.Header().Get("Retry-After")
 	if retryAfter == "" {
 		t.Fatal("Retry-After header should be present on 429 response")
+	}
+}
+
+func TestRateLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testing.T) {
+	rl := NewRateLimiter(2, time.Minute)
+	called := false
+	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "not an ip"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("next handler must not run when client IP cannot be determined")
+	}
+	if got := rateLimiterEntryCount(rl); got != 0 {
+		t.Fatalf("invalid client IP was stored; entries = %d", got)
 	}
 }
 
@@ -202,15 +252,26 @@ func TestRateLimiterTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestWithTrustedProxies_OptionReuseClonesOutput(t *testing.T) {
+	opt := WithTrustedProxies([]string{"192.0.2.0/24"})
+
+	rl1 := NewRateLimiter(1, time.Minute, opt)
+	rl2 := NewRateLimiter(1, time.Minute, opt)
+
+	rl1.trustedProxies[0].IP = net.ParseIP("10.0.0.0")
+	if !rl2.trustedProxies[0].Contains(net.ParseIP("192.0.2.10")) {
+		t.Fatalf("second option application shared trusted proxy state: %v", rl2.trustedProxies[0])
+	}
+}
+
 func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
 	rl := NewRateLimiter(5, 10*time.Millisecond)
 	rl.allow("1.2.3.4")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		rl.Run(ctx)
-		close(done)
+		done <- rl.Run(ctx)
 	}()
 
 	// Let at least one cleanup tick fire.
@@ -218,11 +279,83 @@ func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
 	cancel()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
 		// Run returned successfully.
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop after context cancel")
 	}
+}
+
+func TestRateLimiterRun_RejectsNilContext(t *testing.T) {
+	rl := NewRateLimiter(5, 10*time.Millisecond)
+	var ctx context.Context
+	err := rl.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
+		t.Fatalf("expected non-nil context error, got %v", err)
+	}
+}
+
+func TestRateLimiterRun_RejectsInvalidLimiter(t *testing.T) {
+	var rl RateLimiter
+	if err := rl.Run(context.Background()); err != ErrInvalidLimiter {
+		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
+	}
+}
+
+func TestRateLimiterRun_RejectsSecondStart(t *testing.T) {
+	rl := NewRateLimiter(5, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rl.Run(ctx) }()
+	waitForRateLimiterRunStarted(t, rl)
+
+	err := rl.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestRateLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
+	rl := NewRateLimiter(5, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rl.Run(ctx) }()
+	waitForRateLimiterRunStarted(t, rl)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	err := rl.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+}
+
+func waitForRateLimiterRunStarted(t *testing.T, rl *RateLimiter) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rl.runMu.Lock()
+		started := rl.started
+		rl.runMu.Unlock()
+		if started {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("RateLimiter.Run did not start")
 }
 
 func TestClientIP_DirectConnection(t *testing.T) {
@@ -278,12 +411,17 @@ func TestWithTrustedProxies_PlainIP(t *testing.T) {
 	}
 }
 
-func TestWithTrustedProxies_InvalidSkipped(t *testing.T) {
-	// Invalid CIDR/IP entries should be silently skipped.
-	rl := NewRateLimiter(10, time.Minute, WithTrustedProxies([]string{"not-valid", "10.0.0.0/8"}))
-	if len(rl.trustedProxies) != 1 {
-		t.Errorf("trustedProxies = %d, want 1 (invalid skipped)", len(rl.trustedProxies))
-	}
+func TestWithTrustedProxies_PanicsOnInvalid(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on invalid trusted proxy")
+		}
+		if r != "ratelimit: invalid trusted proxy" {
+			t.Fatalf("panic = %q, want %q", r, "ratelimit: invalid trusted proxy")
+		}
+	}()
+	_ = WithTrustedProxies([]string{"secret-token", "10.0.0.0/8"})
 }
 
 func TestRateLimiterWithClock(t *testing.T) {
@@ -311,4 +449,44 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 		}
 	}()
 	_ = WithClock(nil)
+}
+
+func TestNewRateLimiter_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_ = NewRateLimiter(1, time.Minute, nil)
+}
+
+func TestRateLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
+	t.Run("zero limiter", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on zero limiter")
+			}
+		}()
+		var zero RateLimiter
+		_ = zero.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	})
+	t.Run("nil next", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on nil next handler")
+			}
+		}()
+		_ = NewRateLimiter(1, time.Minute).Middleware(nil)
+	})
+}
+
+func rateLimiterEntryCount(rl *RateLimiter) int {
+	var count int
+	for i := range rl.shards {
+		s := &rl.shards[i]
+		s.mu.Lock()
+		count += s.visitors.Len()
+		s.mu.Unlock()
+	}
+	return count
 }

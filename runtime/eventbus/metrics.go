@@ -47,10 +47,10 @@ func newPoolMetrics(reg prometheus.Registerer) *poolMetrics {
 		}, []string{"event_name"}),
 	}
 
-	promutil.RegisterCollector(reg, m.activeWorkers)
-	promutil.RegisterCollector(reg, m.queueDepth)
-	promutil.RegisterCollector(reg, m.dropped)
-	promutil.RegisterCollector(reg, m.processed)
+	m.activeWorkers = promutil.MustRegisterOrGet(reg, m.activeWorkers)
+	m.queueDepth = promutil.MustRegisterOrGet(reg, m.queueDepth)
+	m.dropped = promutil.MustRegisterOrGet(reg, m.dropped)
+	m.processed = promutil.MustRegisterOrGet(reg, m.processed)
 
 	return m
 }

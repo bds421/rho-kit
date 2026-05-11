@@ -66,6 +66,7 @@ func Registered() []Rule {
 	return []Rule{
 		jwtMissingClaimsRule{},
 		idempotencyMissingUserExtractorRule{},
+		tenantKeyPrefixRule{},
 		defaultHTTPClientRule{},
 		httpServerMissingErrorLogRule{},
 		httpServerDirectConstructionRule{},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +122,25 @@ func TestCircuitBreaker_StateChangeCallback(t *testing.T) {
 	assert.Contains(t, transitions, "closed→open")
 }
 
+func TestCircuitBreaker_StateChangeCallbackPanicDoesNotEscape(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	failing := &alwaysFailBackend{err: errors.New("down")}
+	cb := New(failing,
+		WithThreshold(1),
+		WithOnStateChange(func(State, State) {
+			panic("metrics hook exploded")
+		}),
+	)
+
+	assert.NotPanics(t, func() {
+		_, _, err := cb.Get(ctx, "key")
+		assert.Error(t, err)
+	})
+	assert.Equal(t, StateOpen, cb.State())
+}
+
 func TestCircuitBreaker_Delete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -135,6 +155,13 @@ func TestCircuitBreaker_New_NilBackendPanics(t *testing.T) {
 	t.Parallel()
 	assert.PanicsWithValue(t, "storage/circuitbreaker: backend must not be nil", func() {
 		_ = New(nil)
+	})
+}
+
+func TestCircuitBreaker_New_NilOptionPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/circuitbreaker: option must not be nil", func() {
+		_ = New(membackend.New(), nil)
 	})
 }
 
@@ -159,6 +186,54 @@ func TestCircuitBreaker_WithShouldTripNil_PreservesDefault(t *testing.T) {
 	// and must not contribute to tripping.
 	_, err := cb.Exists(ctx, "missing")
 	assert.NoError(t, err)
+	assert.Equal(t, StateClosed, cb.State())
+}
+
+func TestCircuitBreaker_DefaultDoesNotTripOnValidationErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := membackend.New()
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	err := cb.Put(ctx, "file.txt", nil, storage.ObjectMeta{})
+	require.ErrorIs(t, err, storage.ErrValidation)
+	assert.Equal(t, StateClosed, cb.State())
+
+	_, _, err = cb.Get(ctx, "")
+	require.ErrorIs(t, err, storage.ErrValidation)
+	assert.Equal(t, StateClosed, cb.State())
+}
+
+func TestCircuitBreaker_ValidatesBeforeBackendAndBreakerState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &validationProbeBackend{}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+
+	_, _, err := cb.Get(ctx, "bad key")
+	require.ErrorIs(t, err, storage.ErrValidation)
+	assert.Equal(t, int32(0), backend.calls.Load())
+	assert.Equal(t, StateClosed, cb.State())
+}
+
+func TestCircuitBreaker_ListValidatesBeforeBackendAndBreakerState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	backend := &validationProbeBackend{}
+	cb := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
+	lister, ok := storage.AsLister(cb)
+	require.True(t, ok)
+
+	var seenErr error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{MaxKeys: -1}) {
+		seenErr = err
+		break
+	}
+
+	require.ErrorIs(t, seenErr, storage.ErrValidation)
+	assert.Equal(t, int32(0), backend.calls.Load())
 	assert.Equal(t, StateClosed, cb.State())
 }
 
@@ -361,4 +436,35 @@ func (b *switchableBackend) Exists(ctx context.Context, key string) (bool, error
 		return false, b.err
 	}
 	return b.backend.Exists(ctx, key)
+}
+
+type validationProbeBackend struct {
+	calls atomic.Int32
+}
+
+func (b *validationProbeBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	b.calls.Add(1)
+	return nil
+}
+
+func (b *validationProbeBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	b.calls.Add(1)
+	return nil, storage.ObjectMeta{}, errors.New("backend should not be called")
+}
+
+func (b *validationProbeBackend) Delete(context.Context, string) error {
+	b.calls.Add(1)
+	return nil
+}
+
+func (b *validationProbeBackend) Exists(context.Context, string) (bool, error) {
+	b.calls.Add(1)
+	return false, nil
+}
+
+func (b *validationProbeBackend) List(context.Context, string, storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		b.calls.Add(1)
+		yield(storage.ObjectInfo{}, errors.New("backend should not be called"))
+	}
 }

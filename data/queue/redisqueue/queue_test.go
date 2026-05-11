@@ -3,16 +3,22 @@ package redisqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
@@ -49,6 +55,29 @@ func TestNewMessage(t *testing.T) {
 	assert.Equal(t, 1, msg.Attempt)
 }
 
+func TestNewMessage_RejectsInvalidType(t *testing.T) {
+	for _, msgType := range []string{"", "bad type", "bad\ttype", "bad\ntype"} {
+		t.Run(msgType, func(t *testing.T) {
+			_, err := NewMessage(msgType, map[string]string{"key": "value"})
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
+		})
+	}
+}
+
+func TestMessage_CloneDetachesPayload(t *testing.T) {
+	msg := Message{
+		ID:      "msg-1",
+		Type:    "test.job",
+		Payload: []byte(`{"ok":true}`),
+		Attempt: 1,
+	}
+
+	clone := msg.Clone()
+	clone.Payload[1] = 'X'
+
+	assert.Equal(t, `{"ok":true}`, string(msg.Payload))
+}
+
 func TestQueue_Enqueue_EmptyName(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
@@ -58,6 +87,107 @@ func TestQueue_Enqueue_EmptyName(t *testing.T) {
 
 	err := q.Enqueue(context.Background(), "", msg)
 	assert.Error(t, err)
+}
+
+func TestQueue_RedisCommandErrorsDoNotReflectQueueName(t *testing.T) {
+	client := newTestClient(t)
+	q := NewQueue(client, WithBlockTimeout(10*time.Millisecond))
+	ctx := context.Background()
+	queueName := "test:queue:secret-token"
+	msg, err := NewMessage("test.job", map[string]string{"ok": "true"})
+	require.NoError(t, err)
+	require.NoError(t, client.Close())
+
+	err = q.Enqueue(ctx, queueName, msg)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+
+	_, err = q.Len(ctx, queueName)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestQueue_DepthCheck_DoesNotExposeQueueName(t *testing.T) {
+	var q *Queue
+	check := q.DepthCheck("email:priority.high", 10)
+	assert.Regexp(t, `^queue-depth-[0-9a-f]{12}$`, check.Name)
+	assert.NotContains(t, check.Name, "email")
+	assert.NotContains(t, check.Name, "priority")
+	assert.NotContains(t, check.Name, "high")
+}
+
+func TestQueue_MetricLabelDoesNotExposeQueueName(t *testing.T) {
+	label := queueMetricLabel("email:priority.high:tenant-secret")
+	assert.Regexp(t, `^queue-[0-9a-f]{12}$`, label)
+	assert.NotContains(t, label, "email")
+	assert.NotContains(t, label, "priority")
+	assert.NotContains(t, label, "high")
+	assert.NotContains(t, label, "tenant")
+	assert.NotContains(t, label, "secret")
+	assert.Equal(t, label, queueMetricLabel("email:priority.high:tenant-secret"))
+}
+
+func TestNewQueue_PanicsOnNilOption(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	assert.Panics(t, func() {
+		NewQueue(client, nil)
+	})
+}
+
+func TestQueue_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	msg := Message{ID: "msg-1", Type: "test", Payload: []byte(`{}`), Timestamp: time.Now()}
+	cases := []struct {
+		name string
+		q    *Queue
+	}{
+		{"nil", nil},
+		{"zero", &Queue{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Empty(t, tc.q.ConsumerID())
+
+			err := tc.q.Enqueue(ctx, "test:queue", msg)
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+
+			err = tc.q.EnqueueBatch(ctx, "test:queue", []Message{msg})
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+
+			n, err := tc.q.Len(ctx, "test:queue")
+			assert.Equal(t, int64(0), n)
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+
+			assert.Panics(t, func() {
+				tc.q.Process(ctx, "test:queue", func(context.Context, Message) error { return nil })
+			})
+		})
+	}
+}
+
+func TestCallHandler_ConvertsPanicToError(t *testing.T) {
+	err := callHandler(context.Background(), func(context.Context, Message) error {
+		panic("handler exploded")
+	}, Message{ID: "msg-1"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "handler panic")
+	assert.Contains(t, err.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, err.Error(), "handler exploded")
+}
+
+func TestCallHandler_ClonesPayloadForHandler(t *testing.T) {
+	msg := Message{ID: "msg-1", Payload: []byte(`{"ok":true}`)}
+
+	err := callHandler(context.Background(), func(_ context.Context, got Message) error {
+		got.Payload[1] = 'X'
+		return nil
+	}, msg)
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"ok":true}`, string(msg.Payload))
 }
 
 func TestQueue_Enqueue_PayloadTooLarge(t *testing.T) {
@@ -70,7 +200,67 @@ func TestQueue_Enqueue_PayloadTooLarge(t *testing.T) {
 
 	err = q.Enqueue(context.Background(), "test:queue", msg)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds max payload size")
+	assert.ErrorIs(t, err, kitqueue.ErrMessageTooLarge)
+}
+
+func TestQueue_Enqueue_RejectsInvalidMessage(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	queueName := "test:queue:invalid-message"
+
+	for _, msg := range []Message{
+		{ID: "msg-1", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1},
+		{ID: "msg-2", Type: "bad\ntype", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1},
+	} {
+		err := q.Enqueue(ctx, queueName, msg)
+		assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
+	}
+
+	n, err := q.Len(ctx, queueName)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+}
+
+func TestQueue_Enqueue_InvalidMessageIDDoesNotReflectValue(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	msg := Message{
+		ID:        "secret-token/bad",
+		Type:      "test.job",
+		Payload:   []byte(`"x"`),
+		Timestamp: time.Now(),
+		Attempt:   1,
+	}
+
+	err := q.Enqueue(context.Background(), "test:queue:invalid-id", msg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
+}
+
+func TestQueue_EnqueueBatch_RejectsInvalidMessage(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	queueName := "test:queue:batch:invalid-message"
+
+	good, err := NewMessage("test", "data")
+	require.NoError(t, err)
+	bad := Message{ID: "msg-2", Type: "bad\rtype", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1}
+
+	err = q.EnqueueBatch(ctx, queueName, []Message{good, bad})
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
+
+	n, err := q.Len(ctx, queueName)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "no message must be enqueued when validation fails")
 }
 
 func TestQueue_EnqueueBatch_Empty(t *testing.T) {
@@ -80,6 +270,32 @@ func TestQueue_EnqueueBatch_Empty(t *testing.T) {
 	q := NewQueue(client)
 	err := q.EnqueueBatch(context.Background(), "test:queue", nil)
 	require.NoError(t, err)
+}
+
+func TestQueue_EnqueueBatch_RejectsTooManyMessages(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	queueName := "test:queue:batch:too-large"
+	msgs := make([]Message, kitqueue.MaxBatchMessages+1)
+	for i := range msgs {
+		msgs[i] = Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			Type:      "test.job",
+			Payload:   []byte(`"x"`),
+			Timestamp: time.Now().UTC(),
+			Attempt:   1,
+		}
+	}
+
+	err := q.EnqueueBatch(ctx, queueName, msgs)
+	assert.ErrorIs(t, err, kitqueue.ErrBatchTooLarge)
+
+	n, err := q.Len(ctx, queueName)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
 }
 
 func TestQueue_Len(t *testing.T) {
@@ -96,6 +312,109 @@ func TestQueue_Len(t *testing.T) {
 	n, err := q.Len(ctx, "test:len")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n)
+}
+
+func TestHandleMessage_RetryUsesOriginalPayloadWhenHandlerMutates(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	ctx := context.Background()
+	queueName := "test:queue:retry-clone"
+	processingQ := queueName + ":processing:self"
+	deadQ := queueName + ":dead"
+	msg := Message{
+		ID:        "msg-1",
+		Type:      "test.job",
+		Payload:   []byte(`{"ok":true}`),
+		Timestamp: time.Now().UTC(),
+		Attempt:   1,
+	}
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(ctx, processingQ, data).Err())
+
+	q.handleMessage(ctx, string(data), processingQ, queueName, deadQ, func(_ context.Context, got Message) error {
+		got.Payload[1] = 'X'
+		return errors.New("retry")
+	})
+
+	retryData, err := client.RPop(ctx, queueName).Result()
+	require.NoError(t, err)
+	var retryMsg Message
+	require.NoError(t, json.Unmarshal([]byte(retryData), &retryMsg))
+	assert.Equal(t, `{"ok":true}`, string(retryMsg.Payload))
+	assert.Equal(t, 2, retryMsg.Attempt)
+}
+
+type queueContextKey struct{}
+
+func TestHandleMessage_DetachedContextsPreserveValuesAfterCancellation(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client)
+	queueName := "test:queue:detached-context"
+	processingQ := queueName + ":processing:self"
+	deadQ := queueName + ":dead"
+	msg := Message{
+		ID:        "msg-1",
+		Type:      "test.job",
+		Payload:   []byte(`{"ok":true}`),
+		Timestamp: time.Now().UTC(),
+		Attempt:   1,
+	}
+	data, err := jsonMarshal(msg)
+	require.NoError(t, err)
+	require.NoError(t, client.LPush(context.Background(), processingQ, data).Err())
+
+	parent := context.WithValue(context.Background(), queueContextKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+
+	called := false
+	q.handleMessage(ctx, string(data), processingQ, queueName, deadQ, func(handlerCtx context.Context, got Message) error {
+		called = true
+		assert.Equal(t, "trace-123", handlerCtx.Value(queueContextKey{}))
+		assert.NoError(t, handlerCtx.Err())
+		assert.Equal(t, msg.ID, got.ID)
+		return nil
+	})
+
+	assert.True(t, called)
+	processingLen, err := client.LLen(context.Background(), processingQ).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), processingLen)
+}
+
+func TestHandleMessage_InvalidDecodedMessageDiscardedBeforeHandler(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithMaxPayloadSize(16))
+	ctx := context.Background()
+	queueName := "test:queue:invalid-decoded"
+	processingQ := queueName + ":processing:self"
+	deadQ := queueName + ":dead"
+	data := `{"id":"bad id","type":"test.job","payload":{"too":"large to fit"},"timestamp":"2026-01-01T00:00:00Z","attempt":1}`
+	require.NoError(t, client.LPush(ctx, processingQ, data).Err())
+
+	called := false
+	q.handleMessage(ctx, data, processingQ, queueName, deadQ, func(context.Context, Message) error {
+		called = true
+		return nil
+	})
+
+	assert.False(t, called, "invalid decoded messages must not reach handlers")
+	processingLen, err := client.LLen(ctx, processingQ).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), processingLen)
+	queueLen, err := client.LLen(ctx, queueName).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), queueLen)
+	deadLen, err := client.LLen(ctx, deadQ).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), deadLen)
 }
 
 func TestOptions(t *testing.T) {
@@ -116,23 +435,35 @@ func TestOptions(t *testing.T) {
 	assert.Equal(t, 2<<20, q.maxPayloadSize)
 }
 
-func TestOptions_IgnoresInvalid(t *testing.T) {
-	q := &Queue{
-		blockTimeout:   5 * time.Second,
-		maxRetries:     5,
-		deadLetterMax:  defaultDeadLetterMaxLen,
-		maxPayloadSize: defaultMaxPayloadSize,
+func TestOptions_PanicOnInvalid(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithBlockTimeout zero":     func() { WithBlockTimeout(0) },
+		"WithBlockTimeout negative": func() { WithBlockTimeout(-time.Second) },
+		"WithMaxRetries negative":   func() { WithMaxRetries(-1) },
+		"WithDeadLetterMaxLen negative": func() {
+			WithDeadLetterMaxLen(-1)
+		},
+		"WithMaxPayloadSize negative": func() { WithMaxPayloadSize(-1) },
+		"WithHeartbeatTTL zero":       func() { WithHeartbeatTTL(0) },
+		"WithHeartbeatTTL negative":   func() { WithHeartbeatTTL(-time.Second) },
+		"WithHeartbeatInterval zero":  func() { WithHeartbeatInterval(0) },
+		"WithHeartbeatInterval negative": func() {
+			WithHeartbeatInterval(-time.Second)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				require.NotNil(t, r)
+				msg, ok := r.(string)
+				require.True(t, ok, "panic value must be a string, got %T", r)
+				assert.NotContains(t, msg, "-1s")
+				assert.NotContains(t, msg, "0s")
+				assert.NotContains(t, msg, "got")
+			}()
+			fn()
+		})
 	}
-
-	WithBlockTimeout(-1)(q)
-	WithMaxRetries(-1)(q)
-	WithDeadLetterMaxLen(-1)(q)
-	WithMaxPayloadSize(-1)(q)
-
-	assert.Equal(t, 5*time.Second, q.blockTimeout)
-	assert.Equal(t, 5, q.maxRetries)
-	assert.Equal(t, defaultDeadLetterMaxLen, q.deadLetterMax)
-	assert.Equal(t, defaultMaxPayloadSize, q.maxPayloadSize)
 }
 
 func TestWithProcessingQueue_PanicsOnInvalid(t *testing.T) {
@@ -169,6 +500,36 @@ func TestNewQueue_GeneratesUniqueConsumerID(t *testing.T) {
 		"each Queue must have a unique consumer ID so per-consumer processing lists don't collide")
 }
 
+func TestNewQueueE_ReturnsConsumerIDGenerationError(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	prev := newQueueConsumerID
+	newQueueConsumerID = func() (uuid.UUID, error) {
+		return uuid.Nil, errors.New("rng failed")
+	}
+	t.Cleanup(func() { newQueueConsumerID = prev })
+
+	q, err := NewQueueE(client)
+	require.Error(t, err)
+	assert.Nil(t, q)
+	assert.Contains(t, err.Error(), "generate consumer ID")
+}
+
+func TestNewQueue_WithConsumerIDSkipsDefaultIDGeneration(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	prev := newQueueConsumerID
+	newQueueConsumerID = func() (uuid.UUID, error) {
+		return uuid.Nil, errors.New("should not be called")
+	}
+	t.Cleanup(func() { newQueueConsumerID = prev })
+
+	q := NewQueue(client, WithConsumerID("worker-pod-7"))
+	assert.Equal(t, "worker-pod-7", q.ConsumerID())
+}
+
 func TestWithConsumerID_OverridesDefault(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
@@ -183,6 +544,13 @@ func TestWithConsumerID_EmptyKeepsGenerated(t *testing.T) {
 
 	q := NewQueue(client, WithConsumerID(""))
 	assert.NotEmpty(t, q.ConsumerID(), "empty override must not clear the auto-generated ID")
+}
+
+func TestWithConsumerID_PanicDoesNotReflectInvalidID(t *testing.T) {
+	assert.PanicsWithValue(t,
+		"redisqueue: WithConsumerID requires a safe bounded token",
+		func() { WithConsumerID("pod/secret-token") },
+	)
 }
 
 func TestRemoveByID_ScopedToMessageID(t *testing.T) {
@@ -221,6 +589,40 @@ func TestProcess_PanicsOnNilHandler(t *testing.T) {
 		"redisqueue: Queue.Process requires a non-nil handler",
 		func() {
 			q.Process(context.TODO(), "test:queue", nil)
+		},
+	)
+}
+
+func TestProcess_ActiveQueuePanicDoesNotReflectQueueName(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	q := NewQueue(client, WithBlockTimeout(10*time.Millisecond))
+	queueName := "test:queue:secret-token"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		q.Process(ctx, queueName, func(context.Context, Message) error { return nil })
+	}()
+	require.Eventually(t, func() bool {
+		q.activeQueuesMu.Lock()
+		defer q.activeQueuesMu.Unlock()
+		return q.activeQueues[queueName]
+	}, time.Second, 10*time.Millisecond)
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("first Process did not stop")
+		}
+	}()
+
+	assert.PanicsWithValue(t,
+		"redisqueue: queue already has an active Process goroutine",
+		func() {
+			q.Process(context.Background(), queueName, func(context.Context, Message) error { return nil })
 		},
 	)
 }
@@ -469,6 +871,7 @@ func TestEnqueue_RejectsUnsafeID(t *testing.T) {
 		msg := Message{ID: badID, Type: "test", Payload: []byte(`"x"`), Timestamp: time.Now(), Attempt: 1}
 		err := q.Enqueue(ctx, "test:queue:reject", msg)
 		assert.Error(t, err, "Enqueue must reject unsafe ID %q", badID)
+		assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
 	}
 }
 
@@ -487,6 +890,7 @@ func TestEnqueueBatch_RejectsUnsafeID(t *testing.T) {
 
 	err = q.EnqueueBatch(ctx, "test:queue:batch:reject", []Message{good, bad})
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, kitqueue.ErrInvalidMessage)
 
 	n, err := q.Len(ctx, "test:queue:batch:reject")
 	require.NoError(t, err)
@@ -507,11 +911,26 @@ func TestNewQueue_PanicsOnBadHeartbeatRatio(t *testing.T) {
 		require.True(t, ok, "panic value must be a string, got %T", r)
 		assert.Contains(t, msg, "heartbeat interval", "panic must reference heartbeat configuration")
 		assert.Contains(t, msg, "TTL/2", "panic must explain the ratio policy")
+		assert.NotContains(t, msg, "5s")
+		assert.NotContains(t, msg, "30s")
 	}()
 	_ = NewQueue(client,
 		WithHeartbeatTTL(5*time.Second),
 		WithHeartbeatInterval(30*time.Second),
 	)
+}
+
+func TestNewQueue_PanicsOnHeartbeatRatioOverflow(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	const maxDuration = time.Duration(1<<63 - 1)
+	assert.Panics(t, func() {
+		_ = NewQueue(client,
+			WithHeartbeatTTL(maxDuration),
+			WithHeartbeatInterval(maxDuration),
+		)
+	})
 }
 
 // TestNewQueue_PanicsWhenIntervalEqualsTTL — the 1:1 ratio is also unsafe

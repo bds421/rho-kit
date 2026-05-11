@@ -15,9 +15,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
+	"github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
@@ -60,6 +63,16 @@ func TestNewGRPCModule_PanicsOnEmptyAddr(t *testing.T) {
 func TestGRPCModule_Name(t *testing.T) {
 	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
 	assert.Equal(t, "grpc", m.Name())
+}
+
+func TestNewGRPCModule_ClonesOptions(t *testing.T) {
+	opts := []grpcx.ServerOption{grpcx.WithDefaultDeadline(time.Second)}
+
+	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", opts)
+	opts[0] = nil
+
+	require.Len(t, m.opts, 1)
+	assert.NotNil(t, m.opts[0])
 }
 
 func TestGRPCModule_InitCallsRegistrar(t *testing.T) {
@@ -135,10 +148,9 @@ func TestGRPCModule_RegisterHealthWiresService(t *testing.T) {
 	}
 	m.RegisterHealth(checker)
 
-	// Start serving in background with a cancellable context.
-	ctx, cancel := context.WithCancel(context.Background())
+	// Start serving in background and stop through the lifecycle component API.
 	errCh := make(chan error, 1)
-	go func() { errCh <- m.serve(ctx) }()
+	go func() { errCh <- m.Start(context.Background()) }()
 
 	// Wait for server to be ready.
 	waitForGRPC(t, addr, 3*time.Second)
@@ -153,8 +165,10 @@ func TestGRPCModule_RegisterHealthWiresService(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
 
-	// Clean up via context cancellation (like the runner does).
-	cancel()
+	// Clean up via component Stop (like the runner does).
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	require.NoError(t, m.Stop(stopCtx))
 	select {
 	case srvErr := <-errCh:
 		// Serve returns nil after GracefulStop.
@@ -168,6 +182,28 @@ func TestGRPCModule_CloseBeforeInit(t *testing.T) {
 	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
 	// Close before Init should not panic or error.
 	assert.NoError(t, m.Close(context.Background()))
+}
+
+func TestGRPCModule_StartBeforeInitReturnsError(t *testing.T) {
+	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
+	err := m.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not initialized")
+}
+
+func TestGRPCModule_StopRejectsNilContext(t *testing.T) {
+	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	err := m.Init(context.Background(), ModuleContext{
+		Logger: logger,
+		Runner: lifecycle.NewRunner(logger),
+		Config: BaseConfig{},
+	})
+	require.NoError(t, err)
+
+	err = m.Stop(nil) //nolint:staticcheck // exercising the explicit nil-context guard
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
 }
 
 func TestGRPCModule_RegisterHealthNilChecker(t *testing.T) {
@@ -191,6 +227,106 @@ func TestGRPCModule_RegisterHealthBeforeInit(t *testing.T) {
 	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
 	// Should not panic when server is nil.
 	m.RegisterHealth(&health.Checker{Version: "test"})
+}
+
+func TestBuilder_WithPublicGRPCHealthOptIn(t *testing.T) {
+	b := New("grpc-test", "v0.0.1", BaseConfig{}).WithPublicGRPCHealth()
+	assert.True(t, b.publicGRPCHealth)
+}
+
+func TestGRPCModuleServeListenErrorDoesNotReflectAddress(t *testing.T) {
+	m := &grpcModule{
+		addr:   "secret-token.invalid:-1",
+		server: grpc.NewServer(),
+		logger: slog.Default(),
+	}
+
+	err := m.serve()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gRPC listen failed")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), m.addr)
+}
+
+func TestBuilder_GRPCHealthInternalOnlyByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	grpcPort := freePort(t)
+	srvPort := freePort(t)
+	intPort := freePort(t)
+	grpcAddr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
+	internalAddr := fmt.Sprintf("127.0.0.1:%d", intPort)
+
+	cfg := BaseConfig{
+		Server:   ServerConfig{Host: "127.0.0.1", Port: srvPort},
+		Internal: InternalConfig{Host: "127.0.0.1", Port: intPort},
+	}
+
+	stop := make(chan struct{})
+	var stopClosed atomic.Bool
+	closeStop := func() {
+		if stopClosed.CompareAndSwap(false, true) {
+			close(stop)
+		}
+	}
+	runErr := make(chan error, 1)
+	var runDone atomic.Bool
+	defer func() {
+		if runDone.Load() {
+			return
+		}
+		closeStop()
+		select {
+		case <-runErr:
+		case <-time.After(5 * time.Second):
+			t.Fatal("builder did not stop within timeout")
+		}
+	}()
+
+	b := New("grpc-test", "v0.0.1", cfg).
+		WithoutTLS().
+		WithModule(NewGRPCModule(func(_ *grpc.Server) {}, grpcAddr)).
+		Router(func(infra Infrastructure) http.Handler {
+			infra.Background("hold-open", func(ctx context.Context) error {
+				select {
+				case <-stop:
+					return errors.New("intentional shutdown")
+				case <-ctx.Done():
+					return nil
+				}
+			})
+			return http.NotFoundHandler()
+		})
+
+	go func() {
+		runErr <- b.Run()
+	}()
+
+	waitForGRPC(t, grpcAddr, 3*time.Second)
+	waitForGRPCHealth(t, internalAddr, 3*time.Second)
+
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	checkCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = healthpb.NewHealthClient(conn).Check(checkCtx, &healthpb.HealthCheckRequest{})
+	require.Error(t, err)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unimplemented, st.Code(), "public gRPC listener must not expose health by default")
+
+	closeStop()
+	select {
+	case err := <-runErr:
+		runDone.Store(true)
+		assert.ErrorContains(t, err, "intentional shutdown")
+	case <-time.After(5 * time.Second):
+		t.Fatal("builder did not stop within timeout")
+	}
 }
 
 func TestGRPCModule_Lifecycle(t *testing.T) {
@@ -242,4 +378,29 @@ func waitForGRPC(t *testing.T, addr string, timeout time.Duration) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("gRPC server at %s not ready within %v", addr, timeout)
+}
+
+func waitForGRPCHealth(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err == nil {
+			resp, checkErr := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+			if checkErr == nil && resp.GetStatus() == healthpb.HealthCheckResponse_SERVING {
+				cancel()
+				_ = conn.Close()
+				return
+			}
+			lastErr = checkErr
+			_ = conn.Close()
+		} else {
+			lastErr = err
+		}
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("gRPC health at %s not ready within %v: %v", addr, timeout, lastErr)
 }

@@ -73,10 +73,13 @@ func New(db *sql.DB, opts ...Option) *PgStore {
 		table: "idempotency_keys",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("pgstore: New option must not be nil")
+		}
 		o(s)
 	}
 	if !validTableName.MatchString(s.table) {
-		panic("pgstore: invalid table name: " + s.table)
+		panic("pgstore: invalid table name")
 	}
 	return s
 }
@@ -94,6 +97,12 @@ func New(db *sql.DB, opts ...Option) *PgStore {
 // and cleared back to NULL by [PgStore.TryLock] (ON CONFLICT branch),
 // so it is the correct cache-vs-lock signal.
 func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	if err := s.ready(); err != nil {
+		return nil, false, err
+	}
+	if err := idempotency.ValidateKey(key); err != nil {
+		return nil, false, err
+	}
 	query := fmt.Sprintf(
 		`SELECT status_code, headers, response_body, fingerprint FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
@@ -108,7 +117,7 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("pgstore: get %q: %w", key, err)
+		return nil, false, fmt.Errorf("pgstore: get: %w", err)
 	}
 
 	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
@@ -127,15 +136,19 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 	var headers map[string][]string
 	if len(headersJSON) > 0 {
 		if err := json.Unmarshal(headersJSON, &headers); err != nil {
-			return nil, false, fmt.Errorf("pgstore: unmarshal headers %q: %w", key, err)
+			return nil, false, fmt.Errorf("pgstore: unmarshal headers: %w", err)
 		}
 	}
 
-	return &idempotency.CachedResponse{
+	resp := idempotency.CachedResponse{
 		StatusCode: statusCode,
 		Headers:    headers,
 		Body:       body,
-	}, false, nil
+	}
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		return nil, false, fmt.Errorf("pgstore: invalid cached response: %w", err)
+	}
+	return &resp, false, nil
 }
 
 // Set replaces the lock row with the cached response. Returns
@@ -145,8 +158,17 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 // would otherwise round sub-second values to "0 seconds" and create a
 // row that's already expired before any consumer can read it.
 func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
+	if err := idempotency.ValidateKey(key); err != nil {
+		return err
+	}
 	if ttl <= 0 {
 		return idempotency.ErrInvalidTTL
+	}
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		return err
 	}
 	headersJSON, err := json.Marshal(resp.Headers)
 	if err != nil {
@@ -166,11 +188,11 @@ func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.C
 	result, err := s.db.ExecContext(ctx, query,
 		resp.StatusCode, headersJSON, resp.Body, intervalSeconds(ttl), key, token)
 	if err != nil {
-		return fmt.Errorf("pgstore: set %q: %w", key, err)
+		return fmt.Errorf("pgstore: set: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("pgstore: set %q rows affected: %w", key, err)
+		return fmt.Errorf("pgstore: set rows affected: %w", err)
 	}
 	if rows == 0 {
 		return idempotency.ErrLockLost
@@ -184,10 +206,19 @@ func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.C
 // fingerprintMismatch=true. Returns [idempotency.ErrInvalidTTL] when
 // ttl <= 0.
 func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if err := s.ready(); err != nil {
+		return "", false, false, err
+	}
+	if err := idempotency.ValidateKey(key); err != nil {
+		return "", false, false, err
+	}
 	if ttl <= 0 {
 		return "", false, false, idempotency.ErrInvalidTTL
 	}
-	token := idempotency.GenerateToken()
+	token, err := idempotency.GenerateToken()
+	if err != nil {
+		return "", false, false, err
+	}
 
 	query := fmt.Sprintf(
 		`INSERT INTO %s (key, owner_token, fingerprint, expires_at)
@@ -205,12 +236,12 @@ func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, t
 
 	result, err := s.db.ExecContext(ctx, query, key, token, fingerprint, intervalSeconds(ttl))
 	if err != nil {
-		return "", false, false, fmt.Errorf("pgstore: lock %q: %w", key, err)
+		return "", false, false, fmt.Errorf("pgstore: lock: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", false, false, fmt.Errorf("pgstore: lock %q rows affected: %w", key, err)
+		return "", false, false, fmt.Errorf("pgstore: lock rows affected: %w", err)
 	}
 	if rows == 1 {
 		return token, false, true, nil
@@ -230,7 +261,7 @@ func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, t
 			// next TryLock will succeed.
 			return "", false, false, nil
 		}
-		return "", false, false, fmt.Errorf("pgstore: inspect %q: %w", key, err)
+		return "", false, false, fmt.Errorf("pgstore: inspect: %w", err)
 	}
 	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
 		return "", true, false, nil
@@ -248,13 +279,26 @@ func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, t
 // Unlock could destroy a successfully-cached empty-body response
 // (HTTP 204) on a panic-during-second-request path.
 func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
+	if err := idempotency.ValidateKey(key); err != nil {
+		return err
+	}
 	query := fmt.Sprintf(
 		`DELETE FROM %s WHERE key = $1 AND owner_token = $2 AND status_code IS NULL`,
 		s.table,
 	)
 	_, err := s.db.ExecContext(ctx, query, key, token)
 	if err != nil {
-		return fmt.Errorf("pgstore: unlock %q: %w", key, err)
+		return fmt.Errorf("pgstore: unlock: %w", err)
+	}
+	return nil
+}
+
+func (s *PgStore) ready() error {
+	if s == nil || s.db == nil || s.table == "" || !validTableName.MatchString(s.table) {
+		return idempotency.ErrInvalidStore
 	}
 	return nil
 }
@@ -262,6 +306,9 @@ func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
 // DeleteExpired removes all expired entries. Call this periodically
 // (e.g., via cron) to prevent table bloat.
 func (s *PgStore) DeleteExpired(ctx context.Context) (int64, error) {
+	if err := s.ready(); err != nil {
+		return 0, err
+	}
 	query := fmt.Sprintf(`DELETE FROM %s WHERE expires_at <= now()`, s.table)
 	result, err := s.db.ExecContext(ctx, query)
 	if err != nil {

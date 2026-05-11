@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -25,6 +26,7 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 	if base == nil {
 		base = slog.Default()
 	}
+	extraAttrs = append([]func(r *http.Request) slog.Attr(nil), extraAttrs...)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attrs := make([]slog.Attr, 0, 4+len(extraAttrs))
@@ -42,10 +44,10 @@ func WithRequestLogger(base *slog.Logger, extraAttrs ...func(r *http.Request) sl
 			}
 
 			attrs = append(attrs, slog.String("method", r.Method))
-			attrs = append(attrs, slog.String("path", r.URL.Path))
+			attrs = append(attrs, redact.String("path", httpx.RequestPath(r)))
 
 			for _, fn := range extraAttrs {
-				if a := fn(r); a.Key != "" {
+				if a := safeExtraAttr(base, "request-logger", fn, r); a.Key != "" {
 					attrs = append(attrs, a)
 				}
 			}

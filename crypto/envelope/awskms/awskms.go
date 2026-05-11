@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -50,6 +51,16 @@ type Config struct {
 	EncryptionContext map[string]string
 }
 
+// LogValue implements slog.LogValuer to avoid logging cloud key identifiers or
+// encryption-context values. Key IDs and aliases commonly reveal account IDs,
+// environment names, tenant names, or key-ring layout.
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("key_id_configured", c.KeyID != ""),
+		slog.Any("encryption_context", redactedContext(c.EncryptionContext)),
+	)
+}
+
 // New builds a KEK from cfg using the given KMS client. Returns an
 // error if KeyID is empty.
 func New(c *kms.Client, cfg Config) (*KEK, error) {
@@ -59,17 +70,25 @@ func New(c *kms.Client, cfg Config) (*KEK, error) {
 	if cfg.KeyID == "" {
 		return nil, errors.New("awskms: Config.KeyID must not be empty")
 	}
-	return &KEK{c: c, keyID: cfg.KeyID, context: cfg.EncryptionContext}, nil
+	return &KEK{c: c, keyID: cfg.KeyID, context: cloneContext(cfg.EncryptionContext)}, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the configured AWS key
 // identifier — telemetry only; envelope writes use the ID returned
 // by Wrap to avoid TOCTOU races.
-func (k *KEK) KeyID() string { return k.keyID }
+func (k *KEK) KeyID() string {
+	if k == nil {
+		return ""
+	}
+	return k.keyID
+}
 
 // Wrap implements [envelope.KEK]. Calls KMS Encrypt and returns the
 // version-qualified KeyId for embedding in the envelope.
 func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
+	if err := k.validate(ctx); err != nil {
+		return "", nil, err
+	}
 	out, err := k.c.Encrypt(ctx, &kms.EncryptInput{
 		KeyId:             aws.String(k.keyID),
 		Plaintext:         dek,
@@ -88,6 +107,12 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 // pinned to the keyID returned at Wrap time so a misconfigured
 // alias cannot silently retarget decryption.
 func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
+	if err := k.validate(ctx); err != nil {
+		return nil, err
+	}
+	if keyID == "" {
+		return nil, errors.New("awskms: keyID must not be empty")
+	}
 	out, err := k.c.Decrypt(ctx, &kms.DecryptInput{
 		CiphertextBlob:    wrapped,
 		KeyId:             aws.String(keyID),
@@ -101,3 +126,35 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 
 // Compile-time guard.
 var _ envelope.KEK = (*KEK)(nil)
+
+func (k *KEK) validate(ctx context.Context) error {
+	if k == nil || k.c == nil || k.keyID == "" {
+		return errors.New("awskms: KEK is not initialized")
+	}
+	if ctx == nil {
+		return errors.New("awskms: context must not be nil")
+	}
+	return nil
+}
+
+func cloneContext(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func redactedContext(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k := range in {
+		out[k] = "[REDACTED]"
+	}
+	return out
+}

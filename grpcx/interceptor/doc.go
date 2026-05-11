@@ -10,7 +10,8 @@
 //   - Metrics: records grpc_server_handled_total and grpc_server_handling_seconds
 //   - Logging: structured request logging with correlation ID
 //   - Auth: JWT extraction from gRPC metadata (AuthUnary, AuthStream)
-//   - mTLS S2S: JWT or verified mTLS + SAN/CN allowlist (MTLSAuthUnary, MTLSAuthStream)
+//   - mTLS S2S: JWT or verified mTLS + SAN/CN allowlist + impersonation
+//     guard (MTLSAuthUnary, MTLSAuthStream)
 //   - RBAC: per-method permission and scope checks (RequirePermissionUnary,
 //     RequirePermissionStream, RequireScopeUnary, RequireScopeStream)
 //
@@ -22,8 +23,9 @@
 //  1. Authentication interceptor — AuthUnary (JWT only) or MTLSAuthUnary
 //     (JWT or mTLS S2S). Populates ctx with userID + permissions + scopes.
 //     MTLSAuthUnary additionally stamps a trusted-S2S marker on the mTLS
-//     branch so verified internal callers bypass RBAC without conflating
-//     "verified service" with "JWT happened to lack a permissions claim".
+//     branch after WithS2SImpersonationGuard approves x-user-id, so verified
+//     internal callers bypass RBAC without conflating "verified service" with
+//     "JWT happened to lack a permissions claim".
 //  2. RequirePermissionUnary / RequireScopeUnary — applied per-method (or
 //     to all methods via grpc.ChainUnaryInterceptor). These fail closed:
 //     a request without the trusted-S2S marker AND without a matching

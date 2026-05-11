@@ -24,8 +24,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/config"
 )
 
 // Token is an opaque CSRF token. The wire format is intentionally
@@ -38,12 +43,20 @@ var (
 	ErrTokenInvalid    = errors.New("csrf: invalid token")
 	ErrTokenExpired    = errors.New("csrf: token expired")
 	ErrSessionMismatch = errors.New("csrf: session binding mismatch")
+	ErrSessionInvalid  = errors.New("csrf: session ID is invalid")
 )
 
 // DefaultTTL is the token validity window applied when [WithTTL] is not
 // supplied. One hour balances usability (covers typical browsing
 // sessions) against the cost of a leaked token.
 const DefaultTTL = time.Hour
+
+// MaxSessionIDLen bounds the session identifier passed to [Issuer.Issue]
+// and [Issuer.Verify]. The value is large enough for opaque cookie values,
+// JWT subjects, UUIDs, ULIDs, and hashed anonymous IDs while preventing a
+// caller-controlled session extractor from turning every token operation
+// into multi-megabyte HMAC work.
+const MaxSessionIDLen = 1024
 
 // nonceLen is the per-token random suffix length in bytes. 16 bytes of
 // entropy is enough that a brute-force attacker would have to forge
@@ -86,7 +99,7 @@ func WithClock(now func() time.Time) Option {
 // brute-forceable token format.
 func NewIssuer(secret []byte, opts ...Option) (*Issuer, error) {
 	if len(secret) < 32 {
-		return nil, fmt.Errorf("csrf: secret must be at least 32 bytes, got %d", len(secret))
+		return nil, fmt.Errorf("csrf: secret must be at least 32 bytes")
 	}
 	i := &Issuer{
 		secret: append([]byte(nil), secret...),
@@ -94,10 +107,13 @@ func NewIssuer(secret []byte, opts ...Option) (*Issuer, error) {
 		now:    time.Now,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("csrf: NewIssuer option must not be nil")
+		}
 		o(i)
 	}
 	if i.ttl <= 0 {
-		return nil, fmt.Errorf("csrf: TTL must be positive, got %s", i.ttl)
+		return nil, errors.New("csrf: TTL must be positive")
 	}
 	return i, nil
 }
@@ -108,20 +124,21 @@ func NewIssuer(secret []byte, opts ...Option) (*Issuer, error) {
 func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 	i, err := NewIssuer(secret, opts...)
 	if err != nil {
-		panic(err)
+		panic("csrf: issuer configuration is invalid")
 	}
 	return i
 }
 
-// Issue returns a fresh token bound to sessionID. The same sessionID
-// produces a different token each call (the nonce ensures freshness),
-// but every issued token verifies against the same sessionID.
+// Issue returns a fresh token bound to sessionID. The same sessionID produces
+// a different token each call (the nonce ensures freshness), but every issued
+// token verifies against the same sessionID.
 //
-// sessionID may be empty for unauthenticated forms — but in that case
-// the token is only useful as a per-process replay guard, not as a
-// cross-session attacker shield. Prefer to bind to a stable identifier
-// (session cookie value, JWT subject, anonymous ID).
+// sessionID must be a non-empty, bounded, printable token. For unauthenticated
+// forms, bind to a stable anonymous identifier rather than the empty string.
 func (i *Issuer) Issue(sessionID string) (Token, error) {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return "", err
+	}
 	now := i.now().UTC().Unix()
 	if now < 0 {
 		return "", fmt.Errorf("csrf: clock skew before unix epoch")
@@ -147,12 +164,15 @@ func (i *Issuer) Issue(sessionID string) (Token, error) {
 }
 
 // Verify returns nil on success, or one of [ErrTokenInvalid],
-// [ErrTokenExpired], [ErrSessionMismatch].
+// [ErrTokenExpired], [ErrSessionMismatch], [ErrSessionInvalid].
 //
 // The HMAC compare is constant-time; the session-binding check is also
 // constant-time over the prefix bytes. Callers should not branch on
 // which specific sentinel was returned — log the error verbatim.
 func (i *Issuer) Verify(t Token, sessionID string) error {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(string(t))
 	if err != nil {
 		return ErrTokenInvalid
@@ -220,6 +240,29 @@ func sessionPrefix(sessionID string) []byte {
 	return h[:sessionPrefixLen]
 }
 
+// ValidateSessionID validates the identifier used for session-bound token
+// issuance and verification.
+func ValidateSessionID(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("%w: must not be empty", ErrSessionInvalid)
+	}
+	if len(sessionID) > MaxSessionIDLen {
+		return fmt.Errorf("%w: exceeds maximum length", ErrSessionInvalid)
+	}
+	if strings.TrimSpace(sessionID) != sessionID {
+		return fmt.Errorf("%w: contains leading or trailing whitespace", ErrSessionInvalid)
+	}
+	if !utf8.ValidString(sessionID) {
+		return fmt.Errorf("%w: contains invalid UTF-8", ErrSessionInvalid)
+	}
+	for _, r := range sessionID {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("%w: contains whitespace or control characters", ErrSessionInvalid)
+		}
+	}
+	return nil
+}
+
 // OriginAllowlist evaluates an HTTP request's Origin/Referer against a
 // configured allowlist. Used as a complement to token verification —
 // both signals must pass for a request to be considered safe.
@@ -233,7 +276,11 @@ type OriginAllowlist struct {
 func NewOriginAllowlist(origins ...string) *OriginAllowlist {
 	m := make(map[string]struct{}, len(origins))
 	for _, o := range origins {
-		m[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
+		canonical, ok := canonicalOrigin(o, false)
+		if !ok {
+			panic("csrf: invalid origin allowlist entry")
+		}
+		m[canonical] = struct{}{}
 	}
 	return &OriginAllowlist{origins: m}
 }
@@ -253,23 +300,49 @@ func (a *OriginAllowlist) Allowed(origin, referer string) bool {
 }
 
 func (a *OriginAllowlist) matches(raw string) bool {
-	// Parse scheme://host[:port] without pulling net/url for every check.
-	// Anything past the host is ignored (path / query / fragment).
-	raw = strings.ToLower(strings.TrimSpace(raw))
-	schemeEnd := strings.Index(raw, "://")
-	if schemeEnd < 0 {
+	candidate, ok := canonicalOrigin(raw, true)
+	if !ok {
 		return false
 	}
-	hostStart := schemeEnd + len("://")
-	hostEnd := len(raw)
-	for i := hostStart; i < len(raw); i++ {
-		c := raw[i]
-		if c == '/' || c == '?' || c == '#' {
-			hostEnd = i
-			break
+	_, ok = a.origins[candidate]
+	return ok
+}
+
+func canonicalOrigin(raw string, allowPath bool) (string, bool) {
+	if raw == "" || !utf8.ValidString(raw) {
+		return "", false
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return "", false
 		}
 	}
-	candidate := raw[:hostEnd]
-	_, ok := a.origins[candidate]
-	return ok
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return "", false
+	}
+	for _, r := range raw {
+		if unicode.IsSpace(r) {
+			return "", false
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", false
+	}
+	if u.Host == "" || u.User != nil {
+		return "", false
+	}
+	if !allowPath && (u.Path != "" || u.RawQuery != "" || u.Fragment != "") {
+		return "", false
+	}
+	if err := config.ValidateURLHost("csrf origin", u); err != nil {
+		return "", false
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host), true
 }

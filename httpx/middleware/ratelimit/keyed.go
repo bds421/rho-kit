@@ -2,16 +2,19 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"log/slog"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -38,6 +41,8 @@ type KeyedRateLimiter struct {
 	now         func() time.Time
 	health      HealthIndicator
 	degradation DegradationHandler
+	runMu       sync.Mutex
+	started     bool
 }
 
 // KeyedOption configures a KeyedRateLimiter.
@@ -69,6 +74,9 @@ func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *
 		now:    time.Now,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("ratelimit: NewKeyedRateLimiter option must not be nil")
+		}
 		opt(rl)
 	}
 	for i := range rl.shards {
@@ -85,8 +93,38 @@ func (rl *KeyedRateLimiter) getShard(key string) *keyedShard {
 	return &rl.shards[h.Sum32()%numShards]
 }
 
-// Allow checks whether the given key is within its rate limit.
+func (rl *KeyedRateLimiter) ready() error {
+	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
+		return ErrInvalidLimiter
+	}
+	for i := range rl.shards {
+		if rl.shards[i].entries == nil {
+			return ErrInvalidLimiter
+		}
+	}
+	return nil
+}
+
+// Allow checks whether the given key is within its rate limit. Invalid keys
+// fail closed and are not stored. Call [KeyedRateLimiter.AllowKey] when the
+// caller needs to distinguish invalid keys from throttled keys.
 func (rl *KeyedRateLimiter) Allow(key string) (allowed bool, retryAfter int) {
+	allowed, retryAfter, err := rl.AllowKey(key)
+	if err != nil {
+		return false, 1
+	}
+	return allowed, retryAfter
+}
+
+// AllowKey checks whether the given key is within its rate limit and returns
+// an error for invalid keys or uninitialized limiters.
+func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
+	if err := rl.ready(); err != nil {
+		return false, 0, err
+	}
+	if err := ValidateKey(key); err != nil {
+		return false, 0, err
+	}
 	now := rl.now()
 	s := rl.getShard(key)
 	s.mu.Lock()
@@ -99,38 +137,52 @@ func (rl *KeyedRateLimiter) Allow(key string) (allowed bool, retryAfter int) {
 		if now.After(entry.windowEnd) {
 			entry.count = 1
 			entry.windowEnd = now.Add(rl.window)
-			return true, 0
+			return true, 0, nil
 		}
 		entry.count++
 		if entry.count <= rl.limit {
-			return true, 0
+			return true, 0, nil
 		}
 		seconds := int(math.Ceil(entry.windowEnd.Sub(now).Seconds()))
 		if seconds < 1 {
 			seconds = 1
 		}
-		return false, seconds
+		return false, seconds, nil
 	}
 
 	s.entries.Add(key, &keyedRateLimitEntry{count: 1, windowEnd: now.Add(rl.window)})
-	return true, 0
+	return true, 0, nil
 }
 
 // Run starts the cleanup goroutine that evicts expired entries. Blocks until ctx is cancelled.
 // Cleanup runs at 2× the rate limit window to allow entries to fully expire
 // before eviction, matching the IP rate limiter's cleanup cadence.
-func (rl *KeyedRateLimiter) Run(ctx context.Context) {
-	ticker := time.NewTicker(rl.window * 2)
+func (rl *KeyedRateLimiter) Run(ctx context.Context) error {
+	if err := rl.ready(); err != nil {
+		return err
+	}
+	if ctx == nil {
+		return errors.New("ratelimit: KeyedRateLimiter.Run requires a non-nil context")
+	}
+	rl.runMu.Lock()
+	if rl.started {
+		rl.runMu.Unlock()
+		return errors.New("ratelimit: KeyedRateLimiter.Run already started")
+	}
+	rl.started = true
+	rl.runMu.Unlock()
+
+	ticker := time.NewTicker(cleanupInterval(rl.window))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("panic in keyed rate limiter cleanup", "panic", r)
+						slog.Error("panic in keyed rate limiter cleanup", redact.Panic(r))
 					}
 				}()
 				rl.cleanup()
@@ -142,6 +194,9 @@ func (rl *KeyedRateLimiter) Run(ctx context.Context) {
 // cleanup evicts expired entries from all shards. Scans at most
 // maxCleanupPerShard entries per shard to bound allocation.
 func (rl *KeyedRateLimiter) cleanup() {
+	if rl.ready() != nil {
+		return
+	}
 	now := rl.now()
 	for i := range rl.shards {
 		s := &rl.shards[i]
@@ -164,6 +219,12 @@ func (rl *KeyedRateLimiter) cleanup() {
 // When degradation is configured via [WithKeyedDegradation], the middleware
 // checks the health indicator before enforcing rate limits.
 func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
+	if rl == nil {
+		panic("ratelimit: KeyedRateLimitMiddleware requires a non-nil limiter")
+	}
+	if keyFunc == nil {
+		panic("ratelimit: KeyedRateLimitMiddleware requires a non-nil key function")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
@@ -175,8 +236,20 @@ func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request
 				return
 			}
 
-			key := keyFunc(r)
-			allowed, retryAfter := rl.Allow(key)
+			key, ok := safeRateLimitKey(keyFunc, r)
+			if !ok {
+				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
+				return
+			}
+			allowed, retryAfter, err := rl.AllowKey(key)
+			if err != nil {
+				if errors.Is(err, ErrInvalidKey) {
+					httpx.WriteError(w, http.StatusBadRequest, "invalid rate limit key")
+					return
+				}
+				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
+				return
+			}
 			if !allowed {
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -185,4 +258,17 @@ func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func safeRateLimitKey(fn func(*http.Request) string, r *http.Request) (key string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("ratelimit: key function panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			key, ok = "", false
+		}
+	}()
+	return fn(r), true
 }

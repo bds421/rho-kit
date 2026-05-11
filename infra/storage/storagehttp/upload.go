@@ -7,7 +7,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -89,6 +92,12 @@ func (o *UploadOptions) applyDefaults() {
 // Returns UploadResult on success, or an error that may wrap
 // [storage.ErrValidation] (use errors.Is to distinguish 422 vs 500 responses).
 func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {
+	if ctx == nil {
+		return UploadResult{}, fmt.Errorf("storagehttp: context is required")
+	}
+	if r == nil {
+		return UploadResult{}, fmt.Errorf("storagehttp: request is required")
+	}
 	if backend == nil {
 		return UploadResult{}, fmt.Errorf("storagehttp: backend is required")
 	}
@@ -99,7 +108,7 @@ func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage
 		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize is required — set a positive byte cap, or pass Unlimited to opt out explicitly")
 	}
 	if opts.MaxFileSize < 0 && opts.MaxFileSize != Unlimited {
-		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize must be positive or Unlimited (-1), got %d", opts.MaxFileSize)
+		return UploadResult{}, fmt.Errorf("storagehttp: MaxFileSize must be positive or Unlimited (-1)")
 	}
 	opts.applyDefaults()
 
@@ -116,7 +125,7 @@ func ParseAndStore(ctx context.Context, r *http.Request, backend storage.Storage
 
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return UploadResult{}, fmt.Errorf("storagehttp: parse multipart: %w", err)
+		return UploadResult{}, storage.WrapSafe("storagehttp: parse multipart failed", err)
 	}
 
 	return processMultipartParts(ctx, mr, r, backend, opts)
@@ -135,13 +144,13 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			break
 		}
 		if err != nil {
-			return UploadResult{}, fmt.Errorf("storagehttp: read multipart part: %w", err)
+			return UploadResult{}, storage.WrapSafe("storagehttp: read multipart part failed", err)
 		}
 
 		if part.FormName() != opts.FormField {
 			skipped++
 			if skipped > maxSkippedParts {
-				return UploadResult{}, fmt.Errorf("storagehttp: too many non-file parts (limit %d)", maxSkippedParts)
+				return UploadResult{}, fmt.Errorf("storagehttp: too many non-file parts")
 			}
 			// Discard up to 10 MiB per part. If a single part exceeds the
 			// per-part limit OR the cumulative budget across all skipped
@@ -152,7 +161,7 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			const maxPartDiscard = 10 << 20
 			remainingBudget := opts.MaxTotalSkippedBytes - totalSkippedBytes
 			if remainingBudget <= 0 {
-				return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit (%d)", opts.MaxTotalSkippedBytes)
+				return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
 			}
 			limit := int64(maxPartDiscard)
 			if limit > remainingBudget {
@@ -162,9 +171,9 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 			totalSkippedBytes += n
 			if n > limit {
 				if limit < maxPartDiscard {
-					return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit (%d)", opts.MaxTotalSkippedBytes)
+					return UploadResult{}, fmt.Errorf("storagehttp: cumulative non-file part bytes exceed limit")
 				}
-				return UploadResult{}, fmt.Errorf("storagehttp: non-file part too large (limit %d bytes)", maxPartDiscard)
+				return UploadResult{}, fmt.Errorf("storagehttp: non-file part too large")
 			}
 			continue
 		}
@@ -172,7 +181,7 @@ func processMultipartParts(ctx context.Context, mr *multipart.Reader, r *http.Re
 		return storePart(ctx, part, r, backend, opts)
 	}
 
-	return UploadResult{}, fmt.Errorf("storagehttp: no file part %q found in request", opts.FormField)
+	return UploadResult{}, fmt.Errorf("storagehttp: no file part found in request")
 }
 
 func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backend storage.Storage, opts UploadOptions) (UploadResult, error) {
@@ -181,8 +190,13 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 		return UploadResult{}, fmt.Errorf("storagehttp: file part has no filename")
 	}
 
+	contentType, err := partContentType(part)
+	if err != nil {
+		return UploadResult{}, err
+	}
+
 	meta := storage.ObjectMeta{
-		ContentType: part.Header.Get("Content-Type"),
+		ContentType: contentType,
 	}
 
 	// Apply upload-level validators before key derivation so that
@@ -190,22 +204,27 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 	// Prepend the mandatory MaxFileSize cap unless the caller explicitly
 	// opted out with Unlimited — without this, an unconfigured Validators
 	// slice would let a request stream unbounded bytes into backend.Put.
-	validators := opts.Validators
+	validators := append([]storage.Validator(nil), opts.Validators...)
 	if opts.MaxFileSize > 0 {
 		validators = append([]storage.Validator{storage.MaxFileSize(opts.MaxFileSize)}, validators...)
 	}
 	var reader io.Reader = part
 	if len(validators) > 0 {
-		validated, err := storage.ApplyValidators(reader, &meta, validators)
+		validated, err := storage.ApplyValidators(ctx, reader, &meta, validators)
 		if err != nil {
 			return UploadResult{}, err
 		}
 		reader = validated
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
 	}
 
-	key, err := opts.KeyFunc(r, filename, meta)
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return UploadResult{}, err
+	}
+
+	key, err := deriveKey(opts.KeyFunc, r, filename, meta)
 	if err != nil {
-		return UploadResult{}, fmt.Errorf("storagehttp: key derivation: %w", err)
+		return UploadResult{}, storage.WrapSafe("storagehttp: key derivation failed", err)
 	}
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -214,7 +233,7 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 
 	cr := &countingReader{r: reader}
 	if err := backend.Put(ctx, key, cr, meta); err != nil {
-		return UploadResult{}, err
+		return UploadResult{}, storage.WrapSafe("storagehttp: store failed", err)
 	}
 
 	return UploadResult{
@@ -222,6 +241,37 @@ func storePart(ctx context.Context, part *multipart.Part, r *http.Request, backe
 		ContentType: meta.ContentType,
 		Size:        cr.n,
 	}, nil
+}
+
+func partContentType(part *multipart.Part) (string, error) {
+	values := part.Header.Values("Content-Type")
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf("storagehttp: file part has multiple Content-Type headers")
+	}
+	raw := values[0]
+	if !utf8.ValidString(raw) || strings.ContainsAny(raw, "\x00\r\n") {
+		return "", fmt.Errorf("storagehttp: file part Content-Type contains invalid characters")
+	}
+	contentType := strings.TrimSpace(raw)
+	if contentType == "" {
+		return "", nil
+	}
+	if err := storage.ValidateObjectMeta(storage.ObjectMeta{ContentType: contentType}); err != nil {
+		return "", err
+	}
+	return contentType, nil
+}
+
+func deriveKey(fn func(*http.Request, string, storage.ObjectMeta) (string, error), r *http.Request, filename string, meta storage.ObjectMeta) (key string, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			key, err = "", fmt.Errorf("panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	return fn(r, filename, meta)
 }
 
 // countingReader wraps a reader and counts bytes read through it.

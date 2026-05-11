@@ -210,7 +210,8 @@ func TestWorkerPool_PanicDoesNotCrashPool(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("OnError not called after panic")
 	}
-	assert.Contains(t, panicErr.Error(), "boom")
+	assert.Contains(t, panicErr.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, panicErr.Error(), "boom")
 
 	// Pool should still be alive for subsequent events.
 	_ = Publish(bus, context.Background(), testEvent{ID: "ok"})
@@ -223,7 +224,7 @@ func TestWorkerPool_PanicDoesNotCrashPool(t *testing.T) {
 }
 
 func TestWithoutWorkerPool_LegacyBehaviorPreserved(t *testing.T) {
-	bus := New()
+	bus := New(WithUnboundedAsync())
 	var called atomic.Bool
 
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {
@@ -246,6 +247,29 @@ func TestWithoutWorkerPool_LegacyBehaviorPreserved(t *testing.T) {
 	cancel()
 	<-done
 	assert.NoError(t, bus.Stop(context.Background()))
+}
+
+func TestDefaultWorkerPool_AutoStartsAndStops(t *testing.T) {
+	bus := New()
+	require.NotNil(t, bus.pool)
+	assert.True(t, bus.autoStartedPool, "default pool should be marked as auto-started")
+	assert.True(t, bus.pool.started.Load(), "default workers should be available immediately after New")
+
+	done := make(chan struct{})
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		close(done)
+		return nil
+	}, WithAsync(), WithName("default-pool-canary"))
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "default"}))
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("default worker pool did not process async event")
+	}
+
+	require.NoError(t, bus.Stop(context.Background()))
+	assert.True(t, bus.pool.stopped.Load(), "Stop should close the auto-started default pool")
 }
 
 func TestWorkerPool_BoundedGoroutines(t *testing.T) {
@@ -325,6 +349,51 @@ func TestBus_StartStopLifecycle(t *testing.T) {
 	assert.NoError(t, stopErr)
 }
 
+func TestBus_StartRejectsSecondStart(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(1),
+		WithRegisterer(reg),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startDone := make(chan error, 1)
+	go func() { startDone <- bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+
+	err := bus.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-startDone)
+}
+
+func TestBus_StartRejectsRestartAfterStop(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(1),
+		WithRegisterer(reg),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startDone := make(chan error, 1)
+	go func() { startDone <- bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	require.NoError(t, bus.Stop(stopCtx))
+	cancel()
+	require.NoError(t, <-startDone)
+
+	err := bus.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
 func TestWithWorkerPool_PanicsOnZeroSize(t *testing.T) {
 	assert.Panics(t, func() {
 		New(WithWorkerPool(0))
@@ -397,6 +466,46 @@ func TestWorkerPool_AsyncErrorCallsOnError(t *testing.T) {
 
 	cancel()
 	_ = bus.Stop(context.Background())
+}
+
+func TestWorkerPool_OnErrorPanicDoesNotStopWorker(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	var (
+		onErrorCalled atomic.Bool
+		processed     atomic.Bool
+	)
+
+	bus := New(
+		WithWorkerPool(1),
+		WithWorkerPoolBuffer(10),
+		WithRegisterer(reg),
+		WithOnError(func(context.Context, string, string, error) {
+			onErrorCalled.Store(true)
+			panic("error hook exploded")
+		}),
+	)
+
+	Subscribe(bus, func(_ context.Context, e testEvent) error {
+		if e.ID == "fail" {
+			return errors.New("handler failed")
+		}
+		processed.Store(true)
+		return nil
+	}, WithAsync(), WithName("maybe-failing"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		_ = bus.Stop(context.Background())
+	}()
+	go func() { _ = bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "fail"}))
+	assert.Eventually(t, onErrorCalled.Load, time.Second, 5*time.Millisecond)
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "ok"}))
+	assert.Eventually(t, processed.Load, time.Second, 5*time.Millisecond)
 }
 
 func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
@@ -542,7 +651,10 @@ func TestPublish_OnFullError_ReturnsErrQueueFull(t *testing.T) {
 
 	// Block the single worker so subsequent submits saturate the buffer.
 	release := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		startedOnce.Do(func() { close(started) })
 		<-release
 		return nil
 	}, WithAsync())
@@ -558,6 +670,11 @@ func TestPublish_OnFullError_ReturnsErrQueueFull(t *testing.T) {
 
 	// First fills the worker.
 	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "1"}))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking handler did not start")
+	}
 	// Second fills the buffer.
 	require.NoError(t, Publish(bus, context.Background(), testEvent{ID: "2"}))
 

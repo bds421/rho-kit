@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
@@ -48,6 +50,7 @@ func WithClientIPResolver(resolver func(*http.Request) string) LoggerOption {
 // installs the standard kit resolver bound to a CIDR list. Equivalent to
 // passing a function that calls [clientip.ClientIPWithTrustedProxies].
 func WithTrustedProxies(trusted []*net.IPNet) LoggerOption {
+	trusted = cloneIPNets(trusted)
 	return WithClientIPResolver(func(r *http.Request) string {
 		return clientip.ClientIPWithTrustedProxies(r, trusted)
 	})
@@ -76,8 +79,12 @@ func LoggerWithOptions(logger *slog.Logger, quietPaths []string, opts []LoggerOp
 	if logger == nil {
 		logger = slog.Default()
 	}
+	extraAttrs = append([]func(r *http.Request) slog.Attr(nil), extraAttrs...)
 	cfg := loggerConfig{clientIPResolver: clientip.ClientIP}
 	for _, o := range opts {
+		if o == nil {
+			panic("logging: middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -91,28 +98,61 @@ func LoggerWithOptions(logger *slog.Logger, quietPaths []string, opts []LoggerOp
 			start := time.Now()
 
 			wrapped := middleware.NewResponseRecorder(w)
+			defer func() {
+				recovered := recover()
+				logAccessRequest(logger, cfg, quiet, wrapped, r, start, recovered != nil, extraAttrs)
+				if recovered != nil {
+					panic(recovered)
+				}
+			}()
 
 			next.ServeHTTP(wrapped, r)
-
-			level := slog.LevelInfo
-			if quiet[strings.TrimRight(r.URL.Path, "/")] {
-				level = slog.LevelDebug
-			}
-
-			attrs := []slog.Attr{
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-				slog.Int("status", wrapped.Status()),
-				slog.Duration("duration", time.Since(start)),
-				slog.String("remote", cfg.clientIPResolver(r)),
-			}
-			for _, fn := range extraAttrs {
-				if a := fn(r); a.Key != "" {
-					attrs = append(attrs, a)
-				}
-			}
-
-			logger.LogAttrs(r.Context(), level, "request", attrs...)
 		})
 	}
+}
+
+func logAccessRequest(logger *slog.Logger, cfg loggerConfig, quiet map[string]bool, wrapped *middleware.ResponseRecorder, r *http.Request, start time.Time, panicked bool, extraAttrs []func(r *http.Request) slog.Attr) {
+	level := slog.LevelInfo
+	path := httpx.RequestPath(r)
+	if quiet[strings.TrimRight(path, "/")] {
+		level = slog.LevelDebug
+	}
+
+	status := wrapped.Status()
+	if panicked && !wrapped.WroteHeader() {
+		status = http.StatusInternalServerError
+	}
+
+	attrs := []slog.Attr{
+		slog.String("method", r.Method),
+		redact.String("path", path),
+		slog.Int("status", status),
+		slog.Duration("duration", time.Since(start)),
+		slog.String("remote", safeClientIP(logger, cfg.clientIPResolver, r)),
+	}
+	if panicked {
+		attrs = append(attrs, slog.Bool("panicked", true))
+	}
+	for _, fn := range extraAttrs {
+		if a := safeExtraAttr(logger, "access-log", fn, r); a.Key != "" {
+			attrs = append(attrs, a)
+		}
+	}
+
+	logger.LogAttrs(r.Context(), level, "request", attrs...)
+}
+
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		if n == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &net.IPNet{
+			IP:   append(net.IP(nil), n.IP...),
+			Mask: append(net.IPMask(nil), n.Mask...),
+		})
+	}
+	return out
 }

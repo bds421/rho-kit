@@ -1,9 +1,18 @@
 package signing
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
 const minKeyLen = 32
+
+// maxKeyIDLen caps key IDs before they become HTTP header values or
+// secret-store lookup keys.
+const maxKeyIDLen = 256
 
 // UnsafeKeyStore provides zero-copy key access for performance-critical paths.
 // Implementations must guarantee the returned slice is never mutated.
@@ -51,12 +60,18 @@ func NewStaticKeyStoreE(keys map[string][]byte, currentID string) (*StaticKeySto
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("signing: keys map must not be empty")
 	}
+	if err := validateKeyID(currentID); err != nil {
+		return nil, fmt.Errorf("signing: currentID: %w", err)
+	}
 	if _, ok := keys[currentID]; !ok {
-		return nil, fmt.Errorf("signing: currentID %q not found in keys map", currentID)
+		return nil, fmt.Errorf("signing: currentID not found in keys map")
 	}
 	for id, k := range keys {
+		if err := validateKeyID(id); err != nil {
+			return nil, fmt.Errorf("signing: key ID is invalid: %w", err)
+		}
 		if len(k) < minKeyLen {
-			return nil, fmt.Errorf("signing: key %q must be at least %d bytes (got %d)", id, minKeyLen, len(k))
+			return nil, fmt.Errorf("signing: key must meet minimum length")
 		}
 	}
 
@@ -82,7 +97,7 @@ func NewStaticKeyStoreE(keys map[string][]byte, currentID string) (*StaticKeySto
 func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
 	s, err := NewStaticKeyStoreE(keys, currentID)
 	if err != nil {
-		panic(err.Error())
+		panic("signing: static key store configuration is invalid")
 	}
 	return s
 }
@@ -90,6 +105,9 @@ func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore
 // Key returns the secret for the given key ID. Returns nil, false if not found.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
+	if s == nil || s.keys == nil {
+		return nil, false
+	}
 	k, ok := s.keys[keyID]
 	if !ok {
 		return nil, false
@@ -104,6 +122,9 @@ func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
 // caller does not expose the slice. The returned slice MUST NOT be mutated
 // or retained beyond the calling function's scope.
 func (s *StaticKeyStore) KeyUnsafe(keyID string) ([]byte, bool) {
+	if s == nil || s.keys == nil {
+		return nil, false
+	}
 	k, ok := s.keys[keyID]
 	return k, ok
 }
@@ -111,14 +132,41 @@ func (s *StaticKeyStore) KeyUnsafe(keyID string) ([]byte, bool) {
 // CurrentKeyUnsafe returns the active signing key ID and internal secret
 // slice without copying. Same safety constraints as KeyUnsafe apply.
 func (s *StaticKeyStore) CurrentKeyUnsafe() (string, []byte) {
+	if s == nil || s.keys == nil {
+		return "", nil
+	}
 	return s.currentID, s.keys[s.currentID]
 }
 
 // CurrentKeyID returns the active signing key ID and secret.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
+	if s == nil || s.keys == nil {
+		return "", nil
+	}
 	k := s.keys[s.currentID]
 	dst := make([]byte, len(k))
 	copy(dst, k)
 	return s.currentID, dst
+}
+
+func validateKeyID(keyID string) error {
+	if keyID == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if len(keyID) > maxKeyIDLen {
+		return fmt.Errorf("exceeds maximum length")
+	}
+	if !utf8.ValidString(keyID) {
+		return fmt.Errorf("must be valid UTF-8")
+	}
+	if strings.Contains(keyID, ",") {
+		return fmt.Errorf("must not contain commas")
+	}
+	for _, r := range keyID {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("must not contain control or whitespace characters")
+		}
+	}
+	return nil
 }

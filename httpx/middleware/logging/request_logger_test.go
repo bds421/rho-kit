@@ -36,8 +36,57 @@ func TestWithRequestLogger_InjectsLogger(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("method=GET")) {
 		t.Errorf("expected method=GET in logger attrs, got: %s", output)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("path=/api/items")) {
-		t.Errorf("expected path=/api/items in logger attrs, got: %s", output)
+	assertLogPathRedacted(t, buf.Bytes(), "/api/items")
+}
+
+func TestWithRequestLogger_ClonesExtraAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	extra := []func(*http.Request) slog.Attr{
+		func(*http.Request) slog.Attr { return slog.String("extra", "original") },
+	}
+	handler := WithRequestLogger(base, extra...)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.Logger(r.Context(), nil).Info("inside")
+		w.WriteHeader(http.StatusOK)
+	}))
+	extra[0] = func(*http.Request) slog.Attr { return slog.String("extra", "mutated") }
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !bytes.Contains(buf.Bytes(), []byte("extra=original")) {
+		t.Fatalf("expected original extra attr, got: %s", buf.String())
+	}
+	if bytes.Contains(buf.Bytes(), []byte("extra=mutated")) {
+		t.Fatalf("unexpected mutated extra attr, got: %s", buf.String())
+	}
+}
+
+func TestWithRequestLogger_UsesEscapedPath(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/a%2Fb", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got == nil {
+		t.Fatal("expected logger in context, got nil")
+	}
+	got.Info("probe")
+
+	output := buf.String()
+	assertLogPathRedacted(t, buf.Bytes(), "/api/files/a%2Fb")
+	if bytes.Contains(buf.Bytes(), []byte("path=/api/files/a/b")) {
+		t.Errorf("decoded path delimiter should not be logged, got: %s", output)
 	}
 }
 
@@ -71,9 +120,7 @@ func TestWithRequestLogger_InjectsLogger_WithRequestID(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("method=POST")) {
 		t.Errorf("expected method=POST in logger attrs, got: %s", output)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("path=/api/orders")) {
-		t.Errorf("expected path=/api/orders in logger attrs, got: %s", output)
-	}
+	assertLogPathRedacted(t, buf.Bytes(), "/api/orders")
 }
 
 func TestWithRequestLogger_NoRequestID_OmitsAttr(t *testing.T) {
@@ -134,6 +181,41 @@ func TestWithRequestLogger_ExtraAttrs(t *testing.T) {
 	output := buf.String()
 	if !bytes.Contains(buf.Bytes(), []byte("user_id=u-999")) {
 		t.Errorf("expected user_id=u-999 in logger attrs, got: %s", output)
+	}
+}
+
+func TestWithRequestLogger_ExtraAttrPanicDoesNotPanic(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var got *slog.Logger
+	handler := WithRequestLogger(base,
+		func(*http.Request) slog.Attr {
+			panic("attr exploded")
+		},
+		func(*http.Request) slog.Attr {
+			return slog.String("keep", "this")
+		},
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = httpx.Logger(r.Context(), nil)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/profile", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if got == nil {
+		t.Fatal("expected logger in context")
+	}
+	got.Info("probe")
+
+	logOutput := buf.String()
+	if !bytes.Contains(buf.Bytes(), []byte("keep=this")) {
+		t.Errorf("later attrs should still be included, got: %s", logOutput)
 	}
 }
 
@@ -199,9 +281,7 @@ func TestWithRequestLogger_InjectsLogger_WithCorrelationID(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("method=GET")) {
 		t.Errorf("expected method=GET in logger attrs, got: %s", output)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("path=/api/trace")) {
-		t.Errorf("expected path=/api/trace in logger attrs, got: %s", output)
-	}
+	assertLogPathRedacted(t, buf.Bytes(), "/api/trace")
 }
 
 func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
@@ -238,9 +318,7 @@ func TestWithRequestLogger_InjectsLogger_WithBothIDs(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("method=PUT")) {
 		t.Errorf("expected method=PUT in logger attrs, got: %s", output)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("path=/api/users/42")) {
-		t.Errorf("expected path=/api/users/42 in logger attrs, got: %s", output)
-	}
+	assertLogPathRedacted(t, buf.Bytes(), "/api/users/42")
 }
 
 func TestWithRequestLogger_OmitsEmptyKeyAttr(t *testing.T) {

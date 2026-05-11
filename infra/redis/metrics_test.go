@@ -88,6 +88,12 @@ func TestCollectPoolMetrics_NilClient(t *testing.T) {
 	CollectPoolMetrics(nil, "test")
 }
 
+func TestCollectPoolMetrics_PanicsOnInvalidInstanceWithoutReflectingName(t *testing.T) {
+	assert.PanicsWithValue(t, "redis: invalid instance name", func() {
+		CollectPoolMetrics(nil, "secret-token\nbad")
+	})
+}
+
 func TestCollectPoolMetrics_NonClientType(t *testing.T) {
 	// ClusterClient implements UniversalClient but is not *redis.Client.
 	// Should be a no-op, not panic.
@@ -118,4 +124,20 @@ func TestStartPoolMetricsCollector_StopsOnCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("collector did not stop after context cancel")
 	}
+}
+
+func TestStartPoolMetricsCollector_PanicsOnNilOption(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	assert.Panics(t, func() {
+		StartPoolMetricsCollector(context.Background(), client, "test", time.Second, nil)
+	})
+}
+
+func TestStartPoolMetricsCollector_PanicsOnInvalidInstanceWithoutReflectingName(t *testing.T) {
+	assert.PanicsWithValue(t, "redis: invalid instance name", func() {
+		StartPoolMetricsCollector(context.Background(), nil, "secret-token\nbad", time.Second)
+	})
 }

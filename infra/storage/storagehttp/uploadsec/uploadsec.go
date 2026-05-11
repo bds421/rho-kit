@@ -12,6 +12,10 @@
 //     pixel counts above the configured cap. Defends against
 //     decompression-bomb DoS where a 1 KB compressed image expands
 //     to 100,000 × 100,000 RGBA in RAM.
+//   - [ScanWith] adapts a malware scanner into the same validator
+//     chain. The base package defines the contract; concrete scanners
+//     live in split modules so services only import scanner-specific
+//     dependencies when they use them.
 //
 // Validators compose via [Chain]: each runs in order, the first
 // rejection wins. They share a [Meta] type so each step can refine
@@ -43,7 +47,31 @@ var (
 	ErrExtensionNotAllowed = errors.New("uploadsec: file extension not allowed")
 	ErrImageTooLarge       = errors.New("uploadsec: image dimensions exceed limit")
 	ErrInvalidImage        = errors.New("uploadsec: image header could not be parsed")
+	ErrMalwareDetected     = errors.New("uploadsec: malware detected")
+	ErrScannerUnavailable  = errors.New("uploadsec: malware scanner unavailable")
 )
+
+// MalwareDetectedError carries the scanner's threat name while still
+// matching [ErrMalwareDetected] through errors.Is.
+type MalwareDetectedError struct {
+	Threat string
+}
+
+// Error implements error.
+func (e *MalwareDetectedError) Error() string {
+	return ErrMalwareDetected.Error()
+}
+
+// Unwrap returns the sentinel so errors.Is(err, ErrMalwareDetected) works.
+func (e *MalwareDetectedError) Unwrap() error {
+	return ErrMalwareDetected
+}
+
+// MalwareDetected returns an error that wraps [ErrMalwareDetected] and
+// preserves the scanner's threat name.
+func MalwareDetected(threat string) error {
+	return &MalwareDetectedError{Threat: strings.TrimSpace(threat)}
+}
 
 // Meta is the upload context exchanged between validators. Validators
 // may return an updated Meta to override the caller-supplied
@@ -65,6 +93,22 @@ type Validator interface {
 	Validate(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error)
 }
 
+// Scanner streams an upload body to a malware scanner. It returns nil only
+// when the scanner has produced a clean verdict. Scanner failures should wrap
+// [ErrScannerUnavailable]; positive malware findings should wrap
+// [ErrMalwareDetected].
+type Scanner interface {
+	Scan(ctx context.Context, body io.Reader, meta Meta) error
+}
+
+// ScannerFunc adapts a function to Scanner.
+type ScannerFunc func(ctx context.Context, body io.Reader, meta Meta) error
+
+// Scan implements Scanner.
+func (f ScannerFunc) Scan(ctx context.Context, body io.Reader, meta Meta) error {
+	return f(ctx, body, meta)
+}
+
 // ValidatorFunc adapts a function to Validator.
 type ValidatorFunc func(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error)
 
@@ -73,9 +117,46 @@ func (f ValidatorFunc) Validate(ctx context.Context, body io.ReadSeeker, meta Me
 	return f(ctx, body, meta)
 }
 
+// ScanWith returns a Validator that streams the upload through scanner and
+// rejects unless the scanner returns a clean verdict. It does not buffer the
+// body; the surrounding [Chain] rewinds before and after each validator.
+func ScanWith(scanner Scanner) Validator {
+	if scanner == nil {
+		panic("uploadsec: ScanWith requires a non-nil scanner")
+	}
+	return ValidatorFunc(func(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
+		if err := scanner.Scan(ctx, body, meta); err != nil {
+			return meta, normalizeScannerError(err)
+		}
+		return meta, nil
+	})
+}
+
+func normalizeScannerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrMalwareDetected) {
+		var detected *MalwareDetectedError
+		if errors.As(err, &detected) {
+			return detected
+		}
+		return ErrMalwareDetected
+	}
+	if errors.Is(err, ErrScannerUnavailable) {
+		return ErrScannerUnavailable
+	}
+	return ErrScannerUnavailable
+}
+
 // Chain runs validators in order. Each receives the Meta produced by
 // the previous step. The first error short-circuits the chain.
 func Chain(validators ...Validator) Validator {
+	for _, v := range validators {
+		if v == nil {
+			panic("uploadsec: validator must not be nil")
+		}
+	}
 	return ValidatorFunc(func(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
 		for _, v := range validators {
 			if _, err := body.Seek(0, io.SeekStart); err != nil {
@@ -105,22 +186,29 @@ func Chain(validators ...Validator) Validator {
 // application/octet-stream. Rely on AllowExtensions for those edge
 // cases or extend the allowlist with the kit's own MIME registry.
 func AllowMIMETypes(allowed ...string) Validator {
+	if len(allowed) == 0 {
+		panic("uploadsec: AllowMIMETypes requires at least one MIME type")
+	}
 	allowSet := make(map[string]struct{}, len(allowed))
 	for _, m := range allowed {
-		allowSet[strings.ToLower(strings.TrimSpace(m))] = struct{}{}
+		mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(m)))
+		if err != nil || mediaType == "" || !strings.Contains(mediaType, "/") {
+			panic("uploadsec: invalid MIME type")
+		}
+		allowSet[mediaType] = struct{}{}
 	}
 	return ValidatorFunc(func(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
 		buf := make([]byte, 512)
 		n, err := io.ReadFull(body, buf)
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-			return meta, fmt.Errorf("uploadsec: sniff body: %w", err)
+			return meta, fmt.Errorf("uploadsec: sniff body failed")
 		}
 		sniffed := http.DetectContentType(buf[:n])
 		// DetectContentType returns "type; charset=…" for text; strip params for the allowlist match.
 		base, _, _ := strings.Cut(sniffed, ";")
 		base = strings.ToLower(strings.TrimSpace(base))
 		if _, ok := allowSet[base]; !ok {
-			return meta, fmt.Errorf("%w: %q", ErrMIMETypeNotAllowed, base)
+			return meta, ErrMIMETypeNotAllowed
 		}
 		meta.ContentType = base
 		return meta, nil
@@ -132,17 +220,24 @@ func AllowMIMETypes(allowed ...string) Validator {
 // case-insensitively and must include the leading dot ("." prefix).
 // Filenames without an extension are rejected.
 func AllowExtensions(allowed ...string) Validator {
+	if len(allowed) == 0 {
+		panic("uploadsec: AllowExtensions requires at least one extension")
+	}
 	allowSet := make(map[string]struct{}, len(allowed))
 	for _, e := range allowed {
-		allowSet[strings.ToLower(strings.TrimSpace(e))] = struct{}{}
+		ext := strings.ToLower(strings.TrimSpace(e))
+		if ext == "" || !strings.HasPrefix(ext, ".") || strings.ContainsAny(ext, `/\`) {
+			panic("uploadsec: invalid extension")
+		}
+		allowSet[ext] = struct{}{}
 	}
 	return ValidatorFunc(func(_ context.Context, _ io.ReadSeeker, meta Meta) (Meta, error) {
 		ext := strings.ToLower(path.Ext(meta.Filename))
 		if ext == "" {
-			return meta, fmt.Errorf("%w: filename %q has no extension", ErrExtensionNotAllowed, meta.Filename)
+			return meta, ErrExtensionNotAllowed
 		}
 		if _, ok := allowSet[ext]; !ok {
-			return meta, fmt.Errorf("%w: %q", ErrExtensionNotAllowed, ext)
+			return meta, ErrExtensionNotAllowed
 		}
 		// Cross-check: the configured extension should match the canonical
 		// extension for the (sniffed) content type, when both are known.
@@ -157,7 +252,7 @@ func AllowExtensions(allowed ...string) Validator {
 					}
 				}
 				if !ok {
-					return meta, fmt.Errorf("%w: extension %q does not match content type %q", ErrExtensionNotAllowed, ext, meta.ContentType)
+					return meta, fmt.Errorf("%w: extension does not match content type", ErrExtensionNotAllowed)
 				}
 			}
 		}
@@ -197,15 +292,14 @@ func MaxImageDimensions(maxWidth, maxHeight int) Validator {
 		// imageHeaderReadLimit even for arbitrarily large uploads.
 		header, err := io.ReadAll(io.LimitReader(body, imageHeaderReadLimit))
 		if err != nil {
-			return meta, fmt.Errorf("uploadsec: buffer image header: %w", err)
+			return meta, fmt.Errorf("uploadsec: buffer image header failed")
 		}
 		cfg, _, err := image.DecodeConfig(bytes.NewReader(header))
 		if err != nil {
-			return meta, fmt.Errorf("%w: %v", ErrInvalidImage, err)
+			return meta, ErrInvalidImage
 		}
 		if cfg.Width > maxWidth || cfg.Height > maxHeight {
-			return meta, fmt.Errorf("%w: %dx%d exceeds %dx%d",
-				ErrImageTooLarge, cfg.Width, cfg.Height, maxWidth, maxHeight)
+			return meta, ErrImageTooLarge
 		}
 		meta.ImageWidth = cfg.Width
 		meta.ImageHeight = cfg.Height
@@ -227,8 +321,11 @@ func HTTPStatusForError(err error) int {
 		return http.StatusUnsupportedMediaType
 	case errors.Is(err, ErrExtensionNotAllowed),
 		errors.Is(err, ErrImageTooLarge),
-		errors.Is(err, ErrInvalidImage):
+		errors.Is(err, ErrInvalidImage),
+		errors.Is(err, ErrMalwareDetected):
 		return http.StatusUnprocessableEntity
+	case errors.Is(err, ErrScannerUnavailable):
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

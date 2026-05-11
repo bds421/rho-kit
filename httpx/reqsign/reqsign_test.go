@@ -2,7 +2,9 @@ package reqsign
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,12 @@ import (
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
 
 func TestSignAndVerifyRoundTrip(t *testing.T) {
 	store := testStore()
@@ -38,6 +46,24 @@ func TestSignAndVerifyRoundTrip(t *testing.T) {
 	err := VerifyRequest(req, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
 	if err != nil {
 		t.Fatalf("VerifyRequest failed: %v", err)
+	}
+}
+
+func TestSignRequestReturnsNonceGenerationError(t *testing.T) {
+	prev := nonceRandReader
+	nonceRandReader = failingReader{}
+	t.Cleanup(func() { nonceRandReader = prev })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", nil)
+	err := SignRequest(req, nil, testStore())
+	if err == nil {
+		t.Fatal("expected nonce generation error")
+	}
+	if !strings.Contains(err.Error(), "generate nonce") {
+		t.Fatalf("error = %v, want generate nonce context", err)
+	}
+	if got := req.Header.Get(HeaderNonce); got != "" {
+		t.Fatalf("nonce header = %q, want empty on signing failure", got)
 	}
 }
 
@@ -130,17 +156,19 @@ func TestVerifyInvalidTimestamp(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	req.Header.Set(HeaderSignature, "sha256=abc")
-	req.Header.Set(HeaderTimestamp, "not-a-number")
+	req.Header.Set(HeaderTimestamp, "secret-token")
 	req.Header.Set(HeaderKeyID, "primary")
-	req.Header.Set(HeaderNonce, "abc-nonce")
+	req.Header.Set(HeaderNonce, testNonce("invalid-timestamp"))
 
 	err := VerifyRequest(req, nil, store, freshNonceStoreOpt())
 	if err == nil {
 		t.Fatal("expected error for invalid timestamp, got nil")
 	}
-
-	if got := err.Error(); !strings.Contains(got, "invalid timestamp") {
-		t.Errorf("error = %q, want it to contain %q", got, "invalid timestamp")
+	if !errors.Is(err, ErrTimestampInvalid) {
+		t.Fatalf("expected ErrTimestampInvalid, got %v", err)
+	}
+	if got := err.Error(); strings.Contains(got, "secret-token") {
+		t.Errorf("timestamp parse error leaked header value: %q", got)
 	}
 }
 
@@ -151,6 +179,28 @@ func TestVerifyMissingHeaders(t *testing.T) {
 	err := VerifyRequest(req, nil, store, freshNonceStoreOpt())
 	if err != ErrMissingHeaders {
 		t.Errorf("expected ErrMissingHeaders, got %v", err)
+	}
+}
+
+func TestVerifyRequest_RejectsDuplicateSignatureHeaders(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+	body := []byte(`{"action":"deploy"}`)
+
+	for _, header := range []string{HeaderSignature, HeaderTimestamp, HeaderKeyID, HeaderNonce} {
+		t.Run(header, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+			if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+				t.Fatalf("SignRequest failed: %v", err)
+			}
+			req.Header.Add(header, req.Header.Get(header))
+
+			err := VerifyRequest(req, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+			if !errors.Is(err, ErrInvalidHeaders) {
+				t.Fatalf("expected ErrInvalidHeaders for duplicate %s, got %v", header, err)
+			}
+		})
 	}
 }
 
@@ -194,6 +244,203 @@ func TestVerifyQueryParameterTampering(t *testing.T) {
 	err := VerifyRequest(tampered, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
 	if err == nil {
 		t.Fatal("expected error for query parameter tampering, got nil")
+	}
+}
+
+func TestVerifyHostTampering(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "https://service-a.example.com/api/deploy", bytes.NewReader(body))
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	tampered := httptest.NewRequest(http.MethodPost, "https://service-b.example.com/api/deploy", bytes.NewReader(body))
+	tampered.Header = req.Header
+
+	err := VerifyRequest(tampered, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+	if err == nil {
+		t.Fatal("expected error for host tampering, got nil")
+	}
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("expected ErrSignatureMismatch, got %v", err)
+	}
+}
+
+func TestVerifyHostCanonicalizationIsCaseInsensitive(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "https://SERVICE-A.example.com/api/deploy", bytes.NewReader(body))
+	req.Host = "SERVICE-A.example.com"
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	verify := httptest.NewRequest(http.MethodPost, "https://service-a.example.com/api/deploy", bytes.NewReader(body))
+	verify.Host = "service-a.example.com"
+	verify.Header = req.Header
+
+	err := VerifyRequest(verify, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+	if err != nil {
+		t.Fatalf("VerifyRequest should accept host case changes, got %v", err)
+	}
+}
+
+func TestVerifyContentTypeTampering(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	tampered := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	tampered.Header = req.Header.Clone()
+	tampered.Header.Set("Content-Type", "text/plain")
+
+	err := VerifyRequest(tampered, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("expected ErrSignatureMismatch, got %v", err)
+	}
+}
+
+func TestVerifyRequest_RejectsDuplicateContentType(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+	req.Header.Add("Content-Type", "text/plain")
+
+	err := VerifyRequest(req, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+	if !errors.Is(err, ErrInvalidHeaders) {
+		t.Fatalf("expected ErrInvalidHeaders, got %v", err)
+	}
+}
+
+func TestSignRequest_RejectsInvalidContentTypeValue(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json\r\nX-Evil: 1")
+
+	err := SignRequest(req, body, store, WithSigner(signer))
+	if !errors.Is(err, ErrInvalidHeaders) {
+		t.Fatalf("expected ErrInvalidHeaders, got %v", err)
+	}
+}
+
+func TestSignRequest_RejectsInvalidCurrentKeyID(t *testing.T) {
+	body := []byte(`{"action":"deploy"}`)
+
+	for _, keyID := range []string{
+		"",
+		" primary",
+		"primary,secondary",
+		strings.Repeat("k", keyIDMaxLen+1),
+	} {
+		t.Run(keyID, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+			err := SignRequest(req, body, malformedCurrentKeyStore{keyID: keyID})
+			if !errors.Is(err, ErrInvalidHeaders) {
+				t.Fatalf("expected ErrInvalidHeaders, got %v", err)
+			}
+			if req.Header.Get(HeaderSignature) != "" {
+				t.Fatalf("signature header was set despite invalid key ID")
+			}
+		})
+	}
+}
+
+func TestVerifyRequest_RejectsInvalidSignatureHeaderValues(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"deploy"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+	req.Header.Set(HeaderKeyID, "primary\r\nX-Evil: 1")
+
+	err := VerifyRequest(req, body, store, WithVerifySigner(signer), freshNonceStoreOpt())
+	if !errors.Is(err, ErrInvalidHeaders) {
+		t.Fatalf("expected ErrInvalidHeaders, got %v", err)
+	}
+}
+
+func TestVerifyRequest_RejectsOversizedSignatureHeaders(t *testing.T) {
+	store := testStore()
+	body := []byte(`{}`)
+
+	tests := []struct {
+		name   string
+		header string
+		value  string
+		want   error
+	}{
+		{name: "signature", header: HeaderSignature, value: "sha256=" + strings.Repeat("a", sha256.Size*2+1), want: ErrInvalidHeaders},
+		{name: "timestamp", header: HeaderTimestamp, value: strings.Repeat("1", timestampMaxLen+1), want: ErrInvalidHeaders},
+		{name: "key id", header: HeaderKeyID, value: strings.Repeat("k", keyIDMaxLen+1), want: ErrInvalidHeaders},
+		{name: "nonce", header: HeaderNonce, value: strings.Repeat("a", nonceMaxLen+1), want: ErrNonceTooLong},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/x", bytes.NewReader(body))
+			req.Header.Set(HeaderSignature, "sha256="+strings.Repeat("a", sha256.Size*2))
+			req.Header.Set(HeaderTimestamp, "1718452800")
+			req.Header.Set(HeaderKeyID, "primary")
+			req.Header.Set(HeaderNonce, testNonce("oversized-headers"))
+			req.Header.Set(tt.header, tt.value)
+
+			err := VerifyRequest(req, body, store, freshNonceStoreOpt())
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestVerifyRequest_RejectsAmbiguousCommaHeaders(t *testing.T) {
+	store := testStore()
+	body := []byte(`{}`)
+
+	for _, header := range []string{HeaderSignature, HeaderTimestamp, HeaderKeyID, HeaderNonce} {
+		t.Run(header, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/x", bytes.NewReader(body))
+			req.Header.Set(HeaderSignature, "sha256="+strings.Repeat("a", sha256.Size*2))
+			req.Header.Set(HeaderTimestamp, "1718452800")
+			req.Header.Set(HeaderKeyID, "primary")
+			req.Header.Set(HeaderNonce, testNonce("comma-headers"))
+			req.Header.Set(header, req.Header.Get(header)+",evil")
+
+			err := VerifyRequest(req, body, store, freshNonceStoreOpt())
+			if !errors.Is(err, ErrInvalidHeaders) {
+				t.Fatalf("expected ErrInvalidHeaders, got %v", err)
+			}
+		})
 	}
 }
 
@@ -366,6 +613,25 @@ func TestVerifyRequest_RejectsOversizedNonce(t *testing.T) {
 	}
 }
 
+func TestVerifyRequest_RejectsMalformedNonceBeforeStore(t *testing.T) {
+	store := testStore()
+	body := []byte(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/x", bytes.NewReader(body))
+	req.Header.Set(HeaderSignature, "sha256=abc")
+	req.Header.Set(HeaderTimestamp, "1718452800")
+	req.Header.Set(HeaderKeyID, "primary")
+	req.Header.Set(HeaderNonce, "not-base64")
+
+	nonceStore := &recordingNonceStore{}
+	err := VerifyRequest(req, body, store, WithNonceStore(nonceStore))
+	if !errors.Is(err, ErrNonceInvalid) {
+		t.Fatalf("expected ErrNonceInvalid, got %v", err)
+	}
+	if nonceStore.calls != 0 {
+		t.Fatalf("malformed nonce reached nonce store %d times", nonceStore.calls)
+	}
+}
+
 // Companion: RequireSignedRequest must panic at construction without
 // a NonceStore — fail-loud at startup, not on first request.
 func TestRequireSignedRequest_PanicsWithoutNonceStore(t *testing.T) {
@@ -375,4 +641,25 @@ func TestRequireSignedRequest_PanicsWithoutNonceStore(t *testing.T) {
 		}
 	}()
 	RequireSignedRequest(testStore())
+}
+
+type recordingNonceStore struct {
+	calls int
+}
+
+func (s *recordingNonceStore) SeenOrStore(string) (bool, error) {
+	s.calls++
+	return true, nil
+}
+
+type malformedCurrentKeyStore struct {
+	keyID string
+}
+
+func (s malformedCurrentKeyStore) Key(string) ([]byte, bool) {
+	return testKey(32, 1), true
+}
+
+func (s malformedCurrentKeyStore) CurrentKeyID() (string, []byte) {
+	return s.keyID, testKey(32, 1)
 }

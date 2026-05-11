@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // StartConsumers launches a consumer goroutine for each declared binding
@@ -24,14 +26,36 @@ func StartConsumers(
 	logger *slog.Logger,
 	shutdownFn func(),
 ) error {
+	if len(declared) == 0 {
+		return nil
+	}
+	if c == nil {
+		return ErrInvalidConsumer
+	}
+	if wg == nil {
+		return fmt.Errorf("messaging: StartConsumers requires a non-nil WaitGroup when bindings are declared")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	var missing []string
+	var nilHandlers []string
 	for _, b := range declared {
-		if _, ok := handlers[b.RoutingKey]; !ok {
+		h, ok := handlers[b.RoutingKey]
+		if !ok {
 			missing = append(missing, b.RoutingKey)
+			continue
+		}
+		if h == nil {
+			nilHandlers = append(nilHandlers, b.RoutingKey)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("no handlers registered for bindings: %v", missing)
+		return fmt.Errorf("messaging: no handlers registered for declared bindings (count=%d)", len(missing))
+	}
+	if len(nilHandlers) > 0 {
+		return fmt.Errorf("messaging: nil handlers registered for declared bindings (count=%d)", len(nilHandlers))
 	}
 
 	for _, b := range declared {
@@ -41,8 +65,8 @@ func StartConsumers(
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Error("consumer panicked",
-						"routing_key", binding.RoutingKey,
-						"panic", r,
+						redact.String("routing_key", binding.RoutingKey),
+						redact.Panic(r),
 						"stack", string(debug.Stack()),
 					)
 					if shutdownFn != nil {
@@ -51,7 +75,10 @@ func StartConsumers(
 				}
 			}()
 			if err := c.Consume(ctx, binding, h); err != nil && ctx.Err() == nil {
-				logger.Error("consumer permanently failed", "queue", binding.Queue, "error", err)
+				logger.Error("consumer permanently failed", redact.String("queue", binding.Queue), redact.Error(err))
+				if shutdownFn != nil {
+					shutdownFn()
+				}
 			}
 		})
 	}

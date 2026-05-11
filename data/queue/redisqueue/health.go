@@ -2,7 +2,6 @@ package redisqueue
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -15,7 +14,7 @@ import (
 // The check issues an LLEN command per evaluation, which is O(1) in Redis.
 func (q *Queue) DepthCheck(queueName string, threshold int64) health.DependencyCheck {
 	return health.DependencyCheck{
-		Name: fmt.Sprintf("queue-%s-depth", queueName),
+		Name: health.OpaqueCheckName("queue-depth", queueName),
 		Check: func(ctx context.Context) string {
 			n, err := q.Len(ctx, queueName)
 			if err != nil {

@@ -19,11 +19,27 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/open-feature/go-sdk/openfeature"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
 	"github.com/bds421/rho-kit/core/v2/tenant"
+)
+
+const (
+	// MaxKeyLen bounds feature flag names before they reach the SDK/provider path.
+	MaxKeyLen = 256
+	// MaxUserKeyLen bounds user targeting keys attached through WithUserKey.
+	MaxUserKeyLen = 256
+)
+
+var (
+	ErrInvalidClient  = errors.New("flags: client is not initialized")
+	ErrInvalidContext = errors.New("flags: context is nil")
+	ErrInvalidKey     = errors.New("flags: key is invalid")
+	ErrInvalidUserKey = errors.New("flags: user key is invalid")
 )
 
 // Provider is the OpenFeature provider interface. Adapters
@@ -62,7 +78,7 @@ func New(name string, p Provider) (*Client, error) {
 		panic("flags: domain name must not be empty")
 	}
 	if err := openfeature.SetNamedProviderAndWait(name, p); err != nil {
-		return nil, fmt.Errorf("flags: install provider on domain %q: %w", name, err)
+		return nil, fmt.Errorf("flags: install provider: %w", err)
 	}
 	return &Client{inner: openfeature.NewClient(name)}, nil
 }
@@ -73,7 +89,7 @@ func New(name string, p Provider) (*Client, error) {
 func MustNew(name string, p Provider) *Client {
 	c, err := New(name, p)
 	if err != nil {
-		panic(err)
+		panic("flags: client configuration is invalid")
 	}
 	return c
 }
@@ -84,8 +100,8 @@ func MustNew(name string, p Provider) *Client {
 // the convenience getters. Use [Client.BoolE] (and the matching
 // String/Int/Float/Object error variants) when an upstream outage,
 // malformed flag value, or kill-switch misconfiguration must be
-// surfaced. Wire [Client.OnEvalError] to a Prometheus counter / alert
-// to detect provider regressions in production.
+// surfaced. Wire [Client.SetEvalErrorHook] to a Prometheus counter /
+// alert to detect provider regressions in production.
 func (c *Client) Bool(ctx context.Context, key string, fallback bool) bool {
 	v, _ := c.BoolE(ctx, key, fallback)
 	return v
@@ -93,14 +109,20 @@ func (c *Client) Bool(ctx context.Context, key string, fallback bool) bool {
 
 // BoolE returns the evaluated bool plus any provider error.
 func (c *Client) BoolE(ctx context.Context, key string, fallback bool) (bool, error) {
-	d, err := c.inner.BooleanValueDetails(ctx, key, fallback, evalCtx(ctx))
-	if d.ErrorCode != "" || err != nil {
-		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
-		}
+	if err := c.ready(); err != nil {
+		return fallback, err
 	}
-	return d.Value, err
+	if err := ValidateKey(key); err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	ec, err := evalCtx(ctx)
+	if err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	d, err := c.inner.BooleanValueDetails(ctx, key, fallback, ec)
+	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
 }
 
 // String evaluates a string flag.
@@ -111,14 +133,20 @@ func (c *Client) String(ctx context.Context, key, fallback string) string {
 
 // StringE returns the evaluated string plus any provider error.
 func (c *Client) StringE(ctx context.Context, key, fallback string) (string, error) {
-	d, err := c.inner.StringValueDetails(ctx, key, fallback, evalCtx(ctx))
-	if d.ErrorCode != "" || err != nil {
-		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
-		}
+	if err := c.ready(); err != nil {
+		return fallback, err
 	}
-	return d.Value, err
+	if err := ValidateKey(key); err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	ec, err := evalCtx(ctx)
+	if err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	d, err := c.inner.StringValueDetails(ctx, key, fallback, ec)
+	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
 }
 
 // Int evaluates an integer flag.
@@ -129,14 +157,20 @@ func (c *Client) Int(ctx context.Context, key string, fallback int64) int64 {
 
 // IntE returns the evaluated int plus any provider error.
 func (c *Client) IntE(ctx context.Context, key string, fallback int64) (int64, error) {
-	d, err := c.inner.IntValueDetails(ctx, key, fallback, evalCtx(ctx))
-	if d.ErrorCode != "" || err != nil {
-		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
-		}
+	if err := c.ready(); err != nil {
+		return fallback, err
 	}
-	return d.Value, err
+	if err := ValidateKey(key); err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	ec, err := evalCtx(ctx)
+	if err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	d, err := c.inner.IntValueDetails(ctx, key, fallback, ec)
+	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
 }
 
 // Float evaluates a float64 flag.
@@ -147,14 +181,20 @@ func (c *Client) Float(ctx context.Context, key string, fallback float64) float6
 
 // FloatE returns the evaluated float plus any provider error.
 func (c *Client) FloatE(ctx context.Context, key string, fallback float64) (float64, error) {
-	d, err := c.inner.FloatValueDetails(ctx, key, fallback, evalCtx(ctx))
-	if d.ErrorCode != "" || err != nil {
-		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
-		}
+	if err := c.ready(); err != nil {
+		return fallback, err
 	}
-	return d.Value, err
+	if err := ValidateKey(key); err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	ec, err := evalCtx(ctx)
+	if err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	d, err := c.inner.FloatValueDetails(ctx, key, fallback, ec)
+	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
 }
 
 // Object evaluates an opaque-shape flag (typically JSON). Useful for
@@ -166,14 +206,20 @@ func (c *Client) Object(ctx context.Context, key string, fallback any) any {
 
 // ObjectE returns the evaluated object plus any provider error.
 func (c *Client) ObjectE(ctx context.Context, key string, fallback any) (any, error) {
-	d, err := c.inner.ObjectValueDetails(ctx, key, fallback, evalCtx(ctx))
-	if d.ErrorCode != "" || err != nil {
-		c.observeError(key, d.ErrorMessage, err)
-		if err == nil && d.ErrorMessage != "" {
-			err = errors.New(d.ErrorMessage)
-		}
+	if err := c.ready(); err != nil {
+		return fallback, err
 	}
-	return d.Value, err
+	if err := ValidateKey(key); err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	ec, err := evalCtx(ctx)
+	if err != nil {
+		c.observeError(key, err.Error(), err)
+		return fallback, err
+	}
+	d, err := c.inner.ObjectValueDetails(ctx, key, fallback, ec)
+	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
 }
 
 // SetEvalErrorHook installs a callback fired whenever any flag
@@ -185,6 +231,23 @@ func (c *Client) ObjectE(ctx context.Context, key string, fallback any) (any, er
 // non-blocking. Setting nil clears the hook.
 func (c *Client) SetEvalErrorHook(fn func(key, message string, err error)) {
 	c.errHook.Store(&fn)
+}
+
+func (c *Client) ready() error {
+	if c == nil || c.inner == nil {
+		return ErrInvalidClient
+	}
+	return nil
+}
+
+func (c *Client) finishEval(key string, d openfeature.EvaluationDetails, err error) error {
+	if d.ErrorCode != "" || err != nil {
+		c.observeError(key, d.ErrorMessage, err)
+		if err == nil && d.ErrorMessage != "" {
+			err = errors.New(d.ErrorMessage)
+		}
+	}
+	return err
 }
 
 func (c *Client) observeError(key, msg string, err error) {
@@ -204,7 +267,11 @@ func (c *Client) observeError(key, msg string, err error) {
 // circular dep here. Callers that need user-level targeting should
 // merge the user attribute themselves via [WithUserKey] before
 // calling Bool/String/etc.
-func evalCtx(ctx context.Context) openfeature.EvaluationContext {
+func evalCtx(ctx context.Context) (openfeature.EvaluationContext, error) {
+	if ctx == nil {
+		return openfeature.EvaluationContext{}, ErrInvalidContext
+	}
+
 	attrs := map[string]any{}
 	targetingKey := ""
 
@@ -212,17 +279,75 @@ func evalCtx(ctx context.Context) openfeature.EvaluationContext {
 		targetingKey = t.String()
 		attrs["tenant"] = t.String()
 	}
-	if uid, ok := ctx.Value(userKeyCtx{}).(string); ok && uid != "" {
-		attrs["user"] = uid
+	switch stored := ctx.Value(userKeyCtx{}).(type) {
+	case userKeyValue:
+		if stored.err != nil {
+			return openfeature.EvaluationContext{}, stored.err
+		}
+		if stored.value == "" {
+			break
+		}
+		attrs["user"] = stored.value
 		if targetingKey == "" {
-			targetingKey = uid
+			targetingKey = stored.value
+		}
+	case string:
+		if stored == "" {
+			break
+		}
+		if err := validateUserKey(stored); err != nil {
+			return openfeature.EvaluationContext{}, err
+		}
+		attrs["user"] = stored
+		if targetingKey == "" {
+			targetingKey = stored
 		}
 	}
 	if cid := contextutil.CorrelationID(ctx); cid != "" {
 		attrs["correlation_id"] = cid
 	}
 
-	return openfeature.NewEvaluationContext(targetingKey, attrs)
+	return openfeature.NewEvaluationContext(targetingKey, attrs), nil
+}
+
+// ValidateKey validates a feature flag key before it reaches the SDK
+// and provider path.
+func ValidateKey(key string) error {
+	return validateTokenish("key", key, MaxKeyLen, ErrInvalidKey)
+}
+
+func validateUserKey(userID string) error {
+	return validateTokenish("user key", userID, MaxUserKeyLen, ErrInvalidUserKey)
+}
+
+func validateTokenish(name, value string, maxLen int, sentinel error) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s must not be empty", sentinel, name)
+	}
+	if len(value) > maxLen {
+		return fmt.Errorf("%w: %s exceeds maximum length", sentinel, name)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s must be valid UTF-8", sentinel, name)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("%w: %s must not contain whitespace or control characters", sentinel, name)
+		}
+	}
+	return nil
+}
+
+type userKeyValue struct {
+	value string
+	err   error
+}
+
+func validUserKeyValue(userID string) userKeyValue {
+	if err := validateUserKey(userID); err != nil {
+		return userKeyValue{err: err}
+	}
+	return userKeyValue{value: userID}
 }
 
 // WithUserKey attaches a user identifier to the evaluation context for
@@ -231,10 +356,13 @@ func evalCtx(ctx context.Context) openfeature.EvaluationContext {
 // package the flags module cannot import. The returned context is for
 // short-lived use — wrap a single Bool/String/etc. call, don't store.
 func WithUserKey(ctx context.Context, userID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if userID == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, userKeyCtx{}, userID)
+	return context.WithValue(ctx, userKeyCtx{}, validUserKeyValue(userID))
 }
 
 type userKeyCtx struct{}

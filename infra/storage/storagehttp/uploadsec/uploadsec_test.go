@@ -3,6 +3,7 @@ package uploadsec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/png"
 	"io"
@@ -57,23 +58,104 @@ func TestAllowMIMETypes_AcceptsAllowed(t *testing.T) {
 	assert.Equal(t, "image/png", meta.ContentType, "validator must overwrite caller-supplied ContentType with the sniffed value")
 }
 
+func TestAllowMIMETypes_PanicsOnInvalidAllowlist(t *testing.T) {
+	assert.Panics(t, func() { AllowMIMETypes() })
+	assert.Panics(t, func() { AllowMIMETypes("") })
+	assert.Panics(t, func() { AllowMIMETypes("not-a-mime") })
+	assert.PanicsWithValue(t, "uploadsec: invalid MIME type", func() {
+		AllowMIMETypes("not-a-mime secret-token")
+	})
+}
+
 func TestAllowMIMETypes_RejectsDisallowed(t *testing.T) {
 	v := AllowMIMETypes("image/jpeg")
 	body := bytes.NewReader(tinyPNG(t))
 	_, err := v.Validate(context.Background(), body, Meta{})
 	assert.ErrorIs(t, err, ErrMIMETypeNotAllowed)
+	assert.NotContains(t, err.Error(), "image/png")
+}
+
+func TestChain_PanicsOnNilValidator(t *testing.T) {
+	assert.PanicsWithValue(t, "uploadsec: validator must not be nil", func() {
+		Chain(ValidatorFunc(func(_ context.Context, _ io.ReadSeeker, meta Meta) (Meta, error) {
+			return meta, nil
+		}), nil)
+	})
+}
+
+func TestScanWith_AcceptsCleanVerdict(t *testing.T) {
+	var gotBody string
+	var gotMeta Meta
+	v := ScanWith(ScannerFunc(func(_ context.Context, body io.Reader, meta Meta) error {
+		b, err := io.ReadAll(body)
+		require.NoError(t, err)
+		gotBody = string(b)
+		gotMeta = meta
+		return nil
+	}))
+
+	meta := Meta{Filename: "avatar.png", ContentType: "image/png"}
+	updated, err := v.Validate(context.Background(), bytes.NewReader([]byte("clean")), meta)
+	require.NoError(t, err)
+	assert.Equal(t, meta, updated)
+	assert.Equal(t, "clean", gotBody)
+	assert.Equal(t, meta, gotMeta)
+}
+
+func TestScanWith_RejectsMalware(t *testing.T) {
+	v := ScanWith(ScannerFunc(func(context.Context, io.Reader, Meta) error {
+		return MalwareDetected("Eicar-Test-Signature")
+	}))
+
+	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("bad")), Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMalwareDetected)
+	assert.NotContains(t, err.Error(), "Eicar")
+
+	var detected *MalwareDetectedError
+	require.True(t, errors.As(err, &detected))
+	assert.Equal(t, "Eicar-Test-Signature", detected.Threat)
+}
+
+func TestScanWith_UnknownScannerErrorDoesNotReflectDetails(t *testing.T) {
+	v := ScanWith(ScannerFunc(func(context.Context, io.Reader, Meta) error {
+		return errors.New("scanner failed while processing secret-token")
+	}))
+
+	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("bad")), Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrScannerUnavailable)
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "scanner failed")
+}
+
+func TestScanWith_PanicsOnNilScanner(t *testing.T) {
+	assert.Panics(t, func() { ScanWith(nil) })
+}
+
+func TestAllowExtensions_PanicsOnInvalidAllowlist(t *testing.T) {
+	assert.Panics(t, func() { AllowExtensions() })
+	assert.Panics(t, func() { AllowExtensions("") })
+	assert.Panics(t, func() { AllowExtensions("png") })
+	assert.Panics(t, func() { AllowExtensions("../png") })
+	assert.PanicsWithValue(t, "uploadsec: invalid extension", func() {
+		AllowExtensions("../secret-token")
+	})
 }
 
 func TestAllowExtensions_RejectsMissing(t *testing.T) {
 	v := AllowExtensions(".png", ".jpg")
-	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("x")), Meta{Filename: "noext"})
+	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("x")), Meta{Filename: "secret-token"})
 	assert.ErrorIs(t, err, ErrExtensionNotAllowed)
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestAllowExtensions_RejectsDisallowed(t *testing.T) {
 	v := AllowExtensions(".png")
-	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("x")), Meta{Filename: "evil.php"})
+	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("x")), Meta{Filename: "secret-token.php"})
 	assert.ErrorIs(t, err, ErrExtensionNotAllowed)
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), ".php")
 }
 
 func TestAllowExtensions_AllowedCaseInsensitive(t *testing.T) {
@@ -89,6 +171,8 @@ func TestAllowExtensions_RejectsMismatchedContentType(t *testing.T) {
 	meta := Meta{Filename: "image.jpg", ContentType: "image/png"}
 	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("x")), meta)
 	assert.ErrorIs(t, err, ErrExtensionNotAllowed)
+	assert.NotContains(t, err.Error(), ".jpg")
+	assert.NotContains(t, err.Error(), "image/png")
 }
 
 func TestMaxImageDimensions_AcceptsSmallImage(t *testing.T) {
@@ -110,6 +194,17 @@ func TestMaxImageDimensions_RejectsBomb(t *testing.T) {
 	// "invalid image". Either ErrImageTooLarge or ErrInvalidImage is
 	// an acceptable rejection — both are 422.
 	assert.True(t, strings.Contains(err.Error(), "image"), "must reject patched/oversize image: %v", err)
+	assert.NotContains(t, err.Error(), "100000")
+	assert.NotContains(t, err.Error(), "1024")
+}
+
+func TestMaxImageDimensions_InvalidImageDoesNotReflectDecoderDetails(t *testing.T) {
+	v := MaxImageDimensions(1024, 1024)
+
+	_, err := v.Validate(context.Background(), bytes.NewReader([]byte("secret-token invalid image")), Meta{ContentType: "image/png"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestMaxImageDimensions_PassesNonImage(t *testing.T) {
@@ -192,6 +287,8 @@ func TestHTTPStatusForError(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, HTTPStatusForError(ErrImageTooLarge))
 	assert.Equal(t, http.StatusUnprocessableEntity, HTTPStatusForError(ErrInvalidImage))
 	assert.Equal(t, http.StatusUnprocessableEntity, HTTPStatusForError(ErrExtensionNotAllowed))
+	assert.Equal(t, http.StatusUnprocessableEntity, HTTPStatusForError(ErrMalwareDetected))
+	assert.Equal(t, http.StatusServiceUnavailable, HTTPStatusForError(ErrScannerUnavailable))
 	assert.Equal(t, http.StatusInternalServerError, HTTPStatusForError(assert.AnError))
 }
 

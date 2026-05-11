@@ -3,6 +3,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -14,11 +15,14 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 )
 
 const numShards = 16
+
+const maxDurationValue = time.Duration(1<<63 - 1)
 
 type visitor struct {
 	count    int
@@ -44,6 +48,8 @@ type RateLimiter struct {
 	maxPerShard    int
 	health         HealthIndicator
 	degradation    DegradationHandler
+	runMu          sync.Mutex
+	started        bool
 }
 
 // RateLimiterOption configures optional RateLimiter behaviour.
@@ -60,9 +66,17 @@ func WithClock(fn func() time.Time) RateLimiterOption {
 }
 
 // WithTrustedProxies sets the CIDRs from which X-Forwarded-For is trusted.
+// Invalid entries panic so proxy attribution cannot silently degrade at startup.
 func WithTrustedProxies(cidrs []string) RateLimiterOption {
+	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
+	if err != nil {
+		panic("ratelimit: invalid trusted proxy")
+	}
+	if len(trusted) == 0 {
+		trusted = clientip.ParseTrustedProxies(nil)
+	}
 	return func(rl *RateLimiter) {
-		rl.trustedProxies = clientip.ParseTrustedProxies(cidrs)
+		rl.trustedProxies = cloneIPNets(trusted)
 	}
 }
 
@@ -82,6 +96,9 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 		maxPerShard: defaultMaxPerShard,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("ratelimit: NewRateLimiter option must not be nil")
+		}
 		opt(rl)
 	}
 	if len(rl.trustedProxies) == 0 {
@@ -97,6 +114,33 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 	return rl
 }
 
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		if n == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &net.IPNet{
+			IP:   append(net.IP(nil), n.IP...),
+			Mask: append(net.IPMask(nil), n.Mask...),
+		})
+	}
+	return out
+}
+
+func (rl *RateLimiter) ready() error {
+	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
+		return ErrInvalidLimiter
+	}
+	for i := range rl.shards {
+		if rl.shards[i].visitors == nil {
+			return ErrInvalidLimiter
+		}
+	}
+	return nil
+}
+
 // getShard returns the shard for the given IP using FNV-1a hashing.
 func (rl *RateLimiter) getShard(ip string) *shard {
 	h := fnv.New32a()
@@ -107,6 +151,9 @@ func (rl *RateLimiter) getShard(ip string) *shard {
 // allow checks if the IP is within the rate limit. Returns (allowed, windowRemaining).
 // windowRemaining is only meaningful when allowed is false.
 func (rl *RateLimiter) allow(ip string) (bool, time.Duration) {
+	if rl.ready() != nil || ip == "" {
+		return false, 0
+	}
 	s := rl.getShard(ip)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,6 +202,9 @@ const maxCleanupPerShard = 1000
 // re-check is benign and a freshly-touched entry stays even if it was
 // stale at snapshot time.
 func (rl *RateLimiter) cleanup() {
+	if rl.ready() != nil {
+		return
+	}
 	cutoff := rl.now().Add(-rl.window)
 	for i := range rl.shards {
 		s := &rl.shards[i]
@@ -179,18 +229,32 @@ func (rl *RateLimiter) cleanup() {
 // Run starts the periodic cleanup goroutine. Blocks until ctx is cancelled.
 // Cleanup runs at 2× the rate limit window to amortize scan cost while
 // ensuring expired entries don't accumulate beyond one extra window.
-func (rl *RateLimiter) Run(ctx context.Context) {
-	ticker := time.NewTicker(rl.window * 2)
+func (rl *RateLimiter) Run(ctx context.Context) error {
+	if err := rl.ready(); err != nil {
+		return err
+	}
+	if ctx == nil {
+		return errors.New("ratelimit: RateLimiter.Run requires a non-nil context")
+	}
+	rl.runMu.Lock()
+	if rl.started {
+		rl.runMu.Unlock()
+		return errors.New("ratelimit: RateLimiter.Run already started")
+	}
+	rl.started = true
+	rl.runMu.Unlock()
+
+	ticker := time.NewTicker(cleanupInterval(rl.window))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("panic in rate limiter cleanup", "panic", r)
+						slog.Error("panic in rate limiter cleanup", redact.Panic(r))
 					}
 				}()
 				rl.cleanup()
@@ -199,8 +263,18 @@ func (rl *RateLimiter) Run(ctx context.Context) {
 	}
 }
 
+func cleanupInterval(window time.Duration) time.Duration {
+	if window > maxDurationValue/2 {
+		return maxDurationValue
+	}
+	return window * 2
+}
+
 // clientIP extracts the real client IP using proxy-aware logic.
 func (rl *RateLimiter) clientIP(r *http.Request) string {
+	if rl.ready() != nil {
+		return ""
+	}
 	return clientip.ClientIPWithTrustedProxies(r, rl.trustedProxies)
 }
 
@@ -214,6 +288,12 @@ func (rl *RateLimiter) ClientIP(r *http.Request) string {
 // When degradation is configured via [WithDegradation], the middleware checks
 // the health indicator before enforcing rate limits.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
+	if err := rl.ready(); err != nil {
+		panic("ratelimit: Middleware requires an initialized limiter")
+	}
+	if next == nil {
+		panic("ratelimit: Middleware requires a non-nil next handler")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
 		if handled {
@@ -225,6 +305,10 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 		}
 
 		ip := rl.clientIP(r)
+		if ip == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "client IP could not be determined")
+			return
+		}
 		allowed, remaining := rl.allow(ip)
 		if !allowed {
 			retryAfter := int(math.Ceil(remaining.Seconds()))

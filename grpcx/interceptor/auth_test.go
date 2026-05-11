@@ -5,8 +5,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +22,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -55,6 +62,52 @@ func testKeyAndProvider(t *testing.T) (*jwtutil.Provider, *ecdsa.PrivateKey) {
 		jwtutil.WithAllowAnyAudience(),
 	)
 	return provider, privKey
+}
+
+func allowS2SImpersonationForTest() interceptor.MTLSIdentityOption {
+	return interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error {
+		return nil
+	})
+}
+
+func TestWithSkipMethodsClonesInput(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	methods := []string{"/rho.test.Service/Check"}
+	opt := interceptor.WithSkipMethods(methods...)
+	methods[0] = "/rho.test.Service/Mutated"
+
+	unary := interceptor.AuthUnary(provider, opt)
+	called := false
+	resp, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/rho.test.Service/Check"}, func(context.Context, any) (any, error) {
+		called = true
+		return "ok", nil
+	})
+
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, "ok", resp)
+}
+
+func TestWithMTLSSkipMethodsClonesInput(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	methods := []string{"/rho.test.Service/Check"}
+	opt := interceptor.WithMTLSSkipMethods(methods...)
+	methods[0] = "/rho.test.Service/Mutated"
+
+	unary := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs([]string{"rho-service"}),
+		allowS2SImpersonationForTest(),
+		opt,
+	)
+	called := false
+	resp, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/rho.test.Service/Check"}, func(context.Context, any) (any, error) {
+		called = true
+		return "ok", nil
+	})
+
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, "ok", resp)
 }
 
 // signTestToken creates a signed JWT with the given subject and permissions.
@@ -185,6 +238,67 @@ func TestAuthUnary_InvalidToken(t *testing.T) {
 	assert.Equal(t, codes.Unauthenticated, st.Code())
 }
 
+func TestAuthUnary_RejectsDuplicateAuthorizationMetadata(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
+
+	called := false
+	ic := interceptor.AuthUnary(provider)
+	_, err := ic(
+		metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			"authorization", "Bearer "+token,
+			"authorization", "Bearer invalid-token",
+		)),
+		nil,
+		noopUnaryInfo,
+		func(context.Context, any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestAuthUnary_RejectsAmbiguousAuthorizationMetadata(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
+
+	tests := map[string]string{
+		"edge whitespace": " Bearer " + token,
+		"trailing token":  "Bearer " + token + " ",
+		"empty token":     "Bearer ",
+		"control":         "Bearer " + token + "\n",
+		"embedded control": "Bearer " + token[:len(token)/2] +
+			"\x00" + token[len(token)/2:],
+		"comma combined": "Bearer " + token + ",Bearer invalid-token",
+		"oversized":      "Bearer " + strings.Repeat("a", 8193),
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			ic := interceptor.AuthUnary(provider)
+			_, err := ic(
+				metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", value)),
+				nil,
+				noopUnaryInfo,
+				func(context.Context, any) (any, error) {
+					called = true
+					return nil, nil
+				},
+			)
+			require.Error(t, err)
+			assert.False(t, called)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			assert.Equal(t, codes.Unauthenticated, st.Code())
+		})
+	}
+}
+
 func TestAuthUnary_SkipMethods(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
@@ -226,9 +340,23 @@ func TestAuthUnary_PanicsOnNilProvider(t *testing.T) {
 	})
 }
 
+func TestAuthUnary_PanicsOnNilOption(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.AuthUnary(provider, nil)
+	})
+}
+
 func TestAuthStream_PanicsOnNilProvider(t *testing.T) {
 	assert.Panics(t, func() {
 		interceptor.AuthStream(nil)
+	})
+}
+
+func TestAuthStream_PanicsOnNilOption(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.AuthStream(provider, nil)
 	})
 }
 
@@ -364,6 +492,21 @@ type fakeStream struct {
 }
 
 func (f *fakeStream) Context() context.Context { return f.ctx }
+
+func mtlsIncomingContext(cert *x509.Certificate) context.Context {
+	return mtlsIncomingContextWithMetadata(cert, metadata.Pairs(
+		"x-user-id", "11111111-1111-1111-1111-111111111111",
+	))
+}
+
+func mtlsIncomingContextWithMetadata(cert *x509.Certificate, md metadata.MD) context.Context {
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+	state := tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
+	return peer.NewContext(ctx, &peer.Peer{AuthInfo: credentials.TLSInfo{State: state}})
+}
 
 func TestRequirePermissionUnary_PanicsOnEmpty(t *testing.T) {
 	assert.Panics(t, func() {
@@ -580,17 +723,31 @@ func TestMTLSAuthUnary_PanicsOnNilProvider(t *testing.T) {
 	})
 }
 
+func TestMTLSAuthUnary_PanicsOnNilOption(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(provider, nil)
+	})
+}
+
 // TestMTLSAuthUnary_PanicsOnEmptyIdentities mirrors HTTP RequireS2SAuth.
 func TestMTLSAuthUnary_PanicsOnEmptyIdentities(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(provider)
+		interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest())
 	})
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs(nil))
+		interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs(nil))
 	})
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedSANs([]string{}))
+		interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedSANs([]string{}))
+	})
+}
+
+func TestMTLSAuthUnary_PanicsWithoutImpersonationGuard(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs([]string{"svc"}))
 	})
 }
 
@@ -600,10 +757,30 @@ func TestMTLSAuthStream_PanicsOnNilProvider(t *testing.T) {
 	})
 }
 
+func TestMTLSAuthStream_PanicsOnNilOption(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthStream(provider, nil)
+	})
+}
+
 func TestMTLSAuthStream_PanicsOnEmptyIdentities(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 	assert.Panics(t, func() {
-		interceptor.MTLSAuthStream(provider)
+		interceptor.MTLSAuthStream(provider, allowS2SImpersonationForTest())
+	})
+}
+
+func TestMTLSAuthStream_PanicsWithoutImpersonationGuard(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	assert.Panics(t, func() {
+		interceptor.MTLSAuthStream(provider, interceptor.WithAllowedCNs([]string{"svc"}))
+	})
+}
+
+func TestWithS2SImpersonationGuard_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		interceptor.WithS2SImpersonationGuard(nil)
 	})
 }
 
@@ -613,7 +790,7 @@ func TestMTLSAuthStream_PanicsOnEmptyIdentities(t *testing.T) {
 func TestMTLSAuthUnary_NoCertNoToken_Unauthenticated(t *testing.T) {
 	provider, _ := testKeyAndProvider(t)
 
-	ic := interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs([]string{"svc-a"}))
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
 
 	called := false
 	_, err := ic(
@@ -633,6 +810,246 @@ func TestMTLSAuthUnary_NoCertNoToken_Unauthenticated(t *testing.T) {
 	assert.Equal(t, codes.Unauthenticated, st.Code())
 }
 
+func TestMTLSAuthUnary_GuardPanicRejects(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs([]string{"svc-a"}),
+		interceptor.WithS2SImpersonationGuard(func(context.Context, string, string) error {
+			panic("guard failed")
+		}),
+	)
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestMTLSAuthUnary_GuardErrorRejectsAndReceivesIdentity(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	guardCalled := false
+	ic := interceptor.MTLSAuthUnary(provider,
+		interceptor.WithAllowedCNs([]string{"svc-a"}),
+		interceptor.WithS2SImpersonationGuard(func(_ context.Context, identity, userID string) error {
+			guardCalled = true
+			assert.Equal(t, "cn:svc-a", identity)
+			assert.Equal(t, "11111111-1111-1111-1111-111111111111", userID)
+			return errors.New("not allowed")
+		}),
+	)
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.True(t, guardCalled)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestMTLSAuthUnary_RejectsMalformedAuthorizationBeforeMTLSFallback(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContextWithMetadata(cert, metadata.Pairs(
+			"authorization", "Basic dXNlcjpwYXNz",
+			"x-user-id", "11111111-1111-1111-1111-111111111111",
+		)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestMTLSAuthUnary_RejectsDuplicateAuthorizationBeforeMTLSFallback(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContextWithMetadata(cert, metadata.Pairs(
+			"authorization", "Bearer "+token,
+			"authorization", "Bearer invalid-token",
+			"x-user-id", "11111111-1111-1111-1111-111111111111",
+		)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestMTLSAuthUnary_RejectsDuplicateXUserIDMetadata(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContextWithMetadata(cert, metadata.Pairs(
+			"x-user-id", "11111111-1111-1111-1111-111111111111",
+			"x-user-id", "22222222-2222-2222-2222-222222222222",
+		)),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestMTLSAuthUnary_RejectsAmbiguousXUserIDMetadata(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "edge whitespace", value: " 11111111-1111-1111-1111-111111111111 "},
+		{name: "internal whitespace", value: "11111111-1111-1111-1111-11111111 1111"},
+		{name: "comma combined", value: "11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222"},
+		{name: "control", value: "11111111-1111-1111-1111-111111111111\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			_, err := ic(
+				mtlsIncomingContextWithMetadata(cert, metadata.Pairs("x-user-id", tt.value)),
+				nil,
+				noopUnaryInfo,
+				func(ctx context.Context, req any) (any, error) {
+					called = true
+					return nil, nil
+				},
+			)
+			require.Error(t, err)
+			assert.False(t, called)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			assert.Equal(t, codes.Unauthenticated, st.Code())
+		})
+	}
+}
+
+func TestMTLSAuthUnary_RejectsCACert(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		IsCA:        true,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestMTLSAuthUnary_RejectsServerOnlyCert(t *testing.T) {
+	provider, _ := testKeyAndProvider(t)
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "svc-a"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	called := false
+	_, err := ic(
+		mtlsIncomingContext(cert),
+		nil,
+		noopUnaryInfo,
+		func(ctx context.Context, req any) (any, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	require.Error(t, err)
+	assert.False(t, called)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+}
+
 // TestMTLSAuthUnary_JWTPath_NoTrustedMarker verifies that when MTLSAuthUnary
 // authenticates via the JWT branch (Bearer header present), it does NOT
 // stamp the trusted-S2S marker. Only the mTLS branch should do that.
@@ -640,7 +1057,7 @@ func TestMTLSAuthUnary_JWTPath_NoTrustedMarker(t *testing.T) {
 	provider, privKey := testKeyAndProvider(t)
 	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read"})
 
-	ic := interceptor.MTLSAuthUnary(provider, interceptor.WithAllowedCNs([]string{"svc-a"}))
+	ic := interceptor.MTLSAuthUnary(provider, allowS2SImpersonationForTest(), interceptor.WithAllowedCNs([]string{"svc-a"}))
 
 	var observedTrusted bool
 	_, err := ic(
@@ -655,6 +1072,19 @@ func TestMTLSAuthUnary_JWTPath_NoTrustedMarker(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, observedTrusted,
 		"JWT branch of MTLSAuthUnary must NOT stamp the trusted-S2S marker")
+}
+
+func TestUserPermissions_ReturnsClone(t *testing.T) {
+	provider, privKey := testKeyAndProvider(t)
+	token := signTestToken(t, privKey, "11111111-1111-1111-1111-111111111111", []string{"read", "write"})
+	ctx, err := authedCtx(t, provider, token)
+	require.NoError(t, err)
+
+	perms := interceptor.UserPermissions(ctx)
+	require.Equal(t, []string{"read", "write"}, perms)
+
+	perms[0] = "admin"
+	assert.Equal(t, []string{"read", "write"}, interceptor.UserPermissions(ctx))
 }
 
 // authedCtx invokes AuthUnary with the given Bearer token and returns the

@@ -13,6 +13,7 @@ make test-race     # race detector
 make test-cover    # coverage report
 make lint          # golangci-lint v2
 make vulncheck     # govulncheck
+make check-dependency-allowlist # direct external Go dependency policy
 make bench         # benchmarks
 make fmt           # goimports + gofumpt
 make tidy          # go mod tidy
@@ -73,20 +74,23 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Store/retrieve files | `infra/storage` + backend (s3/azure/gcs/sftp/local) | [storage](docs/ai/storage.md) |
 | Multi-disk file storage | `storage.Manager` | [storage](docs/ai/storage.md) |
 | Encrypt files at rest | `storage/encryption` | [storage](docs/ai/storage.md) |
+| Scan uploaded files for malware | `storagehttp/uploadsec` + `storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
 | Publish/consume AMQP messages | `messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Redis Streams | `messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Buffered message delivery | `messaging.BufferedPublisher` | [messaging](docs/ai/messaging.md) |
+| Bound message size per route | `messaging.MessageSizeLimiter`, Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes` | [messaging](docs/ai/messaging.md) |
 | Cache data (single instance) | `cache.MemoryCache` | [utilities](docs/ai/utilities.md) |
 | Cache data (shared/distributed) | `data/cache/rediscache` | [redis](docs/ai/redis.md) |
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |
 | Task queue (single consumer) | `data/queue/redisqueue` | [redis](docs/ai/redis.md) |
 | Cross-service messaging | `infra/messaging` interfaces + backend | [messaging](docs/ai/messaging.md) |
-| Connect to MySQL/PostgreSQL | `infra/sqldb`, `infra/sqldb/gormdb` | [database](docs/ai/sqldb.md) |
+| Connect to PostgreSQL | `infra/sqldb`, `infra/sqldb/pgx` | [database](docs/ai/sqldb.md) |
 | Retry transient failures | `resilience/retry` | [resilience](docs/ai/resilience.md) |
 | Protect against cascading failure | `resilience/circuitbreaker` | [resilience](docs/ai/resilience.md) |
 | Encrypt DB fields | `crypto/encrypt.FieldEncryptor` | [security](docs/ai/security.md) |
 | Sign/verify webhooks (HMAC) | `crypto/signing` | [security](docs/ai/security.md) |
 | Verify JWTs (JWKS) | `security/jwtutil` | [security](docs/ai/security.md) |
+| Revoke JWTs after logout | `security/jwtutil/revocation` | [security](docs/ai/security.md) |
 | mTLS between services | `security/netutil` | [security](docs/ai/security.md) |
 | Prevent SSRF | `security/netutil` | [security](docs/ai/security.md) |
 | Validate structs | `core/validate` | [utilities](docs/ai/utilities.md) |
@@ -99,16 +103,15 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Test HTTP handlers | `httpx/httpxtest` | [testing](docs/ai/testing.md) |
 | Redis-backed idempotency | `data/idempotency/redisstore` | [redis](docs/ai/redis.md) |
 | Queue depth health check | `redis/queue.DepthCheck` | [redis](docs/ai/redis.md) |
-| Write integration tests (DB) | `infra/sqldb/dbtest` | [testing](docs/ai/testing.md) |
-| Write integration tests (Redis) | `infra/redis/redistest` | [testing](docs/ai/testing.md) |
-| Write integration tests (RabbitMQ) | `messaging/amqpbackend/rabbitmqtest` | [testing](docs/ai/testing.md) |
-| Test storage backends | `testutil/storagetest` | [testing](docs/ai/testing.md) |
-| In-memory DB for unit tests | `testutil/memdb` | [testing](docs/ai/testing.md) |
+| Write integration tests (DB) | `infra/sqldb/dbtest/v2` | [testing](docs/ai/testing.md) |
+| Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
+| Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |
+| Test storage backends | `infra/storage/storagetest/v2` | [testing](docs/ai/testing.md) |
 | In-memory broker for unit tests | `messaging/membroker` | [testing](docs/ai/testing.md) |
 | Safe integer cast (no silent overflow) | `core/safecast` | [utilities](docs/ai/utilities.md) |
 | Cryptographically random strings (OTPs, tokens) | `core/randstr` | [utilities](docs/ai/utilities.md) |
 | Zeroizable secret type | `core/secret` | [utilities](docs/ai/utilities.md) |
-| Tenant-aware identity helpers | `core/tenant` | [utilities](docs/ai/utilities.md) |
+| Tenant-aware identity and scoped keys | `core/tenant` | [utilities](docs/ai/utilities.md) |
 | Per-tenant cost / spend ledger | `data/budget` (+ `memory`/`redis` backends) | [redis](docs/ai/redis.md) |
 | Async approval workflows | `data/approval` (+ `memory`/`postgres`) | [utilities](docs/ai/utilities.md) |
 | Append-only chained action log | `data/actionlog` (+ `memory`/`postgres`) | [utilities](docs/ai/utilities.md) |
@@ -120,8 +123,9 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Postgres advisory lock | `data/lock/pgadvisory` | [database](docs/ai/sqldb.md) |
 | MCP-compatible HTTP handlers | `httpx/mcp` | [http](docs/ai/http.md) |
 | HMAC request signing | `httpx/sign`, `httpx/middleware/signedrequest` | [security](docs/ai/security.md) |
-| Safe URL helpers | `httpx/urlutil` | [utilities](docs/ai/utilities.md) |
+| Safe URL helpers and redirects | `httpx/urlutil`, `httpx.SafeRedirect` | [http](docs/ai/http.md) |
 | HTTP request budget enforcement | `httpx/budget`, `httpx/middleware/budget` | [http](docs/ai/http.md) |
+| Postgres-backed idempotency | `data/idempotency/pgstore` | [database](docs/ai/sqldb.md) |
 | PASETO v4 token issuance / verification | `crypto/paseto` | [security](docs/ai/security.md) |
 | Argon2id password hashing | `crypto/passhash` | [security](docs/ai/security.md) |
 | Envelope encryption (DEK + KEK) | `crypto/envelope`, `crypto/envelope/kekstatic` | [security](docs/ai/security.md) |
@@ -130,7 +134,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | SLO checker (latency, error/success rate) | `observability/slo` | [observability](docs/ai/observability.md) |
 | pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
 | Service health check binary | `cmd/kit-doctor`, `observability/health.RunHealthCheck` | [observability](docs/ai/observability.md) |
-| Scaffold a new service | `cmd/kit-new` | — |
+| Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
 | Performance regression gate | `cmd/kit-bench-gate` | — |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
@@ -141,23 +145,30 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Error handling**: Return typed `core/apperror` errors using `apperror.Code` enum (`CodeNotFound`, `CodeValidation`, `CodeConflict`, `CodeAuthRequired`, `CodeForbidden`, `CodeRateLimit`, `CodeOperationFailed`, `CodePermanent`, `CodeUnavailable`). `httpx.WriteServiceError` maps them to HTTP status codes automatically via `httpx.HTTPStatus()`. Every error type implements `Retryable() bool` — use `apperror.ShouldRetry` as a predicate for retry middleware (e.g. `retry.WithRetryIf(apperror.ShouldRetry)`). Error codes are transport-agnostic; HTTP mapping lives in `httpx`, not in `core/apperror`.
 - **Metrics**: All Prometheus metrics accept `prometheus.Registerer` via `WithRegisterer()` options. Defaults to `prometheus.DefaultRegisterer` for zero-config usage. Use custom registerers for test isolation.
 - **Permanent errors**: Wrap with `apperror.NewPermanent()` to skip retries in consumers.
-- **Operation errors**: Use `apperror.NewOperationFailed()` for known failures with client-safe messages (vs untyped errors which get generic "internal error").
+- **Operation errors**: Use `apperror.NewOperationFailed()` for non-retryable operation failures that should be logged and typed; HTTP adapters return a generic `internal error` body for both operation failures and untyped errors.
 - **Unavailable errors**: Use `apperror.NewUnavailable()` when the service itself is not ready, or `apperror.NewDependencyUnavailable("redis", msg, cause)` when an upstream dependency is down. Both are retryable. HTTP status mapping (502 vs 503) is handled by `httpx.HTTPStatus()`.
 - **Fail fast**: Configuration errors panic at startup (nil backends, empty names). Runtime errors return `error`.
-- **Health checks**: Internal port `:9090` serves `/ready` (dependency health) and `/metrics` (Prometheus).
+- **Health checks**: Internal port `:9090` serves `/ready` (dependency health), `/metrics` (Prometheus), and gRPC health over h2c. Public gRPC health requires `WithPublicGRPCHealth()`.
 - **TLS**: Set `TLS_CA_CERT`, `TLS_CERT`, `TLS_KEY` together to enable mTLS globally.
 - **Middleware order**: Always use `stack.Default()` — it enforces: outer → metrics → requestID → tracing → logging → inner → handler.
+- **Scaffolds**: Use `kit-new -tenant` for new multi-tenant services so Redis cache and idempotency start behind the tenant wrappers.
+- **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
+- **Messaging size**: Builder-created RabbitMQ and NATS publishers enforce `messaging.DefaultMaxMessageBytes`; use `WithRouteMaxMessageBytes` for explicitly large routes instead of disabling the cap globally.
 
 ## Anti-Patterns
 
-- **Never** create `http.Server` directly — use `httpx.NewServer` (safe timeouts, header limits).
+- **Never** create or serve with `net/http` server entrypoints (`http.Server`, `http.ListenAndServe`, `http.Serve`) directly — use `httpx.NewServer` (safe timeouts, header limits).
 - **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `infra.HTTPClient`.
 - **Never** embed user IDs or request IDs in Redis/Prometheus metric names — causes cardinality explosion.
 - **Never** use raw client filenames as storage keys — use `storagehttp.UUIDKeyFunc`.
+- **Never** store user uploads when malware scanning fails or returns inconclusive — treat `uploadsec.ErrScannerUnavailable` as fail-closed.
 - **Never** skip `validate.Struct()` on user input — it returns `apperror.ValidationError` with field details.
-- **Never** call `WithMySQL` and `WithPostgres` together — they are mutually exclusive.
+- **Never** import Docker-backed test helpers from base packages — keep Testcontainers helpers in split modules such as `infra/sqldb/dbtest/v2`.
 - **Never** ACK messages on transient errors — return the error so retry/DLX handles it.
-- **Never** use `idempotency.NewMemoryStore()` in production — it only works on a single instance. Use `redis/redisstore.New()` for multi-instance deployments.
+- **Never** disable message-size limits globally just to support one large event type — add a route-specific override with `WithRouteMaxMessageBytes`.
+- **Never** use `idempotency.NewMemoryStore()` in production — it only works on a single instance. Use `data/idempotency/redisstore.New()` or `data/idempotency/pgstore.New()` for multi-instance deployments.
+- **Never** hand-roll tenant-scoped Redis/cache/idempotency keys with a literal `tenant:` prefix — use `core/tenant.Key` or the tenant wrappers.
+- **Never** introduce a direct external Go dependency without updating `docs/audit/dependency-allowlist.txt` and passing `make check-dependency-allowlist`.
 - **Never** store `SSRFSafeTransport` long-term — the resolved IP may go stale. Create a new transport per request.
 - **Never** call `Lock.Acquire` twice without `Release` — the second acquire will return an error.
 - **Never** pass zero/negative values to `NewRateLimiter`, `NewKeyedRateLimiter`, `Timeout`, or `MaxBodySize` — they panic on misconfiguration.

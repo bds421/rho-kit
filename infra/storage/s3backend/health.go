@@ -2,13 +2,13 @@ package s3backend
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
@@ -26,7 +26,7 @@ func CriticalHealthCheck(b *S3Backend) health.DependencyCheck {
 
 func healthCheck(b *S3Backend, critical bool) health.DependencyCheck {
 	return health.DependencyCheck{
-		Name: fmt.Sprintf("s3:%s", b.bucket),
+		Name: health.OpaqueCheckName("s3", b.bucket),
 		Check: func(ctx context.Context) string {
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -35,7 +35,7 @@ func healthCheck(b *S3Backend, critical bool) health.DependencyCheck {
 				Bucket: aws.String(b.bucket),
 			})
 			if err != nil {
-				slog.Warn("s3 health check failed", "bucket", b.bucket, "error", err)
+				slog.Warn("s3 health check failed", redact.String("bucket", b.bucket), redact.Error(err))
 				return "unhealthy"
 			}
 			return "healthy"

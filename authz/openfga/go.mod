@@ -9,10 +9,11 @@
 // later) don't pay the SDK cost.
 module github.com/bds421/rho-kit/authz/openfga/v2
 
-go 1.26
+go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/openfga/go-sdk v0.7.4
 )
 
@@ -22,12 +23,11 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
-	go.opentelemetry.io/otel/metric v1.39.0 // indirect
-	go.opentelemetry.io/otel/trace v1.39.0 // indirect
-	go.uber.org/atomic v1.7.0 // indirect
-	go.uber.org/multierr v1.9.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	go.opentelemetry.io/otel v1.42.0 // indirect
+	go.opentelemetry.io/otel/metric v1.42.0 // indirect
+	go.opentelemetry.io/otel/trace v1.42.0 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 )
 
 replace github.com/bds421/rho-kit/authz/v2 => ../

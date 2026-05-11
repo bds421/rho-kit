@@ -21,7 +21,7 @@ func ValidateServiceName(name string) error {
 		return fmt.Errorf("kit-new: ServiceName must not be empty")
 	}
 	if !serviceNamePattern.MatchString(name) {
-		return fmt.Errorf("kit-new: ServiceName %q must match %s", name, serviceNamePattern)
+		return fmt.Errorf("kit-new: ServiceName must match lowercase kebab-case")
 	}
 	return nil
 }
@@ -57,6 +57,11 @@ type Params struct {
 	// v2 made this the canonical data path; the kit no longer ships a
 	// GORM scaffold.
 	Postgres bool
+	// Tenant scaffolds the multi-tenant Redis path: Redis config loading,
+	// Builder.WithRedis + WithMultiTenant, and tenant-wrapped Redis cache
+	// and idempotency stores so new services start from the shared scoped-key
+	// encoder instead of hand-rolled prefixes.
+	Tenant bool
 }
 
 // DefaultGoVersion is the bare major.minor line emitted into the
@@ -106,10 +111,14 @@ var templateFile = []struct {
 	{"db_migrations_pkg.go.tmpl", "db/migrations/migrations.go", "Postgres"},
 }
 
-// scaffold writes the generated tree into outDir. Returns an error on
-// the first template or filesystem failure (no partial-state cleanup
-// — callers writing to a fresh directory get a clear half-written
-// tree they can `rm -rf`).
+type plannedFile struct {
+	tmplName string
+	tmpl     *template.Template
+	fullPath string
+}
+
+// scaffold writes the generated tree into outDir. It refuses to overwrite
+// existing files and preflights every destination before creating anything.
 func scaffold(outDir string, p Params) error {
 	if err := ValidateServiceName(p.ServiceName); err != nil {
 		return err
@@ -118,24 +127,22 @@ func scaffold(outDir string, p Params) error {
 		return fmt.Errorf("kit-new: ModulePath must not be empty")
 	}
 	if p.RhoVersion != "" && !rhoVersionPattern.MatchString(p.RhoVersion) {
-		return fmt.Errorf("kit-new: RhoVersion %q must be a semver tag like v2.0.0 or a pseudo-version", p.RhoVersion)
+		return fmt.Errorf("kit-new: RhoVersion must be a semver tag like v2.0.0 or a pseudo-version")
 	}
 	if p.GoVersion == "" {
 		p.GoVersion = DefaultGoVersion
 	} else if !goVersionPattern.MatchString(p.GoVersion) {
-		return fmt.Errorf("kit-new: GoVersion %q must be major.minor like 1.26 (no patch, no prefix)", p.GoVersion)
+		return fmt.Errorf("kit-new: GoVersion must be major.minor like 1.26 (no patch, no prefix)")
 	}
 
 	absOutDir, err := filepath.Abs(outDir)
 	if err != nil {
-		return fmt.Errorf("kit-new: resolve outDir %q: %w", outDir, err)
+		return fmt.Errorf("kit-new: resolve output directory failed")
 	}
 	absOutDir = filepath.Clean(absOutDir)
-	if err := os.MkdirAll(absOutDir, 0o750); err != nil {
-		return fmt.Errorf("kit-new: mkdir %q: %w", absOutDir, err)
-	}
-	prefix := absOutDir + string(filepath.Separator)
 
+	plan := make([]plannedFile, 0, len(templateFile))
+	seen := make(map[string]string, len(templateFile))
 	for _, row := range templateFile {
 		if row.gate != "" && !gateActive(p, row.gate) {
 			continue
@@ -153,30 +160,122 @@ func scaffold(outDir string, p Params) error {
 		// {{.ServiceName}} placeholders work in dest paths too.
 		destT, err := template.New("dest:" + row.tmpl).Parse(row.dest)
 		if err != nil {
-			return fmt.Errorf("kit-new: parse dest path %q: %w", row.dest, err)
+			return fmt.Errorf("kit-new: parse destination path")
 		}
 		destPath, err := renderString(destT, p)
 		if err != nil {
-			return fmt.Errorf("kit-new: render dest path %q: %w", row.dest, err)
+			return fmt.Errorf("kit-new: render destination path")
 		}
 
 		full := filepath.Clean(filepath.Join(absOutDir, destPath))
-		if full != absOutDir && !strings.HasPrefix(full, prefix) {
-			return fmt.Errorf("kit-new: rendered path %q escapes outDir %q", full, absOutDir)
+		if err := ensureContainedPath(absOutDir, full); err != nil {
+			return fmt.Errorf("kit-new: rendered path escapes output directory")
 		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
-			return fmt.Errorf("kit-new: mkdir %q: %w", filepath.Dir(full), err)
+		if _, ok := seen[full]; ok {
+			return fmt.Errorf("kit-new: templates render to the same destination")
 		}
-		f, err := os.Create(full)
+		seen[full] = row.tmpl
+		if _, err := os.Lstat(full); err == nil {
+			return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("kit-new: inspect destination failed")
+		}
+
+		plan = append(plan, plannedFile{
+			tmplName: row.tmpl,
+			tmpl:     t,
+			fullPath: full,
+		})
+	}
+
+	if err := os.MkdirAll(absOutDir, 0o750); err != nil {
+		return fmt.Errorf("kit-new: create output directory failed")
+	}
+
+	for _, file := range plan {
+		parent := filepath.Dir(file.fullPath)
+		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+			return fmt.Errorf("kit-new: unsafe destination: %w", err)
+		}
+		if err := os.MkdirAll(parent, 0o750); err != nil {
+			return fmt.Errorf("kit-new: create destination directory failed")
+		}
+		if err := rejectSymlinkAncestors(absOutDir, file.fullPath); err != nil {
+			return fmt.Errorf("kit-new: unsafe destination: %w", err)
+		}
+		f, err := os.OpenFile(file.fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
-			return fmt.Errorf("kit-new: create %q: %w", full, err)
+			if os.IsExist(err) {
+				return fmt.Errorf("kit-new: destination already exists; refusing to overwrite")
+			}
+			return fmt.Errorf("kit-new: create destination failed")
 		}
-		if err := t.Execute(f, p); err != nil {
+		if err := file.tmpl.Execute(f, p); err != nil {
 			_ = f.Close()
-			return fmt.Errorf("kit-new: render %q: %w", row.tmpl, err)
+			_ = os.Remove(file.fullPath)
+			return fmt.Errorf("kit-new: render template failed")
 		}
 		if err := f.Close(); err != nil {
-			return fmt.Errorf("kit-new: close %q: %w", full, err)
+			return fmt.Errorf("kit-new: close destination failed")
+		}
+	}
+	return nil
+}
+
+func ensureContainedPath(root, target string) error {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path escapes output directory")
+	}
+	return nil
+}
+
+func rejectSymlinkAncestors(root, target string) error {
+	if err := ensureContainedPath(root, target); err != nil {
+		return err
+	}
+
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("root directory is a symlink")
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("root path is not a directory")
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+
+	cur := root
+	parts := strings.Split(rel, string(filepath.Separator))
+	for _, part := range parts[:len(parts)-1] {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component is a symlink")
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("path component is not a directory")
 		}
 	}
 	return nil
@@ -200,6 +299,6 @@ func gateActive(p Params, gate string) bool {
 	case "MCP":
 		return p.MCP
 	default:
-		panic("kit-new: unknown template gate " + gate)
+		panic("kit-new: unknown template gate")
 	}
 }

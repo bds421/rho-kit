@@ -10,6 +10,11 @@ this repository. Mirror the rho-kit AGENTS.md conventions.
 - Persistence: `internal/repo/`.
 - Background workers: register via the kit's lifecycle in
   `internal/app/wire.go`.
+{{- if .Tenant}}
+- Tenant-scoped cache and idempotency resources are constructed in
+  `internal/app/wire.go`; pass those wrappers into routes instead of
+  building Redis keys manually.
+{{- end}}
 
 ## Run kit-doctor before commit
 

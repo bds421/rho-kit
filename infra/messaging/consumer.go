@@ -1,6 +1,13 @@
 package messaging
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrInvalidConsumer is returned when a consumer method is invoked on a
+// nil or otherwise uninitialized consumer implementation.
+var ErrInvalidConsumer = errors.New("messaging: consumer is not initialized")
 
 // Handler processes a received Delivery. Return nil to acknowledge,
 // or an error to nack (backend handles retry/dead-letter if configured).

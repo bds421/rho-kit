@@ -7,12 +7,14 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
+require golang.org/x/net v0.53.0 // indirect
+
 require (
-	github.com/bds421/rho-kit/core/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0
-	github.com/bds421/rho-kit/observability/v2 v2.0.0
-	github.com/bds421/rho-kit/resilience/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -34,12 +36,6 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-replace (
-	github.com/bds421/rho-kit/data/v2/actionlog => ../../data/actionlog
-	github.com/bds421/rho-kit/data/v2/approval => ../../data/approval
-	github.com/bds421/rho-kit/data/v2/budget => ../../data/budget
 )
 
 replace github.com/bds421/rho-kit/core/v2 => ../../core

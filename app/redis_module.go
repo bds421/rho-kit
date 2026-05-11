@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -30,9 +33,25 @@ func newRedisModule(opts *goredis.Options, connOpts ...kitredis.ConnOption) *red
 		panic("app: redis options must not be nil")
 	}
 	return &redisModule{
-		opts:     opts,
-		connOpts: connOpts,
+		opts:     cloneRedisOptions(opts),
+		connOpts: append([]kitredis.ConnOption(nil), connOpts...),
 	}
+}
+
+func cloneRedisOptions(opts *goredis.Options) *goredis.Options {
+	optsCopy := *opts
+	if optsCopy.TLSConfig != nil {
+		tlsConfig, err := tlsclone.ConfigWithFloor(optsCopy.TLSConfig, tls.VersionTLS12)
+		if err != nil {
+			panic("app: redis TLS MaxVersion must allow TLS 1.2 or newer")
+		}
+		optsCopy.TLSConfig = tlsConfig
+	}
+	if optsCopy.MaintNotificationsConfig != nil {
+		cfg := *optsCopy.MaintNotificationsConfig
+		optsCopy.MaintNotificationsConfig = &cfg
+	}
+	return &optsCopy
 }
 
 func (m *redisModule) Name() string { return "redis" }
@@ -79,7 +98,7 @@ func (m *redisModule) Close(_ context.Context) error {
 		return nil
 	}
 	if err := m.conn.Close(); err != nil {
-		m.logger.Warn("error closing redis", "error", err)
+		m.logger.Warn("error closing redis", redact.Error(err))
 		return err
 	}
 	return nil

@@ -8,13 +8,18 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
+	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
+	"golang.org/x/net/http/httpguts"
 )
 
 // AnonymousActor is the actor id recorded when no authenticated identity
@@ -39,13 +44,22 @@ const DefaultActorHeader = "X-Actor-Id"
 // log want a sentence, not a transcript.
 const MaxReasonLength = 1024
 
+// MaxToolNameLen is the maximum registered MCP tool-name length.
+// Action-log entries store tool calls as "mcp."+name and cap Action
+// at actionlog.MaxActionLen, so registration enforces the same limit
+// up front instead of letting a call fail after the tool has run.
+const MaxToolNameLen = actionlog.MaxActionLen - len("mcp.")
+
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+
 // Tool describes one MCP tool. Every handler registered via
 // [Register] becomes one Tool. The fields are the public surface of
 // the MCP `tools/list` response — clients read them to render the
 // tool catalog and validate inputs.
 type Tool struct {
 	// Name uniquely identifies the tool. Convention: dotted lowercase
-	// scope (e.g. "user.delete"). Names may not contain whitespace.
+	// scope (e.g. "user.delete"). Names are ASCII identifiers matching
+	// [A-Za-z0-9][A-Za-z0-9._/-]* and are capped at MaxToolNameLen bytes.
 	Name string `json:"name"`
 
 	// Description is human-readable. Default: derived from the input
@@ -89,12 +103,14 @@ func WithToolDescription(s string) ToolOption {
 
 // WithInputSchema overrides the auto-generated input JSON-Schema.
 // Use sparingly — drift between the schema and the Go struct
-// produces validation failures that look like bugs.
+// produces validation failures that look like bugs. The override
+// must be a valid JSON object.
 func WithInputSchema(schema json.RawMessage) ToolOption {
 	return func(c *toolConfig) { c.inputSchema = schema }
 }
 
 // WithOutputSchema overrides the auto-generated output JSON-Schema.
+// The override must be a valid JSON object.
 func WithOutputSchema(schema json.RawMessage) ToolOption {
 	return func(c *toolConfig) { c.outputSchema = schema }
 }
@@ -161,9 +177,10 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 // header (and have a reverse proxy stamping it) can pass
 // [WithActorFromHeader] — read its doc first.
 //
-// An empty return value is recorded as [AnonymousActor] — same
-// convention as [httpx/middleware/approval] — so the action log
-// never carries an empty Actor field that the store would reject.
+// An empty or action-log-invalid return value is recorded as
+// [AnonymousActor] — same convention as [httpx/middleware/approval]
+// — so the action log never carries an Actor field that the store
+// would reject after the tool has already run.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorExtractor: function must not be nil")
@@ -186,7 +203,8 @@ func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 // verified the caller's credentials and a context value cannot be
 // forged by a remote client.
 //
-// fn must not be nil. An empty return is recorded as [AnonymousActor].
+// fn must not be nil. An empty or action-log-invalid return is
+// recorded as [AnonymousActor].
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorFromContext: function must not be nil")
@@ -204,21 +222,26 @@ func WithActorFromContext(fn func(context.Context) string) ServerOption {
 // following are true:
 //
 //  1. the service is exclusively reachable via a reverse proxy
-//     (Oathkeeper, ingress, mesh sidecar) that you control;
+//     (identity proxy, ingress, mesh sidecar) that you control;
 //  2. that proxy strips the header from inbound requests and
 //     re-stamps it from a verified identity (mTLS CN, verified JWT
 //     subject) before forwarding;
 //  3. the proxy's own connection to this service is mutually
 //     authenticated (mTLS, sidecar-only network).
 //
-// In every other case prefer [WithActorFromContext]. An empty header
-// is recorded as [AnonymousActor].
+// In every other case prefer [WithActorFromContext]. An empty, blank,
+// duplicated, or action-log-invalid header is recorded as
+// [AnonymousActor].
 func WithActorFromHeader(header string) ServerOption {
-	if header == "" {
-		panic("mcp: WithActorFromHeader: header must not be empty")
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("mcp: WithActorFromHeader: header must be a valid non-empty header name")
 	}
 	return WithActorExtractor(func(r *http.Request) string {
-		return r.Header.Get(header)
+		value, ok := headerutil.SingletonIdentity(r.Header, header)
+		if !ok {
+			return ""
+		}
+		return value
 	})
 }
 
@@ -367,6 +390,7 @@ type Server struct {
 }
 
 type auditJob struct {
+	ctx      context.Context
 	entry    actionlog.Entry
 	tool     string
 	tenantID string
@@ -389,6 +413,9 @@ type dispatchFunc func(ctx context.Context, raw json.RawMessage) (json.RawMessag
 func NewServer(opts ...ServerOption) *Server {
 	cfg := defaultServerConfig()
 	for _, o := range opts {
+		if o == nil {
+			panic("mcp: server option must not be nil")
+		}
 		o(&cfg)
 	}
 	s := &Server{cfg: cfg, tools: make(map[string]*toolEntry)}
@@ -455,21 +482,28 @@ func (s *Server) runAuditJob(job auditJob) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.cfg.logger.Error("mcp: async audit append panicked",
-				"tool", job.tool,
-				"tenant_id", job.tenantID,
-				"panic", rec,
+				redact.String("tool", job.tool),
+				redact.String("tenant_id", job.tenantID),
+				redact.Panic(rec),
 			)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.asyncAuditTimeout)
+	ctx, cancel := asyncAuditContext(job.ctx, s.cfg.asyncAuditTimeout)
 	defer cancel()
 	if err := s.appendActionLog(ctx, job.entry, job.tool, job.tenantID); err != nil {
 		s.cfg.logger.Warn("mcp: async audit append failed",
-			"tool", job.tool,
-			"tenant_id", job.tenantID,
-			"err", err,
+			redact.String("tool", job.tool),
+			redact.String("tenant_id", job.tenantID),
+			redact.ErrorKey("err", err),
 		)
 	}
+}
+
+func asyncAuditContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 // Stop drains in-flight async audit appends and shuts down the worker
@@ -482,6 +516,9 @@ func (s *Server) runAuditJob(job auditJob) {
 // from the locked block, every subsequent enqueue observes
 // auditStopped == true and drops without touching auditQueue.
 func (s *Server) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("mcp: Server.Stop requires a non-nil context")
+	}
 	if !s.cfg.asyncAudit {
 		return nil
 	}
@@ -522,7 +559,10 @@ func (s *Server) Tools() []Tool {
 	defer s.mu.RUnlock()
 	out := make([]Tool, 0, len(s.tools))
 	for _, e := range s.tools {
-		out = append(out, e.tool)
+		tool := e.tool
+		tool.InputSchema = append(json.RawMessage(nil), tool.InputSchema...)
+		tool.OutputSchema = append(json.RawMessage(nil), tool.OutputSchema...)
+		out = append(out, tool)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -534,13 +574,13 @@ func (s *Server) register(name string, entry *toolEntry) error {
 	if name == "" {
 		return errors.New("mcp: Register: tool name must not be empty")
 	}
-	if !validToolName(name) {
-		return fmt.Errorf("mcp: Register: invalid tool name %q (must not contain whitespace)", name)
+	if err := validateToolName(name); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, dup := s.tools[name]; dup {
-		return fmt.Errorf("mcp: Register: tool %q already registered", name)
+		return fmt.Errorf("mcp: Register: tool already registered")
 	}
 	s.tools[name] = entry
 	return nil
@@ -554,17 +594,21 @@ func (s *Server) lookup(name string) (*toolEntry, bool) {
 	return e, ok
 }
 
-// validToolName allows non-whitespace printable ASCII plus '/'.
-// JSON-RPC method names with whitespace would round-trip oddly
-// through some clients, and the spec doesn't require us to support
-// them.
-func validToolName(name string) bool {
-	for _, r := range name {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			return false
-		}
+// validateToolName accepts a conservative ASCII identifier grammar.
+// JSON-RPC method names with whitespace/control bytes round-trip
+// poorly through clients, and names that actionlog would reject must
+// fail at registration rather than after a handler side effect.
+func validateToolName(name string) error {
+	switch {
+	case len(name) > MaxToolNameLen:
+		return fmt.Errorf("mcp: Register: invalid tool name (max %d bytes)", MaxToolNameLen)
+	case !utf8.ValidString(name):
+		return fmt.Errorf("mcp: Register: invalid tool name (must be valid UTF-8)")
+	case !toolNamePattern.MatchString(name):
+		return fmt.Errorf("mcp: Register: invalid tool name (must match %s)", toolNamePattern.String())
+	default:
+		return nil
 	}
-	return true
 }
 
 // Register adds a [Handler] as an MCP tool with the given name. The
@@ -583,7 +627,7 @@ func validToolName(name string) bool {
 //     that would produce a non-terminating schema;
 //   - the input or output type cannot be reflected into a schema
 //     (e.g. unsupported type kinds);
-//   - the name is empty or contains whitespace;
+//   - the name is empty, too long, or outside the supported tool-name grammar;
 //   - the name has already been registered.
 func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts ...ToolOption) error {
 	if s == nil {
@@ -595,6 +639,9 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 
 	cfg := toolConfig{}
 	for _, o := range opts {
+		if o == nil {
+			panic("mcp: tool option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -605,7 +652,13 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	if len(inSchema) == 0 {
 		schema, err := GenerateSchema(reflect.TypeOf(inZero))
 		if err != nil {
-			return fmt.Errorf("mcp: Register %q: input schema: %w", name, err)
+			return fmt.Errorf("mcp: Register: input schema: %w", err)
+		}
+		inSchema = schema
+	} else {
+		schema, err := validateSchemaOverride("input", inSchema)
+		if err != nil {
+			return fmt.Errorf("mcp: Register: %w", err)
 		}
 		inSchema = schema
 	}
@@ -614,7 +667,13 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	if len(outSchema) == 0 {
 		schema, err := GenerateSchema(reflect.TypeOf(outZero))
 		if err != nil {
-			return fmt.Errorf("mcp: Register %q: output schema: %w", name, err)
+			return fmt.Errorf("mcp: Register: output schema: %w", err)
+		}
+		outSchema = schema
+	} else {
+		schema, err := validateSchemaOverride("output", outSchema)
+		if err != nil {
+			return fmt.Errorf("mcp: Register: %w", err)
 		}
 		outSchema = schema
 	}
@@ -631,7 +690,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		// httpx/middleware/approval is the actual gate.
 		schema, err := withVendorExtension(inSchema, "x-destructive", true)
 		if err != nil {
-			return fmt.Errorf("mcp: Register %q: annotate input schema: %w", name, err)
+			return fmt.Errorf("mcp: Register: annotate input schema: %w", err)
 		}
 		inSchema = schema
 	}
@@ -645,6 +704,32 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 
 	dispatch := buildDispatch[In, Out](h)
 	return s.register(name, &toolEntry{tool: tool, dispatch: dispatch})
+}
+
+func validateSchemaOverride(kind string, schema json.RawMessage) (json.RawMessage, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		return nil, fmt.Errorf("%s schema must be a valid JSON object: %w", kind, err)
+	}
+	if obj == nil {
+		return nil, fmt.Errorf("%s schema must be a JSON object", kind)
+	}
+	return append(json.RawMessage(nil), schema...), nil
+}
+
+func validActionLogTextField(s string, maxLen int, required bool) bool {
+	if s == "" {
+		return !required
+	}
+	if len(s) > maxLen || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultDescription derives a description from the input type's

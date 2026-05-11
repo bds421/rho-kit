@@ -2,8 +2,11 @@ package messaging
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -14,6 +17,25 @@ const (
 	HeaderRequestID     = "X-Request-Id"
 	HeaderSchemaVersion = "X-Schema-Version"
 )
+
+const (
+	// MaxMessageIDBytes caps message IDs used in logs, headers, and broker metadata.
+	MaxMessageIDBytes = 255
+	// MaxMessageTypeBytes caps message type names used in logs, routing fallbacks, and handler dispatch.
+	MaxMessageTypeBytes = 256
+	// MaxMessageHeaderNameBytes caps transport header names at a portable size.
+	MaxMessageHeaderNameBytes = 128
+	// MaxMessageHeaderValueBytes caps each transport header value.
+	MaxMessageHeaderValueBytes = 8 * 1024
+)
+
+// ErrInvalidMessage marks message metadata or payload that is not portable
+// across the kit's AMQP, NATS, Redis, and in-memory messaging backends.
+var ErrInvalidMessage = errors.New("messaging: invalid message")
+
+// ErrInvalidMessageHeader marks message headers that are not portable across
+// the kit's AMQP, NATS, Redis, and in-memory messaging backends.
+var ErrInvalidMessageHeader = errors.New("messaging: invalid message header")
 
 // Message represents a structured message with metadata.
 // It is transport-agnostic and used by both AMQP and Redis backends.
@@ -32,10 +54,6 @@ type Message struct {
 
 // NewMessage creates a Message with a UUID v7 ID and current timestamp.
 func NewMessage(msgType string, payload any) (Message, error) {
-	if msgType == "" {
-		return Message{}, fmt.Errorf("message type must not be empty")
-	}
-
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return Message{}, fmt.Errorf("marshal payload: %w", err)
@@ -51,41 +69,43 @@ func NewMessage(msgType string, payload any) (Message, error) {
 		Type:      msgType,
 		Payload:   data,
 		Timestamp: time.Now().UTC(),
-	}, nil
+	}.validated()
+}
+
+// Clone returns a copy of m with mutable payload and header containers detached.
+func (m Message) Clone() Message {
+	if m.Payload != nil {
+		m.Payload = append(m.Payload[:0:0], m.Payload...)
+	}
+	if m.Headers != nil {
+		headers := make(map[string]string, len(m.Headers))
+		for k, v := range m.Headers {
+			headers[k] = v
+		}
+		m.Headers = headers
+	}
+	return m
 }
 
 // WithHeader returns a copy of the message with the given header set.
 func (m Message) WithHeader(key, value string) Message {
-	headers := make(map[string]string, len(m.Headers)+1)
-	for k, v := range m.Headers {
-		headers[k] = v
+	if err := ValidateMessageHeader(key, value); err != nil {
+		panic("messaging: message header is invalid")
 	}
-	headers[key] = value
-	return Message{
-		ID:            m.ID,
-		Type:          m.Type,
-		Payload:       m.Payload,
-		Timestamp:     m.Timestamp,
-		SchemaVersion: m.SchemaVersion,
-		Headers:       headers,
+	clone := m.Clone()
+	if clone.Headers == nil {
+		clone.Headers = make(map[string]string, 1)
 	}
+	clone.Headers[key] = value
+	return clone
 }
 
 // WithSchemaVersion returns a copy of the message with the given schema version.
 // Version 0 represents unversioned/legacy messages.
 func (m Message) WithSchemaVersion(version uint) Message {
-	headers := make(map[string]string, len(m.Headers))
-	for k, v := range m.Headers {
-		headers[k] = v
-	}
-	return Message{
-		ID:            m.ID,
-		Type:          m.Type,
-		Payload:       m.Payload,
-		Timestamp:     m.Timestamp,
-		SchemaVersion: version,
-		Headers:       headers,
-	}
+	clone := m.Clone()
+	clone.SchemaVersion = version
+	return clone
 }
 
 // CorrelationID returns the correlation ID from headers, or empty string.
@@ -96,7 +116,107 @@ func (m Message) CorrelationID() string {
 // DecodePayload unmarshals the message payload into the provided target.
 func (m Message) DecodePayload(target any) error {
 	if err := json.Unmarshal(m.Payload, target); err != nil {
-		return fmt.Errorf("decode payload for message %s: %w", m.ID, err)
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	return nil
+}
+
+// ValidateMessage rejects message metadata and payloads that cannot safely
+// round-trip through all supported brokers and observability surfaces.
+func ValidateMessage(msg Message) error {
+	if err := validateMessageToken("id", msg.ID, MaxMessageIDBytes); err != nil {
+		return err
+	}
+	if err := validateMessageToken("type", msg.Type, MaxMessageTypeBytes); err != nil {
+		return err
+	}
+	if msg.Payload != nil && !json.Valid(msg.Payload) {
+		return fmt.Errorf("%w: payload must be valid JSON", ErrInvalidMessage)
+	}
+	if err := ValidateMessageHeaders(msg.Headers); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateMessageHeaders rejects header metadata that cannot safely round-trip
+// across every message transport supported by the kit.
+func ValidateMessageHeaders(headers map[string]string) error {
+	for name, value := range headers {
+		if err := ValidateMessageHeader(name, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateMessageHeader rejects empty, oversized, non-token header names and
+// values containing invalid UTF-8 or response-splitting control bytes.
+func ValidateMessageHeader(name, value string) error {
+	if name == "" {
+		return fmt.Errorf("%w: name must not be empty", ErrInvalidMessageHeader)
+	}
+	if len(name) > MaxMessageHeaderNameBytes {
+		return fmt.Errorf("%w: name exceeds maximum length", ErrInvalidMessageHeader)
+	}
+	for i := 0; i < len(name); i++ {
+		if !isMessageHeaderNameByte(name[i]) {
+			return fmt.Errorf("%w: name contains invalid character", ErrInvalidMessageHeader)
+		}
+	}
+	if len(value) > MaxMessageHeaderValueBytes {
+		return fmt.Errorf("%w: value exceeds maximum length", ErrInvalidMessageHeader)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: value contains invalid UTF-8", ErrInvalidMessageHeader)
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case 0, '\r', '\n':
+			return fmt.Errorf("%w: value contains invalid character", ErrInvalidMessageHeader)
+		}
+	}
+	return nil
+}
+
+func isMessageHeaderNameByte(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z':
+		return true
+	case 'A' <= c && c <= 'Z':
+		return true
+	case '0' <= c && c <= '9':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
+}
+
+func (m Message) validated() (Message, error) {
+	if err := ValidateMessage(m); err != nil {
+		return Message{}, err
+	}
+	return m, nil
+}
+
+func validateMessageToken(kind, value string, maxBytes int) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s must not be empty", ErrInvalidMessage, kind)
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("%w: %s exceeds maximum length", ErrInvalidMessage, kind)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s contains invalid UTF-8", ErrInvalidMessage, kind)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("%w: %s contains whitespace or control characters", ErrInvalidMessage, kind)
+		}
 	}
 	return nil
 }

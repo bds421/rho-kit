@@ -24,6 +24,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
@@ -44,8 +46,8 @@ type Metrics struct {
 }
 
 // NewMetrics registers and returns the panic counter. If reg is nil,
-// prometheus.DefaultRegisterer is used. Safe to call repeatedly via
-// promutil.RegisterCollector's idempotent registration.
+// prometheus.DefaultRegisterer is used. Safe to call repeatedly; duplicate
+// construction reuses the collector already registered on reg.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
@@ -55,7 +57,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		Name:      "panics_total",
 		Help:      "Number of HTTP handler panics recovered by the recover middleware.",
 	}, []string{"method"})
-	promutil.RegisterCollector(reg, c)
+	c = promutil.MustRegisterOrGet(reg, c)
 	return &Metrics{panics: c}
 }
 
@@ -119,6 +121,9 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 		stackTrace: true,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("recover: option must not be nil")
+		}
 		opt(&cfg)
 	}
 
@@ -146,15 +151,15 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 // because the deferred body is the hottest path.
 func handlePanic(rec *recordingWriter, r *http.Request, rv any, cfg *config) {
 	if cfg.metrics != nil {
-		cfg.metrics.panics.WithLabelValues(r.Method).Inc()
+		cfg.metrics.panics.WithLabelValues(promutil.HTTPMethodLabel(r.Method)).Inc()
 	}
 
 	requestID := contextutil.RequestID(r.Context())
 
 	attrs := []any{
 		"method", r.Method,
-		"path", r.URL.Path,
-		"panic", fmt.Sprintf("%v", rv),
+		redact.String("path", httpx.RequestPath(r)),
+		redact.Panic(rv),
 	}
 	if requestID != "" {
 		attrs = append(attrs, "request_id", requestID)
@@ -177,7 +182,24 @@ func handlePanic(rec *recordingWriter, r *http.Request, rv any, cfg *config) {
 
 	rec.Header().Set("Content-Type", "application/json")
 	rec.WriteHeader(cfg.statusCode)
-	_, _ = rec.Write(cfg.body(r, rv))
+	_, _ = rec.Write(safeBody(r, rv, cfg))
+}
+
+func safeBody(r *http.Request, rv any, cfg *config) (body []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger := cfg.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("recover: body builder panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			body = defaultBody(r, rv)
+		}
+	}()
+	return cfg.body(r, rv)
 }
 
 // defaultBody emits {"error":"internal server error","code":"INTERNAL","request_id":"..."}.

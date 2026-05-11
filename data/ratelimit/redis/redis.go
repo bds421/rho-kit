@@ -1,6 +1,6 @@
 // Package redis implements a Redis-backed GCRA [ratelimit.Limiter].
 //
-// State per key is a single int64 nanosecond timestamp ("theoretical
+// State per key is a single int64 microsecond timestamp ("theoretical
 // arrival time"). Each Allow call is an atomic Lua script that loads,
 // updates, and expires the key in one round trip. Across many app
 // replicas the limit is the same: a Redis-backed GCRA is the
@@ -32,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -41,12 +43,12 @@ import (
 // gcraScript is the atomic GCRA evaluation.
 //
 //	KEYS[1] = per-key state ("<prefix>:<key>")
-//	ARGV[1] = now in nanoseconds (caller's clock)
-//	ARGV[2] = rate (period / burst) in nanoseconds
+//	ARGV[1] = now in microseconds (caller's clock)
+//	ARGV[2] = rate (period / burst) in microseconds, rounded up
 //	ARGV[3] = burst (cells)
 //	ARGV[4] = key TTL in seconds (>=1)
 //
-// Returns: {allowed (0|1), retryAfter ns when denied}.
+// Returns: {allowed (0|1), retryAfter microseconds when denied}.
 var gcraScript = goredis.NewScript(`
 local now    = tonumber(ARGV[1])
 local rate   = tonumber(ARGV[2])
@@ -73,6 +75,7 @@ type Limiter struct {
 	period time.Duration
 	burst  int
 	rate   time.Duration
+	rateUS int64
 	keyTTL time.Duration
 	now    func(ctx context.Context) (time.Time, error)
 }
@@ -85,24 +88,24 @@ type Option func(*Limiter)
 // limiters with different (period, burst) configurations on the same
 // Redis can't collide.
 //
-// Audit FR-058: panics on empty or >maxKeyPrefixLen prefix so a
-// misconfigured prefix cannot inflate every Redis key.
+// Audit FR-058: panics on empty, invalid, or >maxKeyPrefixLen prefix so a
+// misconfigured prefix cannot inflate or corrupt every Redis key.
 func WithKeyPrefix(p string) Option {
 	if p == "" {
 		panic("ratelimit/redis: WithKeyPrefix requires a non-empty prefix")
 	}
 	if len(p) > maxKeyPrefixLen {
-		panic(fmt.Sprintf("ratelimit/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+		panic("ratelimit/redis: WithKeyPrefix prefix exceeds maximum length")
+	}
+	if containsInvalidStringBytes(p) {
+		panic("ratelimit/redis: WithKeyPrefix prefix contains invalid characters")
 	}
 	return func(l *Limiter) { l.prefix = p }
 }
 
-// maxKeyPrefixLen / maxRawKeyLen cap Redis key components (audit
-// FR-058) to prevent pathological key sizes.
-const (
-	maxKeyPrefixLen = 128
-	maxRawKeyLen    = 256
-)
+// maxKeyPrefixLen caps Redis key prefixes (audit FR-058) to prevent
+// pathological key sizes. Raw limiter keys use [ratelimit.ValidateKey].
+const maxKeyPrefixLen = 128
 
 // WithKeyTTL overrides the per-key expiration. Default: max(period,
 // 60s). Bounding TTL keeps cold keys from accumulating in Redis.
@@ -110,6 +113,9 @@ const (
 // The TTL must be at least `period` — shorter and Redis can evict the
 // state mid-window, defeating the cross-replica budget for that key.
 func WithKeyTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("ratelimit/redis: WithKeyTTL requires a positive duration")
+	}
 	return func(l *Limiter) { l.keyTTL = d }
 }
 
@@ -149,6 +155,11 @@ func WithRedisTime() Option {
 //
 //   - New(client, time.Second, 10): 10 events/sec smoothed.
 //   - New(client, time.Minute, 60): 60 events/min smoothed.
+//
+// Redis Lua arithmetic cannot represent current Unix nanosecond timestamps
+// exactly, so this backend stores TAT in microseconds. Sub-microsecond rates
+// are rounded up to 1 microsecond, which is conservative for enforcement and
+// still below Redis/network scheduling resolution.
 func New(client goredis.UniversalClient, period time.Duration, burst int, opts ...Option) *Limiter {
 	if client == nil {
 		panic("ratelimit/redis: client must not be nil")
@@ -169,12 +180,16 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 		period: period,
 		burst:  burst,
 		rate:   rate,
+		rateUS: ceilDurationMicros(rate),
 		keyTTL: maxDuration(period, time.Minute),
 		now: func(_ context.Context) (time.Time, error) {
 			return time.Now(), nil
 		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("ratelimit/redis: New option must not be nil")
+		}
 		o(l)
 	}
 	if l.keyTTL < period {
@@ -183,11 +198,31 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 	return l
 }
 
+func (l *Limiter) ready() error {
+	if l == nil ||
+		l.client == nil ||
+		l.prefix == "" ||
+		len(l.prefix) > maxKeyPrefixLen ||
+		containsInvalidStringBytes(l.prefix) ||
+		l.period <= 0 ||
+		l.burst < 1 ||
+		l.rate <= 0 ||
+		l.rateUS <= 0 ||
+		l.keyTTL < l.period ||
+		l.now == nil {
+		return ratelimit.ErrInvalidLimiter
+	}
+	return nil
+}
+
 // Allow reports whether key's next event is permitted. retryAfter is
 // the time-until-next-allowed when denied.
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
-	if key == "" || len(key) > maxRawKeyLen {
-		return false, 0, ratelimit.ErrInvalidKey
+	if err := l.ready(); err != nil {
+		return false, 0, err
+	}
+	if err := ratelimit.ValidateKey(key); err != nil {
+		return false, 0, err
 	}
 	now, err := l.now(ctx)
 	if err != nil {
@@ -196,12 +231,12 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 
 	// Round TTL up so a sub-second period still passes a positive value
 	// to EX (Redis EX takes integer seconds).
-	ttlSec := int64((l.keyTTL + time.Second - 1) / time.Second)
+	ttlSec := ceilDurationSeconds(l.keyTTL)
 
 	res, err := gcraScript.Run(ctx, l.client,
 		[]string{l.prefix + key},
-		now.UnixNano(),
-		int64(l.rate),
+		now.UnixMicro(),
+		l.rateUS,
 		l.burst,
 		ttlSec,
 	).Result()
@@ -213,11 +248,43 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
 	allowed, _ := pair[0].(int64)
-	retryNs, _ := pair[1].(int64)
+	retryUS, _ := pair[1].(int64)
 	if allowed == 1 {
 		return true, 0, nil
 	}
-	return false, time.Duration(retryNs), nil
+	return false, durationFromMicros(retryUS), nil
+}
+
+const maxDurationValue = time.Duration(1<<63 - 1)
+
+func ceilDurationMicros(d time.Duration) int64 {
+	micros := d / time.Microsecond
+	if d%time.Microsecond != 0 {
+		micros++
+	}
+	return int64(micros)
+}
+
+func ceilDurationSeconds(d time.Duration) int64 {
+	seconds := d / time.Second
+	if d%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return int64(seconds)
+}
+
+func durationFromMicros(micros int64) time.Duration {
+	if micros <= 0 {
+		return time.Nanosecond
+	}
+	maxMicros := int64(maxDurationValue / time.Microsecond)
+	if micros > maxMicros {
+		return maxDurationValue
+	}
+	return time.Duration(micros) * time.Microsecond
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -225,4 +292,16 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func containsInvalidStringBytes(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }

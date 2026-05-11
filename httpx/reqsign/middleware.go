@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/signing"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
@@ -31,6 +32,9 @@ func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(htt
 		maxBodySize: MaxBodySize,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("reqsign: middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.nonceStore == nil {
@@ -42,12 +46,17 @@ func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(htt
 			var body []byte
 
 			if r.Body != nil && r.Body != http.NoBody {
-				// Close the original body; it is replaced with a bytes.NewReader below.
-				defer func() { _ = r.Body.Close() }()
+				originalBody := r.Body
 				var err error
-				body, err = io.ReadAll(io.LimitReader(r.Body, cfg.maxBodySize+1))
+				body, err = io.ReadAll(io.LimitReader(originalBody, cfg.maxBodySize+1))
+				closeErr := originalBody.Close()
 				if err != nil {
-					httpx.Logger(r.Context(), nil).Debug("failed to read request body", "error", err)
+					httpx.Logger(r.Context(), nil).Debug("failed to read request body", redact.Error(err))
+					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
+					return
+				}
+				if closeErr != nil {
+					httpx.Logger(r.Context(), nil).Debug("failed to close request body", redact.Error(closeErr))
 					httpx.WriteError(w, http.StatusBadRequest, "failed to read request body")
 					return
 				}
@@ -55,11 +64,13 @@ func RequireSignedRequest(store signing.KeyStore, opts ...VerifyOption) func(htt
 					httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 					return
 				}
-				r.Body = io.NopCloser(bytes.NewReader(body))
+				replayBody := io.NopCloser(bytes.NewReader(body))
+				r.Body = replayBody
+				defer func() { _ = replayBody.Close() }()
 			}
 
 			if err := verifyRequestWithConfig(r, body, store, cfg); err != nil {
-				httpx.Logger(r.Context(), nil).Debug("request signature verification failed", "error", err)
+				httpx.Logger(r.Context(), nil).Debug("request signature verification failed", redact.Error(err))
 				httpx.WriteError(w, http.StatusUnauthorized, "invalid or missing signature")
 				return
 			}

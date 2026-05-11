@@ -8,6 +8,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // RecoveryUnary returns a unary server interceptor that recovers from panics
@@ -30,7 +32,7 @@ func RecoveryUnary(logger *slog.Logger) grpc.UnaryServerInterceptor {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
 				logger.ErrorContext(ctx, "grpc: panic recovered",
-					slog.Any("panic", r),
+					redact.Panic(r),
 					slog.String("method", info.FullMethod),
 					slog.String("stack", stack),
 				)
@@ -58,7 +60,7 @@ func RecoveryStream(logger *slog.Logger) grpc.StreamServerInterceptor {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
 				logger.ErrorContext(ss.Context(), "grpc: panic recovered",
-					slog.Any("panic", r),
+					redact.Panic(r),
 					slog.String("method", info.FullMethod),
 					slog.String("stack", stack),
 				)

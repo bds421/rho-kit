@@ -3,12 +3,17 @@ package health
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Health status constants.
@@ -17,6 +22,8 @@ const (
 	StatusUnhealthy  = "unhealthy"
 	StatusConnecting = "connecting"
 	StatusDegraded   = "degraded"
+
+	MaxCheckNameLen = 128
 )
 
 // validCheckName matches lowercase alphanumeric names with hyphens and underscores.
@@ -26,8 +33,142 @@ var validCheckName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 // Names must start with a lowercase letter and contain only lowercase letters,
 // digits, hyphens, and underscores.
 func ValidateCheckName(name string) error {
+	if len(name) > MaxCheckNameLen {
+		return fmt.Errorf("health: invalid check name exceeds maximum length")
+	}
 	if !validCheckName.MatchString(name) {
-		return fmt.Errorf("health: invalid check name %q (must match %s)", name, validCheckName.String())
+		return fmt.Errorf("health: invalid check name (must match %s)", validCheckName.String())
+	}
+	return nil
+}
+
+// SafeCheckName builds a valid health-check name from non-sensitive name parts.
+// The returned name preserves normalized input values, so do not pass tenant
+// IDs, resource names, hosts, bucket names, queue names, or secrets. Use
+// OpaqueCheckName when a check must remain distinct without exposing the
+// underlying identifier.
+func SafeCheckName(parts ...string) string {
+	raw := strings.Join(parts, "\x00")
+	name := normalizeCheckName(parts)
+	if len(name) <= MaxCheckNameLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(raw))
+	suffix := hex.EncodeToString(sum[:4])
+	keep := MaxCheckNameLen - len(suffix) - 1
+	base := strings.TrimRight(name[:keep], "-_")
+	if base == "" {
+		base = "check"
+	}
+	return base + "-" + suffix
+}
+
+// OpaqueCheckName builds a valid health-check name from a non-sensitive prefix
+// and one or more sensitive or topology-bearing identifiers. The prefix remains
+// visible and the identifiers are represented by a stable hash suffix.
+//
+// The suffix is deterministic so duplicate checks are grouped consistently, but
+// it is not a secret-bearing construction. Do not pass secrets whose equality or
+// membership in a small candidate set must remain hidden.
+func OpaqueCheckName(prefix string, opaqueParts ...string) string {
+	name := normalizeCheckName([]string{prefix})
+	if len(opaqueParts) == 0 {
+		if len(name) <= MaxCheckNameLen {
+			return name
+		}
+		return SafeCheckName(prefix)
+	}
+
+	rawParts := append([]string{prefix}, opaqueParts...)
+	sum := sha256.Sum256([]byte(strings.Join(rawParts, "\x00")))
+	suffix := hex.EncodeToString(sum[:6])
+	keep := MaxCheckNameLen - len(suffix) - 1
+	if keep < 1 {
+		keep = 1
+	}
+	if len(name) > keep {
+		name = strings.TrimRight(name[:keep], "-_")
+	}
+	if name == "" {
+		name = "check"
+	}
+	return name + "-" + suffix
+}
+
+func normalizeCheckName(parts []string) string {
+	var out []byte
+	lastSep := true
+	for _, part := range parts {
+		for _, r := range part {
+			c, ok := checkNameByte(r)
+			if ok {
+				out = append(out, c)
+				lastSep = false
+				continue
+			}
+			if !lastSep {
+				out = append(out, '-')
+				lastSep = true
+			}
+		}
+		if !lastSep {
+			out = append(out, '-')
+			lastSep = true
+		}
+	}
+	name := strings.Trim(string(out), "-_")
+	if name == "" {
+		return "check"
+	}
+	if name[0] < 'a' || name[0] > 'z' {
+		return "check-" + name
+	}
+	return name
+}
+
+func checkNameByte(r rune) (byte, bool) {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return byte(r), true
+	case r >= 'A' && r <= 'Z':
+		return byte(r + ('a' - 'A')), true
+	case r >= '0' && r <= '9':
+		return byte(r), true
+	case r == '-' || r == '_':
+		return byte(r), true
+	default:
+		return 0, false
+	}
+}
+
+// ValidateDependencyCheck returns an error when check cannot be evaluated
+// safely by readiness handlers.
+func ValidateDependencyCheck(check DependencyCheck) error {
+	if err := ValidateCheckName(check.Name); err != nil {
+		return err
+	}
+	if check.Check == nil {
+		return fmt.Errorf("health: check requires a non-nil Check function")
+	}
+	if check.Timeout < 0 {
+		return fmt.Errorf("health: check timeout must be >= 0")
+	}
+	return nil
+}
+
+// ValidateChecker returns an error when checker is nil or contains invalid
+// health-check configuration.
+func ValidateChecker(checker *Checker) error {
+	if checker == nil {
+		return fmt.Errorf("health: checker must not be nil")
+	}
+	if checker.CacheTTL < 0 {
+		return fmt.Errorf("health: CacheTTL must be >= 0")
+	}
+	for i, check := range checker.Checks {
+		if err := ValidateDependencyCheck(check); err != nil {
+			return fmt.Errorf("health: check %d invalid: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -51,8 +192,9 @@ type DependencyCheck struct {
 	// Critical means an unhealthy result triggers HTTP 503.
 	Critical bool
 
-	// Timeout caps how long Check may run. Zero/negative falls back to
-	// [defaultCheckTimeout] (3s). Tune lower for fast in-cluster
+	// Timeout caps how long Check may run. Zero falls back to
+	// [defaultCheckTimeout] (3s); negative values are invalid and are
+	// rejected by readiness handler constructors. Tune lower for fast in-cluster
 	// dependencies (Redis, Postgres) so kubelet probes don't queue,
 	// higher for cross-region calls. The check goroutine receives a
 	// cancelled context when the timeout fires.
@@ -168,7 +310,7 @@ func (hc *Checker) Evaluate(ctx context.Context) Response {
 
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("health check panicked", "panic", r)
+			slog.Error("health check panicked", redact.Panic(r))
 		}
 		hc.mu.Lock()
 		if result != nil {
@@ -285,7 +427,7 @@ func runCheck(ctx context.Context, dc DependencyCheck) string {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("health check panicked", "check", dc.Name, "panic", r)
+				slog.Error("health check panicked", "check", dc.Name, redact.Panic(r))
 				done <- StatusUnhealthy
 			}
 		}()
@@ -294,9 +436,22 @@ func runCheck(ctx context.Context, dc DependencyCheck) string {
 
 	select {
 	case s := <-done:
-		return s
+		return normalizeStatus(dc.Name, s)
 	case <-checkCtx.Done():
 		slog.Warn("health check timed out", "check", dc.Name, "timeout", timeout)
+		return StatusUnhealthy
+	}
+}
+
+func normalizeStatus(checkName, status string) string {
+	switch status {
+	case StatusHealthy, StatusUnhealthy, StatusConnecting, StatusDegraded:
+		return status
+	default:
+		slog.Warn("health check returned invalid status",
+			"check", checkName,
+			"status", status,
+		)
 		return StatusUnhealthy
 	}
 }

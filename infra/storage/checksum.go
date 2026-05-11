@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -13,41 +14,33 @@ const ChecksumMetaKey = "sha256"
 
 // ChecksumValidator returns a Validator that computes SHA-256 as the stream
 // passes through and stores it in meta.Custom[ChecksumMetaKey].
-// The checksum is computed incrementally without buffering the entire content.
+// The input reader must implement [io.ReadSeeker] so the checksum can be
+// computed before upload metadata is sent, then rewound for the backend.
 func ChecksumValidator() Validator {
-	return func(r io.Reader, meta *ObjectMeta) (io.Reader, error) {
+	return func(_ context.Context, r io.Reader, meta *ObjectMeta) (io.Reader, error) {
+		rs, ok := r.(io.ReadSeeker)
+		if !ok {
+			return nil, fmt.Errorf("%w: ChecksumValidator requires an io.ReadSeeker", ErrValidation)
+		}
+		start, err := rs.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("storage: checksum seek current: %w", err)
+		}
 		h := sha256.New()
-		wrapped := &checksumReader{r: io.TeeReader(r, h), hash: h, meta: meta}
-		return wrapped, nil
+		if _, err := io.Copy(h, rs); err != nil {
+			_, _ = rs.Seek(start, io.SeekStart)
+			return nil, fmt.Errorf("storage: compute checksum: %w", err)
+		}
+		if _, err := rs.Seek(start, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("storage: checksum rewind: %w", err)
+		}
+		meta.Custom = CloneCustomMeta(meta.Custom)
+		if meta.Custom == nil {
+			meta.Custom = make(map[string]string)
+		}
+		meta.Custom[ChecksumMetaKey] = hex.EncodeToString(h.Sum(nil))
+		return rs, nil
 	}
-}
-
-type checksumReader struct {
-	r    io.Reader
-	hash hash.Hash
-	meta *ObjectMeta
-	done bool
-}
-
-func (c *checksumReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	if err == io.EOF && !c.done {
-		// Store checksum only on EOF — the stream has been fully read.
-		// Storing on non-EOF errors would produce a checksum over partial
-		// data, which is incorrect and could cause verification failures
-		// on subsequent Get operations.
-		c.done = true
-		c.storeChecksum()
-	}
-	return n, err
-}
-
-func (c *checksumReader) storeChecksum() {
-	sum := hex.EncodeToString(c.hash.Sum(nil))
-	if c.meta.Custom == nil {
-		c.meta.Custom = make(map[string]string)
-	}
-	c.meta.Custom[ChecksumMetaKey] = sum
 }
 
 // VerifyChecksum wraps a reader and verifies the SHA-256 checksum at EOF.
@@ -94,7 +87,7 @@ func (v *verifyReader) Read(p []byte) (int, error) {
 			// Per the io.Reader contract, callers MUST process n > 0 bytes
 			// before considering the error. Return the bytes from this read
 			// with the mismatch error so the caller can process them.
-			mismatchErr := fmt.Errorf("%w: checksum mismatch: expected %s, got %s", ErrValidation, v.expected, got)
+			mismatchErr := fmt.Errorf("%w: checksum mismatch", ErrValidation)
 			if n > 0 {
 				// Buffer the error: return (n, nil) now and (0, mismatchErr)
 				// on the next Read, ensuring the caller processes the final

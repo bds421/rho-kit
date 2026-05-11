@@ -51,8 +51,8 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 		Name:      "job_skipped_not_leader_total",
 		Help:      "Cron jobs skipped because the leader-election gate reported this replica is not the leader.",
 	}, []string{"name"})
-	promutil.RegisterCollector(reg, m.runs)
-	promutil.RegisterCollector(reg, m.duration)
-	promutil.RegisterCollector(reg, m.skippedNotLeader)
+	m.runs = promutil.MustRegisterOrGet(reg, m.runs)
+	m.duration = promutil.MustRegisterOrGet(reg, m.duration)
+	m.skippedNotLeader = promutil.MustRegisterOrGet(reg, m.skippedNotLeader)
 	return m
 }

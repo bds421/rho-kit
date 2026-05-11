@@ -3,13 +3,17 @@ package riverqueue_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/stretchr/testify/assert"
 
-	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 	"github.com/bds421/rho-kit/data/queue/riverqueue/v2"
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 )
 
 func TestNewPublisher_PanicsOnNil(t *testing.T) {
@@ -21,6 +25,51 @@ func TestNewPublisher_PanicsOnNil(t *testing.T) {
 	riverqueue.NewPublisher(nil)
 }
 
+func TestNewPublisher_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	riverqueue.NewPublisher(new(river.Client[pgx.Tx]), nil)
+}
+
+func TestWithMaxPayloadBytes_PanicsOnNonPositive(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			assert.Panics(t, func() {
+				riverqueue.WithMaxPayloadBytes(n)
+			})
+		})
+	}
+}
+
+func TestWithWorkerMaxPayloadBytes_PanicsOnNonPositive(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			assert.Panics(t, func() {
+				riverqueue.WithWorkerMaxPayloadBytes(n)
+			})
+		})
+	}
+}
+
+func TestPublisher_InvalidReceiverReturnsError(t *testing.T) {
+	cases := []struct {
+		name string
+		p    *riverqueue.Publisher
+	}{
+		{"nil", nil},
+		{"zero", &riverqueue.Publisher{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.p.Enqueue(context.Background(), "queue", kitqueue.Message{ID: "msg-1", Type: "test"})
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+		})
+	}
+}
+
 func TestNewEnvelopeWorker_PanicsOnNilHandler(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -28,6 +77,68 @@ func TestNewEnvelopeWorker_PanicsOnNilHandler(t *testing.T) {
 		}
 	}()
 	riverqueue.NewEnvelopeWorker(nil)
+}
+
+func TestNewEnvelopeWorker_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	riverqueue.NewEnvelopeWorker(func(context.Context, kitqueue.Message) error { return nil }, nil)
+}
+
+func TestEnvelopeWorker_InvalidReceiverReturnsError(t *testing.T) {
+	cases := []struct {
+		name string
+		w    *riverqueue.EnvelopeWorker
+	}{
+		{"nil", nil},
+		{"zero", &riverqueue.EnvelopeWorker{}},
+		{"nil job", riverqueue.NewEnvelopeWorker(func(context.Context, kitqueue.Message) error { return nil })},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.w.Work(context.Background(), nil)
+			assert.ErrorIs(t, err, kitqueue.ErrInvalidQueue)
+		})
+	}
+}
+
+func TestPublisher_RejectsInvalidQueueNameBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+
+	err := pub.Enqueue(context.Background(), "bad\nqueue", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "user.created",
+		Payload: json.RawMessage(`{"id":42}`),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrInvalidName), "err=%v", err)
+}
+
+func TestPublisher_RejectsInvalidMessageBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]))
+
+	err := pub.Enqueue(context.Background(), "jobs", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "",
+		Payload: json.RawMessage(`{"id":42}`),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrInvalidMessage), "err=%v", err)
+}
+
+func TestPublisher_RejectsOversizePayloadBeforeInsert(t *testing.T) {
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]), riverqueue.WithMaxPayloadBytes(4))
+
+	err := pub.Enqueue(context.Background(), "jobs", kitqueue.Message{
+		ID:      "msg-1",
+		Type:    "user.created",
+		Payload: json.RawMessage(strings.Repeat("x", 5)),
+	})
+
+	assert.True(t, errors.Is(err, kitqueue.ErrMessageTooLarge), "err=%v", err)
 }
 
 func TestEnvelopeWorker_DispatchesToHandler(t *testing.T) {

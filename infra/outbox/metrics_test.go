@@ -33,6 +33,12 @@ func TestNewMetrics_DefaultRegisterer(t *testing.T) {
 	require.NotNil(t, m)
 }
 
+func TestNewMetrics_PanicsOnNilOption(t *testing.T) {
+	require.Panics(t, func() {
+		outbox.NewMetrics(nil)
+	})
+}
+
 func TestNewMetrics_DoubleRegistration(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m1 := outbox.NewMetrics(outbox.WithRegisterer(reg))

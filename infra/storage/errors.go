@@ -2,7 +2,6 @@ package storage
 
 import (
 	"errors"
-	"fmt"
 )
 
 // StorageError is a structured error returned by storage backends.
@@ -24,10 +23,7 @@ type StorageError struct {
 
 // Error implements the error interface.
 func (e *StorageError) Error() string {
-	if e.Key != "" {
-		return fmt.Sprintf("storage.%s %q: %v", e.Op, e.Key, e.Err)
-	}
-	return fmt.Sprintf("storage.%s: %v", e.Op, e.Err)
+	return "storage: operation failed"
 }
 
 // Unwrap implements errors.Unwrap for use with errors.Is/As.
@@ -41,6 +37,16 @@ func (e *StorageError) Transient() bool {
 	return e.transient
 }
 
+// WrapSafe returns an error that renders only message while preserving cause
+// for errors.Is/As. The message must be static and safe for public responses,
+// logs, and telemetry.
+func WrapSafe(message string, cause error) error {
+	if cause == nil {
+		return errors.New(message)
+	}
+	return safeCauseError{message: message, cause: cause}
+}
+
 // NewTransientError creates a StorageError marked as transient (retryable).
 func NewTransientError(op, key string, err error) *StorageError {
 	return &StorageError{Op: op, Key: key, Err: err, transient: true}
@@ -49,6 +55,19 @@ func NewTransientError(op, key string, err error) *StorageError {
 // NewPermanentError creates a StorageError marked as permanent (not retryable).
 func NewPermanentError(op, key string, err error) *StorageError {
 	return &StorageError{Op: op, Key: key, Err: err, transient: false}
+}
+
+type safeCauseError struct {
+	message string
+	cause   error
+}
+
+func (e safeCauseError) Error() string {
+	return e.message
+}
+
+func (e safeCauseError) Unwrap() error {
+	return e.cause
 }
 
 // IsTransient reports whether err (or any error in its chain) is a transient

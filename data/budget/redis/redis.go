@@ -35,6 +35,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -156,24 +158,29 @@ type Option func(*Budget)
 // budgets with different (cap, period) configurations on the same
 // Redis can't collide.
 //
-// Audit FR-057: panics on empty or >maxKeyPrefixLen prefix so a
-// misconfigured / attacker-influenced prefix cannot inflate every
+// Audit FR-057: panics on empty, invalid, or >maxKeyPrefixLen prefix so a
+// misconfigured / attacker-influenced prefix cannot inflate or corrupt every
 // Redis key.
 func WithKeyPrefix(p string) Option {
 	if p == "" {
 		panic("budget/redis: WithKeyPrefix requires a non-empty prefix")
 	}
 	if len(p) > maxKeyPrefixLen {
-		panic(fmt.Sprintf("budget/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+		panic("budget/redis: WithKeyPrefix prefix exceeds maximum length")
+	}
+	if containsInvalidStringBytes(p) {
+		panic("budget/redis: WithKeyPrefix prefix contains invalid characters")
 	}
 	return func(b *Budget) { b.prefix = p }
 }
 
-// maxKeyPrefixLen / maxRawKeyLen cap Redis key components (audit
-// FR-057) to prevent pathological key sizes.
+// maxKeyPrefixLen caps the Redis prefix component (audit FR-057) to prevent
+// pathological key sizes. Raw budget keys use [budget.ValidateKey].
+const maxKeyPrefixLen = 128
+
 const (
-	maxKeyPrefixLen = 128
-	maxRawKeyLen    = 256
+	maxLuaExactInteger = int64(1<<53 - 1)
+	maxDurationValue   = time.Duration(1<<63 - 1)
 )
 
 // WithKeyTTL overrides the per-bucket expiration. Default:
@@ -219,13 +226,17 @@ func WithRedisTime() Option {
 // persisted in `client`.
 //
 // Panics on misconfiguration (nil client, zero cap, zero period,
-// TTL < period).
+// TTL < period). The Redis backend uses Lua for atomic cap checks, so cap is
+// limited to the largest integer Lua can represent exactly.
 func New(client goredis.UniversalClient, cap int64, period time.Duration, opts ...Option) *Budget {
 	if client == nil {
 		panic("budget/redis: client must not be nil")
 	}
 	if cap <= 0 {
 		panic("budget/redis: cap must be > 0")
+	}
+	if cap > maxLuaExactInteger {
+		panic("budget/redis: cap exceeds Redis Lua exact integer range")
 	}
 	if period <= 0 {
 		panic("budget/redis: period must be > 0")
@@ -235,18 +246,49 @@ func New(client goredis.UniversalClient, cap int64, period time.Duration, opts .
 		prefix: "budget:",
 		cap:    cap,
 		period: period,
-		keyTTL: period + time.Minute,
+		keyTTL: defaultKeyTTL(period),
 		now: func(_ context.Context) (time.Time, error) {
 			return time.Now(), nil
 		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("budget/redis: option must not be nil")
+		}
 		o(b)
 	}
 	if b.keyTTL < period {
 		panic("budget/redis: key TTL must be >= period (otherwise Redis can evict mid-window)")
 	}
 	return b
+}
+
+func containsInvalidStringBytes(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Budget) ready() error {
+	if b == nil ||
+		b.client == nil ||
+		b.prefix == "" ||
+		len(b.prefix) > maxKeyPrefixLen ||
+		containsInvalidStringBytes(b.prefix) ||
+		b.cap <= 0 ||
+		b.cap > maxLuaExactInteger ||
+		b.period <= 0 ||
+		b.keyTTL < b.period ||
+		b.now == nil {
+		return budget.ErrInvalidBudget
+	}
+	return nil
 }
 
 // periodOf returns the integer period id and the wall-clock instant
@@ -266,13 +308,16 @@ func (b *Budget) bucketKey(key string, periodID int64) string {
 // ttlSeconds rounds the configured TTL up to whole seconds so a
 // sub-second period still passes a positive integer to EX.
 func (b *Budget) ttlSeconds() int64 {
-	return int64((b.keyTTL + time.Second - 1) / time.Second)
+	return ceilDurationSeconds(b.keyTTL)
 }
 
 // Consume implements [budget.Budget].
 func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
-	if key == "" || len(key) > maxRawKeyLen {
-		return false, 0, 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return false, 0, 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return false, 0, 0, err
 	}
 	if amount < 0 {
 		return false, 0, 0, budget.ErrInvalidAmount
@@ -338,11 +383,17 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 // clamps at the cap (`used` floors at zero) so refunds never
 // inflate the budget above its configured limit.
 func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
-	if key == "" || len(key) > maxRawKeyLen {
-		return 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return 0, err
 	}
 	if amount < 0 {
 		return 0, budget.ErrInvalidAmount
+	}
+	if amount > b.cap {
+		amount = b.cap
 	}
 	now, err := b.now(ctx)
 	if err != nil {
@@ -362,10 +413,31 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 	return rem, nil
 }
 
+func defaultKeyTTL(period time.Duration) time.Duration {
+	if maxDurationValue-period < time.Minute {
+		return maxDurationValue
+	}
+	return period + time.Minute
+}
+
+func ceilDurationSeconds(d time.Duration) int64 {
+	seconds := d / time.Second
+	if d%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return int64(seconds)
+}
+
 // Peek implements [budget.Budget].
 func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
-	if key == "" || len(key) > maxRawKeyLen {
-		return 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return 0, err
 	}
 	now, err := b.now(ctx)
 	if err != nil {

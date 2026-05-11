@@ -2,8 +2,10 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"testing"
 
@@ -18,7 +20,7 @@ func TestChecksumValidator(t *testing.T) {
 	meta := &ObjectMeta{}
 	v := ChecksumValidator()
 
-	r, err := v(bytes.NewReader(data), meta)
+	r, err := v(context.Background(), bytes.NewReader(data), meta)
 	require.NoError(t, err)
 
 	got, err := io.ReadAll(r)
@@ -28,6 +30,60 @@ func TestChecksumValidator(t *testing.T) {
 	// Verify checksum was stored.
 	expected := sha256.Sum256(data)
 	assert.Equal(t, hex.EncodeToString(expected[:]), meta.Custom[ChecksumMetaKey])
+}
+
+func TestChecksumValidator_RejectsNonSeekableReader(t *testing.T) {
+	t.Parallel()
+
+	meta := &ObjectMeta{}
+	v := ChecksumValidator()
+	_, err := v(context.Background(), io.LimitReader(bytes.NewReader([]byte("hello")), 5), meta)
+	assert.ErrorIs(t, err, ErrValidation)
+}
+
+func TestChecksumValidator_DetachesCustomMetadata(t *testing.T) {
+	t.Parallel()
+
+	custom := map[string]string{"owner": "alice"}
+	meta := &ObjectMeta{Custom: custom}
+	v := ChecksumValidator()
+
+	_, err := v(context.Background(), bytes.NewReader([]byte("hello")), meta)
+	require.NoError(t, err)
+
+	meta.Custom["owner"] = "bob"
+	assert.Equal(t, "alice", custom["owner"])
+	assert.NotContains(t, custom, ChecksumMetaKey)
+}
+
+func TestChecksumValidator_RewindsToOriginalOffset(t *testing.T) {
+	t.Parallel()
+
+	r := bytes.NewReader([]byte("prefix-body"))
+	_, err := r.Seek(7, io.SeekStart)
+	require.NoError(t, err)
+
+	meta := &ObjectMeta{}
+	v := ChecksumValidator()
+	out, err := v(context.Background(), r, meta)
+	require.NoError(t, err)
+
+	got, err := io.ReadAll(out)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("body"), got)
+
+	expected := sha256.Sum256([]byte("body"))
+	assert.Equal(t, hex.EncodeToString(expected[:]), meta.Custom[ChecksumMetaKey])
+}
+
+func TestChecksumValidator_PropagatesSeekError(t *testing.T) {
+	t.Parallel()
+
+	meta := &ObjectMeta{}
+	v := ChecksumValidator()
+	_, err := v(context.Background(), errorReadSeeker{}, meta)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrValidation))
 }
 
 func TestVerifyChecksum_Match(t *testing.T) {
@@ -48,11 +104,12 @@ func TestVerifyChecksum_Mismatch(t *testing.T) {
 	t.Parallel()
 
 	data := []byte("original")
-	rc := VerifyChecksum(io.NopCloser(bytes.NewReader(data)), "0000000000000000000000000000000000000000000000000000000000000000")
+	rc := VerifyChecksum(io.NopCloser(bytes.NewReader(data)), "secret-token")
 
 	_, err := io.ReadAll(rc)
 	assert.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), "checksum mismatch")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestVerifyChecksum_EmptyExpected(t *testing.T) {
@@ -64,4 +121,12 @@ func TestVerifyChecksum_EmptyExpected(t *testing.T) {
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	assert.Equal(t, data, got)
+}
+
+type errorReadSeeker struct{}
+
+func (errorReadSeeker) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (errorReadSeeker) Seek(int64, int) (int64, error) {
+	return 0, errors.New("seek failed")
 }

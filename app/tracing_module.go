@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
@@ -39,7 +40,7 @@ func (m *tracingModule) Init(ctx context.Context, mc ModuleContext) error {
 
 	tp, err := tracing.Init(ctx, m.cfg)
 	if err != nil {
-		mc.Logger.Warn("tracing init failed, continuing without tracing", "error", err)
+		mc.Logger.Warn("tracing init failed, continuing without tracing", redact.Error(err))
 		m.healthChecks_ = []health.DependencyCheck{
 			{
 				Name: "tracing",
@@ -53,22 +54,25 @@ func (m *tracingModule) Init(ctx context.Context, mc ModuleContext) error {
 
 	m.provider = tp
 	m.active = true
-	mc.Logger.Info("tracing enabled", "endpoint", m.cfg.Endpoint)
+	mc.Logger.Info("tracing enabled", "endpoint_configured", m.cfg.Endpoint != "")
 	return nil
 }
 
 func (m *tracingModule) HealthChecks() []health.DependencyCheck {
-	return m.healthChecks_
+	if m.healthChecks_ == nil {
+		return nil
+	}
+	return append([]health.DependencyCheck(nil), m.healthChecks_...)
 }
 
-func (m *tracingModule) Close(_ context.Context) error {
+func (m *tracingModule) Close(ctx context.Context) error {
 	if m.provider == nil {
 		return nil
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
 	if err := m.provider.Shutdown(shutdownCtx); err != nil {
-		m.logger.Warn("tracing shutdown error", "error", err)
+		m.logger.Warn("tracing shutdown error", redact.Error(err))
 		return fmt.Errorf("tracing shutdown: %w", err)
 	}
 	return nil

@@ -2,16 +2,27 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
+	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // shutdownHookTimeout caps how long any single hook may take. Each
 // hook still derives from the parent shutdown context (FR-011), so a
 // runner-level force cancellation also propagates.
 const shutdownHookTimeout = 10 * time.Second
+
+func detachedTimeoutContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+}
 
 // runShutdownHooks invokes every registered hook synchronously, with
 // individual panic recovery and a per-hook timeout. Hook contexts are
@@ -28,25 +39,26 @@ func runShutdownHooks(parent context.Context, hooks []func(context.Context), log
 	}
 	for i, fn := range hooks {
 		func(idx int, hook func(context.Context)) {
-			defer func() {
-				if rec := recover(); rec != nil {
-					logger.Error("shutdown hook panicked",
-						"hook_index", idx,
-						"panic", rec,
-					)
-				}
-			}()
 			hookCtx, cancel := context.WithTimeout(parent, shutdownHookTimeout)
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
+				defer func() {
+					if rec := recover(); rec != nil {
+						logger.Error("shutdown hook panicked",
+							"hook_index", idx,
+							redact.Panic(rec),
+							"stack", string(debug.Stack()),
+						)
+					}
+				}()
 				hook(hookCtx)
 			}()
 			select {
 			case <-done:
 			case <-hookCtx.Done():
-				logger.Error("shutdown hook timed out", "hook_index", idx, "cause", context.Cause(hookCtx))
+				logger.Error("shutdown hook timed out", "hook_index", idx, redact.ErrorKey("cause", context.Cause(hookCtx)))
 			}
 		}(i, fn)
 	}
@@ -66,6 +78,27 @@ type keyedLimiterSpec struct {
 type bgSpec struct {
 	name string
 	fn   func(ctx context.Context) error
+}
+
+func validateBackgroundSpec(name string, fn func(context.Context) error) {
+	if name == "" {
+		panic("app: Background requires a non-empty name")
+	}
+	if fn == nil {
+		panic("app: Background requires a non-nil function")
+	}
+}
+
+func validateDependencyCheck(check health.DependencyCheck, where string) {
+	if err := health.ValidateDependencyCheck(check); err != nil {
+		panic("app: health check invalid")
+	}
+}
+
+func validateDependencyChecks(checks []health.DependencyCheck, where string) {
+	for i, check := range checks {
+		validateDependencyCheck(check, fmt.Sprintf("%s[%d]", where, i))
+	}
 }
 
 // buildIntegrationModules converts builder config from the With*() methods
@@ -111,11 +144,14 @@ func (b *Builder) buildIntegrationModules() []Module {
 	if b.mqURL != "" {
 		m := newMessagingModule(b.mqURL)
 		m.criticalBroker = b.criticalBroker
+		m.messageSizeLimiter = b.messageSizeLimiter
 		modules = append(modules, m)
 	}
 
 	if b.natsCfg != nil {
-		modules = append(modules, newNatsModule(*b.natsCfg))
+		m := newNatsModule(*b.natsCfg)
+		m.messageSizeLimiter = b.messageSizeLimiter
+		modules = append(modules, m)
 	}
 
 	if b.leaderElector != nil {

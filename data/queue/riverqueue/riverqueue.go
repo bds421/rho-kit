@@ -20,7 +20,6 @@ package riverqueue
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -43,8 +42,9 @@ import (
 // service uses the kit's [kitqueue.Publisher] surface and a Postgres
 // is already available.
 type Publisher struct {
-	client     *river.Client[pgx.Tx]
-	uniqueByID bool
+	client          *river.Client[pgx.Tx]
+	uniqueByID      bool
+	maxPayloadBytes int
 }
 
 // NewPublisher builds a Publisher backed by an already-running River
@@ -62,38 +62,57 @@ func NewPublisher(client *river.Client[pgx.Tx], opts ...PublisherOption) *Publis
 	if client == nil {
 		panic("riverqueue: client must not be nil")
 	}
-	p := &Publisher{client: client, uniqueByID: true}
+	p := &Publisher{
+		client:          client,
+		uniqueByID:      true,
+		maxPayloadBytes: kitqueue.DefaultMaxPayloadBytes,
+	}
 	for _, o := range opts {
+		if o == nil {
+			panic("riverqueue: publisher option must not be nil")
+		}
 		o(p)
 	}
 	return p
 }
 
+func (p *Publisher) ready() error {
+	if p == nil || p.client == nil {
+		return kitqueue.ErrInvalidQueue
+	}
+	return nil
+}
+
 // Enqueue implements [kitqueue.Publisher]. The queue argument maps
 // to River's queue field (River uses string queue names natively).
-// Returns ErrEmptyQueue when queue is empty so the caller doesn't
-// silently default to River's "default" queue.
+// Empty or invalid queue names are rejected before River can silently
+// default to its "default" queue.
 //
-// FR-059 [MED]: when [Publisher.WithUniqueByID] is in effect (the
-// default), River is configured to dedupe by (queue, kind, args)
-// for jobs that share a Message.ID — a second Enqueue with the same
-// ID is a no-op rather than a duplicate execution. Callers who want
-// classic "every Enqueue executes" semantics can opt out via
+// FR-059 [MED]: by default, River is configured to dedupe by (queue,
+// kind, args) for jobs that share a Message.ID - a second Enqueue with
+// the same ID is a no-op rather than a duplicate execution. Callers who
+// want classic "every Enqueue executes" semantics can opt out via
 // [WithoutUniqueByID].
 func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Message) error {
-	if queue == "" {
-		return errors.New("riverqueue: queue must not be empty")
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := kitqueue.ValidateName(queue, "queue"); err != nil {
+		return fmt.Errorf("riverqueue: %w", err)
+	}
+	if err := kitqueue.ValidateMessage(msg, p.maxPayloadBytes); err != nil {
+		return fmt.Errorf("riverqueue: %w", err)
 	}
 	job := envelopeArgs{
 		ID:      msg.ID,
 		Type:    msg.Type,
-		Payload: msg.Payload,
+		Payload: clonePayload(msg.Payload),
 	}
 	opts := &river.InsertOpts{Queue: queue}
 	if p.uniqueByID && msg.ID != "" {
 		opts.UniqueOpts = river.UniqueOpts{
-			ByArgs:   true,
-			ByQueue:  true,
+			ByArgs:  true,
+			ByQueue: true,
 		}
 	}
 	if _, err := p.client.Insert(ctx, job, opts); err != nil {
@@ -107,6 +126,22 @@ func (p *Publisher) Enqueue(ctx context.Context, queue string, msg kitqueue.Mess
 // idempotency token and re-enqueues should always run.
 func WithoutUniqueByID() PublisherOption {
 	return func(p *Publisher) { p.uniqueByID = false }
+}
+
+// WithMaxPayloadBytes sets the maximum kit message payload size accepted by
+// Enqueue. The default is [kitqueue.DefaultMaxPayloadBytes].
+func WithMaxPayloadBytes(maxBytes int) PublisherOption {
+	if maxBytes <= 0 {
+		panic("riverqueue: WithMaxPayloadBytes requires maxBytes > 0")
+	}
+	return func(p *Publisher) { p.maxPayloadBytes = maxBytes }
+}
+
+// WithoutMaxPayloadBytes disables the publisher-level payload cap. Use only
+// when an outer product contract or River queue policy already applies a
+// stricter bound.
+func WithoutMaxPayloadBytes() PublisherOption {
+	return func(p *Publisher) { p.maxPayloadBytes = 0 }
 }
 
 // PublisherOption configures a [Publisher] at construction time.
@@ -128,25 +163,69 @@ func (envelopeArgs) Kind() string { return "rho.envelope" }
 // adapter can publish to it.
 type EnvelopeWorker struct {
 	river.WorkerDefaults[envelopeArgs]
-	handler kitqueue.Handler
+	handler         kitqueue.Handler
+	maxPayloadBytes int
 }
 
 // NewEnvelopeWorker returns a worker that hands every dequeued job
 // to the supplied [kitqueue.Handler].
-func NewEnvelopeWorker(handler kitqueue.Handler) *EnvelopeWorker {
+func NewEnvelopeWorker(handler kitqueue.Handler, opts ...EnvelopeWorkerOption) *EnvelopeWorker {
 	if handler == nil {
 		panic("riverqueue: handler must not be nil")
 	}
-	return &EnvelopeWorker{handler: handler}
+	w := &EnvelopeWorker{
+		handler:         handler,
+		maxPayloadBytes: kitqueue.DefaultMaxPayloadBytes,
+	}
+	for _, o := range opts {
+		if o == nil {
+			panic("riverqueue: envelope worker option must not be nil")
+		}
+		o(w)
+	}
+	return w
 }
+
+// WithWorkerMaxPayloadBytes sets the maximum kit message payload size accepted
+// by [EnvelopeWorker]. The default is [kitqueue.DefaultMaxPayloadBytes].
+func WithWorkerMaxPayloadBytes(maxBytes int) EnvelopeWorkerOption {
+	if maxBytes <= 0 {
+		panic("riverqueue: WithWorkerMaxPayloadBytes requires maxBytes > 0")
+	}
+	return func(w *EnvelopeWorker) { w.maxPayloadBytes = maxBytes }
+}
+
+// WithoutWorkerMaxPayloadBytes disables the worker-level payload cap. Use only
+// when River queue policy or an outer product contract applies a stricter
+// bound before work dispatch.
+func WithoutWorkerMaxPayloadBytes() EnvelopeWorkerOption {
+	return func(w *EnvelopeWorker) { w.maxPayloadBytes = 0 }
+}
+
+// EnvelopeWorkerOption configures an [EnvelopeWorker] at construction time.
+type EnvelopeWorkerOption func(*EnvelopeWorker)
 
 // Work implements [river.Worker].
 func (w *EnvelopeWorker) Work(ctx context.Context, job *river.Job[envelopeArgs]) error {
-	return w.handler(ctx, kitqueue.Message{
+	if w == nil || w.handler == nil || job == nil {
+		return kitqueue.ErrInvalidQueue
+	}
+	msg := kitqueue.Message{
 		ID:      job.Args.ID,
 		Type:    job.Args.Type,
-		Payload: job.Args.Payload,
-	})
+		Payload: clonePayload(job.Args.Payload),
+	}
+	if err := kitqueue.ValidateMessage(msg, w.maxPayloadBytes); err != nil {
+		return fmt.Errorf("riverqueue: invalid envelope: %w", err)
+	}
+	return w.handler(ctx, msg)
+}
+
+func clonePayload(payload []byte) []byte {
+	if payload == nil {
+		return nil
+	}
+	return append(payload[:0:0], payload...)
 }
 
 // JobState mirrors [rivertype.JobState] for callers that want to

@@ -51,8 +51,8 @@ type Option func(*AzureBackend)
 // WithInstance sets the metrics/tracing instance label.
 func WithInstance(name string) Option {
 	return func(b *AzureBackend) {
-		if name == "" {
-			panic("azurebackend: instance name must not be empty")
+		if err := storage.ValidateInstanceName(name); err != nil {
+			panic("azurebackend: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -60,8 +60,9 @@ func WithInstance(name string) Option {
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
+	copied := storage.CloneValidators(validators...)
 	return func(b *AzureBackend) {
-		b.validators = append(b.validators, validators...)
+		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
@@ -70,10 +71,13 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 	if cfg.ContainerName == "" {
 		panic("azurebackend: AzureConfig.ContainerName is required")
 	}
+	if err := cfg.Validate(""); err != nil {
+		return nil, err
+	}
 
 	cred, err := azblob.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
 	if err != nil {
-		return nil, fmt.Errorf("azurebackend: create credential: %w", err)
+		return nil, storage.WrapSafe("azurebackend: create credential failed", err)
 	}
 
 	endpoint := cfg.Endpoint
@@ -83,7 +87,7 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 
 	client, err := azblob.NewClientWithSharedKeyCredential(endpoint, cred, nil)
 	if err != nil {
-		return nil, fmt.Errorf("azurebackend: create client: %w", err)
+		return nil, storage.WrapSafe("azurebackend: create client failed", err)
 	}
 
 	b := &AzureBackend{
@@ -93,6 +97,9 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 		instance:  "default",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("azurebackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b, nil
@@ -112,6 +119,9 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Azu
 		instance:  "default",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("azurebackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b
@@ -123,16 +133,23 @@ func (b *AzureBackend) Put(ctx context.Context, key string, r io.Reader, meta st
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.container", b.container),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
@@ -150,8 +167,9 @@ func (b *AzureBackend) Put(ctx context.Context, key string, r io.Reader, meta st
 
 	_, err = b.client.UploadStream(ctx, key, validated, opts)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("azurebackend: put %q: %w", key, err)
+		opErr := storage.WrapSafe("azurebackend: put failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -162,7 +180,7 @@ func (b *AzureBackend) Get(ctx context.Context, key string) (io.ReadCloser, stor
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.container", b.container),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -172,10 +190,11 @@ func (b *AzureBackend) Get(ctx context.Context, key string) (io.ReadCloser, stor
 	resp, err := b.client.DownloadStream(ctx, key, nil)
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
-			return nil, storage.ObjectMeta{}, fmt.Errorf("azurebackend: get %q: %w", key, storage.ErrObjectNotFound)
+			return nil, storage.ObjectMeta{}, fmt.Errorf("azurebackend: get: %w", storage.ErrObjectNotFound)
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return nil, storage.ObjectMeta{}, fmt.Errorf("azurebackend: get %q: %w", key, err)
+		opErr := storage.WrapSafe("azurebackend: get failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	meta := storage.ObjectMeta{
@@ -203,7 +222,7 @@ func (b *AzureBackend) Delete(ctx context.Context, key string) error {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.container", b.container),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -215,8 +234,9 @@ func (b *AzureBackend) Delete(ctx context.Context, key string) error {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("azurebackend: delete %q: %w", key, err)
+		opErr := storage.WrapSafe("azurebackend: delete failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -227,7 +247,7 @@ func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.container", b.container),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -241,8 +261,9 @@ func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return false, nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return false, fmt.Errorf("azurebackend: exists %q: %w", key, err)
+		opErr := storage.WrapSafe("azurebackend: exists failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
 	}
 	_ = resp.Body.Close()
 	return true, nil
@@ -272,6 +293,9 @@ func (c *azureBlobClient) NewListBlobsFlatPager(opts *container.ListBlobsFlatOpt
 
 // Healthy reports whether the container is accessible.
 func (b *AzureBackend) Healthy() bool {
+	if b == nil || b.client == nil {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -52,12 +53,13 @@ type ComputeOption func(*computeConfig)
 // WithStaleTTL sets the stale-while-revalidate window. After the primary TTL
 // expires, stale data is served for up to this duration while a background
 // refresh runs. Zero means no stale serving (default).
-// Negative values are silently ignored (the default zero value is used).
+// Negative values panic.
 func WithStaleTTL(d time.Duration) ComputeOption {
+	if d < 0 {
+		panic("cache: WithStaleTTL requires d >= 0")
+	}
 	return func(cfg *computeConfig) {
-		if d >= 0 {
-			cfg.staleTTL = d
-		}
+		cfg.staleTTL = d
 	}
 }
 
@@ -65,6 +67,9 @@ func WithStaleTTL(d time.Duration) ComputeOption {
 // Use NewComputeMetrics to create the metrics, or WithComputePrometheusMetrics
 // for a one-step option.
 func WithComputeMetricsRegisterer(m *ComputeMetrics) ComputeOption {
+	if m == nil {
+		panic("cache: WithComputeMetricsRegisterer requires non-nil metrics")
+	}
 	return func(cfg *computeConfig) {
 		cfg.metrics = m
 	}
@@ -72,6 +77,9 @@ func WithComputeMetricsRegisterer(m *ComputeMetrics) ComputeOption {
 
 // WithComputeName sets the Prometheus metric label for this cache instance.
 func WithComputeName(name string) ComputeOption {
+	if err := promutil.ValidateStaticLabelValue("compute cache name", name); err != nil {
+		panic("cache: invalid compute name")
+	}
 	return func(cfg *computeConfig) {
 		cfg.name = name
 	}
@@ -80,20 +88,22 @@ func WithComputeName(name string) ComputeOption {
 // WithComputeLogger sets the logger used for backend-error notifications.
 // Default: slog.Default(). Pass io.Discard-backed slog.Handler to mute.
 func WithComputeLogger(l *slog.Logger) ComputeOption {
+	if l == nil {
+		panic("cache: WithComputeLogger requires a non-nil logger")
+	}
 	return func(cfg *computeConfig) {
-		if l != nil {
-			cfg.logger = l
-		}
+		cfg.logger = l
 	}
 }
 
 // WithRefreshTimeout sets the timeout for background refresh operations.
-// Values <= 0 are ignored and the default (30 seconds) is used.
+// The duration must be positive.
 func WithRefreshTimeout(d time.Duration) ComputeOption {
+	if d <= 0 {
+		panic("cache: WithRefreshTimeout requires a positive duration")
+	}
 	return func(cfg *computeConfig) {
-		if d > 0 {
-			cfg.refreshTimeout = d
-		}
+		cfg.refreshTimeout = d
 	}
 }
 
@@ -102,12 +112,13 @@ func WithRefreshTimeout(d time.Duration) ComputeOption {
 // without this cap a slow ComputeFunc invoked from a Background-typed
 // ctx blocks every singleflight follower for the lifetime of the call.
 //
-// Values <= 0 are ignored.
+// The duration must be positive.
 func WithComputeTimeout(d time.Duration) ComputeOption {
+	if d <= 0 {
+		panic("cache: WithComputeTimeout requires a positive duration")
+	}
 	return func(cfg *computeConfig) {
-		if d > 0 {
-			cfg.computeTimeout = d
-		}
+		cfg.computeTimeout = d
 	}
 }
 
@@ -148,11 +159,8 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 	if backend == nil {
 		return nil, fmt.Errorf("cache: NewComputeCache requires a non-nil backend")
 	}
-	if strings.ContainsAny(prefix, "\x00\n\r") {
-		return nil, fmt.Errorf("cache prefix contains invalid characters (null byte, newline, or carriage return)")
-	}
-	if len(prefix) > MaxKeyLen/2 {
-		return nil, fmt.Errorf("cache prefix length %d exceeds maximum of %d bytes", len(prefix), MaxKeyLen/2)
+	if err := ValidateKeyPrefix(prefix); err != nil {
+		return nil, err
 	}
 
 	cfg := computeConfig{
@@ -162,6 +170,9 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 		logger:         slog.Default(),
 	}
 	for _, o := range opts {
+		if o == nil {
+			return nil, fmt.Errorf("cache: NewComputeCache option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -192,13 +203,15 @@ func NewComputeCacheWithCodec[T any](backend Cache, prefix string, codec Codec[T
 
 // fullKey validates the user-provided key and returns the combined prefix+key.
 func (cc *ComputeCache[T]) fullKey(key string) (string, error) {
+	if cc == nil || cc.backend == nil || cc.codec == nil || cc.cancelBg == nil {
+		return "", ErrInvalidCache
+	}
 	if err := ValidateKey(key); err != nil {
 		return "", err
 	}
 	full := cc.prefix + key
 	if len(full) > MaxKeyLen {
-		return "", fmt.Errorf("cache key with prefix exceeds maximum length of %d bytes (prefix=%d, key=%d)",
-			MaxKeyLen, len(cc.prefix), len(key))
+		return "", fmt.Errorf("%w: key with prefix exceeds maximum length", ErrKeyTooLong)
 	}
 	return full, nil
 }
@@ -216,13 +229,15 @@ func (cc *ComputeCache[T]) fullKey(key string) (string, error) {
 func (cc *ComputeCache[T]) GetOrCompute(ctx context.Context, key string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
-	if cc.closed.Load() {
-		return zero, ErrCacheClosed
-	}
-
 	full, err := cc.fullKey(key)
 	if err != nil {
 		return zero, err
+	}
+	if cc.closed.Load() {
+		return zero, ErrCacheClosed
+	}
+	if fn == nil {
+		return zero, ErrInvalidComputeFunc
 	}
 
 	// Try the backend first.
@@ -348,11 +363,18 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 }
 
 // executeCompute calls fn, marshals the result into an envelope, and stores it.
-func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
-	var zero T
+func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn ComputeFunc[T]) (val T, err error) {
+	defer func() {
+		if rv := recover(); rv != nil {
+			var zero T
+			val = zero
+			err = fmt.Errorf("cache compute: ComputeFunc panicked: %s", redact.PanicValue(rv))
+		}
+	}()
 
 	val, ttl, err := fn(ctx)
 	if err != nil {
+		var zero T
 		return zero, err
 	}
 
@@ -364,11 +386,13 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 	// TTL — callers wanting a non-expiring computed value should set a long
 	// concrete TTL (24h, 7d) appropriate to their refresh budget.
 	if ttl <= 0 {
-		return zero, fmt.Errorf("cache compute: ComputeFunc returned non-positive ttl (%s); ComputeCache requires a positive TTL because it adds stale-while-revalidate semantics on top", ttl)
+		var zero T
+		return zero, fmt.Errorf("cache compute: ComputeFunc returned non-positive ttl; ComputeCache requires a positive TTL because it adds stale-while-revalidate semantics on top")
 	}
 
 	valBytes, marshalErr := cc.codec.Marshal(val)
 	if marshalErr != nil {
+		var zero T
 		return zero, fmt.Errorf("cache compute marshal: %w", marshalErr)
 	}
 
@@ -379,6 +403,7 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 
 	envData, marshalErr := envelopeCodec.Marshal(env)
 	if marshalErr != nil {
+		var zero T
 		return zero, fmt.Errorf("cache compute envelope marshal: %w", marshalErr)
 	}
 
@@ -391,7 +416,7 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 		// cache from persisting and operators would have no signal.
 		cc.recordError()
 		cc.cfg.logger.Warn("cache compute: backend Set failed; serving computed value uncached",
-			"key", full, "error", storeErr)
+			redact.String("key", full), redact.Error(storeErr))
 		return val, nil
 	}
 
@@ -446,6 +471,9 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 // Wait blocks until all background refresh goroutines complete.
 // Primarily useful in tests to ensure deterministic behavior.
 func (cc *ComputeCache[T]) Wait() {
+	if cc == nil {
+		return
+	}
 	cc.bgWg.Wait()
 }
 
@@ -459,6 +487,9 @@ func (cc *ComputeCache[T]) Wait() {
 // trigger sees closed and skips the Add. Wait then drains the in-flight
 // refreshes that observed closed=false before this Store ran.
 func (cc *ComputeCache[T]) Close() error {
+	if cc == nil || cc.cancelBg == nil {
+		return ErrInvalidCache
+	}
 	cc.closeOnce.Do(func() {
 		cc.bgMu.Lock()
 		cc.closed.Store(true)

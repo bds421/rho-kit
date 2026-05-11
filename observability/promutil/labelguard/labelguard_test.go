@@ -1,6 +1,7 @@
 package labelguard
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -96,6 +97,33 @@ func TestNew_PanicsOnNilAllowed(t *testing.T) {
 		}
 	}()
 	New(nil)
+}
+
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		New(map[string][]string{"method": {"GET"}}, nil)
+	})
+}
+
+func TestNew_PanicsOnUnsafeAllowlistDimensions(t *testing.T) {
+	cases := []struct {
+		name    string
+		allowed map[string][]string
+	}{
+		{name: "empty label", allowed: map[string][]string{"": {"GET"}}},
+		{name: "label with space", allowed: map[string][]string{"bad label": {"GET"}}},
+		{name: "label with newline", allowed: map[string][]string{"bad\nlabel": {"GET"}}},
+		{name: "empty value", allowed: map[string][]string{"method": {""}}},
+		{name: "value with space", allowed: map[string][]string{"method": {"BAD VALUE"}}},
+		{name: "value too long", allowed: map[string][]string{"method": {strings.Repeat("x", 257)}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Panics(t, func() {
+				New(tc.allowed, WithRegisterer(prometheus.NewRegistry()))
+			})
+		})
+	}
 }
 
 func TestObserve_LabelOutsideAllowlistIsUnconstrained(t *testing.T) {

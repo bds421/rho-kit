@@ -13,11 +13,12 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
-	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
+	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
 	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
@@ -26,10 +27,11 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -44,7 +46,7 @@ import (
 // Builder configures and runs a service's infrastructure lifecycle.
 //
 // Import cost: The app package imports database, redis, messaging, and storage
-// modules. Services that only need HTTP+Redis still pull in GORM and AMQP as
+// modules. Services that only need HTTP+Redis still pull in pgx and AMQP as
 // transitive dependencies. This is acceptable for monorepo services that
 // typically use most infrastructure. For lightweight services (e.g., a pure
 // HTTP proxy), use the individual packages directly with lifecycle.Runner
@@ -92,8 +94,9 @@ type Builder struct {
 	redisConnOpts []kitredis.ConnOption
 
 	// RabbitMQ
-	mqURL          string
-	criticalBroker bool
+	mqURL              string
+	criticalBroker     bool
+	messageSizeLimiter messaging.MessageSizeLimiter
 
 	// NATS JetStream — independent of RabbitMQ; both may coexist.
 	natsCfg *natsbackend.Config
@@ -181,6 +184,10 @@ type Builder struct {
 	// Server options
 	serverOpts []httpx.ServerOption
 
+	// Public gRPC health is off by default. Internal readiness is served on the
+	// internal ops listener, including the gRPC Health Checking Protocol.
+	publicGRPCHealth bool
+
 	// Public-mux default stack
 	disableDefaultStack bool
 	stackOpts           []stack.Option
@@ -244,8 +251,8 @@ func (b *Builder) WithInternalNonLoopback() *Builder {
 // HTTP.
 //
 // Use this only for services explicitly fronted by an external TLS
-// terminator (Oathkeeper, ALB, ingress controller) that re-encrypts
-// to the cluster. The check is unconditional — there is no KIT_ENV
+// terminator (identity proxy, load balancer, ingress controller) that
+// re-encrypts to the cluster. The check is unconditional — there is no KIT_ENV
 // escape hatch.
 func (b *Builder) WithoutTLS() *Builder {
 	b.allowPlaintext = true
@@ -264,9 +271,9 @@ func (b *Builder) WithoutTLS() *Builder {
 // part of the public Builder surface.
 func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
 	if b.tlsOptionalClientCert {
-		return nil
+		return []netutil.ServerTLSOption{netutil.WithOptionalClientCert()}
 	}
-	return []netutil.ServerTLSOption{netutil.WithRequireClientCert()}
+	return nil
 }
 
 // WithOptionalClientCertificates opts the public TLS server out of
@@ -283,8 +290,8 @@ func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
 // shape.
 //
 // Use this only for services genuinely fronted by an external TLS
-// terminator (Oathkeeper, ALB, ingress controller) that re-encrypts
-// to the cluster *without* presenting a client certificate. Internal
+// terminator (identity proxy, load balancer, ingress controller) that
+// re-encrypts to the cluster *without* presenting a client certificate. Internal
 // service-to-service listeners should never use this option — the
 // verifier is the kit's only authentication layer for those callers.
 func (b *Builder) WithOptionalClientCertificates() *Builder {
@@ -335,8 +342,13 @@ func (b *Builder) WithRedis(opts *goredis.Options, connOpts ...kitredis.ConnOpti
 	if opts == nil {
 		panic("app: redis options must not be nil")
 	}
-	b.redisOpts = opts
-	b.redisConnOpts = connOpts
+	for _, opt := range connOpts {
+		if opt == nil {
+			panic("app: WithRedis connection option must not be nil")
+		}
+	}
+	b.redisOpts = cloneRedisOptions(opts)
+	b.redisConnOpts = append([]kitredis.ConnOption(nil), connOpts...)
 	return b
 }
 
@@ -357,6 +369,30 @@ func (b *Builder) WithCriticalBroker() *Builder {
 	return b
 }
 
+// WithMaxMessageBytes sets the default serialized message-size limit for
+// Builder-created RabbitMQ and NATS publishers. The default is
+// messaging.DefaultMaxMessageBytes.
+func (b *Builder) WithMaxMessageBytes(maxBytes int) *Builder {
+	b.messageSizeLimiter = b.messageSizeLimiter.WithDefaultMaxBytes(maxBytes)
+	return b
+}
+
+// WithoutMessageSizeLimit disables the default size limit for Builder-created
+// publishers. Route-specific limits configured with WithRouteMaxMessageBytes
+// still apply.
+func (b *Builder) WithoutMessageSizeLimit() *Builder {
+	b.messageSizeLimiter = b.messageSizeLimiter.WithoutDefaultMaxBytes()
+	return b
+}
+
+// WithRouteMaxMessageBytes overrides the serialized message-size limit for one
+// exact exchange+routing-key pair on Builder-created RabbitMQ and NATS
+// publishers. routingKey may be empty for fanout-style routes.
+func (b *Builder) WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) *Builder {
+	b.messageSizeLimiter = b.messageSizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
+	return b
+}
+
 // WithNATS registers a NATS JetStream broker. The kit exposes the
 // connection plus a default Publisher via Infrastructure.NATS and
 // Infrastructure.NATSPublisher; stream/consumer declarations are
@@ -372,6 +408,10 @@ func (b *Builder) WithNATS(cfg natsbackend.Config) *Builder {
 	if cfg.URL == "" {
 		panic("app: WithNATS requires a non-empty URL")
 	}
+	if err := natsbackend.ValidateURL(cfg.URL); err != nil {
+		panic("app: WithNATS requires a valid URL")
+	}
+	cfg = mustCloneNATSConfig(cfg)
 	b.natsCfg = &cfg
 	return b
 }
@@ -483,10 +523,15 @@ func (b *Builder) WithSignedRequests(
 	if store == nil {
 		panic("app: WithSignedRequests requires a non-nil NonceStore (no-store means trivially-replayable signatures)")
 	}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app: WithSignedRequests option must not be nil")
+		}
+	}
 	b.signedSpec = &signedRequestSpec{
 		resolver: resolver,
 		store:    store,
-		opts:     opts,
+		opts:     append([]signedrequest.Option(nil), opts...),
 	}
 	return b
 }
@@ -524,8 +569,8 @@ func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor, required bool
 // to [httpxtenant.WithAllowMissingTenantOnSafeMethods].
 //
 // Mutually exclusive with [Builder.WithTenantBudget]: budget
-// enforcement keys on the tenant ID, so a safe-method bypass would
-// let GETs skip both tenant validation and budget charging.
+// enforcement keys on the tenant ID, so every charged route needs a
+// required tenant context before the budget middleware runs.
 // [Builder.Validate] rejects the combination at startup.
 func (b *Builder) WithAllowMissingTenantOnSafeMethods() *Builder {
 	if b.tenantSpec == nil {
@@ -538,8 +583,8 @@ func (b *Builder) WithAllowMissingTenantOnSafeMethods() *Builder {
 // WithTenantBudget enforces a per-tenant cost budget on every
 // inbound request via [httpx/middleware/budget]. The default key
 // function pulls the tenant ID from ctx (assumes
-// [WithMultiTenant] is also configured); supply a custom one via
-// [httpxbudget.WithKeyFunc] if your scope is different.
+// [WithMultiTenant] is also configured with required=true); supply a
+// custom one via [httpxbudget.WithKeyFunc] if your scope is different.
 //
 // Panics if `b2` is nil — silent no-budget would defeat the
 // kit's "refuse to misconfigure" stance.
@@ -547,7 +592,12 @@ func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option)
 	if b2 == nil {
 		panic("app: WithTenantBudget requires a non-nil Budget store")
 	}
-	b.budgetSpec = &budgetSpec{store: b2, opts: opts}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app: WithTenantBudget option must not be nil")
+		}
+	}
+	b.budgetSpec = &budgetSpec{store: b2, opts: append([]httpxbudget.Option(nil), opts...)}
 	return b
 }
 
@@ -632,6 +682,12 @@ func (b *Builder) WithFeatureFlags(p kitflags.Provider) *Builder {
 // per-route overrides — e.g. tightening the limit on /admin while the
 // auto-applied limiter handles the public mux baseline.
 func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
+	if requests <= 0 {
+		panic("app: WithIPRateLimit requires a positive request limit")
+	}
+	if window <= 0 {
+		panic("app: WithIPRateLimit requires a positive window")
+	}
 	b.ipRateRequests = requests
 	b.ipRateWindow = window
 	return b
@@ -640,9 +696,18 @@ func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
 // WithKeyedRateLimit adds a named keyed rate limiter. The limiter is accessible
 // via Infrastructure.KeyedLimiters[name].
 func (b *Builder) WithKeyedRateLimit(name string, requests int, window time.Duration) *Builder {
+	if name == "" {
+		panic("app: WithKeyedRateLimit requires a non-empty name")
+	}
+	if requests <= 0 {
+		panic("app: WithKeyedRateLimit requires a positive request limit")
+	}
+	if window <= 0 {
+		panic("app: WithKeyedRateLimit requires a positive window")
+	}
 	for _, existing := range b.keyedLimiters {
 		if existing.name == name {
-			panic(fmt.Sprintf("app: duplicate keyed rate limiter name %q", name))
+			panic("app: duplicate keyed rate limiter name")
 		}
 	}
 	b.keyedLimiters = append(b.keyedLimiters, keyedLimiterSpec{
@@ -660,6 +725,7 @@ func (b *Builder) WithStorage(backend storage.Storage, checks ...health.Dependen
 	if backend == nil {
 		panic("app: storage backend must not be nil")
 	}
+	validateDependencyChecks(checks, "WithStorage")
 	b.storageBackend = backend
 	b.healthChecks = append(b.healthChecks, checks...)
 	return b
@@ -679,6 +745,7 @@ func (b *Builder) WithNamedStorage(name string, backend storage.Storage, checks 
 	if backend == nil {
 		panic("app: storage backend must not be nil")
 	}
+	validateDependencyChecks(checks, "WithNamedStorage")
 	b.storageSpecs = append(b.storageSpecs, storageSpec{
 		name:    name,
 		backend: backend,
@@ -694,8 +761,13 @@ func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *B
 	if store == nil {
 		panic("app: audit log store must not be nil")
 	}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app: WithAuditLog option must not be nil")
+		}
+	}
 	b.auditStore = store
-	b.auditOpts = opts
+	b.auditOpts = append([]auditlog.Option(nil), opts...)
 	return b
 }
 
@@ -709,8 +781,13 @@ func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *B
 // scheduled work. Other infrastructure (HTTP, consumers) keeps running on
 // every replica.
 func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app: WithCron option must not be nil")
+		}
+	}
 	b.cronEnabled = true
-	b.cronOpts = opts
+	b.cronOpts = append([]kitcron.Option(nil), opts...)
 	return b
 }
 
@@ -776,12 +853,23 @@ func (b *Builder) WithLogger(l *slog.Logger) *Builder {
 
 // WithServerOption adds an httpx.ServerOption to the public HTTP server.
 func (b *Builder) WithServerOption(opt httpx.ServerOption) *Builder {
+	if opt == nil {
+		panic("app: WithServerOption requires a non-nil option")
+	}
 	b.serverOpts = append(b.serverOpts, opt)
 	return b
 }
 
+func serverErrorLogOption(logger *slog.Logger) httpx.ServerOption {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return httpx.WithErrorLog(slog.NewLogLogger(logger.Handler(), slog.LevelWarn))
+}
+
 // AddHealthCheck adds a custom DependencyCheck to the readiness probe.
 func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
+	validateDependencyCheck(check, "AddHealthCheck")
 	b.healthChecks = append(b.healthChecks, check)
 	return b
 }
@@ -789,6 +877,9 @@ func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
 // WithCustomReadiness overrides the auto-accumulated health checks with a
 // custom readiness handler (e.g. for custom state introspection).
 func (b *Builder) WithCustomReadiness(h http.Handler) *Builder {
+	if h == nil {
+		panic("app: WithCustomReadiness requires a non-nil handler")
+	}
 	b.customReadiness = h
 	return b
 }
@@ -799,6 +890,11 @@ func (b *Builder) WithCustomReadiness(h http.Handler) *Builder {
 // supplies a logger derived from the slog default; pass [stack.WithLogger]
 // here to override it.
 func (b *Builder) WithStackOptions(opts ...stack.Option) *Builder {
+	for _, opt := range opts {
+		if opt == nil {
+			panic("app: WithStackOptions option must not be nil")
+		}
+	}
 	b.stackOpts = append(b.stackOpts, opts...)
 	return b
 }
@@ -817,6 +913,7 @@ func (b *Builder) WithoutDefaultStack() *Builder {
 // Background registers a managed goroutine that starts before the router.
 // If fn returns a non-nil error, the entire service shuts down.
 func (b *Builder) Background(name string, fn func(ctx context.Context) error) *Builder {
+	validateBackgroundSpec(name, fn)
 	b.earlyBgs = append(b.earlyBgs, bgSpec{name: name, fn: fn})
 	return b
 }
@@ -837,15 +934,30 @@ func (b *Builder) Background(name string, fn func(ctx context.Context) error) *B
 // services with strict cold-start budgets.
 const defaultStartupTimeout = 60 * time.Second
 
-// WithStartupTimeout caps module initialization time. Pass <=0 to
-// fall back to [defaultStartupTimeout].
+// WithStartupTimeout caps module initialization time. Omit this option to use
+// [defaultStartupTimeout].
 //
 // FR-013 [MED]: pre-fix module Init ran with context.Background, so
 // a module that hung during initialization (KMS DNS, broker connect)
 // blocked startup forever. The deadline now triggers a typed error
 // from the affected module's Init.
 func (b *Builder) WithStartupTimeout(d time.Duration) *Builder {
+	if d <= 0 {
+		panic("app: WithStartupTimeout requires a positive duration")
+	}
 	b.startupTimeout = d
+	return b
+}
+
+// WithPublicGRPCHealth also registers the gRPC Health Checking Protocol on
+// the public gRPC listener.
+//
+// By default, Builder exposes health on the internal ops listener only:
+// HTTP /ready plus gRPC health over h2c on the same internal address. Use this
+// opt-in only when the public gRPC listener is protected by network policy or
+// the health service is intentionally part of the public contract.
+func (b *Builder) WithPublicGRPCHealth() *Builder {
+	b.publicGRPCHealth = true
 	return b
 }
 
@@ -877,7 +989,7 @@ func (b *Builder) WithModule(m Module) *Builder {
 	}
 	for _, existing := range b.modules {
 		if existing.Name() == name {
-			panic(fmt.Sprintf("app: duplicate module name %q", name))
+			panic("app: duplicate module name")
 		}
 	}
 	b.modules = append(b.modules, m)
@@ -893,6 +1005,9 @@ func (b *Builder) WithSLO(slos ...slo.SLO) *Builder {
 
 // Router sets the function that builds the HTTP handler from infrastructure.
 func (b *Builder) Router(fn RouterFunc) *Builder {
+	if fn == nil {
+		panic("app: Router requires a non-nil RouterFunc")
+	}
 	b.routerFn = fn
 	return b
 }
@@ -904,6 +1019,20 @@ func (b *Builder) Router(fn RouterFunc) *Builder {
 // (DB, MQ, tracing) uses defers. The internal health server is started outside
 // the Runner so it outlives workers during drain.
 func (b *Builder) Run() error {
+	return b.RunContext(context.Background())
+}
+
+// RunContext executes the full service lifecycle like [Builder.Run], using ctx
+// as the parent context for startup and shutdown. Cancelling ctx initiates the
+// same graceful drain as SIGINT/SIGTERM, which lets tests, CLIs, supervisors,
+// and embedded services control the app without process-global signals.
+func (b *Builder) RunContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("app: Builder.RunContext requires a non-nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if b.ran {
 		panic("app: Builder.Run() must not be called more than once")
 	}
@@ -950,18 +1079,19 @@ func (b *Builder) Run() error {
 	}
 	runner := lifecycle.NewRunner(logger, runnerOpts...)
 
-	// 2.5. EventBus pool lifecycle -- register after runner creation.
-	if b.eventBusPoolSize > 0 {
-		runner.Add("eventbus", eventBus)
-	}
+	// 2.5. EventBus lifecycle -- register even when the Builder uses
+	// the eventbus package's default auto-started worker pool. Start
+	// will not create duplicate workers for that pool; it simply binds
+	// shutdown to the Runner so embedded RunContext calls do not leak
+	// eventbus workers after returning.
+	runner.Add("eventbus", eventBus)
 
 	// 3. Rate limiters
 	var rl *mwrl.RateLimiter
 	if b.ipRateRequests > 0 {
 		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow)
 		runner.AddFunc("rate-limiter-cleanup", func(ctx context.Context) error {
-			rl.Run(ctx)
-			return nil
+			return rl.Run(ctx)
 		})
 	}
 
@@ -971,8 +1101,7 @@ func (b *Builder) Run() error {
 		keyedLimiters[spec.name] = kl
 		name := "keyed-limiter-" + spec.name
 		runner.AddFunc(name, func(ctx context.Context) error {
-			kl.Run(ctx)
-			return nil
+			return kl.Run(ctx)
 		})
 	}
 
@@ -1021,7 +1150,7 @@ func (b *Builder) Run() error {
 		if startupTimeout <= 0 {
 			startupTimeout = defaultStartupTimeout
 		}
-		initCtx, initCancel := context.WithTimeout(context.Background(), startupTimeout)
+		initCtx, initCancel := context.WithTimeout(ctx, startupTimeout)
 		moduleCleanup, moduleErr := initModules(
 			initCtx,
 			allModules,
@@ -1034,14 +1163,20 @@ func (b *Builder) Run() error {
 			return moduleErr
 		}
 		defer func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cleanupCtx, cancel := detachedTimeoutContext(ctx, 10*time.Second)
 			defer cancel()
 			moduleCleanup(cleanupCtx)
 		}()
 
 		// Collect health checks from all modules.
 		for _, m := range allModules {
-			b.healthChecks = append(b.healthChecks, m.HealthChecks()...)
+			checks := m.HealthChecks()
+			for _, check := range checks {
+				if err := health.ValidateDependencyCheck(check); err != nil {
+					return fmt.Errorf("module health check invalid: %w", err)
+				}
+			}
+			b.healthChecks = append(b.healthChecks, checks...)
 		}
 	}
 
@@ -1071,6 +1206,7 @@ func (b *Builder) Run() error {
 		Flags:          b.flagsClient(),
 		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
+			validateBackgroundSpec(name, fn)
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
@@ -1079,6 +1215,9 @@ func (b *Builder) Run() error {
 			lateBgs = append(lateBgs, bgSpec{name: name, fn: fn})
 		},
 		SetCustomReadiness: func(h http.Handler) {
+			if h == nil {
+				panic("app: SetCustomReadiness requires a non-nil handler")
+			}
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
@@ -1087,6 +1226,7 @@ func (b *Builder) Run() error {
 			b.customReadiness = h
 		},
 		AddHealthCheck: func(check health.DependencyCheck) {
+			validateDependencyCheck(check, "Infrastructure.AddHealthCheck")
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
@@ -1161,12 +1301,15 @@ func (b *Builder) Run() error {
 		Checks:  b.healthChecks,
 	}
 
-	// Register gRPC health service with the same checker used for HTTP readiness.
-	// Scan allModules for a *grpcModule — it may come from WithModule(NewGRPCModule(...)).
-	for _, m := range allModules {
-		if gm, ok := m.(*grpcModule); ok {
-			gm.RegisterHealth(healthChecker)
-			break
+	// gRPC health is internal by default. Public registration is an
+	// explicit opt-in because the public gRPC listener may be reachable by
+	// untrusted clients even when the internal ops listener is not.
+	if b.publicGRPCHealth {
+		for _, m := range allModules {
+			if gm, ok := m.(*grpcModule); ok {
+				gm.RegisterHealth(healthChecker)
+				break
+			}
 		}
 	}
 
@@ -1183,8 +1326,10 @@ func (b *Builder) Run() error {
 			break
 		}
 	}
+	serverErrorLogOpt := serverErrorLogOption(logger)
 	internalHandler := healthhttp.NewInternalHandler(b.version, readiness, internalOpts...)
-	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler)
+	internalHandler = withInternalGRPCHealth(internalHandler, healthChecker)
+	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, serverErrorLogOpt)
 	internalErrCh := make(chan error, 1)
 	go func() {
 		if srvErr := internalSrv.ListenAndServe(); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
@@ -1192,10 +1337,10 @@ func (b *Builder) Run() error {
 		}
 	}()
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 		defer cancel()
 		if shutdownErr := internalSrv.Shutdown(shutdownCtx); shutdownErr != nil {
-			logger.Warn("internal server shutdown error", "error", shutdownErr)
+			logger.Warn("internal server shutdown error", redact.Error(shutdownErr))
 		}
 	}()
 
@@ -1205,7 +1350,7 @@ func (b *Builder) Run() error {
 		return fmt.Errorf("internal server failed to start: %w", srvErr)
 	case <-time.After(50 * time.Millisecond):
 	}
-	logger.Info("internal server started", "addr", b.cfg.Internal.Addr())
+	logger.Info("internal server started", redact.String("addr", b.cfg.Internal.Addr()))
 
 	// Monitor internal server for post-startup failures (e.g., accept loop errors).
 	// If the internal server dies, the entire service shuts down — running without
@@ -1229,15 +1374,14 @@ func (b *Builder) Run() error {
 	// stopped after HTTP during graceful shutdown (reverse order).
 	for _, m := range allModules {
 		if gm, ok := m.(*grpcModule); ok {
-			runner.AddFunc("grpc-server", func(ctx context.Context) error {
-				return gm.serve(ctx)
-			})
+			runner.Add("grpc-server", gm)
 			break
 		}
 	}
 
 	// 14. Public server — added last so it is stopped first (reverse order).
-	srvOpts := make([]httpx.ServerOption, 0, len(b.serverOpts)+1)
+	srvOpts := make([]httpx.ServerOption, 0, len(b.serverOpts)+2)
+	srvOpts = append(srvOpts, serverErrorLogOpt)
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
 	}
@@ -1246,5 +1390,5 @@ func (b *Builder) Run() error {
 	runner.Add("public-server", lifecycle.HTTPServer(srv))
 
 	// 15. Run — signal handling, component lifecycle, graceful shutdown.
-	return runner.Run(context.Background())
+	return runner.Run(ctx)
 }

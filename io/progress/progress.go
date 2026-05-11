@@ -66,6 +66,9 @@ func NewProgressReader(r io.Reader, totalBytes int64, fn ProgressFunc, opts ...R
 	}
 	cfg := readerConfig{}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("progress: Reader option must not be nil")
+		}
 		opt(&cfg)
 	}
 	return &progressReader{

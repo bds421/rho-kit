@@ -5,6 +5,7 @@ package healthhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
@@ -20,8 +23,8 @@ import (
 //   - StatusUnhealthy → 503 Service Unavailable
 //   - everything else → 200 OK
 func Handler(checker *health.Checker) http.Handler {
-	if checker == nil {
-		panic("healthhttp: Handler requires a non-nil *health.Checker")
+	if err := health.ValidateChecker(checker); err != nil {
+		panic("healthhttp: Handler requires a valid *health.Checker")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := checker.Evaluate(r.Context())
@@ -35,7 +38,7 @@ func Handler(checker *health.Checker) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			slog.Error("health: failed to encode response", "error", err)
+			slog.Error("health: failed to encode response", redact.Error(err))
 		}
 	})
 }
@@ -46,6 +49,8 @@ type InternalHandlerOption func(*internalConfig)
 type internalConfig struct {
 	sloHandler http.Handler
 }
+
+var errHTTPCheckRedirectBlocked = errors.New("healthhttp: dependency redirects are disabled")
 
 // WithSLOHandler adds a GET /slo endpoint to the internal ops handler.
 // Pass the handler from slohttp.Handler.
@@ -65,8 +70,14 @@ func WithSLOHandler(h http.Handler) InternalHandlerOption {
 // The readiness parameter accepts any http.Handler.
 // Use [Handler] to wrap a [health.Checker] as an http.Handler.
 func NewInternalHandler(version string, readiness http.Handler, opts ...InternalHandlerOption) http.Handler {
+	if readiness == nil {
+		panic("healthhttp: NewInternalHandler requires a non-nil readiness handler")
+	}
 	var cfg internalConfig
 	for _, o := range opts {
+		if o == nil {
+			panic("healthhttp: NewInternalHandler option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -96,8 +107,10 @@ func noStoreHandler(h http.Handler) http.Handler {
 
 // HTTPCheck returns a [health.DependencyCheck] that probes the given URL with
 // an HTTP GET. Use this to monitor external HTTP dependencies (e.g., upstream
-// APIs, auth servers). The check applies a 5-second timeout.
+// APIs, auth servers). The check applies a 5-second timeout and blocks
+// redirects unless the supplied client has an explicit redirect policy.
 func HTTPCheck(name, url string, client *http.Client, critical bool) health.DependencyCheck {
+	client = dependencyHTTPClient(client)
 	return health.DependencyCheck{
 		Name: name,
 		Check: func(ctx context.Context) string {
@@ -120,4 +133,32 @@ func HTTPCheck(name, url string, client *http.Client, critical bool) health.Depe
 		},
 		Critical: critical,
 	}
+}
+
+func dependencyHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return &http.Client{
+			Timeout:       5 * time.Second,
+			Transport:     transportdefaults.New(nil, 0, "healthhttp: HTTPCheck"),
+			CheckRedirect: blockHTTPCheckRedirect,
+		}
+	}
+	if client.Timeout > 0 && client.Transport != nil && client.CheckRedirect != nil {
+		return client
+	}
+	cloned := *client
+	if cloned.Timeout <= 0 {
+		cloned.Timeout = 5 * time.Second
+	}
+	if cloned.Transport == nil {
+		cloned.Transport = transportdefaults.New(nil, 0, "healthhttp: HTTPCheck")
+	}
+	if cloned.CheckRedirect == nil {
+		cloned.CheckRedirect = blockHTTPCheckRedirect
+	}
+	return &cloned
+}
+
+func blockHTTPCheckRedirect(_ *http.Request, _ []*http.Request) error {
+	return errHTTPCheckRedirectBlocked
 }

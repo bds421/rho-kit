@@ -4,15 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 const (
-	pingTimeout = 5 * time.Second
+	pingTimeout               = 5 * time.Second
+	defaultOnReconnectTimeout = 30 * time.Second
 )
 
 // Connection manages a Redis client with health monitoring and lifecycle channels.
@@ -38,6 +42,7 @@ type Connection struct {
 	maxReconnectAttempts int
 	lazyConnect          bool
 	healthInterval       time.Duration
+	onReconnectTimeout   time.Duration
 	onReconnect          func(context.Context, *Connection) error
 
 	metrics *RedisMetrics
@@ -59,13 +64,14 @@ func WithLogger(l *slog.Logger) ConnOption {
 }
 
 // WithMaxReconnectAttempts limits reconnection attempts. 0 means unlimited.
-// Negative values are ignored. When the limit is reached, the Dead() channel
+// Negative values panic. When the limit is reached, the Dead() channel
 // is closed to signal permanent failure.
 func WithMaxReconnectAttempts(n int) ConnOption {
+	if n < 0 {
+		panic("redis: WithMaxReconnectAttempts requires n >= 0")
+	}
 	return func(c *Connection) {
-		if n >= 0 {
-			c.maxReconnectAttempts = n
-		}
+		c.maxReconnectAttempts = n
 	}
 }
 
@@ -78,12 +84,13 @@ func WithLazyConnect() ConnOption {
 
 // WithHealthInterval sets how frequently the health loop pings Redis.
 // Defaults to 5 seconds. Lower values detect outages faster but increase
-// load on the Redis server. Values <= 0 are ignored (the default is used).
+// load on the Redis server. The duration must be positive.
 func WithHealthInterval(d time.Duration) ConnOption {
+	if d <= 0 {
+		panic("redis: WithHealthInterval requires a positive duration")
+	}
 	return func(c *Connection) {
-		if d > 0 {
-			c.healthInterval = d
-		}
+		c.healthInterval = d
 	}
 }
 
@@ -94,7 +101,7 @@ func WithHealthInterval(d time.Duration) ConnOption {
 func WithInstance(name string) ConnOption {
 	return func(c *Connection) {
 		if err := ValidateName(name, "instance"); err != nil {
-			panic("redis: " + err.Error())
+			panic("redis: invalid instance name")
 		}
 		c.instance = name
 	}
@@ -110,7 +117,21 @@ func WithInstance(name string) ConnOption {
 // long-running operations. Errors are logged but do not prevent the
 // connection from being used.
 func WithOnReconnect(fn func(ctx context.Context, conn *Connection) error) ConnOption {
+	if fn == nil {
+		panic("redis: WithOnReconnect requires a non-nil callback")
+	}
 	return func(c *Connection) { c.onReconnect = fn }
+}
+
+// WithOnReconnectTimeout bounds each onReconnect callback. The timeout
+// context is cancelled when d elapses or the connection closes.
+func WithOnReconnectTimeout(d time.Duration) ConnOption {
+	if d <= 0 {
+		panic("redis: WithOnReconnectTimeout requires a positive duration")
+	}
+	return func(c *Connection) {
+		c.onReconnectTimeout = d
+	}
 }
 
 // WithRegisterer sets the Prometheus registerer for connection metrics.
@@ -136,7 +157,14 @@ func WithRegisterer(reg prometheus.Registerer) ConnOption {
 // This is harmless but can cause confusing log output in tests. Use
 // WithLazyConnect if rapid connect/close cycles are expected.
 func Connect(opts *redis.Options, connOpts ...ConnOption) (*Connection, error) {
-	return connectInternal(redis.NewClient(opts), connOpts...)
+	if opts == nil {
+		panic("redis: Connect requires non-nil options")
+	}
+	copied, err := cloneOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	return connectInternal(redis.NewClient(copied), connOpts...)
 }
 
 // ConnectUniversal is the Sentinel/Cluster-aware constructor. opts is the
@@ -145,20 +173,67 @@ func Connect(opts *redis.Options, connOpts ...ConnOption) (*Connection, error) {
 // The returned Connection is otherwise identical to one returned by
 // [Connect] — Client() returns the same UniversalClient interface.
 func ConnectUniversal(opts *redis.UniversalOptions, connOpts ...ConnOption) (*Connection, error) {
-	return connectInternal(redis.NewUniversalClient(opts), connOpts...)
+	if opts == nil {
+		panic("redis: ConnectUniversal requires non-nil options")
+	}
+	copied, err := cloneUniversalOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	return connectInternal(redis.NewUniversalClient(copied), connOpts...)
+}
+
+func cloneOptions(opts *redis.Options) (*redis.Options, error) {
+	copied := *opts
+	var err error
+	if copied.TLSConfig != nil {
+		copied.TLSConfig, err = cloneTLSConfigWithFloor(copied.TLSConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if copied.MaintNotificationsConfig != nil {
+		cfg := *copied.MaintNotificationsConfig
+		copied.MaintNotificationsConfig = &cfg
+	}
+	return &copied, nil
+}
+
+func cloneUniversalOptions(opts *redis.UniversalOptions) (*redis.UniversalOptions, error) {
+	copied := *opts
+	copied.Addrs = append([]string(nil), opts.Addrs...)
+	var err error
+	if copied.TLSConfig != nil {
+		copied.TLSConfig, err = cloneTLSConfigWithFloor(copied.TLSConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if copied.MaintNotificationsConfig != nil {
+		cfg := *copied.MaintNotificationsConfig
+		copied.MaintNotificationsConfig = &cfg
+	}
+	return &copied, nil
 }
 
 func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Connection, error) {
+	if client == nil {
+		panic("redis: connectInternal requires a non-nil client")
+	}
 	c := &Connection{
-		closed:         make(chan struct{}),
-		dead:           make(chan struct{}),
-		connected:      make(chan struct{}),
-		logger:         slog.Default(),
-		instance:       "default",
-		healthInterval: 5 * time.Second,
-		metrics:        defaultMetrics,
+		closed:             make(chan struct{}),
+		dead:               make(chan struct{}),
+		connected:          make(chan struct{}),
+		logger:             slog.Default(),
+		instance:           "default",
+		healthInterval:     5 * time.Second,
+		onReconnectTimeout: defaultOnReconnectTimeout,
+		metrics:            defaultMetrics,
 	}
 	for _, o := range connOpts {
+		if o == nil {
+			panic("redis: connection option must not be nil")
+		}
 		o(c)
 	}
 
@@ -191,12 +266,18 @@ func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Con
 // Client returns the underlying Redis client. The returned client is safe
 // for concurrent use and handles connection pooling internally.
 func (c *Connection) Client() redis.UniversalClient {
+	if c == nil {
+		return nil
+	}
 	return c.client
 }
 
 // Healthy reports whether the connection is currently healthy. This is used
 // by health check integrations (health.DependencyCheck).
 func (c *Connection) Healthy() bool {
+	if c == nil {
+		return false
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.healthy
@@ -206,6 +287,9 @@ func (c *Connection) Healthy() bool {
 // established. Used by health checks to distinguish "still connecting on
 // startup" from "was healthy but lost connection".
 func (c *Connection) WasConnected() bool {
+	if c == nil || c.connected == nil {
+		return false
+	}
 	select {
 	case <-c.connected:
 		return true
@@ -218,27 +302,44 @@ func (c *Connection) WasConnected() bool {
 // connection is established. Useful for services that need Redis before
 // starting their main loop.
 func (c *Connection) Connected() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
 	return c.connected
 }
 
 // Dead returns a channel that is closed when reconnection has been
 // permanently abandoned (maxReconnectAttempts exceeded).
 func (c *Connection) Dead() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
 	return c.dead
 }
 
 // Close shuts down the connection and stops the health monitor loop.
 // It is safe to call multiple times; subsequent calls return nil.
 func (c *Connection) Close() error {
+	if c == nil {
+		return nil
+	}
 	var err error
 	c.closeOnce.Do(func() {
-		close(c.closed)
-		err = c.client.Close()
+		if c.closed != nil {
+			close(c.closed)
+		}
+		if c.client != nil {
+			err = c.client.Close()
+		}
 		c.mu.Lock()
 		c.healthy = false
 		c.mu.Unlock()
-		c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
-		c.logger.Info("redis connection closed")
+		if c.metrics != nil {
+			c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
+		}
+		if c.logger != nil {
+			c.logger.Info("redis connection closed")
+		}
 	})
 	return err
 }
@@ -305,10 +406,10 @@ func (c *Connection) checkHealth() {
 	c.metrics.reconnectAttempts.WithLabelValues(c.instance).Inc()
 
 	if wasHealthy {
-		c.logger.Error("redis connection lost", "error", err)
+		c.logger.Error("redis connection lost", redact.Error(err))
 	} else {
 		c.logger.Warn("redis still unhealthy",
-			"error", err,
+			redact.Error(err),
 			"consecutive_failures", failures,
 		)
 	}
@@ -318,12 +419,6 @@ func (c *Connection) checkHealth() {
 		c.deadOnce.Do(func() { close(c.dead) })
 	}
 }
-
-// onReconnectTimeout bounds how long an onReconnect callback may run.
-// Prevents user-supplied callbacks from blocking indefinitely and leaking
-// goroutines. 30 seconds is generous for topology declarations or
-// re-subscriptions.
-const onReconnectTimeout = 30 * time.Second
 
 func (c *Connection) fireOnReconnect() {
 	if c.onReconnect == nil {
@@ -343,6 +438,12 @@ func (c *Connection) fireOnReconnect() {
 
 	go func() {
 		defer func() {
+			if rec := recover(); rec != nil {
+				c.logger.Error("redis onReconnect callback panicked",
+					redact.Panic(rec),
+					"stack", string(debug.Stack()),
+				)
+			}
 			c.mu.Lock()
 			c.reconnecting = false
 			c.mu.Unlock()
@@ -353,39 +454,32 @@ func (c *Connection) fireOnReconnect() {
 		default:
 		}
 
-		// Create a context bounded by both the timeout and the connection lifetime.
-		// This allows callbacks to use ctx.Done() for clean cancellation.
-		ctx, cancel := context.WithTimeout(context.Background(), onReconnectTimeout)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		done := make(chan struct{})
+		defer close(done)
+
+		timer := time.NewTimer(c.onReconnectTimeout)
+		defer timer.Stop()
 		go func() {
 			select {
 			case <-c.closed:
 				cancel()
-			case <-ctx.Done():
+			case <-timer.C:
+				c.logger.Error("redis onReconnect callback timed out",
+					"timeout", c.onReconnectTimeout)
+				cancel()
+			case <-done:
 			}
 		}()
 
-		done := make(chan error, 1)
-		go func() { done <- c.onReconnect(ctx, c) }()
-		select {
-		case err := <-done:
-			if err != nil {
-				select {
-				case <-c.closed:
-					c.logger.Warn("redis connection closed during onReconnect callback")
-				default:
-					c.logger.Error("redis onReconnect callback failed", "error", err)
-				}
+		if err := c.onReconnect(ctx, c); err != nil {
+			select {
+			case <-c.closed:
+				c.logger.Warn("redis connection closed during onReconnect callback")
+			default:
+				c.logger.Error("redis onReconnect callback failed", redact.Error(err))
 			}
-		case <-ctx.Done():
-			c.logger.Error("redis onReconnect callback timed out — abandoning waiter",
-				"timeout", onReconnectTimeout)
-			// FR-078 [MED]: do NOT block on <-done. A misbehaving
-			// callback that ignores ctx would otherwise pin this
-			// goroutine forever. The callback's goroutine leaks for
-			// its own lifetime, but the orchestrator returns
-			// promptly so subsequent reconnects can proceed and
-			// shutdown is not blocked.
 		}
 	}()
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,6 +85,47 @@ func TestRetryStorage_StopsOnPermanent(t *testing.T) {
 	assert.Equal(t, int32(1), callCount.Load()) // no retries for permanent errors
 }
 
+func TestRetryStorage_ValidatesBeforeBackendAndRetryPolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var retryPredicateCalled atomic.Bool
+	backend := &validationProbeBackend{}
+	r := New(backend, WithShouldRetry(func(error) bool {
+		retryPredicateCalled.Store(true)
+		return true
+	}))
+
+	_, _, err := r.Get(ctx, "bad key")
+	require.ErrorIs(t, err, storage.ErrValidation)
+	assert.Equal(t, int32(0), backend.calls.Load())
+	assert.False(t, retryPredicateCalled.Load())
+}
+
+func TestRetryStorage_ListValidatesBeforeBackendAndRetryPolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var retryPredicateCalled atomic.Bool
+	backend := &validationProbeBackend{}
+	r := New(backend, WithShouldRetry(func(error) bool {
+		retryPredicateCalled.Store(true)
+		return true
+	}))
+	lister, ok := storage.AsLister(r)
+	require.True(t, ok)
+
+	var seenErr error
+	for _, err := range lister.List(ctx, "", storage.ListOptions{StartAfter: "bad key"}) {
+		seenErr = err
+		break
+	}
+
+	require.ErrorIs(t, seenErr, storage.ErrValidation)
+	assert.Equal(t, int32(0), backend.calls.Load())
+	assert.False(t, retryPredicateCalled.Load())
+}
+
 func TestRetryStorage_RespectsContext(t *testing.T) {
 	t.Parallel()
 
@@ -118,6 +160,13 @@ func TestRetryStorage_New_NilBackendPanics(t *testing.T) {
 	t.Parallel()
 	assert.PanicsWithValue(t, "storage/retry: backend must not be nil", func() {
 		_ = New(nil)
+	})
+}
+
+func TestRetryStorage_New_NilOptionPanics(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "storage/retry: option must not be nil", func() {
+		_ = New(membackend.New(), nil)
 	})
 }
 
@@ -312,4 +361,35 @@ func (f *failingBackend) Delete(ctx context.Context, key string) error {
 
 func (f *failingBackend) Exists(ctx context.Context, key string) (bool, error) {
 	return f.underlying.Exists(ctx, key)
+}
+
+type validationProbeBackend struct {
+	calls atomic.Int32
+}
+
+func (b *validationProbeBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	b.calls.Add(1)
+	return nil
+}
+
+func (b *validationProbeBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	b.calls.Add(1)
+	return nil, storage.ObjectMeta{}, errors.New("backend should not be called")
+}
+
+func (b *validationProbeBackend) Delete(context.Context, string) error {
+	b.calls.Add(1)
+	return nil
+}
+
+func (b *validationProbeBackend) Exists(context.Context, string) (bool, error) {
+	b.calls.Add(1)
+	return false, nil
+}
+
+func (b *validationProbeBackend) List(context.Context, string, storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		b.calls.Add(1)
+		yield(storage.ObjectInfo{}, errors.New("backend should not be called"))
+	}
 }

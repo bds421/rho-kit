@@ -31,9 +31,10 @@ type ObjectVersion struct {
 
 // Versioner is an optional extension for backends that support
 // object versioning (e.g. S3 with versioning enabled).
-// Check capability via type assertion:
+// Check capability via [AsVersioner] so decorators with [Unwrapper] support are
+// handled consistently:
 //
-//	if v, ok := backend.(storage.Versioner); ok {
+//	if v, ok := storage.AsVersioner(backend); ok {
 //	    for ver, err := range v.ListVersions(ctx, "doc.pdf") {
 //	        // ...
 //	    }

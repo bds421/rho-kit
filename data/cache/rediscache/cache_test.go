@@ -2,6 +2,7 @@ package rediscache
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -36,6 +37,48 @@ func TestNewRedisCache_InvalidName(t *testing.T) {
 
 	_, err := NewRedisCache(client, "")
 	assert.Error(t, err)
+}
+
+func TestNewRedisCache_RejectsNilOption(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	_, err := NewRedisCache(client, "test", nil)
+	assert.Error(t, err)
+}
+
+func TestRedisCache_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, rc := range map[string]*RedisCache{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := rc.Get(ctx, "key")
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = rc.Set(ctx, "key", []byte("value"), time.Minute)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			_, err = rc.MGet(ctx, []string{"key"})
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = rc.MSet(ctx, map[string][]byte{"key": []byte("value")}, time.Minute)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			ok, err := rc.SetNX(ctx, "key", []byte("value"), time.Minute)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			err = rc.Delete(ctx, "key")
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+
+			exists, err := rc.Exists(ctx, "key")
+			assert.False(t, exists)
+			assert.ErrorIs(t, err, sharedcache.ErrInvalidCache)
+		})
+	}
 }
 
 func TestRedisCache_GetMiss(t *testing.T) {
@@ -98,15 +141,45 @@ func TestRedisCache_Exists(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestRedisCache_Set_NegativeTTL(t *testing.T) {
+func TestRedisCache_NegativeTTLDoesNotReflectValue(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
 	rc, err := NewRedisCache(client, "test")
 	require.NoError(t, err)
 
-	err = rc.Set(context.Background(), "key", []byte("val"), -time.Second)
-	assert.Error(t, err)
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "set",
+			run: func() error {
+				return rc.Set(context.Background(), "key", []byte("val"), -time.Second)
+			},
+		},
+		{
+			name: "mset",
+			run: func() error {
+				return rc.MSet(context.Background(), map[string][]byte{"key": []byte("val")}, -time.Second)
+			},
+		},
+		{
+			name: "setnx",
+			run: func() error {
+				_, err := rc.SetNX(context.Background(), "key", []byte("val"), -time.Second)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "TTL must not be negative")
+			assert.NotContains(t, err.Error(), "-1s")
+		})
+	}
 }
 
 func TestRedisCache_Set_ExceedsMaxValueSize(t *testing.T) {
@@ -118,7 +191,57 @@ func TestRedisCache_Set_ExceedsMaxValueSize(t *testing.T) {
 
 	err = rc.Set(context.Background(), "key", make([]byte, 20), time.Minute)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds max")
+	assert.Contains(t, err.Error(), "exceeds maximum")
+	assert.NotContains(t, err.Error(), "10")
+	assert.NotContains(t, err.Error(), "20")
+}
+
+func TestRedisCache_MSet_ExceedsMaxValueSizeDoesNotReflectKey(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	rc, err := NewRedisCache(client, "test", WithCacheMaxValueSize(10))
+	require.NoError(t, err)
+
+	err = rc.MSet(context.Background(), map[string][]byte{
+		"secret-token-key": make([]byte, 20),
+	}, time.Minute)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum")
+	assert.NotContains(t, err.Error(), "secret-token-key")
+	assert.NotContains(t, err.Error(), "10")
+	assert.NotContains(t, err.Error(), "20")
+}
+
+func oversizedRedisKeysForTest() []string {
+	keys := make([]string, sharedcache.MaxBulkKeys+1)
+	for i := range keys {
+		keys[i] = "key-" + strconv.Itoa(i)
+	}
+	return keys
+}
+
+func oversizedRedisItemsForTest() map[string][]byte {
+	items := make(map[string][]byte, sharedcache.MaxBulkKeys+1)
+	for i := 0; i <= sharedcache.MaxBulkKeys; i++ {
+		items["key-"+strconv.Itoa(i)] = []byte("value")
+	}
+	return items
+}
+
+func TestRedisCache_BulkOperationsRejectOversizedBatches(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	rc, err := NewRedisCache(client, "test")
+	require.NoError(t, err)
+
+	_, err = rc.MGet(context.Background(), oversizedRedisKeysForTest())
+	assert.ErrorIs(t, err, sharedcache.ErrBulkTooLarge)
+
+	err = rc.MSet(context.Background(), oversizedRedisItemsForTest(), time.Minute)
+	assert.ErrorIs(t, err, sharedcache.ErrBulkTooLarge)
 }
 
 func TestRedisCache_InvalidKey(t *testing.T) {
@@ -142,10 +265,10 @@ func TestRedisCache_InvalidKey(t *testing.T) {
 	assert.Error(t, existsErr)
 }
 
-func TestWithCacheMaxValueSize_IgnoresNegative(t *testing.T) {
-	rc := &RedisCache{maxValueSize: defaultMaxValueSize}
-	WithCacheMaxValueSize(-1)(rc)
-	assert.Equal(t, defaultMaxValueSize, rc.maxValueSize)
+func TestWithCacheMaxValueSize_PanicsOnNegative(t *testing.T) {
+	assert.Panics(t, func() {
+		WithCacheMaxValueSize(-1)
+	})
 }
 
 func TestWithCacheMaxValueSize_ZeroDisablesLimit(t *testing.T) {

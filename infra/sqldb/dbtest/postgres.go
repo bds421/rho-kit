@@ -24,6 +24,7 @@ func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 		tcpostgres.WithDatabase(dbName),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
+		tcpostgres.BasicWaitStrategies(),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
@@ -46,7 +47,7 @@ func StartPostgres(t *testing.T, dbName string) sqldb.Config {
 
 	return sqldb.Config{
 		Host:     host,
-		Port:     port.Int(),
+		Port:     int(port.Num()),
 		User:     "test",
 		Password: "test",
 		Name:     dbName,

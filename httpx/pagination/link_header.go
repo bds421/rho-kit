@@ -45,7 +45,9 @@ func WriteLinkHeader(w http.ResponseWriter, u *url.URL, total, offset, limit int
 		// The "page is full" heuristic is the standard one — without total
 		// we cannot tell that the next page will be empty, but most
 		// streaming list APIs document this caveat.
-		parts = appendLink(parts, u, "next", offset+limit, limit)
+		if next, ok := nextPageOffset(offset, limit); ok {
+			parts = appendLink(parts, u, "next", next, limit)
+		}
 	} else {
 		// Known total: first/prev/next/last as appropriate.
 		if offset > 0 {
@@ -56,8 +58,8 @@ func WriteLinkHeader(w http.ResponseWriter, u *url.URL, total, offset, limit int
 			}
 			parts = appendLink(parts, u, "prev", prev, limit)
 		}
-		if offset+limit < total {
-			parts = appendLink(parts, u, "next", offset+limit, limit)
+		if next, ok := nextPageOffset(offset, limit); ok && next < total {
+			parts = appendLink(parts, u, "next", next, limit)
 			lastOffset := lastPageOffset(total, limit)
 			parts = appendLink(parts, u, "last", lastOffset, limit)
 		}
@@ -77,6 +79,17 @@ func appendLink(parts []string, u *url.URL, rel string, offset, limit int) []str
 	cp.RawQuery = q.Encode()
 	parts = append(parts, fmt.Sprintf(`<%s>; rel=%q`, cp.String(), rel))
 	return parts
+}
+
+func nextPageOffset(offset, limit int) (int, bool) {
+	if limit <= 0 {
+		return 0, false
+	}
+	maxInt := int(^uint(0) >> 1)
+	if offset > maxInt-limit {
+		return 0, false
+	}
+	return offset + limit, true
 }
 
 // lastPageOffset returns the offset of the first item on the last page —

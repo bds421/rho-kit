@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // ErrNotFound indicates that the targeted outbox row no longer exists when
@@ -84,7 +89,10 @@ func (e Entry) HeadersMap() (map[string]string, error) {
 
 	var headers map[string]string
 	if err := json.Unmarshal(e.Headers, &headers); err != nil {
-		return nil, fmt.Errorf("outbox: unmarshal headers for entry %s: %w", e.ID, err)
+		return nil, fmt.Errorf("outbox: unmarshal headers: %w", err)
+	}
+	if err := messaging.ValidateMessageHeaders(headers); err != nil {
+		return nil, fmt.Errorf("outbox: invalid headers: %w", err)
 	}
 
 	return headers, nil
@@ -107,6 +115,7 @@ type Writer struct {
 	store           Store
 	txCheck         func(context.Context) error
 	requireTxPolicy bool
+	sizeLimiter     messaging.MessageSizeLimiter
 }
 
 // WriterOption configures the Writer.
@@ -146,6 +155,40 @@ func WithRequireTransaction(check func(context.Context) error) WriterOption {
 	}
 }
 
+// WithMessageSizeLimiter replaces the writer's message-size policy. The
+// default is messaging.DefaultMaxMessageBytes so oversized rows are rejected
+// before they are persisted to the outbox store.
+func WithMessageSizeLimiter(l messaging.MessageSizeLimiter) WriterOption {
+	return func(w *Writer) {
+		w.sizeLimiter = l
+	}
+}
+
+// WithMaxMessageBytes sets the default serialized message-size limit for
+// writes. Route-specific limits can still override it.
+func WithMaxMessageBytes(maxBytes int) WriterOption {
+	return func(w *Writer) {
+		w.sizeLimiter = w.sizeLimiter.WithDefaultMaxBytes(maxBytes)
+	}
+}
+
+// WithoutMaxMessageBytes disables the default writer size limit. Use only
+// when an outer protocol, database constraint, or publisher contract already
+// bounds outbox entry size.
+func WithoutMaxMessageBytes() WriterOption {
+	return func(w *Writer) {
+		w.sizeLimiter = w.sizeLimiter.WithoutDefaultMaxBytes()
+	}
+}
+
+// WithRouteMaxMessageBytes overrides the message-size limit for one exact
+// topic+routing-key pair. routingKey may be empty for fanout-style routes.
+func WithRouteMaxMessageBytes(topic, routingKey string, maxBytes int) WriterOption {
+	return func(w *Writer) {
+		w.sizeLimiter = w.sizeLimiter.WithRouteMaxBytes(topic, routingKey, maxBytes)
+	}
+}
+
 // NewWriter creates a Writer backed by the given store. Panics if store is
 // nil — the misconfiguration would otherwise surface as a nil-deref on the
 // first Write call.
@@ -153,8 +196,14 @@ func NewWriter(store Store, opts ...WriterOption) *Writer {
 	if store == nil {
 		panic("outbox: NewWriter requires a non-nil Store")
 	}
-	w := &Writer{store: store}
+	w := &Writer{
+		store:       store,
+		sizeLimiter: messaging.DefaultMessageSizeLimiter(),
+	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("outbox: Writer option must not be nil")
+		}
 		opt(w)
 	}
 	return w
@@ -174,11 +223,16 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 			return fmt.Errorf("outbox: %w", err)
 		}
 	}
-	if params.Topic == "" {
-		return fmt.Errorf("outbox: topic must not be empty")
+	if err := validateWriteParams(params); err != nil {
+		return err
 	}
-	if params.RoutingKey == "" {
-		return fmt.Errorf("outbox: routing key must not be empty")
+	if err := w.sizeLimiter.Check(params.Topic, params.RoutingKey, messaging.Message{
+		ID:      params.MessageID,
+		Type:    params.MessageType,
+		Payload: params.Payload,
+		Headers: params.Headers,
+	}); err != nil {
+		return err
 	}
 
 	headersJSON, err := json.Marshal(params.Headers)
@@ -197,7 +251,7 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 		RoutingKey:  params.RoutingKey,
 		MessageID:   params.MessageID,
 		MessageType: params.MessageType,
-		Payload:     params.Payload,
+		Payload:     cloneRawMessage(params.Payload),
 		Headers:     headersJSON,
 		Status:      StatusPending,
 		Attempts:    0,
@@ -205,4 +259,57 @@ func (w *Writer) Write(ctx context.Context, params WriteParams) error {
 	}
 
 	return w.store.Insert(ctx, entry)
+}
+
+func validateWriteParams(params WriteParams) error {
+	if params.Topic == "" {
+		return fmt.Errorf("outbox: topic must not be empty")
+	}
+	if params.RoutingKey == "" {
+		return fmt.Errorf("outbox: routing key must not be empty")
+	}
+	if err := messaging.ValidatePublishRoute(params.Topic, params.RoutingKey); err != nil {
+		return fmt.Errorf("outbox: invalid publish route: %w", err)
+	}
+	if err := validatePortableField("message id", params.MessageID); err != nil {
+		return err
+	}
+	if err := validatePortableField("message type", params.MessageType); err != nil {
+		return err
+	}
+	if len(params.Payload) == 0 {
+		return fmt.Errorf("outbox: payload must not be empty")
+	}
+	if !json.Valid(params.Payload) {
+		return fmt.Errorf("outbox: payload must be valid JSON")
+	}
+	if err := messaging.ValidateMessageHeaders(params.Headers); err != nil {
+		return fmt.Errorf("outbox: invalid headers: %w", err)
+	}
+	return nil
+}
+
+func validatePortableField(kind, value string) error {
+	if value == "" {
+		return fmt.Errorf("outbox: %s must not be empty", kind)
+	}
+	if len(value) > messaging.MaxRouteNameBytes {
+		return fmt.Errorf("outbox: %s exceeds maximum length", kind)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("outbox: %s contains invalid UTF-8", kind)
+	}
+	if strings.ContainsFunc(value, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r)
+	}) {
+		return fmt.Errorf("outbox: %s contains whitespace or control characters", kind)
+	}
+	return nil
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	return append(raw[:0:0], raw...)
 }

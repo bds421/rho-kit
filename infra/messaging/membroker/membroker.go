@@ -30,28 +30,93 @@ type Broker struct {
 	mu            sync.Mutex
 	subscriptions []subscription
 	nextID        SubscriptionID
+	nextPublishID uint64
 	published     []publishedMessage
+	sizeLimiter   messaging.MessageSizeLimiter
 }
 
 type publishedMessage struct {
+	id         uint64
 	exchange   string
 	routingKey string
 	msg        messaging.Message
 }
 
+// Option configures an in-memory Broker.
+type Option func(*Broker)
+
+// WithMessageSizeLimiter replaces the broker's message-size policy.
+func WithMessageSizeLimiter(l messaging.MessageSizeLimiter) Option {
+	return func(b *Broker) { b.sizeLimiter = l }
+}
+
+// WithMaxMessageBytes sets the default serialized message-size limit.
+func WithMaxMessageBytes(maxBytes int) Option {
+	return func(b *Broker) {
+		b.sizeLimiter = b.sizeLimiter.WithDefaultMaxBytes(maxBytes)
+	}
+}
+
+// WithoutMaxMessageBytes disables the default size limit. Route-specific
+// limits configured with WithRouteMaxMessageBytes still apply.
+func WithoutMaxMessageBytes() Option {
+	return func(b *Broker) {
+		b.sizeLimiter = b.sizeLimiter.WithoutDefaultMaxBytes()
+	}
+}
+
+// WithRouteMaxMessageBytes overrides the message-size limit for one exact
+// exchange+routing-key pair. routingKey may be empty for fanout-style routes.
+func WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) Option {
+	return func(b *Broker) {
+		b.sizeLimiter = b.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
+	}
+}
+
 // New creates a new in-memory broker.
-func New() *Broker {
-	return &Broker{}
+func New(opts ...Option) *Broker {
+	b := &Broker{sizeLimiter: messaging.DefaultMessageSizeLimiter()}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("membroker: option must not be nil")
+		}
+		opt(b)
+	}
+	return b
+}
+
+func (b *Broker) ready() error {
+	if b == nil {
+		return messaging.ErrInvalidPublisher
+	}
+	return nil
 }
 
 // Publish stores a message and dispatches it to matching subscribers.
 // Implements messaging.MessagePublisher.
-func (b *Broker) Publish(_ context.Context, exchange, routingKey string, msg messaging.Message) error {
+func (b *Broker) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
+	if err := b.ready(); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
+		return err
+	}
+	if err := messaging.ValidateMessage(msg); err != nil {
+		return err
+	}
+	if err := b.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
+		return err
+	}
 	b.mu.Lock()
+	b.nextPublishID++
 	b.published = append(b.published, publishedMessage{
+		id:         b.nextPublishID,
 		exchange:   exchange,
 		routingKey: routingKey,
-		msg:        msg,
+		msg:        msg.Clone(),
 	})
 	b.mu.Unlock()
 	return nil
@@ -62,6 +127,20 @@ func (b *Broker) Publish(_ context.Context, exchange, routingKey string, msg mes
 // [SubscriptionID] that callers can pass to [Broker.Unsubscribe] for
 // fine-grained teardown without dropping unrelated subscriptions.
 func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context.Context, d messaging.Delivery) error) SubscriptionID {
+	if b == nil {
+		panic("membroker: Subscribe requires a non-nil Broker")
+	}
+	if handler == nil {
+		panic("membroker: Subscribe requires a non-nil handler")
+	}
+	if exchange != "*" && exchange != "#" {
+		if err := messaging.ValidateExchangeName(exchange); err != nil {
+			panic("membroker: exchange name is invalid")
+		}
+	}
+	if err := messaging.ValidateRoutingKey(routingKey); err != nil {
+		panic("membroker: routing key is invalid")
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++
@@ -80,6 +159,9 @@ func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context
 // without checking whether the subscription is still registered. Use this
 // instead of [Reset] when only one of several subscriptions should go.
 func (b *Broker) Unsubscribe(id SubscriptionID) {
+	if b == nil {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i, sub := range b.subscriptions {
@@ -94,29 +176,51 @@ func (b *Broker) Unsubscribe(id SubscriptionID) {
 // matching subscribers synchronously. Returns the first error from any
 // handler, or nil if all succeed.
 func (b *Broker) Drain(ctx context.Context) error {
-	b.mu.Lock()
-	msgs := b.published
-	b.published = nil
-	subs := make([]subscription, len(b.subscriptions))
-	copy(subs, b.subscriptions)
-	b.mu.Unlock()
-
-	for _, pm := range msgs {
-		d := messaging.Delivery{
-			Message:       pm.msg,
-			Exchange:      pm.exchange,
-			RoutingKey:    pm.routingKey,
-			SchemaVersion: pm.msg.SchemaVersion,
+	if err := b.ready(); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
+		b.mu.Lock()
+		if len(b.published) == 0 {
+			b.mu.Unlock()
+			return nil
+		}
+		pm := b.published[0]
+		subs := make([]subscription, len(b.subscriptions))
+		copy(subs, b.subscriptions)
+		b.mu.Unlock()
+
 		for _, sub := range subs {
 			if matches(sub, pm.exchange, pm.routingKey) {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				d := messaging.Delivery{
+					Message:       pm.msg.Clone(),
+					Exchange:      pm.exchange,
+					RoutingKey:    pm.routingKey,
+					SchemaVersion: pm.msg.SchemaVersion,
+				}
 				if err := sub.handler(ctx, d); err != nil {
 					return err
 				}
 			}
 		}
+
+		b.mu.Lock()
+		if len(b.published) > 0 && b.published[0].id == pm.id {
+			b.published = b.published[1:]
+		} else {
+			b.removePublishedLocked(pm.id)
+		}
+		b.mu.Unlock()
 	}
-	return nil
 }
 
 // PublishAndDrain publishes a message and immediately dispatches it to matching
@@ -132,21 +236,36 @@ func (b *Broker) PublishAndDrain(ctx context.Context, exchange, routingKey strin
 // Published returns all messages that have been published since the last
 // Drain or Reset. Useful for asserting in tests.
 func (b *Broker) Published() []messaging.Message {
+	if b == nil {
+		return nil
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	msgs := make([]messaging.Message, len(b.published))
 	for i, pm := range b.published {
-		msgs[i] = pm.msg
+		msgs[i] = pm.msg.Clone()
 	}
 	return msgs
 }
 
 // Reset clears all published messages and subscriptions.
 func (b *Broker) Reset() {
+	if b == nil {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.published = nil
 	b.subscriptions = nil
+}
+
+func (b *Broker) removePublishedLocked(id uint64) {
+	for i, candidate := range b.published {
+		if candidate.id == id {
+			b.published = append(b.published[:i], b.published[i+1:]...)
+			return
+		}
+	}
 }
 
 // matches checks whether a subscription matches the given exchange and routing key.

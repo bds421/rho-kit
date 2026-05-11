@@ -11,6 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	kitstream "github.com/bds421/rho-kit/data/v2/stream"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
@@ -42,12 +44,20 @@ func NewProducerMetrics(reg prometheus.Registerer) *ProducerMetrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.messagesProduced)
+	m.messagesProduced = promutil.MustRegisterOrGet(reg, m.messagesProduced)
 
 	return m
 }
 
 var defaultProducerMetrics = NewProducerMetrics(nil)
+
+func streamMetricLabel(stream string) string {
+	return promutil.OpaqueLabelValue("stream", stream)
+}
+
+func groupMetricLabel(group string) string {
+	return promutil.OpaqueLabelValue("group", group)
+}
 
 // Producer publishes messages to Redis streams with delivery guarantees.
 type Producer struct {
@@ -87,40 +97,45 @@ func WithProducerLogger(l *slog.Logger) ProducerOption {
 
 // WithMaxStreamLen sets the approximate maximum stream length. Messages
 // beyond this limit are trimmed using Redis MAXLEN ~N (approximate trimming
-// for better performance). 0 disables trimming. Negative values are ignored.
+// for better performance). 0 disables length-based trimming. Negative values
+// panic.
 //
 // Mutually exclusive with WithRetention — if both are set, MaxLen takes precedence.
 func WithMaxStreamLen(n int64) ProducerOption {
+	if n < 0 {
+		panic("redisstream: WithMaxStreamLen requires n >= 0")
+	}
 	return func(p *Producer) {
-		if n >= 0 {
-			p.maxLen = n
-		}
+		p.maxLen = n
 	}
 }
 
 // WithProducerMaxPayloadSize sets the maximum payload size in bytes.
 // Messages with a payload exceeding this limit are rejected at publish time.
 // Default is 1 MiB. Set to 0 to disable the limit entirely (use with caution).
-// Negative values are ignored.
+// Negative values panic.
 func WithProducerMaxPayloadSize(n int) ProducerOption {
+	if n < 0 {
+		panic("redisstream: WithProducerMaxPayloadSize requires n >= 0")
+	}
 	return func(p *Producer) {
-		if n >= 0 {
-			p.maxPayloadSize = n
-		}
+		p.maxPayloadSize = n
 	}
 }
 
 // WithRetention enables time-based stream trimming via Redis MINID ~<id>.
 // Entries older than the given duration are approximately trimmed on each
 // publish. For example, WithRetention(7 * 24 * time.Hour) keeps roughly
-// one week of entries. Values <= 0 are ignored.
+// one week of entries. The duration must be positive; use
+// [WithUnboundedStream] to opt out of default retention.
 //
 // Mutually exclusive with WithMaxStreamLen — if both are set, MaxLen takes precedence.
 func WithRetention(d time.Duration) ProducerOption {
+	if d <= 0 {
+		panic("redisstream: WithRetention requires a positive duration")
+	}
 	return func(p *Producer) {
-		if d > 0 {
-			p.retention = d
-		}
+		p.retention = d
 	}
 }
 
@@ -156,6 +171,9 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 		metrics:        defaultProducerMetrics,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("redisstream: NewProducer option must not be nil")
+		}
 		o(p)
 	}
 	// FR-063 [MED]: WithProducerLogger silently ignored a nil
@@ -168,6 +186,20 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 		p.retention = defaultStreamRetention
 	}
 	return p
+}
+
+func (p *Producer) ready() error {
+	if p == nil ||
+		p.client == nil ||
+		p.logger == nil ||
+		p.maxLen < 0 ||
+		p.retention < 0 ||
+		p.maxPayloadSize < 0 ||
+		(p.maxLen == 0 && p.retention == 0 && !p.unbounded) ||
+		p.metrics == nil {
+		return kitstream.ErrInvalidStream
+	}
+	return nil
 }
 
 // defaultStreamRetention bounds Redis-stream growth when no
@@ -193,11 +225,11 @@ func WithUnboundedStream() ProducerOption {
 //	ts       → RFC3339Nano timestamp
 //	headers  → JSON-encoded headers map
 func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (string, error) {
-	if err := redis.ValidateName(stream, "stream"); err != nil {
+	if err := p.ready(); err != nil {
 		return "", err
 	}
-	if p.maxPayloadSize > 0 && len(msg.Payload) > p.maxPayloadSize {
-		return "", fmt.Errorf("payload size %d exceeds max %d", len(msg.Payload), p.maxPayloadSize)
+	if err := redis.ValidateName(stream, "stream"); err != nil {
+		return "", err
 	}
 	args, err := p.buildXAddArgs(stream, msg)
 	if err != nil {
@@ -206,16 +238,16 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 
 	result, err := p.client.XAdd(ctx, args).Result()
 	if err != nil {
-		return "", fmt.Errorf("xadd %s: %w", stream, err)
+		return "", fmt.Errorf("xadd: %w", err)
 	}
 
-	p.metrics.messagesProduced.WithLabelValues(stream).Inc()
+	p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Inc()
 
 	p.logger.Debug("message published to stream",
-		"stream", stream,
-		"redis_id", result,
-		"msg_id", msg.ID,
-		"type", msg.Type,
+		redact.String("stream", stream),
+		redact.String("redis_id", result),
+		redact.String("msg_id", msg.ID),
+		redact.String("type", msg.Type),
 	)
 
 	return result, nil
@@ -228,18 +260,24 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 // some messages may have been written. Callers should treat a pipeline
 // error as "unknown state" and use idempotent message IDs for deduplication.
 func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Message) ([]string, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
 	if err := redis.ValidateName(stream, "stream"); err != nil {
 		return nil, err
 	}
 	if len(msgs) == 0 {
 		return nil, nil
 	}
+	if len(msgs) > MaxBatchMessages {
+		return nil, ErrBatchTooLarge
+	}
 
 	// Pre-validate all messages before building the pipeline to avoid
 	// partially constructing pipeline commands that are then discarded.
 	for i, msg := range msgs {
-		if p.maxPayloadSize > 0 && len(msg.Payload) > p.maxPayloadSize {
-			return nil, fmt.Errorf("message [%d] payload size %d exceeds max %d", i, len(msg.Payload), p.maxPayloadSize)
+		if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
+			return nil, fmt.Errorf("message [%d]: %w", i, err)
 		}
 	}
 
@@ -265,7 +303,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 		if err != nil {
 			// Record the messages that did succeed before the failure.
 			if succeeded > 0 {
-				p.metrics.messagesProduced.WithLabelValues(stream).Add(float64(succeeded))
+				p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
 			}
 			return nil, fmt.Errorf("xadd result [%d]: %w", i, err)
 		}
@@ -273,7 +311,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 		succeeded++
 	}
 
-	p.metrics.messagesProduced.WithLabelValues(stream).Add(float64(succeeded))
+	p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
 
 	return ids, nil
 }
@@ -290,6 +328,9 @@ func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs,
 	}
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now().UTC()
+	}
+	if err := ValidateMessage(msg, p.maxPayloadSize); err != nil {
+		return nil, err
 	}
 
 	values := map[string]any{

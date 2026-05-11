@@ -14,6 +14,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/bds421/rho-kit/httpx/v2"
 	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
 )
 
@@ -40,7 +41,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(
 				semconv.HTTPRequestMethodKey.String(r.Method),
-				semconv.URLPath(r.URL.Path),
+				semconv.URLPath(httpx.RequestPath(r)),
 				semconv.URLScheme(r.URL.Scheme),
 				semconv.ServerAddress(r.Host),
 				semconv.UserAgentOriginal(r.UserAgent()),
@@ -52,35 +53,53 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		prop.Inject(ctx, propagation.HeaderCarrier(w.Header()))
 
 		rec := mw.NewResponseRecorder(w)
+		defer func() {
+			recovered := recover()
+			finishHTTPSpan(span, r, rec, recovered != nil)
+			if recovered != nil {
+				panic(recovered)
+			}
+		}()
 		next.ServeHTTP(rec, r.WithContext(ctx))
-
-		// Update span name with route pattern if available (more stable than URL path).
-		if pattern := r.Pattern; pattern != "" {
-			span.SetName(r.Method + " " + pattern)
-		}
-
-		// Hijacked connections (WebSocket, h2 stream takeover) never went
-		// through WriteHeader, so rec.Status() is the recorder default
-		// (200) — misleading on a connection that may run for hours and
-		// has nothing to do with HTTP response semantics. Record 101
-		// (Switching Protocols) instead, which matches the actual wire
-		// status the upgrade emitted.
-		status := rec.Status()
-		if rec.WasHijacked() {
-			status = http.StatusSwitchingProtocols
-		}
-		span.SetAttributes(
-			semconv.HTTPResponseStatusCode(status),
-		)
-
-		if status >= 500 {
-			span.SetStatus(codes.Error, http.StatusText(status))
-		}
 	})
+}
+
+func finishHTTPSpan(span trace.Span, r *http.Request, rec *mw.ResponseRecorder, panicked bool) {
+	// Update span name with route pattern if available (more stable than URL path).
+	if pattern := r.Pattern; pattern != "" {
+		span.SetName(r.Method + " " + pattern)
+	}
+
+	// Hijacked connections (WebSocket, h2 stream takeover) never went
+	// through WriteHeader, so rec.Status() is the recorder default
+	// (200) — misleading on a connection that may run for hours and
+	// has nothing to do with HTTP response semantics. Record 101
+	// (Switching Protocols) instead, which matches the actual wire
+	// status the upgrade emitted.
+	status := rec.Status()
+	if rec.WasHijacked() {
+		status = http.StatusSwitchingProtocols
+	} else if panicked && !rec.WroteHeader() {
+		status = http.StatusInternalServerError
+	}
+	span.SetAttributes(
+		semconv.HTTPResponseStatusCode(status),
+	)
+
+	if panicked {
+		span.SetStatus(codes.Error, "handler panic")
+		return
+	}
+	if status >= 500 {
+		span.SetStatus(codes.Error, http.StatusText(status))
+	}
 }
 
 // InjectHTTPHeaders injects the current trace context into outgoing HTTP
 // request headers. Use this when making HTTP calls to other services.
 func InjectHTTPHeaders(ctx context.Context, req *http.Request) {
+	if req == nil {
+		return
+	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -21,17 +20,14 @@ type TypedCache[T any] struct {
 // Returns an error if backend is nil, or if the prefix contains invalid
 // characters or is too long. The combined prefix+key must fit within
 // MaxKeyLen (checked per-operation in fullKey). A prefix longer than
-// MaxKeyLen/2 is rejected upfront to guarantee at least MaxKeyLen/2 bytes
-// remain for keys.
+// MaxKeyPrefixLen is rejected upfront to guarantee at least MaxKeyPrefixLen
+// bytes remain for keys.
 func NewTypedCache[T any](backend Cache, prefix string) (*TypedCache[T], error) {
 	if backend == nil {
 		return nil, fmt.Errorf("cache: NewTypedCache requires a non-nil backend")
 	}
-	if strings.ContainsAny(prefix, "\x00\n\r") {
-		return nil, fmt.Errorf("cache prefix contains invalid characters (null byte, newline, or carriage return)")
-	}
-	if len(prefix) > MaxKeyLen/2 {
-		return nil, fmt.Errorf("cache prefix length %d exceeds maximum of %d bytes", len(prefix), MaxKeyLen/2)
+	if err := ValidateKeyPrefix(prefix); err != nil {
+		return nil, err
 	}
 	return &TypedCache[T]{backend: backend, prefix: prefix}, nil
 }
@@ -39,13 +35,15 @@ func NewTypedCache[T any](backend Cache, prefix string) (*TypedCache[T], error) 
 // fullKey validates the user-provided key and returns the combined prefix+key.
 // Validates both the key itself and the combined length.
 func (tc *TypedCache[T]) fullKey(key string) (string, error) {
+	if tc == nil || tc.backend == nil {
+		return "", ErrInvalidCache
+	}
 	if err := ValidateKey(key); err != nil {
 		return "", err
 	}
 	full := tc.prefix + key
 	if len(full) > MaxKeyLen {
-		return "", fmt.Errorf("cache key with prefix exceeds maximum length of %d bytes (prefix=%d, key=%d)",
-			MaxKeyLen, len(tc.prefix), len(key))
+		return "", fmt.Errorf("%w: key with prefix exceeds maximum length", ErrKeyTooLong)
 	}
 	return full, nil
 }

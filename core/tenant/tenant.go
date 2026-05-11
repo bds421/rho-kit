@@ -68,6 +68,11 @@ func (id ID) IsZero() bool { return id == "" }
 // tenant ID. Callers may compare with `errors.Is`.
 var ErrMissing = errors.New("tenant: required tenant ID is missing from context")
 
+// ErrAlreadySet is returned by [WithIDChecked] when ctx already carries a
+// different tenant ID. A request context must not be re-stamped as another
+// tenant after the trust boundary resolves it.
+var ErrAlreadySet = errors.New("tenant: context already carries a different tenant ID")
+
 // ErrInvalid is returned by [NewID] when the supplied string fails
 // validation (empty or contains a forbidden byte). Callers may compare
 // with `errors.Is`.
@@ -94,7 +99,7 @@ func ValidateID(s string) error {
 		return fmt.Errorf("%w: must not be empty", ErrInvalid)
 	}
 	if len(s) > MaxIDLen {
-		return fmt.Errorf("%w: length %d exceeds maximum %d bytes", ErrInvalid, len(s), MaxIDLen)
+		return fmt.Errorf("%w: exceeds maximum length", ErrInvalid)
 	}
 	if strings.TrimSpace(s) != s {
 		return fmt.Errorf("%w: contains leading or trailing whitespace", ErrInvalid)
@@ -105,12 +110,12 @@ func ValidateID(s string) error {
 			return fmt.Errorf("%w: contains invalid UTF-8 at offset %d", ErrInvalid, i)
 		}
 		if unicode.IsSpace(r) {
-			return fmt.Errorf("%w: contains whitespace rune %q at offset %d", ErrInvalid, r, i)
+			return fmt.Errorf("%w: contains whitespace at offset %d", ErrInvalid, i)
 		}
 		i += size
 	}
 	if i := strings.IndexAny(s, forbiddenBytes); i >= 0 {
-		return fmt.Errorf("%w: contains forbidden byte %q at offset %d", ErrInvalid, s[i], i)
+		return fmt.Errorf("%w: contains forbidden byte at offset %d", ErrInvalid, i)
 	}
 	return nil
 }
@@ -138,11 +143,37 @@ func NewIDUnchecked(s string) ID { return ID(s) }
 // ctxKey is unexported so consumers cannot bypass the typed helpers.
 type ctxKey struct{}
 
-// WithID returns a child context carrying id. Use this in the
-// HTTP/gRPC middleware that resolves the tenant from request
-// metadata.
+// WithID returns a child context carrying id. Use this in the HTTP/gRPC
+// middleware that resolves the tenant from request metadata.
+//
+// If ctx already carries a different tenant ID, WithID panics. Re-stamping an
+// already-scoped request is a cross-tenant isolation violation; callers that
+// need an error-returning path should use [WithIDChecked].
 func WithID(ctx context.Context, id ID) context.Context {
-	return context.WithValue(ctx, ctxKey{}, id)
+	next, err := WithIDChecked(ctx, id)
+	if err != nil {
+		panic("tenant: context already carries a different tenant ID")
+	}
+	return next
+}
+
+// WithIDChecked is the error-returning form of [WithID]. It refuses to
+// overwrite a different tenant ID already present on ctx. Re-applying the same
+// tenant ID is a no-op, as is applying the zero ID.
+func WithIDChecked(ctx context.Context, id ID) (context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id.IsZero() {
+		return ctx, nil
+	}
+	if existing, ok := FromContext(ctx); ok {
+		if existing != id {
+			return ctx, ErrAlreadySet
+		}
+		return ctx, nil
+	}
+	return context.WithValue(ctx, ctxKey{}, id), nil
 }
 
 // FromContext returns the tenant ID stored in ctx and a presence

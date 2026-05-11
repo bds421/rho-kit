@@ -1,14 +1,19 @@
 package pagination
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestParseCursorParams_defaults(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 20 {
 		t.Errorf("Limit = %d, want 20", cp.Limit)
@@ -20,7 +25,10 @@ func TestParseCursorParams_defaults(t *testing.T) {
 
 func TestParseCursorParams_customValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items?cursor=abc-123&limit=50", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 50 {
 		t.Errorf("Limit = %d, want 50", cp.Limit)
@@ -32,7 +40,10 @@ func TestParseCursorParams_customValues(t *testing.T) {
 
 func TestParseCursorParams_clampsToMax(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items?limit=500", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 100 {
 		t.Errorf("Limit = %d, want 100 (clamped)", cp.Limit)
@@ -41,7 +52,10 @@ func TestParseCursorParams_clampsToMax(t *testing.T) {
 
 func TestParseCursorParams_negativeUsesDefault(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items?limit=-5", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 20 {
 		t.Errorf("Limit = %d, want 20 (default)", cp.Limit)
@@ -50,7 +64,10 @@ func TestParseCursorParams_negativeUsesDefault(t *testing.T) {
 
 func TestParseCursorParams_zeroUsesDefault(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items?limit=0", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 20 {
 		t.Errorf("Limit = %d, want 20 (default)", cp.Limit)
@@ -59,10 +76,95 @@ func TestParseCursorParams_zeroUsesDefault(t *testing.T) {
 
 func TestParseCursorParams_invalidLimitUsesDefault(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/items?limit=abc", nil)
-	cp := ParseCursorParams(r, 20, 100)
+	cp, err := ParseCursorParams(r, 20, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
 
 	if cp.Limit != 20 {
 		t.Errorf("Limit = %d, want 20 (default)", cp.Limit)
+	}
+}
+
+func TestParseCursorParams_defaultGreaterThanMaxClampsToMax(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	cp, err := ParseCursorParams(r, 200, 100)
+	if err != nil {
+		t.Fatalf("ParseCursorParams returned error: %v", err)
+	}
+
+	if cp.Limit != 100 {
+		t.Errorf("Limit = %d, want 100 (clamped)", cp.Limit)
+	}
+}
+
+func TestParseCursorParams_rejectsOversizedCursor(t *testing.T) {
+	cursor := strings.Repeat("a", MaxCursorLen+1)
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor="+cursor, nil)
+
+	_, err := ParseCursorParams(r, 20, 100)
+	if !errors.Is(err, ErrCursorTooLong) {
+		t.Fatalf("ParseCursorParams error = %v, want ErrCursorTooLong", err)
+	}
+}
+
+func TestParseCursorParams_rejectsInvalidLimitConfig(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+
+	for _, tt := range []struct {
+		name         string
+		defaultLimit int
+		maxLimit     int
+	}{
+		{name: "zero default", defaultLimit: 0, maxLimit: 100},
+		{name: "negative default", defaultLimit: -1, maxLimit: 100},
+		{name: "zero max", defaultLimit: 20, maxLimit: 0},
+		{name: "negative max", defaultLimit: 20, maxLimit: -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseCursorParams(r, tt.defaultLimit, tt.maxLimit)
+			if !errors.Is(err, ErrInvalidLimitConfig) {
+				t.Fatalf("ParseCursorParams error = %v, want ErrInvalidLimitConfig", err)
+			}
+		})
+	}
+}
+
+func TestParseCursorParams_rejectsInvalidRequest(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		r    *http.Request
+	}{
+		{name: "nil request", r: nil},
+		{name: "nil URL", r: &http.Request{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseCursorParams(tt.r, 20, 100)
+			if !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("ParseCursorParams error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
+func TestParseCursorParams_rejectsAmbiguousQueryParams(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		url  string
+	}{
+		{name: "duplicate cursor", url: "/items?cursor=a&cursor=b"},
+		{name: "duplicate limit", url: "/items?limit=10&limit=20"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			_, err := ParseCursorParams(r, 20, 100)
+			if !errors.Is(err, ErrAmbiguousQueryParam) {
+				t.Fatalf("ParseCursorParams error = %v, want ErrAmbiguousQueryParam", err)
+			}
+			if err.Error() != ErrAmbiguousQueryParam.Error() {
+				t.Fatalf("ParseCursorParams error = %q, want stable ambiguous-query error", err)
+			}
+		})
 	}
 }
 
@@ -79,8 +181,13 @@ func TestValidateCursor_validUUID(t *testing.T) {
 }
 
 func TestValidateCursor_invalidUUID(t *testing.T) {
-	if err := ValidateCursorUUID("not-a-uuid"); err == nil {
+	err := ValidateCursorUUID("not-a-uuid")
+	if err == nil {
 		t.Error("invalid UUID should fail")
+		return
+	}
+	if strings.Contains(err.Error(), "not-a-uuid") {
+		t.Fatalf("invalid UUID error leaked raw cursor: %v", err)
 	}
 }
 

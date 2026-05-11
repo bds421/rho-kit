@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/google/uuid"
 )
 
@@ -24,7 +25,7 @@ var fallbackCounter atomic.Uint64
 func NewID() string {
 	id, err := uuid.NewV7()
 	if err != nil {
-		slog.Warn("uuid.NewV7 failed, using fallback for ID generation", "error", err)
+		slog.Warn("uuid.NewV7 failed, using fallback for ID generation", redact.Error(err))
 		return fallbackGenerate()
 	}
 	return id.String()

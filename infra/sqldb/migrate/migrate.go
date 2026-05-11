@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"log/slog"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/pressly/goose/v3"
 )
 
@@ -73,7 +74,7 @@ func Status(ctx context.Context, db *sql.DB, cfg Config, logger *slog.Logger) er
 		}
 		logger.Info("migration",
 			"version", s.Source.Version,
-			"path", s.Source.Path,
+			redact.String("path", s.Source.Path),
 			"state", state,
 		)
 	}

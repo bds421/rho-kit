@@ -56,8 +56,8 @@ func TestNewCustomPolicy_PanicsOnEmptyName(t *testing.T) {
 }
 
 func TestNewCustomPolicy_PanicsOnInvalidName(t *testing.T) {
-	assert.Panics(t, func() {
-		NewCustomPolicy("INVALID NAME!", func(_ context.Context) error { return nil })
+	assert.PanicsWithValue(t, "redis: invalid custom policy name", func() {
+		NewCustomPolicy("secret-token bad", func(_ context.Context) error { return nil })
 	})
 }
 
@@ -151,10 +151,10 @@ func TestPerFeatureHealthChecks_CustomPolicy(t *testing.T) {
 func TestPerFeatureHealthChecks_PanicsOnInvalidFeatureName(t *testing.T) {
 	conn := newTestConnection(true, true)
 	features := []FeatureCheck{
-		{Feature: "INVALID NAME!", Policy: PassthroughPolicy{}},
+		{Feature: "secret-token bad", Policy: PassthroughPolicy{}},
 	}
 
-	assert.Panics(t, func() {
+	assert.PanicsWithValue(t, "redis: invalid feature name", func() {
 		PerFeatureHealthChecks(conn, features)
 	})
 }

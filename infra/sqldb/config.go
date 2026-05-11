@@ -72,11 +72,15 @@ func (c Config) IsTLSAttempted() bool {
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials.
 func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
-		slog.String("host", c.Host),
+		slog.Bool("host_configured", c.Host != ""),
 		slog.Int("port", c.Port),
-		slog.String("user", c.User),
-		slog.String("name", c.Name),
-		slog.String("password", "[REDACTED]"),
+		slog.Bool("user_configured", c.User != ""),
+		slog.Bool("name_configured", c.Name != ""),
+		slog.Bool("password_configured", c.Password != ""),
+		slog.String("log_level", c.LogLevel),
+		slog.Bool("options_configured", len(c.Options) > 0),
+		slog.Bool("tls_enabled", c.IsTLSEnabled()),
+		slog.Bool("tls_attempted", c.IsTLSAttempted()),
 	)
 }
 
@@ -90,10 +94,21 @@ func (c Config) LogValue() slog.Value {
 func ParseDSN(rawURL string) (Config, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return Config{}, fmt.Errorf("parse DATABASE_URL: %w", err)
+		if strings.Contains(err.Error(), "invalid port") {
+			return Config{}, fmt.Errorf("invalid port in DATABASE_URL")
+		}
+		return Config{}, fmt.Errorf("DATABASE_URL is invalid")
 	}
 	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
-		return Config{}, fmt.Errorf("DATABASE_URL scheme must be postgres or postgresql, got %q", u.Scheme)
+		return Config{}, fmt.Errorf("DATABASE_URL scheme must be postgres or postgresql")
+	}
+	if u.Host == "" {
+		return Config{}, fmt.Errorf("DATABASE_URL host is required")
+	}
+
+	dbName := strings.TrimPrefix(u.Path, "/")
+	if dbName == "" {
+		return Config{}, fmt.Errorf("DATABASE_URL database name is required")
 	}
 
 	port := 5432
@@ -111,7 +126,13 @@ func ParseDSN(rawURL string) (Config, error) {
 	}
 
 	var opts map[string]string
-	if sslMode := u.Query().Get("sslmode"); sslMode != "" {
+	query := u.Query()
+	sslModes := query["sslmode"]
+	if len(sslModes) > 1 {
+		return Config{}, fmt.Errorf("DATABASE_URL sslmode query parameter must not be repeated")
+	}
+	if len(sslModes) == 1 && sslModes[0] != "" {
+		sslMode := sslModes[0]
 		opts = map[string]string{"sslmode": sslMode}
 	}
 
@@ -120,7 +141,7 @@ func ParseDSN(rawURL string) (Config, error) {
 		Port:     port,
 		User:     user,
 		Password: password,
-		Name:     strings.TrimPrefix(u.Path, "/"),
+		Name:     dbName,
 		Options:  opts,
 	}, nil
 }
@@ -253,7 +274,7 @@ func (f Fields) Validate(envPrefix string) error {
 	// silently shipping credentials and queries on the wire.
 	normalized := strings.ToLower(sslMode)
 	if normalized == "" || normalized == "disable" {
-		return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full (got %q)", envPrefix, sslMode)
+		return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full", envPrefix)
 	}
 	return config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password)
 }
@@ -266,7 +287,7 @@ func validateDatabaseHost(host string) error {
 	}
 	for _, c := range host {
 		if c == ')' || c == '/' || c == '\'' || c == '\\' || c == '\x00' || c == '@' || c == '\n' || c == '\r' {
-			return fmt.Errorf("DB_HOST contains invalid character %q", c)
+			return fmt.Errorf("DB_HOST contains invalid character")
 		}
 	}
 	return nil
@@ -284,8 +305,8 @@ func validatePostgresSSLMode(mode string) error {
 		return nil
 	case "allow", "prefer":
 		// Both modes silently degrade to plaintext on TLS handshake error.
-		return fmt.Errorf("DB_SSL_MODE=%q admits a plaintext fallback on TLS handshake error; use require, verify-ca, or verify-full", mode)
+		return fmt.Errorf("DB_SSL_MODE admits a plaintext fallback on TLS handshake error; use require, verify-ca, or verify-full")
 	default:
-		return fmt.Errorf("DB_SSL_MODE must be require, verify-ca, or verify-full (got %q)", mode)
+		return fmt.Errorf("DB_SSL_MODE must be require, verify-ca, or verify-full")
 	}
 }

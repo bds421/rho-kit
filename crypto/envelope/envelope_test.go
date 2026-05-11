@@ -3,6 +3,7 @@ package envelope_test
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,12 +17,18 @@ import (
 
 func newKEK(t *testing.T, keyID string) *kekstatic.KEK {
 	t.Helper()
-	mk := make([]byte, 32)
-	_, err := rand.Read(mk)
-	require.NoError(t, err)
+	mk := newMasterKey(t)
 	k, err := kekstatic.New(keyID, mk)
 	require.NoError(t, err)
 	return k
+}
+
+func newMasterKey(t *testing.T) []byte {
+	t.Helper()
+	mk := make([]byte, 32)
+	_, err := rand.Read(mk)
+	require.NoError(t, err)
+	return mk
 }
 
 func TestEncryptDecrypt_RoundTrip(t *testing.T) {
@@ -121,10 +128,8 @@ func TestDecrypt_RejectsWrongVersion(t *testing.T) {
 }
 
 func TestRotation_OldBlobsStillReadable(t *testing.T) {
-	mk1 := make([]byte, 32)
-	_, _ = rand.Read(mk1)
-	mk2 := make([]byte, 32)
-	_, _ = rand.Read(mk2)
+	mk1 := newMasterKey(t)
+	mk2 := newMasterKey(t)
 
 	k, err := kekstatic.New("v1", mk1)
 	require.NoError(t, err)
@@ -154,10 +159,8 @@ func TestRotation_OldBlobsStillReadable(t *testing.T) {
 }
 
 func TestRewrap_RewrapsUnderActiveKey(t *testing.T) {
-	mk1 := make([]byte, 32)
-	_, _ = rand.Read(mk1)
-	mk2 := make([]byte, 32)
-	_, _ = rand.Read(mk2)
+	mk1 := newMasterKey(t)
+	mk2 := newMasterKey(t)
 
 	k, _ := kekstatic.New("v1", mk1)
 	enc := envelope.New(k)
@@ -180,10 +183,8 @@ func TestRewrap_RewrapsUnderActiveKey(t *testing.T) {
 }
 
 func TestRewrap_PreservesAADBinding(t *testing.T) {
-	mk1 := make([]byte, 32)
-	_, _ = rand.Read(mk1)
-	mk2 := make([]byte, 32)
-	_, _ = rand.Read(mk2)
+	mk1 := newMasterKey(t)
+	mk2 := newMasterKey(t)
 
 	k, _ := kekstatic.New("v1", mk1)
 	enc := envelope.New(k)
@@ -224,6 +225,102 @@ func TestRewrap_RejectsMalformedBlob(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestEncryptor_InvalidReceiverReturnsError(t *testing.T) {
+	var nilEncryptor *envelope.Encryptor
+	for name, enc := range map[string]*envelope.Encryptor{
+		"nil":  nilEncryptor,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := enc.Encrypt(context.Background(), []byte("payload"), nil); !errors.Is(err, envelope.ErrInvalidEncryptor) {
+				t.Fatalf("Encrypt error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := enc.Decrypt(context.Background(), []byte("blob"), nil); !errors.Is(err, envelope.ErrInvalidEncryptor) {
+				t.Fatalf("Decrypt error = %v, want ErrInvalidEncryptor", err)
+			}
+			if _, err := enc.Rewrap(context.Background(), []byte("blob")); !errors.Is(err, envelope.ErrInvalidEncryptor) {
+				t.Fatalf("Rewrap error = %v, want ErrInvalidEncryptor", err)
+			}
+		})
+	}
+}
+
+func TestEncryptor_NilContextReturnsError(t *testing.T) {
+	k := newKEK(t, "v1")
+	enc := envelope.New(k)
+	ctx := nilContextForTest()
+	if _, err := enc.Encrypt(ctx, []byte("payload"), nil); !errors.Is(err, envelope.ErrInvalidContext) {
+		t.Fatalf("Encrypt nil context error = %v, want ErrInvalidContext", err)
+	}
+	if _, err := enc.Decrypt(ctx, []byte("blob"), nil); !errors.Is(err, envelope.ErrInvalidContext) {
+		t.Fatalf("Decrypt nil context error = %v, want ErrInvalidContext", err)
+	}
+	if _, err := enc.Rewrap(ctx, []byte("blob")); !errors.Is(err, envelope.ErrInvalidContext) {
+		t.Fatalf("Rewrap nil context error = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestEncrypt_RejectsInvalidKEKOutput(t *testing.T) {
+	for name, fake := range map[string]envelope.KEK{
+		"empty-key-id":     fakeKEK{keyID: "", wrapped: []byte("wrapped")},
+		"control-key-id":   fakeKEK{keyID: "v1\n", wrapped: []byte("wrapped")},
+		"invalid-key-id":   fakeKEK{keyID: string([]byte{'v', 0xff}), wrapped: []byte("wrapped")},
+		"empty-wrapped":    fakeKEK{keyID: "v1", wrapped: nil},
+		"oversize-wrapped": fakeKEK{keyID: "v1", wrapped: make([]byte, 0x1_0000)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			enc := envelope.New(fake)
+			if _, err := enc.Encrypt(context.Background(), []byte("payload"), nil); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestDecrypt_RejectsEmptyHeaderFields(t *testing.T) {
+	k := newKEK(t, "v1")
+	enc := envelope.New(k)
+
+	emptyKeyID := []byte{'E', 'N', 'V', 2, 0, 0, 1, 'x'}
+	if _, err := enc.Decrypt(context.Background(), emptyKeyID, nil); !errors.Is(err, envelope.ErrMalformed) {
+		t.Fatalf("empty keyID error = %v, want ErrMalformed", err)
+	}
+
+	emptyWrapped := []byte{'E', 'N', 'V', 2, 2, 'v', '1', 0, 0, 'b', 'o', 'd', 'y'}
+	if _, err := enc.Decrypt(context.Background(), emptyWrapped, nil); !errors.Is(err, envelope.ErrMalformed) {
+		t.Fatalf("empty wrapped DEK error = %v, want ErrMalformed", err)
+	}
+
+	controlKeyID := []byte{'E', 'N', 'V', 2, 2, 'v', '\n', 0, 1, 'x', 'b', 'o', 'd', 'y'}
+	if _, err := enc.Decrypt(context.Background(), controlKeyID, nil); !errors.Is(err, envelope.ErrMalformed) {
+		t.Fatalf("control keyID error = %v, want ErrMalformed", err)
+	}
+}
+
+func TestDecryptAndRewrap_RejectInvalidDEKLengthWithStableError(t *testing.T) {
+	enc := envelope.New(fakeKEK{keyID: "v1", wrapped: []byte("wrapped"), unwrapDEK: make([]byte, 16)})
+	blob := []byte{'E', 'N', 'V', 2, 2, 'v', '1', 0, 7, 'w', 'r', 'a', 'p', 'p', 'e', 'd'}
+	blob = append(blob, make([]byte, 12)...)
+
+	for name, run := range map[string]func() error{
+		"decrypt": func() error {
+			_, err := enc.Decrypt(context.Background(), blob, nil)
+			return err
+		},
+		"rewrap": func() error {
+			_, err := enc.Rewrap(context.Background(), blob)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := run()
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "16")
+			assert.NotContains(t, err.Error(), "32")
+		})
+	}
+}
+
 // splitForTest mirrors the wire format and returns the body suffix
 // (nonce || ciphertext+tag) so tests can compare it across rewraps.
 func splitForTest(t *testing.T, blob []byte) (magic byte, version byte, header []byte, body []byte) {
@@ -243,16 +340,61 @@ func TestKEKStatic_RemoveActiveKeyReturnsError(t *testing.T) {
 	require.Error(t, k.RemoveKey("v1"))
 }
 
+func TestKEKStatic_NilReceiverReturnsErrors(t *testing.T) {
+	var k *kekstatic.KEK
+	require.Empty(t, k.KeyID())
+
+	_, _, err := k.Wrap(context.Background(), make([]byte, 32))
+	require.Error(t, err)
+	_, err = k.Unwrap(context.Background(), "v1", []byte("wrapped"))
+	require.Error(t, err)
+	require.Error(t, k.AddKey("v1", make([]byte, 32)))
+	require.Error(t, k.Rotate("v1"))
+	require.Error(t, k.RemoveKey("v1"))
+}
+
+func TestKEKStatic_ZeroValueAddKeyDoesNotPanic(t *testing.T) {
+	var k kekstatic.KEK
+	require.NoError(t, k.AddKey("v1", make([]byte, 32)))
+	require.NoError(t, k.Rotate("v1"))
+}
+
+func TestKEKStatic_RejectsOversizedKeyID(t *testing.T) {
+	longKeyID := string(make([]byte, 256))
+	_, err := kekstatic.New(longKeyID, make([]byte, 32))
+	require.Error(t, err)
+
+	k := newKEK(t, "v1")
+	require.Error(t, k.AddKey(longKeyID, make([]byte, 32)))
+}
+
+func TestKEKStatic_RejectsUnsafeKeyID(t *testing.T) {
+	for _, keyID := range []string{"v1\n", string([]byte{'v', 0xff})} {
+		t.Run("new", func(t *testing.T) {
+			_, err := kekstatic.New(keyID, make([]byte, 32))
+			require.Error(t, err)
+		})
+		t.Run("add", func(t *testing.T) {
+			k := newKEK(t, "v1")
+			require.Error(t, k.AddKey(keyID, make([]byte, 32)))
+		})
+	}
+}
+
 func TestKEKStatic_UnknownKeyIDRejected(t *testing.T) {
 	k := newKEK(t, "v1")
-	_, err := k.Unwrap(context.Background(), "v999", []byte("garbage"))
+	_, err := k.Unwrap(context.Background(), "secret-token", []byte("garbage"))
 	assert.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestKEKStatic_RemoveUnknownKeyIDRejected(t *testing.T) {
+	k := newKEK(t, "v1")
+	require.Error(t, k.RemoveKey("v999"))
 }
 
 func TestKEKStatic_KeyIDBoundAsAAD(t *testing.T) {
-	mk := make([]byte, 32)
-	_, err := rand.Read(mk)
-	require.NoError(t, err)
+	mk := newMasterKey(t)
 
 	k, err := kekstatic.New("keyA", mk)
 	require.NoError(t, err)
@@ -277,9 +419,7 @@ func TestKEKStatic_KeyIDBoundAsAAD(t *testing.T) {
 // under the returned keyID succeeds, which proves the keyID and the
 // AAD-bound wrap are mutually consistent.
 func TestKEKStatic_WrapReturnsActiveKeyID(t *testing.T) {
-	mk := make([]byte, 32)
-	_, err := rand.Read(mk)
-	require.NoError(t, err)
+	mk := newMasterKey(t)
 
 	k, err := kekstatic.New("v1", mk)
 	require.NoError(t, err)
@@ -303,10 +443,8 @@ func TestKEKStatic_WrapReturnsActiveKeyID(t *testing.T) {
 // Every produced blob must decrypt — this would fail if envelope.go
 // read keyID separately from the wrap.
 func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
-	mk1 := make([]byte, 32)
-	_, _ = rand.Read(mk1)
-	mk2 := make([]byte, 32)
-	_, _ = rand.Read(mk2)
+	mk1 := newMasterKey(t)
+	mk2 := newMasterKey(t)
 
 	k, err := kekstatic.New("v1", mk1)
 	require.NoError(t, err)
@@ -377,3 +515,25 @@ type mismatchError struct{ want, got string }
 func (e *mismatchError) Error() string {
 	return "plaintext mismatch: want=" + e.want + " got=" + e.got
 }
+
+type fakeKEK struct {
+	keyID     string
+	wrapped   []byte
+	unwrapDEK []byte
+}
+
+func (f fakeKEK) KeyID() string { return f.keyID }
+
+func (f fakeKEK) Wrap(context.Context, []byte) (string, []byte, error) {
+	return f.keyID, f.wrapped, nil
+}
+
+func (f fakeKEK) Unwrap(context.Context, string, []byte) ([]byte, error) {
+	if f.unwrapDEK != nil {
+		return f.unwrapDEK, nil
+	}
+	dek := make([]byte, 32)
+	return dek, nil
+}
+
+func nilContextForTest() context.Context { return nil }

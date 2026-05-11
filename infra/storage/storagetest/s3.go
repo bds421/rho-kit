@@ -58,11 +58,12 @@ func StartS3(t *testing.T, bucket string) s3backend.S3Config {
 		}
 
 		s3Config = s3backend.S3Config{
-			Region:          "us-east-1",
-			Endpoint:        fmt.Sprintf("http://%s:%s", host, port.Port()),
-			ForcePathStyle:  true,
-			AccessKeyID:     "test",
-			SecretAccessKey: "test",
+			Region:                "us-east-1",
+			Endpoint:              fmt.Sprintf("http://%s:%s", host, port.Port()),
+			ForcePathStyle:        true,
+			AllowInsecureEndpoint: true,
+			AccessKeyID:           "localstack-access-key",
+			SecretAccessKey:       "localstack-secret-key-123456",
 		}
 	})
 

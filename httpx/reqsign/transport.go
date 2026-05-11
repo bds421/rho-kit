@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
+	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 )
 
 // SigningTransport wraps an http.RoundTripper to sign all outbound requests.
@@ -18,13 +19,14 @@ type SigningTransport struct {
 }
 
 // NewSigningTransport creates a transport that signs every outbound request.
-// If base is nil, http.DefaultTransport is used.
+// If base is nil, a kit transport with the outbound TLS floor and
+// connection-pool defaults is used.
 func NewSigningTransport(base http.RoundTripper, store signing.KeyStore, opts ...SignOption) *SigningTransport {
 	if store == nil {
 		panic(nilKeyStoreMsg)
 	}
 	if base == nil {
-		base = http.DefaultTransport
+		base = transportdefaults.New(nil, 0, "httpx/reqsign: NewSigningTransport")
 	}
 
 	// Pre-apply options to determine maxBodySize.
@@ -33,13 +35,16 @@ func NewSigningTransport(base http.RoundTripper, store signing.KeyStore, opts ..
 		maxBodySize: MaxBodySize,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("reqsign: transport option must not be nil")
+		}
 		o(&cfg)
 	}
 
 	return &SigningTransport{
 		base:        base,
 		store:       store,
-		opts:        opts,
+		opts:        append([]SignOption(nil), opts...),
 		maxBodySize: cfg.maxBodySize,
 	}
 }
@@ -56,6 +61,9 @@ func NewSigningTransport(base http.RoundTripper, store signing.KeyStore, opts ..
 // 100-Continue replay path works without consuming the caller's
 // reader.
 func (t *SigningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := validateRequest(req); err != nil {
+		return nil, err
+	}
 	body, err := bufferBody(req, t.maxBodySize)
 	if err != nil {
 		return nil, err
@@ -93,13 +101,13 @@ func bufferBody(req *http.Request, max int64) ([]byte, error) {
 	buf, err := io.ReadAll(io.LimitReader(req.Body, max+1))
 	closeErr := req.Body.Close()
 	if err != nil {
-		return nil, fmt.Errorf("reqsign: reading request body: %w", err)
+		return nil, safeWrap("reqsign: read request body failed", err)
 	}
 	if closeErr != nil {
-		return nil, fmt.Errorf("reqsign: closing request body: %w", closeErr)
+		return nil, safeWrap("reqsign: close request body failed", closeErr)
 	}
 	if int64(len(buf)) > max {
-		return nil, fmt.Errorf("reqsign: request body exceeds %d bytes", max)
+		return nil, fmt.Errorf("%w: request body exceeds maximum size", ErrBodyTooLarge)
 	}
 	return buf, nil
 }

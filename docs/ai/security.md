@@ -1,6 +1,6 @@
-# Security — Encryption, Signing, JWT, TLS, SSRF
+# Security — Encryption, Signing, JWT, TLS, SSRF, ASVS
 
-Packages: `crypto/encrypt`, `crypto/signing`, `security/jwtutil`, `crypto/masking`, `security/netutil`, `security/netutil`
+Packages: `crypto/encrypt`, `crypto/signing`, `security/jwtutil`, `security/jwtutil/revocation`, `crypto/masking`, `security/netutil`, `security/mtlsidentity`, `security/asvs`
 
 ## When to Use
 
@@ -9,30 +9,41 @@ Packages: `crypto/encrypt`, `crypto/signing`, `security/jwtutil`, `crypto/maskin
 | Encrypt DB columns (PII, secrets) | `crypto/encrypt` (FieldEncryptor) |
 | Encrypt files at rest | `storage/encryption` (see [storage.md](storage.md)) |
 | Sign/verify webhooks | `crypto/signing` (HMAC-SHA256) |
-| Verify JWTs from Oathkeeper | `security/jwtutil` |
+| Sign service-to-service HTTP requests with replay protection | `httpx/sign` + `httpx/middleware/signedrequest` |
+| Verify JWTs from a JWKS endpoint | `security/jwtutil` |
+| Revoke JWTs after logout | `security/jwtutil/revocation` |
 | mTLS between services | `security/netutil` |
+| Normalize mTLS SAN/CN allowlists | `security/mtlsidentity` |
 | Redact secrets in logs | `crypto/masking` |
 | Prevent SSRF in user-supplied URLs | `security/netutil` |
+| Inspect kit ASVS control manifests | `security/asvs` |
 
 ## Field Encryption (AES-256-GCM)
 
-Encrypt sensitive DB columns with a versioned prefix (`enc:v1:`):
+Encrypt sensitive DB columns with the current versioned prefix (`enc:v3:`).
+Prefer the AAD-bound methods so ciphertext copied between rows, tenants, or
+columns fails authentication.
 
 ```go
 key := []byte(os.Getenv("FIELD_ENCRYPTION_KEY")) // exactly 32 bytes
 enc, err := encrypt.NewFieldEncryptor(key)
 if err != nil { return err }
 
+aad := []byte("users:" + userID + ":ssn")
+
 // Encrypt before storing:
-encrypted, err := enc.Encrypt(user.SSN)
-// "enc:v1:base64(nonce||ciphertext)"
+encrypted, err := enc.EncryptWithContext(user.SSN, aad)
+// "enc:v3:base64(nonce||ciphertext||tag)"
 
 // Decrypt after reading:
-plaintext, err := enc.Decrypt(row.SSN)
-// Values without "enc:v1:" prefix pass through unchanged (migration-safe)
+plaintext, err := enc.DecryptWithContext(row.SSN, aad)
+// Values without a recognised prefix fail closed with ErrPlaintextNotAllowed.
 
-// Nil-safe helper (enc may be nil if encryption is optional):
-result, err := encrypt.EncryptOptional(enc, value)
+// Idempotent re-save path:
+result, err := enc.EncryptIfPlainWithContext(value, aad)
+
+// Nil-safe helper for optional encryption configuration:
+result, err := encrypt.EncryptOptionalWithContext(enc, value, aad)
 ```
 
 ### Low-Level Byte Encryption
@@ -57,9 +68,15 @@ req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
 
 // Receiver:
 secret := []byte("your-webhook-secret")
-ts, _ := strconv.ParseInt(r.Header.Get("X-Timestamp"), 10, 64)
-ok, err := signing.Verify(secret, body, ts, r.Header.Get("X-Signature"), signing.DefaultSignatureMaxAge)
-if err != nil || !ok {
+tsHeaders := r.Header.Values("X-Timestamp")
+sigHeaders := r.Header.Values("X-Signature")
+if len(tsHeaders) != 1 || len(sigHeaders) != 1 {
+    httpx.WriteError(w, 401, "invalid signature")
+    return
+}
+ts, err := strconv.ParseInt(strings.TrimSpace(tsHeaders[0]), 10, 64)
+ok, verifyErr := signing.Verify(secret, body, ts, strings.TrimSpace(sigHeaders[0]), signing.DefaultSignatureMaxAge)
+if err != nil || verifyErr != nil || !ok {
     httpx.WriteError(w, 401, "invalid signature")
     return
 }
@@ -67,30 +84,106 @@ if err != nil || !ok {
 
 `DefaultSignatureMaxAge` = 5 minutes. Constant-time comparison. No nonce — add external nonce store if within-window replay prevention is needed.
 
+## Signed HTTP Requests (Replay-Protected)
+
+Use `httpx/sign` with `httpx/middleware/signedrequest` for machine-to-machine
+HTTP calls that need body, host, path, timestamp, nonce, and selected header
+binding. Verification requires a `NonceStore`; use the in-memory store only for
+single-instance deployments and a shared store such as Redis for multi-replica
+services.
+
+```go
+// Receiver:
+nonceStore := signedrequest.NewMemoryNonceStore(10 * time.Minute) // single instance
+verifyMW := signedrequest.Middleware(keyResolver, nonceStore,
+    signedrequest.WithRequiredHeaders("X-Tenant-ID"),
+)
+
+// Sender:
+base := httpx.NewHTTPClient(10*time.Second, tlsConfig)
+client := &http.Client{
+    Transport: sign.Wrap(base.Transport, hmacKey, "key-2026-05",
+        sign.WithIncludeHeaders("X-Tenant-ID"),
+    ),
+    Timeout: 10 * time.Second,
+}
+```
+
+Pinned canonical headers must be singleton valid HTTP header values. The signer
+and verifier reject duplicate values and control characters in `Content-Type`,
+signature headers, and any headers listed in `WithIncludeHeaders` /
+`WithRequiredHeaders`.
+Nonce generation failures are returned as signing errors so callers can fail the
+request without reusing or downgrading the nonce.
+Key IDs used by `crypto/signing.StaticKeyStore`, `httpx/sign`, and
+`httpx/reqsign` must be non-empty bounded header-safe tokens; rotate by adding
+a new safe ID and making it current, not by changing the bytes under an unsafe
+or ambiguous ID.
+
 ## JWT Verification (JWKS)
 
-Auto-refreshing JWKS provider for Oathkeeper ES256 tokens:
+Auto-refreshing JWKS provider for asymmetric JWT verification:
 
 ```go
 // Setup (in Builder, WithJWT does this automatically):
 provider := jwtutil.NewProvider(
-    cfg.JWKSURL, // default: "https://oathkeeper:4456/.well-known/jwks.json"
+    cfg.JWKSURL,
     httpx.NewHTTPClient(5*time.Second, nil),
     10*time.Minute, // refresh interval
-    jwtutil.WithExpectedIssuer("https://oathkeeper"),
+    jwtutil.WithExpectedIssuer(cfg.JWTIssuer),
+    jwtutil.WithExpectedAudience("my-service"),
 )
-go provider.Run(ctx) // retries initial fetch indefinitely
+go func() {
+    if err := provider.Run(ctx); err != nil {
+        logger.Error("jwt provider stopped", "err", err)
+    }
+}() // retries initial fetch indefinitely; one Run per provider
 
 // In middleware (automatic via auth.RequireUserWithJWT):
-ks := provider.KeySet()
-claims, err := ks.Verify(tokenString, time.Now())
-// claims.Subject, claims.Permissions, claims.Scopes
+claims, err := provider.VerifyContext(r.Context(), tokenString, time.Now())
+// claims.ID, claims.Subject, claims.Permissions, claims.Scopes
 ```
+
+Pass `nil` for the HTTP client to use jwtutil's default JWKS client
+(5s timeout, 64 KiB response-header cap, TLS 1.2+ floor). Use a custom
+client only when you need service-mesh routing or additional transport
+instrumentation. JWKS URLs must be absolute `https://` URLs without
+embedded credentials; local `http://` endpoints require the explicit
+`jwtutil.WithAllowInsecureURL()` opt-in.
+`Provider.Run` returns an error for nil contexts, nil receivers, and duplicate
+starts. Treat providers as one-shot lifecycle components; construct a new
+provider instead of restarting a stopped one.
+
+### JWT Revocation
+
+Use a shared cache backend when a service needs logout / admin-revoke semantics.
+The revocation key is based on `iss` + `jti` and expires with the token.
+
+```go
+revocations := revocation.New(cacheBackend) // data/cache.Cache-compatible
+provider := jwtutil.NewProvider(
+    cfg.JWKSURL,
+    httpx.NewHTTPClient(5*time.Second, nil),
+    10*time.Minute,
+    jwtutil.WithExpectedIssuer(cfg.JWTIssuer),
+    jwtutil.WithExpectedAudience("my-service"),
+    jwtutil.WithRevocationChecker(revocations),
+)
+
+// Logout / admin revoke:
+claims, err := provider.VerifyContext(r.Context(), tokenString, time.Now())
+if err == nil {
+    err = revocations.Revoke(r.Context(), claims)
+}
+```
+
+Tokens must carry a `jti` claim to participate in revocation. When a
+revocation checker is configured, missing `jti` fails closed.
 
 **Env vars:**
 | Variable | Default | Notes |
 |---|---|---|
-| `JWKS_URL` | `https://oathkeeper:4456/.well-known/jwks.json` | |
+| `JWKS_URL` | unset | Required by services that call `WithJWT` or construct a `jwtutil.Provider` |
 | `JWT_CACHE_TTL_MINUTES` | `5` | Key cache TTL |
 
 ### Testing JWTs
@@ -107,9 +200,13 @@ provider := jwtutil.NewProviderWithKeySet(ks) // no HTTP fetch
 tlsCfg := netutil.LoadTLS()
 if err := tlsCfg.Validate(); err != nil { return err }
 
-// Server: TLS 1.3, optional client cert verification
+// Server: TLS 1.3, requires verified client certificates by default
 serverTLS, _ := tlsCfg.ServerTLS()
-srv := httpx.NewServer(addr, handler, httpx.WithTLSConfig(serverTLS))
+
+// Gateway-fronted services can explicitly downgrade to verify-if-present:
+gatewayTLS, _ := tlsCfg.ServerTLS(netutil.WithOptionalClientCert())
+serverLog := slog.NewLogLogger(logger.Handler(), slog.LevelWarn)
+srv := httpx.NewServer(addr, handler, httpx.WithTLSConfig(serverTLS), httpx.WithErrorLog(serverLog))
 
 // Client: presents client cert, verifies server against CA
 clientTLS, _ := tlsCfg.ClientTLS()
@@ -117,6 +214,11 @@ client := httpx.NewHTTPClient(10*time.Second, clientTLS)
 ```
 
 Set all three env vars together. If any is empty, TLS is disabled.
+
+`httpx/middleware/auth` and `grpcx/interceptor` both use
+`security/mtlsidentity` to normalize allowed SAN/CN identities. Use the same
+package for custom transports so DNS SANs, URI SANs, empty entries, and invalid
+identity errors behave consistently across HTTP and gRPC.
 
 ## Masking (Log Sanitization)
 
@@ -148,6 +250,12 @@ resp, err := client.Get("https://" + userHost + "/webhook")
 `IsPrivateIP` covers: RFC 1918, loopback, link-local, CGNAT, Teredo, 6to4, NAT64.
 
 **Important:** Create a new `SSRFSafeTransport` per request — the resolved IP may go stale.
+The transport is pinned to the host it resolved at construction and rejects
+later requests that try to dial a different host through the same client.
+
+Use `SSRFSafeClientFollowRedirects(maxHops, ...)` only when redirects are part
+of the upstream contract. It validates the initial request URL and every
+redirect hop, then re-resolves each dial through the SSRF guard.
 
 ### Dev Mode (localhost / private IPs)
 
@@ -169,7 +277,7 @@ HMAC-signed tokens:
 
 1. On every request, the middleware sets a `__csrf` cookie with a random token
    signed by a server-side HMAC secret (`HttpOnly=false`, `SameSite=Lax`,
-   `Secure` when configured).
+   `Secure=true` by default).
 2. The frontend reads the cookie via JavaScript and sends it back as the
    `X-CSRF-Token` header on mutating requests (POST, PUT, PATCH, DELETE).
 3. The middleware verifies: (a) constant-time comparison of cookie and header
@@ -177,13 +285,20 @@ HMAC-signed tokens:
 4. Safe methods (GET, HEAD, OPTIONS) are exempt.
 
 ```go
-csrfMiddleware := csrf.New(csrf.WithSecure(true)) // Secure=true in production
+csrfMiddleware := csrf.New(
+    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithAllowedOrigins("https://app.example.com"),
+)
 mux.Handle("/api/", csrfMiddleware(apiHandler))
 ```
 
 For additional defense-in-depth, combine with `RequireJSONContentType`:
 ```go
-mux.Handle("/api/", csrf.New(csrf.WithSecure(true))(csrf.RequireJSONContentType(apiHandler)))
+csrfMiddleware := csrf.New(
+    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithAllowedOrigins("https://app.example.com"),
+)
+mux.Handle("/api/", csrfMiddleware(csrf.RequireJSONContentType(apiHandler)))
 ```
 
 The frontend must include the token header on every mutating request:
@@ -198,8 +313,10 @@ fetch('/api/resource', {
 ```
 
 Options:
-- `WithSecret(key)` — HMAC key (min 32 bytes). Auto-generated if not set.
-- `WithSecure(true)` — Set `Secure` flag on cookie (requires HTTPS).
+- `WithSecret(key)` — Required HMAC key (min 32 bytes).
+- `WithDevSecret()` — Local-development-only random per-process secret.
+- `WithSecure(false)` — Explicit local plain-HTTP opt-out; default is `Secure=true`.
+- `WithAllowedOrigins(origin...)` — Origin/Referer allowlist; each entry must be a full `http(s)://host[:port]` origin with no path, query, fragment, userinfo, or trailing slash.
 - `WithCookieName(name)` — Custom cookie name (default: `__csrf`).
 - `WithHeaderName(name)` — Custom header name (default: `X-CSRF-Token`).
 - `WithSameSite(mode)` — SameSite attribute (default: `Lax`).
@@ -212,6 +329,7 @@ Use `csrf.New()` for all new code.
 - **Never** hardcode encryption keys — use env vars (`FIELD_ENCRYPTION_KEY`).
 - **Never** use encryption keys shorter than 32 bytes — `NewFieldEncryptor` rejects them.
 - **Never** log decrypted values — use `crypto/masking` to sanitize before logging.
-- **Never** trust `X-User-Id` header without mTLS verification — use `auth.RequireS2SAuth`.
+- **Never** trust `X-User-Id` / `x-user-id` identity metadata without mTLS verification and an impersonation guard — use `auth.RequireS2SAuth` or `grpcx/interceptor.MTLSAuthUnary`.
 - **Never** reuse `SSRFSafeTransport` across requests — DNS can change.
 - **Never** skip SSRF validation on user-supplied webhook URLs.
+- **Never** use `csrf.RequireCSRF` for new browser flows — use `csrf.New(...)` with a shared secret.

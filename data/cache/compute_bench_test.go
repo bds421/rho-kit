@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -41,12 +42,17 @@ func BenchmarkGetOrCompute_Miss(b *testing.B) {
 
 	ctx := context.Background()
 	fn := func(ctx context.Context) (string, time.Duration, error) {
-		return "value", 0, nil // zero TTL so entry never persists
+		return "value", time.Minute, nil
 	}
 
 	b.ResetTimer()
+	i := 0
 	for b.Loop() {
-		_, _ = cc.GetOrCompute(ctx, "key", fn)
+		key := "key-" + strconv.Itoa(i)
+		i++
+		if _, err := cc.GetOrCompute(ctx, key, fn); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

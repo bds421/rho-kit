@@ -29,8 +29,9 @@ func trackPeak(running, peak *atomic.Int32) {
 // ---------------------------------------------------------------------------
 
 func TestPanicError_ErrorMessage(t *testing.T) {
-	err := &PanicError{Index: 3, Value: "oops", Stack: "fake stack"}
-	assert.Equal(t, "concurrency: goroutine 3 panicked: oops", err.Error())
+	err := &PanicError{Index: 3, RedactedValue: "<redacted panic value: string>", Stack: "fake stack"}
+	assert.Equal(t, "concurrency: goroutine 3 panicked: <redacted panic value: string>", err.Error())
+	assert.NotContains(t, err.Error(), "oops")
 }
 
 func TestFanOut_PanicProducesPanicError(t *testing.T) {
@@ -42,20 +43,23 @@ func TestFanOut_PanicProducesPanicError(t *testing.T) {
 	var pe *PanicError
 	require.ErrorAs(t, err, &pe)
 	assert.Equal(t, 0, pe.Index)
-	assert.Equal(t, "check-type", pe.Value)
+	assert.Equal(t, "<redacted panic value: string>", pe.RedactedValue)
+	assert.NotContains(t, pe.RedactedValue, "check-type")
 	assert.NotEmpty(t, pe.Stack)
 }
 
-func TestPanicError_Unwrap_WithErrorValue(t *testing.T) {
-	inner := errors.New("root cause")
-	pe := &PanicError{Index: 0, Value: inner, Stack: "fake"}
-	assert.Equal(t, inner, pe.Unwrap())
-	assert.ErrorIs(t, pe, inner)
-}
+func TestPanicError_DoesNotExposeRawPanicValue(t *testing.T) {
+	secret := "api-key-super-secret"
+	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { panic(secret) },
+	})
+	require.Error(t, err)
 
-func TestPanicError_Unwrap_WithNonErrorValue(t *testing.T) {
-	pe := &PanicError{Index: 0, Value: "just a string", Stack: "fake"}
-	assert.Nil(t, pe.Unwrap())
+	var pe *PanicError
+	require.ErrorAs(t, err, &pe)
+	assert.NotContains(t, err.Error(), secret)
+	assert.NotContains(t, pe.RedactedValue, secret)
+	assert.Contains(t, pe.RedactedValue, "string")
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +102,7 @@ func TestFanOut_OneFailsCancelsOthers(t *testing.T) {
 	assert.ErrorIs(t, err, errBoom)
 }
 
-func TestFanOut_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
+func TestFanOut_PanicWithErrorDoesNotUnwrapRawError(t *testing.T) {
 	sentinel := errors.New("sentinel")
 	_, err := FanOut(context.Background(), []func(ctx context.Context) (int, error){
 		func(_ context.Context) (int, error) {
@@ -106,7 +110,8 @@ func TestFanOut_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sentinel)
+	assert.False(t, errors.Is(err, sentinel))
+	assert.NotContains(t, err.Error(), sentinel.Error())
 }
 
 func TestFanOut_PanicRecovery(t *testing.T) {
@@ -116,7 +121,8 @@ func TestFanOut_PanicRecovery(t *testing.T) {
 
 	_, err := FanOut(context.Background(), fns)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "kaboom")
+	assert.Contains(t, err.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, err.Error(), "kaboom")
 	assert.Contains(t, err.Error(), "panicked")
 
 	var pe *PanicError
@@ -191,6 +197,31 @@ func TestFanOut_ZeroFunctions(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestFanOut_RejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	_, err := FanOut[int](ctx, []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { return 1, nil },
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilContext)
+}
+
+func TestFanOut_RejectsNilFunctionBeforeStarting(t *testing.T) {
+	var called atomic.Bool
+	_, err := FanOut[int](context.Background(), []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) {
+			called.Store(true)
+			return 1, nil
+		},
+		nil,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilFunction)
+	assert.False(t, called.Load(), "FanOut should fail validation before starting work")
+}
+
 func TestFanOut_SingleFunction(t *testing.T) {
 	fns := []func(ctx context.Context) (string, error){
 		func(_ context.Context) (string, error) { return "only", nil },
@@ -253,7 +284,8 @@ func TestFanOutSettled_PanicRecovery(t *testing.T) {
 	assert.Equal(t, 1, got[0].Value)
 
 	require.Error(t, got[1].Err)
-	assert.Contains(t, got[1].Err.Error(), "settled-boom")
+	assert.Contains(t, got[1].Err.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, got[1].Err.Error(), "settled-boom")
 	assert.Contains(t, got[1].Err.Error(), "panicked")
 
 	var pe *PanicError
@@ -262,7 +294,7 @@ func TestFanOutSettled_PanicRecovery(t *testing.T) {
 	assert.NotEmpty(t, pe.Stack)
 }
 
-func TestFanOutSettled_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
+func TestFanOutSettled_PanicWithErrorDoesNotUnwrapRawError(t *testing.T) {
 	sentinel := errors.New("sentinel")
 	got := FanOutSettled(context.Background(), []func(ctx context.Context) (int, error){
 		func(_ context.Context) (int, error) {
@@ -270,7 +302,8 @@ func TestFanOutSettled_PanicWithError_UnwrapsViaErrorsIs(t *testing.T) {
 		},
 	})
 	require.Len(t, got, 1)
-	assert.ErrorIs(t, got[0].Err, sentinel)
+	assert.False(t, errors.Is(got[0].Err, sentinel))
+	assert.NotContains(t, got[0].Err.Error(), sentinel.Error())
 }
 
 func TestFanOutSettled_ContextCancellation(t *testing.T) {
@@ -333,6 +366,36 @@ func TestFanOutSettled_ZeroFunctions(t *testing.T) {
 	got := FanOutSettled[int](context.Background(), nil)
 	assert.NotNil(t, got)
 	assert.Empty(t, got)
+}
+
+func TestFanOutSettled_ReportsNilContextForEachFunction(t *testing.T) {
+	var ctx context.Context
+	got := FanOutSettled[int](ctx, []func(ctx context.Context) (int, error){
+		func(_ context.Context) (int, error) { return 1, nil },
+		func(_ context.Context) (int, error) { return 2, nil },
+	})
+
+	require.Len(t, got, 2)
+	for i := range got {
+		assert.ErrorIs(t, got[i].Err, ErrNilContext)
+	}
+}
+
+func TestFanOutSettled_ReportsNilFunctionAndRunsOthers(t *testing.T) {
+	var called atomic.Bool
+	got := FanOutSettled[int](context.Background(), []func(ctx context.Context) (int, error){
+		nil,
+		func(_ context.Context) (int, error) {
+			called.Store(true)
+			return 2, nil
+		},
+	})
+
+	require.Len(t, got, 2)
+	assert.ErrorIs(t, got[0].Err, ErrNilFunction)
+	assert.NoError(t, got[1].Err)
+	assert.Equal(t, 2, got[1].Value)
+	assert.True(t, called.Load())
 }
 
 func TestFanOutSettled_SingleFunction(t *testing.T) {
@@ -468,15 +531,10 @@ func TestFanOut_WithMaxGoroutinesZero(t *testing.T) {
 	assert.Len(t, got, 5, "WithMaxGoroutines(0) should behave as unbounded")
 }
 
-func TestFanOut_WithMaxGoroutinesNegative(t *testing.T) {
-	fns := make([]func(ctx context.Context) (int, error), 5)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
-	}
-
-	got, err := FanOut(context.Background(), fns, WithMaxGoroutines(-1))
-	require.NoError(t, err)
-	assert.Len(t, got, 5, "WithMaxGoroutines(-1) should behave as unbounded")
+func TestFanOut_WithMaxGoroutinesNegativePanics(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = WithMaxGoroutines(-1)
+	})
 }
 
 func TestFanOutSettled_WithMaxGoroutinesZero(t *testing.T) {
@@ -489,14 +547,10 @@ func TestFanOutSettled_WithMaxGoroutinesZero(t *testing.T) {
 	assert.Len(t, got, 5, "WithMaxGoroutines(0) should behave as unbounded")
 }
 
-func TestFanOutSettled_WithMaxGoroutinesNegative(t *testing.T) {
-	fns := make([]func(ctx context.Context) (int, error), 5)
-	for i := range fns {
-		fns[i] = func(_ context.Context) (int, error) { return 1, nil }
-	}
-
-	got := FanOutSettled(context.Background(), fns, WithMaxGoroutines(-1))
-	assert.Len(t, got, 5, "WithMaxGoroutines(-1) should behave as unbounded")
+func TestFanOutSettled_WithMaxGoroutinesNegativePanics(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = WithMaxGoroutines(-1)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -588,14 +642,11 @@ func TestBuildConfig_WithMaxGoroutinesZeroOptsOut(t *testing.T) {
 	}
 }
 
-func TestBuildConfig_WithMaxGoroutinesNegativeIgnored(t *testing.T) {
+func TestWithMaxGoroutinesNegativePanics(t *testing.T) {
 	t.Parallel()
-	cfg := buildConfig([]FanOutOption{WithMaxGoroutines(-5)})
-	want := runtime.GOMAXPROCS(0) * 2
-	if cfg.maxGoroutines != want {
-		t.Fatalf("negative WithMaxGoroutines should be ignored; got %d, want default %d",
-			cfg.maxGoroutines, want)
-	}
+	assert.Panics(t, func() {
+		_ = WithMaxGoroutines(-5)
+	})
 }
 
 func TestBuildConfig_WithMaxGoroutinesPositiveOverridesDefault(t *testing.T) {
@@ -604,4 +655,10 @@ func TestBuildConfig_WithMaxGoroutinesPositiveOverridesDefault(t *testing.T) {
 	if cfg.maxGoroutines != 7 {
 		t.Fatalf("WithMaxGoroutines(7) = %d, want 7", cfg.maxGoroutines)
 	}
+}
+
+func TestBuildConfig_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = buildConfig([]FanOutOption{nil})
+	})
 }

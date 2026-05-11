@@ -2,12 +2,26 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type fakeMessageConsumer struct {
+	err error
+}
+
+func (f fakeMessageConsumer) Consume(context.Context, Binding, Handler) error {
+	return f.err
+}
+
+func (f fakeMessageConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
+	return f.err
+}
 
 // --- StartConsumers validation ---
 
@@ -21,11 +35,13 @@ func TestStartConsumers_MissingHandler_ReturnsError(t *testing.T) {
 		// "user.updated" handler is missing
 	}
 
-	err := StartConsumers(context.Background(), nil, bindings, handlers, nil, discardLogger(), nil)
+	var wg sync.WaitGroup
+	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "user.updated")
 	assert.Contains(t, err.Error(), "no handlers registered")
+	assert.Contains(t, err.Error(), "count=1")
+	assert.NotContains(t, err.Error(), "user.updated")
 }
 
 func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
@@ -38,11 +54,58 @@ func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
 		"a.event": func(_ context.Context, _ Delivery) error { return nil },
 	}
 
-	err := StartConsumers(context.Background(), nil, bindings, handlers, nil, discardLogger(), nil)
+	var wg sync.WaitGroup
+	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "b.event")
-	assert.Contains(t, err.Error(), "c.event")
+	assert.Contains(t, err.Error(), "count=2")
+	assert.NotContains(t, err.Error(), "b.event")
+	assert.NotContains(t, err.Error(), "c.event")
+}
+
+func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
+	bindings := []Binding{
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+	}
+	handlers := map[string]Handler{
+		"order.created": nil,
+	}
+
+	var wg sync.WaitGroup
+	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil handlers")
+	assert.Contains(t, err.Error(), "count=1")
+	assert.NotContains(t, err.Error(), "order.created")
+}
+
+func TestStartConsumers_NilConsumer_ReturnsError(t *testing.T) {
+	bindings := []Binding{
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+	}
+	handlers := map[string]Handler{
+		"order.created": func(_ context.Context, _ Delivery) error { return nil },
+	}
+
+	var wg sync.WaitGroup
+	err := StartConsumers(context.Background(), nil, bindings, handlers, &wg, discardLogger(), nil)
+
+	assert.ErrorIs(t, err, ErrInvalidConsumer)
+}
+
+func TestStartConsumers_NilWaitGroup_ReturnsError(t *testing.T) {
+	bindings := []Binding{
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+	}
+	handlers := map[string]Handler{
+		"order.created": func(_ context.Context, _ Delivery) error { return nil },
+	}
+
+	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, nil, discardLogger(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WaitGroup")
 }
 
 func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
@@ -53,16 +116,12 @@ func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
 	}
 
-	// We need a real WaitGroup and Consumer for the goroutine launch,
-	// but the goroutine will call Consumer.Consume which needs a real connection.
-	// Instead, we test that validation passes (no error) with a nil consumer.
-	// The goroutine will panic, but we verify the shutdown function is called.
 	var shutdownCalled bool
 	var wg sync.WaitGroup
 
 	err := StartConsumers(
 		context.Background(),
-		nil, // nil consumer will panic in the goroutine
+		fakeMessageConsumer{},
 		bindings,
 		handlers,
 		&wg,
@@ -72,10 +131,9 @@ func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
 
 	require.NoError(t, err, "validation should pass when all handlers are present")
 
-	// Wait for the goroutine to complete (it will panic and recover).
 	wg.Wait()
 
-	assert.True(t, shutdownCalled, "shutdown function should be called after panic recovery")
+	assert.False(t, shutdownCalled, "shutdown function should not be called for a clean consumer return")
 }
 
 func TestStartConsumers_PanicRecovery_NilShutdownFn(t *testing.T) {
@@ -91,7 +149,7 @@ func TestStartConsumers_PanicRecovery_NilShutdownFn(t *testing.T) {
 	// Nil shutdownFn should not panic on recovery.
 	err := StartConsumers(
 		context.Background(),
-		nil,
+		panicConsumer{},
 		bindings,
 		handlers,
 		&wg,
@@ -101,6 +159,41 @@ func TestStartConsumers_PanicRecovery_NilShutdownFn(t *testing.T) {
 
 	require.NoError(t, err)
 	wg.Wait() // goroutine panics, recovers, and does not call nil shutdownFn
+}
+
+type panicConsumer struct{}
+
+func (panicConsumer) Consume(context.Context, Binding, Handler) error {
+	panic("boom")
+}
+
+func (panicConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
+	panic("boom")
+}
+
+func TestStartConsumers_ConsumeErrorCallsShutdown(t *testing.T) {
+	bindings := []Binding{
+		{BindingSpec: BindingSpec{RoutingKey: "order.created", Queue: "orders"}},
+	}
+	handlers := map[string]Handler{
+		"order.created": func(_ context.Context, _ Delivery) error { return nil },
+	}
+
+	var shutdownCalled atomic.Bool
+	var wg sync.WaitGroup
+	err := StartConsumers(
+		context.Background(),
+		fakeMessageConsumer{err: errors.New("consumer failed")},
+		bindings,
+		handlers,
+		&wg,
+		discardLogger(),
+		func() { shutdownCalled.Store(true) },
+	)
+
+	require.NoError(t, err)
+	wg.Wait()
+	assert.True(t, shutdownCalled.Load(), "shutdown function should be called after live consumer failure")
 }
 
 func TestStartConsumers_EmptyBindings_NoError(t *testing.T) {

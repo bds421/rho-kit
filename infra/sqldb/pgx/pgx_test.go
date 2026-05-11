@@ -2,16 +2,151 @@ package pgx
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+var _ slog.LogValuer = Config{}
+
+type listenContextKey struct{}
+
+func TestConfig_LogValue_RedactsURLDSN(t *testing.T) {
+	cfg := Config{
+		DSN:                            "postgres://token-user:secret-pass@db.example.com/app?sslmode=verify-full&password=query-secret",
+		AllowSSLModeRequire:            true,
+		MaxConns:                       10,
+		HealthCheckPeriod:              5,
+		MaxConnLifetime:                7,
+		AllowPlaintextLoopbackForTests: true,
+	}
+
+	rendered := cfg.LogValue().String()
+
+	assert.Contains(t, rendered, "dsn_configured=true")
+	assert.NotContains(t, rendered, "token-user")
+	assert.NotContains(t, rendered, "secret-pass")
+	assert.NotContains(t, rendered, "query-secret")
+	assert.NotContains(t, rendered, "db.example.com")
+	assert.NotContains(t, rendered, "/app")
+}
+
+func TestConfig_LogValue_RedactsKeywordValueDSN(t *testing.T) {
+	cfg := Config{DSN: "host=db.example.com user=app password=secret-pass dbname=app sslmode=verify-full"}
+
+	rendered := cfg.LogValue().String()
+
+	assert.Contains(t, rendered, "dsn_configured=true")
+	assert.NotContains(t, rendered, "secret-pass")
+	assert.NotContains(t, rendered, "db.example.com")
+	assert.NotContains(t, rendered, "dbname=app")
+}
+
 func TestConnect_RejectsEmptyDSN(t *testing.T) {
 	_, err := Connect(context.Background(), Config{})
 	require.Error(t, err)
+}
+
+func TestConnect_RejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	_, err := Connect(ctx, Config{DSN: "postgres://user:pass@localhost:5432/db?sslmode=require"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestPool_InvalidReceiverSafety(t *testing.T) {
+	for name, pool := range map[string]*Pool{
+		"nil":  nil,
+		"zero": &Pool{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Nil(t, pool.Pool())
+			assert.NoError(t, pool.Close())
+
+			assert.Error(t, pool.Ping(context.Background()))
+			_, err := pool.Copy(context.Background(), "table", []string{"id"}, [][]any{{1}})
+			assert.Error(t, err)
+
+			ch, errCh, err := pool.Listen(context.Background(), "events")
+			assert.Nil(t, ch)
+			assert.Nil(t, errCh)
+			assert.Error(t, err)
+
+			assert.Error(t, pool.Notify(context.Background(), "events", "payload"))
+		})
+	}
+}
+
+func TestPool_CopyRejectsInvalidColumnsBeforePoolUse(t *testing.T) {
+	pool := &Pool{pool: &pgxpool.Pool{}}
+
+	_, err := pool.Copy(context.Background(), "items", []string{"secret-token"}, [][]any{{1}})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid identifier")
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestPool_CopyRejectsTooManyColumnsBeforePoolUse(t *testing.T) {
+	pool := &Pool{pool: &pgxpool.Pool{}}
+	columns := make([]string, MaxCopyColumns+1)
+	for i := range columns {
+		columns[i] = "id"
+	}
+
+	_, err := pool.Copy(context.Background(), "items", columns, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "column count")
+}
+
+func TestPool_CopyRejectsTooManyRowsBeforePoolUse(t *testing.T) {
+	pool := &Pool{pool: &pgxpool.Pool{}}
+	rows := make([][]any, MaxCopyRows+1)
+	for i := range rows {
+		rows[i] = []any{i}
+	}
+
+	_, err := pool.Copy(context.Background(), "items", []string{"id"}, rows)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row count")
+}
+
+func TestPool_CopyRejectsRowWidthMismatchBeforePoolUse(t *testing.T) {
+	pool := &Pool{pool: &pgxpool.Pool{}}
+
+	_, err := pool.Copy(context.Background(), "items", []string{"id", "name"}, [][]any{{1}})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row width")
+}
+
+func TestListenCleanupContextPreservesValuesAfterCancellation(t *testing.T) {
+	parent := context.WithValue(context.Background(), listenContextKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+
+	cleanupCtx, cleanupCancel := listenCleanupContext(ctx, time.Second)
+	defer cleanupCancel()
+
+	assert.Equal(t, "trace-123", cleanupCtx.Value(listenContextKey{}))
+	assert.NoError(t, cleanupCtx.Err())
+}
+
+func TestPool_ListenRejectsNilContext(t *testing.T) {
+	pool := &Pool{pool: &pgxpool.Pool{}}
+	var ctx context.Context
+	ch, errCh, err := pool.Listen(ctx, "events")
+	assert.Nil(t, ch)
+	assert.Nil(t, errCh)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
 }
 
 func parseForTest(t *testing.T, dsn string) *pgxpool.Config {
@@ -155,10 +290,12 @@ func TestConnect_RejectsMultiHostURLFormFallback(t *testing.T) {
 }
 
 func TestRequireLoopbackHost_RejectsNonLoopback(t *testing.T) {
-	for _, host := range []string{"10.0.0.5", "8.8.8.8", "evil.com", "0.0.0.0", "192.168.1.1"} {
+	for _, host := range []string{"10.0.0.5", "8.8.8.8", "evil.com", "0.0.0.0", "192.168.1.1", "secret-token.example"} {
 		t.Run(host, func(t *testing.T) {
 			err := requireLoopbackHost(host)
 			assert.Error(t, err, "host %q must be rejected", host)
+			assert.NotContains(t, err.Error(), host)
+			assert.NotContains(t, err.Error(), "secret-token")
 		})
 	}
 }
@@ -182,6 +319,10 @@ func TestParseCopyIdentifier(t *testing.T) {
 		{name: "empty middle", in: ".", wantErr: true},
 		{name: "embedded quote", in: "public.\"users", wantErr: true},
 		{name: "embedded null byte", in: "public.us\x00ers", wantErr: true},
+		{name: "semicolon", in: "public.users;drop", wantErr: true},
+		{name: "space", in: "public.user table", wantErr: true},
+		{name: "starts digit", in: "public.1users", wantErr: true},
+		{name: "too long", in: strings.Repeat("x", maxCopyIdentifierBytes+1), wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +335,12 @@ func TestParseCopyIdentifier(t *testing.T) {
 			assert.Equal(t, tc.want, []string(got))
 		})
 	}
+}
+
+func TestParseCopyIdentifier_ErrorDoesNotEchoTableName(t *testing.T) {
+	_, err := parseCopyIdentifier("secret-token.schema.table")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 // TestRequireLoopbackHost_RejectsHostBypass covers the N-2 finding:

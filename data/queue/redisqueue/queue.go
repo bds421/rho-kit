@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
+	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
@@ -25,13 +26,26 @@ import (
 // escaping concerns. 1..255 bytes; non-empty and bounded.
 var messageIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
+var newQueueConsumerID = uuid.NewV7
+
 // validateMessageID enforces messageIDPattern. Returned as an error so
 // callers (Enqueue, EnqueueBatch) can surface the failure without panicking.
 func validateMessageID(id string) error {
 	if !messageIDPattern.MatchString(id) {
-		return fmt.Errorf("message ID must match %s (got %q)", messageIDPattern, id)
+		return fmt.Errorf("%w: message ID must match %s", kitqueue.ErrInvalidMessage, messageIDPattern)
 	}
 	return nil
+}
+
+func validateMessage(msg Message, maxPayloadSize int) error {
+	if err := kitqueue.ValidateMessage(kitqueue.Message{
+		ID:      msg.ID,
+		Type:    msg.Type,
+		Payload: msg.Payload,
+	}, maxPayloadSize); err != nil {
+		return err
+	}
+	return validateMessageID(msg.ID)
 }
 
 const (
@@ -41,8 +55,7 @@ const (
 
 	// defaultMaxPayloadSize is the default max message size (1 MiB).
 	// Override with WithMaxPayloadSize. Set to 0 to disable the limit.
-	// Kept in sync with stream.defaultStreamMaxPayloadSize.
-	defaultMaxPayloadSize = 1 << 20 // 1 MiB
+	defaultMaxPayloadSize = kitqueue.DefaultMaxPayloadBytes
 
 	// defaultHeartbeatTTL is how long an active consumer's heartbeat key
 	// lives in Redis before expiring. Recovery treats a missing heartbeat as
@@ -69,6 +82,9 @@ type Message struct {
 
 // NewMessage creates a Message with a UUID v7 ID and current timestamp.
 func NewMessage(msgType string, payload any) (Message, error) {
+	if err := kitqueue.ValidateMessage(kitqueue.Message{Type: msgType}, 0); err != nil {
+		return Message{}, err
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return Message{}, fmt.Errorf("marshal payload: %w", err)
@@ -84,6 +100,14 @@ func NewMessage(msgType string, payload any) (Message, error) {
 		Timestamp: time.Now().UTC(),
 		Attempt:   1,
 	}, nil
+}
+
+// Clone returns a copy of m with its mutable payload detached.
+func (m Message) Clone() Message {
+	if m.Payload != nil {
+		m.Payload = append(m.Payload[:0:0], m.Payload...)
+	}
+	return m
 }
 
 // Handler processes a single queue message.
@@ -194,20 +218,24 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.messagesEnqueued)
-	promutil.RegisterCollector(reg, m.messagesProcessed)
-	promutil.RegisterCollector(reg, m.messagesFailed)
-	promutil.RegisterCollector(reg, m.messagesDeadLettered)
-	promutil.RegisterCollector(reg, m.processingDuration)
-	promutil.RegisterCollector(reg, m.messagesRetried)
-	promutil.RegisterCollector(reg, m.ackNotFound)
-	promutil.RegisterCollector(reg, m.processingDepth)
-	promutil.RegisterCollector(reg, m.queueDepth)
+	m.messagesEnqueued = promutil.MustRegisterOrGet(reg, m.messagesEnqueued)
+	m.messagesProcessed = promutil.MustRegisterOrGet(reg, m.messagesProcessed)
+	m.messagesFailed = promutil.MustRegisterOrGet(reg, m.messagesFailed)
+	m.messagesDeadLettered = promutil.MustRegisterOrGet(reg, m.messagesDeadLettered)
+	m.processingDuration = promutil.MustRegisterOrGet(reg, m.processingDuration)
+	m.messagesRetried = promutil.MustRegisterOrGet(reg, m.messagesRetried)
+	m.ackNotFound = promutil.MustRegisterOrGet(reg, m.ackNotFound)
+	m.processingDepth = promutil.MustRegisterOrGet(reg, m.processingDepth)
+	m.queueDepth = promutil.MustRegisterOrGet(reg, m.queueDepth)
 
 	return m
 }
 
 var defaultMetrics = NewMetrics(nil)
+
+func queueMetricLabel(queue string) string {
+	return promutil.OpaqueLabelValue("queue", queue)
+}
 
 // Queue provides reliable LIST-based FIFO queuing using BLMOVE.
 //
@@ -294,22 +322,24 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithBlockTimeout sets how long BLMOVE blocks waiting for messages.
-// Values <= 0 are ignored; the default is used instead.
+// The duration must be positive.
 func WithBlockTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("redisqueue: WithBlockTimeout requires a positive duration")
+	}
 	return func(q *Queue) {
-		if d > 0 {
-			q.blockTimeout = d
-		}
+		q.blockTimeout = d
 	}
 }
 
 // WithMaxRetries sets the maximum processing attempts before dead-lettering.
-// Values < 0 are ignored; the default is used instead.
+// Negative values panic. Zero dead-letters on the first handler error.
 func WithMaxRetries(n int) Option {
+	if n < 0 {
+		panic("redisqueue: WithMaxRetries requires n >= 0")
+	}
 	return func(q *Queue) {
-		if n >= 0 {
-			q.maxRetries = n
-		}
+		q.maxRetries = n
 	}
 }
 
@@ -319,7 +349,7 @@ func WithMaxRetries(n int) Option {
 func WithProcessingQueue(name string) Option {
 	return func(q *Queue) {
 		if err := redis.ValidateName(name, "processing queue"); err != nil {
-			panic("redis: " + err.Error())
+			panic("redisqueue: invalid processing queue name")
 		}
 		q.processingQueue = name
 	}
@@ -331,7 +361,7 @@ func WithProcessingQueue(name string) Option {
 func WithDeadLetterQueue(name string) Option {
 	return func(q *Queue) {
 		if err := redis.ValidateName(name, "dead-letter queue"); err != nil {
-			panic("redis: " + err.Error())
+			panic("redisqueue: invalid dead-letter queue name")
 		}
 		q.deadLetterQueue = name
 	}
@@ -339,23 +369,25 @@ func WithDeadLetterQueue(name string) Option {
 
 // WithDeadLetterMaxLen sets the maximum number of entries in the dead-letter
 // queue. When exceeded, the oldest entries are trimmed. 0 means no limit.
-// Negative values are ignored. Default is 10000.
+// Negative values panic. Default is 10000.
 func WithDeadLetterMaxLen(n int64) Option {
+	if n < 0 {
+		panic("redisqueue: WithDeadLetterMaxLen requires n >= 0")
+	}
 	return func(q *Queue) {
-		if n >= 0 {
-			q.deadLetterMax = n
-		}
+		q.deadLetterMax = n
 	}
 }
 
 // WithMaxPayloadSize sets the maximum message size in bytes. Messages exceeding
 // this limit are rejected at enqueue time. Default is 1 MiB. Set to 0 to
-// disable the limit entirely (use with caution). Negative values are ignored.
+// disable the limit entirely. Negative values panic.
 func WithMaxPayloadSize(n int) Option {
+	if n < 0 {
+		panic("redisqueue: WithMaxPayloadSize requires n >= 0")
+	}
 	return func(q *Queue) {
-		if n >= 0 {
-			q.maxPayloadSize = n
-		}
+		q.maxPayloadSize = n
 	}
 }
 
@@ -378,7 +410,7 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // suffix-stripping logic.
 func WithConsumerID(id string) Option {
 	if id != "" && !validConsumerID(id) {
-		panic(fmt.Sprintf("redisqueue: WithConsumerID requires a token of [A-Za-z0-9_-]{1,%d} (got %q)", maxConsumerIDLen, id))
+		panic("redisqueue: WithConsumerID requires a safe bounded token")
 	}
 	return func(q *Queue) {
 		if id != "" {
@@ -396,10 +428,10 @@ func validConsumerID(id string) bool {
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
-		if !((c >= 'A' && c <= 'Z') ||
-			(c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') ||
-			c == '_' || c == '-') {
+		if (c < 'A' || c > 'Z') &&
+			(c < 'a' || c > 'z') &&
+			(c < '0' || c > '9') &&
+			c != '_' && c != '-' {
 			return false
 		}
 	}
@@ -407,26 +439,28 @@ func validConsumerID(id string) bool {
 }
 
 // WithHeartbeatTTL sets the lifetime of the per-consumer heartbeat key
-// used by recovery to detect dead consumers. Values <= 0 are ignored.
-// Default is 60s. The configured interval must be at most TTL/2 so a
-// single missed refresh does not immediately expire the key — [NewQueue]
+// used by recovery to detect dead consumers. Default is 60s. The duration
+// must be positive. The configured interval must be at most TTL/2 so a
+// single missed refresh does not immediately expire the key; [NewQueue]
 // panics otherwise.
 func WithHeartbeatTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("redisqueue: WithHeartbeatTTL requires a positive duration")
+	}
 	return func(q *Queue) {
-		if d > 0 {
-			q.heartbeatTTL = d
-		}
+		q.heartbeatTTL = d
 	}
 }
 
 // WithHeartbeatInterval sets how often the Process loop refreshes its
-// heartbeat key. Values <= 0 are ignored. Default is 20s. Must be at
+// heartbeat key. Default is 20s. The duration must be positive. Must be at
 // most TTL/2 (see [WithHeartbeatTTL]); [NewQueue] panics otherwise.
 func WithHeartbeatInterval(d time.Duration) Option {
+	if d <= 0 {
+		panic("redisqueue: WithHeartbeatInterval requires a positive duration")
+	}
 	return func(q *Queue) {
-		if d > 0 {
-			q.heartbeatInterval = d
-		}
+		q.heartbeatInterval = d
 	}
 }
 
@@ -440,20 +474,27 @@ func WithRecoveryEnabled(enabled bool) Option {
 	}
 }
 
-// NewQueue creates a LIST-based queue. Panics if client is nil — a miswired
-// queue would otherwise dereference nil on the first Push or Pop.
+// NewQueue creates a LIST-based queue. Panics if client is nil, options are
+// invalid, or the auto-generated consumer ID cannot be generated. Use
+// [NewQueueE] when the caller wants UUID generation failures returned.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
+	q, err := NewQueueE(client, opts...)
+	if err != nil {
+		panic("redisqueue: NewQueue failed")
+	}
+	return q
+}
+
+// NewQueueE creates a LIST-based queue and returns UUID generation failures as
+// errors. Configuration errors still panic because they are startup
+// misconfiguration, matching [NewQueue].
+func NewQueueE(client goredis.UniversalClient, opts ...Option) (*Queue, error) {
 	if client == nil {
 		panic("redisqueue: NewQueue requires a non-nil Redis client")
-	}
-	consumerID, err := uuid.NewV7()
-	if err != nil {
-		panic("redis: failed to generate consumer ID: " + err.Error())
 	}
 	q := &Queue{
 		client:            client,
 		logger:            slog.Default(),
-		consumerID:        consumerID.String(),
 		blockTimeout:      5 * time.Second,
 		maxRetries:        5,
 		deadLetterMax:     defaultDeadLetterMaxLen,
@@ -465,7 +506,17 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 		activeQueues:      make(map[string]bool),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("redisqueue: NewQueue option must not be nil")
+		}
 		o(q)
+	}
+	if q.consumerID == "" {
+		consumerID, err := newQueueConsumerID()
+		if err != nil {
+			return nil, fmt.Errorf("generate consumer ID: %w", err)
+		}
+		q.consumerID = consumerID.String()
 	}
 
 	// Heartbeat-ratio guard: enforce interval <= TTL/2 so one missed refresh
@@ -474,25 +525,46 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	// outright bug; interval > TTL/2 is the unsafe edge where a single
 	// transient Redis stall causes false-dead reclaim under normal load.
 	if q.heartbeatTTL <= 0 {
-		panic(fmt.Sprintf("redisqueue: heartbeat TTL must be positive (got %s)", q.heartbeatTTL))
+		panic("redisqueue: heartbeat TTL must be positive")
 	}
 	if q.heartbeatInterval <= 0 {
-		panic(fmt.Sprintf("redisqueue: heartbeat interval must be positive (got %s)", q.heartbeatInterval))
+		panic("redisqueue: heartbeat interval must be positive")
 	}
-	if q.heartbeatInterval*2 > q.heartbeatTTL {
-		panic(fmt.Sprintf(
-			"redisqueue: heartbeat interval %s must be at most TTL/2 (TTL=%s); a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim",
-			q.heartbeatInterval, q.heartbeatTTL,
-		))
+	if q.heartbeatInterval > q.heartbeatTTL/2 {
+		panic("redisqueue: heartbeat interval must be at most TTL/2; a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim")
 	}
 
-	return q
+	return q, nil
+}
+
+func (q *Queue) ready() error {
+	if q == nil ||
+		q.client == nil ||
+		q.logger == nil ||
+		q.metrics == nil ||
+		!validConsumerID(q.consumerID) ||
+		q.blockTimeout <= 0 ||
+		q.maxRetries < 0 ||
+		q.deadLetterMax < 0 ||
+		q.maxPayloadSize < 0 ||
+		q.heartbeatTTL <= 0 ||
+		q.heartbeatInterval <= 0 ||
+		q.heartbeatInterval > q.heartbeatTTL/2 ||
+		q.activeQueues == nil {
+		return kitqueue.ErrInvalidQueue
+	}
+	return nil
 }
 
 // ConsumerID returns the unique identifier for this Queue instance. Stable
 // for the lifetime of the Queue; included in processing-list naming so
 // crash recovery scopes itself to this consumer's in-flight messages.
-func (q *Queue) ConsumerID() string { return q.consumerID }
+func (q *Queue) ConsumerID() string {
+	if q == nil {
+		return ""
+	}
+	return q.consumerID
+}
 
 // Enqueue adds a message to the queue (LPUSH — left side).
 // Returns an error if the serialized message exceeds the configured max
@@ -502,10 +574,13 @@ func (q *Queue) ConsumerID() string { return q.consumerID }
 // arbitrary bytes (quotes, control chars) leaves the door open for ack
 // misses and processing-list corruption.
 func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
+	if err := q.ready(); err != nil {
+		return err
+	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return err
 	}
-	if err := validateMessageID(msg.ID); err != nil {
+	if err := validateMessage(msg, q.maxPayloadSize); err != nil {
 		return err
 	}
 	data, err := json.Marshal(msg)
@@ -513,12 +588,12 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 	if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
-		return fmt.Errorf("message size %d exceeds max payload size %d", len(data), q.maxPayloadSize)
+		return &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize}
 	}
 	if err := q.client.LPush(ctx, queue, data).Err(); err != nil {
-		return fmt.Errorf("lpush %s: %w", queue, err)
+		return fmt.Errorf("lpush: %w", err)
 	}
-	q.metrics.messagesEnqueued.WithLabelValues(queue).Inc()
+	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Inc()
 	return nil
 }
 
@@ -528,16 +603,22 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 // some messages may have been enqueued. Callers should treat a pipeline
 // error as "unknown state" and rely on idempotent handlers for deduplication.
 func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) error {
+	if err := q.ready(); err != nil {
+		return err
+	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return err
 	}
 	if len(msgs) == 0 {
 		return nil
 	}
+	if len(msgs) > kitqueue.MaxBatchMessages {
+		return kitqueue.ErrBatchTooLarge
+	}
 
 	for i, msg := range msgs {
-		if err := validateMessageID(msg.ID); err != nil {
-			return fmt.Errorf("message [%d] %w", i, err)
+		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
+			return fmt.Errorf("message [%d]: %w", i, err)
 		}
 	}
 
@@ -548,7 +629,7 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 			return fmt.Errorf("marshal message [%d]: %w", i, err)
 		}
 		if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
-			return fmt.Errorf("message [%d] size %d exceeds max payload size %d", i, len(data), q.maxPayloadSize)
+			return fmt.Errorf("message [%d]: %w", i, &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize})
 		}
 		pipe.LPush(ctx, queue, data)
 	}
@@ -563,11 +644,11 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 			}
 		}
 		if succeeded > 0 {
-			q.metrics.messagesEnqueued.WithLabelValues(queue).Add(float64(succeeded))
+			q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Add(float64(succeeded))
 		}
 		return fmt.Errorf("pipeline exec: %w", err)
 	}
-	q.metrics.messagesEnqueued.WithLabelValues(queue).Add(float64(len(msgs)))
+	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Add(float64(len(msgs)))
 	return nil
 }
 
@@ -580,8 +661,11 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 // Panics if queue name is empty or handler is nil (programming errors —
 // fail fast at startup rather than on the first message).
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
+	if err := q.ready(); err != nil {
+		panic("redisqueue: queue is invalid")
+	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
-		panic("redis: " + err.Error())
+		panic("redisqueue: invalid queue name")
 	}
 	if handler == nil {
 		panic("redisqueue: Queue.Process requires a non-nil handler")
@@ -591,7 +675,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	q.activeQueuesMu.Lock()
 	if q.activeQueues[queue] {
 		q.activeQueuesMu.Unlock()
-		panic(fmt.Sprintf("redis: queue %q already has an active Process goroutine", queue))
+		panic("redisqueue: queue already has an active Process goroutine")
 	}
 	q.activeQueues[queue] = true
 	q.activeQueuesMu.Unlock()
@@ -710,7 +794,7 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("blmove %s: %w", queue, err)
+			return fmt.Errorf("blmove: %w", err)
 		}
 
 		q.handleMessage(ctx, result, processingQ, queue, deadQ, handler)
@@ -720,12 +804,15 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 
 // Len returns the number of messages in the queue.
 func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
+	if err := q.ready(); err != nil {
+		return 0, err
+	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return 0, err
 	}
 	n, err := q.client.LLen(ctx, queue).Result()
 	if err != nil {
-		return 0, fmt.Errorf("llen %s: %w", queue, err)
+		return 0, fmt.Errorf("llen: %w", err)
 	}
 	return n, nil
 }

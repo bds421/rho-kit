@@ -72,6 +72,10 @@ func NewFieldEncryptor(key []byte) (*FieldEncryptor, error) {
 // failures instead of data leaks.
 var ErrPlaintextNotAllowed = fmt.Errorf("encrypt: ciphertext missing %q prefix", encryptedV3Prefix)
 
+// ErrInvalidEncryptor is returned when a FieldEncryptor was not
+// constructed by NewFieldEncryptor.
+var ErrInvalidEncryptor = fmt.Errorf("encrypt: FieldEncryptor is not initialized")
+
 // Encrypt encrypts a plaintext string and returns a base64-encoded
 // ciphertext prefixed with "enc:v3:". Empty strings are returned
 // as-is. The output contains only printable ASCII, so it stores
@@ -97,6 +101,9 @@ func (e *FieldEncryptor) Encrypt(plaintext string) (string, error) {
 //
 // AAD nil is equivalent to [FieldEncryptor.Encrypt] (no binding).
 func (e *FieldEncryptor) EncryptWithContext(plaintext string, aad []byte) (string, error) {
+	if err := e.validate(); err != nil {
+		return "", err
+	}
 	if plaintext == "" {
 		return "", nil
 	}
@@ -108,38 +115,69 @@ func (e *FieldEncryptor) EncryptWithContext(plaintext string, aad []byte) (strin
 }
 
 // EncryptIfPlain encrypts plaintext UNLESS it appears to already be
-// valid ciphertext under the current key. Use this for idempotent
-// "re-save the row" code paths where the same value may be passed
-// through the encryptor repeatedly. Unlike a naive
-// "Encrypt-with-prefix-shortcut", this verifies the candidate
-// decrypts cleanly (AEAD tag valid) before treating it as
+// valid ciphertext under the current key with no AAD. Use
+// [FieldEncryptor.EncryptIfPlainWithContext] for AAD-bound fields.
+//
+// This is useful for idempotent "re-save the row" code paths where
+// the same value may be passed through the encryptor repeatedly.
+// Unlike a naive "Encrypt-with-prefix-shortcut", this verifies the
+// candidate decrypts cleanly (AEAD tag valid) before treating it as
 // already-encrypted — an attacker cannot bypass encryption by
 // crafting a value that merely starts with the right prefix.
 //
 // Returns the input unchanged when it parses as a valid ciphertext
-// for this key; otherwise encrypts.
+// for this key and nil AAD; otherwise encrypts.
 func (e *FieldEncryptor) EncryptIfPlain(value string) (string, error) {
+	return e.EncryptIfPlainWithContext(value, nil)
+}
+
+// EncryptIfPlainWithContext encrypts plaintext UNLESS it appears to
+// already be valid ciphertext under the current key and the supplied
+// AAD. Use this for idempotent "re-save the row" code paths when
+// fields are encrypted with [FieldEncryptor.EncryptWithContext].
+//
+// Passing the same AAD used for EncryptWithContext preserves
+// already-encrypted values unchanged. A ciphertext bound to different
+// AAD is treated as plaintext and encrypted again, which prevents a
+// copied value from bypassing the row/tenant binding.
+func (e *FieldEncryptor) EncryptIfPlainWithContext(value string, aad []byte) (string, error) {
+	if err := e.validate(); err != nil {
+		return "", err
+	}
 	if value == "" {
 		return "", nil
 	}
-	if e.isAuthenticatedCiphertext(value, nil) {
+	if e.isAuthenticatedCiphertext(value, aad) {
 		return value, nil
 	}
-	return e.Encrypt(value)
+	return e.EncryptWithContext(value, aad)
 }
 
-// EncryptOptional encrypts the value if enc is non-nil, otherwise
-// returns it unchanged. Eliminates the repetitive nil-check pattern
-// at every call site.
+// EncryptOptional encrypts the value with enc. A nil encryptor is a
+// misconfiguration and returns ErrInvalidEncryptor; callers that
+// intentionally store plaintext should make that branch explicit at
+// the call site.
 func EncryptOptional(enc *FieldEncryptor, value string) (string, error) {
-	if enc == nil || value == "" {
-		return value, nil
+	return EncryptOptionalWithContext(enc, value, nil)
+}
+
+// EncryptOptionalWithContext encrypts the value with enc and binds it
+// to aad. A nil encryptor is a misconfiguration and returns
+// ErrInvalidEncryptor; callers that intentionally store plaintext
+// should make that branch explicit at the call site.
+func EncryptOptionalWithContext(enc *FieldEncryptor, value string, aad []byte) (string, error) {
+	if enc == nil {
+		return "", ErrInvalidEncryptor
 	}
-	return enc.Encrypt(value)
+	if value == "" {
+		return "", nil
+	}
+	return enc.EncryptWithContext(value, aad)
 }
 
 // Decrypt decrypts a ciphertext string produced by [FieldEncryptor.Encrypt].
-// Returns [ErrPlaintextNotAllowed] when the input lacks the v2 prefix.
+// Returns [ErrPlaintextNotAllowed] when the input lacks a recognised
+// encryption prefix.
 func (e *FieldEncryptor) Decrypt(ciphertext string) (string, error) {
 	return e.DecryptWithContext(ciphertext, nil)
 }
@@ -148,8 +186,12 @@ func (e *FieldEncryptor) Decrypt(ciphertext string) (string, error) {
 // same AAD. The AAD must match the EncryptWithContext call exactly;
 // mismatch fails authentication and returns an error.
 //
-// Returns [ErrPlaintextNotAllowed] when the input lacks the v2 prefix.
+// Returns [ErrPlaintextNotAllowed] when the input lacks a recognised
+// encryption prefix.
 func (e *FieldEncryptor) DecryptWithContext(ciphertext string, aad []byte) (string, error) {
+	if err := e.validate(); err != nil {
+		return "", err
+	}
 	if ciphertext == "" {
 		return "", nil
 	}
@@ -177,6 +219,9 @@ func (e *FieldEncryptor) DecryptWithContext(ciphertext string, aad []byte) (stri
 // [FieldEncryptor.EncryptIfPlain] to make the idempotent shortcut
 // safe — only verifiable ciphertexts are passed through unchanged.
 func (e *FieldEncryptor) isAuthenticatedCiphertext(value string, aad []byte) bool {
+	if err := e.validate(); err != nil {
+		return false
+	}
 	encoded, ok := stripEncryptedPrefix(value)
 	if !ok {
 		return false
@@ -187,6 +232,13 @@ func (e *FieldEncryptor) isAuthenticatedCiphertext(value string, aad []byte) boo
 	}
 	_, err = OpenBytesAAD(e.aead, data, aad)
 	return err == nil
+}
+
+func (e *FieldEncryptor) validate() error {
+	if e == nil || e.aead == nil {
+		return ErrInvalidEncryptor
+	}
+	return nil
 }
 
 // stripEncryptedPrefix returns the base64-encoded body of a

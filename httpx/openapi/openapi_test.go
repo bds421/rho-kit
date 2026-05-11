@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/httpx/v2/openapi"
 )
 
@@ -48,7 +49,16 @@ func TestDefaultErrorMapper_NilReturnsOK(t *testing.T) {
 }
 
 func TestDefaultErrorMapper_ErrorReturns500(t *testing.T) {
-	p := openapi.DefaultErrorMapper(errors.New("boom"))
+	p := openapi.DefaultErrorMapper(errors.New("pq: password authentication failed for postgres://user:secret@10.0.0.5/app"))
 	assert.Equal(t, http.StatusInternalServerError, p.Status)
-	assert.Equal(t, "boom", p.Detail)
+	assert.Equal(t, "internal error", p.Detail)
+	assert.NotContains(t, p.Detail, "secret")
+	assert.NotContains(t, p.Detail, "10.0.0.5")
+}
+
+func TestDefaultErrorMapper_ApperrorUsesProblemDetailsMapping(t *testing.T) {
+	p := openapi.DefaultErrorMapper(apperror.NewNotFound("widget", "secret-id"))
+	assert.Equal(t, http.StatusNotFound, p.Status)
+	assert.Equal(t, "resource not found", p.Detail)
+	assert.NotContains(t, p.Detail, "secret-id")
 }

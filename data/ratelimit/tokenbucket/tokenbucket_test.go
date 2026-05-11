@@ -2,6 +2,9 @@ package tokenbucket
 
 import (
 	"context"
+	"math"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +23,24 @@ func TestAllow_RejectsEmptyKey(t *testing.T) {
 	allowed, _, err := l.Allow(context.Background(), "")
 	assert.False(t, allowed)
 	assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+}
+
+func TestAllow_RejectsInvalidKey(t *testing.T) {
+	l := New(5, 1)
+
+	cases := []string{
+		"tenant\nid",
+		"tenant\rid",
+		"tenant\x00id",
+		string([]byte{'t', 'e', 'n', 0xff}),
+		strings.Repeat("a", ratelimit.MaxKeyLen+1),
+	}
+	for _, key := range cases {
+		allowed, retry, err := l.Allow(context.Background(), key)
+		assert.False(t, allowed)
+		assert.Zero(t, retry)
+		assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+	}
 }
 
 func TestAllow_FullBucketAcceptsBurst(t *testing.T) {
@@ -61,9 +82,52 @@ func TestAllow_PerKeyIsolation(t *testing.T) {
 }
 
 func TestNew_PanicsOnInvalidParams(t *testing.T) {
-	assert.Panics(t, func() { New(0, 1) })
-	assert.Panics(t, func() { New(1, 0) })
-	assert.Panics(t, func() { New(-1, 1) })
+	cases := []struct {
+		name     string
+		capacity float64
+		refill   float64
+	}{
+		{name: "zero capacity", capacity: 0, refill: 1},
+		{name: "negative capacity", capacity: -1, refill: 1},
+		{name: "nan capacity", capacity: math.NaN(), refill: 1},
+		{name: "infinite capacity", capacity: math.Inf(1), refill: 1},
+		{name: "zero refill", capacity: 1, refill: 0},
+		{name: "nan refill", capacity: 1, refill: math.NaN()},
+		{name: "infinite refill", capacity: 1, refill: math.Inf(1)},
+		{name: "unrepresentably slow refill", capacity: 1, refill: math.SmallestNonzeroFloat64},
+		{name: "boundary slow refill", capacity: 1, refill: minRepresentableRefillPerSec},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Panics(t, func() { New(tc.capacity, tc.refill) })
+		})
+	}
+}
+
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() { New(1, 1, nil) })
+}
+
+func TestInvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		l    *Limiter
+	}{
+		{"nil", nil},
+		{"zero", &Limiter{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, retry, err := tc.l.Allow(ctx, "k")
+			assert.False(t, ok)
+			assert.Equal(t, time.Duration(0), retry)
+			assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
+
+			assert.NotPanics(t, tc.l.Stop)
+			assert.Equal(t, 0, tc.l.Len())
+		})
+	}
 }
 
 func TestRetryAfter_AccurateWhenDenied(t *testing.T) {
@@ -78,6 +142,17 @@ func TestRetryAfter_AccurateWhenDenied(t *testing.T) {
 	assert.InDelta(t, time.Second, retry, float64(50*time.Millisecond))
 }
 
+func TestRetryAfter_ClampsSubNanosecondWaitToPositive(t *testing.T) {
+	now := time.Now()
+	l := New(1, math.MaxFloat64, WithClock(func() time.Time { return now }))
+	require.True(t, mustAllow(t, l, "k"))
+
+	ok, retry, err := l.Allow(context.Background(), "k")
+	require.NoError(t, err)
+	require.False(t, ok)
+	assert.Equal(t, time.Nanosecond, retry)
+}
+
 func mustAllow(t *testing.T, l *Limiter, key string) bool {
 	t.Helper()
 	ok, _, err := l.Allow(context.Background(), key)
@@ -85,13 +160,24 @@ func mustAllow(t *testing.T, l *Limiter, key string) bool {
 	return ok
 }
 
+func TestWithSweeper_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithSweeper(d)
+			})
+		})
+	}
+}
+
 // TestSweeper_RemovesColdBuckets bounds memory growth: a bucket that
 // has fully refilled is indistinguishable from a fresh one and the
 // sweeper reclaims it.
 func TestSweeper_RemovesColdBuckets(t *testing.T) {
-	cur := time.Now()
+	var cur atomic.Int64
+	cur.Store(time.Now().UnixNano())
 	l := New(2, 2,
-		WithClock(func() time.Time { return cur }),
+		WithClock(func() time.Time { return time.Unix(0, cur.Load()) }),
 		WithSweeper(10*time.Millisecond),
 	)
 	t.Cleanup(l.Stop)
@@ -103,7 +189,7 @@ func TestSweeper_RemovesColdBuckets(t *testing.T) {
 	}
 	require.Equal(t, 3, l.Len())
 
-	cur = cur.Add(10 * time.Second)
+	cur.Add(int64(10 * time.Second))
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

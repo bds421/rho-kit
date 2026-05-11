@@ -6,7 +6,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// JWTFields holds the JWKS URL for JWT verification via Oathkeeper.
+// JWTFields holds the JWKS URL for JWT verification.
 // Embed this in service configs that verify JWTs.
 type JWTFields struct {
 	JWKSURL string
@@ -15,7 +15,7 @@ type JWTFields struct {
 // LoadJWTFields reads the JWKS URL from environment variables.
 func LoadJWTFields() JWTFields {
 	return JWTFields{
-		JWKSURL: config.Get("JWKS_URL", "https://oathkeeper:4456/.well-known/jwks.json"),
+		JWKSURL: config.Get("JWKS_URL", ""),
 	}
 }
 

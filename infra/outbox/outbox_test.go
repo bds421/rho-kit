@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/outbox"
 )
 
@@ -276,6 +277,13 @@ func TestNewWriter_PanicsOnNilStore(t *testing.T) {
 	outbox.NewWriter(nil)
 }
 
+func TestNewWriter_PanicsOnNilOption(t *testing.T) {
+	store := &fakeStore{}
+	assert.Panics(t, func() {
+		outbox.NewWriter(store, nil)
+	})
+}
+
 func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
 	store := &fakeStore{}
 	check := func(ctx context.Context) error {
@@ -287,9 +295,11 @@ func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
 	writer := outbox.NewWriter(store, outbox.WithRequireTransaction(check))
 
 	err := writer.Write(context.Background(), outbox.WriteParams{
-		Topic:      "t",
-		RoutingKey: "rk",
-		Payload:    json.RawMessage(`{}`),
+		Topic:       "t",
+		RoutingKey:  "rk",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     json.RawMessage(`{}`),
 	})
 	if err == nil {
 		t.Fatal("expected error when ctx has no tx")
@@ -316,9 +326,11 @@ func TestWriter_RequireTransaction_AcceptsWithTx(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), testTxKey{}, "fake-tx")
 	err := writer.Write(ctx, outbox.WriteParams{
-		Topic:      "t",
-		RoutingKey: "rk",
-		Payload:    json.RawMessage(`{}`),
+		Topic:       "t",
+		RoutingKey:  "rk",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("Write with tx in ctx failed: %v", err)
@@ -368,6 +380,65 @@ func TestWriter_Write(t *testing.T) {
 	assert.Nil(t, entry.PublishedAt)
 }
 
+func TestWriter_Write_CopiesPayloadBeforeInsert(t *testing.T) {
+	store := &fakeStore{}
+	writer := outbox.NewWriter(store)
+	payload := []byte(`{"key":"value"}`)
+
+	err := writer.Write(context.Background(), outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     payload,
+	})
+	require.NoError(t, err)
+
+	payload[8] = 'X'
+
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
+	assert.JSONEq(t, `{"key":"value"}`, string(entry.Payload))
+}
+
+func TestWriter_Write_RejectsOversizedMessageBeforeInsert(t *testing.T) {
+	store := &fakeStore{}
+	writer := outbox.NewWriter(store)
+
+	payload := json.RawMessage(`"` + strings.Repeat("x", messaging.DefaultMaxMessageBytes) + `"`)
+	err := writer.Write(context.Background(), outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     payload,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, messaging.ErrMessageTooLarge)
+	assert.Equal(t, 0, store.count())
+}
+
+func TestWriter_Write_RouteMaxMessageBytesOverridesDefault(t *testing.T) {
+	store := &fakeStore{}
+	writer := outbox.NewWriter(store,
+		outbox.WithMaxMessageBytes(64),
+		outbox.WithRouteMaxMessageBytes("orders", "order.created", 512),
+	)
+
+	err := writer.Write(context.Background(), outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     json.RawMessage(`"` + strings.Repeat("x", 128) + `"`),
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, store.count())
+}
+
 func TestWriter_Write_EmptyTopic(t *testing.T) {
 	store := &fakeStore{}
 	writer := outbox.NewWriter(store)
@@ -398,6 +469,112 @@ func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "routing key must not be empty")
+}
+
+func TestWriter_Write_RejectsUnsafeEntryFields(t *testing.T) {
+	valid := outbox.WriteParams{
+		Topic:       "orders",
+		RoutingKey:  "order.created",
+		MessageID:   "msg-1",
+		MessageType: "order.created",
+		Payload:     []byte(`{}`),
+	}
+
+	tests := []struct {
+		name        string
+		mutate      func(*outbox.WriteParams)
+		want        string
+		wantErrorIs error
+	}{
+		{
+			name: "invalid topic route",
+			mutate: func(p *outbox.WriteParams) {
+				p.Topic = "orders prod"
+			},
+			want:        "invalid publish route",
+			wantErrorIs: messaging.ErrInvalidRoute,
+		},
+		{
+			name: "invalid routing key route",
+			mutate: func(p *outbox.WriteParams) {
+				p.RoutingKey = "order\ncreated"
+			},
+			want:        "invalid publish route",
+			wantErrorIs: messaging.ErrInvalidRoute,
+		},
+		{
+			name: "missing message id",
+			mutate: func(p *outbox.WriteParams) {
+				p.MessageID = ""
+			},
+			want: "message id must not be empty",
+		},
+		{
+			name: "unsafe message id",
+			mutate: func(p *outbox.WriteParams) {
+				p.MessageID = "msg\n1"
+			},
+			want: "message id contains whitespace or control characters",
+		},
+		{
+			name: "message id too long",
+			mutate: func(p *outbox.WriteParams) {
+				p.MessageID = strings.Repeat("m", messaging.MaxRouteNameBytes+1)
+			},
+			want: "message id exceeds maximum length",
+		},
+		{
+			name: "missing message type",
+			mutate: func(p *outbox.WriteParams) {
+				p.MessageType = ""
+			},
+			want: "message type must not be empty",
+		},
+		{
+			name: "empty payload",
+			mutate: func(p *outbox.WriteParams) {
+				p.Payload = nil
+			},
+			want: "payload must not be empty",
+		},
+		{
+			name: "invalid payload",
+			mutate: func(p *outbox.WriteParams) {
+				p.Payload = []byte(`{"unterminated"`)
+			},
+			want: "payload must be valid JSON",
+		},
+		{
+			name: "invalid headers",
+			mutate: func(p *outbox.WriteParams) {
+				p.Headers = map[string]string{"Bad Header": "value"}
+			},
+			want:        "invalid headers",
+			wantErrorIs: messaging.ErrInvalidMessageHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeStore{}
+			writer := outbox.NewWriter(store)
+			params := valid
+			tt.mutate(&params)
+
+			err := writer.Write(context.Background(), params)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			if tt.wantErrorIs != nil {
+				assert.ErrorIs(t, err, tt.wantErrorIs)
+			}
+			if tt.name == "message id too long" {
+				assert.NotContains(t, err.Error(), "255")
+				assert.NotContains(t, err.Error(), "256")
+			}
+			assert.Equal(t, 0, store.count())
+		})
+	}
 }
 
 func TestWriter_Write_PreservesHeaders(t *testing.T) {
@@ -442,4 +619,31 @@ func TestEntry_HeadersMap_NilHeaders(t *testing.T) {
 	got, err := entry.HeadersMap()
 	require.NoError(t, err)
 	assert.Nil(t, got)
+}
+
+func TestEntry_HeadersMap_RejectsInvalidStoredHeaders(t *testing.T) {
+	headers, err := json.Marshal(map[string]string{"Bad Header": "value"})
+	require.NoError(t, err)
+
+	entry := outbox.Entry{
+		Headers: headers,
+	}
+
+	_, err = entry.HeadersMap()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, messaging.ErrInvalidMessageHeader)
+}
+
+func TestEntry_HeadersMapErrorsDoNotReflectEntryID(t *testing.T) {
+	id, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	entry := outbox.Entry{
+		ID:      id,
+		Headers: []byte(`{"bad"`),
+	}
+
+	_, err = entry.HeadersMap()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), id.String())
 }

@@ -1,7 +1,7 @@
 // Package asvs maps kit middleware and helpers to OWASP Application
 // Security Verification Standard (ASVS) 5.0 controls. The mapping is
 // the kit's documented security contract: each middleware annotates
-// which controls it satisfies, and [Catalog] is the source of truth
+// which controls it satisfies, and [Catalog] returns the source of truth
 // kit-doctor scans to report a service's ASVS posture.
 //
 // Why ASVS: it's the OWASP-published standard for "what defensive
@@ -17,10 +17,9 @@
 //     trusted as compliance evidence by themselves (audit FR-007).
 //   - The kit also maintains a hand-curated [PackageRegistry] mapping
 //     each kit import path to the controls it satisfies. kit-doctor's
-//     [ScanImports] resolves a service's imports against this
-//     registry to produce *trustworthy* import-evidence — the
-//     service literally imports the package, which cannot be forged
-//     by editing comments.
+//     [ScanImports] resolves a service's non-blank imports against
+//     this registry to produce package-capability evidence — stronger
+//     than comments, but still not runtime proof.
 //   - Controls carry an [Evidence] class — Capability, BuilderEnforced,
 //     or RuntimeVerified — so kit-doctor reports can distinguish
 //     "kit ships the helper" from "Builder.Validate refuses startup
@@ -45,7 +44,7 @@
 package asvs
 
 import (
-	"fmt"
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -67,83 +66,91 @@ type Control struct {
 	Description string // one-line summary fit for terminal output
 }
 
-// Catalog is the kit's per-chapter index of controls referenced by
+// catalog is the kit's per-chapter index of controls referenced by
 // any kit middleware/helper annotation. It is intentionally NOT
 // exhaustive — it lists only controls the kit actually addresses.
 // Adding a new annotation requires adding the matching entry here so
 // kit-doctor can resolve the ID.
-var Catalog = []Control{
+var catalog = []Control{
 	// V2 Authentication
-	{"V2.1.5", "Authentication", "Password Security", "Service rejects passwords below minimum entropy."},
-	{"V2.2.1", "Authentication", "General Authentication", "Anti-automation — rate limiting on auth endpoints."},
-	{"V2.3.1", "Authentication", "Authenticator Lifecycle", "Credential rotation supported via JWKS or PASETO key roll."},
+	{"V2.1.5", "Authentication", "Password Security", "Password helpers support minimum-entropy verification."},
+	{"V2.2.1", "Authentication", "General Authentication", "Rate-limit helpers support anti-automation controls."},
+	{"V2.3.1", "Authentication", "Authenticator Lifecycle", "JWT and PASETO helpers support credential/key rotation."},
 
 	// V3 Session Management
-	{"V3.2.1", "Session", "Session Binding", "Session tokens bound to TLS handshake or JWT subject."},
-	{"V3.3.1", "Session", "Session Termination", "Token revocation paths implemented (logout / revoke)."},
-	{"V3.4.1", "Session", "Cookie Security", "Cookies set Secure, HttpOnly, SameSite by default."},
+	{"V3.2.1", "Session", "Session Binding", "Auth helpers support subject-bound session/token handling."},
+	{"V3.3.1", "Session", "Session Termination", "Auth helpers support token revocation paths."},
+	{"V3.4.1", "Session", "Cookie Security", "CSRF helpers support Secure, HttpOnly, SameSite cookies."},
 
 	// V4 Access Control
-	{"V4.1.1", "Access Control", "General Access Control", "Tenant + role checks enforced at handler boundary."},
-	{"V4.1.5", "Access Control", "General Access Control", "Server-side authz decision logged via authz.Decider."},
-	{"V4.2.1", "Access Control", "Operation Authorization", "Approval workflow gates state-changing operations."},
+	{"V4.1.1", "Access Control", "General Access Control", "Tenant and authorization helpers support handler-boundary checks."},
+	{"V4.1.5", "Access Control", "General Access Control", "Authorization helpers support server-side decision logging."},
+	{"V4.2.1", "Access Control", "Operation Authorization", "Approval workflow helpers support state-changing operation gates."},
 
 	// V5 Validation, Sanitization, Encoding
-	{"V5.1.3", "Validation", "Input Validation", "All inputs validated against schemas before handler."},
-	{"V5.2.5", "Validation", "Sanitization & Sandboxing", "URL parsing rejects credentials in URL userinfo."},
-	{"V5.3.1", "Validation", "Output Encoding", "Problem details responses use RFC 7807 encoding."},
+	{"V5.1.3", "Validation", "Input Validation", "Validation helpers support schema checks before handler logic."},
+	{"V5.2.5", "Validation", "Sanitization & Sandboxing", "URL helpers support rejecting credentials in URL userinfo."},
+	{"V5.3.1", "Validation", "Output Encoding", "Problem-details helpers support RFC 7807 encoding."},
 
 	// V6 Stored Cryptography
-	{"V6.2.1", "Cryptography", "Algorithms", "Argon2id used for password storage; AES-GCM for at-rest data."},
-	{"V6.4.1", "Cryptography", "Key Management", "Envelope encryption with KEK from KMS adapter."},
+	{"V6.2.1", "Cryptography", "Algorithms", "Crypto helpers provide Argon2id password hashing and AES-GCM encryption."},
+	{"V6.4.1", "Cryptography", "Key Management", "Envelope encryption helpers support KMS-backed KEKs."},
 
 	// V7 Error Handling and Logging
-	{"V7.1.1", "Logging", "Log Content", "Structured logs with request_id, correlation_id, tenant."},
-	{"V7.4.1", "Logging", "Log Protection", "Secrets redacted via core/secret.String LogValuer."},
+	{"V7.1.1", "Logging", "Log Content", "Logging helpers support structured request, correlation, and tenant attributes."},
+	{"V7.4.1", "Logging", "Log Protection", "Secret helpers support redaction in slog output."},
 
 	// V8 Data Protection
-	{"V8.2.2", "Data Protection", "Client-Side Data Protection", "No-store cache headers on /ready, /healthz."},
+	{"V8.2.2", "Data Protection", "Client-Side Data Protection", "Health handlers support no-store cache headers."},
 
 	// V9 Communications
-	{"V9.1.1", "Communications", "Server Communications", "TLS required by Builder.Validate; sslmode=require for Postgres."},
-	{"V9.2.1", "Communications", "Server Communications", "X-Content-Type-Options, X-Frame-Options, HSTS via secheaders."},
+	{"V9.1.1", "Communications", "Server Communications", "Builder validation and Postgres helpers support TLS / sslmode enforcement."},
+	{"V9.2.1", "Communications", "Server Communications", "Security-header middleware supports X-Content-Type-Options, X-Frame-Options, and HSTS."},
 
 	// V11 Business Logic
-	{"V11.1.1", "Business Logic", "Business Logic Security", "Per-tenant budget caps via WithTenantBudget."},
-	{"V11.1.2", "Business Logic", "Business Logic Security", "Idempotency keys deduplicate retried requests."},
+	{"V11.1.1", "Business Logic", "Business Logic Security", "Budget helpers support per-tenant spend caps."},
+	{"V11.1.2", "Business Logic", "Business Logic Security", "Idempotency helpers support retry deduplication."},
 
 	// V12 Files and Resources
-	{"V12.1.1", "Files & Resources", "File Upload", "Storage uploads gate on MIME sniff + size limit."},
-	{"V12.3.1", "Files & Resources", "File Storage", "Object keys derived server-side; never trust client filenames."},
+	{"V12.1.1", "Files & Resources", "File Upload", "Storage helpers support MIME sniffing and size-limited uploads."},
+	{"V12.3.1", "Files & Resources", "File Storage", "Storage helpers support server-side object keys instead of raw filenames."},
 
 	// V13 API and Web Service
-	{"V13.1.1", "API", "Generic Web Service", "Content-Type validation per endpoint."},
-	{"V13.2.1", "API", "RESTful Web Service", "Methods restricted; OPTIONS handled by CORS middleware."},
-	{"V13.2.3", "API", "RESTful Web Service", "Anti-CSRF tokens on state-changing operations."},
-	{"V13.4.1", "API", "GraphQL & Web Service", "Request bodies bounded by maxbody middleware."},
+	{"V13.1.1", "API", "Generic Web Service", "HTTP helpers support JSON Content-Type validation."},
+	{"V13.2.1", "API", "RESTful Web Service", "CORS helpers support method and OPTIONS handling."},
+	{"V13.2.3", "API", "RESTful Web Service", "CSRF and signed-request helpers support replay/cross-site request defenses."},
+	{"V13.4.1", "API", "GraphQL & Web Service", "Middleware supports bounded request bodies."},
 
 	// V14 Configuration
-	{"V14.1.1", "Configuration", "Build & Deploy", "Production-safety validator unconditionally enforced."},
-	{"V14.4.1", "Configuration", "HTTP Security Headers", "Default stack installs secheaders + recovery."},
+	{"V14.1.1", "Configuration", "Build & Deploy", "Builder production-safety validator checks deployment defaults."},
+	{"V14.4.1", "Configuration", "HTTP Security Headers", "Default stack can install security headers and recovery middleware."},
+}
+
+// Catalog returns a detached copy of the kit's per-chapter index of controls
+// referenced by kit middleware/helper annotations.
+func Catalog() []Control {
+	out := make([]Control, len(catalog))
+	copy(out, catalog)
+	return out
 }
 
 // Lookup returns the catalog entry for id, or an error when the ID
 // is unknown. kit-doctor calls this when surfacing an annotation;
 // unknown IDs indicate a typo in the source annotation.
 func Lookup(id ID) (Control, error) {
-	for _, c := range Catalog {
+	for _, c := range catalog {
 		if c.ID == id {
 			return c, nil
 		}
 	}
-	return Control{}, fmt.Errorf("asvs: unknown control %q (add to security/asvs/Catalog)", id)
+	return Control{}, errors.New("asvs: unknown control (add to security/asvs/Catalog)")
 }
 
 // IDs returns the catalog's control IDs sorted lexically. Used by
 // kit-doctor to render a stable column ordering.
 func IDs() []ID {
-	out := make([]ID, 0, len(Catalog))
-	for _, c := range Catalog {
+	out := make([]ID, 0, len(catalog))
+	for _, c := range catalog {
 		out = append(out, c.ID)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })

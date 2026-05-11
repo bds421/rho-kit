@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,12 +14,6 @@ import (
 
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
-
-// requestIDPattern mirrors the package-level rule in data/approval. The
-// pattern is duplicated rather than exported because the rule is an
-// internal invariant — callers should not be able to bypass the safe-
-// charset guard by constructing IDs that match a custom regexp.
-var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 const defaultLimit = 100
 
@@ -52,6 +45,9 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 	}
 	s := &Store{pool: pool, clock: time.Now}
 	for _, o := range opts {
+		if o == nil {
+			panic("approval/postgres: option must not be nil")
+		}
 		o(s)
 	}
 	return s
@@ -59,7 +55,10 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 
 // Create persists a new request in StatePending.
 func (s *Store) Create(ctx context.Context, r approval.Request) (approval.Request, error) {
-	if err := validateForCreate(r, s.clock()); err != nil {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateForCreate(r, s.clock()); err != nil {
 		return approval.Request{}, err
 	}
 	r.State = approval.StatePending
@@ -86,6 +85,9 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
 
 // Get returns the request by id.
 func (s *Store) Get(ctx context.Context, id string) (approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
 	const q = `
 SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
        decided_at, reason, created_at, expires_at
@@ -105,8 +107,12 @@ WHERE id = $1`
 // List returns matching requests newest-first. Returns
 // [approval.ErrQueryTenantRequired] when the caller did not set
 // [approval.Query.TenantID] or opt into AllTenants — see audit
-// FR-053 for why cross-tenant listings must be explicit.
+// FR-053 for why cross-tenant listings must be explicit. Returns
+// [approval.ErrQueryScopeConflict] when both scope modes are set.
 func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
@@ -175,8 +181,14 @@ FROM approval_requests`
 // refuses to flip a recorded decision, refuses to move out of a
 // terminal state, auto-expires past-deadline pending requests.
 func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
-	if decidedBy == "" {
-		return approval.Request{}, approval.ErrInvalidApprover
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateDecision(decidedBy); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateReason(reason); err != nil {
+		return approval.Request{}, err
 	}
 	target := approval.StateApproved
 	if !approve {
@@ -217,7 +229,7 @@ FOR UPDATE`
 		if err := tx.Commit(ctx); err != nil {
 			return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
 		}
-		return approval.Request{}, fmt.Errorf("%w: request expired at %s", approval.ErrInvalidTransition, r.ExpiresAt.UTC().Format(time.RFC3339))
+		return approval.Request{}, fmt.Errorf("%w: request expired", approval.ErrInvalidTransition)
 	}
 
 	if r.State == target {
@@ -235,7 +247,7 @@ FOR UPDATE`
 	}
 
 	if r.State.IsTerminal() {
-		return approval.Request{}, fmt.Errorf("%w: cannot transition out of %s", approval.ErrInvalidTransition, r.State)
+		return approval.Request{}, fmt.Errorf("%w: cannot transition out of terminal state", approval.ErrInvalidTransition)
 	}
 
 	if r.State == approval.StateApproved || r.State == approval.StateRejected {
@@ -258,6 +270,9 @@ FOR UPDATE`
 
 // MarkExecuted moves an approved request to executed.
 func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return approval.Request{}, fmt.Errorf("approval/postgres: begin: %w", err)
@@ -286,7 +301,7 @@ FOR UPDATE`
 		return r, nil
 	}
 	if r.State != approval.StateApproved {
-		return approval.Request{}, fmt.Errorf("%w: MarkExecuted requires source state %s, got %s", approval.ErrInvalidTransition, approval.StateApproved, r.State)
+		return approval.Request{}, fmt.Errorf("%w: request is not approved", approval.ErrInvalidTransition)
 	}
 
 	const updateSQL = `UPDATE approval_requests SET state = $1 WHERE id = $2`
@@ -343,21 +358,9 @@ func nullableTime(t time.Time) any {
 	return t.UTC()
 }
 
-func validateForCreate(r approval.Request, now time.Time) error {
-	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
-		return approval.ErrInvalidRequest
-	}
-	if !requestIDPattern.MatchString(r.ID) {
-		return approval.ErrInvalidRequest
-	}
-	if r.State != "" && r.State != approval.StatePending {
-		return approval.ErrInvalidRequest
-	}
-	if r.ExpiresAt.IsZero() {
-		return approval.ErrInvalidRequest
-	}
-	if !r.ExpiresAt.After(now) {
-		return approval.ErrInvalidRequest
+func (s *Store) ready() error {
+	if s == nil || s.pool == nil || s.clock == nil {
+		return approval.ErrInvalidStore
 	}
 	return nil
 }

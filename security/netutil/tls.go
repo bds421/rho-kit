@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/bds421/rho-kit/core/v2/config"
@@ -16,6 +17,16 @@ type TLSConfig struct {
 	CACert string // Path to CA certificate (PEM)
 	Cert   string // Path to client/server certificate (PEM)
 	Key    string // Path to private key (PEM)
+}
+
+// LogValue implements slog.LogValuer to avoid logging mounted secret paths.
+func (c TLSConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("enabled", c.Enabled()),
+		slog.Bool("ca_cert_configured", c.CACert != ""),
+		slog.Bool("cert_configured", c.Cert != ""),
+		slog.Bool("key_configured", c.Key != ""),
+	)
 }
 
 // Enabled returns true when all TLS paths are configured.
@@ -49,7 +60,7 @@ func (c TLSConfig) Validate() error {
 	} {
 		f, err := os.Open(entry.path)
 		if err != nil {
-			return fmt.Errorf("%s: file not accessible: %w", entry.name, err)
+			return fmt.Errorf("%s: file not accessible", entry.name)
 		}
 		_ = f.Close()
 	}
@@ -82,37 +93,44 @@ type serverTLSOpts struct {
 }
 
 // WithRequireClientCert enforces that all clients present a valid certificate.
-// Without this option, client certificates are verified if presented but not
-// required (tls.VerifyClientCertIfGiven). Use this when all clients are known
-// to have certificates — e.g., internal service mesh without a gateway.
+// This is the default. The option remains useful at call sites that want to
+// make the mTLS requirement explicit.
 func WithRequireClientCert() ServerTLSOption {
 	return func(o *serverTLSOpts) { o.requireClientCert = true }
 }
 
+// WithOptionalClientCert downgrades server-side TLS from mutual TLS to
+// verify-if-present client certificates. Use only for listeners behind a
+// trusted TLS terminator that re-encrypts to the service but cannot present
+// a client certificate.
+func WithOptionalClientCert() ServerTLSOption {
+	return func(o *serverTLSOpts) { o.requireClientCert = false }
+}
+
 // ServerTLS returns a *tls.Config for an HTTP server with mTLS support.
 //
-// By default, client certificates are verified when presented but not required
-// (tls.VerifyClientCertIfGiven). This enables trusted gateways like Oathkeeper
-// to proxy requests without certificates while service-to-service calls use
-// mutual auth.
+// By default, client certificates are required and verified
+// (tls.RequireAndVerifyClientCert). This matches the kit convention that
+// setting TLS_CA_CERT, TLS_CERT, and TLS_KEY enables mTLS globally.
 //
-// Use [WithRequireClientCert] to enforce that ALL clients present a valid
-// certificate (tls.RequireAndVerifyClientCert).
+// Use [WithOptionalClientCert] only for gateway-fronted services that must
+// accept anonymous connections from a trusted TLS terminator.
 //
 // Note: callers using [github.com/bds421/rho-kit/app] do not need to pass
-// this option directly — the Builder enables [WithRequireClientCert] by
-// default and exposes [Builder.WithOptionalClientCertificates] for
-// gateway-fronted services (audit FR-014).
+// options directly — the Builder exposes [Builder.WithOptionalClientCertificates]
+// for gateway-fronted services (audit FR-014).
 //
 // Returns nil if TLS is not enabled.
 func (c TLSConfig) ServerTLS(opts ...ServerTLSOption) (*tls.Config, error) {
+	o := serverTLSOpts{requireClientCert: true}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("netutil: ServerTLS option must not be nil")
+		}
+		opt(&o)
+	}
 	if !c.Enabled() {
 		return nil, nil
-	}
-
-	var o serverTLSOpts
-	for _, opt := range opts {
-		opt(&o)
 	}
 
 	cert, caPool, err := c.loadCertAndCA()
@@ -156,12 +174,12 @@ func (c TLSConfig) ClientTLS() (*tls.Config, error) {
 func (c TLSConfig) loadCertAndCA() (tls.Certificate, *x509.CertPool, error) {
 	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
 	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("load cert/key pair: %w", err)
+		return tls.Certificate{}, nil, fmt.Errorf("load cert/key pair failed")
 	}
 
 	caPEM, err := os.ReadFile(c.CACert)
 	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("read CA cert: %w", err)
+		return tls.Certificate{}, nil, fmt.Errorf("read CA cert failed")
 	}
 
 	caPool := x509.NewCertPool()

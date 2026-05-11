@@ -12,7 +12,11 @@ require (
 	go.opentelemetry.io/otel v1.42.0
 )
 
-require github.com/fsnotify/fsnotify v1.10.1 // indirect
+require (
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
+	github.com/tink-crypto/tink-go/v2 v2.6.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+)
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.5 // indirect
@@ -33,7 +37,7 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/v2 v2.0.0
-	github.com/bds421/rho-kit/io/v2 v2.0.0
+	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

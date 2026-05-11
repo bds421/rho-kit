@@ -43,8 +43,8 @@ func NewS3Metrics(reg prometheus.Registerer) *S3Metrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.opDuration)
-	promutil.RegisterCollector(reg, m.opErrors)
+	m.opDuration = promutil.MustRegisterOrGet(reg, m.opDuration)
+	m.opErrors = promutil.MustRegisterOrGet(reg, m.opErrors)
 
 	return m
 }

@@ -12,9 +12,12 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	actionlogpostgres "github.com/bds421/rho-kit/data/actionlog/postgres/v2"
 	approvalpostgres "github.com/bds421/rho-kit/data/approval/postgres/v2"
@@ -32,27 +35,57 @@ var registry = map[string]fs.FS{
 	"approval":    approvalpostgres.Migrations,
 }
 
+type registryEntry struct {
+	name string
+	fsys fs.FS
+}
+
+type migrationFile struct {
+	component string
+	filename  string
+	target    string
+	data      []byte
+}
+
+type publishPlan struct {
+	publish []migrationFile
+	drifted []migrationFile
+	skipped int
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		usage(stderr)
+		return 2
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "list":
-		cmdList()
+		if len(args) > 1 {
+			writef(stderr, "Error: list does not accept arguments\n")
+			return 2
+		}
+		if err := cmdList(stdout); err != nil {
+			writef(stderr, "Error listing migrations: %v\n", err)
+			return 1
+		}
+		return 0
 	case "publish":
-		cmdPublish()
+		return cmdPublish(args[1:], stdout, stderr)
 	case "check":
-		cmdCheck()
+		return cmdCheck(args[1:], stdout, stderr)
 	default:
-		usage()
-		os.Exit(1)
+		usage(stderr)
+		return 2
 	}
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `Usage:
+func usage(w io.Writer) {
+	writef(w, `Usage:
   kit-migrate list                    List available kit migrations
   kit-migrate publish --to=DIR        Copy kit migrations to DIR
   kit-migrate publish --to=DIR NAME   Copy only named component's migrations
@@ -63,102 +96,82 @@ Options:
 `)
 }
 
-func cmdList() {
-	for name, fsys := range registry {
-		files, _ := listMigrations(fsys)
-		fmt.Printf("%s:\n", name)
+func cmdList(stdout io.Writer) error {
+	for _, entry := range registryEntries("") {
+		files, err := listMigrations(entry.fsys)
+		if err != nil {
+			return fmt.Errorf("reading migrations failed")
+		}
+		writef(stdout, "%s:\n", entry.name)
 		for _, f := range files {
-			fmt.Printf("  %s\n", f)
+			writef(stdout, "  %s\n", f)
 		}
 	}
+	return nil
 }
 
-func cmdPublish() {
-	var targetDir string
-	var filterName string
-
-	for _, arg := range os.Args[2:] {
-		switch {
-		case len(arg) > 5 && arg[:5] == "--to=":
-			targetDir = arg[5:]
-		case arg == "--to":
-			fmt.Fprintf(os.Stderr, "Error: --to requires a value (use --to=DIR)\n")
-			os.Exit(1)
-		case len(arg) > 0 && arg[0] != '-':
-			filterName = arg
-		}
+func cmdPublish(args []string, stdout, stderr io.Writer) int {
+	targetDir, filterName, err := parseTargetAndComponent(args)
+	if err != nil {
+		writef(stderr, "Error: %v\n", err)
+		return 2
 	}
 
-	if targetDir == "" {
-		fmt.Fprintf(os.Stderr, "Error: --to=DIR is required\n")
-		os.Exit(1)
+	if err := rejectSymlinkPathComponents(targetDir, targetDir); err != nil {
+		writef(stderr, "Error preparing directory: %v\n", err)
+		return 1
 	}
-
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
-		os.Exit(1)
+		writef(stderr, "Error creating directory: %v\n", err)
+		return 1
+	}
+	if err := rejectSymlinkPathComponents(targetDir, targetDir); err != nil {
+		writef(stderr, "Error preparing directory: %v\n", err)
+		return 1
+	}
+
+	plan, err := buildPublishPlan(targetDir, filterName)
+	if err != nil {
+		writef(stderr, "Error preparing migrations: %v\n", err)
+		return 1
+	}
+
+	for _, drifted := range plan.drifted {
+		writef(
+			stderr,
+			"  drift: %s (from %s) - on-disk file differs from kit version; not overwritten\n",
+			drifted.filename,
+			drifted.component,
+		)
+	}
+	if len(plan.drifted) > 0 {
+		writef(
+			stderr,
+			"%d migration(s) have drifted from the kit version; refusing to publish new migrations\n",
+			len(plan.drifted),
+		)
+		return 2
 	}
 
 	published := 0
-	skipped := 0
-	drifted := 0
-
-	for name, fsys := range registry {
-		if filterName != "" && name != filterName {
-			continue
+	for _, migration := range plan.publish {
+		if err := writeNewFile(targetDir, migration.target, migration.data, 0o644); err != nil {
+			writef(stderr, "Error writing migration: %v\n", err)
+			return 1
 		}
-
-		files, err := listMigrations(fsys)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading %s migrations: %v\n", name, err)
-			os.Exit(1)
-		}
-
-		for _, filename := range files {
-			targetPath := filepath.Join(targetDir, filename)
-
-			data, err := fs.ReadFile(fsys, "migrations/"+filename)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", filename, err)
-				os.Exit(1)
-			}
-
-			// Detect drift: a kit-published migration that has been
-			// edited locally is a silent forward-compat hazard. The
-			// kit ships a fix, the operator has diverged, the next
-			// publish does nothing — and the bug stays. Compare
-			// bytes; on mismatch, warn but do not overwrite.
-			if existing, statErr := os.ReadFile(targetPath); statErr == nil {
-				if !bytes.Equal(existing, data) {
-					fmt.Fprintf(os.Stderr, "  drift: %s (from %s) — on-disk file differs from kit version; not overwritten\n", filename, name)
-					drifted++
-				} else {
-					skipped++
-				}
-				continue
-			}
-
-			if err := os.WriteFile(targetPath, data, 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", targetPath, err)
-				os.Exit(1)
-			}
-
-			fmt.Printf("  published: %s (from %s)\n", filename, name)
-			published++
-		}
+		writef(stdout, "  published: %s (from %s)\n", migration.filename, migration.component)
+		published++
 	}
 
 	switch {
-	case published == 0 && skipped > 0 && drifted == 0:
-		fmt.Printf("All migrations already published (%d skipped)\n", skipped)
+	case published == 0 && plan.skipped > 0:
+		writef(stdout, "All migrations already published (%d skipped)\n", plan.skipped)
 	case published > 0:
-		fmt.Printf("Published %d migration(s), %d already existed, %d drifted\n", published, skipped, drifted)
-	case drifted > 0:
-		fmt.Printf("No new migrations published; %d drifted (see warnings above)\n", drifted)
-		os.Exit(2)
+		writef(stdout, "Published %d migration(s), %d already existed\n", published, plan.skipped)
 	default:
-		fmt.Println("No migrations to publish")
+		writeln(stdout, "No migrations to publish")
 	}
+	return 0
 }
 
 // cmdCheck reports any kit migration whose on-disk copy has diverged
@@ -167,71 +180,300 @@ func cmdPublish() {
 // Designed for CI gates: `kit-migrate check --to=./migrations` is a
 // pre-merge guard that fails the build when a teammate has hand-edited
 // a kit-managed migration.
-func cmdCheck() {
-	var targetDir string
-	var filterName string
-
-	for _, arg := range os.Args[2:] {
-		switch {
-		case len(arg) > 5 && arg[:5] == "--to=":
-			targetDir = arg[5:]
-		case arg == "--to":
-			fmt.Fprintf(os.Stderr, "Error: --to requires a value (use --to=DIR)\n")
-			os.Exit(1)
-		case len(arg) > 0 && arg[0] != '-':
-			filterName = arg
-		}
+func cmdCheck(args []string, stdout, stderr io.Writer) int {
+	targetDir, filterName, err := parseTargetAndComponent(args)
+	if err != nil {
+		writef(stderr, "Error: %v\n", err)
+		return 2
 	}
-
-	if targetDir == "" {
-		fmt.Fprintf(os.Stderr, "Error: --to=DIR is required\n")
-		os.Exit(1)
+	if err := rejectSymlinkPathComponents(targetDir, targetDir); err != nil {
+		writef(stderr, "Error preparing directory: %v\n", err)
+		return 1
 	}
 
 	drifted := 0
 	checked := 0
 
-	for name, fsys := range registry {
-		if filterName != "" && name != filterName {
-			continue
-		}
-
-		files, err := listMigrations(fsys)
+	for _, entry := range registryEntries(filterName) {
+		files, err := listMigrations(entry.fsys)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading %s migrations: %v\n", name, err)
-			os.Exit(1)
+			writef(stderr, "Error reading %s migrations: %v\n", entry.name, err)
+			return 1
 		}
 
 		for _, filename := range files {
-			targetPath := filepath.Join(targetDir, filename)
+			targetPath, err := migrationTargetPath(targetDir, filename)
+			if err != nil {
+				writef(stderr, "Error resolving %s: %v\n", filename, err)
+				return 1
+			}
+			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(targetPath)); err != nil {
+				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				return 1
+			}
+			if err := rejectSymlinkTarget(targetPath); err != nil {
+				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				return 1
+			}
 			existing, err := os.ReadFile(targetPath)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
 				}
-				fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", targetPath, err)
-				os.Exit(1)
+				writef(stderr, "Error reading %s: %v\n", targetPath, err)
+				return 1
 			}
 
-			data, err := fs.ReadFile(fsys, "migrations/"+filename)
+			data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading embedded %s: %v\n", filename, err)
-				os.Exit(1)
+				writef(stderr, "Error reading embedded %s: %v\n", filename, err)
+				return 1
 			}
 
 			checked++
 			if !bytes.Equal(existing, data) {
-				fmt.Printf("  drift: %s (from %s)\n", filename, name)
+				writef(stdout, "  drift: %s (from %s)\n", filename, entry.name)
 				drifted++
 			}
 		}
 	}
 
 	if drifted > 0 {
-		fmt.Fprintf(os.Stderr, "%d migration(s) have drifted from the kit version\n", drifted)
-		os.Exit(2)
+		writef(stderr, "%d migration(s) have drifted from the kit version\n", drifted)
+		return 2
 	}
-	fmt.Printf("OK: %d migration(s) in sync with kit\n", checked)
+	writef(stdout, "OK: %d migration(s) in sync with kit\n", checked)
+	return 0
+}
+
+func writef(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+func writeln(w io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(w, args...)
+}
+
+func parseTargetAndComponent(args []string) (string, string, error) {
+	var targetDir string
+	var component string
+
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--to="):
+			value := strings.TrimPrefix(arg, "--to=")
+			if value == "" {
+				return "", "", fmt.Errorf("--to requires a non-empty value")
+			}
+			if targetDir != "" {
+				return "", "", fmt.Errorf("--to may only be specified once")
+			}
+			targetDir = value
+		case arg == "--to":
+			return "", "", fmt.Errorf("--to requires a value (use --to=DIR)")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", fmt.Errorf("unknown flag")
+		default:
+			if arg == "" {
+				return "", "", fmt.Errorf("component name cannot be empty")
+			}
+			if component != "" {
+				return "", "", fmt.Errorf("only one component may be specified")
+			}
+			component = arg
+		}
+	}
+
+	if targetDir == "" {
+		return "", "", fmt.Errorf("--to=DIR is required")
+	}
+	if component != "" {
+		if _, ok := registry[component]; !ok {
+			return "", "", fmt.Errorf("unknown component")
+		}
+	}
+	return targetDir, component, nil
+}
+
+func buildPublishPlan(targetDir, filterName string) (publishPlan, error) {
+	var plan publishPlan
+
+	for _, entry := range registryEntries(filterName) {
+		files, err := listMigrations(entry.fsys)
+		if err != nil {
+			return publishPlan{}, fmt.Errorf("reading migrations failed")
+		}
+
+		for _, filename := range files {
+			data, err := fs.ReadFile(entry.fsys, "migrations/"+filename)
+			if err != nil {
+				return publishPlan{}, fmt.Errorf("reading embedded migration failed")
+			}
+
+			migration := migrationFile{
+				component: entry.name,
+				filename:  filename,
+				data:      data,
+			}
+			migration.target, err = migrationTargetPath(targetDir, filename)
+			if err != nil {
+				return publishPlan{}, fmt.Errorf("resolving migration target failed")
+			}
+			if err := rejectSymlinkPathComponents(targetDir, filepath.Dir(migration.target)); err != nil {
+				return publishPlan{}, fmt.Errorf("reading migration target failed: %w", err)
+			}
+			if err := rejectSymlinkTarget(migration.target); err != nil {
+				return publishPlan{}, fmt.Errorf("reading migration target failed: %w", err)
+			}
+
+			existing, err := os.ReadFile(migration.target)
+			if err == nil {
+				if bytes.Equal(existing, data) {
+					plan.skipped++
+				} else {
+					plan.drifted = append(plan.drifted, migration)
+				}
+				continue
+			}
+			if !os.IsNotExist(err) {
+				return publishPlan{}, fmt.Errorf("reading migration target failed")
+			}
+			plan.publish = append(plan.publish, migration)
+		}
+	}
+
+	return plan, nil
+}
+
+func migrationTargetPath(targetDir, filename string) (string, error) {
+	target := filepath.Clean(filepath.Join(targetDir, filename))
+	absDir, err := filepath.Abs(targetDir)
+	if err != nil {
+		return "", err
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(filepath.Clean(absDir), filepath.Clean(absTarget))
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("target path escapes target directory")
+	}
+	return target, nil
+}
+
+func rejectSymlinkTarget(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target is a symlink; refusing to follow it")
+	}
+	return nil
+}
+
+func rejectSymlinkPathComponents(root, path string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	absRoot = filepath.Clean(absRoot)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	absPath = filepath.Clean(absPath)
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path escapes target directory")
+	}
+	if err := rejectSymlinkTarget(absRoot); err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+
+	cur := absRoot
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component is a symlink; refusing to follow it")
+		}
+		if !info.IsDir() && filepath.Clean(cur) != absPath {
+			return fmt.Errorf("path component is not a directory")
+		}
+	}
+	return nil
+}
+
+func writeNewFile(root, path string, data []byte, perm fs.FileMode) error {
+	if err := rejectSymlinkPathComponents(root, filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := rejectSymlinkTarget(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func registryEntries(filterName string) []registryEntry {
+	names := componentNames()
+	entries := make([]registryEntry, 0, len(names))
+	for _, name := range names {
+		if filterName != "" && name != filterName {
+			continue
+		}
+		entries = append(entries, registryEntry{name: name, fsys: registry[name]})
+	}
+	return entries
+}
+
+func componentNames() []string {
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // listMigrations returns the filenames from the migrations/ subdirectory.
@@ -246,5 +488,6 @@ func listMigrations(fsys fs.FS) ([]string, error) {
 			names = append(names, e.Name())
 		}
 	}
+	sort.Strings(names)
 	return names, nil
 }

@@ -74,6 +74,16 @@ func TestBuilder_Validates_TracingAcceptsLowSampleRate(t *testing.T) {
 	require.NoError(t, b.Validate())
 }
 
+func TestBuilder_Validates_TracingConfig(t *testing.T) {
+	b := newSafeBuilder().WithTracing(tracing.Config{
+		ServiceName: "test",
+		Endpoint:    "https://collector.example.com:4317",
+	})
+	err := b.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Endpoint")
+}
+
 // --- C-1: internal ops port must default to loopback ---
 
 func TestInternalConfig_DefaultsToLoopback(t *testing.T) {
@@ -123,7 +133,7 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 // The fix flipped the contract from "reject unspecified" to "require
 // loopback".
 func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
-	for _, host := range []string{"10.0.0.5", "192.168.1.1", "172.16.0.1", "8.8.8.8"} {
+	for _, host := range []string{"10.0.0.5", "192.168.1.1", "172.16.0.1", "8.8.8.8", "secret-token.example"} {
 		t.Run(host, func(t *testing.T) {
 			cfg := BaseConfig{
 				Server:   ServerConfig{Port: 8080},
@@ -135,6 +145,8 @@ func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
 			require.Errorf(t, err, "Internal.Host=%q must be rejected without WithInternalNonLoopback", host)
 			assert.Contains(t, err.Error(), "not loopback")
 			assert.Contains(t, err.Error(), "WithInternalNonLoopback")
+			assert.NotContains(t, err.Error(), host)
+			assert.NotContains(t, err.Error(), "secret-token")
 		})
 	}
 }
@@ -355,13 +367,13 @@ func realTLSForTest(t *testing.T) netutil.TLSConfig {
 	require.NoError(t, err)
 
 	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		IsCA:         true,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IsCA:                  true,
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)

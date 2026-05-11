@@ -8,14 +8,12 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
-// pgxModule wires a pgx-native Postgres pool into the Builder. It is
-// mutually exclusive with [Builder.WithPostgres] (the GORM path) at
-// validate time — services pick one DB driver per Postgres instance.
+// pgxModule wires a pgx-native Postgres pool into the Builder.
 type pgxModule struct {
 	BaseModule
 

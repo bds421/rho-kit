@@ -70,15 +70,27 @@ func defaultEnforcementPolicy() keepalive.EnforcementPolicy {
 // WithUnaryInterceptors appends unary server interceptors.
 // Interceptors are chained in the order provided.
 func WithUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) ServerOption {
+	for _, interceptor := range interceptors {
+		if interceptor == nil {
+			panic("grpcx: WithUnaryInterceptors requires non-nil interceptors")
+		}
+	}
+	copied := append([]grpc.UnaryServerInterceptor(nil), interceptors...)
 	return func(c *serverConfig) {
-		c.unaryInterceptors = append(c.unaryInterceptors, interceptors...)
+		c.unaryInterceptors = append(c.unaryInterceptors, copied...)
 	}
 }
 
 // WithStreamInterceptors appends stream server interceptors.
 func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) ServerOption {
+	for _, interceptor := range interceptors {
+		if interceptor == nil {
+			panic("grpcx: WithStreamInterceptors requires non-nil interceptors")
+		}
+	}
+	copied := append([]grpc.StreamServerInterceptor(nil), interceptors...)
 	return func(c *serverConfig) {
-		c.streamInterceptors = append(c.streamInterceptors, interceptors...)
+		c.streamInterceptors = append(c.streamInterceptors, copied...)
 	}
 }
 
@@ -113,8 +125,14 @@ func WithKeepalivePolicy(policy keepalive.EnforcementPolicy) ServerOption {
 // WithGRPCServerOptions appends raw grpc.ServerOption values for cases not
 // covered by the typed options above.
 func WithGRPCServerOptions(opts ...grpc.ServerOption) ServerOption {
+	for _, opt := range opts {
+		if opt == nil {
+			panic("grpcx: WithGRPCServerOptions requires non-nil options")
+		}
+	}
+	copied := append([]grpc.ServerOption(nil), opts...)
 	return func(c *serverConfig) {
-		c.grpcOpts = append(c.grpcOpts, opts...)
+		c.grpcOpts = append(c.grpcOpts, copied...)
 	}
 }
 
@@ -218,6 +236,9 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		defaultDeadline: DefaultRPCDeadline,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("grpcx: NewServer option must not be nil")
+		}
 		opt(&cfg)
 	}
 

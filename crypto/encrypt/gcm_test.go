@@ -1,6 +1,7 @@
 package encrypt
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -83,5 +84,14 @@ func TestSealOpenBytes_EmptyPlaintext(t *testing.T) {
 
 	if len(opened) != 0 {
 		t.Fatalf("expected empty, got %d bytes", len(opened))
+	}
+}
+
+func TestSealOpenBytes_NilAEADReturnsError(t *testing.T) {
+	if _, err := SealBytes(nil, []byte("secret")); !errors.Is(err, ErrInvalidAEAD) {
+		t.Fatalf("SealBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
+	}
+	if _, err := OpenBytes(nil, []byte("ciphertext")); !errors.Is(err, ErrInvalidAEAD) {
+		t.Fatalf("OpenBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
 	}
 }

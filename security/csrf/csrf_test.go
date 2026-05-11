@@ -24,13 +24,19 @@ func TestNewIssuer_RejectsShortSecret(t *testing.T) {
 	_, err := NewIssuer(make([]byte, 16))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "32 bytes")
+	assert.NotContains(t, err.Error(), "16")
 }
 
 func TestNewIssuer_RejectsNonPositiveTTL(t *testing.T) {
 	_, err := NewIssuer(make([]byte, 32), WithTTL(0))
 	require.Error(t, err)
+	assert.EqualError(t, err, "csrf: TTL must be positive")
+	assert.NotContains(t, err.Error(), "0s")
+
 	_, err = NewIssuer(make([]byte, 32), WithTTL(-time.Second))
 	require.Error(t, err)
+	assert.EqualError(t, err, "csrf: TTL must be positive")
+	assert.NotContains(t, err.Error(), "-1s")
 }
 
 func TestIssueAndVerify_RoundTrip(t *testing.T) {
@@ -38,6 +44,50 @@ func TestIssueAndVerify_RoundTrip(t *testing.T) {
 	tok, err := i.Issue("user-42")
 	require.NoError(t, err)
 	require.NoError(t, i.Verify(tok, "user-42"))
+}
+
+func TestIssue_RejectsInvalidSessionID(t *testing.T) {
+	i := newTestIssuer(t)
+	for name, sessionID := range invalidSessionIDs() {
+		t.Run(name, func(t *testing.T) {
+			_, err := i.Issue(sessionID)
+			assert.ErrorIs(t, err, ErrSessionInvalid)
+			if name == "over max" {
+				assert.NotContains(t, err.Error(), "1024")
+				assert.NotContains(t, err.Error(), "1025")
+			}
+		})
+	}
+}
+
+func TestVerify_RejectsInvalidSessionID(t *testing.T) {
+	i := newTestIssuer(t)
+	tok, err := i.Issue("user-42")
+	require.NoError(t, err)
+
+	for name, sessionID := range invalidSessionIDs() {
+		t.Run(name, func(t *testing.T) {
+			err := i.Verify(tok, sessionID)
+			assert.ErrorIs(t, err, ErrSessionInvalid)
+			if name == "over max" {
+				assert.NotContains(t, err.Error(), "1024")
+				assert.NotContains(t, err.Error(), "1025")
+			}
+		})
+	}
+}
+
+func TestValidateSessionID_AcceptsCommonOpaqueIDs(t *testing.T) {
+	for _, sessionID := range []string{
+		"user-42",
+		"550e8400-e29b-41d4-a716-446655440000",
+		"v4.public.eyJzdWIiOiJ1c2VyIn0",
+		"base64url_token-abc_123",
+	} {
+		t.Run(sessionID, func(t *testing.T) {
+			assert.NoError(t, ValidateSessionID(sessionID))
+		})
+	}
 }
 
 func TestIssue_FreshNonceEachCall(t *testing.T) {
@@ -167,6 +217,60 @@ func TestOriginAllowlist_StripsPathQuery(t *testing.T) {
 	assert.True(t, a.Allowed("https://app.example.com/some/path?x=1", ""))
 }
 
+func TestOriginAllowlist_PanicsOnInvalidConfiguredOrigin(t *testing.T) {
+	cases := []string{
+		"",
+		" ",
+		"ftp://app.example.com",
+		"https://app.example.com/",
+		"https://app.example.com/path",
+		"https://app.example.com?x=1",
+		"https://user@app.example.com",
+		"https://app.example.com:bad",
+		"https://app.example.com:+443",
+		"https://[not-ip]:443",
+		"https://app.example.com\n",
+		string([]byte("https://app.example.com\xff")),
+	}
+	for _, origin := range cases {
+		name := strings.ReplaceAll(origin, "/", "_")
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, func() {
+				NewOriginAllowlist(origin)
+			})
+		})
+	}
+}
+
+func TestOriginAllowlist_InvalidConfiguredOriginDoesNotEchoValue(t *testing.T) {
+	assert.PanicsWithValue(t, "csrf: invalid origin allowlist entry", func() {
+		NewOriginAllowlist("https://app.example.com/%zz?token=secret-token")
+	})
+}
+
+func TestOriginAllowlist_RejectsMalformedRuntimeOrigin(t *testing.T) {
+	a := NewOriginAllowlist("https://app.example.com")
+	assert.False(t, a.Allowed("https://app.example.com:bad", ""))
+	assert.False(t, a.Allowed("https://app.example.com:+443", ""))
+	assert.False(t, a.Allowed("https://app.example.com@evil.example", ""))
+	assert.False(t, a.Allowed("null", "https://app.example.com/path"))
+	assert.False(t, a.Allowed("https://app.example.com\n", "https://app.example.com/path"))
+	assert.False(t, a.Allowed(string([]byte("https://app.example.com\xff")), ""))
+	assert.False(t, a.Allowed("", "https://app.example.com/path\n"))
+	assert.False(t, a.Allowed("", string([]byte("https://app.example.com/path\xff"))))
+	assert.False(t, a.Allowed("", "https://app.example.com/path with space"))
+}
+
+func TestOriginAllowlist_IPv6Origin(t *testing.T) {
+	a := NewOriginAllowlist("https://[2001:db8::1]:8443")
+	assert.True(t, a.Allowed("https://[2001:db8::1]:8443/path", ""))
+	assert.False(t, a.Allowed("https://[2001:db8::1]", ""))
+	assert.False(t, a.Allowed("https://[not-ip]:8443/path", ""))
+}
+
 func TestWithClock_PanicsOnNil(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -174,4 +278,25 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 		}
 	}()
 	_ = WithClock(nil)
+}
+
+func TestNewIssuer_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		_, _ = NewIssuer(make([]byte, 32), nil)
+	})
+}
+
+func invalidSessionIDs() map[string]string {
+	return map[string]string{
+		"empty":           "",
+		"only whitespace": " \t ",
+		"leading space":   " user",
+		"trailing space":  "user ",
+		"embedded space":  "user 42",
+		"tab":             "user\t42",
+		"newline":         "user\n42",
+		"null":            "user\x0042",
+		"invalid utf8":    string([]byte{'u', 0xff}),
+		"over max":        strings.Repeat("a", MaxSessionIDLen+1),
+	}
 }

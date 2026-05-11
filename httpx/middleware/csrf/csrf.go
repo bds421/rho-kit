@@ -8,12 +8,20 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
-	"mime"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"golang.org/x/net/http/httpguts"
+
+	coreconfig "github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	securitycsrf "github.com/bds421/rho-kit/security/v2/csrf"
 )
@@ -31,6 +39,8 @@ const (
 	// bearerPrefixLen is the length of the "Bearer " prefix (scheme + space).
 	bearerPrefixLen = 7
 )
+
+var tokenRandReader io.Reader = rand.Reader
 
 // Option configures the CSRF middleware.
 type Option func(*config)
@@ -56,11 +66,17 @@ type config struct {
 
 // WithCookieName sets the CSRF cookie name. Default: "__csrf".
 func WithCookieName(name string) Option {
+	if !httpguts.ValidHeaderFieldName(name) {
+		panic("csrf: WithCookieName requires a valid cookie name")
+	}
 	return func(c *config) { c.cookieName = name }
 }
 
 // WithHeaderName sets the expected header name. Default: "X-CSRF-Token".
 func WithHeaderName(name string) Option {
+	if !httpguts.ValidHeaderFieldName(name) {
+		panic("csrf: WithHeaderName requires a valid HTTP header field name")
+	}
 	return func(c *config) { c.headerName = name }
 }
 
@@ -86,10 +102,12 @@ func WithSecure(secure bool) Option {
 // The secret is defensively copied at construction time, so callers
 // can safely zero or reuse the buffer they pass in.
 func WithSecret(secret []byte) Option {
+	if len(secret) < 32 {
+		panic("csrf: HMAC secret must be at least 32 bytes")
+	}
+	copied := append([]byte(nil), secret...)
 	return func(c *config) {
-		cp := make([]byte, len(secret))
-		copy(cp, secret)
-		c.secret = cp
+		c.secret = append([]byte(nil), copied...)
 	}
 }
 
@@ -104,11 +122,19 @@ func WithDevSecret() Option {
 // WithSameSite sets the SameSite attribute on the CSRF cookie.
 // Default: SameSiteLaxMode.
 func WithSameSite(mode http.SameSite) Option {
+	switch mode {
+	case http.SameSiteDefaultMode, http.SameSiteLaxMode, http.SameSiteStrictMode, http.SameSiteNoneMode:
+	default:
+		panic("csrf: WithSameSite requires a valid SameSite mode")
+	}
 	return func(c *config) { c.sameSite = mode }
 }
 
 // WithPath sets the Path attribute on the CSRF cookie. Default: "/".
 func WithPath(path string) Option {
+	if path == "" || !strings.HasPrefix(path, "/") {
+		panic("csrf: WithPath requires an absolute cookie path")
+	}
 	return func(c *config) { c.path = path }
 }
 
@@ -146,32 +172,23 @@ func WithAllowedOrigins(origins ...string) Option {
 	// any of those would never match.
 	canonical := make(map[string]struct{}, len(origins))
 	for _, o := range origins {
-		trimmed := strings.TrimSpace(o)
-		if trimmed == "" {
+		if strings.TrimSpace(o) == "" {
 			continue
 		}
-		u, err := url.Parse(trimmed)
+		origin, err := canonicalOrigin(o, false)
 		if err != nil {
-			panic(fmt.Sprintf("csrf: WithAllowedOrigins parse %q: %v", o, err))
+			panic("csrf: WithAllowedOrigins invalid origin")
 		}
-		switch strings.ToLower(u.Scheme) {
-		case "http", "https":
-		default:
-			panic(fmt.Sprintf("csrf: WithAllowedOrigins requires http/https scheme (got %q)", o))
-		}
-		if u.Host == "" {
-			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q is missing host", o))
-		}
-		if u.Path != "" && u.Path != "/" {
-			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q must not include a path", o))
-		}
-		if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-			panic(fmt.Sprintf("csrf: WithAllowedOrigins origin %q must not include query, fragment, or userinfo", o))
-		}
-		canonical[strings.ToLower(u.Scheme+"://"+u.Host)] = struct{}{}
+		canonical[origin] = struct{}{}
+	}
+	if len(canonical) == 0 {
+		panic("csrf: WithAllowedOrigins requires at least one non-empty origin")
 	}
 	return func(c *config) {
-		c.allowedOrigins = canonical
+		c.allowedOrigins = make(map[string]struct{}, len(canonical))
+		for origin := range canonical {
+			c.allowedOrigins[origin] = struct{}{}
+		}
 	}
 }
 
@@ -190,12 +207,18 @@ func WithAllowedOrigins(origins ...string) Option {
 // rather than fall back to per-process pinning (which would defeat the
 // purpose of session binding).
 func WithSessionExtractor(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("csrf: WithSessionExtractor requires a non-nil extractor")
+	}
 	return func(c *config) { c.sessionExtractor = fn }
 }
 
 // WithSessionTTL overrides the validity window for session-bound tokens.
 // Default: 1 hour. Has no effect unless [WithSessionExtractor] is set.
 func WithSessionTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("csrf: WithSessionTTL requires a positive duration")
+	}
 	return func(c *config) { c.sessionTTL = d }
 }
 
@@ -215,6 +238,9 @@ func WithSessionTTL(d time.Duration) Option {
 // since these auth mechanisms are not vulnerable to CSRF attacks (browsers don't
 // auto-attach them in cross-origin requests).
 func WithSkipCheck(skip func(r *http.Request) bool) Option {
+	if skip == nil {
+		panic("csrf: WithSkipCheck requires a non-nil predicate")
+	}
 	return func(c *config) { c.skipCheck = skip }
 }
 
@@ -246,6 +272,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		path:       "/",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("csrf: New option must not be nil")
+		}
 		o(&cfg)
 	}
 	// FR-020 [HIGH]: default Secure to true. Pre-fix the default was
@@ -262,11 +291,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			panic("csrf: no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 		}
 		cfg.secret = make([]byte, 32)
-		if _, err := rand.Read(cfg.secret); err != nil {
-			panic("csrf: failed to generate HMAC secret: " + err.Error())
+		if _, err := io.ReadFull(tokenRandReader, cfg.secret); err != nil {
+			panic("csrf: failed to generate HMAC secret")
 		}
-	} else if len(cfg.secret) < 32 {
-		panic("csrf: HMAC secret must be at least 32 bytes")
 	}
 
 	// SameSite=None requires Secure: every modern browser rejects a cookie
@@ -295,7 +322,11 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			cookieRegenerated := false
 			if err != nil || !isValidSignedToken(cookie.Value, cfg.secret) {
 				// Generate a new token and set it as a cookie.
-				token := generateSignedToken(cfg.secret)
+				token, err := mintSignedToken(cfg.secret)
+				if err != nil {
+					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+					return
+				}
 				http.SetCookie(w, &http.Cookie{
 					Name:     cfg.cookieName,
 					Value:    token,
@@ -339,7 +370,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			// If the skip predicate matches, bypass CSRF token validation.
 			// The cookie was already set above, so browser clients still
 			// receive a token for later use.
-			if cfg.skipCheck != nil && cfg.skipCheck(r) {
+			if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -361,9 +392,13 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				return
 			}
 
-			headerToken := r.Header.Get(cfg.headerName)
-			if headerToken == "" {
-				httpx.WriteError(w, http.StatusForbidden, "missing "+cfg.headerName+" header")
+			headerToken, present, ok := strictSingleHeaderValue(r.Header, cfg.headerName)
+			if !present {
+				httpx.WriteError(w, http.StatusForbidden, "missing CSRF header")
+				return
+			}
+			if !ok {
+				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF header")
 				return
 			}
 
@@ -390,7 +425,11 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			session := cfg.sessionExtractor(r)
+			session, ok := safeSessionExtractor(cfg.sessionExtractor, r)
+			if !ok || securitycsrf.ValidateSessionID(session) != nil {
+				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
+				return
+			}
 
 			// Issue a fresh token cookie when the request lacks one OR
 			// the existing cookie no longer verifies under the current
@@ -430,17 +469,8 @@ func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.
 				return
 			}
 
-			if cfg.skipCheck != nil && cfg.skipCheck(r) {
+			if cfg.skipCheck != nil && safeSkipCheck(cfg.skipCheck, r) {
 				next.ServeHTTP(w, r)
-				return
-			}
-
-			// An empty session is a configuration bug or an
-			// unauthenticated state-changing request. Either way,
-			// session-bound CSRF can't protect it — reject loudly so
-			// the caller fixes the auth ordering.
-			if session == "" {
-				httpx.WriteError(w, http.StatusForbidden, "csrf: session required")
 				return
 			}
 
@@ -449,9 +479,13 @@ func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.
 				return
 			}
 
-			headerToken := r.Header.Get(cfg.headerName)
-			if headerToken == "" {
-				httpx.WriteError(w, http.StatusForbidden, "missing "+cfg.headerName+" header")
+			headerToken, present, ok := strictSingleHeaderValue(r.Header, cfg.headerName)
+			if !present {
+				httpx.WriteError(w, http.StatusForbidden, "missing CSRF header")
+				return
+			}
+			if !ok {
+				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF header")
 				return
 			}
 			if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
@@ -468,48 +502,147 @@ func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.
 	}
 }
 
+func safeSkipCheck(skip func(*http.Request) bool, r *http.Request) (matched bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("csrf: skip predicate panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			matched = false
+		}
+	}()
+	return skip(r)
+}
+
+func safeSessionExtractor(extract func(*http.Request) string, r *http.Request) (session string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("csrf: session extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			session, ok = "", false
+		}
+	}()
+	return extract(r), true
+}
+
 // originAllowed inspects Origin then Referer (in that order) and reports
 // whether the request's origin appears in the allowlist. A request with
 // neither header is rejected — modern browsers always send Origin on
 // state-changing cross-origin requests, so the absence is itself
 // suspicious in the contexts where Origin checks matter.
 func originAllowed(r *http.Request, allow map[string]struct{}) bool {
-	for _, raw := range []string{r.Header.Get("Origin"), r.Header.Get("Referer")} {
-		if raw == "" || raw == "null" {
-			continue
+	raw, present, ok := singleHeaderValue(r.Header, "Origin")
+	if present {
+		if !ok || raw == "null" {
+			return false
 		}
-		o := normaliseOrigin(raw)
-		if o == "" {
-			continue
-		}
-		if _, ok := allow[o]; ok {
-			return true
-		}
+		return rawOriginAllowed(raw, allow)
 	}
-	return false
+
+	raw, present, ok = singleHeaderValue(r.Header, "Referer")
+	if !present || !ok || raw == "null" {
+		return false
+	}
+	return rawOriginAllowed(raw, allow)
 }
 
-// normaliseOrigin extracts "scheme://host[:port]" from an Origin or Referer
-// header value, lower-casing the host so comparison is case-insensitive.
-// Returns "" if the value is unparseable or missing scheme/host.
-func normaliseOrigin(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
+func rawOriginAllowed(raw string, allow map[string]struct{}) bool {
+	o, err := canonicalOrigin(raw, true)
+	if err != nil {
+		return false
 	}
-	return strings.ToLower(u.Scheme + "://" + u.Host)
+	_, ok := allow[o]
+	return ok
+}
+
+func singleHeaderValue(h http.Header, name string) (value string, present bool, ok bool) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 {
+		return "", true, false
+	}
+	raw := values[0]
+	if raw == "" || !utf8.ValidString(raw) || !httpguts.ValidHeaderFieldValue(raw) {
+		return "", true, false
+	}
+	value = strings.TrimSpace(raw)
+	if value == "" {
+		return "", true, false
+	}
+	return value, true, true
+}
+
+func strictSingleHeaderValue(h http.Header, name string) (value string, present bool, ok bool) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 {
+		return "", true, false
+	}
+	value = values[0]
+	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) || !httpguts.ValidHeaderFieldValue(value) || strings.Contains(value, ",") {
+		return "", true, false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", true, false
+		}
+	}
+	return value, true, true
+}
+
+// canonicalOrigin extracts "scheme://host[:port]" from an Origin or Referer
+// header value, lower-casing the host so comparison is case-insensitive.
+func canonicalOrigin(raw string, allowPath bool) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return "", fmt.Errorf("empty or null origin")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("origin URL is invalid")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("scheme must be http or https")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("origin must not include userinfo")
+	}
+	if !allowPath && (u.Path != "" || u.RawQuery != "" || u.Fragment != "") {
+		return "", fmt.Errorf("origin must not include path, query, or fragment")
+	}
+	if err := coreconfig.ValidateURLHost("csrf origin", u); err != nil {
+		return "", err
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host), nil
 }
 
 // generateSignedToken creates a random token with an HMAC signature.
 // Format: "<random_hex>.<hmac_hex>"
 func generateSignedToken(secret []byte) string {
+	token, err := mintSignedToken(secret)
+	if err != nil {
+		panic("csrf: failed to generate random token")
+	}
+	return token
+}
+
+func mintSignedToken(secret []byte) (string, error) {
 	raw := make([]byte, tokenLength)
-	if _, err := rand.Read(raw); err != nil {
-		panic("csrf: failed to generate random token: " + err.Error())
+	if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
+		return "", fmt.Errorf("csrf: generate random token: %w", err)
 	}
 	tokenHex := hex.EncodeToString(raw)
 	sig := computeHMAC(tokenHex, secret)
-	return tokenHex + "." + sig
+	return tokenHex + "." + sig, nil
 }
 
 // isValidSignedToken verifies that the token was signed by the server.
@@ -535,8 +668,30 @@ func computeHMAC(data string, key []byte) string {
 // Bearer-authenticated requests are immune to CSRF because browsers never
 // auto-attach the Authorization header in cross-origin requests.
 func HasBearerToken(r *http.Request) bool {
-	v := r.Header.Get("Authorization")
-	return len(v) > bearerPrefixLen && strings.EqualFold(v[:bearerPrefixLen], "bearer ")
+	if r == nil {
+		return false
+	}
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return false
+	}
+	v := values[0]
+	if v == "" || strings.TrimSpace(v) != v || !utf8.ValidString(v) || !httpguts.ValidHeaderFieldValue(v) {
+		return false
+	}
+	if len(v) <= bearerPrefixLen || !strings.EqualFold(v[:bearerPrefixLen], "bearer ") {
+		return false
+	}
+	token := v[bearerPrefixLen:]
+	if token == "" || strings.TrimSpace(token) != token || strings.Contains(token, ",") {
+		return false
+	}
+	for _, r := range token {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // HasAPIKey returns a predicate that checks for the presence of a non-empty
@@ -544,18 +699,22 @@ func HasBearerToken(r *http.Request) bool {
 // "X-Api-Token"). Like Bearer tokens, custom API key headers are not
 // auto-attached by browsers.
 //
-// Panics if header is empty.
+// Panics if header is invalid.
 func HasAPIKey(header string) func(r *http.Request) bool {
-	if header == "" {
-		panic("csrf: HasAPIKey header name must not be empty")
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("csrf: HasAPIKey header name must be a valid non-empty HTTP header field name")
 	}
 	return func(r *http.Request) bool {
-		return strings.TrimSpace(r.Header.Get(header)) != ""
+		if r == nil {
+			return false
+		}
+		_, present, ok := strictSingleHeaderValue(r.Header, header)
+		return present && ok
 	}
 }
 
 // RequireJSONContentType rejects state-changing requests that carry a body
-// without an application/json Content-Type. Requests without a body
+// without a JSON Content-Type. Requests without a body
 // (ContentLength == 0 and Body is nil or http.NoBody) are allowed through
 // regardless of Content-Type — this supports body-less actions like
 // POST /restart.
@@ -563,7 +722,8 @@ func RequireJSONContentType(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			if hasBody(r) && !isJSONContentType(r.Header.Get("Content-Type")) {
+			contentType, present, ok := singleHeaderValue(r.Header, "Content-Type")
+			if hasBody(r) && (!present || !ok || !httpx.IsJSONContentType(contentType)) {
 				httpx.WriteError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 				return
 			}
@@ -575,16 +735,4 @@ func RequireJSONContentType(next http.Handler) http.Handler {
 // hasBody reports whether the request appears to carry a body.
 func hasBody(r *http.Request) bool {
 	return r.ContentLength > 0 || (r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody)
-}
-
-// isJSONContentType returns true if the Content-Type is application/json.
-func isJSONContentType(value string) bool {
-	if value == "" {
-		return false
-	}
-	mediaType, _, err := mime.ParseMediaType(value)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(mediaType, "application/json")
 }

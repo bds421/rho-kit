@@ -23,7 +23,10 @@ import (
 type mockSFTPClient struct {
 	store   map[string][]byte
 	root    string
+	lstatFn func(string) (os.FileInfo, error)
 	statFn  func(string) (os.FileInfo, error)
+	readFn  func(string) ([]os.FileInfo, error)
+	openFn  func(string) (*sftp.File, error)
 	closeFn func() error
 }
 
@@ -42,6 +45,9 @@ func (m *mockSFTPClient) Create(p string) (*sftp.File, error) {
 }
 
 func (m *mockSFTPClient) Open(p string) (*sftp.File, error) {
+	if m.openFn != nil {
+		return m.openFn(p)
+	}
 	panic("mockSFTPClient.Open: sftp.File cannot be mocked; use integration tests for Get")
 }
 
@@ -63,6 +69,28 @@ func (m *mockSFTPClient) Rename(oldpath, newpath string) error {
 	return nil
 }
 
+func (m *mockSFTPClient) Lstat(p string) (os.FileInfo, error) {
+	if m.lstatFn != nil {
+		return m.lstatFn(p)
+	}
+	if p == m.root {
+		return fakeFileInfo{name: pathBase(p), dir: true}, nil
+	}
+	if data, ok := m.store[p]; ok {
+		return fakeFileInfo{name: pathBase(p), size: int64(len(data))}, nil
+	}
+	prefix := p
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	for key := range m.store {
+		if strings.HasPrefix(key, prefix) {
+			return fakeFileInfo{name: pathBase(p), dir: true}, nil
+		}
+	}
+	return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+}
+
 func (m *mockSFTPClient) Stat(p string) (os.FileInfo, error) {
 	if m.statFn != nil {
 		return m.statFn(p)
@@ -77,6 +105,9 @@ func (m *mockSFTPClient) Stat(p string) (os.FileInfo, error) {
 func (m *mockSFTPClient) MkdirAll(_ string) error { return nil }
 
 func (m *mockSFTPClient) ReadDir(p string) ([]os.FileInfo, error) {
+	if m.readFn != nil {
+		return m.readFn(p)
+	}
 	prefix := p
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
@@ -123,6 +154,14 @@ func (m *mockSFTPClient) ReadDir(p string) ([]os.FileInfo, error) {
 	return result, nil
 }
 
+func pathBase(p string) string {
+	p = strings.TrimSuffix(p, "/")
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 func (m *mockSFTPClient) Close() error {
 	if m.closeFn != nil {
 		return m.closeFn()
@@ -134,6 +173,7 @@ type fakeFileInfo struct {
 	name    string
 	size    int64
 	dir     bool
+	mode    os.FileMode
 	modTime time.Time
 }
 
@@ -142,6 +182,9 @@ func (f fakeFileInfo) Size() int64        { return f.size }
 func (f fakeFileInfo) IsDir() bool        { return f.dir }
 func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
 func (f fakeFileInfo) Mode() os.FileMode {
+	if f.mode != 0 {
+		return f.mode
+	}
 	if f.dir {
 		return os.ModeDir | 0o750
 	}
@@ -185,6 +228,70 @@ func TestSFTPBackend_Delete(t *testing.T) {
 		err := b.Delete(ctx, "")
 		assert.Error(t, err)
 	})
+
+	t.Run("rejects symlink object", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.store["/data/secret-token-link"] = []byte("not deleted")
+		mock.lstatFn = func(p string) (os.FileInfo, error) {
+			switch p {
+			case "/data":
+				return fakeFileInfo{name: "data", dir: true}, nil
+			case "/data/secret-token-link":
+				return fakeFileInfo{name: "secret-token-link", mode: os.ModeSymlink | 0o777}, nil
+			default:
+				return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+			}
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		err := b.Delete(ctx, "secret-token-link")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.Contains(t, mock.store, "/data/secret-token-link")
+	})
+}
+
+func TestSFTPBackend_GetMissingDoesNotReflectKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mock := newMockSFTPClient("/data")
+	mock.openFn = func(string) (*sftp.File, error) {
+		return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+	}
+	b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+	_, _, err := b.Get(ctx, "secret-token.txt")
+
+	require.ErrorIs(t, err, storage.ErrObjectNotFound)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestSFTPBackend_GetRemoteErrorDoesNotReflectPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mock := newMockSFTPClient("/data")
+	mock.lstatFn = func(p string) (os.FileInfo, error) {
+		switch p {
+		case "/data":
+			return fakeFileInfo{name: "data", dir: true}, nil
+		case "/data/secret-token.txt":
+			return fakeFileInfo{name: "secret-token.txt"}, nil
+		default:
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+	}
+	mock.openFn = func(p string) (*sftp.File, error) {
+		return nil, errors.New("open failed for " + p)
+	}
+	b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+	_, _, err := b.Get(ctx, "secret-token.txt")
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "/data")
 }
 
 func TestSFTPBackend_Exists(t *testing.T) {
@@ -210,6 +317,62 @@ func TestSFTPBackend_Exists(t *testing.T) {
 		ok, err := b.Exists(ctx, "missing.txt")
 		require.NoError(t, err)
 		assert.False(t, ok)
+	})
+
+	t.Run("rejects symlink object", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = func(p string) (os.FileInfo, error) {
+			switch p {
+			case "/data":
+				return fakeFileInfo{name: "data", dir: true}, nil
+			case "/data/secret-token-link":
+				return fakeFileInfo{name: "secret-token-link", mode: os.ModeSymlink | 0o777}, nil
+			default:
+				return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+			}
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		ok, err := b.Exists(ctx, "secret-token-link")
+		require.Error(t, err)
+		assert.False(t, ok)
+		assert.Contains(t, err.Error(), "symlink")
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("stat error does not reflect key", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.store["/data/secret-token.txt"] = []byte("content")
+		mock.statFn = func(p string) (os.FileInfo, error) {
+			return nil, errors.New("backend down for " + p)
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		ok, err := b.Exists(ctx, "secret-token.txt")
+		require.Error(t, err)
+		assert.False(t, ok)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "/data")
+	})
+
+	t.Run("lstat error does not reflect key", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = func(p string) (os.FileInfo, error) {
+			if p == "/data" {
+				return fakeFileInfo{name: "data", dir: true}, nil
+			}
+			return nil, errors.New("lstat failed for " + p)
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		ok, err := b.Exists(ctx, "secret-token.txt")
+		require.Error(t, err)
+		assert.False(t, ok)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "/data")
 	})
 }
 
@@ -247,6 +410,13 @@ func TestSFTPBackend_Healthy(t *testing.T) {
 		}
 		assert.False(t, b.Healthy())
 	})
+
+	t.Run("invalid receivers are unhealthy", func(t *testing.T) {
+		t.Parallel()
+		var nilBackend *SFTPBackend
+		assert.False(t, nilBackend.Healthy())
+		assert.False(t, (&SFTPBackend{}).Healthy())
+	})
 }
 
 func TestSFTPBackend_Close(t *testing.T) {
@@ -267,6 +437,13 @@ func TestSFTPBackend_Close(t *testing.T) {
 		assert.True(t, closed)
 		assert.False(t, b.connected)
 	})
+
+	t.Run("invalid receivers are no-op", func(t *testing.T) {
+		t.Parallel()
+		var nilBackend *SFTPBackend
+		assert.NoError(t, nilBackend.Close())
+		assert.NoError(t, (&SFTPBackend{}).Close())
+	})
 }
 
 func TestSFTPBackend_HealthCheck(t *testing.T) {
@@ -285,7 +462,21 @@ func TestSFTPBackend_HealthCheck(t *testing.T) {
 		check := HealthCheck(b)
 		assert.Equal(t, "healthy", check.Check(ctx))
 		assert.False(t, check.Critical)
-		assert.Contains(t, check.Name, "sftp:testhost")
+		assert.Regexp(t, `^sftp-[0-9a-f]{12}$`, check.Name)
+		assert.NotContains(t, check.Name, "testhost")
+	})
+
+	t.Run("does not expose host name in check name", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		mock := newMockSFTPClient(dir)
+		b := NewWithClient(mock, SFTPConfig{Host: "Files.EXAMPLE.com", Port: 2222, RootPath: dir})
+
+		check := HealthCheck(b)
+		assert.Regexp(t, `^sftp-[0-9a-f]{12}$`, check.Name)
+		assert.NotContains(t, check.Name, "files")
+		assert.NotContains(t, check.Name, "example")
+		assert.NotContains(t, check.Name, "2222")
 	})
 
 	t.Run("critical check marks critical", func(t *testing.T) {
@@ -422,6 +613,118 @@ func TestSFTPBackend_List(t *testing.T) {
 
 		assert.Len(t, results, 2)
 	})
+
+	t.Run("rejects symlink objects", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.readFn = func(p string) ([]os.FileInfo, error) {
+			if p != "/data" {
+				return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+			}
+			return []os.FileInfo{
+				fakeFileInfo{name: "secret-token-link", mode: os.ModeSymlink | 0o777},
+			}, nil
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		var errs []error
+		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		require.NotEmpty(t, errs)
+		assert.Contains(t, errs[0].Error(), "symlink")
+		assert.NotContains(t, errs[0].Error(), "secret-token")
+	})
+
+	t.Run("rejects symlink root before reading", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.lstatFn = func(p string) (os.FileInfo, error) {
+			if p == "/data" {
+				return fakeFileInfo{name: "data", mode: os.ModeSymlink | 0o777}, nil
+			}
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+		readCalls := 0
+		mock.readFn = func(string) ([]os.FileInfo, error) {
+			readCalls++
+			return nil, errors.New("backend should not read through symlink root")
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		var errs []error
+		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		require.NotEmpty(t, errs)
+		assert.Contains(t, errs[0].Error(), "symlink")
+		assert.Equal(t, 0, readCalls)
+	})
+
+	t.Run("readdir error does not reflect remote path", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		mock.readFn = func(p string) ([]os.FileInfo, error) {
+			return nil, errors.New("cannot read " + p + "/secret-token")
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		var errs []error
+		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		require.NotEmpty(t, errs)
+		assert.NotContains(t, errs[0].Error(), "secret-token")
+		assert.NotContains(t, errs[0].Error(), "/data")
+	})
+
+	t.Run("rejects invalid options before reading remote dirs", func(t *testing.T) {
+		t.Parallel()
+		mock := newMockSFTPClient("/data")
+		calls := 0
+		mock.readFn = func(string) ([]os.FileInfo, error) {
+			calls++
+			return nil, errors.New("backend should not be called")
+		}
+		b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+		var seenErr error
+		for _, err := range b.List(ctx, "", storage.ListOptions{StartAfter: "bad key"}) {
+			seenErr = err
+			break
+		}
+
+		require.ErrorIs(t, seenErr, storage.ErrValidation)
+		assert.Equal(t, 0, calls)
+	})
+}
+
+func TestSFTPBackend_RejectsSymlinkParent(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockSFTPClient("/data")
+	mock.lstatFn = func(p string) (os.FileInfo, error) {
+		switch p {
+		case "/data":
+			return fakeFileInfo{name: "data", dir: true}, nil
+		case "/data/secret-token-uploads":
+			return fakeFileInfo{name: "secret-token-uploads", mode: os.ModeSymlink | 0o777}, nil
+		default:
+			return nil, &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
+		}
+	}
+	b := NewWithClient(mock, SFTPConfig{Host: "localhost", RootPath: "/data"})
+
+	err := b.rejectSymlinkAncestors(mock, "/data/secret-token-uploads/file.txt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 // Verify _ = io.ReadCloser is satisfied by sftp.File at compile time.
@@ -451,5 +754,12 @@ func TestNewWithClient_PanicsOnNilClient(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
 		NewWithClient(nil, SFTPConfig{Host: "localhost"})
+	})
+}
+
+func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		NewWithClient(newMockSFTPClient("/data"), SFTPConfig{Host: "localhost", RootPath: "/data"}, nil)
 	})
 }

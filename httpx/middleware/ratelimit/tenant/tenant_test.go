@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -86,6 +87,7 @@ func TestNew_BlocksWhenTenantBudgetExhausted(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 	assert.Equal(t, "tenant", rec.Header().Get("X-RateLimit-Scope"))
 	assert.Equal(t, "5", rec.Header().Get("Retry-After"))
+	assertJSONError(t, rec, "tenant rate limit exceeded")
 }
 
 func TestNew_TenantsAreIsolated(t *testing.T) {
@@ -116,6 +118,7 @@ func TestNew_MissingTenantReturns400(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	assert.Equal(t, http.StatusBadRequest, rec.Code,
 		"missing tenant should return 400; tenant middleware must run upstream")
+	assertJSONError(t, rec, "tenant: required tenant ID is missing")
 }
 
 func TestNew_LimiterErrorReturns500(t *testing.T) {
@@ -128,6 +131,7 @@ func TestNew_LimiterErrorReturns500(t *testing.T) {
 	h.ServeHTTP(rec, reqWithTenant(t, "acme"))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code,
 		"limiter backend error must not silently fail-open")
+	assertJSONError(t, rec, "rate limit check failed")
 }
 
 func TestNew_PanicsOnNilLimiter(t *testing.T) {
@@ -151,4 +155,20 @@ func TestNew_NoRetryAfterWhenLimiterDoesntKnow(t *testing.T) {
 	// Limiter returned retryAfter=0 (no opinion); middleware must not
 	// fabricate a Retry-After header.
 	assert.Empty(t, rec.Header().Get("Retry-After"))
+	assertJSONError(t, rec, "tenant rate limit exceeded")
+}
+
+func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, want, body.Error)
+	assert.NotEmpty(t, body.Code)
 }

@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
@@ -58,6 +59,9 @@ func main() {
 }
 
 func run(baselinePath, currentPath string, failOn map[Metric]struct{}, threshold float64, out io.Writer) (code int, err error) {
+	if err := validateThreshold(threshold); err != nil {
+		return 2, err
+	}
 	baseResults, err := readResults(baselinePath, "baseline")
 	if err != nil {
 		return 2, err
@@ -105,6 +109,13 @@ func readResults(path, label string) (results []Result, err error) {
 	return results, nil
 }
 
+func validateThreshold(threshold float64) error {
+	if math.IsNaN(threshold) || math.IsInf(threshold, 0) || threshold < 0 {
+		return fmt.Errorf("threshold must be a finite non-negative percentage")
+	}
+	return nil
+}
+
 func parseFailOn(s string) (map[Metric]struct{}, error) {
 	out := make(map[Metric]struct{})
 	for _, tok := range strings.Split(s, ",") {
@@ -114,17 +125,20 @@ func parseFailOn(s string) (map[Metric]struct{}, error) {
 		}
 		m := Metric(tok)
 		if !IsValidMetric(m) {
-			return nil, fmt.Errorf("unknown -fail-on metric %q (valid: %s)",
-				tok, strings.Join(metricNames(), ","))
+			return nil, fmt.Errorf("unknown -fail-on metric (valid: %s)", strings.Join(metricNames(), ","))
 		}
 		out[m] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("-fail-on must include at least one metric")
 	}
 	return out, nil
 }
 
 func metricNames() []string {
-	out := make([]string, 0, len(SupportedMetrics))
-	for _, m := range SupportedMetrics {
+	metrics := SupportedMetrics()
+	out := make([]string, 0, len(metrics))
+	for _, m := range metrics {
 		out = append(out, string(m))
 	}
 	return out

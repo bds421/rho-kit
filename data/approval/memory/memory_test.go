@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +30,55 @@ func TestCreate_StartsPending(t *testing.T) {
 	assert.Equal(t, approval.StatePending, r.State)
 }
 
+func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
+	store := New()
+	r := newReq("copy-payload")
+	r.Payload = []byte("original")
+
+	created, err := store.Create(context.Background(), r)
+	require.NoError(t, err)
+
+	r.Payload[0] = 'i'
+	created.Payload[0] = 'c'
+	got, err := store.Get(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(got.Payload))
+
+	got.Payload[0] = 'g'
+	gotAgain, err := store.Get(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(gotAgain.Payload))
+
+	listed, err := store.List(context.Background(), approval.Query{TenantID: "tenant"})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	listed[0].Payload[0] = 'l'
+	gotAgain, err = store.Get(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(gotAgain.Payload))
+
+	decided, err := store.Decide(context.Background(), "copy-payload", "approver", "ok", true)
+	require.NoError(t, err)
+	decided.Payload[0] = 'd'
+	gotAgain, err = store.Get(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(gotAgain.Payload))
+
+	executed, err := store.MarkExecuted(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	executed.Payload[0] = 'e'
+	gotAgain, err = store.Get(context.Background(), "copy-payload")
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(gotAgain.Payload))
+}
+
 func TestCreate_RejectsDuplicate(t *testing.T) {
 	store := New()
-	_, err := store.Create(context.Background(), newReq("r1"))
+	_, err := store.Create(context.Background(), newReq("secret-token"))
 	require.NoError(t, err)
-	_, err = store.Create(context.Background(), newReq("r1"))
+	_, err = store.Create(context.Background(), newReq("secret-token"))
 	assert.ErrorIs(t, err, ErrDuplicateID)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
 }
 
 func TestCreate_RejectsMissingFields(t *testing.T) {
@@ -59,12 +103,72 @@ func TestCreate_RejectsPastExpiresAt(t *testing.T) {
 	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
 }
 
+func TestCreate_UsesSharedValidation(t *testing.T) {
+	store := New()
+
+	r := newReq(strings.Repeat("a", approval.MaxIDLen+1))
+	_, err := store.Create(context.Background(), r)
+	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
+
+	r = newReq("actor-too-long")
+	r.Actor = strings.Repeat("a", approval.MaxActorLen+1)
+	_, err = store.Create(context.Background(), r)
+	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
+
+	r = newReq("payload-too-large")
+	r.Payload = make([]byte, approval.MaxPayloadSize+1)
+	_, err = store.Create(context.Background(), r)
+	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
+}
+
+func TestStore_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, store := range map[string]*Store{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := store.Create(ctx, newReq("r"))
+			assert.ErrorIs(t, err, approval.ErrInvalidStore)
+
+			_, err = store.Get(ctx, "r")
+			assert.ErrorIs(t, err, approval.ErrInvalidStore)
+
+			_, err = store.List(ctx, approval.Query{TenantID: "tenant"})
+			assert.ErrorIs(t, err, approval.ErrInvalidStore)
+
+			_, err = store.Decide(ctx, "r", "approver", "ok", true)
+			assert.ErrorIs(t, err, approval.ErrInvalidStore)
+
+			_, err = store.MarkExecuted(ctx, "r")
+			assert.ErrorIs(t, err, approval.ErrInvalidStore)
+		})
+	}
+}
+
 func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Decide(context.Background(), "r1", "", "ok", true)
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
+}
+
+func TestDecide_RejectsInvalidDecidedBy(t *testing.T) {
+	store := New()
+	_, err := store.Create(context.Background(), newReq("r1"))
+	require.NoError(t, err)
+	_, err = store.Decide(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok", true)
+	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
+}
+
+func TestDecide_RejectsInvalidReason(t *testing.T) {
+	store := New()
+	_, err := store.Create(context.Background(), newReq("r1"))
+	require.NoError(t, err)
+	_, err = store.Decide(context.Background(), "r1", "approver-1", strings.Repeat("r", approval.MaxReasonLen+1), true)
+	assert.ErrorIs(t, err, approval.ErrInvalidReason)
 }
 
 func TestDecide_ApprovesPending(t *testing.T) {
@@ -216,11 +320,18 @@ func TestList_RejectsEmptyTenantWithoutAllTenants(t *testing.T) {
 	require.ErrorIs(t, err, approval.ErrQueryTenantRequired)
 }
 
+func TestList_RejectsTenantAndAllTenantsConflict(t *testing.T) {
+	store := New()
+	_, err := store.List(context.Background(), approval.Query{TenantID: "t1", AllTenants: true})
+	require.ErrorIs(t, err, approval.ErrQueryScopeConflict)
+}
+
 func TestQuery_Validate(t *testing.T) {
 	assert.ErrorIs(t, (approval.Query{}).Validate(), approval.ErrQueryTenantRequired)
 	assert.ErrorIs(t, (approval.Query{State: approval.StatePending}).Validate(), approval.ErrQueryTenantRequired)
 	assert.NoError(t, (approval.Query{TenantID: "t1"}).Validate())
 	assert.NoError(t, (approval.Query{AllTenants: true}).Validate())
+	assert.ErrorIs(t, (approval.Query{TenantID: "t1", AllTenants: true}).Validate(), approval.ErrQueryScopeConflict)
 }
 
 func TestGet_NotFound(t *testing.T) {
@@ -231,6 +342,10 @@ func TestGet_NotFound(t *testing.T) {
 
 func TestWithClock_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() { New(nil) })
 }
 
 func TestDecide_ExpiresAtTheInstant(t *testing.T) {

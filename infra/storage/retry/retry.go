@@ -117,6 +117,9 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 		ShouldRetry: storage.IsTransient,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("storage/retry: option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.ShouldRetry == nil {
@@ -163,10 +166,13 @@ func (r *RetryStorage) policy() kitretry.Policy {
 // Put does NOT retry — the first error is returned immediately because
 // the reader has been consumed and retrying would upload empty content.
 func (r *RetryStorage) Put(ctx context.Context, key string, reader io.Reader, meta storage.ObjectMeta) error {
+	if err := storage.ValidateKey(key); err != nil {
+		return err
+	}
 	seeker, seekable := reader.(io.Seeker)
 
 	if !seekable {
-		return r.backend.Put(ctx, key, reader, meta)
+		return r.backend.Put(ctx, key, reader, storage.CloneObjectMeta(meta))
 	}
 
 	first := true
@@ -178,16 +184,7 @@ func (r *RetryStorage) Put(ctx context.Context, key string, reader io.Reader, me
 			}
 		}
 		first = false
-		// Copy meta for each attempt. Value fields (ContentType, Size) are
-		// copied by struct assignment. Custom (map) must be deep-copied to
-		// prevent validator mutations from persisting across retries.
-		attemptMeta := meta
-		if len(meta.Custom) > 0 {
-			attemptMeta.Custom = make(map[string]string, len(meta.Custom))
-			for k, v := range meta.Custom {
-				attemptMeta.Custom[k] = v
-			}
-		}
+		attemptMeta := storage.CloneObjectMeta(meta)
 		return r.backend.Put(ctx, key, reader, attemptMeta)
 	})
 }
@@ -195,6 +192,9 @@ func (r *RetryStorage) Put(ctx context.Context, key string, reader io.Reader, me
 // Get retries on transient errors. Any ReadCloser from a failed attempt is
 // closed before retrying to prevent resource leaks.
 func (r *RetryStorage) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
 	var (
 		rc   io.ReadCloser
 		meta storage.ObjectMeta
@@ -220,6 +220,9 @@ func (r *RetryStorage) Get(ctx context.Context, key string) (io.ReadCloser, stor
 
 // Delete retries on transient errors.
 func (r *RetryStorage) Delete(ctx context.Context, key string) error {
+	if err := storage.ValidateKey(key); err != nil {
+		return err
+	}
 	return kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
 		return r.backend.Delete(ctx, key)
 	})
@@ -227,6 +230,9 @@ func (r *RetryStorage) Delete(ctx context.Context, key string) error {
 
 // Exists retries on transient errors.
 func (r *RetryStorage) Exists(ctx context.Context, key string) (bool, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return false, err
+	}
 	var ok bool
 	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
 		var existsErr error
@@ -247,6 +253,12 @@ func (r *RetryStorage) Exists(ctx context.Context, key string) (bool, error) {
 // for List — restarting iteration would duplicate already-yielded items.
 
 func (r *RetryStorage) listImpl(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return retryErrorSeq(err)
+	}
+	if err := storage.ValidateListOptions(opts); err != nil {
+		return retryErrorSeq(err)
+	}
 	lister, ok := storage.AsLister(r.backend)
 	if !ok {
 		return func(yield func(storage.ObjectInfo, error) bool) {
@@ -257,6 +269,12 @@ func (r *RetryStorage) listImpl(ctx context.Context, prefix string, opts storage
 }
 
 func (r *RetryStorage) copyImpl(ctx context.Context, srcKey, dstKey string) error {
+	if err := storage.ValidateKey(srcKey); err != nil {
+		return err
+	}
+	if err := storage.ValidateKey(dstKey); err != nil {
+		return err
+	}
 	copier, ok := storage.AsCopier(r.backend)
 	if !ok {
 		return fmt.Errorf("storage/retry: underlying backend does not implement storage.Copier")
@@ -267,6 +285,9 @@ func (r *RetryStorage) copyImpl(ctx context.Context, srcKey, dstKey string) erro
 }
 
 func (r *RetryStorage) presignGetImpl(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
 	ps, ok := storage.AsPresigned(r.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PresignedStore")
@@ -281,6 +302,12 @@ func (r *RetryStorage) presignGetImpl(ctx context.Context, key string, ttl time.
 }
 
 func (r *RetryStorage) presignPutImpl(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return "", err
+	}
 	ps, ok := storage.AsPresigned(r.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PresignedStore")
@@ -288,13 +315,16 @@ func (r *RetryStorage) presignPutImpl(ctx context.Context, key string, ttl time.
 	var url string
 	err := kitretry.DoWith(ctx, r.policy(), func(ctx context.Context) error {
 		var perr error
-		url, perr = ps.PresignPutURL(ctx, key, ttl, meta)
+		url, perr = ps.PresignPutURL(ctx, key, ttl, storage.CloneObjectMeta(meta))
 		return perr
 	})
 	return url, err
 }
 
 func (r *RetryStorage) urlImpl(ctx context.Context, key string) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
 	urler, ok := storage.AsPublicURLer(r.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/retry: underlying backend does not implement storage.PublicURLer")
@@ -306,6 +336,12 @@ func (r *RetryStorage) urlImpl(ctx context.Context, key string) (string, error) 
 		return uerr
 	})
 	return url, err
+}
+
+func retryErrorSeq(err error) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		yield(storage.ObjectInfo{}, err)
+	}
 }
 
 // Compile-time interface compliance check.

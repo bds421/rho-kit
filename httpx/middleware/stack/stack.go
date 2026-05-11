@@ -46,8 +46,10 @@ type Config struct {
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// recover -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler
-// Additional outer middleware wraps the entire chain.
+// recover -> outer -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler.
+// Additional outer middleware wraps the standard observability/security chain
+// but remains inside recover so panics in custom boundary middleware get the
+// same JSON 500 response, logging, and panic metrics as handler panics.
 //
 // The request logger is injected so that httpx.Logger(ctx, fallback) returns
 // a request-scoped logger in handler code. Recover is the OUTERMOST kit
@@ -75,6 +77,9 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		FrameOption:         secheaders.Deny,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("stack: option must not be nil")
+		}
 		opt(&cfg)
 	}
 	if cfg.Logger == nil {
@@ -142,6 +147,11 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		shOpts = append(shOpts, cfg.SecHeadersOptions...)
 		h = secheaders.New(shOpts...)(h)
 	}
+
+	for i := len(cfg.Outer) - 1; i >= 0; i-- {
+		h = cfg.Outer[i](h)
+	}
+
 	if cfg.EnableRecover {
 		recOpts := []mwrecover.Option{mwrecover.WithLogger(cfg.Logger)}
 		if cfg.RecoverMetrics != nil {
@@ -150,16 +160,13 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 		h = mwrecover.Middleware(recOpts...)(h)
 	}
 
-	for i := len(cfg.Outer) - 1; i >= 0; i-- {
-		h = cfg.Outer[i](h)
-	}
-
 	return h
 }
 
 // WithQuietPaths sets paths logged at debug level.
 func WithQuietPaths(paths ...string) Option {
-	return func(cfg *Config) { cfg.QuietPaths = paths }
+	copied := append([]string(nil), paths...)
+	return func(cfg *Config) { cfg.QuietPaths = append([]string(nil), copied...) }
 }
 
 // WithLogger overrides the default logger.
@@ -200,6 +207,9 @@ func WithoutLogging() Option {
 // or other streaming endpoints should be mounted on a sub-stack built with
 // [WithoutTimeout] (the timeout buffers the response, which defeats streaming).
 func WithTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("stack: WithTimeout requires a positive duration (use WithoutTimeout to opt out)")
+	}
 	return func(cfg *Config) { cfg.Timeout = d }
 }
 
@@ -248,17 +258,20 @@ func WithFrameOption(opt secheaders.FrameOption) Option {
 // behind TLS-terminating ingress, force HSTS unconditionally, or any
 // other secheaders option not surfaced as a typed stack field.
 func WithSecHeadersOptions(opts ...secheaders.Option) Option {
+	copied := append([]secheaders.Option(nil), opts...)
 	return func(cfg *Config) {
-		cfg.SecHeadersOptions = append(cfg.SecHeadersOptions, opts...)
+		cfg.SecHeadersOptions = append(cfg.SecHeadersOptions, copied...)
 	}
 }
 
 // WithOuter appends middleware that wraps the full stack.
 func WithOuter(mw ...func(http.Handler) http.Handler) Option {
-	return func(cfg *Config) { cfg.Outer = append(cfg.Outer, mw...) }
+	copied := append([]func(http.Handler) http.Handler(nil), mw...)
+	return func(cfg *Config) { cfg.Outer = append(cfg.Outer, copied...) }
 }
 
 // WithInner appends middleware applied closest to the handler.
 func WithInner(mw ...func(http.Handler) http.Handler) Option {
-	return func(cfg *Config) { cfg.Inner = append(cfg.Inner, mw...) }
+	copied := append([]func(http.Handler) http.Handler(nil), mw...)
+	return func(cfg *Config) { cfg.Inner = append(cfg.Inner, copied...) }
 }

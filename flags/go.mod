@@ -9,7 +9,7 @@
 // the SDK transitively.
 module github.com/bds421/rho-kit/flags/v2
 
-go 1.26
+go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0

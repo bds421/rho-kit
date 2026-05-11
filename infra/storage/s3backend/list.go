@@ -21,11 +21,14 @@ var _ storage.Lister = (*S3Backend)(nil)
 // Pagination is handled internally — the iterator fetches pages lazily as the
 // caller consumes results.
 func (b *S3Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
-	if prefix != "" {
-		if err := storage.ValidatePrefix(prefix); err != nil {
-			return func(yield func(storage.ObjectInfo, error) bool) {
-				yield(storage.ObjectInfo{}, fmt.Errorf("s3backend: %w", err))
-			}
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("s3backend: %w", err))
+		}
+	}
+	if err := storage.ValidateListOptions(opts); err != nil {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("s3backend: %w", err))
 		}
 	}
 
@@ -34,7 +37,7 @@ func (b *S3Backend) List(ctx context.Context, prefix string, opts storage.ListOp
 		defer span.End()
 		span.SetAttributes(
 			attribute.String("storage.bucket", b.bucket),
-			attribute.String("storage.prefix", prefix),
+			attribute.Int("storage.prefix_len", len(prefix)),
 		)
 
 		input := &s3.ListObjectsV2Input{
@@ -58,8 +61,9 @@ func (b *S3Backend) List(ctx context.Context, prefix string, opts storage.ListOp
 			b.metrics.observeOp(b.instance, "list", start, err)
 
 			if err != nil {
-				span.SetStatus(codes.Error, err.Error())
-				yield(storage.ObjectInfo{}, fmt.Errorf("s3backend: list prefix %q: %w", prefix, err))
+				opErr := storage.WrapSafe("s3backend: list failed", err)
+				span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+				yield(storage.ObjectInfo{}, opErr)
 				return
 			}
 

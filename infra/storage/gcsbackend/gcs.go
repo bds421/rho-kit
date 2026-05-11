@@ -35,8 +35,8 @@ type Option func(*GCSBackend)
 // WithInstance sets the metrics/tracing instance label.
 func WithInstance(name string) Option {
 	return func(b *GCSBackend) {
-		if name == "" {
-			panic("gcsbackend: instance name must not be empty")
+		if err := storage.ValidateInstanceName(name); err != nil {
+			panic("gcsbackend: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -44,8 +44,9 @@ func WithInstance(name string) Option {
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
+	copied := storage.CloneValidators(validators...)
 	return func(b *GCSBackend) {
-		b.validators = append(b.validators, validators...)
+		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
@@ -53,6 +54,9 @@ func WithValidators(validators ...storage.Validator) Option {
 func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error) {
 	if cfg.Bucket == "" {
 		panic("gcsbackend: GCSConfig.Bucket is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	var clientOpts []option.ClientOption
@@ -65,7 +69,7 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 
 	client, err := gcsstorage.NewClient(ctx, clientOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("gcsbackend: create client: %w", err)
+		return nil, storage.WrapSafe("gcsbackend: create client failed", err)
 	}
 
 	b := &GCSBackend{
@@ -75,6 +79,9 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 		instance: "default",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("gcsbackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b, nil
@@ -95,6 +102,9 @@ func NewWithClient(client *gcsstorage.Client, cfg GCSConfig, opts ...Option) *GC
 		instance: "default",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("gcsbackend: option must not be nil")
+		}
 		o(b)
 	}
 	return b
@@ -106,16 +116,23 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.cfg.Bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
@@ -134,21 +151,23 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 	obj := b.bucket.Object(key)
 	w := obj.NewWriter(writerCtx)
 	w.ContentType = contentType
-	w.Metadata = meta.Custom
+	w.Metadata = storage.CloneCustomMeta(meta.Custom)
 
 	if _, err := io.Copy(w, validated); err != nil {
 		cancelWriter()
 		// Close after cancel reaps any goroutine the SDK started; we
 		// ignore its error because the upload is intentionally aborted.
 		_ = w.Close()
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("gcsbackend: put %q: write: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: put write failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 
 	if err := w.Close(); err != nil {
 		cancelWriter()
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("gcsbackend: put %q: close: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: put close failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	cancelWriter()
 
@@ -161,7 +180,7 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.cfg.Bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -175,10 +194,11 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 	attrs, err := obj.Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
-			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get %q: %w", key, storage.ErrObjectNotFound)
+			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get: %w", storage.ErrObjectNotFound)
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get %q: attrs: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: get attrs failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	// Pin the generation from Attrs to ensure NewReader reads the same object
@@ -186,8 +206,9 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 	// the Attrs and NewReader calls.
 	rc, err := obj.Generation(attrs.Generation).NewReader(ctx)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get %q: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: get failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	meta := storage.ObjectMeta{
@@ -195,7 +216,7 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 		Size:         attrs.Size,
 		ETag:         attrs.Etag,
 		LastModified: attrs.Updated,
-		Custom:       attrs.Metadata,
+		Custom:       storage.CloneCustomMeta(attrs.Metadata),
 	}
 
 	return rc, meta, nil
@@ -207,7 +228,7 @@ func (b *GCSBackend) Delete(ctx context.Context, key string) error {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.cfg.Bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -219,8 +240,9 @@ func (b *GCSBackend) Delete(ctx context.Context, key string) error {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("gcsbackend: delete %q: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: delete failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -231,7 +253,7 @@ func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.cfg.Bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -243,13 +265,17 @@ func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return false, nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return false, fmt.Errorf("gcsbackend: exists %q: %w", key, err)
+		opErr := storage.WrapSafe("gcsbackend: exists failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
 	}
 	return true, nil
 }
 
 // Close closes the underlying GCS client.
 func (b *GCSBackend) Close() error {
+	if b == nil || b.client == nil {
+		return nil
+	}
 	return b.client.Close()
 }

@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 
@@ -37,6 +36,13 @@ func New() *Store {
 	}
 }
 
+func (s *Store) ready() error {
+	if s == nil || s.byID == nil {
+		return actionlog.ErrInvalidStore
+	}
+	return nil
+}
+
 func (s *Store) lockFor(tenantID string) *sync.Mutex {
 	if mu, ok := s.tenantMu.Load(tenantID); ok {
 		return mu.(*sync.Mutex)
@@ -56,6 +62,9 @@ func (s *Store) lockFor(tenantID string) *sync.Mutex {
 // Concurrency: callers must guarantee no AppendChained is in flight for
 // the pruned tenants. The store does not synchronise that for them.
 func (s *Store) PruneTenants() {
+	if s.ready() != nil {
+		return
+	}
 	s.mu.RLock()
 	live := make(map[string]struct{}, 16)
 	for _, e := range s.entries {
@@ -74,7 +83,13 @@ func (s *Store) PruneTenants() {
 // AppendChained holds the per-tenant lock, reads the previous entry,
 // runs build, and persists the resulting entry under the same lock.
 func (s *Store) AppendChained(_ context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
 	if tenantID == "" {
+		return actionlog.Entry{}, actionlog.ErrInvalidEntry
+	}
+	if build == nil {
 		return actionlog.Entry{}, actionlog.ErrInvalidEntry
 	}
 	tmu := s.lockFor(tenantID)
@@ -86,15 +101,19 @@ func (s *Store) AppendChained(_ context.Context, tenantID string, build func(pre
 	if err != nil {
 		return actionlog.Entry{}, err
 	}
+	if err := actionlog.ValidateStoredEntry(tenantID, entry); err != nil {
+		return actionlog.Entry{}, err
+	}
+	entry = entry.Clone()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, dup := s.byID[entry.ID]; dup {
-		return actionlog.Entry{}, fmt.Errorf("%w: %s", ErrDuplicateID, entry.ID)
+		return actionlog.Entry{}, ErrDuplicateID
 	}
 	s.byID[entry.ID] = len(s.entries)
 	s.entries = append(s.entries, entry)
-	return entry, nil
+	return entry.Clone(), nil
 }
 
 // latestForTenantLocked returns the highest-Seq entry for tenantID
@@ -116,23 +135,32 @@ func (s *Store) latestForTenantLocked(tenantID string) (actionlog.Entry, int64) 
 			best = e
 		}
 	}
-	return best, bestSeq
+	return best.Clone(), bestSeq
 }
 
 // Get returns the entry by id, or [actionlog.ErrNotFound] if absent.
 func (s *Store) Get(_ context.Context, id string) (actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	idx, ok := s.byID[id]
 	if !ok {
 		return actionlog.Entry{}, actionlog.ErrNotFound
 	}
-	return s.entries[idx], nil
+	return s.entries[idx].Clone(), nil
 }
 
 // List returns entries matching q ordered by OccurredAt descending,
 // then ID descending.
 func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -146,7 +174,7 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, e
 		if !match(e, q) {
 			continue
 		}
-		matched = append(matched, e)
+		matched = append(matched, e.Clone())
 	}
 
 	sort.Slice(matched, func(i, j int) bool {
@@ -166,12 +194,18 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, e
 // ListByTenantSeq returns every entry for tenantID in Seq ASC order.
 // No limit is applied — VerifyChain needs the full chain.
 func (s *Store) ListByTenantSeq(_ context.Context, tenantID string) ([]actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if tenantID == "" {
+		return nil, actionlog.ErrQueryTenantRequired
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]actionlog.Entry, 0)
 	for _, e := range s.entries {
 		if e.TenantID == tenantID {
-			out = append(out, e)
+			out = append(out, e.Clone())
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })

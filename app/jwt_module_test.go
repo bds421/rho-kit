@@ -1,13 +1,17 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/observability/v2/tracing"
+	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
 func TestJWTModule_Name(t *testing.T) {
@@ -90,6 +94,44 @@ func TestBuildIntegrationModules_NoJWT(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
 	modules := b.buildIntegrationModules()
 	assert.False(t, hasModule(modules, "jwt"), "jwt should not be present without config")
+}
+
+func TestJWTModuleLogsDoNotExposeIdentityURLs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	httpClient := newHTTPClientModule(false)
+	require.NoError(t, httpClient.Init(context.Background(), ModuleContext{
+		Logger: logger,
+		Config: BaseConfig{},
+	}))
+
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL:        "https://identity.example.com/realms/acme/.well-known/jwks.json",
+		expectedIssuer: "https://identity.example.com/realms/acme",
+		audience:       "orders-api",
+	})
+	require.NoError(t, m.Init(context.Background(), ModuleContext{
+		Logger: logger,
+		Runner: lifecycle.NewRunner(logger),
+		Config: BaseConfig{},
+		modules: map[string]Module{
+			"httpclient": httpClient,
+		},
+	}))
+
+	rendered := buf.String()
+	for _, leaked := range []string{
+		"identity.example.com",
+		"realms/acme",
+		".well-known/jwks.json",
+		"orders-api",
+	} {
+		assert.NotContains(t, rendered, leaked)
+	}
+	assert.Contains(t, rendered, "jwks_configured=true")
+	assert.Contains(t, rendered, "issuer_configured=true")
+	assert.Contains(t, rendered, "audience_configured=true")
 }
 
 func TestBuildIntegrationModules_FullChain(t *testing.T) {

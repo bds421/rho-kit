@@ -1,6 +1,6 @@
 # Utilities — Errors, Validation, Pagination, Cache, Lifecycle, Concurrency
 
-Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `data/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
+Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `data/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/tenant`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
 
 ## apperror — Sum-Type Application Errors
 
@@ -16,7 +16,7 @@ apperror.NewConflict("email already taken")             // CodeConflict → 409
 apperror.NewAuthRequired("session expired")             // CodeAuthRequired → 401
 apperror.NewForbidden("access denied")                  // CodeForbidden → 403
 apperror.NewRateLimit("quota exceeded", 30*time.Second) // CodeRateLimit → 429 + Retry-After header
-apperror.NewOperationFailed("payment declined")         // CodeOperationFailed → 500 (message exposed)
+apperror.NewOperationFailed("payment declined")         // CodeOperationFailed → 500 (generic body)
 apperror.NewOperationFailedWithCause("failed", err)     // CodeOperationFailed → 500 (wraps cause)
 apperror.NewPermanent("feature disabled")               // CodePermanent → 422 (skips retries)
 apperror.NewPermanentWithCause("failed", err)           // CodePermanent → 422 (wraps cause)
@@ -57,7 +57,7 @@ apperror.ShouldRetry(err) // true for Conflict, RateLimit, Unavailable
 
 **Key difference: `CodeOperationFailed` vs `CodeUnavailable`**: `OperationFailedError` indicates a server-side failure that is unlikely to resolve on retry (non-retryable). `UnavailableError` indicates a transient upstream failure that is worth retrying (retryable).
 
-**Key difference: `CodeOperationFailed` vs untyped errors**: Both map to 500, but `CodeOperationFailed` exposes its message to the client (e.g., "payment declined"), while untyped errors get the generic "internal error" message to avoid leaking internals.
+**Key difference: `CodeOperationFailed` vs untyped errors**: Both map to a generic 500 response body, but `CodeOperationFailed` keeps a typed, non-retryable operation failure for logs, metrics, and programmatic handling.
 
 **Key difference: `CodeAuthRequired` vs middleware auth**: Middleware (`httpx/middleware/auth`) handles transport-level auth (JWT verification, mTLS). Use `CodeAuthRequired` for business-level auth failures from handler logic (e.g., expired session, revoked API key).
 
@@ -91,7 +91,7 @@ if err := validate.Struct(req); err != nil {
 ```go
 func createUser(w http.ResponseWriter, r *http.Request) {
     var req CreateUserRequest
-    if !httpx.DecodeJSON(w, r, &req) { return }      // 400 on malformed JSON
+    if !httpx.DecodeJSON(w, r, &req) { return }      // 415 on non-JSON, 400 on malformed JSON
     if err := validate.Struct(req); err != nil {       // 400 with field details
         httpx.WriteServiceError(w, r, logger, err)
         return
@@ -115,9 +115,19 @@ UUID-cursor pagination with automatic `has_more` detection:
 
 ```go
 func listUsers(w http.ResponseWriter, r *http.Request) {
-    p := pagination.ParseCursorParams(r, 20, 100) // defaultLimit, maxLimit
+    p, err := pagination.ParseCursorParams(r, 20, 100) // defaultLimit, maxLimit
+    if errors.Is(err, pagination.ErrCursorTooLong) {
+        httpx.WriteError(w, 400, "invalid cursor")
+        return
+    }
+    // Other errors are caller wiring/configuration errors such as
+    // ErrInvalidRequest, ErrAmbiguousQueryParam, or ErrInvalidLimitConfig.
+    if err != nil {
+        httpx.WriteError(w, 500, "internal error")
+        return
+    }
     if err := pagination.ValidateCursorUUID(p.Cursor); err != nil {
-        httpx.WriteError(w, 400, err.Error())
+        httpx.WriteError(w, 400, "invalid cursor")
         return
     }
 
@@ -159,6 +169,10 @@ if errors.Is(err, cache.ErrCacheMiss) { /* cold */ }
 mc.Delete(ctx, "key")
 mc.Exists(ctx, "key")
 ```
+
+`MemoryCache` implements `cache.BulkCache` (`MGet`, `MSet`, `SetNX`). The
+shared helpers and concrete backends reject bulk calls above
+`cache.MaxBulkKeys` so callers cannot accidentally build unbounded batches.
 
 ### TypedCache (JSON)
 
@@ -209,8 +223,8 @@ for _, r := range settled {
 
 - `FanOut[T]` — returns `([]T, error)`. Cancels derived context on first error. Panics are recovered into `*PanicError`.
 - `FanOutSettled[T]` — returns `[]Result[T]`. Never cancels siblings; each result carries its own `Err`. Panics are recovered per-goroutine.
-- `WithMaxGoroutines(n)` — limits concurrency via semaphore. Values < 1 are ignored (unbounded).
-- `PanicError` — wraps panic value, goroutine index, and stack trace. Implements `Unwrap()` so `errors.Is`/`errors.As` work when the panic value is an `error`.
+- `WithMaxGoroutines(n)` — limits concurrency via semaphore. `0` opts out to unbounded; negative values panic.
+- `PanicError` — includes the goroutine index, redacted panic marker, and stack trace. Raw panic payloads are not exposed.
 
 ## contextutil — Typed Context Keys
 
@@ -226,6 +240,21 @@ id = userIDKey.MustGet(ctx)      // panics if not set
 ```
 
 Keys are distinguished by their type parameter. Two `Key[string]` share the same slot — use named types (`type UserID string`) for distinct keys of the same underlying type.
+`Key.Set(nil, v)` normalizes to `context.Background()` and `Key.Get(nil)` returns `(zero, false)`.
+
+## tenant — Tenant Context and Scoped Keys
+
+Use `core/tenant` for tenant IDs at trust boundaries and for shared key construction:
+
+```go
+id, err := tenant.NewID(rawTenant)
+ctx = tenant.WithID(ctx, id)
+
+key, err := tenant.Key(ctx, "user", userID, "profile")
+// tenant:<len(id)>:<id>:<len(part)>:<part>...
+```
+
+`WithID` refuses to overwrite a different tenant already on the context and normalizes nil contexts to `context.Background()`. Use `WithIDChecked` when you need an error instead of a panic. Use `tenant.Key` instead of `fmt.Sprintf("tenant:%s:...", id)` so separator characters in IDs or key parts cannot collide.
 
 ## config — Struct-Tag Config Loading
 
@@ -237,7 +266,7 @@ type Config struct {
     Port     int           `env:"DATABASE_PORT" default:"5432"`
     Timeout  time.Duration `env:"TIMEOUT" default:"30s"`
     Debug    bool          `env:"DEBUG" default:"false"`
-    Password string        `env:"DB_PASSWORD" secret:"true"` // supports _FILE suffix
+    Password string        `env:"DB_PASSWORD" secret:"true"` // DB_PASSWORD_FILE is authoritative when set
     Tags     []string      `env:"TAGS"`                       // comma-separated
 }
 
@@ -289,7 +318,10 @@ logger.Info("listening", logattr.Addr(":8080"))
 logger.Info("connected", logattr.Instance("cache"))
 ```
 
-Available: `Error`, `Component`, `RequestID`, `Addr`, `Attempt`, `Delay`, `Method`, `Path`, `StatusCode`, `Instance`.
+Use `logattr.URL` for URL fields; it removes userinfo, query strings, and
+fragments before logging because those components often carry credentials.
+
+Available: `Error`, `Component`, `RequestID`, `Addr`, `Attempt`, `Delay`, `Method`, `Path`, `StatusCode`, `Instance`, `URL`, `Secret`, `SecretWithDigest`, `Email`.
 
 ## eventbus — In-Process Domain Events
 

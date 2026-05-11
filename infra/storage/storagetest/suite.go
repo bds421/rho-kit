@@ -24,7 +24,8 @@ func testPrefix(t *testing.T) string {
 	// parallel test runs sharing a backend.
 	name := strings.ReplaceAll(t.Name(), "/", "-")
 	var buf [4]byte
-	_, _ = rand.Read(buf[:])
+	_, err := rand.Read(buf[:])
+	require.NoError(t, err)
 	return name + "-" + hex.EncodeToString(buf[:]) + "/"
 }
 
@@ -125,6 +126,13 @@ func BackendSuite(t *testing.T, backend storage.Storage) {
 
 		_, err = backend.Exists(ctx, "")
 		assert.Error(t, err)
+	})
+
+	t.Run("InvalidMetadataRejected", func(t *testing.T) {
+		err := backend.Put(ctx, pfx+"invalid-meta.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{
+			Custom: map[string]string{"bad key": "value"},
+		})
+		assert.ErrorIs(t, err, storage.ErrValidation)
 	})
 
 	t.Run("NestedKeys", func(t *testing.T) {

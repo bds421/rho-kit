@@ -7,12 +7,21 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/mtlsidentity"
 )
 
 // Named types for type-safe, collision-free context keys via contextutil.Key.
@@ -34,7 +43,7 @@ var (
 	trustedS2SKey  = contextutil.NewKey[trustedS2SMarker]("httpx.auth.trusted_s2s")
 )
 
-// RequireUserWithJWT returns middleware that verifies Oathkeeper-signed JWTs.
+// RequireUserWithJWT returns middleware that verifies Bearer JWTs through provider.
 // Only Bearer tokens are accepted; X-User-Id header fallback is rejected.
 // Use RequireS2SAuth for services that also accept internal S2S calls.
 //
@@ -53,8 +62,9 @@ func RequireUserWithJWT(provider *jwtutil.Provider) func(http.Handler) http.Hand
 //  2. mTLS client certificate + X-User-Id header (service-to-service)
 //
 // For mode 2, the caller's TLS client certificate must satisfy the CN
-// allowlist. The TLS layer (ServerTLS with VerifyClientCertIfGiven) verifies
-// the cert against the CA; this middleware enforces the per-cert allowlist.
+// allowlist and the X-User-Id value must be permitted by a
+// WithS2SImpersonationGuard callback. The TLS layer verifies the cert against
+// the CA; this middleware enforces the per-cert allowlist.
 //
 // CN-based identity is legacy. CABs deprecate CN as an identity source and
 // modern certificate tooling (cert-manager, SPIFFE) emits identities as SANs.
@@ -62,39 +72,38 @@ func RequireUserWithJWT(provider *jwtutil.Provider) func(http.Handler) http.Hand
 // services; keep this entry point for fleets whose internal CA still issues
 // CN-only certs.
 //
-// Both provider and allowedCNs are required — the function panics at startup
-// if either is nil/empty after trimming, making misconfiguration impossible.
+// The provider, allowedCNs, and WithS2SImpersonationGuard option are required;
+// the function panics at startup if any are missing.
 //
 // An auditor can grep for "RequireS2SAuth" to find all S2S entry points.
-func RequireS2SAuth(provider *jwtutil.Provider, allowedCNs []string) func(http.Handler) http.Handler {
-	return RequireS2SAuthWithIdentity(provider, WithAllowedCNs(allowedCNs))
+func RequireS2SAuth(provider *jwtutil.Provider, allowedCNs []string, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
+	all := make([]MTLSIdentityOption, 0, len(opts)+1)
+	all = append(all, WithAllowedCNs(allowedCNs))
+	all = append(all, opts...)
+	return RequireS2SAuthWithIdentity(provider, all...)
 }
 
-// MTLSIdentityOption configures the mTLS identity allowlist for
-// [RequireS2SAuthWithIdentity]. At least one of [WithAllowedSANs] or
-// [WithAllowedCNs] must be supplied with at least one non-empty entry.
+// MTLSIdentityOption configures the mTLS identity allowlist and impersonation
+// policy for [RequireS2SAuthWithIdentity]. At least one of [WithAllowedSANs]
+// or [WithAllowedCNs] must be supplied with at least one non-empty entry.
 type MTLSIdentityOption func(*mtlsIdentityConfig)
 
 type mtlsIdentityConfig struct {
 	allowedCNs     map[string]struct{}
 	allowedSANDNS  map[string]struct{}
 	allowedSANURIs map[string]struct{}
-	// impersonationGuard, when set, is consulted before stamping
-	// the trusted-S2S marker (audit FR-067). Returning an error
-	// rejects the impersonation. Without this hook every allow-listed
-	// service identity may impersonate any UUID.
+	// impersonationGuard is consulted before stamping the trusted-S2S
+	// marker. Returning an error rejects the impersonation.
 	impersonationGuard func(r *http.Request, identity, userID string) error
 }
 
 // WithS2SImpersonationGuard installs a callback that decides whether
 // `identity` is allowed to impersonate `userID`. Returning an error
 // rejects the impersonation; the middleware returns 403.
-//
-// Audit FR-067: without this guard the kit's HTTP mTLS S2S auth
-// treats every allow-listed service identity as omnipotent. Wire a
-// per-service authorization callback so trust scope matches the kit
-// contract.
 func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string) error) MTLSIdentityOption {
+	if fn == nil {
+		panic("middleware: WithS2SImpersonationGuard requires a non-nil callback")
+	}
 	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
 
@@ -109,23 +118,42 @@ func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string)
 //
 // Empty/whitespace entries are skipped.
 func WithAllowedSANs(sans []string) MTLSIdentityOption {
+	dnsSANs := make([]string, 0, len(sans))
+	uriSANs := make([]string, 0, len(sans))
+	for _, s := range sans {
+		san, ok, err := mtlsidentity.NormalizeSAN(s)
+		if err != nil {
+			switch {
+			case errors.Is(err, mtlsidentity.ErrInvalidURISAN):
+				panic("middleware: WithAllowedSANs invalid URI SAN")
+			case errors.Is(err, mtlsidentity.ErrInvalidDNSSAN):
+				panic("middleware: WithAllowedSANs invalid DNS SAN")
+			default:
+				panic("middleware: WithAllowedSANs invalid SAN")
+			}
+		}
+		if !ok {
+			continue
+		}
+		switch san.Kind {
+		case mtlsidentity.SANURI:
+			uriSANs = append(uriSANs, san.Value)
+		case mtlsidentity.SANDNS:
+			dnsSANs = append(dnsSANs, san.Value)
+		}
+	}
 	return func(c *mtlsIdentityConfig) {
-		for _, s := range sans {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
+		for _, uri := range uriSANs {
+			if c.allowedSANURIs == nil {
+				c.allowedSANURIs = map[string]struct{}{}
 			}
-			if strings.Contains(s, "://") {
-				if c.allowedSANURIs == nil {
-					c.allowedSANURIs = map[string]struct{}{}
-				}
-				c.allowedSANURIs[s] = struct{}{}
-			} else {
-				if c.allowedSANDNS == nil {
-					c.allowedSANDNS = map[string]struct{}{}
-				}
-				c.allowedSANDNS[s] = struct{}{}
+			c.allowedSANURIs[uri] = struct{}{}
+		}
+		for _, dns := range dnsSANs {
+			if c.allowedSANDNS == nil {
+				c.allowedSANDNS = map[string]struct{}{}
 			}
+			c.allowedSANDNS[dns] = struct{}{}
 		}
 	}
 }
@@ -136,12 +164,18 @@ func WithAllowedSANs(sans []string) MTLSIdentityOption {
 //
 // Empty/whitespace entries are skipped.
 func WithAllowedCNs(cns []string) MTLSIdentityOption {
+	canonical := make([]string, 0, len(cns))
+	for _, input := range cns {
+		cn, ok, err := mtlsidentity.NormalizeCN(input)
+		if err != nil {
+			panic("middleware: WithAllowedCNs invalid CN")
+		}
+		if ok {
+			canonical = append(canonical, cn)
+		}
+	}
 	return func(c *mtlsIdentityConfig) {
-		for _, cn := range cns {
-			cn = strings.TrimSpace(cn)
-			if cn == "" {
-				continue
-			}
+		for _, cn := range canonical {
 			if c.allowedCNs == nil {
 				c.allowedCNs = map[string]struct{}{}
 			}
@@ -152,20 +186,28 @@ func WithAllowedCNs(cns []string) MTLSIdentityOption {
 
 // RequireS2SAuthWithIdentity is the SAN-aware sibling of [RequireS2SAuth].
 // It accepts JWT or mTLS+header authentication; the mTLS branch matches the
-// peer certificate against the configured CN/SAN allowlists.
+// peer certificate against the configured CN/SAN allowlists, then requires a
+// WithS2SImpersonationGuard callback to approve the requested X-User-Id.
 //
 // At least one identity allowlist option ([WithAllowedCNs] or
-// [WithAllowedSANs]) must contribute at least one non-empty entry.
+// [WithAllowedSANs]) must contribute at least one non-empty entry, and
+// [WithS2SImpersonationGuard] must be supplied.
 func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
 	if provider == nil {
 		panic("middleware: RequireS2SAuthWithIdentity requires a non-nil JWT provider")
 	}
 	cfg := mtlsIdentityConfig{}
 	for _, o := range opts {
+		if o == nil {
+			panic("middleware: RequireS2SAuthWithIdentity option must not be nil")
+		}
 		o(&cfg)
 	}
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
 		panic("middleware: RequireS2SAuthWithIdentity requires at least one non-empty allowed CN or SAN entry")
+	}
+	if cfg.impersonationGuard == nil {
+		panic("middleware: RequireS2SAuthWithIdentity requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	if len(cfg.allowedCNs) > 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
 		slog.Warn("httpx auth middleware: CN-only mTLS allowlist is legacy; prefer WithAllowedSANs",
@@ -180,8 +222,8 @@ func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentity
 // jwtOnlyHandler returns a handler that requires a valid Bearer JWT token.
 func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := extractBearerToken(r)
-		if token == "" {
+		token, status := parseBearerToken(r)
+		if status != bearerTokenPresent {
 			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -193,9 +235,16 @@ func jwtOnlyHandler(provider *jwtutil.Provider, next http.Handler) http.Handler 
 // s2sHandler returns a handler that accepts JWT or mTLS+header authentication.
 func s2sHandler(provider *jwtutil.Provider, cfg mtlsIdentityConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try JWT from Authorization header first.
-		if token := extractBearerToken(r); token != "" {
+		// Try JWT from Authorization header first. If an Authorization
+		// header is present but malformed or duplicated, fail closed instead
+		// of falling back to mTLS and changing auth mode mid-request.
+		token, status := parseBearerToken(r)
+		switch status {
+		case bearerTokenPresent:
 			verifyJWT(w, r, provider, token, next)
+			return
+		case bearerTokenInvalid:
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -248,7 +297,7 @@ func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, st
 			break
 		}
 	}
-	if !hasClientAuth && len(cert.ExtKeyUsage) > 0 {
+	if !hasClientAuth {
 		return false, ""
 	}
 
@@ -262,7 +311,7 @@ func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, st
 		}
 	}
 	for _, dns := range cert.DNSNames {
-		if _, ok := cfg.allowedSANDNS[dns]; ok {
+		if _, ok := cfg.allowedSANDNS[strings.ToLower(dns)]; ok {
 			return true, "dns:" + dns
 		}
 	}
@@ -279,7 +328,7 @@ func matchCertIdentity(cert *x509.Certificate, cfg mtlsIdentityConfig) (bool, st
 // use jwtutil.NewProviderWithKeySet with pre-built key sets and tokens whose
 // expiry window covers the test execution time.
 func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provider, token string, next http.Handler) {
-	claims, err := provider.Verify(token, time.Now())
+	claims, err := provider.VerifyContext(r.Context(), token, time.Now())
 	if err != nil {
 		// ErrKeySetUnavailable means the JWKS hasn't been fetched yet or has
 		// gone stale; surface the same "unauthorized" response as before but
@@ -297,11 +346,12 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 		return
 	}
 
+	perms := slices.Clone(claims.Permissions)
 	ctx := userIDKey.Set(r.Context(), authUserID(claims.Subject))
-	ctx = permissionsKey.Set(ctx, claims.Permissions)
+	ctx = permissionsKey.Set(ctx, perms)
 	// Build a permission map for O(1) lookups in RequirePermission.
-	ps := make(permissionSet, len(claims.Permissions))
-	for _, p := range claims.Permissions {
+	ps := make(permissionSet, len(perms))
+	for _, p := range perms {
 		ps[p] = struct{}{}
 	}
 	ctx = permSetKey.Set(ctx, ps)
@@ -320,20 +370,18 @@ func verifyJWT(w http.ResponseWriter, r *http.Request, provider *jwtutil.Provide
 // to not run JWT verification at all). Without the marker those middlewares
 // fail closed.
 func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, guard func(*http.Request, string, string) error, next http.Handler) {
-	userID := r.Header.Get("X-User-Id")
-	if userID == "" || !jwtutil.IsUUID(userID) {
+	userID, ok := singleHeaderValue(r.Header, "X-User-Id")
+	if !ok || !jwtutil.IsUUID(userID) {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	// FR-067 [MED]: consult the impersonation guard so a service
-	// identity cannot impersonate arbitrary users by default.
 	if guard != nil {
-		if err := guard(r, identity, userID); err != nil {
+		if err := callImpersonationGuard(guard, r, identity, userID); err != nil {
 			httpx.Logger(r.Context(), slog.Default()).Warn("s2s impersonation rejected by guard",
-				"user_id", userID,
-				"client_identity", identity,
-				"error", err,
+				redact.String("user_id", userID),
+				redact.String("client_identity", identity),
+				redact.Error(err),
 			)
 			httpx.WriteError(w, http.StatusForbidden, "impersonation not permitted")
 			return
@@ -341,10 +389,10 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, 
 	}
 
 	httpx.Logger(r.Context(), slog.Default()).Info("s2s user impersonation",
-		"user_id", userID,
-		"client_identity", identity,
+		redact.String("user_id", userID),
+		redact.String("client_identity", identity),
 		"method", r.Method,
-		"path", r.URL.Path,
+		redact.String("path", httpx.RequestPath(r)),
 	)
 
 	ctx := userIDKey.Set(r.Context(), authUserID(userID))
@@ -352,13 +400,75 @@ func requireHeaderUser(w http.ResponseWriter, r *http.Request, identity string, 
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
-// extractBearerToken returns the token from a "Bearer <token>" Authorization header.
-func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
-		return strings.TrimSpace(auth[7:])
+var errImpersonationGuardPanicked = errors.New("impersonation guard panicked")
+
+func callImpersonationGuard(guard func(*http.Request, string, string) error, r *http.Request, identity, userID string) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			httpx.Logger(r.Context(), slog.Default()).Error("s2s impersonation guard panicked",
+				redact.String("user_id", userID),
+				redact.String("client_identity", identity),
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			err = errImpersonationGuardPanicked
+		}
+	}()
+	return guard(r, identity, userID)
+}
+
+type bearerTokenStatus int
+
+const (
+	bearerTokenAbsent bearerTokenStatus = iota
+	bearerTokenInvalid
+	bearerTokenPresent
+)
+
+const maxBearerTokenLen = 8 * 1024
+
+// parseBearerToken returns the token from a singleton "Bearer <token>"
+// Authorization header. Multiple header instances are rejected because
+// proxies and frameworks can disagree about which value wins.
+func parseBearerToken(r *http.Request) (string, bearerTokenStatus) {
+	values := r.Header.Values("Authorization")
+	switch len(values) {
+	case 0:
+		return "", bearerTokenAbsent
+	case 1:
+	default:
+		return "", bearerTokenInvalid
 	}
-	return ""
+
+	auth := values[0]
+	if auth == "" || strings.TrimSpace(auth) != auth || !utf8.ValidString(auth) || !httpguts.ValidHeaderFieldValue(auth) {
+		return "", bearerTokenInvalid
+	}
+	const bearerPrefix = "Bearer "
+	if len(auth) <= len(bearerPrefix) || !strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
+		return "", bearerTokenInvalid
+	}
+	token := auth[len(bearerPrefix):]
+	if !validBearerToken(token) {
+		return "", bearerTokenInvalid
+	}
+	return token, bearerTokenPresent
+}
+
+func validBearerToken(token string) bool {
+	if token == "" || len(token) > maxBearerTokenLen || strings.TrimSpace(token) != token || strings.Contains(token, ",") {
+		return false
+	}
+	for _, r := range token {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func singleHeaderValue(h http.Header, name string) (string, bool) {
+	return headerutil.SingletonIdentity(h, name)
 }
 
 // UserID extracts the user ID from the request context.
@@ -371,7 +481,7 @@ func UserID(ctx context.Context) string {
 // Returns nil if no permissions are available (S2S mTLS auth).
 func Permissions(ctx context.Context) []string {
 	v, _ := permissionsKey.Get(ctx)
-	return v
+	return slices.Clone(v)
 }
 
 // Scopes extracts the scopes string from the request context.
@@ -497,6 +607,7 @@ func WithUserID(ctx context.Context, id string) context.Context {
 // JWT middleware to set permissions. Using this in production bypasses
 // authorization checks.
 func WithPermissions(ctx context.Context, perms []string) context.Context {
+	perms = slices.Clone(perms)
 	ctx = permissionsKey.Set(ctx, perms)
 	ps := make(permissionSet, len(perms))
 	for _, p := range perms {

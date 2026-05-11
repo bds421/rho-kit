@@ -40,14 +40,29 @@ func NewConsumer(consumer *stream.Consumer, logger *slog.Logger) *Consumer {
 	return &Consumer{consumer: consumer, logger: logger}
 }
 
+func (c *Consumer) ready() error {
+	if c == nil || c.consumer == nil || c.logger == nil {
+		return messaging.ErrInvalidConsumer
+	}
+	return nil
+}
+
 // Consume blocks until ctx is cancelled, dispatching messages to handler.
 // It delegates to the StreamConsumer's built-in retry and dead-letter logic.
 // The Binding.Exchange is used as the stream name; Binding.Queue, when
 // non-empty, must match the wrapped consumer's group (audit FR-064).
 func (c *Consumer) Consume(ctx context.Context, b messaging.Binding, handler messaging.Handler) error {
+	if err := c.ready(); err != nil {
+		return err
+	}
+	if handler == nil {
+		return messaging.ErrInvalidConsumer
+	}
+	if err := messaging.ValidateExchangeName(b.Exchange); err != nil {
+		return err
+	}
 	if b.Queue != "" && b.Queue != c.consumer.Group() {
-		return fmt.Errorf("redisbackend: Binding.Queue %q does not match wrapped consumer group %q (FR-064): construct a separate Consumer per group",
-			b.Queue, c.consumer.Group())
+		return fmt.Errorf("redisbackend: Binding.Queue does not match wrapped consumer group (FR-064): construct a separate Consumer per group")
 	}
 	streamName := b.Exchange
 	c.consumer.Consume(ctx, streamName, func(ctx context.Context, sm stream.Message) error {

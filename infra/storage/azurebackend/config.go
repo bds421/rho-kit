@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // AzureConfig holds Azure Blob Storage connection settings.
@@ -21,15 +22,19 @@ type AzureConfig struct {
 	// Endpoint overrides the default endpoint (for Azurite or sovereign clouds).
 	// Leave empty for the default "https://{account}.blob.core.windows.net".
 	Endpoint string
+
+	// AllowInsecureEndpoint permits http:// endpoints for local emulators.
+	AllowInsecureEndpoint bool
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
 func (c AzureConfig) LogValue() slog.Value {
 	return slog.GroupValue(
-		slog.String("account_name", c.AccountName),
-		slog.String("account_key", "[REDACTED]"),
-		slog.String("container_name", c.ContainerName),
-		slog.String("endpoint", c.Endpoint),
+		slog.Bool("account_name_configured", c.AccountName != ""),
+		slog.Bool("account_key_configured", c.AccountKey != ""),
+		slog.Bool("container_name_configured", c.ContainerName != ""),
+		slog.Bool("endpoint_configured", c.Endpoint != ""),
+		slog.Bool("allow_insecure_endpoint", c.AllowInsecureEndpoint),
 	)
 }
 
@@ -40,12 +45,20 @@ func (c AzureConfig) LogValue() slog.Value {
 //   - {envPrefix}_AZURE_ACCOUNT_KEY (required, supports _FILE suffix)
 //   - STORAGE_AZURE_CONTAINER_NAME (required)
 //   - STORAGE_AZURE_ENDPOINT (optional, for Azurite)
+//   - STORAGE_AZURE_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
 func LoadAzureConfig(envPrefix, environment string) (AzureConfig, error) {
+	p := &config.Parser{}
+	allowInsecureEndpoint := p.Bool("STORAGE_AZURE_ALLOW_INSECURE_ENDPOINT", false)
+	if err := p.Err(); err != nil {
+		return AzureConfig{}, err
+	}
+
 	cfg := AzureConfig{
-		AccountName:   config.Get("STORAGE_AZURE_ACCOUNT_NAME", ""),
-		AccountKey:    config.MustGetSecret(envPrefix+"_AZURE_ACCOUNT_KEY", ""),
-		ContainerName: config.Get("STORAGE_AZURE_CONTAINER_NAME", ""),
-		Endpoint:      config.Get("STORAGE_AZURE_ENDPOINT", ""),
+		AccountName:           config.Get("STORAGE_AZURE_ACCOUNT_NAME", ""),
+		AccountKey:            config.MustGetSecret(envPrefix+"_AZURE_ACCOUNT_KEY", ""),
+		ContainerName:         config.Get("STORAGE_AZURE_CONTAINER_NAME", ""),
+		Endpoint:              config.Get("STORAGE_AZURE_ENDPOINT", ""),
+		AllowInsecureEndpoint: allowInsecureEndpoint,
 	}
 
 	if err := cfg.Validate(environment); err != nil {
@@ -65,6 +78,9 @@ func (c AzureConfig) Validate(environment string) error {
 	}
 	if c.ContainerName == "" {
 		return fmt.Errorf("STORAGE_AZURE_CONTAINER_NAME is required")
+	}
+	if err := storage.ValidateEndpointURL("STORAGE_AZURE_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+		return err
 	}
 
 	if err := config.RejectWeakCredential("AZURE_ACCOUNT_KEY", c.AccountKey); err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // RetentionStore extends Store with the ability to delete old events.
@@ -18,6 +20,12 @@ type RetentionStore interface {
 // audit events older than the retention period. The function logs the number
 // of deleted events.
 func RetentionJob(store RetentionStore, retention time.Duration, logger *slog.Logger) func(ctx context.Context) error {
+	if store == nil {
+		panic("auditlog: RetentionJob requires a non-nil store")
+	}
+	if retention <= 0 {
+		panic("auditlog: RetentionJob requires a positive retention duration")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -26,7 +34,7 @@ func RetentionJob(store RetentionStore, retention time.Duration, logger *slog.Lo
 		deleted, err := store.DeleteBefore(ctx, cutoff)
 		if err != nil {
 			logger.Error("audit retention cleanup failed",
-				"error", err,
+				redact.Error(err),
 				"cutoff", cutoff,
 			)
 			return err

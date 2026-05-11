@@ -2,7 +2,11 @@ package natsbackend
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,7 +14,79 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
+
+var _ slog.LogValuer = Config{}
+
+func TestConfig_LogValue_RedactsURLCredentials(t *testing.T) {
+	cfg := Config{URL: "nats://token-user:secret-pass@tenant-nats.internal:4222?token=query-secret#frag", Name: "orders-secret"}
+
+	rendered := cfg.LogValue().String()
+
+	assert.NotContains(t, rendered, "token-user")
+	assert.NotContains(t, rendered, "secret-pass")
+	assert.NotContains(t, rendered, "query-secret")
+	assert.NotContains(t, rendered, "tenant-nats.internal")
+	assert.NotContains(t, rendered, "orders-secret")
+	assert.Contains(t, rendered, "url_configured=true")
+	assert.Contains(t, rendered, "url_valid=true")
+	assert.Contains(t, rendered, "host_configured=true")
+	assert.Contains(t, rendered, "name_configured=true")
+	assert.Contains(t, rendered, "username_configured=true")
+	assert.Contains(t, rendered, "password_configured=true")
+}
+
+func TestValidateURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"nats", "nats://nats.example.com:4222", false},
+		{"tls", "tls://nats.example.com:4222", false},
+		{"websocket", "ws://nats.example.com:4222", false},
+		{"secure websocket", "wss://nats.example.com:4222", false},
+		{"empty", "", true},
+		{"missing host", "nats:///events", true},
+		{"empty hostname", "nats://:4222/events", true},
+		{"empty port", "nats://nats.example.com:/events", true},
+		{"zero port", "nats://nats.example.com:0/events", true},
+		{"too large port", "nats://nats.example.com:65536/events", true},
+		{"zone identifier", "nats://[fe80::1%25lo0]:4222/events", true},
+		{"unsupported scheme", "http://nats.example.com:4222", true},
+		{"credentials", "nats://user:pass@nats.example.com:4222", true},
+		{"query", "nats://nats.example.com:4222?token=abc", true},
+		{"fragment", "nats://nats.example.com:4222#frag", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateURL(tt.url)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateURL_ParseErrorDoesNotEchoValue(t *testing.T) {
+	err := ValidateURL("nats://nats.example.com/%zz?token=secret-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL is invalid")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "token=")
+	assert.NotContains(t, err.Error(), "%zz")
+}
+
+func TestValidateURL_SchemeErrorDoesNotEchoValue(t *testing.T) {
+	err := ValidateURL("secret-token://nats.example.com:4222")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL scheme must be nats")
+	assert.NotContains(t, err.Error(), "secret-token")
+}
 
 func TestComposeSubject_RoutingKeyOptional(t *testing.T) {
 	// FR-074 [MED]: dots inside individual segments are URL-encoded
@@ -41,6 +117,110 @@ func TestSplitSubject_RoundTripsCompose(t *testing.T) {
 func TestConnect_RejectsEmptyURL(t *testing.T) {
 	_, err := Connect(t.Context(), Config{})
 	assert.Error(t, err)
+}
+
+func TestConnect_RejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	_, err := Connect(ctx, Config{URL: "nats://127.0.0.1:4222", AllowInsecure: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestConnect_RejectsInvalidURLBeforeDial(t *testing.T) {
+	tests := []string{
+		"http://nats.example.com:4222",
+		"nats:///events",
+		"nats://user:pass@nats.example.com:4222",
+		"nats://nats.example.com:4222?token=abc",
+	}
+	for _, rawURL := range tests {
+		t.Run(rawURL, func(t *testing.T) {
+			_, err := Connect(t.Context(), Config{URL: rawURL, AllowInsecure: true})
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "connect:")
+		})
+	}
+}
+
+func TestConnect_RejectsNegativeTimingConfig(t *testing.T) {
+	base := Config{URL: "nats://example.invalid:4222"}
+	for name, mutate := range map[string]func(*Config){
+		"PublishAckWait": func(c *Config) { c.PublishAckWait = -time.Second },
+		"MaxReconnects":  func(c *Config) { c.MaxReconnects = -2 },
+		"ReconnectWait":  func(c *Config) { c.ReconnectWait = -time.Second },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			mutate(&cfg)
+			_, err := Connect(t.Context(), cfg)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCloneTLSConfigWithFloor_ClonesAndEnforcesFloor(t *testing.T) {
+	cfg := &tls.Config{ServerName: "nats.internal.test"}
+	cfg.MinVersion = minimumTLSVersion - 1
+
+	cloned, err := cloneTLSConfigWithFloor(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, cloned)
+	assert.NotSame(t, cfg, cloned)
+	assert.Equal(t, uint16(minimumTLSVersion-1), cfg.MinVersion)
+	assert.Equal(t, uint16(minimumTLSVersion), cloned.MinVersion)
+	assert.Equal(t, "nats.internal.test", cloned.ServerName)
+}
+
+func TestCloneTLSConfigWithFloor_RejectsMaxVersionBelowFloor(t *testing.T) {
+	_, err := cloneTLSConfigWithFloor(&tls.Config{MaxVersion: minimumTLSVersion - 1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TLS MaxVersion")
+}
+
+func TestConfigClone_ClonesTLSAndExtraOptions(t *testing.T) {
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS10,
+		NextProtos: []string{"h2"},
+		ServerName: "before.example",
+	}
+	extraOptions := []nats.Option{nats.NoReconnect()}
+	cfg := Config{
+		URL:          "nats://localhost:4222",
+		TLS:          tlsCfg,
+		ExtraOptions: extraOptions,
+	}
+
+	cloned, err := cfg.Clone()
+	require.NoError(t, err)
+	require.NotNil(t, cloned.TLS)
+	require.Len(t, cloned.ExtraOptions, 1)
+	assert.NotSame(t, tlsCfg, cloned.TLS)
+	assert.Equal(t, uint16(minimumTLSVersion), cloned.TLS.MinVersion)
+	assert.Equal(t, "before.example", cloned.TLS.ServerName)
+	assert.NotNil(t, cloned.ExtraOptions[0])
+
+	tlsCfg.ServerName = "after.example"
+	tlsCfg.NextProtos[0] = "http/1.1"
+	extraOptions[0] = nil
+
+	assert.Equal(t, "before.example", cloned.TLS.ServerName)
+	assert.Equal(t, []string{"h2"}, cloned.TLS.NextProtos)
+	assert.NotNil(t, cloned.ExtraOptions[0])
+}
+
+func TestConfigClone_RejectsTLSMaxVersionBelowFloor(t *testing.T) {
+	_, err := (Config{TLS: &tls.Config{MaxVersion: minimumTLSVersion - 1}}).Clone()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TLS MaxVersion")
+}
+
+func TestConnect_RejectsTLSMaxVersionBelowFloor(t *testing.T) {
+	_, err := Connect(t.Context(), Config{
+		URL: "nats://127.0.0.1:4222",
+		TLS: &tls.Config{MaxVersion: minimumTLSVersion - 1},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TLS MaxVersion")
 }
 
 // TestNewConsumer_DefaultsMaxDeliverTo5 pins the v1 H-3 audit fix:
@@ -74,6 +254,19 @@ func TestNewConsumer_RespectsExplicitMaxDeliver(t *testing.T) {
 	}
 }
 
+func TestNewConsumer_PanicsOnNegativeTimingConfig(t *testing.T) {
+	for name, cfg := range map[string]ConsumerConfig{
+		"MaxAckPending": {Stream: "events", Durable: "consumer-1", MaxAckPending: -1},
+		"AckWait":       {Stream: "events", Durable: "consumer-1", AckWait: -time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Panics(t, func() {
+				NewConsumer(&Connection{}, cfg, nil)
+			})
+		})
+	}
+}
+
 // TestNewPublisher_DefaultPublishAckWait pins the v2 fix: when no option
 // or threaded config is supplied, the publisher uses
 // [defaultPublishAckWait].
@@ -87,6 +280,47 @@ func TestNewPublisher_DefaultPublishAckWait(t *testing.T) {
 func TestNewPublisher_RespectsWithPublishAckWait(t *testing.T) {
 	p := NewPublisher(&Connection{}, WithPublishAckWait(2*time.Second))
 	assert.Equal(t, 2*time.Second, p.wait)
+}
+
+func TestNewPublisher_MessageSizeOptions(t *testing.T) {
+	p := NewPublisher(&Connection{},
+		WithMaxMessageBytes(64),
+		WithRouteMaxMessageBytes("events", "large.event", 512),
+	)
+
+	assert.Equal(t, 64, p.sizeLimiter.LimitFor("events", "small.event"))
+	assert.Equal(t, 512, p.sizeLimiter.LimitFor("events", "large.event"))
+}
+
+func TestNewPublisher_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewPublisher(&Connection{}, nil)
+	})
+}
+
+func TestWithPublishAckWait_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			require.Panics(t, func() {
+				WithPublishAckWait(d)
+			})
+		})
+	}
+}
+
+func TestWithMaxMessageBytes_PanicsOnNonPositive(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			require.Panics(t, func() {
+				NewPublisher(&Connection{}, WithMaxMessageBytes(n))
+			})
+		})
+	}
+}
+
+func TestWithoutPublishAckWait_DisablesPublisherTimeout(t *testing.T) {
+	p := NewPublisher(&Connection{}, WithoutPublishAckWait())
+	assert.Zero(t, p.wait)
 }
 
 // TestConnection_NewPublisher_ThreadsPublishAckWait pins the v2 fix:
@@ -107,6 +341,30 @@ func TestConnection_NewPublisher_ZeroAckWaitFallsBackToDefault(t *testing.T) {
 	conn := &Connection{}
 	p := conn.NewPublisher()
 	assert.Equal(t, defaultPublishAckWait, p.wait)
+}
+
+func TestConnection_InvalidReceiverSafety(t *testing.T) {
+	var nilConn *Connection
+	assert.False(t, nilConn.Healthy())
+	assert.NoError(t, nilConn.Close())
+	assert.Nil(t, nilConn.JetStream())
+	assert.Error(t, nilConn.EnsureStream(t.Context(), StreamConfig{Name: "events", Subjects: []string{"events.>"}}))
+
+	zero := &Connection{}
+	assert.False(t, zero.Healthy())
+	assert.NoError(t, zero.Close())
+	assert.Nil(t, zero.JetStream())
+	assert.Error(t, zero.EnsureStream(t.Context(), StreamConfig{Name: "events", Subjects: []string{"events.>"}}))
+}
+
+func TestPublisher_InvalidReceiverReturnsError(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", map[string]string{"ok": "true"})
+	require.NoError(t, err)
+
+	var nilPublisher *Publisher
+	assert.ErrorIs(t, nilPublisher.Publish(t.Context(), "events", "created", msg), messaging.ErrInvalidPublisher)
+	assert.ErrorIs(t, (&Publisher{}).Publish(t.Context(), "events", "created", msg), messaging.ErrInvalidPublisher)
+	assert.ErrorIs(t, NewPublisher(&Connection{}).Publish(t.Context(), "events", "created", msg), messaging.ErrInvalidPublisher)
 }
 
 // TestConnect_RespectsCancelledContext pins the v2 fix that Connect
@@ -193,18 +451,22 @@ type fakeJetstreamMsg struct {
 	jetstream.Msg
 	subject string
 	headers nats.Header
+	data    []byte
+	acked   bool
+	nacked  bool
+	termed  bool
 }
 
 func (f *fakeJetstreamMsg) Subject() string                    { return f.subject }
 func (f *fakeJetstreamMsg) Headers() nats.Header               { return f.headers }
-func (f *fakeJetstreamMsg) Data() []byte                       { return nil }
+func (f *fakeJetstreamMsg) Data() []byte                       { return f.data }
 func (f *fakeJetstreamMsg) Reply() string                      { return "" }
-func (f *fakeJetstreamMsg) Ack() error                         { return nil }
+func (f *fakeJetstreamMsg) Ack() error                         { f.acked = true; return nil }
 func (f *fakeJetstreamMsg) DoubleAck(_ context.Context) error  { return nil }
-func (f *fakeJetstreamMsg) Nak() error                         { return nil }
+func (f *fakeJetstreamMsg) Nak() error                         { f.nacked = true; return nil }
 func (f *fakeJetstreamMsg) NakWithDelay(_ time.Duration) error { return nil }
 func (f *fakeJetstreamMsg) InProgress() error                  { return nil }
-func (f *fakeJetstreamMsg) Term() error                        { return nil }
+func (f *fakeJetstreamMsg) Term() error                        { f.termed = true; return nil }
 func (f *fakeJetstreamMsg) TermWithReason(_ string) error      { return nil }
 
 func (f *fakeJetstreamMsg) Metadata() (*jetstream.MsgMetadata, error) {
@@ -293,4 +555,52 @@ func TestExtractExchangeAndRoutingKey_HeaderOnlyExchange(t *testing.T) {
 	ex, rk := extractExchangeAndRoutingKey(jm)
 	assert.Equal(t, "orders.v1", ex)
 	assert.Equal(t, "", rk)
+}
+
+func TestConsumer_InvalidReceiverReturnsError(t *testing.T) {
+	var nilConsumer *Consumer
+	err := nilConsumer.Consume(t.Context(), func(context.Context, messaging.Delivery) error { return nil })
+	assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
+
+	err = (&Consumer{}).Consume(t.Context(), func(context.Context, messaging.Delivery) error { return nil })
+	assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
+
+	err = NewConsumer(&Connection{}, ConsumerConfig{Stream: "events", Durable: "durable"}, slog.Default()).
+		Consume(t.Context(), func(context.Context, messaging.Delivery) error { return nil })
+	assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
+}
+
+func TestDispatch_PopulatesMessageHeadersAndDetachesMessage(t *testing.T) {
+	msg, err := messaging.NewMessage("order.created", map[string]string{"id": "42"})
+	require.NoError(t, err)
+	data, err := json.Marshal(msg)
+	require.NoError(t, err)
+
+	jm := &fakeJetstreamMsg{
+		subject: "orders.created",
+		data:    data,
+		headers: nats.Header{
+			headerExchange:                []string{"orders"},
+			headerRoutingKey:              []string{"created"},
+			messaging.HeaderCorrelationID: []string{"corr-1"},
+		},
+	}
+	c := &Consumer{logger: slog.Default()}
+
+	var got messaging.Delivery
+	c.dispatch(t.Context(), jm, func(_ context.Context, d messaging.Delivery) error {
+		assert.Equal(t, "corr-1", d.Message.Headers[messaging.HeaderCorrelationID])
+		got = d
+		d.Message.Payload[1] = 'X'
+		d.Message.Headers[messaging.HeaderCorrelationID] = "changed"
+		return nil
+	})
+
+	require.True(t, jm.acked)
+	assert.Equal(t, "orders", got.Exchange)
+	assert.Equal(t, "created", got.RoutingKey)
+	assert.Equal(t, "corr-1", got.Headers[messaging.HeaderCorrelationID])
+	assert.Equal(t, `{"id":"42"}`, string(msg.Payload))
+	assert.Equal(t, `{Xid":"42"}`, string(got.Message.Payload))
+	assert.Equal(t, "corr-1", jm.headers.Get(messaging.HeaderCorrelationID))
 }

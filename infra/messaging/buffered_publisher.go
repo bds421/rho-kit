@@ -2,12 +2,15 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/io/v2/atomicfile"
 )
 
@@ -51,9 +54,11 @@ type pendingMessage struct {
 type BufferedPublisher struct {
 	logger            *slog.Logger
 	mu                sync.Mutex
+	runMu             sync.Mutex
 	pending           []pendingMessage
 	maxSize           int
 	finalDrainTimeout time.Duration
+	started           bool
 
 	// directInFlight is true while a direct publish is in progress.
 	// While set, concurrent Publish calls buffer instead of bypassing,
@@ -88,6 +93,8 @@ type BufferedPublisher struct {
 	// is fatal at construction so a corrupt or unreadable state file does
 	// not silently drop the messages buffering exists to preserve.
 	lossyStateRecovery bool
+
+	sizeLimiter MessageSizeLimiter
 
 	// lastSaveErr holds the most recent error from saveLocked(). Stored as
 	// atomic.Pointer so [LastSaveError] reads it without contending with
@@ -130,7 +137,7 @@ type BufferedPublisherOption func(*BufferedPublisher)
 // unbounded buffer is genuinely intended.
 func WithBufferedMaxSize(n int) BufferedPublisherOption {
 	if n <= 0 {
-		panic(fmt.Sprintf("messaging: WithBufferedMaxSize requires n > 0 (got %d); use WithUnlimitedBufferedBuffer to opt out", n))
+		panic("messaging: WithBufferedMaxSize requires n > 0; use WithUnlimitedBufferedBuffer to opt out")
 	}
 	return func(o *BufferedPublisher) { o.maxSize = n }
 }
@@ -187,10 +194,42 @@ func WithEphemeralBuffer() BufferedPublisherOption {
 // WithBufferedFinalDrainTimeout sets how long the buffered publisher waits to
 // drain remaining messages during shutdown. Default: 15 seconds.
 func WithBufferedFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
+	if d <= 0 {
+		panic("messaging: WithBufferedFinalDrainTimeout requires a positive duration")
+	}
 	return func(o *BufferedPublisher) {
-		if d > 0 {
-			o.finalDrainTimeout = d
-		}
+		o.finalDrainTimeout = d
+	}
+}
+
+// WithBufferedMessageSizeLimiter replaces the buffered publisher's
+// message-size policy. The check runs before direct publishing or buffering,
+// so an over-large message is never persisted into the retry buffer.
+func WithBufferedMessageSizeLimiter(l MessageSizeLimiter) BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.sizeLimiter = l }
+}
+
+// WithBufferedMaxMessageBytes sets the default serialized message-size limit.
+func WithBufferedMaxMessageBytes(maxBytes int) BufferedPublisherOption {
+	return func(o *BufferedPublisher) {
+		o.sizeLimiter = o.sizeLimiter.WithDefaultMaxBytes(maxBytes)
+	}
+}
+
+// WithoutBufferedMaxMessageBytes disables the default size limit. Route-specific
+// limits configured with WithBufferedRouteMaxMessageBytes still apply.
+func WithoutBufferedMaxMessageBytes() BufferedPublisherOption {
+	return func(o *BufferedPublisher) {
+		o.sizeLimiter = o.sizeLimiter.WithoutDefaultMaxBytes()
+	}
+}
+
+// WithBufferedRouteMaxMessageBytes overrides the message-size limit for one
+// exact exchange+routing-key pair. routingKey may be empty for fanout-style
+// routes.
+func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) BufferedPublisherOption {
+	return func(o *BufferedPublisher) {
+		o.sizeLimiter = o.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
 	}
 }
 
@@ -217,10 +256,14 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 		logger:            logger,
 		maxSize:           defaultBufferedMaxSize,
 		finalDrainTimeout: defaultBufferedFinalDrainTimeout,
+		sizeLimiter:       DefaultMessageSizeLimiter(),
 		publishFn:         inner.Publish,
 		healthyFn:         conn.Healthy,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("messaging: BufferedPublisher option must not be nil")
+		}
 		opt(o)
 	}
 
@@ -231,9 +274,10 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 	if o.stateFile != "" {
 		if err := o.load(); err != nil {
 			if !o.lossyStateRecovery {
-				panic(fmt.Sprintf("messaging: BufferedPublisher state load failed for %q: %v — corrupt or unreadable state would silently drop buffered messages; pass WithLossyStateRecovery() to opt in", o.stateFile, err))
+				panic("messaging: BufferedPublisher state load failed — corrupt or unreadable state would silently drop buffered messages; pass WithLossyStateRecovery() to opt in")
 			}
-			logger.Error("failed to load buffered publisher state, starting empty — potential data loss", "error", err, "file", o.stateFile)
+			logger.Error("failed to load buffered publisher state, starting empty — potential data loss",
+				redact.Error(err), redact.String("file", o.stateFile))
 		} else if len(o.pending) > 0 {
 			logger.Info("restored pending buffered publisher messages", "count", len(o.pending))
 		}
@@ -248,6 +292,19 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 // message is appended to the buffer for the drain loop to publish in order.
 // Returns an error only when the buffer is full (back-pressure).
 func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey string, msg Message) error {
+	if err := ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	if err := ValidatePublishRoute(exchange, routingKey); err != nil {
+		return err
+	}
+	msg = msg.Clone()
+	if err := ValidateMessage(msg); err != nil {
+		return err
+	}
+	if err := o.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
+		return err
+	}
 	o.mu.Lock()
 
 	// Check health inside the lock to prevent FIFO violations. If health
@@ -275,20 +332,20 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			}
 		}()
 
-		if err := o.publishFn(ctx, exchange, routingKey, msg); err == nil {
+		if err := o.publishFn(ctx, exchange, routingKey, msg.Clone()); err == nil {
 			o.mu.Lock()
 			o.directInFlight = false
 			published = true
 			o.mu.Unlock()
-			if o.metrics != nil && o.metrics.OnDirectPublish != nil {
-				o.metrics.OnDirectPublish()
-			}
+			o.onDirectPublish()
 			return nil
 		}
 
 		// Direct publish failed — buffer the message.
 		o.logger.Warn("direct publish failed, buffering message",
-			"exchange", exchange, "routing_key", routingKey, "msg_id", msg.ID)
+			redact.String("exchange", exchange),
+			redact.String("routing_key", routingKey),
+			redact.String("msg_id", msg.ID))
 
 		o.mu.Lock()
 		o.directInFlight = false
@@ -297,10 +354,8 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		// been filled by concurrent Publish calls or the drain loop.
 		if o.maxSize > 0 && len(o.pending) >= o.maxSize {
 			o.mu.Unlock()
-			if o.metrics != nil && o.metrics.OnDrop != nil {
-				o.metrics.OnDrop()
-			}
-			return fmt.Errorf("buffered publisher: buffer full (%d messages), message dropped", o.maxSize)
+			o.onDrop()
+			return fmt.Errorf("buffered publisher: buffer full, message dropped")
 		}
 		o.pending = append(o.pending, pendingMessage{
 			Exchange:   exchange,
@@ -316,16 +371,16 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			o.mu.Unlock()
 			return fmt.Errorf("buffered publisher: persist message after direct publish failure: %w", saveErr)
 		}
-		o.reportPending()
 		pending := len(o.pending)
 		o.mu.Unlock()
 
-		if o.metrics != nil && o.metrics.OnBuffer != nil {
-			o.metrics.OnBuffer()
-		}
+		o.reportPending(pending)
+		o.onBuffer()
 		o.logger.Info("message buffered",
-			"exchange", exchange, "routing_key", routingKey,
-			"msg_id", msg.ID, "pending", pending)
+			redact.String("exchange", exchange),
+			redact.String("routing_key", routingKey),
+			redact.String("msg_id", msg.ID),
+			"pending", pending)
 		return nil
 	}
 
@@ -348,12 +403,12 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		if len(o.pending) >= effectiveMax {
 			o.mu.Unlock()
 			o.logger.Error("buffer full, dropping message",
-				"exchange", exchange, "routing_key", routingKey,
-				"msg_id", msg.ID, "buffer_size", o.maxSize)
-			if o.metrics != nil && o.metrics.OnDrop != nil {
-				o.metrics.OnDrop()
-			}
-			return fmt.Errorf("buffered publisher: buffer full (%d messages), message dropped", o.maxSize)
+				redact.String("exchange", exchange),
+				redact.String("routing_key", routingKey),
+				redact.String("msg_id", msg.ID),
+				"buffer_size", o.maxSize)
+			o.onDrop()
+			return fmt.Errorf("buffered publisher: buffer full, message dropped")
 		}
 	}
 
@@ -368,17 +423,17 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		o.mu.Unlock()
 		return fmt.Errorf("buffered publisher: persist buffered message: %w", saveErr)
 	}
-	o.reportPending()
 	pending := len(o.pending)
 	o.mu.Unlock()
 
-	if o.metrics != nil && o.metrics.OnBuffer != nil {
-		o.metrics.OnBuffer()
-	}
+	o.reportPending(pending)
+	o.onBuffer()
 
 	o.logger.Info("message buffered",
-		"exchange", exchange, "routing_key", routingKey,
-		"msg_id", msg.ID, "pending", pending)
+		redact.String("exchange", exchange),
+		redact.String("routing_key", routingKey),
+		redact.String("msg_id", msg.ID),
+		"pending", pending)
 	return nil
 }
 
@@ -391,11 +446,25 @@ func (o *BufferedPublisher) Pending() int {
 
 // Run starts the background drain loop. It periodically checks for pending
 // messages and publishes them when the broker is healthy. Blocks until ctx
-// is cancelled.
+// is cancelled and returns nil after the final drain completes.
 //
 // On shutdown (ctx cancelled), a final best-effort drain is attempted using a
 // short-lived context so in-flight messages are not lost.
-func (o *BufferedPublisher) Run(ctx context.Context) {
+func (o *BufferedPublisher) Run(ctx context.Context) error {
+	if o == nil || o.publishFn == nil || o.healthyFn == nil {
+		return ErrInvalidPublisher
+	}
+	if ctx == nil {
+		return errors.New("messaging: BufferedPublisher.Run requires a non-nil context")
+	}
+	o.runMu.Lock()
+	if o.started {
+		o.runMu.Unlock()
+		return errors.New("messaging: BufferedPublisher.Run already started")
+	}
+	o.started = true
+	o.runMu.Unlock()
+
 	o.drain(ctx) // Drain immediately on startup to clear any restored messages.
 
 	ticker := time.NewTicker(bufferedDrainInterval)
@@ -404,8 +473,8 @@ func (o *BufferedPublisher) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			o.finalDrain()
-			return
+			o.finalDrain(ctx)
+			return nil
 		case <-ticker.C:
 			o.drain(ctx)
 		}
@@ -414,7 +483,7 @@ func (o *BufferedPublisher) Run(ctx context.Context) {
 
 // finalDrain attempts one last drain with a short timeout so pending messages
 // are not silently discarded on shutdown.
-func (o *BufferedPublisher) finalDrain() {
+func (o *BufferedPublisher) finalDrain(ctx context.Context) {
 	o.mu.Lock()
 	remaining := len(o.pending)
 	o.mu.Unlock()
@@ -425,7 +494,7 @@ func (o *BufferedPublisher) finalDrain() {
 
 	o.logger.Info("buffered publisher final drain starting", "pending", remaining)
 
-	ctx, cancel := context.WithTimeout(context.Background(), o.finalDrainTimeout)
+	ctx, cancel := bufferedDetachedContext(ctx, o.finalDrainTimeout)
 	defer cancel()
 
 	o.drain(ctx)
@@ -439,6 +508,13 @@ func (o *BufferedPublisher) finalDrain() {
 	} else {
 		o.logger.Info("buffered publisher fully drained before shutdown")
 	}
+}
+
+func bufferedDetachedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 func (o *BufferedPublisher) drain(ctx context.Context) {
@@ -473,9 +549,9 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 			o.logger.Warn("buffered publisher drain: broker unhealthy, pausing batch")
 			break
 		}
-		if err := o.publishFn(ctx, pm.Exchange, pm.RoutingKey, pm.Msg); err != nil {
+		if err := o.publishFn(ctx, pm.Exchange, pm.RoutingKey, pm.Msg.Clone()); err != nil {
 			o.logger.Warn("buffered publisher drain publish failed, will retry",
-				"error", err, "msg_id", pm.Msg.ID)
+				redact.Error(err), redact.String("msg_id", pm.Msg.ID))
 			break
 		}
 		published++
@@ -485,6 +561,7 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 	o.directInFlight = false
 
 	var saveErr error
+	pending := -1
 	if published > 0 {
 		// Compact the slice to allow the backing array to be GC'd.
 		// Without this, o.pending[published:] retains the original array
@@ -500,22 +577,21 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		// LastSaveError() is the kit-internal probe; OnSaveError is the
 		// metrics-side hook that pages someone before the next crash.
 		saveErr = o.saveLocked()
-		o.reportPending()
+		pending = len(o.pending)
 	}
 	o.mu.Unlock()
 
+	if pending >= 0 {
+		o.reportPending(pending)
+	}
 	if saveErr != nil {
 		o.logger.Error("buffered publisher state save failed AFTER successful broker publishes; restart-replay risk until next save succeeds",
-			"error", saveErr, "published", published)
-		if o.metrics != nil && o.metrics.OnSaveError != nil {
-			o.metrics.OnSaveError(saveErr)
-		}
+			redact.Error(saveErr), "published", published)
+		o.onSaveError(saveErr)
 	}
 
 	if published > 0 {
-		if o.metrics != nil && o.metrics.OnDrain != nil {
-			o.metrics.OnDrain(published)
-		}
+		o.onDrain(published)
 		o.logger.Info("buffered publisher drained",
 			"published", published)
 	}
@@ -542,7 +618,7 @@ func (o *BufferedPublisher) saveLocked() error {
 	}
 
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
-		o.logger.Error("failed to save buffered publisher state", "error", err)
+		o.logger.Error("failed to save buffered publisher state", redact.Error(err), redact.String("file", o.stateFile))
 		o.lastSaveErr.Store(&err)
 		return err
 	}
@@ -562,16 +638,83 @@ func (o *BufferedPublisher) LastSaveError() error {
 	return nil
 }
 
-func (o *BufferedPublisher) reportPending() {
-	if o.metrics != nil && o.metrics.OnPendingGauge != nil {
-		o.metrics.OnPendingGauge(len(o.pending))
+func (o *BufferedPublisher) onDirectPublish() {
+	if o.metrics == nil {
+		return
 	}
+	o.callMetric("OnDirectPublish", o.metrics.OnDirectPublish)
+}
+
+func (o *BufferedPublisher) onBuffer() {
+	if o.metrics == nil {
+		return
+	}
+	o.callMetric("OnBuffer", o.metrics.OnBuffer)
+}
+
+func (o *BufferedPublisher) onDrop() {
+	if o.metrics == nil {
+		return
+	}
+	o.callMetric("OnDrop", o.metrics.OnDrop)
+}
+
+func (o *BufferedPublisher) onDrain(count int) {
+	if o.metrics == nil || o.metrics.OnDrain == nil {
+		return
+	}
+	o.callMetric("OnDrain", func() {
+		o.metrics.OnDrain(count)
+	})
+}
+
+func (o *BufferedPublisher) onPendingGauge(count int) {
+	if o.metrics == nil || o.metrics.OnPendingGauge == nil {
+		return
+	}
+	o.callMetric("OnPendingGauge", func() {
+		o.metrics.OnPendingGauge(count)
+	})
+}
+
+func (o *BufferedPublisher) onSaveError(err error) {
+	if o.metrics == nil || o.metrics.OnSaveError == nil {
+		return
+	}
+	o.callMetric("OnSaveError", func() {
+		o.metrics.OnSaveError(err)
+	})
+}
+
+func (o *BufferedPublisher) reportPending(count int) {
+	o.onPendingGauge(count)
+}
+
+func (o *BufferedPublisher) callMetric(name string, fn func()) {
+	if fn == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger := o.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("buffered publisher metric callback panicked",
+				"callback", name,
+				redact.Panic(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	fn()
 }
 
 // load reads pending messages from the state file on startup.
-// Invalid entries (missing exchange or routing key) are skipped and logged
-// rather than rejecting the entire file — this preserves valid messages
-// when a single entry is corrupted.
+// Invalid entries (missing exchange) are skipped and logged rather than
+// rejecting the entire file — this preserves valid messages when a single
+// entry is corrupted. An empty routing key is valid for fanout/exchange-only
+// publishes and must be replayed.
 func (o *BufferedPublisher) load() error {
 	if o.stateFile == "" {
 		return nil
@@ -584,9 +727,14 @@ func (o *BufferedPublisher) load() error {
 
 	valid := make([]pendingMessage, 0, len(pending))
 	for i, pm := range pending {
-		if pm.Exchange == "" || pm.RoutingKey == "" {
+		if err := ValidatePublishRoute(pm.Exchange, pm.RoutingKey); err != nil {
 			o.logger.Warn("buffered publisher state: skipping invalid entry",
-				"index", i, "msg_id", pm.Msg.ID)
+				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))
+			continue
+		}
+		if err := ValidateMessage(pm.Msg); err != nil {
+			o.logger.Warn("buffered publisher state: skipping invalid message",
+				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))
 			continue
 		}
 		valid = append(valid, pm)

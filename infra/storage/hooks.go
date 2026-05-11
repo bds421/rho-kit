@@ -55,12 +55,10 @@ func WithHooks(backend Storage, hooks Hooks) Storage {
 		hooks:   hooks,
 	}
 
-	// Check which optional interfaces the backend implements and return
-	// a combined type that preserves all of them through the wrapper.
-	_, isLister := backend.(Lister)
-	_, isCopier := backend.(Copier)
-	_, isPresigned := backend.(PresignedStore)
-	_, isURLer := backend.(PublicURLer)
+	_, isLister := AsLister(backend)
+	_, isCopier := AsCopier(backend)
+	_, isPresigned := AsPresigned(backend)
+	_, isURLer := AsPublicURLer(backend)
 
 	switch {
 	case isLister && isCopier && isPresigned && isURLer:
@@ -109,35 +107,45 @@ type hookedStorage struct {
 func (h *hookedStorage) Unwrap() Storage { return h.backend }
 
 func (h *hookedStorage) Put(ctx context.Context, key string, r io.Reader, meta ObjectMeta) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
+	opMeta := CloneObjectMeta(meta)
 	if h.hooks.BeforePut != nil {
-		if err := h.hooks.BeforePut(ctx, key, meta); err != nil {
+		if err := h.hooks.BeforePut(ctx, key, CloneObjectMeta(opMeta)); err != nil {
 			return err
 		}
 	}
 
-	if err := h.backend.Put(ctx, key, r, meta); err != nil {
+	if err := h.backend.Put(ctx, key, r, opMeta); err != nil {
 		return err
 	}
 
 	if h.hooks.AfterPut != nil {
-		h.hooks.AfterPut(ctx, key, meta)
+		h.hooks.AfterPut(ctx, key, CloneObjectMeta(opMeta))
 	}
 	return nil
 }
 
 func (h *hookedStorage) Get(ctx context.Context, key string) (io.ReadCloser, ObjectMeta, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, ObjectMeta{}, err
+	}
 	rc, meta, err := h.backend.Get(ctx, key)
 	if err != nil {
 		return nil, meta, err
 	}
 
 	if h.hooks.AfterGet != nil {
-		h.hooks.AfterGet(ctx, key, meta)
+		h.hooks.AfterGet(ctx, key, CloneObjectMeta(meta))
 	}
 	return rc, meta, nil
 }
 
 func (h *hookedStorage) Delete(ctx context.Context, key string) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	if h.hooks.BeforeDelete != nil {
 		if err := h.hooks.BeforeDelete(ctx, key); err != nil {
 			return err
@@ -155,6 +163,9 @@ func (h *hookedStorage) Delete(ctx context.Context, key string) error {
 }
 
 func (h *hookedStorage) Exists(ctx context.Context, key string) (bool, error) {
+	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
 	return h.backend.Exists(ctx, key)
 }
 
@@ -164,9 +175,14 @@ var _ Storage = (*hookedStorage)(nil)
 // --- Optional interface forwarding methods ---
 
 func (h *hookedStorage) list(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error] {
-	lister, ok := h.backend.(Lister)
+	if err := ValidatePrefix(prefix); err != nil {
+		return errorSeq(err)
+	}
+	if err := ValidateListOptions(opts); err != nil {
+		return errorSeq(err)
+	}
+	lister, ok := AsLister(h.backend)
 	if !ok {
-		// Should never happen — WithHooks checks capabilities at construction.
 		return func(yield func(ObjectInfo, error) bool) {
 			yield(ObjectInfo{}, fmt.Errorf("storage: backend does not implement Lister"))
 		}
@@ -175,7 +191,13 @@ func (h *hookedStorage) list(ctx context.Context, prefix string, opts ListOption
 }
 
 func (h *hookedStorage) copy(ctx context.Context, srcKey, dstKey string) error {
-	copier, ok := h.backend.(Copier)
+	if err := ValidateKey(srcKey); err != nil {
+		return err
+	}
+	if err := ValidateKey(dstKey); err != nil {
+		return err
+	}
+	copier, ok := AsCopier(h.backend)
 	if !ok {
 		return fmt.Errorf("storage: backend does not implement Copier")
 	}
@@ -189,7 +211,10 @@ func (h *hookedStorage) copy(ctx context.Context, srcKey, dstKey string) error {
 }
 
 func (h *hookedStorage) presignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	ps, ok := h.backend.(PresignedStore)
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	ps, ok := AsPresigned(h.backend)
 	if !ok {
 		return "", fmt.Errorf("storage: backend does not implement PresignedStore")
 	}
@@ -204,11 +229,17 @@ func (h *hookedStorage) presignGetURL(ctx context.Context, key string, ttl time.
 }
 
 func (h *hookedStorage) presignPutURL(ctx context.Context, key string, ttl time.Duration, meta ObjectMeta) (string, error) {
-	ps, ok := h.backend.(PresignedStore)
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	if err := ValidateObjectMeta(meta); err != nil {
+		return "", err
+	}
+	ps, ok := AsPresigned(h.backend)
 	if !ok {
 		return "", fmt.Errorf("storage: backend does not implement PresignedStore")
 	}
-	url, err := ps.PresignPutURL(ctx, key, ttl, meta)
+	url, err := ps.PresignPutURL(ctx, key, ttl, CloneObjectMeta(meta))
 	if err != nil {
 		return "", err
 	}
@@ -219,11 +250,20 @@ func (h *hookedStorage) presignPutURL(ctx context.Context, key string, ttl time.
 }
 
 func (h *hookedStorage) url(ctx context.Context, key string) (string, error) {
-	urler, ok := h.backend.(PublicURLer)
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	urler, ok := AsPublicURLer(h.backend)
 	if !ok {
 		return "", fmt.Errorf("storage: backend does not implement PublicURLer")
 	}
 	return urler.URL(ctx, key)
+}
+
+func errorSeq(err error) iter.Seq2[ObjectInfo, error] {
+	return func(yield func(ObjectInfo, error) bool) {
+		yield(ObjectInfo{}, err)
+	}
 }
 
 // --- Combination wrapper types ---

@@ -19,6 +19,9 @@ const loggerKey contextKey = "logger"
 // httpx.Logger and logging.FromContext find the same logger. This unifies
 // the two logger-in-context mechanisms.
 func SetLogger(ctx context.Context, l *slog.Logger) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ctx = context.WithValue(ctx, loggerKey, l)
 	ctx = logging.WithContext(ctx, l)
 	return ctx
@@ -29,12 +32,14 @@ func SetLogger(ctx context.Context, l *slog.Logger) context.Context {
 // [logging.FromContext] for interoperability with the logging package.
 // Returns the fallback logger if neither was set (never returns nil).
 func Logger(ctx context.Context, fallback *slog.Logger) *slog.Logger {
-	if l, ok := ctx.Value(loggerKey).(*slog.Logger); ok && l != nil {
-		return l
-	}
-	// Fall back to the logging package's context key for interoperability.
-	if l := logging.FromContext(ctx); l != slog.Default() {
-		return l
+	if ctx != nil {
+		if l, ok := ctx.Value(loggerKey).(*slog.Logger); ok && l != nil {
+			return l
+		}
+		// Fall back to the logging package's context key for interoperability.
+		if l := logging.FromContext(ctx); l != slog.Default() {
+			return l
+		}
 	}
 	if fallback != nil {
 		return fallback

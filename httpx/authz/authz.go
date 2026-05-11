@@ -14,11 +14,17 @@ package authz
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 
+	kitauthz "github.com/bds421/rho-kit/authz/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
+	"golang.org/x/net/http/httpguts"
 )
 
 // Policy decides whether a subject may perform an action on a resource.
@@ -50,38 +56,71 @@ func RequirePermission(policy Policy, action string, resource ResourceFunc, subj
 	if subject == nil {
 		panic("authz: RequirePermission requires a non-nil SubjectFunc")
 	}
+	if action == "" {
+		panic("authz: RequirePermission requires a non-empty action")
+	}
+	if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: "subject", Action: action, Resource: "resource"}); err != nil {
+		panic("authz: RequirePermission requires a valid action")
+	}
 	cfg := middlewareConfig{
 		logger: slog.Default(),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("authz: middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			sub := subject(r)
+			sub, ok := safeSubject(cfg.logger, subject, r)
+			if !ok {
+				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
+				return
+			}
 			if sub == "" {
 				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
 				return
 			}
-			res := resource(r)
+			if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: sub, Action: action, Resource: "resource"}); err != nil {
+				cfg.logger.Warn("authorization invalid subject",
+					redact.Error(err),
+					"action", action,
+				)
+				httpx.WriteError(w, http.StatusUnauthorized, "missing subject identity")
+				return
+			}
+			res, ok := safeResource(cfg.logger, resource, r)
+			if !ok {
+				httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: sub, Action: action, Resource: res}); err != nil {
+				cfg.logger.Warn("authorization invalid request",
+					redact.Error(err),
+					"action", action,
+				)
+				httpx.WriteError(w, http.StatusForbidden, "forbidden")
+				return
+			}
 
-			allowed, err := policy.Allowed(r.Context(), sub, action, res)
+			allowed, err := safeAllowed(cfg.logger, policy, r.Context(), sub, action, res)
 			if err != nil {
 				cfg.logger.Error("authorization policy error",
-					"error", err,
-					"subject", sub,
+					redact.Error(err),
+					redact.String("subject", sub),
 					"action", action,
-					"resource", res,
+					redact.String("resource", res),
 				)
 				httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if !allowed {
 				cfg.logger.Warn("authorization denied",
-					"subject", sub,
+					redact.String("subject", sub),
 					"action", action,
-					"resource", res,
+					redact.String("resource", res),
 				)
 				httpx.WriteError(w, http.StatusForbidden, "forbidden")
 				return
@@ -90,6 +129,48 @@ func RequirePermission(policy Policy, action string, resource ResourceFunc, subj
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func safeSubject(logger *slog.Logger, subject SubjectFunc, r *http.Request) (value string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error("authorization subject extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			value, ok = "", false
+		}
+	}()
+	return subject(r), true
+}
+
+func safeResource(logger *slog.Logger, resource ResourceFunc, r *http.Request) (value string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error("authorization resource extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			value, ok = "", false
+		}
+	}()
+	return resource(r), true
+}
+
+func safeAllowed(logger *slog.Logger, policy Policy, ctx context.Context, subject, action, resource string) (allowed bool, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error("authorization policy panicked",
+				redact.Panic(rec),
+				redact.String("subject", subject),
+				"action", action,
+				redact.String("resource", resource),
+				"stack", string(debug.Stack()),
+			)
+			allowed, err = false, fmt.Errorf("authorization policy panicked")
+		}
+	}()
+	return policy.Allowed(ctx, subject, action, resource)
 }
 
 // MiddlewareOption configures the authorization middleware.
@@ -116,6 +197,9 @@ func WithLogger(l *slog.Logger) MiddlewareOption {
 
 // ResourceFromPath returns a ResourceFunc that extracts a path parameter by name.
 func ResourceFromPath(param string) ResourceFunc {
+	if param == "" {
+		panic("authz: ResourceFromPath requires a non-empty parameter name")
+	}
 	return func(r *http.Request) string {
 		return r.PathValue(param)
 	}
@@ -134,8 +218,11 @@ func ResourceFromPath(param string) ResourceFunc {
 // Use this only in tests and non-production fixtures where the only caller
 // is the test harness itself.
 func SubjectFromUntrustedHeader(header string) SubjectFunc {
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("authz: SubjectFromUntrustedHeader requires a valid non-empty header")
+	}
 	return func(r *http.Request) string {
-		return r.Header.Get(header)
+		return singletonIdentityHeader(r.Header, header)
 	}
 }
 
@@ -155,12 +242,39 @@ func SubjectFromUntrustedHeader(header string) SubjectFunc {
 // rejects every request because no remote can be trusted; use
 // [SubjectFromContext] in deployments without a header-stamping proxy.
 func SubjectFromTrustedHeader(header string, trustedProxies []*net.IPNet) SubjectFunc {
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("authz: SubjectFromTrustedHeader requires a valid non-empty header")
+	}
+	trustedProxies = cloneIPNets(trustedProxies)
 	return func(r *http.Request) string {
 		if !remoteAddrInTrustedProxies(r.RemoteAddr, trustedProxies) {
 			return ""
 		}
-		return r.Header.Get(header)
+		return singletonIdentityHeader(r.Header, header)
 	}
+}
+
+func singletonIdentityHeader(h http.Header, name string) string {
+	value, ok := headerutil.SingletonIdentity(h, name)
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		if n == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &net.IPNet{
+			IP:   append(net.IP(nil), n.IP...),
+			Mask: append(net.IPMask(nil), n.Mask...),
+		})
+	}
+	return out
 }
 
 // remoteAddrInTrustedProxies reports whether the host portion of remoteAddr
@@ -195,6 +309,9 @@ func remoteAddrInTrustedProxies(remoteAddr string, trusted []*net.IPNet) bool {
 //	    return auth.UserID(ctx)
 //	})
 func SubjectFromContext(fn func(context.Context) string) SubjectFunc {
+	if fn == nil {
+		panic("authz: SubjectFromContext requires a non-nil function")
+	}
 	return func(r *http.Request) string {
 		return fn(r.Context())
 	}
@@ -203,6 +320,12 @@ func SubjectFromContext(fn func(context.Context) string) SubjectFunc {
 // StaticResource returns a ResourceFunc that always returns a fixed string.
 // Use for endpoints where the resource is implicit (e.g., "system", "admin-panel").
 func StaticResource(resource string) ResourceFunc {
+	if resource == "" {
+		panic("authz: StaticResource requires a non-empty resource")
+	}
+	if err := kitauthz.ValidateRequest(kitauthz.Request{Subject: "subject", Action: "action", Resource: resource}); err != nil {
+		panic("authz: StaticResource requires a valid resource")
+	}
 	return func(_ *http.Request) string {
 		return resource
 	}

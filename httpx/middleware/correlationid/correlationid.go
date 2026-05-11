@@ -16,14 +16,14 @@ import (
 const Header = "X-Correlation-Id"
 
 // maxCorrelationIDLen is the maximum length for an incoming correlation ID header.
-const maxCorrelationIDLen = 128
+const maxCorrelationIDLen = contextutil.MaxCorrelationIDLen
 
 // WithCorrelationID reads the correlation ID from the X-Correlation-Id header.
 // If absent or invalid, it generates a new one. The ID is stored in the request
 // context and set on the response header.
 func WithCorrelationID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(Header)
+		id := singletonHeaderValue(r.Header, Header)
 		if !isValidCorrelationID(id) {
 			id = contextutil.NewID()
 		}
@@ -33,8 +33,15 @@ func WithCorrelationID(next http.Handler) http.Handler {
 	})
 }
 
-// isValidCorrelationID returns true if id is non-empty, within length limits,
-// and contains only printable ASCII characters (excluding space).
+// isValidCorrelationID returns true if id is a safe request/correlation token.
 func isValidCorrelationID(id string) bool {
 	return idutil.IsValid(id, maxCorrelationIDLen)
+}
+
+func singletonHeaderValue(h http.Header, name string) string {
+	values := h.Values(name)
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }

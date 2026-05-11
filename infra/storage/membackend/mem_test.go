@@ -3,7 +3,9 @@ package membackend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,13 +34,70 @@ func TestMemBackend_PutAndGet(t *testing.T) {
 	assert.Equal(t, int64(11), meta.Size)
 }
 
+func TestMemBackend_PutClosesValidatorOwnedReader(t *testing.T) {
+	t.Parallel()
+	closed := false
+	b := New(func(context.Context, io.Reader, *storage.ObjectMeta) (io.Reader, error) {
+		return &trackingReadCloser{Reader: strings.NewReader("validated"), closed: &closed}, nil
+	})
+
+	err := b.Put(context.Background(), "validated.txt", strings.NewReader("original"), storage.ObjectMeta{})
+	require.NoError(t, err)
+	assert.True(t, closed)
+
+	rc, _, err := b.Get(context.Background(), "validated.txt")
+	require.NoError(t, err)
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("validated"), got)
+}
+
+func TestMemBackend_PutDoesNotCloseCallerOwnedReaderWithoutValidators(t *testing.T) {
+	t.Parallel()
+	closed := false
+	r := &trackingReadCloser{Reader: strings.NewReader("caller-owned"), closed: &closed}
+
+	err := New().Put(context.Background(), "caller-owned.txt", r, storage.ObjectMeta{})
+	require.NoError(t, err)
+	assert.False(t, closed)
+}
+
+func TestMemBackend_PutReadErrorDoesNotReflectCause(t *testing.T) {
+	t.Parallel()
+	readErr := errors.New("read failed for secret-token")
+
+	err := New().Put(context.Background(), "reader.txt", errReader{err: readErr}, storage.ObjectMeta{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, readErr)
+	assert.Contains(t, err.Error(), "membackend: read content")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "read failed")
+}
+
+func TestNew_PanicsOnNilValidator(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		New(nil)
+	})
+}
+
+func TestMemBackend_PutRejectsNilReader(t *testing.T) {
+	t.Parallel()
+	err := New().Put(context.Background(), "nil.txt", nil, storage.ObjectMeta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrValidation)
+}
+
 func TestMemBackend_GetNotFound(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	b := New()
 
-	_, _, err := b.Get(ctx, "missing.txt")
+	_, _, err := b.Get(ctx, "secret-token.txt")
 	assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestMemBackend_DeleteIdempotent(t *testing.T) {
@@ -85,6 +144,17 @@ func TestMemBackend_Copy(t *testing.T) {
 	assert.Equal(t, []byte("data"), got)
 }
 
+func TestMemBackend_CopyNotFoundDoesNotReflectSourceKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := New()
+
+	err := b.Copy(ctx, "secret-token.txt", "dst.txt")
+
+	assert.ErrorIs(t, err, storage.ErrObjectNotFound)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
 func TestMemBackend_List(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -119,6 +189,20 @@ func TestMemBackend_ListMaxKeys(t *testing.T) {
 		keys = append(keys, info.Key)
 	}
 	assert.Len(t, keys, 2)
+}
+
+func TestMemBackend_ListRejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+	b := New()
+
+	var seenErr error
+	for _, err := range b.List(context.Background(), "", storage.ListOptions{StartAfter: "bad key"}) {
+		seenErr = err
+		break
+	}
+
+	require.ErrorIs(t, seenErr, storage.ErrValidation)
+	assert.Equal(t, 0, b.Len())
 }
 
 func TestMemBackend_LenAndReset(t *testing.T) {
@@ -158,6 +242,38 @@ func TestMemBackend_ImmutableStorage(t *testing.T) {
 	assert.Equal(t, original, data2)
 }
 
+func TestMemBackend_CustomMetadataIsImmutable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := New()
+
+	meta := storage.ObjectMeta{Custom: map[string]string{"owner": "alice"}}
+	require.NoError(t, b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), meta))
+
+	meta.Custom["owner"] = "mallory"
+
+	_, gotMeta, err := b.Get(ctx, "file.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", gotMeta.Custom["owner"])
+
+	gotMeta.Custom["owner"] = "bob"
+	_, gotMetaAgain, err := b.Get(ctx, "file.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", gotMetaAgain.Custom["owner"])
+}
+
+func TestMemBackend_InvalidMetadataRejected(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := New()
+
+	err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{
+		Custom: map[string]string{"bad\nkey": "value"},
+	})
+	assert.ErrorIs(t, err, storage.ErrValidation)
+	assert.Equal(t, 0, b.Len())
+}
+
 func TestMemBackend_EmptyKeyRejected(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -172,4 +288,22 @@ func TestMemBackend_EmptyKeyRejected(t *testing.T) {
 
 	_, err = b.Exists(ctx, "")
 	assert.Error(t, err)
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r *trackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
+}
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read([]byte) (int, error) {
+	return 0, r.err
 }

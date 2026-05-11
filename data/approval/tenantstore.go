@@ -52,6 +52,9 @@ func NewTenantStore(inner Store, tenantID string) *TenantStore {
 // caller cannot create an approval request scoped to a different
 // tenant than the request boundary they came in on.
 func (t *TenantStore) Create(ctx context.Context, r Request) (Request, error) {
+	if err := t.ready(); err != nil {
+		return Request{}, err
+	}
 	r.TenantID = t.tenantID
 	return t.inner.Create(ctx, r)
 }
@@ -61,6 +64,9 @@ func (t *TenantStore) Create(ctx context.Context, r Request) (Request, error) {
 // reads so a caller cannot probe the existence of approvals owned
 // by other tenants.
 func (t *TenantStore) Get(ctx context.Context, id string) (Request, error) {
+	if err := t.ready(); err != nil {
+		return Request{}, err
+	}
 	r, err := t.inner.Get(ctx, id)
 	if err != nil {
 		return Request{}, err
@@ -75,6 +81,9 @@ func (t *TenantStore) Get(ctx context.Context, id string) (Request, error) {
 // caller cannot widen the scope or set AllTenants from a tenant-
 // scoped boundary.
 func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, error) {
+	if err := t.ready(); err != nil {
+		return nil, err
+	}
 	q.TenantID = t.tenantID
 	q.AllTenants = false
 	return t.inner.List(ctx, q)
@@ -84,6 +93,9 @@ func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, error) {
 // store. Returns [ErrNotFound] when the request belongs to another
 // tenant.
 func (t *TenantStore) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
+	if err := t.ready(); err != nil {
+		return Request{}, err
+	}
 	if _, err := t.Get(ctx, id); err != nil {
 		return Request{}, err
 	}
@@ -101,6 +113,9 @@ func (t *TenantStore) Decide(ctx context.Context, id, decidedBy, reason string, 
 
 // MarkExecuted enforces tenant ownership before delegating.
 func (t *TenantStore) MarkExecuted(ctx context.Context, id string) (Request, error) {
+	if err := t.ready(); err != nil {
+		return Request{}, err
+	}
 	if _, err := t.Get(ctx, id); err != nil {
 		return Request{}, err
 	}
@@ -117,3 +132,10 @@ func (t *TenantStore) MarkExecuted(ctx context.Context, id string) (Request, err
 // Compile-time check that TenantStore satisfies the Store interface
 // so it drops into anywhere the kit accepts a Store.
 var _ Store = (*TenantStore)(nil)
+
+func (t *TenantStore) ready() error {
+	if t == nil || t.inner == nil || t.tenantID == "" {
+		return ErrInvalidStore
+	}
+	return nil
+}

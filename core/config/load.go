@@ -31,8 +31,8 @@ const maxSecretFileSize int64 = 1 << 20
 // Supported field types: string, int, int64, uint, uint8, uint16, uint32, uint64, bool,
 // time.Duration, []string (comma-separated), *url.URL, float64.
 //
-// Note on []string: empty elements are silently dropped. "a,,b" → ["a","b"].
-// There is no way to include empty strings or distinguish "not set" from "set to empty".
+// Note on []string: values are comma-separated and trimmed. Empty elements
+// are rejected, so "a,,b" is a configuration error rather than ["a","b"].
 //
 // Nested structs are recursively loaded. Unexported fields are skipped.
 func Load[T any]() (T, error) {
@@ -42,14 +42,14 @@ func Load[T any]() (T, error) {
 	// pointer receivers, but the loader assumes a struct and would
 	// panic on .NumField() during nested-struct traversal. A typed
 	// error makes the caller-facing failure mode obvious.
-	if v.Kind() == reflect.Ptr {
-		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type, not a pointer (got %s)", v.Type())
+	if v.Kind() == reflect.Pointer {
+		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type, not a pointer")
 	}
 	if v.Kind() != reflect.Struct {
-		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type (got %s)", v.Type())
+		return cfg, fmt.Errorf("config: Load[T] requires T to be a struct type")
 	}
 	if !hasEnvTags(v.Type()) {
-		return cfg, fmt.Errorf("config: type %s has no env struct tags — fields will be zero-valued", v.Type().Name())
+		return cfg, fmt.Errorf("config: type has no env struct tags — fields will be zero-valued")
 	}
 	if err := load(v); err != nil {
 		return cfg, err
@@ -61,7 +61,7 @@ func Load[T any]() (T, error) {
 func MustLoad[T any]() T {
 	cfg, err := Load[T]()
 	if err != nil {
-		panic(fmt.Sprintf("config: %v", err))
+		panic("config: Load failed")
 	}
 	return cfg
 }
@@ -75,7 +75,7 @@ func load(v reflect.Value) error {
 // has at least one field with an "env" struct tag. This prevents silent
 // misconfiguration when Load is called with a type that has no tags.
 func hasEnvTags(t reflect.Type) bool {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -90,7 +90,7 @@ func hasEnvTags(t reflect.Type) bool {
 			return true
 		}
 		ft := field.Type
-		if ft.Kind() == reflect.Ptr {
+		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
 		if ft.Kind() == reflect.Struct && hasEnvTags(ft) {
@@ -128,7 +128,7 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 		// Recurse into pointer-to-struct fields without an env tag.
 		// Only allocate the pointer if at least one nested field received a
 		// value from the environment, preserving nil-means-disabled convention.
-		if field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.Struct && field.Tag.Get("env") == "" {
+		if field.Type.Kind() == reflect.Pointer && field.Type.Elem().Kind() == reflect.Struct && field.Tag.Get("env") == "" {
 			tmp := reflect.New(field.Type.Elem())
 			childRead, err := loadWithEnvTracking(tmp.Elem())
 			if err != nil {
@@ -148,9 +148,10 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 			continue
 		}
 
-		parts := strings.SplitN(envTag, ",", 2)
-		envName := parts[0]
-		required := len(parts) > 1 && parts[1] == "required"
+		envName, required, tagErr := parseEnvTag(envTag, field.Name)
+		if tagErr != nil {
+			return false, tagErr
+		}
 		defaultVal := field.Tag.Get("default")
 		isSecret := field.Tag.Get("secret") == "true"
 
@@ -178,23 +179,54 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 			continue
 		}
 
-		if err := setField(fv, val, envName); err != nil {
+		if err := setField(fv, val, envName, isSecret); err != nil {
 			return false, err
 		}
 	}
 	return envRead, nil
 }
 
+func parseEnvTag(tag, fieldName string) (envName string, required bool, _ error) {
+	parts := strings.Split(tag, ",")
+	envName = strings.TrimSpace(parts[0])
+	if envName == "" {
+		return "", false, fmt.Errorf("config: field env tag must name an environment variable")
+	}
+	for _, rawOpt := range parts[1:] {
+		opt := strings.TrimSpace(rawOpt)
+		switch opt {
+		case "required":
+			required = true
+		default:
+			return "", false, fmt.Errorf("config: field env tag has unknown option")
+		}
+	}
+	return envName, required, nil
+}
+
 // resolveWithSource returns the value for an environment variable and whether
 // it came from the environment (as opposed to being empty/unset).
 //
-// For secret fields, the file path comes from envName+"_FILE". There is an
+// For secret fields, envName+"_FILE" is authoritative when set and the
+// direct environment variable is consulted only when no file source is
+// configured. There is an
 // inherent TOCTOU gap between reading the env var and reading the file — if
 // the file is replaced between these operations, the wrong content is loaded.
 // This is a fundamental limitation of file-based secret injection (Docker
 // secrets, Kubernetes volume mounts) and is accepted as-is. Kubernetes secret
 // volumes use atomic symlink swaps that make the race window negligible.
 func resolveWithSource(envName string, isSecret bool) (val string, fromEnv bool, _ error) {
+	if isSecret {
+		filePath := os.Getenv(envName + "_FILE")
+		if filePath != "" {
+			val, err := readSecretFile(filePath)
+			if err != nil {
+				return "", false, fmt.Errorf("config: failed to read secret file for %s: %w", envName, err)
+			}
+			return val, true, nil
+		}
+	}
+
 	val, found := os.LookupEnv(envName)
 	if found && val != "" {
 		return val, true, nil
@@ -207,34 +239,34 @@ func resolveWithSource(envName string, isSecret bool) (val string, fromEnv bool,
 	if !isSecret {
 		return "", false, nil
 	}
-	filePath := os.Getenv(envName + "_FILE")
-	if filePath == "" {
-		return "", false, nil
-	}
+	return "", false, nil
+}
+
+func readSecretFile(filePath string) (string, error) {
 	// FR-039 [MED]: cap the read at maxSecretFileSize so a
 	// misconfigured _FILE path (e.g. pointing at /var/log/system.log)
 	// cannot pull arbitrary bytes into memory at startup.
 	f, err := os.Open(filePath)
 	if err != nil {
-		return "", false, fmt.Errorf("config: failed to open secret file for %s from %q: %w", envName, filePath, err)
+		return "", fmt.Errorf("open failed")
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxSecretFileSize+1))
 	if err != nil {
-		return "", false, fmt.Errorf("config: failed to read secret file for %s from %q: %w", envName, filePath, err)
+		return "", fmt.Errorf("read failed")
 	}
 	if int64(len(data)) > maxSecretFileSize {
-		return "", false, fmt.Errorf("config: secret file for %s exceeds %d bytes", envName, maxSecretFileSize)
+		return "", fmt.Errorf("exceeds maximum size")
 	}
 	// Trim only trailing line terminators that secret-mounting tools add
 	// (Docker, Kubernetes, Vault all append a single \n). strings.TrimSpace
 	// would also strip meaningful interior/leading whitespace from a base64
 	// secret or a password that legitimately ends in spaces — silent
 	// corruption that's hard to debug.
-	return strings.TrimRight(string(data), "\r\n"), true, nil
+	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
-func setField(fv reflect.Value, val, envName string) error {
+func setField(fv reflect.Value, val, envName string, isSecret bool) error {
 	// Handle *url.URL pointer type.
 	// Note: scheme validation is intentionally limited to requiring a non-empty
 	// scheme and host. Callers that need specific schemes (e.g., http/https only)
@@ -243,10 +275,10 @@ func setField(fv reflect.Value, val, envName string) error {
 	if fv.Type() == reflect.TypeOf((*url.URL)(nil)) {
 		u, err := url.Parse(val)
 		if err != nil {
-			return fmt.Errorf("config: %s: invalid URL: %w", envName, err)
+			return fmt.Errorf("config: %s: invalid URL syntax", envName)
 		}
 		if u.Scheme == "" || u.Host == "" {
-			return fmt.Errorf("config: %s: invalid URL (must include scheme and host): %q", envName, val)
+			return fmt.Errorf("config: %s: invalid URL: must include scheme and host", envName)
 		}
 		fv.Set(reflect.ValueOf(u))
 		return nil
@@ -260,13 +292,13 @@ func setField(fv reflect.Value, val, envName string) error {
 		if fv.Type() == reflect.TypeOf(time.Duration(0)) {
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("config: %s: invalid duration %q: %w", envName, val, err)
+				return invalidParseError(envName, "duration", val, isSecret, err)
 			}
 			fv.Set(reflect.ValueOf(d))
 		} else {
 			n, err := strconv.ParseInt(val, 10, fv.Type().Bits())
 			if err != nil {
-				return fmt.Errorf("config: %s: invalid integer %q: %w", envName, val, err)
+				return invalidParseError(envName, "integer", val, isSecret, err)
 			}
 			fv.SetInt(n)
 		}
@@ -274,21 +306,21 @@ func setField(fv reflect.Value, val, envName string) error {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(val, 10, fv.Type().Bits())
 		if err != nil {
-			return fmt.Errorf("config: %s: invalid unsigned integer %q: %w", envName, val, err)
+			return invalidParseError(envName, "unsigned integer", val, isSecret, err)
 		}
 		fv.SetUint(n)
 
 	case reflect.Bool:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
-			return fmt.Errorf("config: %s: invalid boolean %q: %w", envName, val, err)
+			return invalidParseError(envName, "boolean", val, isSecret, err)
 		}
 		fv.SetBool(b)
 
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(val, fv.Type().Bits())
 		if err != nil {
-			return fmt.Errorf("config: %s: invalid float %q: %w", envName, val, err)
+			return invalidParseError(envName, "float", val, isSecret, err)
 		}
 		fv.SetFloat(f)
 
@@ -296,11 +328,12 @@ func setField(fv reflect.Value, val, envName string) error {
 		if fv.Type().Elem().Kind() == reflect.String {
 			parts := strings.Split(val, ",")
 			items := make([]string, 0, len(parts))
-			for _, p := range parts {
+			for i, p := range parts {
 				s := strings.TrimSpace(p)
-				if s != "" {
-					items = append(items, s)
+				if s == "" {
+					return fmt.Errorf("config: %s: empty list item at position %d", envName, i+1)
 				}
+				items = append(items, s)
 			}
 			fv.Set(reflect.ValueOf(items))
 		} else {
@@ -317,4 +350,11 @@ func setField(fv reflect.Value, val, envName string) error {
 		return fmt.Errorf("config: %s: unsupported type %s", envName, fv.Type())
 	}
 	return nil
+}
+
+func invalidParseError(envName, kind, _ string, isSecret bool, _ error) error {
+	if isSecret {
+		return fmt.Errorf("config: %s: invalid %s [REDACTED]", envName, kind)
+	}
+	return fmt.Errorf("config: %s: invalid %s", envName, kind)
 }

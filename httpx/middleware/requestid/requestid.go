@@ -11,14 +11,14 @@ import (
 const Header = "X-Request-Id"
 
 // maxRequestIDLen is the maximum length for an incoming X-Request-Id header.
-const maxRequestIDLen = 128
+const maxRequestIDLen = contextutil.MaxCorrelationIDLen
 
 // WithRequestID ensures every request has a unique identifier.
 // It uses the incoming X-Request-Id header if present and valid, otherwise
 // generates one. The ID is set on the response header and stored in the context.
 func WithRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(Header)
+		id := singletonHeaderValue(r.Header, Header)
 		if !isValidRequestID(id) {
 			id = contextutil.NewID()
 		}
@@ -28,8 +28,15 @@ func WithRequestID(next http.Handler) http.Handler {
 	})
 }
 
-// isValidRequestID returns true if id is non-empty, within length limits,
-// and contains only printable ASCII characters (excluding space).
+// isValidRequestID returns true if id is a safe request/correlation token.
 func isValidRequestID(id string) bool {
 	return idutil.IsValid(id, maxRequestIDLen)
+}
+
+func singletonHeaderValue(h http.Header, name string) string {
+	values := h.Values(name)
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }

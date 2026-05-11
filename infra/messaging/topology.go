@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -73,6 +74,33 @@ type ExchangeSpec struct {
 	ExchangeType string
 }
 
+// CloneBindingSpecs returns a detached copy of specs. Retry policies are
+// copied so returned bindings can be stored past setup without retaining
+// caller-owned mutable config.
+func CloneBindingSpecs(specs []BindingSpec) []BindingSpec {
+	if len(specs) == 0 {
+		return nil
+	}
+	cloned := make([]BindingSpec, len(specs))
+	for i, spec := range specs {
+		cloned[i] = cloneBindingSpec(spec)
+	}
+	return cloned
+}
+
+func cloneBindingSpec(spec BindingSpec) BindingSpec {
+	if spec.Retry != nil {
+		retry := *spec.Retry
+		spec.Retry = &retry
+	}
+	return spec
+}
+
+func cloneBinding(binding Binding) Binding {
+	binding.BindingSpec = cloneBindingSpec(binding.BindingSpec)
+	return binding
+}
+
 // NormalizeBindingSpecs applies kit defaults to specs and returns a slice of
 // warnings describing any defaults that were applied. It mutates specs in
 // place — callers pass a freshly built slice (the typical pattern).
@@ -89,8 +117,8 @@ func NormalizeBindingSpecs(specs []BindingSpec) []string {
 		if specs[i].Retry == nil && !specs[i].WithoutRetry {
 			specs[i].Retry = DefaultRetryPolicy()
 			warnings = append(warnings, fmt.Sprintf(
-				"binding %q: Retry not configured and WithoutRetry not set; applied DefaultRetryPolicy (MaxRetries=%d, Delay=%s). Set WithoutRetry=true on the BindingSpec to keep ack-and-discard semantics.",
-				specs[i].Queue, specs[i].Retry.MaxRetries, specs[i].Retry.Delay,
+				"retry not configured and WithoutRetry not set; applied DefaultRetryPolicy (MaxRetries=%d, Delay=%s). Set WithoutRetry=true on the BindingSpec to keep ack-and-discard semantics.",
+				specs[i].Retry.MaxRetries, specs[i].Retry.Delay,
 			))
 		}
 	}
@@ -105,8 +133,8 @@ func NormalizeBindingSpecs(specs []BindingSpec) []string {
 // backend-specific DeclareAll do this for you.
 func ValidateBindingSpecs(specs []BindingSpec) error {
 	for _, b := range specs {
-		if b.Exchange == "" {
-			return fmt.Errorf("exchange name must not be empty")
+		if err := ValidateExchangeName(b.Exchange); err != nil {
+			return err
 		}
 		if b.Queue == "" {
 			return fmt.Errorf("queue name must not be empty")
@@ -114,17 +142,20 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 		switch b.ExchangeType {
 		case ExchangeDirect, ExchangeFanout, ExchangeTopic, ExchangeHeaders:
 		default:
-			return fmt.Errorf("unsupported exchange type: %q", b.ExchangeType)
+			return errors.New("unsupported exchange type")
 		}
 		if b.RoutingKey == "" && (b.ExchangeType == ExchangeDirect || b.ExchangeType == ExchangeTopic) {
-			return fmt.Errorf("routing key required for %s exchange %q", b.ExchangeType, b.Exchange)
+			return fmt.Errorf("routing key required for %s exchange", b.ExchangeType)
+		}
+		if err := ValidateRoutingKey(b.RoutingKey); err != nil {
+			return err
 		}
 		if b.Retry != nil && b.WithoutRetry {
-			return fmt.Errorf("binding %q: Retry and WithoutRetry are mutually exclusive — set Retry to override the default policy, or set WithoutRetry=true for ack-and-discard semantics", b.Queue)
+			return errors.New("retry and WithoutRetry are mutually exclusive — set Retry to override the default policy, or set WithoutRetry=true for ack-and-discard semantics")
 		}
 		if b.Retry != nil {
 			if b.Retry.MaxRetries < 1 {
-				return fmt.Errorf("binding %q: RetryPolicy.MaxRetries must be >= 1", b.Queue)
+				return errors.New("retry policy MaxRetries must be >= 1")
 			}
 			// Reject sub-millisecond delays. The amqpbackend topology emits
 			// x-message-ttl as `int64(Delay / time.Millisecond)` which
@@ -132,7 +163,7 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 			// re-delivers immediately, producing a tight loop on every
 			// transient handler error.
 			if b.Retry.Delay < time.Millisecond {
-				return fmt.Errorf("binding %q: RetryPolicy.Delay must be >= 1ms (got %s); sub-ms delays truncate to 0 in the AMQP TTL", b.Queue, b.Retry.Delay)
+				return errors.New("retry policy Delay must be >= 1ms; sub-ms delays truncate to 0 in the AMQP TTL")
 			}
 		}
 	}
@@ -144,9 +175,10 @@ func ValidateBindingSpecs(specs []BindingSpec) error {
 // it requires no broker connection — it is a pure function. Consumer services
 // use this to obtain Binding objects without declaring topology themselves.
 //
-// Mutates specs by calling [NormalizeBindingSpecs] before validation, so a
-// freshly built slice should be passed.
+// The returned bindings own detached retry-policy copies so caller mutation
+// after setup cannot alter consumer retry decisions.
 func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
+	specs = CloneBindingSpecs(specs)
 	_ = NormalizeBindingSpecs(specs)
 	if err := ValidateBindingSpecs(specs); err != nil {
 		return nil, err
@@ -172,10 +204,10 @@ func ComputeBindings(specs ...BindingSpec) ([]Binding, error) {
 func FindBinding(bindings []Binding, routingKey string) (Binding, error) {
 	for _, b := range bindings {
 		if b.RoutingKey == routingKey {
-			return b, nil
+			return cloneBinding(b), nil
 		}
 	}
-	return Binding{}, fmt.Errorf("no binding found for routing key %q", routingKey)
+	return Binding{}, errors.New("no binding found for routing key")
 }
 
 // DeadExchangeName returns the conventional dead-letter exchange name.

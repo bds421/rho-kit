@@ -8,7 +8,7 @@ import (
 func TestLoadJWTFields(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		f := LoadJWTFields()
-		if f.JWKSURL != "https://oathkeeper:4456/.well-known/jwks.json" {
+		if f.JWKSURL != "" {
 			t.Errorf("jwks_url = %q", f.JWKSURL)
 		}
 	})

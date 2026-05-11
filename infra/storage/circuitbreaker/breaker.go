@@ -130,10 +130,15 @@ func New(backend storage.Storage, opts ...Option) Stater {
 		Threshold:    5,
 		ResetTimeout: 30 * time.Second,
 		ShouldTrip: func(err error) bool {
-			return err != nil && !errors.Is(err, storage.ErrObjectNotFound)
+			return err != nil &&
+				!errors.Is(err, storage.ErrObjectNotFound) &&
+				!errors.Is(err, storage.ErrValidation)
 		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("storage/circuitbreaker: option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.ShouldTrip == nil {
@@ -178,13 +183,19 @@ func (cb *CircuitBreaker) State() State {
 
 // Put delegates to the backend if the circuit allows.
 func (cb *CircuitBreaker) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	if err := storage.ValidateKey(key); err != nil {
+		return err
+	}
 	return cb.cb.Execute(func() error {
-		return cb.backend.Put(ctx, key, r, meta)
+		return cb.backend.Put(ctx, key, r, storage.CloneObjectMeta(meta))
 	})
 }
 
 // Get delegates to the backend if the circuit allows.
 func (cb *CircuitBreaker) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
 	var (
 		rc   io.ReadCloser
 		meta storage.ObjectMeta
@@ -207,6 +218,9 @@ func (cb *CircuitBreaker) Get(ctx context.Context, key string) (io.ReadCloser, s
 
 // Delete delegates to the backend if the circuit allows.
 func (cb *CircuitBreaker) Delete(ctx context.Context, key string) error {
+	if err := storage.ValidateKey(key); err != nil {
+		return err
+	}
 	return cb.cb.Execute(func() error {
 		return cb.backend.Delete(ctx, key)
 	})
@@ -214,6 +228,9 @@ func (cb *CircuitBreaker) Delete(ctx context.Context, key string) error {
 
 // Exists delegates to the backend if the circuit allows.
 func (cb *CircuitBreaker) Exists(ctx context.Context, key string) (bool, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return false, err
+	}
 	var ok bool
 	err := cb.cb.Execute(func() error {
 		var existsErr error
@@ -233,6 +250,12 @@ func (cb *CircuitBreaker) Exists(ctx context.Context, key string) (bool, error) 
 // inside cb.Execute so the circuit state gates optional ops too.
 
 func (cb *CircuitBreaker) listImpl(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return cbErrorSeq(err)
+	}
+	if err := storage.ValidateListOptions(opts); err != nil {
+		return cbErrorSeq(err)
+	}
 	lister, ok := storage.AsLister(cb.backend)
 	if !ok {
 		return func(yield func(storage.ObjectInfo, error) bool) {
@@ -262,6 +285,12 @@ func (cb *CircuitBreaker) listImpl(ctx context.Context, prefix string, opts stor
 }
 
 func (cb *CircuitBreaker) copyImpl(ctx context.Context, srcKey, dstKey string) error {
+	if err := storage.ValidateKey(srcKey); err != nil {
+		return err
+	}
+	if err := storage.ValidateKey(dstKey); err != nil {
+		return err
+	}
 	copier, ok := storage.AsCopier(cb.backend)
 	if !ok {
 		return fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.Copier")
@@ -272,6 +301,9 @@ func (cb *CircuitBreaker) copyImpl(ctx context.Context, srcKey, dstKey string) e
 }
 
 func (cb *CircuitBreaker) presignGetImpl(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
 	ps, ok := storage.AsPresigned(cb.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.PresignedStore")
@@ -286,6 +318,12 @@ func (cb *CircuitBreaker) presignGetImpl(ctx context.Context, key string, ttl ti
 }
 
 func (cb *CircuitBreaker) presignPutImpl(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return "", err
+	}
 	ps, ok := storage.AsPresigned(cb.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.PresignedStore")
@@ -293,13 +331,16 @@ func (cb *CircuitBreaker) presignPutImpl(ctx context.Context, key string, ttl ti
 	var url string
 	err := cb.cb.Execute(func() error {
 		var perr error
-		url, perr = ps.PresignPutURL(ctx, key, ttl, meta)
+		url, perr = ps.PresignPutURL(ctx, key, ttl, storage.CloneObjectMeta(meta))
 		return perr
 	})
 	return url, err
 }
 
 func (cb *CircuitBreaker) urlImpl(ctx context.Context, key string) (string, error) {
+	if err := storage.ValidateKey(key); err != nil {
+		return "", err
+	}
 	urler, ok := storage.AsPublicURLer(cb.backend)
 	if !ok {
 		return "", fmt.Errorf("storage/circuitbreaker: underlying backend does not implement storage.PublicURLer")
@@ -311,6 +352,12 @@ func (cb *CircuitBreaker) urlImpl(ctx context.Context, key string) (string, erro
 		return uerr
 	})
 	return url, err
+}
+
+func cbErrorSeq(err error) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		yield(storage.ObjectInfo{}, err)
+	}
 }
 
 // Compile-time interface compliance check.

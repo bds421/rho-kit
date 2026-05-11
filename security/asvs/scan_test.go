@@ -1,6 +1,7 @@
 package asvs_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,34 @@ func X() {}
 	require.NoError(t, err)
 	require.Len(t, got.Annotations, 3)
 	assert.Equal(t, []asvs.ID{"V13.2.3", "V2.1.5", "V9.1.1"}, got.Claimed)
+}
+
+func TestScanDir_DotRootScansCurrentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte(`// asvs: V2.1.5
+package a
+`), 0o644))
+	t.Chdir(dir)
+
+	got, err := asvs.ScanDir(".")
+	require.NoError(t, err)
+	assert.Equal(t, []asvs.ID{"V2.1.5"}, got.Claimed)
+}
+
+func TestScanDir_SkipsSymlinkedGoFiles(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.go")
+	require.NoError(t, os.WriteFile(target, []byte(`// asvs: V2.1.5
+package outside
+`), 0o644))
+	if err := os.Symlink(target, filepath.Join(dir, "linked.go")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	got, err := asvs.ScanDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, got.Claimed, "ScanDir must not claim controls from symlinked files outside root")
 }
 
 func TestScanDir_SkipsTestFilesAndVendor(t *testing.T) {
@@ -71,4 +100,16 @@ package a
 	for _, id := range got.Missing {
 		assert.NotEqual(t, asvs.ID("V2.1.5"), id, "claimed ID must not appear in Missing")
 	}
+}
+
+func TestScanDir_FilesystemErrorDoesNotReflectRootPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "secret-token-root")
+
+	_, err := asvs.ScanDir(root)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Contains(t, err.Error(), "asvs: walk source tree")
+	assert.NotContains(t, err.Error(), root)
+	assert.NotContains(t, err.Error(), "secret-token-root")
+	assert.True(t, errors.Is(err, os.ErrNotExist))
 }

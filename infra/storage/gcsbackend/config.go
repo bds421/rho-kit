@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // GCSConfig holds Google Cloud Storage connection settings.
@@ -21,15 +22,19 @@ type GCSConfig struct {
 
 	// Endpoint overrides the default GCS endpoint (for testing with fake-gcs-server).
 	Endpoint string
+
+	// AllowInsecureEndpoint permits http:// endpoints for local emulators.
+	AllowInsecureEndpoint bool
 }
 
 // LogValue implements slog.LogValuer.
 func (c GCSConfig) LogValue() slog.Value {
 	return slog.GroupValue(
-		slog.String("bucket", c.Bucket),
-		slog.String("project_id", c.ProjectID),
-		slog.String("credentials_file", c.CredentialsFile),
-		slog.String("endpoint", c.Endpoint),
+		slog.Bool("bucket_configured", c.Bucket != ""),
+		slog.Bool("project_id_configured", c.ProjectID != ""),
+		slog.Bool("credentials_file_configured", c.CredentialsFile != ""),
+		slog.Bool("endpoint_configured", c.Endpoint != ""),
+		slog.Bool("allow_insecure_endpoint", c.AllowInsecureEndpoint),
 	)
 }
 
@@ -40,12 +45,20 @@ func (c GCSConfig) LogValue() slog.Value {
 //   - STORAGE_GCS_PROJECT_ID (required)
 //   - STORAGE_GCS_CREDENTIALS_FILE (optional, path to service account JSON)
 //   - STORAGE_GCS_ENDPOINT (optional, for testing)
+//   - STORAGE_GCS_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
 func LoadGCSConfig() (GCSConfig, error) {
+	p := &config.Parser{}
+	allowInsecureEndpoint := p.Bool("STORAGE_GCS_ALLOW_INSECURE_ENDPOINT", false)
+	if err := p.Err(); err != nil {
+		return GCSConfig{}, err
+	}
+
 	cfg := GCSConfig{
-		Bucket:          config.Get("STORAGE_GCS_BUCKET", ""),
-		ProjectID:       config.Get("STORAGE_GCS_PROJECT_ID", ""),
-		CredentialsFile: config.Get("STORAGE_GCS_CREDENTIALS_FILE", ""),
-		Endpoint:        config.Get("STORAGE_GCS_ENDPOINT", ""),
+		Bucket:                config.Get("STORAGE_GCS_BUCKET", ""),
+		ProjectID:             config.Get("STORAGE_GCS_PROJECT_ID", ""),
+		CredentialsFile:       config.Get("STORAGE_GCS_CREDENTIALS_FILE", ""),
+		Endpoint:              config.Get("STORAGE_GCS_ENDPOINT", ""),
+		AllowInsecureEndpoint: allowInsecureEndpoint,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -62,6 +75,9 @@ func (c GCSConfig) Validate() error {
 	}
 	if c.ProjectID == "" {
 		return fmt.Errorf("STORAGE_GCS_PROJECT_ID is required")
+	}
+	if err := storage.ValidateEndpointURL("STORAGE_GCS_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+		return err
 	}
 	return nil
 }

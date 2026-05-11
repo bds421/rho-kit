@@ -7,23 +7,43 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// RegisterCollector registers a Prometheus collector, silently reusing an
-// existing collector on [prometheus.AlreadyRegisteredError]. Panics on other
-// registration errors (e.g. metric name conflicts).
+// RegisterCollector registers a Prometheus collector, silently accepting an
+// already-registered equivalent collector on
+// [prometheus.AlreadyRegisteredError]. Panics on other registration errors
+// (e.g. metric name conflicts).
 //
 // This is the canonical registration helper for the kit workspace. All
 // sub-packages that register Prometheus collectors should use this function
 // to avoid duplicating registration logic.
 //
-// Prefer [Register] when callers need to react to the AlreadyRegistered case
-// (e.g. swap in the existing collector, log a debug line). RegisterCollector
-// is panic-on-conflict by design — most kit modules construct fresh
-// collectors during process startup, where reuse-on-startup is the only
-// acceptable shared-fate outcome.
+// Use this only for fire-and-forget collectors where the caller does not keep a
+// metric handle. Constructors that return counters/gauges/histograms must use
+// [MustRegisterOrGet] so duplicate construction records into the registered
+// collector instead of an unregistered local value.
 func RegisterCollector(reg prometheus.Registerer, c prometheus.Collector) {
 	if _, err := Register(reg, c); err != nil {
-		panic(err)
+		panic("promutil: metric registration failed")
 	}
+}
+
+// MustRegisterOrGet registers c and returns the collector that is live in reg.
+// If an equivalent collector was already registered, the existing collector is
+// returned. Panics on registration conflicts or if the existing collector has
+// an unexpected type.
+//
+// Use this in constructors that return metric handles. Calling
+// RegisterCollector and then keeping c is wrong on duplicate registration: c is
+// not registered, so later observations disappear from the registry.
+func MustRegisterOrGet[T prometheus.Collector](reg prometheus.Registerer, c T) T {
+	registered, err := Register(reg, c)
+	if err != nil {
+		panic("promutil: metric registration failed")
+	}
+	typed, ok := registered.(T)
+	if !ok {
+		panic("promutil: registered collector type mismatch")
+	}
+	return typed
 }
 
 // Register registers a Prometheus collector and reports whether an existing

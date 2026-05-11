@@ -8,7 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Option configures SSRF validation behavior.
@@ -35,6 +40,9 @@ func collectOptions(opts []Option) options {
 		minTLSVersion: tls.VersionTLS12,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("ssrf: option must not be nil")
+		}
 		opt(&o)
 	}
 	return o
@@ -54,8 +62,9 @@ func WithAllowPrivateIPs() Option {
 }
 
 // WithRequestTimeout overrides the whole-request deadline applied to
-// SSRF-safe clients (audit FR-016). Pass <=0 to disable; the default
-// is 30s.
+// SSRF-safe clients (audit FR-016). The duration must be positive; use
+// [WithoutRequestTimeout] for the rare streaming call that must opt out.
+// The default is 30s.
 //
 // The dial / handshake / response-header timeouts on the transport
 // already cap connection setup, but a hostile upstream can still
@@ -63,7 +72,17 @@ func WithAllowPrivateIPs() Option {
 // closes that gap for callers that forgot to set their own context
 // deadline.
 func WithRequestTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("ssrf: WithRequestTimeout requires a positive duration")
+	}
 	return func(o *options) { o.requestTimeout = d }
+}
+
+// WithoutRequestTimeout disables the whole-request deadline applied to
+// SSRF-safe clients. Use only for callers that impose their own context
+// deadline around the full response-body read.
+func WithoutRequestTimeout() Option {
+	return func(o *options) { o.requestTimeout = 0 }
 }
 
 // WithMinTLSVersion overrides the minimum TLS version on the SSRF
@@ -71,6 +90,9 @@ func WithRequestTimeout(d time.Duration) Option {
 // kit-internal-style outbound calls; pass [tls.VersionTLS12] (the
 // default) for compatibility with public TLS-1.2-only upstreams.
 func WithMinTLSVersion(v uint16) Option {
+	if v < tls.VersionTLS12 {
+		panic("ssrf: WithMinTLSVersion requires TLS 1.2 or newer")
+	}
 	return func(o *options) { o.minTLSVersion = v }
 }
 
@@ -91,20 +113,34 @@ type DNSResolver interface {
 // which enforces this by construction.
 func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, opts ...Option) (string, error) {
 	cfg := collectOptions(opts)
+	if err := validateResolveHost(host); err != nil {
+		return "", err
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if cfg.allowPrivateIPs {
+			slog.Warn("ssrf: private IP filtering disabled — do not use in production", redact.String("host", host))
+			return ip.String(), nil
+		}
+		if IsPrivateIP(ip) {
+			return "", fmt.Errorf("ssrf: host is private/reserved")
+		}
+		return ip.String(), nil
+	}
 
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("dns resolution failed for %s: %w", host, err)
+		return "", fmt.Errorf("ssrf: dns resolution failed")
 	}
 	if len(ips) == 0 {
-		return "", fmt.Errorf("dns resolution returned no addresses for %s", host)
+		return "", fmt.Errorf("ssrf: dns resolution returned no addresses")
 	}
 
 	if cfg.allowPrivateIPs {
-		slog.Warn("ssrf: private IP filtering disabled — do not use in production", "host", host)
+		slog.Warn("ssrf: private IP filtering disabled — do not use in production", redact.String("host", host))
 		return ips[0].IP.String(), nil
 	}
 
@@ -114,7 +150,31 @@ func ResolveAndValidate(ctx context.Context, host string, resolver DNSResolver, 
 		}
 		return ip.IP.String(), nil
 	}
-	return "", fmt.Errorf("all resolved IPs for %s are private/reserved", host)
+	return "", fmt.Errorf("ssrf: all resolved IPs are private/reserved")
+}
+
+func validateResolveHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("ssrf: host must not be empty")
+	}
+	for _, r := range host {
+		if r == 0 || unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("ssrf: host contains whitespace or control characters")
+		}
+	}
+	if strings.ContainsAny(host, `/\`) {
+		return fmt.Errorf("ssrf: host must not contain path separators")
+	}
+	if strings.HasPrefix(host, "[") || strings.HasSuffix(host, "]") {
+		return fmt.Errorf("ssrf: host must not include URL brackets")
+	}
+	if strings.ContainsRune(host, '%') {
+		return fmt.Errorf("ssrf: host must not contain percent-encoding or zone identifiers")
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
+		return fmt.Errorf("ssrf: host must not include a port")
+	}
+	return nil
 }
 
 // privateIPv4Ranges lists all IPv4 CIDR ranges considered private/reserved for SSRF protection.
@@ -140,17 +200,24 @@ var privateIPv4Ranges = []net.IPNet{
 // beyond what net.IP.IsPrivate/IsLoopback/IsLinkLocal already cover.
 var privateIPv6Ranges = func() []net.IPNet {
 	cidrs := []string{
-		"2001::/32",     // Teredo tunneling — embeds arbitrary IPv4 addresses
-		"2002::/16",     // 6to4 tunneling — embeds arbitrary IPv4 addresses
-		"64:ff9b::/96",  // NAT64 well-known prefix (RFC 6052)
-		"100::/64",      // Discard-only (RFC 6666)
-		"::ffff:0:0/96", // IPv4-mapped — To4() converts these to IPv4 first, so the IPv4 ranges catch them; this entry is defense-in-depth for implementations that skip To4()
+		"64:ff9b::/96",   // NAT64 well-known prefix (RFC 6052)
+		"64:ff9b:1::/48", // Local-use IPv4/IPv6 translation (RFC 8215)
+		"100::/64",       // Discard-only (RFC 6666)
+		"100:0:0:1::/64", // Dummy IPv6 prefix (RFC 9780)
+		"2001::/32",      // Teredo tunneling — embeds arbitrary IPv4 addresses
+		"2001:2::/48",    // Benchmarking (RFC 5180)
+		"2001:10::/28",   // Deprecated ORCHID (RFC 4843)
+		"2001:db8::/32",  // Documentation (RFC 3849)
+		"2002::/16",      // 6to4 tunneling — embeds arbitrary IPv4 addresses
+		"3fff::/20",      // Documentation (RFC 9637)
+		"5f00::/16",      // SRv6 SIDs, not globally reachable (RFC 9602)
+		"::ffff:0:0/96",  // IPv4-mapped — To4() converts these to IPv4 first, so the IPv4 ranges catch them; this entry is defense-in-depth for implementations that skip To4()
 	}
 	nets := make([]net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
-			panic("netutil: invalid CIDR in privateIPv6Ranges: " + c)
+			panic("netutil: invalid CIDR in privateIPv6Ranges")
 		}
 		nets = append(nets, *n)
 	}
@@ -160,6 +227,9 @@ var privateIPv6Ranges = func() []net.IPNet {
 // IsPrivateIP reports whether ip is in a private, reserved, or otherwise
 // non-routable address range.
 func IsPrivateIP(ip net.IP) bool {
+	if ip == nil || ip.To16() == nil {
+		return true
+	}
 	// Unspecified (0.0.0.0 and ::) must always be rejected — dialing them
 	// targets local-host wildcard semantics regardless of address family,
 	// which trivially defeats the SSRF boundary. The IPv4 0.0.0.0/8 entry
@@ -215,9 +285,12 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 	cfg := collectOptions(opts)
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			_, port, err := net.SplitHostPort(addr)
+			dialHost, port, err := net.SplitHostPort(addr)
 			if err != nil {
-				return nil, fmt.Errorf("ssrf: invalid address %q: %w", addr, err)
+				return nil, fmt.Errorf("ssrf: invalid dial address")
+			}
+			if !sameDialHost(dialHost, host) {
+				return nil, fmt.Errorf("ssrf: transport pinned to host cannot dial different host")
 			}
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
 		},
@@ -229,6 +302,10 @@ func SSRFSafeTransport(ctx context.Context, host string, resolver DNSResolver, o
 		ResponseHeaderTimeout: 30 * time.Second,
 		DisableKeepAlives:     true,
 	}, ip, nil
+}
+
+func sameDialHost(a, b string) bool {
+	return strings.EqualFold(a, b)
 }
 
 // SSRFSafeClient returns an *http.Client that resolves and validates the
@@ -297,15 +374,76 @@ func SSRFSafeClientFromURL(ctx context.Context, rawURL string, resolver DNSResol
 func parseSSRFURL(rawURL string) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: parse URL: %w", err)
+		if strings.Contains(err.Error(), "invalid port") {
+			return nil, fmt.Errorf("ssrf: URL port is invalid")
+		}
+		return nil, fmt.Errorf("ssrf: invalid URL syntax")
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("ssrf: scheme %q is not allowed (only http/https)", u.Scheme)
-	}
-	if u.Hostname() == "" {
-		return nil, fmt.Errorf("ssrf: URL has empty host: %q", rawURL)
+	if err := validateSSRFURL(u); err != nil {
+		return nil, err
 	}
 	return u, nil
+}
+
+func validateSSRFURL(u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("ssrf: URL must not be nil")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("ssrf: scheme is not allowed (only http/https)")
+	}
+	if u.User != nil {
+		return fmt.Errorf("ssrf: URL userinfo is not allowed")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("ssrf: URL has empty host")
+	}
+	if err := validateURLPort(u); err != nil {
+		return err
+	}
+	if err := validateResolveHost(u.Hostname()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateURLPort(u *url.URL) error {
+	host := u.Host
+	if host == "" || !strings.ContainsRune(host, ':') {
+		return nil
+	}
+
+	if strings.HasPrefix(host, "[") {
+		end := strings.LastIndex(host, "]")
+		if end < 0 {
+			return fmt.Errorf("ssrf: URL host is invalid")
+		}
+		rest := host[end+1:]
+		if rest == "" {
+			return nil
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return fmt.Errorf("ssrf: URL host has invalid bracketed IPv6 syntax")
+		}
+		return validatePortValue(rest[1:])
+	}
+
+	_, port, err := net.SplitHostPort(host)
+	if err != nil {
+		return fmt.Errorf("ssrf: URL host has invalid port syntax")
+	}
+	return validatePortValue(port)
+}
+
+func validatePortValue(port string) error {
+	if port == "" {
+		return fmt.Errorf("ssrf: URL port must not be empty")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return fmt.Errorf("ssrf: URL port is invalid")
+	}
+	return nil
 }
 
 // SSRFSafeDynamicTransport returns an *http.Transport whose DialContext
@@ -330,11 +468,11 @@ func SSRFSafeDynamicTransport(resolver DNSResolver, opts ...Option) *http.Transp
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
-				return nil, fmt.Errorf("ssrf: invalid address %q: %w", addr, err)
+				return nil, fmt.Errorf("ssrf: invalid dial address")
 			}
 			ip, err := ResolveAndValidate(ctx, host, resolver, opts...)
 			if err != nil {
-				return nil, fmt.Errorf("ssrf: resolve %s: %w", host, err)
+				return nil, fmt.Errorf("ssrf: resolve target: %w", err)
 			}
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
 		},
@@ -366,13 +504,34 @@ func SSRFSafeClientFollowRedirects(maxHops int, resolver DNSResolver, opts ...Op
 	}
 	cfg := collectOptions(opts)
 	return &http.Client{
-		Transport: SSRFSafeDynamicTransport(resolver, opts...),
+		Transport: ssrfValidatingTransport{next: SSRFSafeDynamicTransport(resolver, opts...)},
 		Timeout:   cfg.requestTimeout,
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			if len(via) >= maxHops {
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if err := validateSSRFURL(req.URL); err != nil {
+				return err
+			}
+			if len(via) > maxHops {
 				return fmt.Errorf("ssrf: redirect chain exceeded %d hops", maxHops)
 			}
 			return nil
 		},
 	}
+}
+
+type ssrfValidatingTransport struct {
+	next http.RoundTripper
+}
+
+func (t ssrfValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("ssrf: request must not be nil")
+	}
+	if err := validateSSRFURL(req.URL); err != nil {
+		return nil, err
+	}
+	next := t.next
+	if next == nil {
+		return nil, fmt.Errorf("ssrf: transport is not initialized")
+	}
+	return next.RoundTrip(req)
 }

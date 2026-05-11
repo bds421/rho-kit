@@ -2,7 +2,7 @@ package sftpbackend
 
 import (
 	"context"
-	"fmt"
+	"strconv"
 
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -21,7 +21,7 @@ func CriticalHealthCheck(b *SFTPBackend) health.DependencyCheck {
 
 func healthCheck(b *SFTPBackend, critical bool) health.DependencyCheck {
 	return health.DependencyCheck{
-		Name: fmt.Sprintf("sftp:%s:%d", b.cfg.Host, b.cfg.Port),
+		Name: health.OpaqueCheckName("sftp", b.cfg.Host, strconv.Itoa(b.cfg.Port)),
 		Check: func(_ context.Context) string {
 			if !b.Healthy() {
 				return "unhealthy"

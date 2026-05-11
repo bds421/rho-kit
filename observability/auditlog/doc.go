@@ -3,29 +3,41 @@
 //
 // The package follows the kit's pluggable store pattern: a [Store] interface
 // defines the persistence contract, with [NewMemoryStore] for testing and
-// [gormstore.New] for production. The [Logger] wraps a Store with convenience
-// methods and automatic field population (ID, timestamp, trace ID).
+// local development. Production services should provide a durable [Store]
+// implementation. The [Logger] wraps a Store with convenience methods and
+// automatic field population (ID, timestamp, trace ID).
+//
+// Events are validated before persistence. Actor, action, resource, and status
+// are required bounded tokens; status must be "success", "failure", or
+// "denied"; metadata must be valid JSON and is capped at 64 KiB. Custom stores
+// should call [ValidateEvent] in Append to keep the same contract as the bundled
+// memory store.
 //
 // # HTTP Middleware
 //
-// Use [Middleware] to automatically audit all HTTP requests:
+// Use the httpx/middleware/auditlog package to automatically audit HTTP
+// requests:
 //
 //	mux := http.NewServeMux()
-//	auditMW := auditlog.Middleware(logger,
-//	    auditlog.WithActorExtractor(extractUserID),
+//	auditMW := auditmw.Middleware(logger,
+//	    auditmw.WithActorExtractor(extractUserID),
 //	)
 //	handler := auditMW(mux)
 //
 // # Programmatic API
 //
-// Use [Logger.Log] for domain-specific events:
+// Use [Logger.LogE] for domain-specific events whose success depends on audit
+// persistence. [Logger.Log] is best-effort and only records append failures via
+// logs, counters, and the optional drop callback.
 //
-//	infra.AuditLog.Log(ctx, auditlog.Event{
+//	if err := infra.AuditLog.LogE(ctx, auditlog.Event{
 //	    Actor:    userID,
 //	    Action:   "approve_order",
 //	    Resource: "orders/" + orderID,
 //	    Status:   "success",
-//	})
+//	}); err != nil {
+//	    return err
+//	}
 //
 // # Retention
 //

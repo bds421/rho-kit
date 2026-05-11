@@ -55,7 +55,7 @@ type CustomPolicy struct {
 // Panics if name is empty or contains invalid characters.
 func NewCustomPolicy(name string, fn func(ctx context.Context) error) CustomPolicy {
 	if err := health.ValidateCheckName(name); err != nil {
-		panic(fmt.Sprintf("redis: invalid custom policy name: %v", err))
+		panic("redis: invalid custom policy name")
 	}
 	if fn == nil {
 		panic("redis: custom policy function must not be nil")
@@ -98,7 +98,7 @@ func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.
 
 func newFeatureHealthCheck(conn *Connection, fc FeatureCheck) health.DependencyCheck {
 	if err := health.ValidateCheckName(fc.Feature); err != nil {
-		panic(fmt.Sprintf("redis: invalid feature name: %v", err))
+		panic("redis: invalid feature name")
 	}
 	checkName := fmt.Sprintf("redis-%s", fc.Feature)
 	_, isFailFast := fc.Policy.(FailFastPolicy)

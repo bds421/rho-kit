@@ -5,7 +5,6 @@ package contextutil
 
 import (
 	"context"
-	"fmt"
 )
 
 // Key is a type-safe context key. Construct one with [NewKey] and store
@@ -45,11 +44,14 @@ func NewKey[T any](name string) Key[T] {
 	return Key[T]{id: &keyID{name: name}}
 }
 
-// Set returns a copy of ctx carrying val. Panics if k was not
-// constructed with [NewKey].
+// Set returns a copy of ctx carrying val. A nil ctx is normalized to
+// context.Background(). Panics if k was not constructed with [NewKey].
 func (k Key[T]) Set(ctx context.Context, val T) context.Context {
 	if k.id == nil {
 		panic("contextutil: Key was not constructed with NewKey — its identity would collide with every other zero-value Key")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return context.WithValue(ctx, k.id, val)
 }
@@ -58,7 +60,7 @@ func (k Key[T]) Set(ctx context.Context, val T) context.Context {
 // value reports whether the key was present.
 func (k Key[T]) Get(ctx context.Context) (T, bool) {
 	var zero T
-	if k.id == nil {
+	if k.id == nil || ctx == nil {
 		return zero, false
 	}
 	val, ok := ctx.Value(k.id).(T)
@@ -70,12 +72,7 @@ func (k Key[T]) Get(ctx context.Context) (T, bool) {
 func (k Key[T]) MustGet(ctx context.Context) T {
 	val, ok := k.Get(ctx)
 	if !ok {
-		var zero T
-		name := "<anonymous>"
-		if k.id != nil {
-			name = k.id.name
-		}
-		panic(fmt.Sprintf("contextutil: Key[%T] %q not found in context; ensure the value was set upstream", zero, name))
+		panic("contextutil: required key is not present in context; ensure the value was set upstream")
 	}
 	return val
 }

@@ -42,6 +42,23 @@ func TestPropagateHTTP_NoCorrelationID(t *testing.T) {
 	}
 }
 
+func TestPropagateHTTP_NilRequestNoops(t *testing.T) {
+	ctx := contextutil.SetCorrelationID(context.Background(), "propagated-id")
+
+	PropagateHTTP(ctx, nil)
+}
+
+func TestPropagateHTTP_NilContextNoops(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+
+	//nolint:staticcheck // Deliberately exercises the nil-safe propagation path.
+	PropagateHTTP(nil, req)
+
+	if got := req.Header.Get("X-Correlation-Id"); got != "" {
+		t.Errorf("header should be empty for nil context, got %q", got)
+	}
+}
+
 func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
 	ctx := context.Background()
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -51,6 +68,18 @@ func TestPropagateHTTP_PreservesExistingHeaderWhenNoContext(t *testing.T) {
 
 	if got := req.Header.Get("X-Correlation-Id"); got != "existing-id" {
 		t.Errorf("header = %q, want %q; pre-existing header should be preserved when context has no ID", got, "existing-id")
+	}
+}
+
+func TestPropagateHTTP_SkipsInvalidContextValue(t *testing.T) {
+	ctx := contextutil.SetCorrelationID(context.Background(), "alice@example.com/reset/token=secret")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Correlation-Id", "existing-id")
+
+	PropagateHTTP(ctx, req)
+
+	if got := req.Header.Get("X-Correlation-Id"); got != "existing-id" {
+		t.Errorf("header = %q, want existing-id", got)
 	}
 }
 
@@ -64,6 +93,16 @@ func TestPropagateMessageHeader(t *testing.T) {
 	}
 	if value != "msg-correlation-id" {
 		t.Errorf("value = %q, want %q", value, "msg-correlation-id")
+	}
+}
+
+func TestPropagateMessageHeader_SkipsInvalidContextValue(t *testing.T) {
+	ctx := contextutil.SetCorrelationID(context.Background(), "alice@example.com/reset/token=secret")
+
+	key, value := PropagateMessageHeader(ctx)
+
+	if key != "" || value != "" {
+		t.Errorf("expected empty key/value for invalid context ID, got (%q, %q)", key, value)
 	}
 }
 

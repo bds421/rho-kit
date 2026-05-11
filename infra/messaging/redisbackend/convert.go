@@ -25,33 +25,40 @@ func toStreamMessage(msg messaging.Message) stream.Message {
 	return stream.Message{
 		ID:        msg.ID,
 		Type:      msg.Type,
-		Payload:   msg.Payload,
+		Payload:   cloneRawMessage(msg.Payload),
 		Timestamp: msg.Timestamp,
 		Headers:   headers,
 	}
 }
 
 // toDelivery converts a stream.Message into a messaging.Delivery.
-// SchemaVersion is extracted from the transport header if present.
+// SchemaVersion is extracted from the transport header if present. The
+// messaging routing key is restored from the transport header set by Publish;
+// direct/legacy Redis stream messages fall back to the event type.
 func toDelivery(sm stream.Message, streamName string) messaging.Delivery {
 	headers := make(map[string]any, len(sm.Headers))
 	for k, v := range sm.Headers {
 		headers[k] = v
 	}
+	messageHeaders := cloneStringHeaders(sm.Headers)
 
 	schemaVersion := parseSchemaVersion(sm.Headers)
+	routingKey := sm.Headers[headerRoutingKey]
+	if routingKey == "" {
+		routingKey = sm.Type
+	}
 
 	return messaging.Delivery{
 		Message: messaging.Message{
 			ID:            sm.ID,
 			Type:          sm.Type,
-			Payload:       sm.Payload,
+			Payload:       cloneRawMessage(sm.Payload),
 			Timestamp:     sm.Timestamp,
 			SchemaVersion: schemaVersion,
-			Headers:       sm.Headers,
+			Headers:       messageHeaders,
 		},
 		Exchange:      streamName,
-		RoutingKey:    sm.Type,
+		RoutingKey:    routingKey,
 		SchemaVersion: schemaVersion,
 		Headers:       headers,
 	}
@@ -70,4 +77,22 @@ func parseSchemaVersion(headers map[string]string) uint {
 		return 0
 	}
 	return uint(v)
+}
+
+func cloneRawMessage(payload []byte) []byte {
+	if payload == nil {
+		return nil
+	}
+	return append(payload[:0:0], payload...)
+}
+
+func cloneStringHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(headers))
+	for k, v := range headers {
+		clone[k] = v
+	}
+	return clone
 }

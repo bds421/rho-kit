@@ -41,14 +41,14 @@ func (m *Manager) Register(name string, backend Storage) *Manager {
 		panic("storage.Manager: name must not be empty")
 	}
 	if backend == nil {
-		panic(fmt.Sprintf("storage.Manager: backend for %q must not be nil", name))
+		panic("storage.Manager: backend must not be nil")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, ok := m.backends[name]; ok {
-		panic(fmt.Sprintf("storage.Manager: disk %q already registered", name))
+		panic("storage.Manager: disk already registered")
 	}
 
 	m.backends[name] = backend
@@ -64,7 +64,7 @@ func (m *Manager) Disk(name string) Storage {
 
 	b, ok := m.backends[name]
 	if !ok {
-		panic(fmt.Sprintf("storage.Manager: disk %q not registered", name))
+		panic("storage.Manager: disk not registered")
 	}
 	return b
 }
@@ -76,7 +76,7 @@ func (m *Manager) SetDefault(name string) *Manager {
 	defer m.mu.Unlock()
 
 	if _, ok := m.backends[name]; !ok {
-		panic(fmt.Sprintf("storage.Manager: cannot set default to unregistered disk %q", name))
+		panic("storage.Manager: default disk is not registered")
 	}
 	m.defaultName = name
 	return m
@@ -95,7 +95,7 @@ func (m *Manager) Default() Storage {
 	if m.defaultName != "" {
 		s, ok := m.backends[m.defaultName]
 		if !ok {
-			panic(fmt.Sprintf("storage.Manager: defaultName %q has no backend", m.defaultName))
+			panic("storage.Manager: default disk has no backend")
 		}
 		return s
 	}
@@ -109,7 +109,7 @@ func (m *Manager) Default() Storage {
 		// map. This previously could happen only via a hypothetical
 		// Unregister; the explicit panic surfaces it loudly so the bug is
 		// caught at Default() time rather than at request time via nil deref.
-		panic(fmt.Sprintf("storage.Manager: order references backend %q absent from map (order/backends invariant violated)", first))
+		panic("storage.Manager: order references backend absent from map")
 	}
 	return s
 }
@@ -141,6 +141,9 @@ func (m *Manager) Has(name string) bool {
 // are closed before the backends they wrap.
 // Returns a joined error of all individual close failures.
 func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -150,7 +153,7 @@ func (m *Manager) Close() error {
 		backend := m.backends[name]
 		if closer, ok := backend.(io.Closer); ok {
 			if err := closer.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close disk %q: %w", name, err))
+				errs = append(errs, fmt.Errorf("close disk: %w", err))
 			}
 		}
 	}

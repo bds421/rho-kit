@@ -3,6 +3,7 @@ package budget_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,69 @@ func TestWrap_PanicsOnEmptyKey(t *testing.T) {
 	budget.Wrap(nil, &scriptedBudget{}, "")
 }
 
+func TestWrap_PanicsOnInvalidKey(t *testing.T) {
+	require.Panics(t, func() {
+		budget.Wrap(nil, &scriptedBudget{}, "tenant acme")
+	})
+	require.Panics(t, func() {
+		budget.Wrap(nil, &scriptedBudget{}, string([]byte{'k', 0xff}))
+	})
+}
+
+func TestWrap_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	budget.Wrap(nil, &scriptedBudget{}, "k", nil)
+}
+
+func TestWrap_NilBaseUsesKitTransportWhenDefaultTransportReplaced(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = failingTransport{}
+
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 99}}}
+	c := newClient(budget.Wrap(nil, b, "alice"))
+
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestRoundTrip_NilRequestReturnsInvalidRequest(t *testing.T) {
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 99}}}
+	rt := budget.Wrap(http.DefaultTransport, b, "alice")
+
+	resp, err := rt.RoundTrip(nil)
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, budget.ErrInvalidRequest)
+	assert.Empty(t, b.consumed, "invalid request must not be charged")
+}
+
+func TestWithCleanupTimeout_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			require.Panics(t, func() {
+				budget.WithCleanupTimeout(d)
+			})
+		})
+	}
+}
+
+func TestOptions_PanicOnInvalidInput(t *testing.T) {
+	require.Panics(t, func() { budget.WithEstimateHeader("Bad Header") })
+	require.Panics(t, func() { budget.WithActualHeader("Bad Header") })
+	require.Panics(t, func() { budget.WithDefaultAmount(-1) })
+	require.Panics(t, func() { budget.WithEnforcement(budget.Enforcement(99)) })
+}
+
 func TestRoundTrip_PreChargesDefaultAmount(t *testing.T) {
 	srv := upstream(t, nil)
 	t.Cleanup(srv.Close)
@@ -173,6 +237,27 @@ func TestRoundTrip_EstimateHeaderUsedWhenSet(t *testing.T) {
 	assert.Equal(t, int64(42), b.consumed[0].amount)
 }
 
+func TestRoundTrip_EstimateHeaderDuplicateFallsBackToDefault(t *testing.T) {
+	srv := upstream(t, nil)
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 50}}}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithEstimateHeader("X-Estimated-Tokens"),
+		budget.WithDefaultAmount(7),
+	))
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, nil)
+	req.Header.Add("X-Estimated-Tokens", "42")
+	req.Header.Add("X-Estimated-Tokens", "100")
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Len(t, b.consumed, 1)
+	assert.Equal(t, int64(7), b.consumed[0].amount,
+		"ambiguous estimate header must fall back to the configured default")
+}
+
 func TestRoundTrip_EstimateHeaderFallsBackOnGarbage(t *testing.T) {
 	srv := upstream(t, nil)
 	t.Cleanup(srv.Close)
@@ -214,6 +299,53 @@ func TestRoundTrip_ReconcileChargesUnderEstimate(t *testing.T) {
 	require.Len(t, b.consumed, 2)
 	assert.Equal(t, int64(20), b.consumed[0].amount, "first call is the estimate")
 	assert.Equal(t, int64(80), b.consumed[1].amount, "second call charges the under-estimate delta")
+}
+
+func TestRoundTrip_DuplicateActualHeaderSkipsReconciliation(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"5", "100"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{
+		consumeResp: []consumeResult{
+			{allowed: true, remaining: 999},
+			{allowed: true, remaining: 899},
+		},
+	}
+	logs := &captureLogger{}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "alice",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+		budget.WithLogger(logs),
+	))
+
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Len(t, b.consumed, 1, "ambiguous actual header must not charge a delta")
+	assert.Empty(t, b.refunded, "ambiguous actual header must not refund from a chosen value")
+	require.NotEmpty(t, logs.warns, "ambiguous actual header should warn operators")
+}
+
+func TestRoundTrip_MalformedActualHeaderLogRedactsValue(t *testing.T) {
+	srv := upstream(t, http.Header{"X-Actual-Tokens": {"tenant-secret-tokens"}})
+	t.Cleanup(srv.Close)
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 999}}}
+	logs := &captureLogger{}
+	c := newClient(budget.Wrap(http.DefaultTransport, b, "tenant-secret-key",
+		budget.WithDefaultAmount(20),
+		budget.WithActualHeader("X-Actual-Tokens"),
+		budget.WithLogger(logs),
+	))
+
+	resp, err := c.Get(srv.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.NotEmpty(t, logs.warns)
+	attrs := fmt.Sprint(logs.warnAttrs)
+	assert.NotContains(t, attrs, "tenant-secret-tokens")
+	assert.NotContains(t, attrs, "tenant-secret-key")
+	assert.Contains(t, attrs, "<redacted")
 }
 
 func TestRoundTrip_ReconcileRefundsOverEstimate(t *testing.T) {
@@ -287,11 +419,22 @@ func TestRoundTrip_RefundFallbackForNonRefunder(t *testing.T) {
 	require.NotEmpty(t, logs.warns, "missed refund must log a warning so operators can see the gap")
 }
 
-func TestRoundTrip_TransportErrorRefundsCharge(t *testing.T) {
-	// The transport closes immediately; we just need an unreachable URL.
+func TestRoundTrip_TransportErrorRetainsChargeByDefault(t *testing.T) {
 	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 100}}}
-	logs := &captureLogger{}
-	c := newClient(budget.Wrap(failingTransport{}, b, "alice", budget.WithLogger(logs)))
+	c := newClient(budget.Wrap(failingTransport{}, b, "alice"))
+
+	resp, err := c.Get("http://example.invalid/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	require.Len(t, b.consumed, 1)
+	assert.Empty(t, b.refunded, "ambiguous transport failures must retain the optimistic charge by default")
+}
+
+func TestRoundTrip_TransportErrorRefundsChargeWhenEnabled(t *testing.T) {
+	b := &scriptedBudget{consumeResp: []consumeResult{{allowed: true, remaining: 100}}}
+	c := newClient(budget.Wrap(failingTransport{}, b, "alice", budget.WithRefundOnTransportError()))
 
 	resp, err := c.Get("http://example.invalid/")
 	if resp != nil {
@@ -310,11 +453,13 @@ func (failingTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 }
 
 type captureLogger struct {
-	warns []string
+	warns     []string
+	warnAttrs [][]any
 }
 
-func (c *captureLogger) Warn(msg string, _ ...any) {
+func (c *captureLogger) Warn(msg string, attrs ...any) {
 	c.warns = append(c.warns, msg)
+	c.warnAttrs = append(c.warnAttrs, attrs)
 }
 
 // TestSentinelString tightens the sentinel's identity so wrappers
@@ -429,7 +574,7 @@ func TestRoundTrip_CleanupRunsOnCanceledContext(t *testing.T) {
 		fn: func(req *http.Request) (*http.Response, error) {
 			return nil, errors.New("transport boom")
 		},
-	}, b, "alice"))
+	}, b, "alice", budget.WithRefundOnTransportError()))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // canceled BEFORE the request runs

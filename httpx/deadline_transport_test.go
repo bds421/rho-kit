@@ -239,6 +239,25 @@ func TestWithDeadlineBudget_DefaultOptions(t *testing.T) {
 	}
 }
 
+func TestWithDeadlineBudget_ClonesOptions(t *testing.T) {
+	opts := []DeadlineBudgetOption{WithSafetyMargin(123 * time.Millisecond)}
+	opt := WithDeadlineBudget(opts...)
+	opts[0] = WithMinTimeout(456 * time.Millisecond)
+
+	client := NewResilientHTTPClient(opt)
+
+	dbt, ok := client.Transport.(*deadlineBudgetTransport)
+	if !ok {
+		t.Fatalf("expected *deadlineBudgetTransport, got %T", client.Transport)
+	}
+	if dbt.safetyMargin != 123*time.Millisecond {
+		t.Fatalf("safetyMargin = %v, want 123ms", dbt.safetyMargin)
+	}
+	if dbt.minTimeout != defaultMinTimeout {
+		t.Fatalf("minTimeout = %v, want %v", dbt.minTimeout, defaultMinTimeout)
+	}
+}
+
 func TestDeadlineBudgetTransport_BaseTransportErrorPropagation(t *testing.T) {
 	baseErr := errors.New("connection refused")
 
@@ -282,14 +301,13 @@ func TestDeadlineBudgetTransport_BaseTransportErrorPropagation(t *testing.T) {
 	})
 }
 
-func TestWithSafetyMargin_IgnoresNegative(t *testing.T) {
-	client := NewResilientHTTPClient(WithDeadlineBudget(
-		WithSafetyMargin(-1 * time.Second),
-	))
-	dbt := client.Transport.(*deadlineBudgetTransport)
-	if dbt.safetyMargin != defaultSafetyMargin {
-		t.Fatalf("expected default safetyMargin %v after negative input, got %v", defaultSafetyMargin, dbt.safetyMargin)
-	}
+func TestWithSafetyMargin_PanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected WithSafetyMargin to panic")
+		}
+	}()
+	WithSafetyMargin(-1 * time.Second)
 }
 
 func TestDeadlineBudgetTransport_AlreadyExpiredParentContext(t *testing.T) {
@@ -330,20 +348,15 @@ func TestDeadlineBudgetTransport_AlreadyExpiredParentContext(t *testing.T) {
 	}
 }
 
-func TestWithMinTimeout_IgnoresZeroAndNegative(t *testing.T) {
-	client := NewResilientHTTPClient(WithDeadlineBudget(
-		WithMinTimeout(0),
-	))
-	dbt := client.Transport.(*deadlineBudgetTransport)
-	if dbt.minTimeout != defaultMinTimeout {
-		t.Fatalf("expected default minTimeout %v after zero input, got %v", defaultMinTimeout, dbt.minTimeout)
-	}
-
-	client = NewResilientHTTPClient(WithDeadlineBudget(
-		WithMinTimeout(-1 * time.Second),
-	))
-	dbt = client.Transport.(*deadlineBudgetTransport)
-	if dbt.minTimeout != defaultMinTimeout {
-		t.Fatalf("expected default minTimeout %v after negative input, got %v", defaultMinTimeout, dbt.minTimeout)
+func TestWithMinTimeout_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected WithMinTimeout to panic")
+				}
+			}()
+			WithMinTimeout(d)
+		})
 	}
 }

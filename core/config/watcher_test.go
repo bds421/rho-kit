@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -90,9 +91,10 @@ func TestFileWatcher_DebouncesRapidWrites(t *testing.T) {
 	defer cancel()
 
 	started := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		close(started)
-		_ = fw.Start(ctx)
+		done <- fw.Start(ctx)
 	}()
 	<-started
 	time.Sleep(50 * time.Millisecond)
@@ -115,18 +117,20 @@ func TestFileWatcher_DebouncesRapidWrites(t *testing.T) {
 	assert.Equal(t, "v5", w.Get())
 
 	cancel()
+	require.NoError(t, <-done)
 }
 
 func TestFileWatcher_LoadErrorKeepsOldValue(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.txt")
 	writeFile(t, cfgPath, "good")
+	var logs bytes.Buffer
 
 	var failNext atomic.Bool
 
 	loadFn := func(path string) (string, error) {
 		if failNext.Load() {
-			return "", fmt.Errorf("simulated load error")
+			return "", fmt.Errorf("failed to load %s token=tenant-secret", path)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -138,15 +142,17 @@ func TestFileWatcher_LoadErrorKeepsOldValue(t *testing.T) {
 	w := NewWatchable("good")
 	fw := NewFileWatcher(cfgPath, loadFn, w,
 		WithDebounce(20*time.Millisecond),
+		WithWatchLogger(slog.New(slog.NewTextHandler(&logs, nil))),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	started := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		close(started)
-		_ = fw.Start(ctx)
+		done <- fw.Start(ctx)
 	}()
 	<-started
 	time.Sleep(50 * time.Millisecond)
@@ -162,6 +168,12 @@ func TestFileWatcher_LoadErrorKeepsOldValue(t *testing.T) {
 	assert.Equal(t, "good", w.Get())
 
 	cancel()
+	require.NoError(t, <-done)
+	got := logs.String()
+	assert.Contains(t, got, "config reload failed")
+	assert.Contains(t, got, "<redacted")
+	assert.NotContains(t, got, cfgPath)
+	assert.NotContains(t, got, "tenant-secret")
 }
 
 func TestFileWatcher_StartBlocksUntilCancelled(t *testing.T) {
@@ -200,6 +212,64 @@ func TestFileWatcher_StartBlocksUntilCancelled(t *testing.T) {
 	}
 }
 
+func TestFileWatcher_StartRejectsNilContext(t *testing.T) {
+	w := NewWatchable("data")
+	fw := NewFileWatcher("unused", func(string) (string, error) {
+		return "data", nil
+	}, w)
+
+	var ctx context.Context
+	err := fw.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestFileWatcher_StartRejectsSecondStart(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.txt")
+	writeFile(t, cfgPath, "data")
+
+	w := NewWatchable("data")
+	fw := NewFileWatcher(cfgPath, func(string) (string, error) {
+		return "data", nil
+	}, w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fw.Start(ctx) }()
+	waitForFileWatcherStarted(t, fw)
+
+	err := fw.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestFileWatcher_StartRejectsRestartAfterCancel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.txt")
+	writeFile(t, cfgPath, "data")
+
+	w := NewWatchable("data")
+	fw := NewFileWatcher(cfgPath, func(string) (string, error) {
+		return "data", nil
+	}, w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fw.Start(ctx) }()
+	waitForFileWatcherStarted(t, fw)
+
+	cancel()
+	require.NoError(t, <-done)
+
+	err := fw.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
 func TestFileWatcher_WatchableAccessor(t *testing.T) {
 	w := NewWatchable("val")
 	fw := NewFileWatcher("unused", func(string) (string, error) {
@@ -207,6 +277,15 @@ func TestFileWatcher_WatchableAccessor(t *testing.T) {
 	}, w)
 
 	assert.Same(t, w, fw.Watchable())
+}
+
+func waitForFileWatcherStarted[T any](t *testing.T, fw *FileWatcher[T]) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		fw.startMu.Lock()
+		defer fw.startMu.Unlock()
+		return fw.started
+	}, time.Second, 10*time.Millisecond)
 }
 
 // ---------- EnvReloader tests ----------
@@ -245,6 +324,50 @@ func TestEnvReloader_StartBlocksUntilCancelled(t *testing.T) {
 	}
 }
 
+func TestEnvReloader_StartRejectsNilContext(t *testing.T) {
+	w := NewWatchable(envReloaderCfg{Value: "initial"})
+	r := NewEnvReloader[envReloaderCfg](w)
+
+	var ctx context.Context
+	err := r.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestEnvReloader_StartRejectsSecondStart(t *testing.T) {
+	w := NewWatchable(envReloaderCfg{Value: "initial"})
+	r := NewEnvReloader[envReloaderCfg](w, WithSignalChannel(make(chan os.Signal, 1)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Start(ctx) }()
+	waitForEnvReloaderStarted(t, r)
+
+	err := r.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestEnvReloader_StartRejectsRestartAfterCancel(t *testing.T) {
+	w := NewWatchable(envReloaderCfg{Value: "initial"})
+	r := NewEnvReloader[envReloaderCfg](w, WithSignalChannel(make(chan os.Signal, 1)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Start(ctx) }()
+	waitForEnvReloaderStarted(t, r)
+
+	cancel()
+	require.NoError(t, <-done)
+
+	err := r.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
 func TestEnvReloader_SIGHUPTriggersReload(t *testing.T) {
 	t.Setenv("TEST_ENV_RELOAD_VALUE", "updated")
 
@@ -270,6 +393,15 @@ func TestEnvReloader_SIGHUPTriggersReload(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond)
 
 	cancel()
+}
+
+func waitForEnvReloaderStarted[T any](t *testing.T, r *EnvReloader[T]) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		r.startMu.Lock()
+		defer r.startMu.Unlock()
+		return r.started
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestEnvReloader_WithImmediateLoadAppliesEnvBeforeFirstSIGHUP(t *testing.T) {
@@ -347,10 +479,35 @@ func TestNewFileWatcher_PanicsOnNilWatchable(t *testing.T) {
 	})
 }
 
+func TestNewFileWatcher_PanicsOnNilOption(t *testing.T) {
+	w := NewWatchable("v")
+	loadFn := func(string) (string, error) { return "", nil }
+	assert.PanicsWithValue(t, "config: watcher option must not be nil", func() {
+		NewFileWatcher[string]("p", loadFn, w, nil)
+	})
+}
+
 func TestNewEnvReloader_PanicsOnNilWatchable(t *testing.T) {
 	assert.PanicsWithValue(t, "config: NewEnvReloader requires a non-nil Watchable", func() {
 		NewEnvReloader[envReloaderCfg](nil)
 	})
+}
+
+func TestNewEnvReloader_PanicsOnNilOption(t *testing.T) {
+	w := NewWatchable(envReloaderCfg{})
+	assert.PanicsWithValue(t, "config: watcher option must not be nil", func() {
+		NewEnvReloader[envReloaderCfg](w, nil)
+	})
+}
+
+func TestWithDebounce_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithDebounce(d)
+			})
+		})
+	}
 }
 
 func TestEnvReloader_WithSignalChannel(t *testing.T) {

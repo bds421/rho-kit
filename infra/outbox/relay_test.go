@@ -1,6 +1,7 @@
 package outbox_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,12 @@ func (f *fakePublisher) setErr(err error) {
 	f.err = err
 }
 
+type panicPublisher struct{}
+
+func (panicPublisher) Publish(context.Context, outbox.Entry) error {
+	panic("publisher exploded")
+}
+
 func TestNewRelay_PanicsOnNilDeps(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -73,6 +80,12 @@ func TestNewRelay_NilLoggerDefaults(t *testing.T) {
 	if r == nil {
 		t.Fatal("expected relay, got nil")
 	}
+}
+
+func TestNewRelay_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		outbox.NewRelay(&fakeStore{}, &fakePublisher{}, nil, nil)
+	})
 }
 
 func TestRelay_PublishesPendingEntries(t *testing.T) {
@@ -171,7 +184,76 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 
 	assert.Equal(t, outbox.StatusFailed, entry.Status)
 	require.NotNil(t, entry.LastError)
-	assert.Contains(t, *entry.LastError, "broker down")
+	assert.Equal(t, "publish failed", *entry.LastError)
+	assert.NotContains(t, *entry.LastError, "broker down")
+}
+
+func TestRelay_HandlesPublisherPanicAsPublishError(t *testing.T) {
+	store := &fakeStore{}
+	writer := outbox.NewWriter(store)
+	ctx := context.Background()
+
+	params := outbox.WriteParams{
+		Topic:       "topic",
+		RoutingKey:  "key",
+		MessageID:   "msg-1",
+		MessageType: "test.event",
+		Payload:     []byte(`{}`),
+	}
+	require.NoError(t, writer.Write(ctx, params))
+
+	relay := outbox.NewRelay(store, panicPublisher{}, slog.Default(),
+		outbox.WithPollInterval(10*time.Millisecond),
+		outbox.WithMaxAttempts(1),
+	)
+
+	relayCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Start(relayCtx)
+	}()
+
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.entries) == 1 && store.entries[0].Status == outbox.StatusFailed
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+
+	store.mu.Lock()
+	entry := store.entries[0]
+	store.mu.Unlock()
+	require.NotNil(t, entry.LastError)
+	assert.Equal(t, "publish failed", *entry.LastError)
+	assert.NotContains(t, *entry.LastError, "publisher exploded")
+}
+
+func TestRelay_StoreErrorLogRedactsBackendError(t *testing.T) {
+	store := &fakeStore{fetchPendingErr: errors.New("database token=tenant-secret")}
+	pub := &fakePublisher{}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	relay := outbox.NewRelay(store, pub, logger,
+		outbox.WithPollInterval(10*time.Millisecond),
+	)
+
+	relayCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Start(relayCtx)
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	got := logs.String()
+	assert.Contains(t, got, "outbox relay: fetch pending failed")
+	assert.Contains(t, got, "<redacted error")
+	assert.NotContains(t, got, "tenant-secret")
 }
 
 func TestRelay_Stop(t *testing.T) {
@@ -197,38 +279,163 @@ func TestRelay_Stop(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+func TestRelay_StartRejectsNilContext(t *testing.T) {
+	relay := outbox.NewRelay(&fakeStore{}, &fakePublisher{}, slog.Default())
+	var ctx context.Context
+	err := relay.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestRelay_StartRejectsSecondStart(t *testing.T) {
+	store := newStartSignalStore()
+	relay := outbox.NewRelay(store, &fakePublisher{}, slog.Default(),
+		outbox.WithPollInterval(time.Hour),
+	)
+
+	relayCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- relay.Start(relayCtx) }()
+
+	store.waitForFetch(t)
+
+	err := relay.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestRelay_StartRejectsAfterStopBeforeStart(t *testing.T) {
+	relay := outbox.NewRelay(&fakeStore{}, &fakePublisher{}, slog.Default())
+
+	require.NoError(t, relay.Stop(context.Background()))
+
+	err := relay.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already stopped")
+}
+
+func TestRelay_StartRejectsRestartAfterStop(t *testing.T) {
+	store := newStartSignalStore()
+	relay := outbox.NewRelay(store, &fakePublisher{}, slog.Default(),
+		outbox.WithPollInterval(time.Hour),
+	)
+
+	done := make(chan error, 1)
+	go func() { done <- relay.Start(context.Background()) }()
+	store.waitForFetch(t)
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), time.Second)
+	defer cancelStop()
+	require.NoError(t, relay.Stop(stopCtx))
+	require.NoError(t, <-done)
+
+	err := relay.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
+func TestRelay_StopRejectsNilContext(t *testing.T) {
+	relay := outbox.NewRelay(&fakeStore{}, &fakePublisher{}, slog.Default())
+	var ctx context.Context
+	err := relay.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+type startSignalStore struct {
+	fakeStore
+	fetchStarted chan struct{}
+	once         sync.Once
+}
+
+func newStartSignalStore() *startSignalStore {
+	return &startSignalStore{fetchStarted: make(chan struct{})}
+}
+
+func (s *startSignalStore) FetchPending(ctx context.Context, _ int) ([]outbox.Entry, error) {
+	s.once.Do(func() { close(s.fetchStarted) })
+	<-ctx.Done()
+	return nil, nil
+}
+
+func (s *startSignalStore) waitForFetch(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.fetchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not start polling")
+	}
+}
+
 func TestRelay_Cleanup(t *testing.T) {
 	store := &fakeStore{}
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
 
-	oldTime := time.Now().UTC().Add(-48 * time.Hour)
-	id, _ := uuid.NewV7()
-	entry := outbox.Entry{
-		ID:          id,
-		Topic:       "test",
-		RoutingKey:  "test.key",
-		MessageID:   "msg-old",
-		MessageType: "test.event",
-		Payload:     []byte(`{}`),
-		Status:      outbox.StatusPublished,
-		PublishedAt: &oldTime,
-		CreatedAt:   oldTime,
+	now := time.Now().UTC()
+	oldTime := now.Add(-48 * time.Hour)
+	recentTime := now.Add(-1 * time.Hour)
+
+	oldPublishedID, _ := uuid.NewV7()
+	recentPublishedID, _ := uuid.NewV7()
+	oldFailedID, _ := uuid.NewV7()
+	recentFailedID, _ := uuid.NewV7()
+
+	for _, entry := range []outbox.Entry{
+		{
+			ID:          oldPublishedID,
+			Topic:       "test",
+			RoutingKey:  "test.key",
+			MessageID:   "msg-published-old",
+			MessageType: "test.event",
+			Payload:     []byte(`{}`),
+			Status:      outbox.StatusPublished,
+			PublishedAt: &oldTime,
+			CreatedAt:   oldTime,
+		},
+		{
+			ID:          recentPublishedID,
+			Topic:       "test",
+			RoutingKey:  "test.key",
+			MessageID:   "msg-published-recent",
+			MessageType: "test.event",
+			Payload:     []byte(`{}`),
+			Status:      outbox.StatusPublished,
+			PublishedAt: &recentTime,
+			CreatedAt:   recentTime,
+		},
+		{
+			ID:          oldFailedID,
+			Topic:       "test",
+			RoutingKey:  "test.key",
+			MessageID:   "msg-failed-old",
+			MessageType: "test.event",
+			Payload:     []byte(`{}`),
+			Status:      outbox.StatusFailed,
+			CreatedAt:   oldTime,
+		},
+		{
+			ID:          recentFailedID,
+			Topic:       "test",
+			RoutingKey:  "test.key",
+			MessageID:   "msg-failed-recent",
+			MessageType: "test.event",
+			Payload:     []byte(`{}`),
+			Status:      outbox.StatusFailed,
+			CreatedAt:   recentTime,
+		},
+	} {
+		require.NoError(t, store.Insert(ctx, entry))
 	}
-	require.NoError(t, store.Insert(ctx, entry))
 
-	// Verify cleanup works via store directly since cleanup interval
-	// is too long for unit tests.
-	cutoff := time.Now().UTC().Add(-24 * time.Hour)
-	deleted, err := store.DeletePublishedBefore(ctx, cutoff)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), deleted)
-
-	// Verify relay starts and stops cleanly.
 	relay := outbox.NewRelay(store, pub, logger,
 		outbox.WithPollInterval(10*time.Millisecond),
 		outbox.WithRetention(24*time.Hour),
+		outbox.WithFailedRetention(24*time.Hour),
 	)
 
 	relayCtx, cancel := context.WithCancel(context.Background())
@@ -237,9 +444,24 @@ func TestRelay_Cleanup(t *testing.T) {
 		relayDone <- relay.Start(relayCtx)
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return store.count() == 2
+	}, 2*time.Second, 10*time.Millisecond)
+
 	cancel()
 	require.NoError(t, <-relayDone)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.entries, 2)
+	remaining := make(map[string]outbox.Status, len(store.entries))
+	for _, entry := range store.entries {
+		remaining[entry.MessageID] = entry.Status
+	}
+	assert.Equal(t, map[string]outbox.Status{
+		"msg-published-recent": outbox.StatusPublished,
+		"msg-failed-recent":    outbox.StatusFailed,
+	}, remaining)
 }
 
 func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
@@ -308,17 +530,42 @@ func TestRelay_Options(t *testing.T) {
 		outbox.WithBatchSize(50),
 		outbox.WithMaxAttempts(5),
 		outbox.WithRetention(48*time.Hour),
+		outbox.WithFailedRetention(14*24*time.Hour),
 	)
 	require.NotNil(t, relay)
+}
 
-	// Zero/negative values are ignored (defaults preserved).
-	relay2 := outbox.NewRelay(store, pub, logger,
-		outbox.WithPollInterval(0),
-		outbox.WithBatchSize(0),
-		outbox.WithMaxAttempts(0),
-		outbox.WithRetention(0),
-	)
-	require.NotNil(t, relay2)
+func TestRelay_OptionsPanicOnInvalidValues(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithPollInterval zero":     func() { outbox.WithPollInterval(0) },
+		"WithPollInterval negative": func() { outbox.WithPollInterval(-time.Second) },
+		"WithBatchSize zero":        func() { outbox.WithBatchSize(0) },
+		"WithBatchSize negative":    func() { outbox.WithBatchSize(-1) },
+		"WithMaxAttempts zero":      func() { outbox.WithMaxAttempts(0) },
+		"WithMaxAttempts negative":  func() { outbox.WithMaxAttempts(-1) },
+		"WithRetention zero":        func() { outbox.WithRetention(0) },
+		"WithRetention negative":    func() { outbox.WithRetention(-time.Second) },
+		"WithFailedRetention zero":  func() { outbox.WithFailedRetention(0) },
+		"WithFailedRetention negative": func() {
+			outbox.WithFailedRetention(-time.Second)
+		},
+		"WithStaleDuration zero":     func() { outbox.WithStaleDuration(0) },
+		"WithStaleDuration negative": func() { outbox.WithStaleDuration(-time.Second) },
+		"WithPublishTimeout zero":    func() { outbox.WithPublishTimeout(0) },
+		"WithPublishTimeout negative": func() {
+			outbox.WithPublishTimeout(-time.Second)
+		},
+		"WithMaxConcurrentPublishes zero": func() {
+			outbox.WithMaxConcurrentPublishes(0)
+		},
+		"WithMaxConcurrentPublishes negative": func() {
+			outbox.WithMaxConcurrentPublishes(-1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Panics(t, fn)
+		})
+	}
 }
 
 func TestRelay_WithMetrics(t *testing.T) {

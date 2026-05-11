@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // FrameOption controls the X-Frame-Options header value.
@@ -36,6 +38,9 @@ type config struct {
 // WithFrameOption sets the X-Frame-Options value.
 // Default: [Deny]. Use [SameOrigin] for services that need iframe embedding.
 func WithFrameOption(opt FrameOption) Option {
+	if opt != "" && opt != Deny && opt != SameOrigin {
+		panic("secheaders: invalid X-Frame-Options value")
+	}
 	return func(c *config) { c.frameOption = opt }
 }
 
@@ -48,6 +53,7 @@ func WithoutContentTypeNoSniff() Option {
 // Default: "strict-origin-when-cross-origin".
 // Set to empty string to disable.
 func WithReferrerPolicy(policy string) Option {
+	validateHeaderValue("Referrer-Policy", policy)
 	return func(c *config) { c.referrerPolicy = policy }
 }
 
@@ -55,6 +61,7 @@ func WithReferrerPolicy(policy string) Option {
 // Default: "geolocation=(), microphone=(), camera=()".
 // Set to empty string to disable.
 func WithPermissionsPolicy(policy string) Option {
+	validateHeaderValue("Permissions-Policy", policy)
 	return func(c *config) { c.permissionsPolicy = policy }
 }
 
@@ -62,6 +69,7 @@ func WithPermissionsPolicy(policy string) Option {
 // Default: "max-age=63072000; includeSubDomains" (2 years).
 // Set to empty string to disable (e.g., local dev without TLS).
 func WithHSTS(value string) Option {
+	validateHeaderValue("Strict-Transport-Security", value)
 	return func(c *config) { c.hsts = value }
 }
 
@@ -74,30 +82,29 @@ func WithoutHSTS() Option {
 // WithCacheControl sets the Cache-Control header for API responses.
 // Default: "no-store". Set to empty string to disable (let handlers set it).
 func WithCacheControl(value string) Option {
+	validateHeaderValue("Cache-Control", value)
 	return func(c *config) { c.cacheControl = value }
 }
 
 // WithTrustedProxiesForProto enables HSTS to fire when the request arrived
 // over TLS at a trusted proxy (X-Forwarded-Proto: https) even if the
 // connection from the proxy to this service is plaintext. The default
-// `r.TLS != nil` check fails behind any TLS-terminating ingress (the
-// most common Kubernetes / Oathkeeper topology), so without this option
-// HSTS is silently disabled for the majority of production deployments.
+// `r.TLS != nil` check fails behind common TLS-terminating ingress
+// topologies, so without this option HSTS is silently disabled for the
+// majority of production deployments.
 //
 // Pass the same proxy CIDRs you supplied to clientip / ratelimit so all
 // trust decisions agree. Pass nil or an empty slice to revert to the
-// strict r.TLS-only check.
+// strict r.TLS-only check. Nil entries panic.
 func WithTrustedProxiesForProto(proxies []*net.IPNet) Option {
-	// FR-019 [LOW]: filter nil entries at construction so the
-	// per-request loop is panic-safe even if a future caller
-	// reconstructs the slice manually.
 	cleaned := make([]*net.IPNet, 0, len(proxies))
 	for _, p := range proxies {
-		if p != nil {
-			cleaned = append(cleaned, p)
+		if p == nil {
+			panic("secheaders: trusted proxy CIDR must not be nil")
 		}
+		cleaned = append(cleaned, cloneIPNet(p))
 	}
-	return func(c *config) { c.trustedProxies = cleaned }
+	return func(c *config) { c.trustedProxies = cloneIPNets(cleaned) }
 }
 
 // WithForceHSTS enables HSTS unconditionally on every response, regardless
@@ -113,6 +120,7 @@ func WithForceHSTS() Option {
 // Default: "default-src 'none'" (strictest — blocks all content loading).
 // Override for services that serve HTML or need specific directives.
 func WithContentSecurityPolicy(policy string) Option {
+	validateHeaderValue("Content-Security-Policy", policy)
 	return func(c *config) { c.csp = policy }
 }
 
@@ -142,6 +150,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		csp:               "default-src 'none'",
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("secheaders: option must not be nil")
+		}
 		opt(&cfg)
 	}
 
@@ -176,9 +187,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 // shouldSetHSTS reports whether HSTS should be sent for this request. The
 // default behaviour (r.TLS != nil) is the strict reading of RFC 6797 §7.2,
-// but it fails in the common k8s / Oathkeeper topology where TLS terminates
-// at an ingress. WithTrustedProxiesForProto and WithForceHSTS expand that
-// surface deliberately.
+// but it fails in common Kubernetes ingress topologies where TLS terminates
+// before reaching the service. WithTrustedProxiesForProto and WithForceHSTS
+// expand that surface deliberately.
 func shouldSetHSTS(r *http.Request, cfg *config) bool {
 	if cfg.forceHSTS {
 		return true
@@ -192,7 +203,25 @@ func shouldSetHSTS(r *http.Request, cfg *config) bool {
 	if !isTrustedRemote(r.RemoteAddr, cfg.trustedProxies) {
 		return false
 	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return forwardedProtoHTTPS(r.Header)
+}
+
+func forwardedProtoHTTPS(h http.Header) bool {
+	values := h.Values("X-Forwarded-Proto")
+	if len(values) != 1 {
+		return false
+	}
+	value := values[0]
+	if strings.TrimSpace(value) == "" || !httpguts.ValidHeaderFieldValue(value) {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case 0, '\r', '\n':
+			return false
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(value), "https")
 }
 
 func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
@@ -205,8 +234,6 @@ func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
 		return false
 	}
 	for _, cidr := range trusted {
-		// FR-019 [LOW]: skip nil entries — a nil CIDR in the
-		// configured slice would otherwise panic on every request.
 		if cidr == nil {
 			continue
 		}
@@ -215,4 +242,34 @@ func isTrustedRemote(remoteAddr string, trusted []*net.IPNet) bool {
 		}
 	}
 	return false
+}
+
+func validateHeaderValue(name, value string) {
+	if value != "" && strings.TrimSpace(value) != value {
+		panic("secheaders: header value contains leading or trailing whitespace")
+	}
+	if !httpguts.ValidHeaderFieldValue(value) {
+		panic("secheaders: header value is invalid")
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case 0, '\r', '\n':
+			panic("secheaders: header value is invalid")
+		}
+	}
+}
+
+func cloneIPNet(n *net.IPNet) *net.IPNet {
+	return &net.IPNet{
+		IP:   append(net.IP(nil), n.IP...),
+		Mask: append(net.IPMask(nil), n.Mask...),
+	}
+}
+
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		out = append(out, cloneIPNet(n))
+	}
+	return out
 }

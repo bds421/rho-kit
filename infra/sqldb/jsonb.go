@@ -7,15 +7,16 @@ import (
 )
 
 // JSONB is a generic type for PostgreSQL JSONB columns.
-// It handles JSON marshaling/unmarshaling transparently via GORM's
-// Scan/Value interface, eliminating per-type boilerplate.
+// It handles JSON marshaling/unmarshaling transparently through the
+// standard sql.Scanner and driver.Valuer interfaces, eliminating
+// per-type boilerplate.
 //
 // Usage:
 //
 //	type User struct {
 //	    ID       uint
-//	    Settings JSONB[map[string]any] `gorm:"type:jsonb"`
-//	    Tags     JSONB[[]string]       `gorm:"type:jsonb"`
+//	    Settings JSONB[map[string]any]
+//	    Tags     JSONB[[]string]
 //	}
 type JSONB[T any] struct {
 	Data  T
@@ -54,7 +55,8 @@ func (j JSONB[T]) Value() (driver.Value, error) {
 	return json.Marshal(j.Data)
 }
 
-// GormDataType returns the GORM data type hint.
+// GormDataType returns "jsonb" for legacy consumers that still use this
+// generic type with GORM in split adapter modules.
 func (j JSONB[T]) GormDataType() string {
 	return "jsonb"
 }

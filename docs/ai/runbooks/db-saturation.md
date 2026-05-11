@@ -16,7 +16,7 @@ hit too. Symptoms upstream: HTTP p99 latency climbs, errors when
 
 1. **Slow queries holding connections** — confirm: long
    query-duration p99 from the application logs, or a `pg_stat_activity`
-   / `SHOW PROCESSLIST` snapshot showing queries running > 1s. Often
+	   snapshot showing queries running > 1s. Often
    triggered by missing indexes or table-scan-inducing parameter
    values.
 2. **Pool size too small for load** — confirm: in-use is at
@@ -38,9 +38,8 @@ hit too. Symptoms upstream: HTTP p99 latency climbs, errors when
    ratio and the wait rate.
 2. If wait rate > 1/s and in-use ≈ open: the pool is too small *or*
    queries are too slow. Decide which:
-   - Run `SELECT pid, now()-query_start AS d, state, query FROM
-     pg_stat_activity ORDER BY d DESC LIMIT 10;` (Postgres) or
-     `SHOW FULL PROCESSLIST;` (MySQL). If many queries are running >
+	   - Run `SELECT pid, now()-query_start AS d, state, query FROM
+	     pg_stat_activity ORDER BY d DESC LIMIT 10;`. If many queries are running >
      1s, fix the queries before raising the pool size.
    - If queries are fast but the pool is small: raise `MaxOpenConns`
      by 50%. Confirm DB CPU stays under 70%.
@@ -48,7 +47,7 @@ hit too. Symptoms upstream: HTTP p99 latency climbs, errors when
    single pod to drain leaked connections; file a bug to find the
    missing `Close()`.
 4. If a stuck transaction: kill the offending PID with
-   `pg_terminate_backend(<pid>)` (Postgres) or `KILL <pid>` (MySQL).
+   `pg_terminate_backend(<pid>)`.
    File a bug to find the orphaned transaction.
 
 ## Longer-term fix

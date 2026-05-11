@@ -2,12 +2,16 @@ package app
 
 import (
 	"io/fs"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
+
+var _ slog.LogValuer = BaseConfig{}
 
 // newTestBuilder constructs a Builder with the always-on
 // production-safety validator's TLS / audience checks opted out so
@@ -25,6 +29,33 @@ func validBaseConfig() BaseConfig {
 	return BaseConfig{
 		Server:   ServerConfig{Port: 8080},
 		Internal: InternalConfig{Port: 9090},
+	}
+}
+
+func TestBaseConfigLogValueRedactsTLSPaths(t *testing.T) {
+	cfg := BaseConfig{
+		Server:      ServerConfig{Host: "0.0.0.0", Port: 8080},
+		Internal:    InternalConfig{Host: "127.0.0.1", Port: 9090},
+		Environment: "production",
+		LogLevel:    "info",
+		TLS: netutil.TLSConfig{
+			CACert: "/var/run/secrets/tls/ca.pem",
+			Cert:   "/var/run/secrets/tls/cert.pem",
+			Key:    "/var/run/secrets/tls/key.pem",
+		},
+	}
+
+	rendered := cfg.LogValue().String()
+
+	for _, path := range []string{cfg.TLS.CACert, cfg.TLS.Cert, cfg.TLS.Key} {
+		if strings.Contains(rendered, path) {
+			t.Fatalf("LogValue leaked TLS path %q in %q", path, rendered)
+		}
+	}
+	for _, expected := range []string{"0.0.0.0:8080", "127.0.0.1:9090", "key_configured=true"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("LogValue %q missing %q", rendered, expected)
+		}
 	}
 }
 

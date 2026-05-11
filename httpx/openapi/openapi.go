@@ -8,12 +8,14 @@
 //
 //  1. Generate a strict server with oapi-codegen
 //     (`oapi-codegen --generate=strict-server,types -package api spec.yaml`).
+//
 //  2. Implement the generated StrictServerInterface.
+//
 //  3. Wire it through openapi.Mount with the kit's middleware:
 //
 //     mux := http.NewServeMux()
 //     openapi.Mount(mux, api.NewStrictHandler(impl, nil), openapi.Options{
-//        Logger: slog.Default(),
+//     Logger: slog.Default(),
 //     })
 //
 // The Mount call applies the kit's error-translation middleware
@@ -29,7 +31,6 @@
 package openapi
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 
@@ -97,17 +98,7 @@ func DefaultErrorMapper(err error) problemdetails.Problem {
 	if err == nil {
 		return problemdetails.Problem{Status: http.StatusOK}
 	}
-	// apperror integration is intentionally light here so this file
-	// doesn't take a hard dep on apperror; consumers wanting
-	// apperror→Problem mapping wire their own ErrorMapper that
-	// uses errors.As against apperror's typed errors and falls back
-	// to this default.
-	_ = errors.New
-	return problemdetails.Problem{
-		Status: http.StatusInternalServerError,
-		Title:  http.StatusText(http.StatusInternalServerError),
-		Detail: err.Error(),
-	}
+	return problemdetails.FromError(err)
 }
 
 // errorMapperMiddleware is a placeholder for translating

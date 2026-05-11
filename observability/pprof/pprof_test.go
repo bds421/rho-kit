@@ -19,6 +19,28 @@ func TestHandler_ServesIndex(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestHandler_DefaultAllowsLoopback(t *testing.T) {
+	h := Handler()
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHandler_DefaultRejectsNonLoopback(t *testing.T) {
+	h := Handler()
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	req.RemoteAddr = "203.0.113.10:12345"
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestHandler_ServesNamedProfile(t *testing.T) {
 	srv := httptest.NewServer(Handler(WithUnsafePublicMount()))
 	defer srv.Close()
@@ -40,6 +62,33 @@ func TestMount_AttachesRoutesToCallerMux(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestMountWith_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		MountWith(http.NewServeMux(), nil)
+	})
+}
+
+func TestWithAuth_PanicsOnNilFunction(t *testing.T) {
+	assert.Panics(t, func() {
+		WithAuth(nil)
+	})
+}
+
+func TestWithAuth_PanicFailsClosed(t *testing.T) {
+	mux := http.NewServeMux()
+	MountWith(mux, WithAuth(func(*http.Request) bool {
+		panic("boom")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	rec := httptest.NewRecorder()
+
+	assert.NotPanics(t, func() {
+		mux.ServeHTTP(rec, req)
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestIsPprofPath(t *testing.T) {

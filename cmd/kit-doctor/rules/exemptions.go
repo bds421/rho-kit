@@ -9,26 +9,37 @@ import (
 	"strings"
 )
 
-// kitFactoryExemptions lists module paths that are the canonical kit
+// kitFactoryExemptions lists import paths that are the canonical kit
 // implementations of the safe-construction helpers their rules push
 // callers toward. Exempting them lets kit-doctor run cleanly against
 // rho-kit itself without weakening enforcement for service repos.
 //
-// Match is by exact go.mod module path. The keys are rule names; the
-// values are the modules where the rule's "unsafe" pattern is the
+// Match is by exact package import path. The keys are rule names; the
+// values are the packages where the rule's "unsafe" pattern is the
 // safe factory the rule exists to recommend.
 var kitFactoryExemptions = map[string]map[string]struct{}{
 	"http-server-direct-construction": {
 		"github.com/bds421/rho-kit/httpx/v2": {},
 	},
 	"default-http-client": {
-		"github.com/bds421/rho-kit/httpx/v2":            {},
-		"github.com/bds421/rho-kit/httpx/v2/budget":     {},
-		"github.com/bds421/rho-kit/httpx/v2/sign":       {},
-		"github.com/bds421/rho-kit/security/v2/jwtutil": {},
+		"github.com/bds421/rho-kit/authz/openfga/v2":                    {},
+		"github.com/bds421/rho-kit/cmd/kit-verify/v2":                   {},
+		"github.com/bds421/rho-kit/httpx/v2":                            {},
+		"github.com/bds421/rho-kit/httpx/v2/budget":                     {},
+		"github.com/bds421/rho-kit/httpx/v2/healthhttp":                 {},
+		"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults": {},
+		"github.com/bds421/rho-kit/httpx/v2/reqsign":                    {},
+		"github.com/bds421/rho-kit/httpx/v2/sign":                       {},
+		"github.com/bds421/rho-kit/observability/v2/health":             {},
+		"github.com/bds421/rho-kit/security/v2/jwtutil":                 {},
+		"github.com/bds421/rho-kit/security/v2/netutil":                 {},
 	},
 	"http-server-error-log": {
 		"github.com/bds421/rho-kit/app/v2": {},
+	},
+	"tenant-key-prefix": {
+		"github.com/bds421/rho-kit/cmd/kit-doctor/v2/rules": {},
+		"github.com/bds421/rho-kit/core/v2/tenant":          {},
 	},
 }
 
@@ -44,43 +55,47 @@ var kitFactoryExemptions = map[string]map[string]struct{}{
 const inlineSuppressionPrefix = "kit-doctor:allow"
 
 // isKitFactoryExempt reports whether the file at filename lives in a
-// module that is on the per-rule allowlist for ruleName. The result is
-// cached per process to keep filesystem walks off the per-finding hot
-// path.
+// package that is on the per-rule allowlist for ruleName. The result
+// is cached per process to keep filesystem walks off the per-finding
+// hot path.
 func isKitFactoryExempt(ruleName, filename string) bool {
-	mods, ok := kitFactoryExemptions[ruleName]
-	if !ok || len(mods) == 0 {
+	pkgs, ok := kitFactoryExemptions[ruleName]
+	if !ok || len(pkgs) == 0 {
 		return false
 	}
-	mod := moduleAtPath(filename)
-	if mod == "" {
+	pkg := packageAtPath(filename)
+	if pkg == "" {
 		return false
 	}
-	_, ok = mods[mod]
+	_, ok = pkgs[pkg]
 	return ok
 }
 
-// moduleCache memoises go.mod lookups per directory.
-var moduleCache = map[string]string{}
+// packageCache memoises package import-path lookups per directory.
+var packageCache = map[string]string{}
 
-// moduleAtPath walks upward from filename until it finds a go.mod,
-// returning its module path. Returns "" if no go.mod is found before
-// the filesystem root.
-func moduleAtPath(filename string) string {
+// packageAtPath walks upward from filename until it finds a go.mod,
+// returning the import path for filename's package. Returns "" if no
+// go.mod is found before the filesystem root.
+func packageAtPath(filename string) string {
 	dir := filepath.Dir(filename)
-	if cached, ok := moduleCache[dir]; ok {
+	if cached, ok := packageCache[dir]; ok {
 		return cached
 	}
 	cur := dir
 	for {
 		modPath := filepath.Join(cur, "go.mod")
 		if mod := readModuleLine(modPath); mod != "" {
-			moduleCache[dir] = mod
-			return mod
+			pkg := mod
+			if rel, err := filepath.Rel(cur, dir); err == nil && rel != "." {
+				pkg += "/" + filepath.ToSlash(rel)
+			}
+			packageCache[dir] = pkg
+			return pkg
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			moduleCache[dir] = ""
+			packageCache[dir] = ""
 			return ""
 		}
 		cur = parent

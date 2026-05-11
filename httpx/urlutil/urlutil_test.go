@@ -2,6 +2,7 @@ package urlutil
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -45,11 +46,19 @@ func TestMustJoin_preservesQueryAndFragment(t *testing.T) {
 
 func TestMustJoin_panicsOnInvalidBase(t *testing.T) {
 	defer func() {
-		if recover() == nil {
+		rec := recover()
+		if rec == nil {
 			t.Error("expected panic on invalid base")
 		}
+		got := rec.(string)
+		if got != "urlutil: base URL is invalid" {
+			t.Fatalf("panic = %q, want stable invalid-base message", got)
+		}
+		if strings.Contains(got, "secret-token") || strings.Contains(got, "%zz") {
+			t.Fatalf("panic leaked raw base URL: %q", got)
+		}
 	}()
-	_ = MustJoin("://bad")
+	_ = MustJoin("https://example.com/%zz?token=secret-token")
 }
 
 func TestAppendPaths_doesNotMutateInput(t *testing.T) {
@@ -104,6 +113,15 @@ func TestAppendPaths_noPartsKeepsTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestAppendPaths_slashOnlyPartCreatesRootPath(t *testing.T) {
+	base := mustParse(t, "https://example.com")
+	got := AppendPaths(base, "/")
+	want := "https://example.com/"
+	if got.String() != want {
+		t.Errorf("got %q, want %q", got.String(), want)
+	}
+}
+
 func TestAppendPaths_noDoubleEncoding(t *testing.T) {
 	// A part containing "%20" (already percent-encoded space) must not be
 	// re-encoded into "%2520".
@@ -112,6 +130,105 @@ func TestAppendPaths_noDoubleEncoding(t *testing.T) {
 	want := "https://example.com/api/with%20space"
 	if got.String() != want {
 		t.Errorf("got %q, want %q", got.String(), want)
+	}
+}
+
+func TestAppendPaths_treatsPartsAsOpaqueSegments(t *testing.T) {
+	base := mustParse(t, "https://example.com/api")
+	got := AppendPaths(base, "tenant/acme", "users")
+	want := "https://example.com/api/tenant%2Facme/users"
+	if got.String() != want {
+		t.Errorf("got %q, want %q", got.String(), want)
+	}
+}
+
+func TestAppendPaths_doesNotCleanDotSegments(t *testing.T) {
+	base := mustParse(t, "https://example.com/api/base")
+	got := AppendPaths(base, "..", "../admin", ".")
+	want := "https://example.com/api/base/%2E%2E/%2E%2E%2Fadmin/%2E"
+	if got.String() != want {
+		t.Errorf("got %q, want %q", got.String(), want)
+	}
+}
+
+func TestAppendPaths_leadingSlashesDoNotReplaceBasePath(t *testing.T) {
+	base := mustParse(t, "https://example.com/api")
+	got := AppendPaths(base, "//evil.example/internal")
+	want := "https://example.com/api/evil.example%2Finternal"
+	if got.String() != want {
+		t.Errorf("got %q, want %q", got.String(), want)
+	}
+}
+
+func TestAppendPaths_reencodesEncodedPathSeparators(t *testing.T) {
+	base := mustParse(t, "https://example.com/api")
+	cases := []struct {
+		name string
+		part string
+		want string
+	}{
+		{
+			name: "encoded slash",
+			part: "tenant%2Facme",
+			want: "https://example.com/api/tenant%252Facme",
+		},
+		{
+			name: "encoded backslash",
+			part: "tenant%5Cacme",
+			want: "https://example.com/api/tenant%255Cacme",
+		},
+		{
+			name: "lowercase encoded slash",
+			part: "tenant%2facme",
+			want: "https://example.com/api/tenant%252facme",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AppendPaths(base, tc.part)
+			if got.String() != tc.want {
+				t.Errorf("got %q, want %q", got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendPaths_reencodesEncodedDotSegments(t *testing.T) {
+	base := mustParse(t, "https://example.com/api/base")
+	cases := []struct {
+		name string
+		part string
+		want string
+	}{
+		{
+			name: "encoded single dot",
+			part: "%2e",
+			want: "https://example.com/api/base/%252e",
+		},
+		{
+			name: "encoded double dot",
+			part: "%2e%2e",
+			want: "https://example.com/api/base/%252e%252e",
+		},
+		{
+			name: "encoded slash creates dot segment",
+			part: "tenant%2f%2e%2e%2fadmin",
+			want: "https://example.com/api/base/tenant%252f%252e%252e%252fadmin",
+		},
+		{
+			name: "mixed case encoded dot",
+			part: "%2E%2e",
+			want: "https://example.com/api/base/%252E%252e",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AppendPaths(base, tc.part)
+			if got.String() != tc.want {
+				t.Errorf("got %q, want %q", got.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -172,12 +289,20 @@ func TestParseRequestURIOrPanic_ok(t *testing.T) {
 
 func TestParseRequestURIOrPanic_panicsOnInvalid(t *testing.T) {
 	defer func() {
-		if recover() == nil {
+		rec := recover()
+		if rec == nil {
 			t.Error("expected panic on invalid URI")
+		}
+		got := rec.(string)
+		if got != "urlutil: request URI is invalid" {
+			t.Fatalf("panic = %q, want stable invalid-URI message", got)
+		}
+		if strings.Contains(got, "secret-token") || strings.Contains(got, "%zz") {
+			t.Fatalf("panic leaked raw request URI: %q", got)
 		}
 	}()
 	// "%zz" is rejected by ParseRequestURI as an invalid percent-escape.
-	_ = ParseRequestURIOrPanic("%zz")
+	_ = ParseRequestURIOrPanic("/callback/%zz?token=secret-token")
 }
 
 func mustParse(t *testing.T, s string) *url.URL {

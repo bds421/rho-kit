@@ -11,7 +11,7 @@ package batchworker
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"runtime/debug"
@@ -21,7 +21,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // Worker runs a batch function periodically with jitter, metrics, and
@@ -37,6 +39,7 @@ type Worker struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	started  atomic.Bool
+	stopped  bool
 	mu       sync.Mutex
 	cancel   context.CancelFunc
 }
@@ -59,7 +62,7 @@ type config struct {
 // surfaces at startup rather than silently keeping the default.
 func WithJitter(fraction float64) Option {
 	if fraction < 0 || fraction > 1 {
-		panic(fmt.Sprintf("batchworker: WithJitter requires 0 <= fraction <= 1 (got %v)", fraction))
+		panic("batchworker: WithJitter requires 0 <= fraction <= 1")
 	}
 	return func(c *config) {
 		c.jitter = fraction
@@ -74,7 +77,7 @@ func WithJitter(fraction float64) Option {
 // surfaces at startup.
 func WithTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic(fmt.Sprintf("batchworker: WithTimeout requires d > 0 (got %s)", d))
+		panic("batchworker: WithTimeout requires d > 0")
 	}
 	return func(c *config) {
 		c.timeout = d
@@ -108,6 +111,9 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 	if name == "" {
 		panic("batchworker: name must not be empty")
 	}
+	if err := promutil.ValidateStaticLabelValue("worker name", name); err != nil {
+		panic("batchworker: invalid name")
+	}
 	if interval <= 0 {
 		panic("batchworker: interval must be positive")
 	}
@@ -121,6 +127,9 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 		logger:  slog.Default(),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("batchworker: option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -140,12 +149,23 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 // (either externally or by [Worker.Stop]).
 // Implements the lifecycle.Component interface.
 func (w *Worker) Start(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
+	if ctx == nil {
+		return errors.New("batchworker: Start requires a non-nil context")
+	}
 	// Set cancel + started together under a single lock so a concurrent
 	// Stop sees both as a unit. Without this, Stop could observe
 	// started=false right after Start has set it, then later Start would
 	// install a cancel that nothing ever invokes.
 	w.mu.Lock()
+	if w.started.Load() {
+		w.mu.Unlock()
+		return errors.New("batchworker: Worker already started")
+	}
+	if w.stopped {
+		w.mu.Unlock()
+		return errors.New("batchworker: Worker already stopped")
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	w.started.Store(true)
 	w.mu.Unlock()
@@ -186,9 +206,13 @@ func (w *Worker) Start(ctx context.Context) error {
 // in-flight batch may still be running until the per-batch timeout completes.
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("batchworker: Stop requires a non-nil context")
+	}
 	w.mu.Lock()
 	started := w.started.Load()
 	cancel := w.cancel
+	w.stopped = true
 	w.mu.Unlock()
 	if !started {
 		w.doneOnce.Do(func() { close(w.done) })
@@ -217,7 +241,7 @@ func (w *Worker) runBatch(parentCtx context.Context) {
 			status = "panic"
 			w.logger.Error("batch worker panicked",
 				"name", w.name,
-				"panic", r,
+				redact.Panic(r),
 				"stack", string(debug.Stack()),
 			)
 		}

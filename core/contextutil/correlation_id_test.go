@@ -22,6 +22,12 @@ func TestCorrelationID_EmptyContext(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestCorrelationID_NilContext(t *testing.T) {
+	//nolint:staticcheck // Deliberately exercises the nil-safe read path.
+	got := contextutil.CorrelationID(nil)
+	assert.Empty(t, got)
+}
+
 func TestSetCorrelationID_Overwrites(t *testing.T) {
 	ctx := contextutil.SetCorrelationID(context.Background(), "first")
 	ctx = contextutil.SetCorrelationID(ctx, "second")

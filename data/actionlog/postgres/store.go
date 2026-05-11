@@ -40,13 +40,26 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+func (s *Store) ready() error {
+	if s == nil || s.pool == nil {
+		return actionlog.ErrInvalidStore
+	}
+	return nil
+}
+
 // AppendChained runs build inside a transaction that holds a per-tenant
 // advisory lock plus SELECT FOR UPDATE on the latest row for tenantID,
 // persisting the resulting entry under the same lock so concurrent
 // appends serialise — including the tenant's first append, where there
 // is no row yet for SELECT FOR UPDATE to lock.
 func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
 	if tenantID == "" {
+		return actionlog.Entry{}, actionlog.ErrInvalidEntry
+	}
+	if build == nil {
 		return actionlog.Entry{}, actionlog.ErrInvalidEntry
 	}
 
@@ -75,6 +88,9 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 	if err != nil {
 		return actionlog.Entry{}, err
 	}
+	if err := actionlog.ValidateStoredEntry(tenantID, entry); err != nil {
+		return actionlog.Entry{}, err
+	}
 
 	if err := insertEntry(ctx, tx, entry); err != nil {
 		return actionlog.Entry{}, err
@@ -89,6 +105,9 @@ func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(p
 // Get returns the entry by id. Returns [actionlog.ErrNotFound] when no
 // row matches.
 func (s *Store) Get(ctx context.Context, id string) (actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
 	const q = `
 SELECT id, tenant_id, actor, action, resource, outcome, reason,
        metadata, occurred_at, signature_key_id, seq, prev_hash, signature
@@ -107,6 +126,12 @@ WHERE id = $1`
 
 // List returns entries matching q, ordered by occurred_at DESC, id DESC.
 func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	limit := q.Limit
 	if limit <= 0 {
 		limit = defaultLimit
@@ -169,6 +194,12 @@ FROM action_log_entries`
 // ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
 // No limit is applied — VerifyChain needs the full chain.
 func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if tenantID == "" {
+		return nil, actionlog.ErrQueryTenantRequired
+	}
 	const q = `
 SELECT id, tenant_id, actor, action, resource, outcome, reason,
        metadata, occurred_at, signature_key_id, seq, prev_hash, signature

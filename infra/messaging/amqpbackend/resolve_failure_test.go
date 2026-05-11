@@ -181,6 +181,13 @@ func TestWithPrefetch_HighValue(t *testing.T) {
 	assert.Equal(t, 1000, c.prefetch)
 }
 
+func TestWithPrefetch_PanicDoesNotReflectValue(t *testing.T) {
+	assert.PanicsWithValue(t,
+		"amqpbackend: WithPrefetch requires n > 0; RabbitMQ treats 0 as unlimited prefetch",
+		func() { WithPrefetch(-1) },
+	)
+}
+
 // --- WithHooks ---
 
 func TestWithHooks_SetsHooks(t *testing.T) {

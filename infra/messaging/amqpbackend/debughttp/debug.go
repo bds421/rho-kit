@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
@@ -49,6 +50,13 @@ type typesResponse struct {
 // Request body: { "type": "event.type", "payload": { ... } }
 // Response:     { "ok": true, "message_id": "..." }
 func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) http.HandlerFunc {
+	if handlers == nil {
+		panic("debughttp: ConsumeHandler requires a non-nil handlers map")
+	}
+	handlers = cloneHandlers(handlers)
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req consumeRequest
 		if !httpx.DecodeJSON(w, r, &req) {
@@ -62,13 +70,13 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 
 		handler, ok := handlers[req.Type]
 		if !ok {
-			httpx.WriteError(w, http.StatusBadRequest, "unknown message type: "+req.Type)
+			httpx.WriteError(w, http.StatusBadRequest, "unknown message type")
 			return
 		}
 
 		msg, err := messaging.NewMessage(req.Type, req.Payload)
 		if err != nil {
-			logger.Error("debug consume: failed to create message", "error", err)
+			logger.Error("debug consume: failed to create message", redact.Error(err))
 			httpx.WriteError(w, http.StatusInternalServerError, "failed to create message")
 			return
 		}
@@ -77,10 +85,10 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 			Message: msg,
 		}
 
-		logger.Info("debug consume", "type", req.Type, "message_id", msg.ID)
+		logger.Info("debug consume", redact.String("type", req.Type), redact.String("message_id", msg.ID))
 
 		if err := handler(r.Context(), d); err != nil {
-			logger.Error("debug consume handler failed", "type", req.Type, "error", err)
+			logger.Error("debug consume handler failed", redact.String("type", req.Type), redact.Error(err))
 			httpx.WriteJSON(w, http.StatusInternalServerError, response{
 				OK:        false,
 				MessageID: msg.ID,
@@ -93,9 +101,23 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 	}
 }
 
+func cloneHandlers(handlers map[string]messaging.Handler) map[string]messaging.Handler {
+	owned := make(map[string]messaging.Handler, len(handlers))
+	for msgType, handler := range handlers {
+		if handler == nil {
+			panic("debughttp: ConsumeHandler requires non-nil handlers")
+		}
+		owned[msgType] = handler
+	}
+	return owned
+}
+
 // ConsumeTypesHandler returns an HTTP handler that lists all registered
 // consumer message types. Useful to discover what types the consume endpoint accepts.
 func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc {
+	if handlers == nil {
+		panic("debughttp: ConsumeTypesHandler requires a non-nil handlers map")
+	}
 	types := make([]string, 0, len(handlers))
 	for t := range handlers {
 		types = append(types, t)
@@ -115,6 +137,12 @@ func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc
 // Request body: { "exchange": "...", "routing_key": "...", "payload": { ... } }
 // Response:     { "ok": true, "message_id": "..." }
 func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
+	if pub == nil {
+		panic("debughttp: PublishHandler requires a non-nil publisher")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	// nil allowedExchanges is now treated as "deny all" rather than the
 	// previous "allow all" — a missing allowlist on a publish endpoint
 	// is RCE-equivalent and is the kind of misconfiguration a strict
@@ -157,19 +185,19 @@ func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, l
 
 		msg, err := messaging.NewMessage(req.RoutingKey, req.Payload)
 		if err != nil {
-			logger.Error("debug publish: failed to create message", "error", err)
+			logger.Error("debug publish: failed to create message", redact.Error(err))
 			httpx.WriteError(w, http.StatusInternalServerError, "failed to create message")
 			return
 		}
 
 		logger.Info("debug publish",
-			"exchange", req.Exchange,
-			"routing_key", req.RoutingKey,
-			"message_id", msg.ID,
+			redact.String("exchange", req.Exchange),
+			redact.String("routing_key", req.RoutingKey),
+			redact.String("message_id", msg.ID),
 		)
 
 		if err := pub.Publish(r.Context(), req.Exchange, req.RoutingKey, msg); err != nil {
-			logger.Error("debug publish failed", "error", err)
+			logger.Error("debug publish failed", redact.Error(err))
 			httpx.WriteJSON(w, http.StatusInternalServerError, response{
 				OK:        false,
 				MessageID: msg.ID,

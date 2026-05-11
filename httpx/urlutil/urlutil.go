@@ -1,8 +1,9 @@
 package urlutil
 
 import (
-	"fmt"
 	"net/url"
+	"strings"
+	"unicode/utf8"
 )
 
 // MustJoin parses base and appends parts to its path, panicking if base does
@@ -17,7 +18,7 @@ import (
 func MustJoin(base string, parts ...string) string {
 	u, err := url.Parse(base)
 	if err != nil {
-		panic(fmt.Sprintf("urlutil: parse %q: %v", base, err))
+		panic("urlutil: base URL is invalid")
 	}
 	return AppendPaths(u, parts...).String()
 }
@@ -25,10 +26,13 @@ func MustJoin(base string, parts ...string) string {
 // AppendPaths returns a NEW [*url.URL] with parts joined onto u's path.
 // The input u is not mutated. RawQuery and Fragment are preserved.
 //
-// Empty parts are skipped. A trailing slash on the existing path is kept
-// when no segments are appended; a trailing slash on the final part is
-// preserved on the result. Already-percent-encoded segments are treated as
-// opaque and never double-encoded.
+// Empty parts are skipped. Each non-empty part is appended as one opaque path
+// segment; pass multiple parts when you want multiple path levels. Leading
+// slashes in a part are ignored so a part cannot replace u's existing path, and
+// trailing slashes are preserved as a trailing slash on the result.
+// Already-percent-encoded octets are preserved and never double-encoded,
+// except when preserving them would decode to path separators or "." / ".."
+// path segments.
 //
 // Returns nil when u is nil.
 func AppendPaths(u *url.URL, parts ...string) *url.URL {
@@ -36,7 +40,6 @@ func AppendPaths(u *url.URL, parts ...string) *url.URL {
 		return nil
 	}
 
-	// Drop empty parts so callers can pass conditional segments.
 	filtered := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p == "" {
@@ -44,12 +47,41 @@ func AppendPaths(u *url.URL, parts ...string) *url.URL {
 		}
 		filtered = append(filtered, p)
 	}
+	out := Copy(u)
+	if len(filtered) == 0 {
+		return out
+	}
 
-	// (*url.URL).JoinPath always returns a fresh URL with its own copy of
-	// fields, so it satisfies the no-mutation contract. With zero parts it
-	// still returns a copy with the same path (preserving any trailing
-	// slash on the base).
-	return u.JoinPath(filtered...)
+	escapedPath := out.EscapedPath()
+	for _, part := range filtered {
+		trailingSlash := strings.HasSuffix(part, "/")
+		trimmed := strings.TrimLeft(part, "/")
+		trimmed = strings.TrimRight(trimmed, "/")
+		if trimmed == "" {
+			if trailingSlash {
+				if escapedPath == "" {
+					escapedPath = "/"
+				} else if !strings.HasSuffix(escapedPath, "/") {
+					escapedPath += "/"
+				}
+			}
+			continue
+		}
+
+		if escapedPath == "" {
+			escapedPath = "/" + escapeOpaquePathSegment(trimmed)
+		} else if strings.HasSuffix(escapedPath, "/") {
+			escapedPath += escapeOpaquePathSegment(trimmed)
+		} else {
+			escapedPath += "/" + escapeOpaquePathSegment(trimmed)
+		}
+		if trailingSlash && !strings.HasSuffix(escapedPath, "/") {
+			escapedPath += "/"
+		}
+	}
+
+	setEscapedPath(out, escapedPath)
+	return out
 }
 
 // Copy returns a deep copy of u. The returned URL is safe to mutate without
@@ -77,7 +109,116 @@ func Copy(u *url.URL) *url.URL {
 func ParseRequestURIOrPanic(s string) *url.URL {
 	u, err := url.ParseRequestURI(s)
 	if err != nil {
-		panic(fmt.Sprintf("urlutil: parse request URI %q: %v", s, err))
+		panic("urlutil: request URI is invalid")
 	}
 	return u
+}
+
+func setEscapedPath(u *url.URL, escapedPath string) {
+	path, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		u.Path = escapedPath
+		u.RawPath = ""
+		return
+	}
+	u.Path = path
+
+	defaultEscaped := (&url.URL{Path: path}).EscapedPath()
+	if escapedPath == defaultEscaped {
+		u.RawPath = ""
+	} else {
+		u.RawPath = escapedPath
+	}
+}
+
+func escapeOpaquePathSegment(s string) string {
+	var b strings.Builder
+	preserveEscapes := !containsDecodedPathControl(s)
+	for i := 0; i < len(s); {
+		if preserveEscapes && s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b.WriteString(s[i : i+3])
+			i += 3
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteString(url.PathEscape(s[i : i+1]))
+			i++
+			continue
+		}
+		if r == '.' && isDotSegmentByte(s, i, size) {
+			b.WriteString("%2E")
+		} else {
+			b.WriteString(url.PathEscape(s[i : i+size]))
+		}
+		i += size
+	}
+	return b.String()
+}
+
+func containsDecodedPathControl(s string) bool {
+	decoded := make([]byte, 0, len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b := fromHex(s[i+1])<<4 | fromHex(s[i+2])
+			if b == '/' || b == '\\' {
+				return true
+			}
+			decoded = append(decoded, b)
+			i += 3
+			continue
+		}
+		decoded = append(decoded, s[i])
+		i++
+	}
+
+	start := 0
+	for i := 0; i <= len(decoded); i++ {
+		if i != len(decoded) && decoded[i] != '/' && decoded[i] != '\\' {
+			continue
+		}
+		seg := decoded[start:i]
+		if len(seg) == 1 && seg[0] == '.' {
+			return true
+		}
+		if len(seg) == 2 && seg[0] == '.' && seg[1] == '.' {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+func isDotSegmentByte(s string, i, size int) bool {
+	before := i == 0 || s[i-1] == '/'
+	after := i+size == len(s) || s[i+size] == '/'
+	if before && after {
+		return true
+	}
+
+	if i+size < len(s) && s[i+size] == '.' {
+		secondEnd := i + size + 1
+		return before && (secondEnd == len(s) || s[secondEnd] == '/')
+	}
+	if i > 0 && s[i-1] == '.' {
+		firstStart := i - 1
+		return (firstStart == 0 || s[firstStart-1] == '/') && after
+	}
+	return false
+}
+
+func isHex(b byte) bool {
+	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
+}
+
+func fromHex(b byte) byte {
+	switch {
+	case '0' <= b && b <= '9':
+		return b - '0'
+	case 'a' <= b && b <= 'f':
+		return b - 'a' + 10
+	default:
+		return b - 'A' + 10
+	}
 }

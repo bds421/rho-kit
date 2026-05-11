@@ -3,13 +3,15 @@ package middleware
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 )
 
 // ResponseRecorder wraps http.ResponseWriter to capture the HTTP status code.
-// It guards against double WriteHeader calls and supports Flush, Hijack, and
-// Unwrap for compatibility with streaming, WebSocket, and http.ResponseController.
+// It guards against double WriteHeader calls and supports Flush, Hijack, Push,
+// ReadFrom, and Unwrap for compatibility with streaming, WebSocket,
+// http.ResponseController, HTTP/2 server push, and large-file transfer paths.
 type ResponseRecorder struct {
 	http.ResponseWriter
 	statusCode  int
@@ -19,6 +21,9 @@ type ResponseRecorder struct {
 
 // Status returns the recorded HTTP status code (default 200).
 func (r *ResponseRecorder) Status() int { return r.statusCode }
+
+// WroteHeader reports whether the handler has started the HTTP response.
+func (r *ResponseRecorder) WroteHeader() bool { return r.wroteHeader }
 
 // WasHijacked returns true if the connection was hijacked (e.g., WebSocket upgrade).
 func (r *ResponseRecorder) WasHijacked() bool { return r.hijacked }
@@ -74,3 +79,25 @@ func (r *ResponseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func (r *ResponseRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
+
+// Push delegates to the underlying writer when it implements [http.Pusher].
+func (r *ResponseRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := r.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// ReadFrom delegates to the underlying writer's optimized copy path when
+// available, while still recording the implicit 200 status.
+func (r *ResponseRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(writerOnly{r.ResponseWriter}, src)
+}
+
+type writerOnly struct{ io.Writer }

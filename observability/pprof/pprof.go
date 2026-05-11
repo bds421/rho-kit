@@ -12,11 +12,15 @@
 package pprof
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"runtime"
+	"runtime/debug"
 	"strings"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // MountOption configures [MountWith].
@@ -51,12 +55,17 @@ func WithRequireLoopback() MountOption {
 // context populated upstream, so pprof inherits whatever auth the rest
 // of the service uses.
 func WithAuth(fn func(*http.Request) bool) MountOption {
+	if fn == nil {
+		panic("pprof: WithAuth requires a non-nil function")
+	}
 	return func(c *mountConfig) { c.authFn = fn }
 }
 
 // Handler returns an http.Handler that serves /debug/pprof/* routes.
 //
-// Mount it on an internal-only port (the kit's :9090 by default).
+// With no options, Handler uses the same safe default as [Mount]:
+// requests must originate from loopback. Mount it on an internal-only
+// port (the kit's :9090 by default).
 // Mounting on the public port without auth exposes:
 //
 //   - /debug/pprof/heap — heap allocations
@@ -68,6 +77,9 @@ func WithAuth(fn func(*http.Request) bool) MountOption {
 // network policy or a fleet-wide auth proxy.
 func Handler(opts ...MountOption) http.Handler {
 	mux := http.NewServeMux()
+	if len(opts) == 0 {
+		opts = []MountOption{WithRequireLoopback()}
+	}
 	MountWith(mux, opts...)
 	return mux
 }
@@ -104,6 +116,9 @@ func Mount(mux *http.ServeMux) {
 func MountWith(mux *http.ServeMux, opts ...MountOption) {
 	cfg := &mountConfig{}
 	for _, o := range opts {
+		if o == nil {
+			panic("pprof: Mount option must not be nil")
+		}
 		o(cfg)
 	}
 	if !cfg.requireLoopback && cfg.authFn == nil && !cfg.allowPublic {
@@ -115,7 +130,7 @@ func MountWith(mux *http.ServeMux, opts ...MountOption) {
 				http.NotFound(w, r)
 				return
 			}
-			if cfg.authFn != nil && !cfg.authFn(r) {
+			if cfg.authFn != nil && !allowPprofRequest(cfg.authFn, r) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -139,6 +154,19 @@ func isLoopback(remoteAddr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+func allowPprofRequest(fn func(*http.Request) bool, r *http.Request) (allowed bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("pprof: auth callback panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			allowed = false
+		}
+	}()
+	return fn(r)
 }
 
 // EnableMutexBlockProfiling turns on the runtime mutex and block

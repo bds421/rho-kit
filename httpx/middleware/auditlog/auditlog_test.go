@@ -1,12 +1,16 @@
 package auditlog
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
@@ -53,6 +57,36 @@ func TestAuditlog_DefaultClientIPNoTrustedProxies(t *testing.T) {
 	}
 }
 
+type hijackableResponseWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (h *hijackableResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, nil
+}
+
+func TestAuditlog_PreservesHijackerInterface(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, ok := w.(http.Hijacker); !ok {
+			t.Fatal("expected audit middleware ResponseWriter to preserve http.Hijacker")
+		}
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	rec := &hijackableResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(store.events))
+	}
+	if got := rec.Code; got != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want %d", got, http.StatusSwitchingProtocols)
+	}
+}
+
 func TestAuditlog_HonorsTrustedProxyXFF(t *testing.T) {
 	store, l := newLogger()
 	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
@@ -75,6 +109,69 @@ func TestAuditlog_HonorsTrustedProxyXFF(t *testing.T) {
 	}
 }
 
+func TestAuditlog_TrustedProxiesAreDetached(t *testing.T) {
+	store, l := newLogger()
+	_, trusted, err := net.ParseCIDR("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := WithTrustedProxies([]*net.IPNet{trusted})
+	trusted.IP = net.ParseIP("10.0.0.0")
+
+	mw := Middleware(l, opt)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(store.events))
+	}
+	if got := store.events[0].IPAddress; got != "203.0.113.10" {
+		t.Fatalf("IPAddress = %q, want %q", got, "203.0.113.10")
+	}
+}
+
+func TestAuditlog_PreservesRequestTraceID(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("trace id: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatalf("span id: %v", err)
+	}
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), spanCtx))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(store.events))
+	}
+	if got := store.events[0].TraceID; got != traceID.String() {
+		t.Fatalf("TraceID = %q, want %q", got, traceID.String())
+	}
+}
+
 func TestAuditlog_PanicsOnNilLogger(t *testing.T) {
 	defer func() {
 		if rcv := recover(); rcv == nil {
@@ -84,45 +181,29 @@ func TestAuditlog_PanicsOnNilLogger(t *testing.T) {
 	_ = Middleware(nil)
 }
 
-func TestAuditlog_NilOptionsPreserveDefaults(t *testing.T) {
-	store, l := newLogger()
-	mw := Middleware(l,
-		WithActorExtractor(nil),
-		WithPathFilter(nil),
-		WithStatusFilter(nil),
-		WithClientIPFunc(nil),
-	)
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
-	req.RemoteAddr = "127.0.0.1:1234"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if len(store.events) != 1 {
-		t.Fatalf("expected 1 event with nil-option defaults preserved, got %d", len(store.events))
+func TestAuditlog_PanicsOnNilOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "actor", fn: func() { WithActorExtractor(nil) }},
+		{name: "path", fn: func() { WithPathFilter(nil) }},
+		{name: "status", fn: func() { WithStatusFilter(nil) }},
+		{name: "client ip", fn: func() { WithClientIPFunc(nil) }},
+		{name: "middleware option", fn: func() {
+			_, l := newLogger()
+			Middleware(l, nil)
+		}},
 	}
-	if got := store.events[0].Actor; got != "anonymous" {
-		t.Errorf("Actor = %q, want %q (default preserved)", got, "anonymous")
-	}
-}
-
-func TestAuditlog_NilPathFilter_HealthStillSkipped(t *testing.T) {
-	store, l := newLogger()
-	mw := Middleware(l, WithPathFilter(nil))
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	req.RemoteAddr = "127.0.0.1:1234"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if len(store.events) != 0 {
-		t.Errorf("expected /health to be skipped by default filter, got %d events", len(store.events))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			tt.fn()
+		})
 	}
 }
 
@@ -154,4 +235,213 @@ func TestAuditlog_RecordsOnPanic(t *testing.T) {
 		}
 	}()
 	h.ServeHTTP(rec, req)
+}
+
+func TestAuditlog_PathFilterPanicAuditsAndContinues(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l, WithPathFilter(func(string) bool {
+		panic("filter failed")
+	}))
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("expected audit event after path filter panic, got %d", len(store.events))
+	}
+}
+
+func TestAuditlog_StatusFilterPanicAudits(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l, WithStatusFilter(func(int) bool {
+		panic("status filter failed")
+	}))
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected audit event after status filter panic, got %d", len(store.events))
+	}
+}
+
+func TestAuditlog_ExtractorPanicsUseFallbacks(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l,
+		WithClientIPFunc(func(*http.Request) string {
+			panic("ip failed")
+		}),
+		WithActorExtractor(func(*http.Request) string {
+			panic("actor failed")
+		}),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected audit event after extractor panics, got %d", len(store.events))
+	}
+	ev := store.events[0]
+	if ev.IPAddress != "" {
+		t.Errorf("IPAddress = %q, want empty fallback", ev.IPAddress)
+	}
+	if ev.Actor != "anonymous" {
+		t.Errorf("Actor = %q, want anonymous fallback", ev.Actor)
+	}
+}
+
+func TestAuditlog_UsesEscapedPathForResource(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/a%20b", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected audit event for escaped path, got %d", len(store.events))
+	}
+	if got := store.events[0].Resource; got != "/api/a%20b" {
+		t.Fatalf("Resource = %q, want escaped path", got)
+	}
+}
+
+func TestAuditlog_PathFilterUsesEscapedPath(t *testing.T) {
+	store, l := newLogger()
+	var sawPath string
+	mw := Middleware(l, WithPathFilter(func(path string) bool {
+		sawPath = path
+		return path != "/api/a%2Fb"
+	}))
+	handlerRan := false
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerRan = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/a%2Fb", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if !handlerRan {
+		t.Fatal("handler should run when audit path filter skips")
+	}
+	if sawPath != "/api/a%2Fb" {
+		t.Fatalf("path filter saw %q, want escaped path", sawPath)
+	}
+	if len(store.events) != 0 {
+		t.Fatalf("expected path filter to skip audit event, got %d", len(store.events))
+	}
+}
+
+func TestAuditlog_DefaultPathFilterDoesNotSkipPrefixCollisions(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/health-delete-user", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected prefix-collision path to be audited, got %d events", len(store.events))
+	}
+	if got := store.events[0].Resource; got != "/health-delete-user" {
+		t.Fatalf("Resource = %q, want audited request path", got)
+	}
+}
+
+func TestAuditlog_DefaultPathFilterSkipsOpsSubpaths(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, path := range []string{"/health", "/health/live", "/ready", "/ready/db", "/metrics", "/metrics/prometheus"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+	}
+
+	if len(store.events) != 0 {
+		t.Fatalf("expected default ops paths to be skipped, got %d events", len(store.events))
+	}
+}
+
+func TestAuditlog_InvalidExtractorValuesDoNotDropEvent(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l,
+		WithActorExtractor(func(*http.Request) string {
+			return "alice smith"
+		}),
+		WithClientIPFunc(func(*http.Request) string {
+			return "203.0.113.10\n"
+		}),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected invalid extractor values to fallback, got %d events", len(store.events))
+	}
+	ev := store.events[0]
+	if ev.Actor != "anonymous" {
+		t.Fatalf("Actor = %q, want anonymous fallback", ev.Actor)
+	}
+	if ev.IPAddress != "" {
+		t.Fatalf("IPAddress = %q, want empty fallback", ev.IPAddress)
+	}
+}
+
+func TestAuditlog_LongPathUsesSafeFallbackResource(t *testing.T) {
+	store, l := newLogger()
+	mw := Middleware(l)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/"+strings.Repeat("a", auditlog.MaxResourceBytes), nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if len(store.events) != 1 {
+		t.Fatalf("expected long path to fallback, got %d events", len(store.events))
+	}
+	if got := store.events[0].Resource; !strings.HasPrefix(got, "path-invalid-sha256-") {
+		t.Fatalf("Resource = %q, want hashed fallback", got)
+	}
 }

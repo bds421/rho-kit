@@ -13,7 +13,7 @@ import (
 // when multiple consumers restart simultaneously.
 // Blocks until ctx is cancelled.
 //
-// This delegates to the shared retry.Loop with the WorkerPolicy defaults
+// This delegates to the shared retry.Loop with the WorkerPolicy() defaults
 // (3s base, 60s max, 2x factor, ±25% jitter, 30s stability reset).
 func RunWithBackoff(ctx context.Context, logger *slog.Logger, component string, fn func(ctx context.Context) error) {
 	retry.Loop(ctx, logger, component, fn)

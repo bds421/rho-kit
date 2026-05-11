@@ -31,8 +31,9 @@ func TestVerifyClientCertGRPC_SANURIMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	cert := &x509.Certificate{
-		Subject: pkix.Name{CommonName: "ignored"},
-		URIs:    []*url.URL{uri},
+		Subject:     pkix.Name{CommonName: "ignored"},
+		URIs:        []*url.URL{uri},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedSANs([]string{"spiffe://example.org/svc-a"}),
@@ -44,8 +45,9 @@ func TestVerifyClientCertGRPC_SANURIMatch(t *testing.T) {
 
 func TestVerifyClientCertGRPC_SANDNSMatch(t *testing.T) {
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "ignored"},
-		DNSNames: []string{"svc-a.internal"},
+		Subject:     pkix.Name{CommonName: "ignored"},
+		DNSNames:    []string{"svc-a.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedSANs([]string{"svc-a.internal"}),
@@ -55,9 +57,24 @@ func TestVerifyClientCertGRPC_SANDNSMatch(t *testing.T) {
 	assert.Equal(t, "dns:svc-a.internal", identity)
 }
 
+func TestVerifyClientCertGRPC_SANDNSMatchIsCaseInsensitive(t *testing.T) {
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "ignored"},
+		DNSNames:    []string{"svc-a.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
+		WithAllowedSANs([]string{"SVC-A.INTERNAL"}),
+	})
+	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
+	assert.True(t, ok)
+	assert.Equal(t, "dns:svc-a.internal", identity)
+}
+
 func TestVerifyClientCertGRPC_CNMatchLegacyOnly(t *testing.T) {
 	cert := &x509.Certificate{
-		Subject: pkix.Name{CommonName: "svc-legacy"},
+		Subject:     pkix.Name{CommonName: "svc-legacy"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedCNs([]string{"svc-legacy"}),
@@ -69,8 +86,9 @@ func TestVerifyClientCertGRPC_CNMatchLegacyOnly(t *testing.T) {
 
 func TestVerifyClientCertGRPC_NoMatch(t *testing.T) {
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "svc-x"},
-		DNSNames: []string{"svc-x.internal"},
+		Subject:     pkix.Name{CommonName: "svc-x"},
+		DNSNames:    []string{"svc-x.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedCNs([]string{"svc-y"}),
@@ -83,8 +101,9 @@ func TestVerifyClientCertGRPC_NoMatch(t *testing.T) {
 
 func TestVerifyClientCertGRPC_SANPreferredOverCN(t *testing.T) {
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "svc-cn"},
-		DNSNames: []string{"svc-san.internal"},
+		Subject:     pkix.Name{CommonName: "svc-cn"},
+		DNSNames:    []string{"svc-san.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedCNs([]string{"svc-cn"}),
@@ -98,8 +117,9 @@ func TestVerifyClientCertGRPC_SANPreferredOverCN(t *testing.T) {
 
 func TestVerifyClientCertGRPC_RejectsUnverifiedChain(t *testing.T) {
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "svc-cn"},
-		DNSNames: []string{"svc-san.internal"},
+		Subject:     pkix.Name{CommonName: "svc-cn"},
+		DNSNames:    []string{"svc-san.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
 		WithAllowedSANs([]string{"svc-san.internal"}),
@@ -110,4 +130,77 @@ func TestVerifyClientCertGRPC_RejectsUnverifiedChain(t *testing.T) {
 	ok, identity := verifyClientCertGRPC(ctx, cfg)
 	assert.False(t, ok, "unverified chain must be rejected even with matching SAN")
 	assert.Empty(t, identity)
+}
+
+func TestVerifyClientCertGRPC_RejectsCertWithoutClientAuthEKU(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		eku  []x509.ExtKeyUsage
+	}{
+		{name: "no EKU", eku: nil},
+		{name: "server auth only", eku: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cert := &x509.Certificate{
+				Subject:     pkix.Name{CommonName: "svc-cn"},
+				DNSNames:    []string{"svc-san.internal"},
+				ExtKeyUsage: tt.eku,
+			}
+			cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
+				WithAllowedSANs([]string{"svc-san.internal"}),
+			})
+			ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
+			assert.False(t, ok)
+			assert.Empty(t, identity)
+		})
+	}
+}
+
+func TestWithAllowedSANsRejectsInvalidEntries(t *testing.T) {
+	for _, san := range []string{
+		"svc name.internal",
+		"svc/internal",
+		"svc_name.internal",
+		"-svc.internal",
+		"svc-.internal",
+		"*.internal",
+		string([]byte{'s', 'v', 'c', 0xff}),
+		"spiffe://example.org/svc-a?debug=true",
+		"spiffe://user@example.org/svc-a",
+		"spiffe://example.org/svc-a#frag",
+	} {
+		t.Run(san, func(t *testing.T) {
+			assert.Panics(t, func() {
+				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedSANs([]string{san})})
+			})
+		})
+	}
+}
+
+func TestWithAllowedCNsRejectsInvalidEntries(t *testing.T) {
+	for _, cn := range []string{
+		"svc\nname",
+		"svc\tname",
+		"svc\x00name",
+		string([]byte{'s', 'v', 'c', 0xff}),
+	} {
+		t.Run(cn, func(t *testing.T) {
+			assert.Panics(t, func() {
+				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedCNs([]string{cn})})
+			})
+		})
+	}
+}
+
+func TestWithAllowedIdentityPanicsDoNotEchoValues(t *testing.T) {
+	assert.PanicsWithValue(t, "interceptor: WithAllowedSANs invalid URI SAN", func() {
+		buildMTLSIdentityConfig([]MTLSIdentityOption{
+			WithAllowedSANs([]string{"spiffe://example.org/%zz?token=secret-token"}),
+		})
+	})
+	assert.PanicsWithValue(t, "interceptor: WithAllowedCNs invalid CN", func() {
+		buildMTLSIdentityConfig([]MTLSIdentityOption{
+			WithAllowedCNs([]string{"svc\nsecret-token"}),
+		})
+	})
 }

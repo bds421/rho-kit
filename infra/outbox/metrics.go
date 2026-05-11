@@ -35,6 +35,9 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		registerer: prometheus.DefaultRegisterer,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("outbox: Metrics option must not be nil")
+		}
 		o(cfg)
 	}
 
@@ -62,10 +65,10 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 		}),
 	}
 
-	promutil.RegisterCollector(cfg.registerer, m.pendingCount)
-	promutil.RegisterCollector(cfg.registerer, m.relayLatency)
-	promutil.RegisterCollector(cfg.registerer, m.publishedTotal)
-	promutil.RegisterCollector(cfg.registerer, m.errorsTotal)
+	m.pendingCount = promutil.MustRegisterOrGet(cfg.registerer, m.pendingCount)
+	m.relayLatency = promutil.MustRegisterOrGet(cfg.registerer, m.relayLatency)
+	m.publishedTotal = promutil.MustRegisterOrGet(cfg.registerer, m.publishedTotal)
+	m.errorsTotal = promutil.MustRegisterOrGet(cfg.registerer, m.errorsTotal)
 
 	return m
 }

@@ -2,6 +2,7 @@ package asvs
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -40,8 +41,9 @@ type ScanReport struct {
 // NOT be used as compliance evidence. A service author can claim
 // any control by typing the annotation; the scanner does not check
 // whether the surrounding code actually implements the control.
-// Use [ScanImports] for trustworthy evidence — it resolves real
-// import statements against the kit's hand-curated [PackageRegistry].
+// Use [ScanImports] for package-capability evidence — it resolves
+// real non-blank import statements against the kit's hand-curated
+// [PackageRegistry].
 //
 // Returns a [ScanReport] suitable for kit-doctor rendering. An error
 // is returned only on filesystem failure; an annotation pointing at
@@ -51,13 +53,19 @@ func ScanDir(root string) (ScanReport, error) {
 	var anns []Annotation
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return asvsFileError("inspect source tree", walkErr)
 		}
 		if d.IsDir() {
+			if filepath.Clean(path) == filepath.Clean(root) {
+				return nil
+			}
 			name := d.Name()
 			if name == "vendor" || strings.HasPrefix(name, ".") || name == "node_modules" {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -71,7 +79,7 @@ func ScanDir(root string) (ScanReport, error) {
 		return nil
 	})
 	if err != nil {
-		return ScanReport{}, fmt.Errorf("asvs: walk %q: %w", root, err)
+		return ScanReport{}, asvsFileError("walk source tree", err)
 	}
 	return buildReport(anns), nil
 }
@@ -79,7 +87,7 @@ func ScanDir(root string) (ScanReport, error) {
 func scanFile(path string) ([]Annotation, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("asvs: open %q: %w", path, err)
+		return nil, asvsFileError("open source file", err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -95,9 +103,22 @@ func scanFile(path string) ([]Annotation, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("asvs: scan %q: %w", path, err)
+		return nil, asvsFileError("scan source file", err)
 	}
 	return out, nil
+}
+
+func asvsFileError(op string, err error) error {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return fmt.Errorf("asvs: %s: %w", op, os.ErrPermission)
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("asvs: %s: %w", op, os.ErrNotExist)
+	case errors.Is(err, os.ErrInvalid):
+		return fmt.Errorf("asvs: %s: %w", op, os.ErrInvalid)
+	default:
+		return fmt.Errorf("asvs: %s failed", op)
+	}
 }
 
 func buildReport(anns []Annotation) ScanReport {
@@ -111,7 +132,7 @@ func buildReport(anns []Annotation) ScanReport {
 	}
 
 	missingSet := map[ID]struct{}{}
-	for _, c := range Catalog {
+	for _, c := range catalog {
 		if _, ok := claimedSet[c.ID]; !ok {
 			missingSet[c.ID] = struct{}{}
 		}

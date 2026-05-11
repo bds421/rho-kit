@@ -1,6 +1,8 @@
 package reqsign
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"net/http"
 	"time"
 
@@ -32,6 +34,11 @@ func testKey(n int, seed int) []byte {
 		k[i] = byte((i*7 + seed) % 256)
 	}
 	return k
+}
+
+func testNonce(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return base64.StdEncoding.EncodeToString(sum[:16])
 }
 
 // testStore returns a StaticKeyStore with two deterministic keys for testing.

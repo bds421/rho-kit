@@ -6,11 +6,24 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
+
+func assertBodyTooLargeStable(t *testing.T, err error, forbidden ...string) {
+	t.Helper()
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
+	}
+	for _, s := range forbidden {
+		if strings.Contains(err.Error(), s) {
+			t.Fatalf("body-size error leaked %q: %v", s, err)
+		}
+	}
+}
 
 func TestVerifyWithCustomMaxAge(t *testing.T) {
 	store := testStore()
@@ -38,74 +51,41 @@ func TestVerifyWithCustomMaxAge(t *testing.T) {
 	}
 }
 
-func TestWithMaxAgeZeroFallsBackToDefault(t *testing.T) {
-	store := testStore()
-	signTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	// 2 minutes later — within the 5min default but would fail with 0 if taken literally.
-	verifyTime := signTime.Add(2 * time.Minute)
-
-	signSigner := signing.NewSigner(signing.WithClock(fixedClock(signTime)))
-	verifySigner := signing.NewSigner(signing.WithClock(fixedClock(verifyTime)))
-
-	body := []byte(`{"action":"test"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(body))
-
-	if err := SignRequest(req, body, store, WithSigner(signSigner)); err != nil {
-		t.Fatalf("SignRequest failed: %v", err)
+func TestReqsignOptionsRejectInvalidValues(t *testing.T) {
+	assertPanics := func(name string, fn func()) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			fn()
+		})
 	}
 
-	// WithMaxAge(0) should be ignored, falling back to the 5min default.
-	err := VerifyRequest(req, body, store,
-		WithVerifySigner(verifySigner),
-		WithMaxAge(0),
-		freshNonceStoreOpt(),
-	)
-	if err != nil {
-		t.Fatalf("expected WithMaxAge(0) to fall back to default 5min, got error: %v", err)
-	}
-}
-
-func TestWithMaxAgeNegativeFallsBackToDefault(t *testing.T) {
-	store := testStore()
-	signTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	// 2 minutes later — within the 5min default but would fail if negative were taken literally.
-	verifyTime := signTime.Add(2 * time.Minute)
-
-	signSigner := signing.NewSigner(signing.WithClock(fixedClock(signTime)))
-	verifySigner := signing.NewSigner(signing.WithClock(fixedClock(verifyTime)))
-
-	body := []byte(`{"action":"test"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewReader(body))
-
-	if err := SignRequest(req, body, store, WithSigner(signSigner)); err != nil {
-		t.Fatalf("SignRequest failed: %v", err)
-	}
-
-	// WithMaxAge(-1s) should be ignored, falling back to the 5min default.
-	err := VerifyRequest(req, body, store,
-		WithVerifySigner(verifySigner),
-		WithMaxAge(-1*time.Second),
-		freshNonceStoreOpt(),
-	)
-	if err != nil {
-		t.Fatalf("expected WithMaxAge(-1s) to fall back to default 5min, got error: %v", err)
-	}
-}
-
-func TestWithSignerNilUsesDefault(t *testing.T) {
-	store := testStore()
-
-	body := []byte(`{"action":"deploy"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
-
-	// Sign with nil signer option — should use default signer and succeed.
-	if err := SignRequest(req, body, store, WithSigner(nil)); err != nil {
-		t.Fatalf("SignRequest with nil signer failed: %v", err)
-	}
-
-	if req.Header.Get(HeaderSignature) == "" {
-		t.Error("expected X-Signature header to be set when using nil signer")
-	}
+	assertPanics("WithSigner nil", func() { WithSigner(nil) })
+	assertPanics("WithVerifySigner nil", func() { WithVerifySigner(nil) })
+	assertPanics("WithMaxAge zero", func() { WithMaxAge(0) })
+	assertPanics("WithMaxAge negative", func() { WithMaxAge(-time.Second) })
+	assertPanics("WithSignMaxBodySize zero", func() { WithSignMaxBodySize(0) })
+	assertPanics("WithSignMaxBodySize negative", func() { WithSignMaxBodySize(-1) })
+	assertPanics("WithVerifyMaxBodySize zero", func() { WithVerifyMaxBodySize(0) })
+	assertPanics("WithVerifyMaxBodySize negative", func() { WithVerifyMaxBodySize(-1) })
+	assertPanics("NewSigningTransport nil option", func() {
+		NewSigningTransport(http.DefaultTransport, testStore(), nil)
+	})
+	assertPanics("SignRequest nil option", func() {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		_ = SignRequest(req, nil, testStore(), nil)
+	})
+	assertPanics("VerifyRequest nil option", func() {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		_ = VerifyRequest(req, nil, testStore(), nil)
+	})
+	assertPanics("RequireSignedRequest nil option", func() {
+		RequireSignedRequest(testStore(), nil)
+	})
 }
 
 func TestWithSignMaxBodySize_RejectsOversizedBody(t *testing.T) {
@@ -126,6 +106,7 @@ func TestWithSignMaxBodySize_RejectsOversizedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for body exceeding custom max body size, got nil")
 	}
+	assertBodyTooLargeStable(t, err, "100", "101")
 }
 
 func TestWithSignMaxBodySize_AcceptsFittingBody(t *testing.T) {
@@ -213,30 +194,6 @@ func TestWithVerifyMaxBodySize_AcceptsFittingBody(t *testing.T) {
 	}
 }
 
-func TestWithVerifySignerNilUsesDefault(t *testing.T) {
-	store := testStore()
-	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	clockSigner := signing.NewSigner(signing.WithClock(fixedClock(now)))
-
-	body := []byte(`{"action":"deploy"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewReader(body))
-
-	if err := SignRequest(req, body, store, WithSigner(clockSigner)); err != nil {
-		t.Fatalf("SignRequest failed: %v", err)
-	}
-
-	// Pass WithVerifySigner(nil) first, then the real signer — nil should be
-	// ignored so the second option sets the signer correctly.
-	err := VerifyRequest(req, body, store,
-		WithVerifySigner(nil),
-		WithVerifySigner(clockSigner),
-		freshNonceStoreOpt(),
-	)
-	if err != nil {
-		t.Fatalf("VerifyRequest should succeed when nil signer is followed by valid signer: %v", err)
-	}
-}
-
 func TestSignRequest_RejectsOversizedBody(t *testing.T) {
 	store := testStore()
 
@@ -247,9 +204,7 @@ func TestSignRequest_RejectsOversizedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrBodyTooLarge for oversized body, got nil")
 	}
-	if !errors.Is(err, ErrBodyTooLarge) {
-		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
-	}
+	assertBodyTooLargeStable(t, err, "100", "101")
 	if req.Header.Get(HeaderSignature) != "" {
 		t.Error("oversized body must not produce a signature header")
 	}
@@ -276,7 +231,5 @@ func TestVerifyRequest_RejectsOversizedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrBodyTooLarge for oversized body during verify, got nil")
 	}
-	if !errors.Is(err, ErrBodyTooLarge) {
-		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
-	}
+	assertBodyTooLargeStable(t, err, "100", "101")
 }

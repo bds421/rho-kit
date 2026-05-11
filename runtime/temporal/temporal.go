@@ -32,7 +32,6 @@ package temporal
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 
@@ -78,6 +77,9 @@ func (c Config) ClientOptions(logger *slog.Logger) client.Options {
 // retry — connection failure at startup should be reported up the
 // lifecycle Runner so an orchestrator can surface a CrashLoop.
 func Connect(ctx context.Context, opts client.Options) (*Client, error) {
+	if ctx == nil {
+		return nil, errors.New("temporal: Connect requires a non-nil context")
+	}
 	if opts.HostPort == "" {
 		return nil, errors.New("temporal: Config.HostPort must not be empty")
 	}
@@ -86,7 +88,7 @@ func Connect(ctx context.Context, opts client.Options) (*Client, error) {
 	}
 	c, err := client.DialContext(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("temporal: dial %s: %w", opts.HostPort, err)
+		return nil, errors.New("temporal: dial failed")
 	}
 	return &Client{c: c}, nil
 }
@@ -115,8 +117,11 @@ func (c *Client) Close() {
 // it via [worker.Registry] (returned by [Worker.Registry]) before
 // starting; once Start runs the registry is sealed.
 type Worker struct {
-	w  worker.Worker
-	mu sync.Mutex
+	w        worker.Worker
+	mu       sync.Mutex
+	started  bool
+	stopped  bool
+	stopOnce sync.Once
 }
 
 // NewWorker creates a kit Worker for the given task queue. Pass
@@ -146,17 +151,38 @@ func (w *Worker) Registry() worker.Registry { return w.w }
 // add a Worker via runner.Add(...) and the runner will manage its
 // lifetime alongside HTTP / gRPC servers.
 func (w *Worker) Start(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("temporal: Worker.Start requires a non-nil context")
+	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	if w.w == nil {
+		w.mu.Unlock()
+		return errors.New("temporal: Worker is not initialized")
+	}
+	if w.started {
+		w.mu.Unlock()
+		return errors.New("temporal: Worker already started")
+	}
+	if w.stopped {
+		w.mu.Unlock()
+		return errors.New("temporal: Worker already stopped")
+	}
+	w.started = true
+	w.mu.Unlock()
 
 	// The SDK's worker.Run wants a <-chan interface{} for shutdown
 	// signalling (legacy interrupt-channel API). Bridge ctx onto it
 	// in a goroutine so the runner's cancellation flows through
 	// cleanly without exposing the SDK's chan type to callers.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
 	interrupt := make(chan any, 1)
 	go func() {
-		<-ctx.Done()
-		interrupt <- struct{}{}
+		<-runCtx.Done()
+		select {
+		case interrupt <- struct{}{}:
+		default:
+		}
 	}()
 
 	errCh := make(chan error, 1)
@@ -165,7 +191,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
-		w.w.Stop()
+		w.stopWorker()
 		return nil
 	case err := <-errCh:
 		return err
@@ -173,9 +199,22 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 // Stop halts the worker. Idempotent.
-func (w *Worker) Stop(_ context.Context) error {
-	w.w.Stop()
+func (w *Worker) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("temporal: Worker.Stop requires a non-nil context")
+	}
+	w.stopWorker()
 	return nil
+}
+
+func (w *Worker) stopWorker() {
+	w.mu.Lock()
+	ww := w.w
+	w.stopped = true
+	w.mu.Unlock()
+	if ww != nil {
+		w.stopOnce.Do(func() { ww.Stop() })
+	}
 }
 
 // bridgeLogger adapts slog.Logger to the SDK's [log.Logger]

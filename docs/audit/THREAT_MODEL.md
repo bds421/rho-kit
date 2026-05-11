@@ -115,8 +115,9 @@ assumed beyond it.
   or an exploitable bug.
 - Capability: arbitrary code execution within the service process,
   possibly on package init.
-- Primary defences (kit side): `govulncheck` in CI (Theme 5),
-  CycloneDX SBOM published per release, dependency pinning policy
+- Primary defences (kit side): exact direct-dependency source
+  allowlist in CI, `govulncheck`, CycloneDX SBOM published per release,
+  dependency pinning policy
   (see [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)).
 - Note: the kit cannot fully prevent this — it can only narrow the
   blast radius and shorten time-to-detect.
@@ -265,7 +266,7 @@ gives the author no way to remove `recover`.
 | H-09 | Unauthenticated access to authenticated routes | A1 | `auth` middleware verifies JWT/PASETO; service composes `auth.RequireScope` for finer checks | [httpx/middleware/auth/auth.go](../../httpx/middleware/auth/auth.go), [httpx/middleware/auth/scope.go](../../httpx/middleware/auth/scope.go) |
 | H-10 | Information disclosure via verbose errors | A1 | `httpx.WriteServiceError` / `WriteServiceProblem` map `core/apperror` codes to safe HTTP status + RFC 7807 — never returns wrapped error strings | [httpx/error_handler.go](../../httpx/error_handler.go), [httpx/problemdetails](../../httpx/problemdetails/) |
 | H-11 | Request smuggling via duplicate Content-Length | A1 | Go stdlib server rejects ambiguous CL/TE — relied on, not reimplemented |
-| H-12 | Open redirect via attacker-controlled URL params | A1 | Kit does not provide a generic `Redirect` helper; service authors must validate. **Listed as gap, not mitigation.** |
+| H-12 | Open redirect via attacker-controlled URL params | A1 | `httpx.SafeRedirect` validates untrusted redirect targets, rejects scheme-relative / encoded scheme-relative targets, userinfo, non-HTTP schemes, control bytes, and absolute hosts outside an explicit allowlist | [httpx/redirect.go](../../httpx/redirect.go) |
 | H-13 | Log injection via crafted headers | A1 | Structured logging (`slog`) — fields are key/value, not formatted; `secret.String` redacts credential fields | [observability/logging](../../observability/logging/), [core/secret](../../core/secret/) |
 | H-14 | Mass-assignment via permissive JSON decoding | A2 | `core/validate.Struct` rejects unknown / extra fields when the struct uses `validate:"-"` on private fields; service authors must opt into strict mode | [core/validate/validate.go](../../core/validate/validate.go) |
 
@@ -286,7 +287,7 @@ others (interceptor ordering, streaming exhaustion).
 | G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app.WithJWT`/`WithPASETO`; rejects requests without a valid token | [app/jwt_module.go](../../app/jwt_module.go), [app/paseto_module.go](../../app/paseto_module.go) |
 | G-03 | Streaming flood — client opens N streams and never sends | A1 | gRPC's max-concurrent-streams + per-stream deadline; service authors must set per-RPC timeouts. **Listed as gap if defaults are not set.** |
 | G-04 | Error message leakage via gRPC status messages | A1 | `grpcx/apperror_status.go` maps `core/apperror` codes to gRPC codes + safe messages — never returns the underlying `error.Error()` | [grpcx/apperror_status.go](../../grpcx/apperror_status.go) |
-| G-05 | Health probe leaks service liveness to attacker | A1 | gRPC `Health` server is bound to the same listener; deployment-level network policy is expected to gate it. **Listed as gap.** |
+| G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `WithPublicGRPCHealth()` | [app/builder.go](../../app/builder.go), [app/internal_grpc_health.go](../../app/internal_grpc_health.go) |
 
 ### 4.3 Message broker (`infra/messaging`)
 
@@ -304,6 +305,7 @@ and `Consumer` interfaces.
 | M-05 | Producer outage drops events that should reach the broker | A1 (DoS) | `messaging.BufferedPublisher` with an optional state file persists pending messages across restarts; **state file path validated against directory traversal** | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 | M-06 | Internal `debughttp` Publish/Consume HTTP endpoints expose broker to attacker | A1 | `debughttp` requires a `Guard` middleware + Authenticator — refuses to mount otherwise | [infra/messaging/amqpbackend/debughttp/guard.go](../../infra/messaging/amqpbackend/debughttp/guard.go) |
 | M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme; pure `amqp://` is rejected by the always-on `app.Builder` production-safety validator | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
+| M-08 | Oversized messages exhaust broker/client memory or poison the buffered retry state file | A1, A4 | `messaging.MessageSizeLimiter` defaults to 1 MiB, supports exact route overrides, and is wired into AMQP, NATS, Redis Streams, `membroker`, and `BufferedPublisher`; Builder exposes `WithMaxMessageBytes` and `WithRouteMaxMessageBytes` for golden-path services | [infra/messaging/size_limit.go](../../infra/messaging/size_limit.go), [app/builder.go](../../app/builder.go) |
 
 **Note:** `BufferedPublisher` is **not** a transactional outbox.
 Where strict at-most-once / exactly-once is required, services use
@@ -332,7 +334,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
-| R-01 | Cross-tenant key collision (tenant A reads tenant B's cached value) | A2 | `data/cache` API requires a key built by the caller; service authors are expected to prefix with `tenant.RequireID` from `core/tenant`. Kit cannot enforce this on a free-form key — see §7. | [data/cache/cache.go](../../data/cache/), [core/tenant/tenant.go](../../core/tenant/tenant.go) |
+| R-01 | Cross-tenant key collision (tenant A reads tenant B's cached value) | A2 | `core/tenant.Key(ctx, parts...)` builds length-prefixed scoped keys, `data/cache/tenant.Wrap` / `data/idempotency/tenant.Wrap` use the same encoder, `cmd/kit-new -tenant` scaffolds those wrappers, and `kit-doctor` flags hand-written `tenant:` key prefixes. | [core/tenant](../../core/tenant/), [data/cache/tenant](../../data/cache/tenant/), [data/idempotency/tenant](../../data/idempotency/tenant/), [cmd/kit-new](../../cmd/kit-new/), [cmd/kit-doctor](../../cmd/kit-doctor/) |
 | R-02 | Lock split-brain (two holders for the same name) | A1, A3 (clock skew) | `redislock.Locker.Acquire` returns a per-call `Lock` handle with a fencing token; `Unlock` checks owner; `Acquire` twice without `Release` returns an error | [data/lock/redislock](../../data/lock/redislock/), [data/lock/lock.go](../../data/lock/lock.go) |
 | R-03 | Idempotency replay across instances → two writes | A1 | Redis store uses Lua to atomically claim key + owner token; `Unlock` requires matching owner | [data/idempotency/redisstore/store.go](../../data/idempotency/redisstore/store.go) |
 | R-04 | Idempotency permanent lock (TTL=0) wedges further requests | A1 (induced) | `WithTTL(0)` on the middleware panics at construction; backends return `ErrInvalidTTL` | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
@@ -349,7 +351,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | S-01 | Path traversal via attacker-controlled key | A1 | `storagehttp.UUIDKeyFunc` recommended; raw client filenames as keys are explicitly disallowed by AGENTS.md "Never use raw client filenames as storage keys" | [infra/storage/storagehttp/keyfunc.go](../../infra/storage/storagehttp/keyfunc.go) |
 | S-02 | Local backend replaces a file but doesn't fsync parent dir → corruption on crash | A1 (DoS) | Local backend fsyncs parent directory after rename | [infra/storage/localbackend](../../infra/storage/localbackend/) |
 | S-03 | Server-side encryption keys leaked in logs | A6 | `storage/encryption` uses `crypto/envelope` KEKs; KEK material wrapped in `core/secret.String` | [infra/storage/encryption](../../infra/storage/encryption/) |
-| S-04 | Upload bypasses content-type/size limits | A1 | `storagehttp/uploadsec` provides MIME sniffing, size limits, dimension limits, AV adapter | [infra/storage/storagehttp/uploadsec](../../infra/storage/storagehttp/uploadsec/) |
+| S-04 | Upload bypasses content-type/size limits | A1 | `storagehttp/uploadsec` provides MIME sniffing, size limits, dimension limits, and a generic malware scanner contract; `infra/storage/storagehttp/uploadsec/clamav` ships a ClamAV adapter that also exposes a `storage.Validator` bridge for `storagehttp.ParseAndStore`. | [infra/storage/storagehttp/uploadsec](../../infra/storage/storagehttp/uploadsec/), [infra/storage/storagehttp/uploadsec/clamav](../../infra/storage/storagehttp/uploadsec/clamav/) |
 | S-05 | SSRF via "fetch from URL" feature when service supports remote ingestion | A1 | `security/netutil.SSRFSafeTransport` resolves and rejects RFC1918, link-local, multicast destinations; documented "do not store SSRFSafeTransport long-term" anti-pattern | [security/netutil/ssrf.go](../../security/netutil/ssrf.go) |
 | S-06 | Cross-tenant file disclosure via guessable key | A2 | UUIDKeyFunc + tenant-prefixed namespace in `storage.Manager` policy; service-author responsibility documented in [docs/ai/storage.md](../ai/storage.md) |
 
@@ -360,7 +362,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
 | T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` or the explicit opt-out `WithoutJWTIssuer`; the legacy `https://oathkeeper` default is rejected by the always-on `app.Builder` validator. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | [app/jwt_module.go](../../app/jwt_module.go) |
 | T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval |
-| T-04 | JWT replay after logout (no revocation) | A1 | The kit does **not** ship a JWT revocation store; services that need it implement against `data/cache`. Out of scope unless service opts in. |
+| T-04 | JWT replay after logout (no revocation) | A1 | `security/jwtutil/revocation` stores revoked `jti` values until token expiry over any cache-compatible backend; `jwtutil.Provider` can fail closed through `WithRevocationChecker`. | [security/jwtutil](../../security/jwtutil/), [security/jwtutil/revocation](../../security/jwtutil/revocation/) |
 | T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
 | T-06 | PASETO key in environment variable visible to `ps` / `/proc/<pid>/environ` | A6 | All PASETO keys go through `core/secret.String`; the kit's config loader supports `_FILE` suffix to mount keys from disk | [core/secret/secret.go](../../core/secret/secret.go), [core/config](../../core/config/) |
 
@@ -395,7 +397,7 @@ backends or other expensive operations.
 
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
-| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | The kit provides primitives (rate limits, circuit breakers, idempotency); the service is responsible for wiring per-tenant cost budgets — see §7. **Tracked as gap.** |
+| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `WithTenantBudget` | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
 | L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.RequireID` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
 | L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | [runtime/concurrency](../../runtime/concurrency/) |
 | L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
@@ -405,10 +407,10 @@ backends or other expensive operations.
 
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
-| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer.WriteWithTx` requires an ambient `*gorm.DB` transaction; relay reads + publishes + marks-claimed in a transaction | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
-| O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; `DeleteFailedBefore` for explicit dead-letter retention | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` can require an ambient transaction via `WithRequireTransaction`; relay reads, publishes, and marks processing rows through the store contract | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; exhausted rows move to failed state for dead-letter inspection | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 | O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | Atomic `UPDATE … WHERE claimed_at IS NULL` claim pattern; `updated_at` used for stale-claim detection | [infra/outbox/gormstore](../../infra/outbox/gormstore/) |
-| O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay.DeleteSentBefore` and `DeleteFailedBefore` exposed; `kit-doctor` audit rule flags relays without retention | [cmd/kit-doctor](../../cmd/kit-doctor/) |
+| O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay` cleans old published rows and old failed rows on startup and periodic ticks; `WithRetention` and `WithFailedRetention` tune the windows | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 
 ### 4.12 Internal observability port
 
@@ -495,8 +497,9 @@ helpers enforce it:
   from "re-stamping" the request as another tenant).
 
 Storage-layer adapters (Redis, Postgres) accept a tenant ID and
-build keys / `WHERE` clauses; the kit does not provide a free-form
-"escape hatch" for tenant-blind queries.
+build keys / `WHERE` clauses. Free-form tenant-scoped keys should go
+through `tenant.Key(ctx, parts...)`, which length-prefixes each variable
+field so `tenant=a:b, key=c` cannot collide with `tenant=a, key=b:c`.
 
 ### 5.4 Structured audit logs
 
@@ -546,15 +549,19 @@ The canonical "user submits a payment" flow. Wired via:
 app.New("payments", version, cfg.BaseConfig).
     WithPostgres(cfg.DB, cfg.DBPool).
     WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
-    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
-    WithIPRateLimit(100, time.Minute).
-    Router(func(infra app.Infrastructure) http.Handler {
-        h := payments.NewHandler(infra.DB, infra.Cache, audit)
-        return stack.Default(h, infra.Logger,
-            stack.WithOuter(csrf.RequireCSRF, csrf.RequireJSONContentType),
-            stack.WithInner(auth.Required, idempotency.Middleware(infra.IdempStore)),
-        )
-    }).Run()
+	    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
+	    WithIPRateLimit(100, time.Minute).
+	    Router(func(infra app.Infrastructure) http.Handler {
+	        h := payments.NewHandler(infra.DB, infra.Cache, audit)
+	        csrfMW := csrf.New(
+	            csrf.WithSecret(cfg.CSRFSecret),
+	            csrf.WithAllowedOrigins(cfg.PublicOrigin),
+	        )
+	        return stack.Default(h, infra.Logger,
+	            stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
+	            stack.WithInner(auth.Required, idempotency.Middleware(infra.IdempStore)),
+	        )
+	    }).Run()
 ```
 
 The Builder's production-safety validator runs in `Build()` — the
@@ -574,7 +581,7 @@ Request lifecycle and threat coverage:
 | 5 | `requestID` middleware | (correlates audit log entry with request) |
 | 6 | `tracing` middleware | (Builder validator caps sample rate ≤ 0.1 by default — D-04 cardinality) |
 | 7 | `logging` middleware (with `secret.String`-aware logger) | H-13 |
-| 8 | `csrf.RequireCSRF` (outer wedge — runs before auth so CSRF failures are not gated by auth) | H-04 |
+| 8 | `csrf.New(...)` double-submit cookie + Origin/Referer allowlist (outer wedge — runs before auth so CSRF failures are not gated by auth) | H-04 |
 | 9 | `csrf.RequireJSONContentType` | H-04 (defence-in-depth) |
 | 10 | `timeout` middleware (30s default) | H-03 |
 | 11 | `auth.Required` (JWT verify, issuer + audience checked) | T-01, T-02, H-09 |
@@ -621,10 +628,13 @@ mounting both on the same path is a documented anti-pattern.
 
 ### 6.3 Multi-tenant cache read
 
-Demonstrates the §4.5 / R-01 control flow, which is convention-bound.
+Demonstrates the §4.5 / R-01 control flow.
 
 ```go
-key := fmt.Sprintf("user:%s:profile:%s", tenant.RequireID(ctx), userID)
+key, err := tenant.Key(ctx, "user", userID, "profile")
+if err != nil {
+    return err
+}
 hit, err := infra.Cache.Get(ctx, key, &profile)
 ```
 
@@ -633,13 +643,12 @@ Threats and the mitigation chain:
 | Step | Component | Threats defused / status |
 |---|---|---|
 | 1 | `tenant.RequireID(ctx)` returns error if context is unscoped | R-01 (precondition) |
-| 2 | Service author prefixes the key with the tenant ID | R-01 (kit cannot enforce — see GAP-05) |
+| 2 | `tenant.Key(ctx, ...)` length-prefixes tenant and key parts | R-01 |
 | 3 | `data/cache/rediscache.Get` reads from Redis with TLS | R-07 |
 | 4 | Cache miss → upstream fetch with same tenant scope | R-01 transitive |
 
-This is the flow most vulnerable to a service-author mistake; until
-GAP-05 lands the kit's defence-in-depth here is documentation +
-`kit-doctor` static analysis.
+This flow still depends on service code using the helper or a tenant-scoped
+wrapper. Code review and `kit-doctor` flag hand-written tenant prefixes.
 
 ### 6.4 Outbox-mediated downstream publish
 
@@ -649,9 +658,13 @@ inconsistency (§4.11 / O-01). Two-step flow:
 **Write path** — same Postgres transaction as the business write:
 
 ```go
-infra.DB.Transaction(func(tx *gorm.DB) error {
-    if err := tx.Create(&order).Error; err != nil { return err }
-    return outbox.WriteWithTx(tx, OrderCreatedEvent{ID: order.ID})
+writer := outbox.NewWriter(store, outbox.WithRequireTransaction(requireTx))
+err := txRunner(ctx, func(txCtx context.Context) error {
+    if err := createOrder(txCtx, order); err != nil { return err }
+    return writer.Write(txCtx, outbox.WriteParams{
+        Topic: "orders", RoutingKey: "order.created", MessageID: order.ID,
+        MessageType: "order.created", Payload: payload,
+    })
 })
 ```
 
@@ -659,12 +672,12 @@ infra.DB.Transaction(func(tx *gorm.DB) error {
 
 | Step | Component | Threats defused |
 |---|---|---|
-| 1 | Relay claims rows: `UPDATE outbox SET claimed_at=NOW() WHERE id IN (...) AND claimed_at IS NULL RETURNING ...` | O-03 (atomic claim) |
+| 1 | Relay claims rows by atomically moving pending entries to processing state | O-03 (atomic claim) |
 | 2 | For each claimed row, `Publisher.Publish` to broker | M-01 (mandatory ack) |
-| 3 | On success, `UPDATE outbox SET sent_at=NOW()` | (idempotent — see I-01 interaction) |
+| 3 | On success, mark the row published and set `published_at` | (idempotent — see I-01 interaction) |
 | 4 | On transient failure, `UPDATE outbox SET next_retry_at = NOW() + backoff(attempts)` | O-02 |
-| 5 | On permanent failure (`apperror.NewPermanent`), row marked `failed_at` and skipped by future relays | M-04 (no retry storm) |
-| 6 | Retention: `Relay.DeleteSentBefore(ctx, ttl)` reaps rows | O-04 (operator must call — GAP-09) |
+| 5 | After max attempts, row is marked failed and skipped by future relays | M-04 (no retry storm) |
+| 6 | Retention cleanup reaps published and failed rows automatically on relay startup and cleanup ticks | O-04 |
 
 The outbox table is a tier-1 asset (carries unredacted business
 events). Access control is via DB grants: only the service's own
@@ -702,21 +715,19 @@ Items the threat model lists as a **gap** (i.e., a real threat
 without a clear in-kit mitigation). Each becomes a follow-up audit
 item. Severity uses the standard scale (CRITICAL / HIGH / MEDIUM / LOW).
 
+GAP-01 (cost budgets), GAP-02 (safe redirects), GAP-03 (gRPC
+default deadline), GAP-04 (internal gRPC health), GAP-05 (tenant
+scaffold), GAP-06 (JWT revocation), GAP-07 (message-size overrides),
+GAP-08 (`storagehttp/uploadsec` AV adapter), GAP-09 (outbox retention
+cleanup), and GAP-10 (dependency allowlist plus heavy SDK boundary
+gate) are closed in v2.0.0.
+
+There are no known in-kit mitigation gaps at this revision. New gaps
+belong in the table below with severity and owner before they are
+worked.
+
 | ID | Gap | Severity | Owner / next step |
 |---|---|---|---|
-| GAP-01 | **Per-tenant LLM cost budget primitive missing.** §4.10 / L-01 — services must build per-tenant cost guards from raw rate-limit primitives. We have nothing equivalent to "this tenant has spent $X this month, refuse to invoke". | HIGH | New package proposal: `data/budget` + `httpx/middleware/budget` (see also `go.work` references already present in working tree). |
-| GAP-02 | **No generic open-redirect helper.** §4.1 / H-12 — service authors hand-roll URL validation. | MEDIUM | Add `httpx.SafeRedirect(allowedHosts)` helper. |
-| GAP-03 | **gRPC default per-RPC deadline.** §4.2 / G-03 — `grpcx.NewServer` does not enforce a per-RPC timeout interceptor. | HIGH | Add a default timeout interceptor mirroring `httpx/middleware/timeout`. |
-| GAP-04 | **gRPC health endpoint exposed on public listener.** §4.2 / G-05 — services that want health on the internal port must wire it manually. | MEDIUM | Move `health.NewServer` registration to the internal listener by default. |
-| GAP-05 | **Tenant-aware Redis key wrapper not enforced.** §4.5 / R-01 — tenant prefixing is convention, not API. The multi-tenant primitives shipped in v2.0.0 (`core/tenant`, `data/cache/tenant.Wrap`, `data/idempotency/tenant.Wrap`) — but a `core/tenant.Key(ctx, parts...)` builder that callers must go through (rather than wrapping after-the-fact) hasn't shipped. | HIGH | Land `core/tenant.Key(ctx, parts...)` and require `data/cache.NewTenantCache(parts...)`. |
-| GAP-06 | **JWT revocation store.** §4.7 / T-04 — services that need post-logout revocation roll their own. | MEDIUM | Add `security/jwtutil/revocation` thin wrapper over `data/cache`. |
-| GAP-07 | **Per-RPC max-message-size override.** §4.3 — the AMQP backend has a configurable max payload, but Redis/NATS/in-memory backends share a single global cap. | LOW | Standardise the option across backends. |
-| GAP-08 | **`storagehttp/uploadsec` AV adapter** is interface-only — no shipped implementation. | MEDIUM | Add ClamAV / cloud-native AV adapter. |
-| GAP-09 | **Outbox retention default.** §4.11 / O-04 — `Relay.DeleteSentBefore` exists but is not called automatically; long-running services need a job. | LOW | Add `RelayOptions.Retention` for self-managed cleanup. |
-| GAP-10 | **No dependency-allowlist.** Theme 5 ships govulncheck + osv-scanner, but the kit does not enforce a closed list of acceptable Go-module sources (e.g., "no `github.com/<random>/...` direct deps without security review"). | MEDIUM | Add a CODEOWNERS-style dep allowlist + a CI rule that fails on a new top-level import without a sign-off comment. |
-
-These gaps are not blockers for v2.0.0; they are the intended Theme
-6+ work surface.
 
 ---
 
@@ -763,24 +774,25 @@ mitigation; ⚠ marks a known gap (cross-referenced to §8).
 | H-08 CORS | ✅ | – | – | ✅ | – | ✅ |
 | H-09 unauth route | ✅ | – | – | ✅ | – | ✅ |
 | H-10 verbose err | – | – | – | ✅ | – | – |
-| H-12 redirect | – | – | – | ✅ | – | ⚠ GAP-02 |
+| H-12 redirect | – | – | – | ✅ | – | ✅ |
 | H-13 log inject | – | ✅ | ✅ | ✅ | – | – |
 | H-14 mass-assign | – | ✅ | – | ✅ | – | ✅ |
 | G-01 grpc panic | – | – | – | – | ✅ | – |
 | G-02 grpc unauth | ✅ | – | – | ✅ | – | ✅ |
-| G-03 stream flood | – | – | – | – | ⚠ GAP-03 | – |
-| G-05 grpc health | – | – | – | ⚠ GAP-04 | – | – |
+| G-03 stream flood | – | – | – | – | ✅ | – |
+| G-05 grpc health | – | – | – | ✅ | – | – |
 | M-01 unroutable | – | ✅ | ✅ | – | – | – |
 | M-02 schema drift | – | ✅ | – | – | – | – |
 | M-03 transient ack | – | ✅ | – | – | – | – |
 | M-05 broker outage | – | – | – | – | ✅ | – |
 | M-06 debug auth | ✅ | ✅ | – | ✅ | – | ✅ |
 | M-07 plaintext AMQP | ✅ | ✅ | – | ✅ | – | – |
+| M-08 message size | – | – | – | – | ✅ | – |
 | D-01 plaintext PG | ✅ | ✅ | – | ✅ | – | – |
 | D-03 cred leakage | – | – | – | ✅ | – | ✅ |
 | D-04 pool DoS | – | – | – | – | ✅ | – |
 | D-05 backup leak | – | – | – | ✅ | – | – |
-| R-01 tenant collision | ✅ | ✅ | – | ✅ | – | ✅ ⚠ GAP-05 |
+| R-01 tenant collision | ✅ | ✅ | – | ✅ | ✅ | ✅ |
 | R-02 lock split | – | ✅ | – | – | – | ✅ |
 | R-03 idem replay | – | ✅ | – | – | – | – |
 | R-04 idem TTL=0 | – | – | – | – | ✅ | – |
@@ -794,7 +806,7 @@ mitigation; ⚠ marks a known gap (cross-referenced to §8).
 | S-06 file disclosure | – | – | – | ✅ | – | ✅ |
 | T-01 alg=none | ✅ | ✅ | – | – | – | ✅ |
 | T-02 issuer | ✅ | – | – | – | – | ✅ |
-| T-04 revocation | ✅ | – | – | – | – | ⚠ GAP-06 |
+| T-04 revocation | ✅ | – | – | – | – | ✅ |
 | T-05 paseto purpose | ✅ | ✅ | – | – | – | ✅ |
 | T-06 key in env | – | – | – | ✅ | – | – |
 | W-01 replay | – | ✅ | – | – | – | ✅ |
@@ -803,13 +815,14 @@ mitigation; ⚠ marks a known gap (cross-referenced to §8).
 | I-01 retry dup | – | ✅ | – | – | – | – |
 | I-02 fingerprint | – | ✅ | – | ✅ | – | – |
 | I-04 pgstore split | – | ✅ | – | – | – | – |
-| L-01 budget | – | – | – | – | ⚠ GAP-01 | – |
+| L-01 budget | – | – | – | – | ✅ | – |
 | L-02 prompt-inj | ✅ | ✅ | – | ✅ | – | ✅ |
 | L-04 leader-only | – | ✅ | – | – | ✅ | – |
 | L-05 buffer OOM | – | – | – | – | ✅ | – |
 | O-01 dual-write | – | ✅ | – | – | – | – |
 | O-02 retry storm | – | – | – | – | ✅ | – |
 | O-03 dup claim | – | ✅ | – | – | – | – |
+| O-04 table bloat | – | – | – | – | ✅ | – |
 | P-01 pprof public | – | – | – | ✅ | ✅ | – |
 | P-02 metrics public | – | – | – | ✅ | – | – |
 
@@ -826,6 +839,7 @@ considered through every STRIDE lens.
 |---|---|---|
 | 2026-04 | (pre-Theme-5 audit) | Original audit landed in `CRITICAL.md` plus per-package implementation-plan files (since retired, see [README.md](README.md)); threat surface implicit, no consolidated doc. |
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
+| 2026-05 | Theme 6+ hardening | GAP-01, GAP-02, GAP-03, GAP-04, GAP-05, GAP-06, GAP-07, GAP-08, GAP-09, and GAP-10 closed by cost-budget primitives, `httpx.SafeRedirect`, `grpcx` default deadlines, internal-only gRPC health, `cmd/kit-new -tenant`, `jwtutil` revocation checks, cross-backend message-size limits, `uploadsec/clamav`, outbox self-managed retention cleanup, direct dependency allowlist CI, and heavy optional SDK boundary CI. |
 
 Future updates: amend this table whenever §4 acquires a new threat
 ID, §6 acquires a new walk-through, or §8 closes a gap. The

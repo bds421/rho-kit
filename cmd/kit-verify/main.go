@@ -3,28 +3,28 @@
 //
 // Usage:
 //
-//	kit-verify -url=https://localhost:8443 [-format=text|json] [-soft] [-allow-skips]
+//	kit-verify -url=https://localhost:8443 [-format=text|json] [-soft] [-no-allow-skips]
 //
 // Exit codes:
-//   - 0: every probe is PASS or (with -allow-skips) SKIPPED. With -soft,
-//     UNKNOWN results are also treated as zero.
+//   - 0: every probe is PASS, or SKIPPED unless -no-allow-skips is set.
+//     With -soft, UNKNOWN results are also treated as zero.
 //   - 1: at least one probe FAILED, or an UNKNOWN probe was not
 //     accepted (default; opt out with -soft).
-//   - 2: tool error (target unreachable, malformed URL).
+//   - 2: tool error (bad flags, malformed URL).
 //
 // Probe status semantics — audit FR-005 [MED]:
 //
 //   - PASS    — the control behaved as claimed.
 //   - FAIL    — the control did not behave as claimed (always counts
-//               against the run regardless of flags).
+//     against the run regardless of flags).
 //   - SKIPPED — the probe deliberately did not run (e.g. the user has
-//               not configured a route the probe needs to hit).
-//               Counted as pass unless `-no-allow-skips` is set.
+//     not configured a route the probe needs to hit).
+//     Counted as pass unless `-no-allow-skips` is set.
 //   - UNKNOWN — the probe ran but the response was inconclusive
-//               (e.g. 404 from a route-by-convention probe could mean
-//               "JWT not wired" OR "no /api/v1/whoami in this
-//               service"). Counted as failure by default; switch to
-//               `-soft` to treat as warning.
+//     (e.g. 404 from a route-by-convention probe could mean
+//     "JWT not wired" OR "no /api/v1/whoami in this
+//     service"). Counted as failure by default; switch to
+//     `-soft` to treat as warning.
 //
 // Pre-fix (audit FR-004 [HIGH]) the default treated everything except
 // readiness as soft, so JWT/CSRF/rate-limit failures could still exit
@@ -42,15 +42,49 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
+	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	"github.com/bds421/rho-kit/security/v2/asvs"
 )
+
+const usage = "usage: kit-verify -url=URL [-format=text|json] [-soft] [-no-allow-skips] [-insecure] [-timeout-ms=N] [-readiness-path=/ready] [-headers-path=/] [-jwt-path=/api/v1/whoami] [-csrf-path=/api/v1/state] [-ratelimit-path=/]"
+
+var errRedirectBlocked = errors.New("kit-verify: redirects are disabled")
+
+type config struct {
+	target       string
+	format       string
+	soft         bool
+	noAllowSkips bool
+	insecureTLS  bool
+	timeoutMS    int
+
+	readinessPath string
+	headersPath   string
+	jwtPath       string
+	csrfPath      string
+	rateLimitPath string
+}
+
+type probeConfig struct {
+	base          *url.URL
+	readinessPath string
+	headersPath   string
+	jwtPath       string
+	csrfPath      string
+	rateLimitPath string
+}
 
 // Status enumerates the four probe outcomes. See package doc for
 // semantics. The string values match the JSON output and `[STATUS]`
@@ -66,45 +100,150 @@ const (
 )
 
 func main() {
-	target := flag.String("url", "", "base URL of the running service (required)")
-	format := flag.String("format", "text", "output format: text|json")
-	soft := flag.Bool("soft", false, "treat UNKNOWN results as pass (exploratory mode); FAIL still exits 1")
-	noAllowSkips := flag.Bool("no-allow-skips", false, "treat SKIPPED probes as failures (route-by-convention probes must have an endpoint configured)")
-	insecureTLS := flag.Bool("insecure", false, "skip TLS cert verification (dev only)")
-	timeoutMS := flag.Int("timeout-ms", 5000, "per-probe timeout in milliseconds")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
-	if *target == "" {
-		fmt.Fprintln(os.Stderr, "usage: kit-verify -url=URL [-format=...] [-soft] [-no-allow-skips] [-insecure] [-timeout-ms=N]")
-		os.Exit(2)
+func run(args []string, stdout, stderr io.Writer) int {
+	cfg, err := parseConfig(args, stderr)
+	if err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
 	}
-	base, err := url.Parse(*target)
+
+	base, err := url.Parse(cfg.target)
 	if err != nil || base.Scheme == "" || base.Host == "" {
-		fmt.Fprintf(os.Stderr, "kit-verify: -url must be an absolute URL (got %q)\n", *target)
-		os.Exit(2)
+		_, _ = fmt.Fprintln(stderr, "kit-verify: -url must be an absolute URL")
+		return 2
+	}
+	if base.Scheme != "http" && base.Scheme != "https" {
+		_, _ = fmt.Fprintln(stderr, "kit-verify: -url scheme must be http or https")
+		return 2
+	}
+	probeCfg := probeConfig{
+		base:          base,
+		readinessPath: cfg.readinessPath,
+		headersPath:   cfg.headersPath,
+		jwtPath:       cfg.jwtPath,
+		csrfPath:      cfg.csrfPath,
+		rateLimitPath: cfg.rateLimitPath,
 	}
 
-	hc := &http.Client{
-		Timeout: time.Duration(*timeoutMS) * time.Millisecond,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: *insecureTLS, //nolint:gosec // explicit dev-only flag
-				MinVersion:         tls.VersionTLS12,
-			},
-		},
-	}
+	hc := newProbeHTTPClient(time.Duration(cfg.timeoutMS)*time.Millisecond, cfg.insecureTLS)
 
-	results := runAll(hc, base.String())
+	results := runAllWithConfig(hc, probeCfg)
 
-	if *format == "json" {
-		_ = json.NewEncoder(os.Stdout).Encode(results)
+	if cfg.format == "json" {
+		_ = json.NewEncoder(stdout).Encode(results)
 	} else {
-		printResults(results)
+		printResults(stdout, results)
 	}
 
-	if exitNonZero(results, *soft, *noAllowSkips) {
-		os.Exit(1)
+	if exitNonZero(results, cfg.soft, cfg.noAllowSkips) {
+		return 1
 	}
+	return 0
+}
+
+func newProbeHTTPClient(timeout time.Duration, insecureTLS bool) *http.Client {
+	transport := cloneDefaultTransport()
+	tlsConfig := cloneTLSConfigWithFloor(transport.TLSClientConfig)
+	tlsConfig.InsecureSkipVerify = insecureTLS //nolint:gosec // explicit dev-only flag
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: blockRedirect,
+	}
+}
+
+func cloneDefaultTransport() *http.Transport {
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		return tr.Clone()
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
+	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, tls.VersionTLS12)
+	if err != nil {
+		panic("kit-verify: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer")
+	}
+	return cloned
+}
+
+func blockRedirect(_ *http.Request, _ []*http.Request) error {
+	return errRedirectBlocked
+}
+
+func parseConfig(args []string, stderr io.Writer) (config, error) {
+	cfg := config{}
+	fs := flag.NewFlagSet("kit-verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&cfg.target, "url", "", "base URL of the running service (required)")
+	fs.StringVar(&cfg.format, "format", "text", "output format: text|json")
+	fs.BoolVar(&cfg.soft, "soft", false, "treat UNKNOWN results as pass (exploratory mode); FAIL still exits 1")
+	fs.BoolVar(&cfg.noAllowSkips, "no-allow-skips", false, "treat SKIPPED probes as failures (route-by-convention probes must have an endpoint configured)")
+	fs.BoolVar(&cfg.insecureTLS, "insecure", false, "skip TLS cert verification (dev only)")
+	fs.IntVar(&cfg.timeoutMS, "timeout-ms", 5000, "per-probe timeout in milliseconds")
+	fs.StringVar(&cfg.readinessPath, "readiness-path", "/ready", "readiness probe path")
+	fs.StringVar(&cfg.headersPath, "headers-path", "/", "path used for security-header, request-id, and correlation-id probes")
+	fs.StringVar(&cfg.jwtPath, "jwt-path", "/api/v1/whoami", "JWT-gated probe path")
+	fs.StringVar(&cfg.csrfPath, "csrf-path", "/api/v1/state", "state-changing CSRF probe path")
+	fs.StringVar(&cfg.rateLimitPath, "ratelimit-path", "/", "rate-limit probe path")
+	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+	if cfg.target == "" {
+		return cfg, errors.New(usage)
+	}
+	switch cfg.format {
+	case "text", "json":
+	default:
+		return cfg, fmt.Errorf("kit-verify: -format must be text or json")
+	}
+	if cfg.timeoutMS <= 0 {
+		return cfg, fmt.Errorf("kit-verify: -timeout-ms must be positive")
+	}
+	for _, entry := range []struct {
+		name  string
+		value string
+	}{
+		{"-readiness-path", cfg.readinessPath},
+		{"-headers-path", cfg.headersPath},
+		{"-jwt-path", cfg.jwtPath},
+		{"-csrf-path", cfg.csrfPath},
+		{"-ratelimit-path", cfg.rateLimitPath},
+	} {
+		if err := validateProbePath(entry.name, entry.value); err != nil {
+			return cfg, err
+		}
+	}
+	return cfg, nil
+}
+
+func validateProbePath(name, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("kit-verify: %s must be a valid origin-form path", name)
+	}
+	if parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") {
+		return fmt.Errorf("kit-verify: %s must be an origin-form path starting with / and may include a query string", name)
+	}
+	return nil
 }
 
 // Result captures a single probe's outcome.
@@ -116,19 +255,38 @@ type Result struct {
 }
 
 // Probe describes a kit-verify check. Run returns the outcome
-// status and a human-readable detail. Use one of [pass]/[fail]/[skip]/
+// status and a human-readable detail. Use one of [pass]/[fail]/
 // [unknown] helpers to build the return value so the four-state
 // invariant is clear in every probe.
 type Probe struct {
 	Name     string
 	Controls []asvs.ID
-	Run      func(*http.Client, string) (Status, string)
+	Run      func(*http.Client, probeConfig) (Status, string)
 }
 
 func runAll(hc *http.Client, base string) []Result {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return []Result{{
+			Probe:  "configuration",
+			Status: StatusFail,
+			Detail: "parse base URL failed",
+		}}
+	}
+	return runAllWithConfig(hc, probeConfig{
+		base:          parsed,
+		readinessPath: "/ready",
+		headersPath:   "/",
+		jwtPath:       "/api/v1/whoami",
+		csrfPath:      "/api/v1/state",
+		rateLimitPath: "/",
+	})
+}
+
+func runAllWithConfig(hc *http.Client, cfg probeConfig) []Result {
 	out := make([]Result, 0, len(probes))
 	for _, p := range probes {
-		status, detail := p.Run(hc, base)
+		status, detail := p.Run(hc, cfg)
 		ids := make([]string, len(p.Controls))
 		for i, id := range p.Controls {
 			ids[i] = string(id)
@@ -143,11 +301,11 @@ func runAll(hc *http.Client, base string) []Result {
 	return out
 }
 
-func printResults(results []Result) {
+func printResults(w io.Writer, results []Result) {
 	for _, r := range results {
-		fmt.Printf("[%s] %s — %v\n", r.Status, r.Probe, r.Controls)
+		_, _ = fmt.Fprintf(w, "[%s] %s — %v\n", r.Status, r.Probe, r.Controls)
 		if r.Detail != "" {
-			fmt.Printf("       %s\n", r.Detail)
+			_, _ = fmt.Fprintf(w, "       %s\n", r.Detail)
 		}
 	}
 }
@@ -173,14 +331,26 @@ func exitNonZero(results []Result, soft, noAllowSkips bool) bool {
 	return false
 }
 
-// pass / fail / skip / unknown are tiny helpers that make every
+// pass / fail / unknown are tiny helpers that make every
 // probe's return statement explicitly name the four-state
 // invariant. They reduce the chance of accidentally treating an
 // inconclusive 404 as a pass.
 func pass(detail string) (Status, string)    { return StatusPass, detail }
 func fail(detail string) (Status, string)    { return StatusFail, detail }
-func skip(detail string) (Status, string)    { return StatusSkipped, detail }
 func unknown(detail string) (Status, string) { return StatusUnknown, detail }
+
+func (cfg probeConfig) url(probePath string) string {
+	u := *cfg.base
+	parsed, _ := url.Parse(probePath)
+	u.Path = pathpkg.Join(cfg.base.Path, parsed.Path)
+	if strings.HasSuffix(parsed.Path, "/") && !strings.HasSuffix(u.Path, "/") {
+		u.Path += "/"
+	}
+	u.RawPath = ""
+	u.RawQuery = parsed.RawQuery
+	u.Fragment = ""
+	return u.String()
+}
 
 // probes is the kit's verification catalog. New probes plug in here.
 //
@@ -191,42 +361,43 @@ var probes = []Probe{
 	{
 		Name:     "readiness-200",
 		Controls: []asvs.ID{"V14.1.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			return expectStatus(hc, base+"/ready", http.StatusOK)
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			return expectStatus(hc, cfg.url(cfg.readinessPath), http.StatusOK)
 		},
 	},
 	{
 		Name:     "readiness-no-store",
 		Controls: []asvs.ID{"V8.2.2"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			return expectHeader(hc, base+"/ready", "Cache-Control", "no-store")
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			return expectHeader(hc, cfg.url(cfg.readinessPath), "Cache-Control", "no-store")
 		},
 	},
 	{
 		Name:     "secheaders-x-content-type-options",
 		Controls: []asvs.ID{"V9.2.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			return expectHeader(hc, base+"/", "X-Content-Type-Options", "nosniff")
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			return expectHeader(hc, cfg.url(cfg.headersPath), "X-Content-Type-Options", "nosniff")
 		},
 	},
 	{
 		Name:     "secheaders-x-frame-options",
 		Controls: []asvs.ID{"V9.2.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			return expectHeaderPresent(hc, base+"/", "X-Frame-Options")
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			return expectHeaderPresent(hc, cfg.url(cfg.headersPath), "X-Frame-Options")
 		},
 	},
 	{
 		Name:     "request-id-roundtrips",
 		Controls: []asvs.ID{"V7.1.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			target := cfg.url(cfg.headersPath)
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
 			resp, err := hc.Do(req)
 			if err != nil {
-				return fail(fmt.Sprintf("GET %s/: %v", base, err))
+				return fail("GET request failed")
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if resp.Header.Get("X-Request-Id") == "" {
+			if _, ok := singletonResponseHeader(resp, "X-Request-Id"); !ok {
 				return fail("response missing X-Request-Id header")
 			}
 			return pass("")
@@ -235,17 +406,18 @@ var probes = []Probe{
 	{
 		Name:     "correlation-id-roundtrips",
 		Controls: []asvs.ID{"V7.1.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			target := cfg.url(cfg.headersPath)
+			req, _ := http.NewRequest(http.MethodGet, target, nil)
 			req.Header.Set("X-Correlation-Id", "kit-verify-probe")
 			resp, err := hc.Do(req)
 			if err != nil {
-				return fail(fmt.Sprintf("GET %s/: %v", base, err))
+				return fail("GET request failed")
 			}
 			defer func() { _ = resp.Body.Close() }()
-			got := resp.Header.Get("X-Correlation-Id")
-			if got != "kit-verify-probe" {
-				return fail(fmt.Sprintf("X-Correlation-Id round-trip = %q, want %q", got, "kit-verify-probe"))
+			got, ok := singletonResponseHeader(resp, "X-Correlation-Id")
+			if !ok || got != "kit-verify-probe" {
+				return fail("X-Correlation-Id round-trip did not match")
 			}
 			return pass("")
 		},
@@ -253,22 +425,22 @@ var probes = []Probe{
 	{
 		Name:     "jwt-rejects-missing-token",
 		Controls: []asvs.ID{"V2.1.5", "V3.2.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
 			// Probes a JWT-gated route by convention. 401/403 → pass.
 			// 404 → UNKNOWN: we cannot tell whether JWT is wired
 			// correctly or this service simply doesn't expose a
 			// /api/v1/whoami route. Anything else → FAIL.
-			req, _ := http.NewRequest(http.MethodGet, base+"/api/v1/whoami", nil)
+			req, _ := http.NewRequest(http.MethodGet, cfg.url(cfg.jwtPath), nil)
 			resp, err := hc.Do(req)
 			if err != nil {
-				return fail(fmt.Sprintf("GET %s: %v", req.URL.String(), err))
+				return fail("GET request failed")
 			}
 			defer func() { _ = resp.Body.Close() }()
 			switch resp.StatusCode {
 			case http.StatusUnauthorized, http.StatusForbidden:
 				return pass("")
 			case http.StatusNotFound:
-				return unknown("no /api/v1/whoami route — JWT enforcement not exercised; configure a JWT-gated probe path or pass -soft to ignore")
+				return unknown("JWT probe returned 404 — JWT enforcement not exercised; configure -jwt-path or pass -soft to ignore")
 			default:
 				return fail(fmt.Sprintf("expected 401/403, got %d", resp.StatusCode))
 			}
@@ -277,47 +449,54 @@ var probes = []Probe{
 	{
 		Name:     "csrf-rejects-state-changing-without-token",
 		Controls: []asvs.ID{"V13.2.3"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			// POST without CSRF token MUST be rejected. 4xx → pass;
-			// 404 → UNKNOWN (no state-changing route to probe);
-			// 2xx/5xx → FAIL.
-			req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/state", nil)
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			// POST without CSRF token MUST be rejected by the kit CSRF
+			// middleware with 403. Send JSON so content-type guards do
+			// not mask the CSRF result. 404 → UNKNOWN (no
+			// state-changing route to probe); 401 means auth likely ran
+			// first, so CSRF enforcement was not proved.
+			req, _ := http.NewRequest(http.MethodPost, cfg.url(cfg.csrfPath), strings.NewReader("{}"))
+			req.Header.Set("Content-Type", "application/json")
 			resp, err := hc.Do(req)
 			if err != nil {
-				return fail(fmt.Sprintf("POST %s: %v", req.URL.String(), err))
+				return fail("POST request failed")
 			}
 			defer func() { _ = resp.Body.Close() }()
 			switch resp.StatusCode {
-			case http.StatusForbidden, http.StatusBadRequest, http.StatusUnauthorized:
+			case http.StatusForbidden:
 				return pass("")
 			case http.StatusNotFound:
-				return unknown("no /api/v1/state route — CSRF enforcement not exercised; configure a state-changing probe path or pass -soft to ignore")
+				return unknown("CSRF probe returned 404 — CSRF enforcement not exercised; configure -csrf-path or pass -soft to ignore")
+			case http.StatusUnauthorized:
+				return fail("got 401; auth rejected the request before kit CSRF returned 403")
 			default:
-				return fail(fmt.Sprintf("expected 4xx rejection, got %d", resp.StatusCode))
+				return fail(fmt.Sprintf("expected 403 CSRF rejection, got %d", resp.StatusCode))
 			}
 		},
 	},
 	{
 		Name:     "ratelimit-emits-retry-after-on-429",
 		Controls: []asvs.ID{"V2.2.1", "V11.1.1"},
-		Run: func(hc *http.Client, base string) (Status, string) {
-			// Hammer / enough times to trip a default rate limit. No
-			// 429 in 30 requests → UNKNOWN (the limit may be above
-			// the probe burst, or no rate limiter is wired). 429 with
-			// no Retry-After → FAIL (header is required by RFC 9110
-			// §15.5.6 for clients to back off correctly).
+		Run: func(hc *http.Client, cfg probeConfig) (Status, string) {
+			// Hammer the configured path enough times to trip a
+			// default rate limit. No 429 in 30 requests → UNKNOWN
+			// (the limit may be above the probe burst, or no rate
+			// limiter is wired). 429 with no Retry-After → FAIL
+			// (header is required by RFC 9110 §15.5.6 for clients to
+			// back off correctly).
 			const burst = 30
 			saw429 := false
 			retryAfter := ""
+			target := cfg.url(cfg.rateLimitPath)
 			for i := 0; i < burst; i++ {
-				resp, err := hc.Get(base + "/")
+				resp, err := hc.Get(target)
 				if err != nil {
-					return fail(fmt.Sprintf("GET %s/: %v", base, err))
+					return fail("GET request failed")
 				}
 				_ = resp.Body.Close()
 				if resp.StatusCode == http.StatusTooManyRequests {
 					saw429 = true
-					retryAfter = resp.Header.Get("Retry-After")
+					retryAfter, _ = singletonResponseHeader(resp, "Retry-After")
 					break
 				}
 			}
@@ -335,11 +514,11 @@ var probes = []Probe{
 func expectStatus(hc *http.Client, url string, want int) (Status, string) {
 	resp, err := hc.Get(url)
 	if err != nil {
-		return fail(fmt.Sprintf("GET %s: %v", url, err))
+		return fail("GET request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != want {
-		return fail(fmt.Sprintf("GET %s: want status %d, got %d", url, want, resp.StatusCode))
+		return fail(fmt.Sprintf("GET response status mismatch: want %d, got %d", want, resp.StatusCode))
 	}
 	return pass("")
 }
@@ -347,12 +526,12 @@ func expectStatus(hc *http.Client, url string, want int) (Status, string) {
 func expectHeader(hc *http.Client, url, key, contains string) (Status, string) {
 	resp, err := hc.Get(url)
 	if err != nil {
-		return fail(fmt.Sprintf("GET %s: %v", url, err))
+		return fail("GET request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	got := resp.Header.Get(key)
-	if got == "" || (contains != "" && !containsFold(got, contains)) {
-		return fail(fmt.Sprintf("GET %s: header %s=%q does not contain %q", url, key, got, contains))
+	got, ok := singletonResponseHeader(resp, key)
+	if !ok || (contains != "" && !containsFold(got, contains)) {
+		return fail(fmt.Sprintf("response header %s does not contain expected value", key))
 	}
 	return pass("")
 }
@@ -360,13 +539,25 @@ func expectHeader(hc *http.Client, url, key, contains string) (Status, string) {
 func expectHeaderPresent(hc *http.Client, url, key string) (Status, string) {
 	resp, err := hc.Get(url)
 	if err != nil {
-		return fail(fmt.Sprintf("GET %s: %v", url, err))
+		return fail("GET request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.Header.Get(key) == "" {
-		return fail(fmt.Sprintf("GET %s: header %s missing", url, key))
+	if _, ok := singletonResponseHeader(resp, key); !ok {
+		return fail(fmt.Sprintf("response header %s missing", key))
 	}
 	return pass("")
+}
+
+func singletonResponseHeader(resp *http.Response, key string) (string, bool) {
+	values := resp.Header.Values(key)
+	if len(values) != 1 {
+		return "", false
+	}
+	value := strings.TrimSpace(values[0])
+	if value == "" {
+		return "", false
+	}
+	return value, true
 }
 
 // containsFold reports whether s contains substr, case-insensitively.

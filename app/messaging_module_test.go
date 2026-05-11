@@ -77,6 +77,25 @@ func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {
 	assert.True(t, mm.criticalBroker)
 }
 
+func TestBuildIntegrationModules_MessageSizeLimiterThreadsToRabbitMQ(t *testing.T) {
+	b := New("test", "v1", BaseConfig{}).
+		WithMaxMessageBytes(64).
+		WithRouteMaxMessageBytes("events", "large.event", 512).
+		WithRabbitMQ("amqp://localhost")
+
+	modules := b.buildIntegrationModules()
+	var mm *messagingModule
+	for _, m := range modules {
+		if mqm, ok := m.(*messagingModule); ok {
+			mm = mqm
+			break
+		}
+	}
+	require.NotNil(t, mm, "messaging module should be present")
+	assert.Equal(t, 64, mm.messageSizeLimiter.LimitFor("events", "small.event"))
+	assert.Equal(t, 512, mm.messageSizeLimiter.LimitFor("events", "large.event"))
+}
+
 func TestBuildIntegrationModules_NoMessaging(t *testing.T) {
 	b := New("test", "v1", BaseConfig{})
 	modules := b.buildIntegrationModules()

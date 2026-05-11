@@ -3,6 +3,7 @@ package rules
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 )
 
 // idempotencyMissingUserExtractorRule flags
@@ -15,13 +16,23 @@ type idempotencyMissingUserExtractorRule struct{}
 func (idempotencyMissingUserExtractorRule) Name() string { return "idempotency-user-extractor" }
 
 func (r idempotencyMissingUserExtractorRule) Run(fset *token.FileSet, file *ast.File) []Finding {
+	if file == nil {
+		return nil
+	}
+	if strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go") {
+		return nil
+	}
+	idempotencyAliases := importAliasesFor(file, "github.com/bds421/rho-kit/httpx/v2/middleware/idempotency")
+	if len(idempotencyAliases) == 0 {
+		return nil
+	}
 	var findings []Finding
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if !isPackageCall(call, "idempotency", "Middleware") {
+		if !isPackageAliasCall(call, idempotencyAliases, "Middleware") {
 			return true
 		}
 		// WithUserExtractor / WithAllowSharedKeys are variadic options

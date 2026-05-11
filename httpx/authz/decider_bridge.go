@@ -35,7 +35,11 @@ type deciderPolicy struct {
 }
 
 func (p deciderPolicy) Allowed(ctx context.Context, subject, action, resource string) (bool, error) {
-	if err := p.d.Allow(ctx, subject, action, resource); err != nil {
+	if err := kitauthz.Allow(ctx, p.d, kitauthz.Request{
+		Subject:  subject,
+		Action:   action,
+		Resource: resource,
+	}); err != nil {
 		if errors.Is(err, kitauthz.ErrDenied) {
 			return false, nil
 		}

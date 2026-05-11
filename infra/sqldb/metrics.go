@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -26,6 +27,9 @@ type PoolMetrics struct {
 func NewPoolMetrics(namespace string, reg prometheus.Registerer) PoolMetrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
+	}
+	if err := promutil.ValidateMetricNamePart("database metric namespace", namespace); err != nil {
+		panic("sqldb: metric namespace is invalid")
 	}
 	return PoolMetrics{
 		OpenConnections: tryRegister(reg, prometheus.NewGauge(prometheus.GaugeOpts{
@@ -62,7 +66,7 @@ func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.C
 	if errors.As(err, &are) {
 		return are.ExistingCollector
 	}
-	panic(err)
+	panic("sqldb: metric registration failed")
 }
 
 // Note: tryRegister differs from promutil.RegisterCollector because it returns

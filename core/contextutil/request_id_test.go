@@ -22,6 +22,12 @@ func TestRequestID_EmptyContext(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestRequestID_NilContext(t *testing.T) {
+	//nolint:staticcheck // Deliberately exercises the nil-safe read path.
+	got := contextutil.RequestID(nil)
+	assert.Empty(t, got)
+}
+
 func TestSetRequestID_Overwrites(t *testing.T) {
 	ctx := contextutil.SetRequestID(context.Background(), "first")
 	ctx = contextutil.SetRequestID(ctx, "second")

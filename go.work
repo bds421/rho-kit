@@ -13,21 +13,30 @@ use (
 	./cmd/kit-verify
 	./core
 	./crypto
+	./crypto/encrypt/integrationtest
 	./crypto/envelope/awskms
 	./crypto/envelope/gcpkms
 	./data
 	./data/actionlog/postgres
+	./data/actionlog/postgres/integrationtest
 	./data/approval/postgres
+	./data/approval/postgres/integrationtest
 	./data/budget/redis
 	./data/cache/rediscache
+	./data/cache/rediscache/integrationtest
 	./data/idempotency/pgstore
+	./data/idempotency/pgstore/integrationtest
 	./data/idempotency/redisstore
 	./data/lock/pgadvisory
+	./data/lock/pgadvisory/integrationtest
 	./data/lock/redislock
 	./data/queue/redisqueue
+	./data/queue/redisqueue/integrationtest
 	./data/queue/riverqueue
+	./data/queue/riverqueue/integrationtest
 	./data/ratelimit/redis
 	./data/stream/redisstream
+	./data/stream/redisstream/integrationtest
 	./examples/agentic-service
 	./flags
 	./grpcx
@@ -38,14 +47,20 @@ use (
 	./infra/leaderelection/redislock
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
+	./infra/messaging/amqpbackend/integrationtest
 	./infra/messaging/natsbackend
+	./infra/messaging/natsbackend/integrationtest
 	./infra/messaging/redisbackend
 	./infra/redis
+	./infra/redis/redistest
+	./infra/sqldb/dbtest
 	./infra/sqldb/pgx
+	./infra/sqldb/pgx/integrationtest
 	./infra/storage/azurebackend
 	./infra/storage/gcsbackend
 	./infra/storage/s3backend
 	./infra/storage/sftpbackend
+	./infra/storage/storagehttp/uploadsec/clamav
 	./infra/storage/storagetest
 	./io
 	./observability

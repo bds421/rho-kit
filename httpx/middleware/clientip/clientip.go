@@ -14,9 +14,8 @@ import (
 // logging, and abuse detection.
 //
 // Production deployments running behind a TLS-terminating ingress MUST
-// supply the ingress's CIDRs via [ParseTrustedProxiesStrict] (or the
-// permissive [ParseTrustedProxies]) and pass the result to
-// [ClientIPWithTrustedProxies]. The same list should drive
+// supply the ingress's CIDRs via [ParseTrustedProxiesStrict] and pass the
+// result to [ClientIPWithTrustedProxies]. The same list should drive
 // [ratelimit.WithTrustedProxies] so log/ratelimit attribution agrees.
 var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 	cidrs := []string{
@@ -48,21 +47,23 @@ func ClientIP(r *http.Request) string {
 // trusted proxy CIDRs. If trusted is nil or empty, the default proxy ranges
 // are used.
 func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
+	if r == nil {
+		return ""
+	}
 	if len(trusted) == 0 {
 		trusted = defaultTrustedProxyCIDRs
 	}
 	if !isTrustedAddr(r.RemoteAddr, trusted) {
-		return stripPort(r.RemoteAddr)
+		return remoteIPString(r.RemoteAddr)
 	}
 
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		if net.ParseIP(realIP) != nil {
-			return realIP
+	if realIP, ok := singletonHeaderValue(r.Header, "X-Real-IP"); ok && realIP != "" {
+		if ip := net.ParseIP(realIP); ip != nil {
+			return ip.String()
 		}
-		// X-Real-IP is not a valid IP address — fall through to X-Forwarded-For.
 	}
 
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+	if forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ","); forwarded != "" {
 		parts := strings.Split(forwarded, ",")
 		for i := len(parts) - 1; i >= 0; i-- {
 			candidate := strings.TrimSpace(parts[i])
@@ -77,30 +78,36 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 				continue
 			}
 			if !isIPInTrustedCIDRs(candidateIP, trusted) {
-				return candidate
+				return candidateIP.String()
 			}
 		}
 	}
 
-	return stripPort(r.RemoteAddr)
+	return remoteIPString(r.RemoteAddr)
+}
+
+func singletonHeaderValue(h http.Header, name string) (string, bool) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return "", true
+	}
+	if len(values) != 1 {
+		return "", false
+	}
+	return strings.TrimSpace(values[0]), true
 }
 
 // ParseTrustedProxies parses a list of CIDR strings or single IP addresses
-// into net.IPNet values. Invalid entries are silently skipped. If the
-// resulting list is empty, the default (loopback-only) trusted proxy ranges
-// are returned.
-//
-// Prefer [ParseTrustedProxiesStrict] — silently skipping invalid entries
-// hides operator typos, and a typo in the trusted-proxies list directly
-// translates to either client-IP spoofing (entry silently skipped) or
-// dropped trust (entry skipped where it shouldn't be).
+// into net.IPNet values. Empty input returns the default loopback-only trusted
+// proxy ranges. Invalid entries panic; use [ParseTrustedProxiesStrict] when
+// callers need an error-returning API.
 func ParseTrustedProxies(cidrs []string) []*net.IPNet {
 	if len(cidrs) == 0 {
-		return defaultTrustedProxyCIDRs
+		return cloneIPNets(defaultTrustedProxyCIDRs)
 	}
-	nets, _ := parseProxies(cidrs, false)
-	if len(nets) == 0 {
-		return defaultTrustedProxyCIDRs
+	nets, err := ParseTrustedProxiesStrict(cidrs)
+	if err != nil {
+		panic("clientip: trusted proxy configuration is invalid")
 	}
 	return nets
 }
@@ -130,7 +137,7 @@ func parseProxies(cidrs []string, strict bool) ([]*net.IPNet, error) {
 			ip := net.ParseIP(c)
 			if ip == nil {
 				if strict {
-					return nil, fmt.Errorf("clientip: %q is not a valid CIDR or IP", c)
+					return nil, fmt.Errorf("clientip: trusted proxy entry is not a valid CIDR or IP")
 				}
 				continue
 			}
@@ -145,12 +152,36 @@ func parseProxies(cidrs []string, strict bool) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
+func remoteIPString(addr string) string {
+	host := stripPort(addr)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
 // stripPort removes the port portion from a host:port address.
 func stripPort(addr string) string {
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return host
 	}
 	return addr
+}
+
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		if n == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &net.IPNet{
+			IP:   append(net.IP(nil), n.IP...),
+			Mask: append(net.IPMask(nil), n.Mask...),
+		})
+	}
+	return out
 }
 
 // isTrustedAddr returns true if remoteAddr (host:port) falls within a trusted CIDR.
@@ -169,6 +200,9 @@ func isTrustedAddr(remoteAddr string, trusted []*net.IPNet) bool {
 // isIPInTrustedCIDRs returns true if ip is contained in any of the trusted CIDRs.
 func isIPInTrustedCIDRs(ip net.IP, trusted []*net.IPNet) bool {
 	for _, cidr := range trusted {
+		if cidr == nil {
+			continue
+		}
 		if cidr.Contains(ip) {
 			return true
 		}

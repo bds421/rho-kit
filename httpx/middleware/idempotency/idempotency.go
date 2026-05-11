@@ -13,13 +13,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/http/httpguts"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	idem "github.com/bds421/rho-kit/data/v2/idempotency"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
@@ -68,10 +71,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Number of store errors (500).",
 		}),
 	}
-	promutil.RegisterCollector(reg, m.hits)
-	promutil.RegisterCollector(reg, m.misses)
-	promutil.RegisterCollector(reg, m.conflicts)
-	promutil.RegisterCollector(reg, m.errors)
+	m.hits = promutil.MustRegisterOrGet(reg, m.hits)
+	m.misses = promutil.MustRegisterOrGet(reg, m.misses)
+	m.conflicts = promutil.MustRegisterOrGet(reg, m.conflicts)
+	m.errors = promutil.MustRegisterOrGet(reg, m.errors)
 	return m
 }
 
@@ -145,7 +148,7 @@ var identityResponseHeaders = func() map[string]bool {
 // "permanent lock" (Redis SET NX with EX 0) by mistake.
 func WithTTL(d time.Duration) Option {
 	if d <= 0 {
-		panic(fmt.Sprintf("idempotency: WithTTL requires a positive duration (got %s); zero/negative TTLs create permanent locks in Redis", d))
+		panic("idempotency: WithTTL requires a positive duration; zero/negative TTLs create permanent locks in Redis")
 	}
 	return func(c *config) { c.ttl = d }
 }
@@ -155,7 +158,7 @@ func WithTTL(d time.Duration) Option {
 // header name would make every request fail with a confusing missing-header error.
 func WithHeader(name string) Option {
 	if !httpguts.ValidHeaderFieldName(name) {
-		panic(fmt.Sprintf("idempotency: WithHeader requires a valid HTTP header field name (got %q)", name))
+		panic("idempotency: WithHeader requires a valid HTTP header field name")
 	}
 	return func(c *config) { c.header = name }
 }
@@ -173,15 +176,26 @@ func WithLogger(l *slog.Logger) Option {
 
 // WithMetrics enables Prometheus metrics for the middleware.
 func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("idempotency: WithMetrics requires non-nil Metrics")
+	}
 	return func(c *config) { c.metrics = m }
 }
 
 // WithRequiredMethods sets the HTTP methods that require an idempotency key.
 // Default: POST, PUT, PATCH.
 func WithRequiredMethods(methods ...string) Option {
+	canonical := make([]string, 0, len(methods))
+	for _, m := range methods {
+		m = strings.ToUpper(strings.TrimSpace(m))
+		if !httpguts.ValidHeaderFieldName(m) {
+			panic("idempotency: WithRequiredMethods requires valid HTTP method tokens")
+		}
+		canonical = append(canonical, m)
+	}
 	return func(c *config) {
 		c.requiredMethods = make(map[string]bool, len(methods))
-		for _, m := range methods {
+		for _, m := range canonical {
 			c.requiredMethods[m] = true
 		}
 	}
@@ -225,13 +239,14 @@ func WithoutBodyFingerprint() Option {
 // WithPostHandlerTimeout sets the deadline for the Set/Unlock store calls
 // the middleware makes after the handler has returned. Default: 5s.
 //
-// These calls run with a fresh background context (the request context is
-// already cancelled by the time the handler returns), so a hung Redis or
+// These calls run on a cancellation-detached copy of the request context with
+// a short timeout, so they survive client disconnects while preserving request
+// context values for tenant-aware stores, tracing, and logging. A hung Redis or
 // Postgres backend without this bound would pin a goroutine until the TCP
 // timeout fires. Panics on non-positive durations.
 func WithPostHandlerTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic(fmt.Sprintf("idempotency: WithPostHandlerTimeout requires a positive duration (got %s)", d))
+		panic("idempotency: WithPostHandlerTimeout requires a positive duration")
 	}
 	return func(c *config) { c.postHandlerTimeout = d }
 }
@@ -294,6 +309,9 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 	}
 	cfg := defaultConfig()
 	for _, o := range opts {
+		if o == nil {
+			panic("idempotency: Middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -308,19 +326,29 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				return
 			}
 
-			rawKey := r.Header.Get(cfg.header)
-			if rawKey == "" {
-				httpx.WriteError(w, http.StatusBadRequest, cfg.header+" header is required")
+			rawKey, ok := singleHeaderValue(r.Header, cfg.header)
+			if !ok {
+				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is required exactly once")
 				return
 			}
-			if len(rawKey) > 256 {
-				httpx.WriteError(w, http.StatusBadRequest, cfg.header+" too long (max 256 bytes)")
+			if strings.Contains(rawKey, ",") {
+				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is invalid")
+				return
+			}
+			if err := idem.ValidateKey(rawKey); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "idempotency key is invalid")
 				return
 			}
 
 			userID := ""
 			if cfg.userExtractor != nil {
-				userID = cfg.userExtractor(r)
+				var ok bool
+				userID, ok = safeUserExtractor(cfg.logger, cfg.userExtractor, r)
+				if !ok {
+					httpx.WriteError(w, http.StatusBadRequest,
+						"idempotency requires authenticated request")
+					return
+				}
 				if userID == "" {
 					// Fail closed: collapsing to (method, path, rawKey) here
 					// would let an anonymous request share a cache slot with
@@ -330,12 +358,22 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 						"idempotency requires authenticated request")
 					return
 				}
+				if err := idem.ValidateKey(userID); err != nil {
+					httpx.WriteError(w, http.StatusBadRequest,
+						"idempotency requires valid authenticated identity")
+					return
+				}
 			}
 			// FR-029 [HIGH]: include canonical query string and any
 			// configured semantic headers in the fingerprint so two
 			// requests that differ on query/header (e.g., dry_run=true vs
 			// false) do not collide on the same body+key.
-			key := fingerprintKey(r, rawKey, userID, cfg.semanticHeaders)
+			key, keyErr := fingerprintKey(r, rawKey, userID, cfg.semanticHeaders)
+			if keyErr != nil {
+				httpx.WriteError(w, http.StatusBadRequest,
+					"configured semantic idempotency headers are required exactly once")
+				return
+			}
 
 			var bodyFingerprint []byte
 			if cfg.fingerprintBody {
@@ -344,6 +382,11 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					if errors.Is(fpErr, errBodyTooLarge) {
 						httpx.WriteError(w, http.StatusRequestEntityTooLarge,
 							fmt.Sprintf("request body exceeds idempotency fingerprint limit (%d bytes)", maxFingerprintBodySize))
+						return
+					}
+					if errors.Is(fpErr, errInvalidFingerprintHeader) {
+						httpx.WriteError(w, http.StatusBadRequest,
+							"idempotency fingerprint headers are invalid")
 						return
 					}
 					if cfg.metrics != nil {
@@ -371,7 +414,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					cfg.metrics.conflicts.Inc()
 				}
 				httpx.WriteError(w, http.StatusUnprocessableEntity,
-					cfg.header+" reused with a different request body")
+					"idempotency key reused with a different request body")
 				return
 			}
 			if cached != nil {
@@ -395,7 +438,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					cfg.metrics.conflicts.Inc()
 				}
 				httpx.WriteError(w, http.StatusUnprocessableEntity,
-					cfg.header+" reused with a different request body")
+					"idempotency key reused with a different request body")
 				return
 			}
 			if !locked {
@@ -419,11 +462,11 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 			panicked := true
 			defer func() {
 				if panicked {
-					ctx, cancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+					ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
 					defer cancel()
 					if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
 						cfg.logger.Error("idempotency: failed to unlock after panic",
-							"error", unlockErr, "key", rawKey)
+							redact.Error(unlockErr), redact.String("key", rawKey))
 					}
 				}
 			}()
@@ -433,12 +476,12 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 
 			if rec.bodyOverflow {
 				cfg.logger.Warn("idempotency: response too large to cache, skipping",
-					"key", rawKey)
-				ctx, cancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+					redact.String("key", rawKey))
+				ctx, cancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
 				defer cancel()
 				if unlockErr := store.Unlock(ctx, key, token); unlockErr != nil {
 					cfg.logger.Error("idempotency: failed to unlock after overflow",
-						"error", unlockErr, "key", rawKey)
+						redact.Error(unlockErr), redact.String("key", rawKey))
 				}
 				return
 			}
@@ -457,7 +500,7 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 				Headers:    headers,
 				Body:       append([]byte(nil), rec.body.Bytes()...),
 			}
-			setCtx, setCancel := context.WithTimeout(context.Background(), cfg.postHandlerTimeout)
+			setCtx, setCancel := postHandlerContext(r.Context(), cfg.postHandlerTimeout)
 			defer setCancel()
 			if setErr := store.Set(setCtx, key, token, resp, cfg.ttl); setErr != nil {
 				if errors.Is(setErr, idem.ErrLockLost) {
@@ -465,10 +508,10 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 					// don't fight them. Their response will be the one
 					// future requests replay.
 					cfg.logger.Warn("idempotency: lock lost before Set; another caller now owns the slot",
-						"key", rawKey)
+						redact.String("key", rawKey))
 				} else {
 					cfg.logger.Error("idempotency: failed to cache response, lock held until TTL expiry",
-						"error", setErr, "key", rawKey)
+						redact.Error(setErr), redact.String("key", rawKey))
 					// Do NOT unlock — keeping the lock prevents duplicate execution
 					// during the TTL window. The lock expires naturally.
 				}
@@ -479,6 +522,41 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 	}
 }
 
+func postHandlerContext(reqCtx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if reqCtx == nil {
+		reqCtx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(reqCtx), timeout)
+}
+
+func safeUserExtractor(logger *slog.Logger, fn func(*http.Request) string, r *http.Request) (userID string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("idempotency: user extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			userID, ok = "", false
+		}
+	}()
+	return fn(r), true
+}
+
+func singleHeaderValue(h http.Header, name string) (string, bool) {
+	values := h.Values(name)
+	if len(values) != 1 {
+		return "", false
+	}
+	value := values[0]
+	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) || !httpguts.ValidHeaderFieldValue(value) {
+		return "", false
+	}
+	return value, true
+}
+
 // errBodyTooLarge signals that the request body exceeded
 // [maxFingerprintBodySize] when fingerprinting is enabled. The middleware
 // translates this into 413 Payload Too Large rather than silently truncating
@@ -486,16 +564,23 @@ func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handle
 // different oversized bodies share an idempotency slot.
 var errBodyTooLarge = errors.New("idempotency: request body exceeds fingerprint limit")
 
+var errInvalidFingerprintHeader = errors.New("idempotency: invalid fingerprint header")
+
+var bodyFingerprintHeaders = [...]string{"Content-Type", "Content-Encoding"}
+
 // readAndFingerprintBody buffers the request body up to maxFingerprintBodySize,
 // computes a SHA-256 digest, and returns both the digest and the buffered
 // body so the caller can install a fresh reader before forwarding. Returns
 // [errBodyTooLarge] when the body exceeds the cap.
 func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
+	headers, err := bodySemanticHeaders(r)
+	if err != nil {
+		return nil, nil, err
+	}
 	if r.Body == nil {
 		// Empty body still gets a stable fingerprint so empty-body retries
 		// match each other.
-		empty := sha256.Sum256(nil)
-		return empty[:], nil, nil
+		return requestBodyFingerprint(headers, nil), nil, nil
 	}
 	limited := io.LimitReader(r.Body, maxFingerprintBodySize+1)
 	body, err := io.ReadAll(limited)
@@ -508,8 +593,50 @@ func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
 	if len(body) > maxFingerprintBodySize {
 		return nil, nil, errBodyTooLarge
 	}
-	digest := sha256.Sum256(body)
-	return digest[:], body, nil
+	return requestBodyFingerprint(headers, body), body, nil
+}
+
+func bodySemanticHeaders(r *http.Request) (map[string]string, error) {
+	out := make(map[string]string, len(bodyFingerprintHeaders))
+	for _, name := range bodyFingerprintHeaders {
+		value, err := optionalSingletonHeaderValue(r.Header, name)
+		if err != nil {
+			return nil, err
+		}
+		if value != "" {
+			out[name] = value
+		}
+	}
+	return out, nil
+}
+
+func requestBodyFingerprint(headers map[string]string, body []byte) []byte {
+	h := sha256.New()
+	_, _ = io.WriteString(h, "rho-kit-idempotency-body-v2")
+	for _, name := range bodyFingerprintHeaders {
+		_, _ = io.WriteString(h, "\x00")
+		_, _ = io.WriteString(h, name)
+		_, _ = io.WriteString(h, ":")
+		_, _ = io.WriteString(h, headers[name])
+	}
+	_, _ = io.WriteString(h, "\x00")
+	_, _ = h.Write(body)
+	return h.Sum(nil)
+}
+
+func optionalSingletonHeaderValue(h http.Header, name string) (string, error) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf("%w: header must appear at most once", errInvalidFingerprintHeader)
+	}
+	value := values[0]
+	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) || !httpguts.ValidHeaderFieldValue(value) {
+		return "", fmt.Errorf("%w: header has invalid value", errInvalidFingerprintHeader)
+	}
+	return value, nil
 }
 
 // fingerprintKey builds the cache key from the dimensions that
@@ -521,19 +648,18 @@ func readAndFingerprintBody(r *http.Request) ([]byte, []byte, error) {
 // The canonicalization rules:
 //   - Query parameters are sorted by name and re-serialised so that
 //     ?b=1&a=2 and ?a=2&b=1 (semantically identical) hash equally.
-//   - Configured semantic header values are joined with "," in the
-//     order configured (NOT sorted) so the operator can choose
-//     whether two requests with the same set of values but different
-//     orderings should collide.
+//   - Configured semantic headers must be present exactly once with a
+//     non-blank value. Duplicate/missing values are rejected instead of
+//     joined, because "a,b" and ["a","b"] would otherwise collide.
 //
 // Components are separated by NUL bytes — the byte that cannot
 // appear in HTTP method/path/key tokens — so concatenation can never
 // alias one input into another.
-func fingerprintKey(r *http.Request, rawKey, userID string, semanticHeaders []string) string {
+func fingerprintKey(r *http.Request, rawKey, userID string, semanticHeaders []string) (string, error) {
 	h := sha256.New()
 	_, _ = io.WriteString(h, r.Method)
 	_, _ = io.WriteString(h, "\x00")
-	_, _ = io.WriteString(h, r.URL.Path)
+	_, _ = io.WriteString(h, canonicalRequestPath(r.URL))
 	_, _ = io.WriteString(h, "\x00")
 	_, _ = io.WriteString(h, canonicalQuery(r.URL.Query()))
 	_, _ = io.WriteString(h, "\x00")
@@ -548,13 +674,22 @@ func fingerprintKey(r *http.Request, rawKey, userID string, semanticHeaders []st
 		// canonical so the configured "X-Tenant-Id" matches
 		// http.Header's normalized form.
 		canonical := http.CanonicalHeaderKey(name)
+		value, ok := singleHeaderValue(r.Header, canonical)
+		if !ok {
+			return "", fmt.Errorf("idempotency: semantic header is required exactly once")
+		}
 		_, _ = io.WriteString(h, canonical)
 		_, _ = io.WriteString(h, "=")
-		// strings.Join over Values to preserve cardinality (multiple
-		// header values of the same name).
-		_, _ = io.WriteString(h, strings.Join(r.Header.Values(canonical), ","))
+		_, _ = io.WriteString(h, value)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func canonicalRequestPath(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return u.EscapedPath()
 }
 
 // canonicalQuery serializes a url.Values with deterministic key
@@ -712,6 +847,9 @@ func (s *captureSink) Write(b []byte) (int, error) {
 // key is scoped per-user, preventing cross-user cache collisions in
 // multi-tenant systems.
 func WithUserExtractor(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("idempotency: WithUserExtractor requires a non-nil extractor")
+	}
 	return func(c *config) { c.userExtractor = fn }
 }
 
@@ -745,11 +883,9 @@ func WithAllowSharedKeys() Option {
 func WithSemanticHeaders(names ...string) Option {
 	canonical := make([]string, 0, len(names))
 	for _, n := range names {
-		if n == "" {
-			continue
-		}
+		n = strings.TrimSpace(n)
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic(fmt.Sprintf("idempotency: WithSemanticHeaders requires a valid HTTP header field name (got %q)", n))
+			panic("idempotency: WithSemanticHeaders requires a valid HTTP header field name")
 		}
 		canonical = append(canonical, http.CanonicalHeaderKey(n))
 	}
@@ -771,17 +907,20 @@ func WithSemanticHeaders(names ...string) Option {
 func WithPreserveHeaders(names ...string) Option {
 	// FR-032 [LOW]: validate header names at construction so a typo
 	// or invalid character does not silently no-op at request time.
+	canonical := make([]string, 0, len(names))
 	for _, n := range names {
+		n = strings.TrimSpace(n)
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic(fmt.Sprintf("idempotency: WithPreserveHeaders requires a valid HTTP header field name (got %q)", n))
+			panic("idempotency: WithPreserveHeaders requires a valid HTTP header field name")
 		}
+		canonical = append(canonical, http.CanonicalHeaderKey(n))
 	}
 	return func(c *config) {
 		if c.preserveHeaders == nil {
-			c.preserveHeaders = make(map[string]bool, len(names))
+			c.preserveHeaders = make(map[string]bool, len(canonical))
 		}
-		for _, n := range names {
-			c.preserveHeaders[http.CanonicalHeaderKey(n)] = true
+		for _, n := range canonical {
+			c.preserveHeaders[n] = true
 		}
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,6 +131,72 @@ func TestWorker_ContextCancellation(t *testing.T) {
 	assert.Equal(t, int32(1), count.Load())
 }
 
+func TestWorker_StartRejectsNilContext(t *testing.T) {
+	w := New("test-start-nil-context", time.Hour, func(ctx context.Context) error {
+		return nil
+	}, WithJitter(0))
+
+	var ctx context.Context
+	err := w.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestWorker_StartRejectsSecondStart(t *testing.T) {
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	w := New("test-start-twice", time.Hour, func(ctx context.Context) error {
+		startedOnce.Do(func() { close(started) })
+		return nil
+	}, WithJitter(0))
+
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	startDone := make(chan error, 1)
+	go func() { startDone <- w.Start(startCtx) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+
+	err := w.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancelStart()
+	require.NoError(t, <-startDone)
+}
+
+func TestWorker_StartRejectsRestartAfterStop(t *testing.T) {
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	w := New("test-restart-after-stop", time.Hour, func(ctx context.Context) error {
+		startedOnce.Do(func() { close(started) })
+		return nil
+	}, WithJitter(0))
+
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	defer cancelStart()
+	startDone := make(chan error, 1)
+	go func() { startDone <- w.Start(startCtx) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), time.Second)
+	defer cancelStop()
+	require.NoError(t, w.Stop(stopCtx))
+	require.NoError(t, <-startDone)
+
+	err := w.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
 func TestWorker_Timeout(t *testing.T) {
 	var timedOut atomic.Bool
 
@@ -200,6 +268,29 @@ func TestWorker_StopBeforeStartReturnsImmediately(t *testing.T) {
 	}
 }
 
+func TestWorker_StartRejectsAfterStopBeforeStart(t *testing.T) {
+	w := New("test-start-after-stop-before-start", time.Second, func(ctx context.Context) error {
+		return nil
+	}, WithJitter(0))
+
+	require.NoError(t, w.Stop(context.Background()))
+
+	err := w.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already stopped")
+}
+
+func TestWorker_StopRejectsNilContext(t *testing.T) {
+	w := New("test-stop-nil-context", time.Second, func(ctx context.Context) error {
+		return nil
+	}, WithJitter(0))
+
+	var ctx context.Context
+	err := w.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
 func TestWorker_WithLoggerNilNormalizesToDefault(t *testing.T) {
 	// WithLogger(nil) must not nil out the worker's logger; otherwise the
 	// run path would panic on its first log call. The logger is normalized
@@ -215,6 +306,24 @@ func TestNew_PanicsOnInvalidArgs(t *testing.T) {
 	assert.Panics(t, func() { New("", time.Second, func(ctx context.Context) error { return nil }) })
 	assert.Panics(t, func() { New("x", 0, func(ctx context.Context) error { return nil }) })
 	assert.Panics(t, func() { New("x", time.Second, nil) })
+	assert.Panics(t, func() { New("x", time.Second, func(ctx context.Context) error { return nil }, nil) })
+	assert.PanicsWithValue(t, "batchworker: WithJitter requires 0 <= fraction <= 1", func() { WithJitter(1.1) })
+	assert.PanicsWithValue(t, "batchworker: WithTimeout requires d > 0", func() { WithTimeout(-time.Second) })
+}
+
+func TestNew_PanicsOnUnsafeName(t *testing.T) {
+	tests := []string{
+		"bad\nname",
+		string([]byte{0xff}),
+		strings.Repeat("a", 257),
+	}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, func() {
+				New(name, time.Second, func(ctx context.Context) error { return nil })
+			})
+		})
+	}
 }
 
 func assertMetricLabel(t *testing.T, mfs []*io_prometheus_client.MetricFamily, name, labelName, labelValue string) {

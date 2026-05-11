@@ -43,8 +43,9 @@ func TestParseMessage(t *testing.T) {
 			"ts":      "2026-01-01T00:00:00Z",
 			"headers": `{"X-Trace":"abc"}`,
 		})
-		msg := parseMessage(raw)
+		msg, err := parseMessage(raw)
 
+		assert.NoError(t, err)
 		assert.Equal(t, "019c-uuid", msg.ID)
 		assert.Equal(t, "test.event", msg.Type)
 		assert.Equal(t, `{"key":"value"}`, string(msg.Payload))
@@ -55,8 +56,9 @@ func TestParseMessage(t *testing.T) {
 
 	t.Run("empty values", func(t *testing.T) {
 		raw := fakeXMessage(map[string]any{})
-		msg := parseMessage(raw)
+		msg, err := parseMessage(raw)
 
+		assert.NoError(t, err)
 		assert.Empty(t, msg.ID)
 		assert.Empty(t, msg.Type)
 		assert.Nil(t, msg.Payload)
@@ -65,13 +67,13 @@ func TestParseMessage(t *testing.T) {
 
 	t.Run("invalid timestamp", func(t *testing.T) {
 		raw := fakeXMessage(map[string]any{"ts": "not-a-time"})
-		msg := parseMessage(raw)
-		assert.True(t, msg.Timestamp.IsZero())
+		_, err := parseMessage(raw)
+		assert.ErrorIs(t, err, ErrInvalidMessage)
 	})
 
 	t.Run("invalid headers JSON", func(t *testing.T) {
 		raw := fakeXMessage(map[string]any{"headers": "not json"})
-		msg := parseMessage(raw)
-		assert.Nil(t, msg.Headers)
+		_, err := parseMessage(raw)
+		assert.ErrorIs(t, err, ErrInvalidMessage)
 	})
 }

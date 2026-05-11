@@ -1,15 +1,21 @@
 package cors
 
 import (
-	"fmt"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	jcors "github.com/jub0bs/cors"
+	"golang.org/x/net/http/httpguts"
+
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // Options configures Cross-Origin Resource Sharing headers.
 type Options struct {
-	// AllowedOrigins is the list of allowed origins. Use ["*"] to allow all.
+	// AllowedOrigins is the required list of allowed origins. Use ["*"] to
+	// explicitly allow all origins. Leave this empty by not installing the
+	// middleware when a service does not expose a browser CORS API.
 	// Supports subdomain wildcards (e.g., "https://*.example.com").
 	AllowedOrigins []string
 
@@ -62,6 +68,8 @@ func (o *Options) applyDefaults() {
 // and exposed-header support.
 func New(opts Options) func(http.Handler) http.Handler {
 	opts.applyDefaults()
+	opts.detach()
+	validateOptions(opts)
 
 	cfg := jcors.Config{
 		Origins:         opts.AllowedOrigins,
@@ -74,10 +82,67 @@ func New(opts Options) func(http.Handler) http.Handler {
 
 	mw, err := jcors.NewMiddleware(cfg)
 	if err != nil {
-		panic(fmt.Sprintf("cors: invalid configuration: %v", err))
+		panic("cors: invalid configuration")
 	}
 
 	return func(next http.Handler) http.Handler {
-		return mw.Wrap(next)
+		wrapped := mw.Wrap(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !validOptionalSingletonHeader(r.Header, "Origin") ||
+				!validOptionalSingletonHeader(r.Header, "Access-Control-Request-Method") ||
+				!validOptionalSingletonHeader(r.Header, "Access-Control-Request-Headers") {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid CORS request")
+				return
+			}
+			wrapped.ServeHTTP(w, r)
+		})
 	}
+}
+
+func (o *Options) detach() {
+	o.AllowedOrigins = cloneStrings(o.AllowedOrigins)
+	o.AllowedMethods = cloneStrings(o.AllowedMethods)
+	o.AllowedHeaders = cloneStrings(o.AllowedHeaders)
+	o.ExposedHeaders = cloneStrings(o.ExposedHeaders)
+}
+
+func cloneStrings(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
+func validateOptions(opts Options) {
+	nonEmptyOrigin := false
+	for _, origin := range opts.AllowedOrigins {
+		if strings.TrimSpace(origin) != "" {
+			nonEmptyOrigin = true
+			break
+		}
+	}
+	if !nonEmptyOrigin {
+		panic("cors: AllowedOrigins must contain at least one origin or \"*\"")
+	}
+}
+
+func validOptionalSingletonHeader(h http.Header, name string) bool {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 {
+		return false
+	}
+	value := values[0]
+	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) || !httpguts.ValidHeaderFieldValue(value) {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case 0, '\r', '\n':
+			return false
+		}
+	}
+	return true
 }

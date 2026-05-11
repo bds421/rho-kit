@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,15 @@ const minSecretLen = 32
 // ErrExpiredSignature is returned by Verify when the signature timestamp
 // exceeds maxAge or is too far in the future (beyond the allowed skew).
 var ErrExpiredSignature = errors.New("signing: signature expired or clock skew too large")
+
+// ErrInvalidSigner is returned when a nil or zero-value Signer is used.
+var ErrInvalidSigner = errors.New("signing: invalid signer")
+
+// ErrInvalidMaxAge is returned when Verify receives a non-positive maximum age.
+var ErrInvalidMaxAge = errors.New("signing: maxAge must be positive")
+
+// ErrInvalidContext is returned when canonical context fields cannot be safely encoded.
+var ErrInvalidContext = errors.New("signing: invalid canonical context")
 
 // Signer holds configuration for computing and verifying HMAC-SHA256 signatures.
 type Signer struct {
@@ -46,10 +56,10 @@ func WithClock(fn func() time.Time) SignerOption {
 // Use higher values for integrations against clients with poor clock
 // hygiene (mobile, browser timestamps, embedded devices).
 func WithFutureSkew(d time.Duration) SignerOption {
+	if d < 0 {
+		panic("signing: WithFutureSkew requires a non-negative duration")
+	}
 	return func(s *Signer) {
-		if d < 0 {
-			d = 0
-		}
 		s.futureSkew = d
 	}
 }
@@ -61,6 +71,9 @@ func NewSigner(opts ...SignerOption) *Signer {
 		futureSkew: defaultFutureSkew,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("signing: NewSigner option must not be nil")
+		}
 		o(s)
 	}
 	return s
@@ -105,6 +118,12 @@ type CanonicalContext struct {
 func (s *Signer) SignContext(ctx CanonicalContext, body []byte, secret []byte) (signature string, timestamp int64, err error) {
 	if len(secret) < minSecretLen {
 		return "", 0, ErrEmptySecret
+	}
+	if s == nil || s.clock == nil {
+		return "", 0, ErrInvalidSigner
+	}
+	if err := validateCanonicalContext(ctx); err != nil {
+		return "", 0, err
 	}
 	timestamp = s.clock().Unix()
 	payload := buildSignedPayload(ctx, timestamp, body)
@@ -188,6 +207,15 @@ func (s *Signer) VerifyContext(ctx CanonicalContext, secret []byte, body []byte,
 	if len(secret) < minSecretLen {
 		return false, ErrEmptySecret
 	}
+	if s == nil || s.clock == nil {
+		return false, ErrInvalidSigner
+	}
+	if maxAge <= 0 {
+		return false, ErrInvalidMaxAge
+	}
+	if err := validateCanonicalContext(ctx); err != nil {
+		return false, err
+	}
 	age := s.clock().Sub(time.Unix(timestamp, 0))
 	if age < -s.futureSkew || age > maxAge {
 		return false, ErrExpiredSignature
@@ -215,6 +243,19 @@ func (s *Signer) VerifyContext(ctx CanonicalContext, secret []byte, body []byte,
 		}
 	}
 	return hmac.Equal(expectedRaw, gotRaw), nil
+}
+
+func validateCanonicalContext(ctx CanonicalContext) error {
+	if strings.ContainsAny(ctx.Method, "\r\n") {
+		return fmt.Errorf("%w: Method must not contain CR/LF", ErrInvalidContext)
+	}
+	if strings.ContainsAny(ctx.Path, "\r\n") {
+		return fmt.Errorf("%w: Path must not contain CR/LF", ErrInvalidContext)
+	}
+	if strings.ContainsAny(ctx.Domain, "\r\n") {
+		return fmt.Errorf("%w: Domain must not contain CR/LF", ErrInvalidContext)
+	}
+	return nil
 }
 
 // Verify checks an HMAC-SHA256 signature using constant-time comparison.

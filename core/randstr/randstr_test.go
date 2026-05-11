@@ -62,9 +62,24 @@ func TestAlphaNumNoAmbiguous_excludesVisuallyAmbiguous(t *testing.T) {
 func TestRuneSequence_invalidArgs(t *testing.T) {
 	if _, err := RuneSequence(-1, AlphaNum); err == nil {
 		t.Error("expected error for negative length")
+	} else if strings.Contains(err.Error(), "-1") {
+		t.Errorf("negative length error leaked value: %v", err)
+	}
+	if _, err := RuneSequence(MaxLength+1, AlphaNum); err == nil {
+		t.Error("expected error for too-long length")
+	} else if strings.Contains(err.Error(), "1048576") || strings.Contains(err.Error(), "1048577") {
+		t.Errorf("too-long length error leaked values: %v", err)
 	}
 	if _, err := RuneSequence(8, ""); err == nil {
 		t.Error("expected error for empty charset")
+	}
+	if _, err := RuneSequence(8, "secret-token-s"); err == nil {
+		t.Error("expected error for duplicate charset rune")
+	} else if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "'s'") {
+		t.Errorf("duplicate charset error leaked rune or charset: %v", err)
+	}
+	if _, err := RuneSequence(8, string([]byte{0xff, 'a'})); err == nil {
+		t.Error("expected error for invalid UTF-8 charset")
 	}
 }
 

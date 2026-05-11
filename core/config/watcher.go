@@ -2,14 +2,18 @@ package config
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Default debounce duration for file watchers.
@@ -49,12 +53,13 @@ func WithSignalChannel(ch chan os.Signal) WatcherOption {
 }
 
 // WithDebounce sets the debounce interval for rapid file changes.
-// Values <= 0 are ignored; the default is 100ms.
+// The duration must be positive.
 func WithDebounce(d time.Duration) WatcherOption {
+	if d <= 0 {
+		panic("config: WithDebounce requires a positive duration")
+	}
 	return func(c *watcherConfig) {
-		if d > 0 {
-			c.debounce = d
-		}
+		c.debounce = d
 	}
 }
 
@@ -75,6 +80,9 @@ func applyWatcherOpts(opts []WatcherOption) watcherConfig {
 		debounce: defaultDebounce,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("config: watcher option must not be nil")
+		}
 		o(&cfg)
 	}
 	return cfg
@@ -97,6 +105,8 @@ type FileWatcher[T any] struct {
 	watchable *Watchable[T]
 	loadFn    func(path string) (T, error)
 	cfg       watcherConfig
+	startMu   sync.Mutex
+	started   bool
 }
 
 // NewFileWatcher creates a FileWatcher that calls loadFn whenever path
@@ -138,13 +148,24 @@ func (fw *FileWatcher[T]) Watchable() *Watchable[T] {
 
 // Start begins watching the file. It blocks until ctx is cancelled.
 func (fw *FileWatcher[T]) Start(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("config: FileWatcher.Start requires a non-nil context")
+	}
+	fw.startMu.Lock()
+	if fw.started {
+		fw.startMu.Unlock()
+		return errors.New("config: FileWatcher already started")
+	}
+	fw.started = true
+	fw.startMu.Unlock()
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if err := watcher.Close(); err != nil {
-			fw.cfg.logger.Warn("failed to close fsnotify watcher", "error", err)
+			fw.cfg.logger.Warn("failed to close fsnotify watcher", redact.Error(err))
 		}
 	}()
 
@@ -162,11 +183,11 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 		val, loadErr := fw.loadFn(fw.path)
 		if loadErr != nil {
 			fw.cfg.logger.Warn("config reload failed, keeping previous value",
-				"path", fw.path, "error", loadErr)
+				redact.String("path", fw.path), redact.Error(loadErr))
 			return
 		}
 		fw.watchable.Set(val)
-		fw.cfg.logger.Info("config reloaded", "path", fw.path)
+		fw.cfg.logger.Info("config reloaded", redact.String("path", fw.path))
 	}
 
 	base := filepath.Base(fw.path)
@@ -202,7 +223,7 @@ func (fw *FileWatcher[T]) Start(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			fw.cfg.logger.Warn("file watcher error", "error", watchErr)
+			fw.cfg.logger.Warn("file watcher error", redact.Error(watchErr))
 
 		case <-debounceCh:
 			debounceCh = nil
@@ -226,6 +247,8 @@ func isRelevantEvent(e fsnotify.Event) bool {
 type EnvReloader[T any] struct {
 	watchable *Watchable[T]
 	cfg       watcherConfig
+	startMu   sync.Mutex
+	started   bool
 }
 
 // NewEnvReloader creates an EnvReloader that reloads config from
@@ -250,6 +273,17 @@ func NewEnvReloader[T any](w *Watchable[T], opts ...WatcherOption) *EnvReloader[
 // signal loop so the Watchable reflects current environment state instead of
 // the construction-time `initial` value.
 func (r *EnvReloader[T]) Start(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("config: EnvReloader.Start requires a non-nil context")
+	}
+	r.startMu.Lock()
+	if r.started {
+		r.startMu.Unlock()
+		return errors.New("config: EnvReloader already started")
+	}
+	r.started = true
+	r.startMu.Unlock()
+
 	sigCh := r.cfg.signalCh
 	if sigCh == nil {
 		sigCh = make(chan os.Signal, 1)
@@ -261,7 +295,7 @@ func (r *EnvReloader[T]) Start(ctx context.Context) error {
 		val, err := Load[T]()
 		if err != nil {
 			r.cfg.logger.Warn("env config initial load failed, keeping construction-time value",
-				"error", err)
+				redact.Error(err))
 		} else {
 			r.watchable.Set(val)
 			r.cfg.logger.Info("config initial-load from environment")
@@ -276,7 +310,7 @@ func (r *EnvReloader[T]) Start(ctx context.Context) error {
 			val, err := Load[T]()
 			if err != nil {
 				r.cfg.logger.Warn("env config reload failed, keeping previous value",
-					"error", err)
+					redact.Error(err))
 				continue
 			}
 			r.watchable.Set(val)

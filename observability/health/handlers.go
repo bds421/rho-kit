@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // LivenessResponse is the JSON envelope returned by [Liveness].
@@ -28,8 +30,8 @@ func Liveness(version string) http.Handler {
 			Version: version,
 		})
 		if err != nil {
-			slog.Error("health: marshal liveness response", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			slog.Error("health: marshal liveness response", redact.Error(err))
+			writeJSONError(w, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -56,16 +58,16 @@ func Liveness(version string) http.Handler {
 // breakdown. The body is marshalled before WriteHeader so encode errors
 // surface as a 500 with no body, instead of a half-written 200/503.
 func Readiness(checker *Checker) http.Handler {
-	if checker == nil {
-		panic("health: Readiness requires a non-nil *Checker")
+	if err := ValidateChecker(checker); err != nil {
+		panic("health: Readiness requires a valid *Checker")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := checker.Evaluate(r.Context())
 
 		body, err := json.Marshal(resp)
 		if err != nil {
-			slog.Error("health: marshal readiness response", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			slog.Error("health: marshal readiness response", redact.Error(err))
+			writeJSONError(w, http.StatusInternalServerError)
 			return
 		}
 
@@ -80,4 +82,11 @@ func Readiness(checker *Checker) http.Handler {
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	})
+}
+
+func writeJSONError(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"error":"internal error","code":"INTERNAL"}` + "\n"))
 }

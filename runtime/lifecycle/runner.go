@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 	"golang.org/x/sync/errgroup"
 )
@@ -49,10 +50,11 @@ type RunnerOption func(*Runner)
 // WithStopTimeout sets the maximum time allowed for each component's Stop
 // method. Default is 30 seconds.
 func WithStopTimeout(d time.Duration) RunnerOption {
+	if d <= 0 {
+		panic("lifecycle: WithStopTimeout requires a positive duration")
+	}
 	return func(r *Runner) {
-		if d > 0 {
-			r.stopTimeout = d
-		}
+		r.stopTimeout = d
 	}
 }
 
@@ -66,6 +68,9 @@ func WithStopTimeout(d time.Duration) RunnerOption {
 // Multiple calls overwrite — only one beforeStop is supported. Wrap
 // at the caller if multiple actions are needed.
 func WithBeforeStop(fn func(context.Context)) RunnerOption {
+	if fn == nil {
+		panic("lifecycle: WithBeforeStop requires a non-nil callback")
+	}
 	return func(r *Runner) { r.beforeStop = fn }
 }
 
@@ -79,6 +84,9 @@ func NewRunner(logger *slog.Logger, opts ...RunnerOption) *Runner {
 		stopTimeout: defaultStopTimeout,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("lifecycle: Runner option must not be nil")
+		}
 		opt(r)
 	}
 	return r
@@ -112,11 +120,17 @@ func (r *Runner) AddFunc(name string, fn func(ctx context.Context) error) *Runne
 }
 
 // Run starts all components and blocks until a signal is received or a
-// component returns an error. On shutdown, all components are stopped in
-// reverse registration order.
+// component exits. Any component exit initiates coordinated shutdown; a
+// non-nil component error is returned. On shutdown, all components are
+// stopped in reverse registration order.
 func (r *Runner) Run(ctx context.Context) error {
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	if ctx == nil {
+		return errors.New("lifecycle: Run requires a non-nil context")
+	}
+	signalCtx, signalCancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer signalCancel()
+	runCtx, runCancel := context.WithCancel(signalCtx)
+	defer runCancel()
 
 	// Listen for a second signal during shutdown — operators expect a second
 	// Ctrl+C to force-kill the process. The first signal cancels ctx above;
@@ -138,12 +152,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	go func() {
 		// First select: wait for signal (ctx.Done) OR for Run to finish on
 		// its own (runDone). Without this, when a component returns an error
-		// before any signal arrives, ctx never cancels and this goroutine
-		// blocks forever on <-ctx.Done — a goroutine leak per failed Run
+		// before any signal arrives, runCtx might never cancel and this goroutine
+		// blocks forever waiting for shutdown — a goroutine leak per failed Run
 		// call. Selecting on runDone here lets the goroutine exit cleanly
 		// in that path.
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			// Fall through to register the second-signal handler below.
 		case <-runDone:
 			return
@@ -171,17 +185,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		slog.Any("components", componentNames),
 	)
 
-	eg, gCtx := errgroup.WithContext(ctx)
+	if len(r.components) == 0 {
+		return nil
+	}
+
+	eg, gCtx := errgroup.WithContext(runCtx)
 
 	for _, nc := range r.components {
 		eg.Go(func() (retErr error) {
+			defer runCancel()
 			defer func() {
 				if rec := recover(); rec != nil {
 					stack := string(debug.Stack())
-					retErr = fmt.Errorf("goroutine %q panicked: %v", nc.name, rec)
+					retErr = fmt.Errorf("goroutine panicked: %s", redact.PanicValue(rec))
 					r.logger.Error("goroutine panicked",
 						logattr.Component(nc.name),
-						slog.Any("panic", rec),
+						redact.Panic(rec),
 						slog.String("stack", stack),
 					)
 				}
@@ -209,6 +228,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	var stopErr error
 	eg.Go(func() error {
 		<-gCtx.Done()
+		var beforeStopErr error
 		// Run BeforeStop synchronously while components are still
 		// live — hooks rely on DB / broker connections being open.
 		// Any panic is converted to a structured error log so a
@@ -218,16 +238,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				defer func() {
 					if rec := recover(); rec != nil {
 						r.logger.Error("BeforeStop panicked",
-							slog.Any("panic", rec),
+							redact.Panic(rec),
 							slog.String("stack", string(debug.Stack())),
 						)
+						beforeStopErr = fmt.Errorf("BeforeStop panicked: %s", redact.PanicValue(rec))
 					}
 				}()
 				r.beforeStop(forceCtx)
 			}()
 		}
 		r.logger.Info("shutting down components")
-		stopErr = r.stopAll(forceCtx)
+		stopErr = errors.Join(beforeStopErr, r.stopAll(forceCtx))
 		return nil
 	})
 
@@ -237,8 +258,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // stopAll stops all components sequentially in reverse registration order.
 // Components that have not yet finished starting will still receive Stop —
-// implementations must handle this gracefully (FuncComponent.Stop is a no-op;
-// http.Server.Shutdown is safe to call before ListenAndServe).
+// implementations must handle this gracefully (FuncComponent.Stop is safe
+// before Start; http.Server.Shutdown is safe before ListenAndServe).
 // The parent context allows force-cancellation (second signal) to interrupt
 // all pending stop timeouts immediately.
 //
@@ -280,7 +301,7 @@ func (r *Runner) stopAll(parent context.Context) error {
 		if sharedCtx.Err() != nil {
 			r.logger.Warn("shutdown deadline exceeded, skipping remaining component",
 				logattr.Component(r.components[i].name))
-			errs = append(errs, fmt.Errorf("shutdown deadline exceeded; skipped %q", r.components[i].name))
+			errs = append(errs, fmt.Errorf("shutdown deadline exceeded; skipped component"))
 			continue
 		}
 		stepCtx, stepCancel := context.WithTimeout(sharedCtx, perStep)
@@ -306,10 +327,10 @@ func (r *Runner) stopOne(parent context.Context, nc namedComponent) (retErr erro
 		if rec := recover(); rec != nil {
 			r.logger.Error("component stop panicked",
 				logattr.Component(nc.name),
-				slog.Any("panic", rec),
+				redact.Panic(rec),
 				slog.String("stack", string(debug.Stack())),
 			)
-			retErr = fmt.Errorf("component %q stop panicked: %v", nc.name, rec)
+			retErr = fmt.Errorf("component stop panicked: %s", redact.PanicValue(rec))
 		}
 	}()
 

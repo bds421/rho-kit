@@ -79,6 +79,8 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":"method not allowed","code":"METHOD_NOT_ALLOWED"}`, rec.Body.String())
 }
 
 func TestHandler_Head(t *testing.T) {

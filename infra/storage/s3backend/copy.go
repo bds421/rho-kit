@@ -2,7 +2,6 @@ package s3backend
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,8 +22,8 @@ func (b *S3Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.bucket),
-		attribute.String("storage.src_key", srcKey),
-		attribute.String("storage.dst_key", dstKey),
+		attribute.Int("storage.src_key_len", len(srcKey)),
+		attribute.Int("storage.dst_key_len", len(dstKey)),
 	)
 
 	if err := storage.ValidateKey(srcKey); err != nil {
@@ -37,17 +36,24 @@ func (b *S3Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 	// CopySource format: "bucket/key" (URL-encoded).
 	copySource := b.bucket + "/" + url.PathEscape(srcKey)
 
-	start := now()
-	_, err := b.client.CopyObject(ctx, &s3.CopyObjectInput{
+	input := &s3.CopyObjectInput{
 		Bucket:     aws.String(b.bucket),
 		CopySource: aws.String(copySource),
 		Key:        aws.String(dstKey),
-	})
+	}
+	if err := applyCopySSE(input, b.cfg); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+
+	start := now()
+	_, err := b.client.CopyObject(ctx, input)
 	b.metrics.observeOp(b.instance, "copy", start, err)
 
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("s3backend: copy %q → %q: %w", srcKey, dstKey, err)
+		opErr := storage.WrapSafe("s3backend: copy failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }

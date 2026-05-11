@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -154,6 +155,120 @@ func TestParseKeySet_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseKeySet_RejectsNonVerificationKeyOps(t *testing.T) {
+	key := testKey(t)
+	pubJWK, err := jwk.Import(key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pubJWK.Set(jwk.KeyIDKey, "enc-only")
+	_ = pubJWK.Set(jwk.AlgorithmKey, jwa.ES256())
+	_ = pubJWK.Set(jwk.KeyOpsKey, jwk.KeyOperationList{jwk.KeyOpEncrypt})
+
+	set := jwk.NewSet()
+	if err := set.AddKey(pubJWK); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ParseKeySet(data); err == nil {
+		t.Fatal("expected ParseKeySet to reject a JWKS with no verification-capable keys")
+	}
+}
+
+func TestParseKeySet_AcceptsVerificationKeyOps(t *testing.T) {
+	key := testKey(t)
+	pubJWK, err := jwk.Import(key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pubJWK.Set(jwk.KeyIDKey, "verify-key")
+	_ = pubJWK.Set(jwk.AlgorithmKey, jwa.ES256())
+	_ = pubJWK.Set(jwk.KeyOpsKey, jwk.KeyOperationList{jwk.KeyOpVerify})
+
+	set := jwk.NewSet()
+	if err := set.AddKey(pubJWK); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks, err := ParseKeySet(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	token := signJWT(t, key, "verify-key", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("keyset should verify a token with key_ops verify: %v", err)
+	}
+}
+
+func TestParseKeySet_StripsPrivateKeyMaterial(t *testing.T) {
+	key := testKey(t)
+	privateJWK, err := jwk.Import(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = privateJWK.Set(jwk.KeyIDKey, "private-key")
+	_ = privateJWK.Set(jwk.AlgorithmKey, jwa.ES256())
+	_ = privateJWK.Set(jwk.KeyUsageKey, "sig")
+
+	set := jwk.NewSet()
+	if err := set.AddKey(privateJWK); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks, err := ParseKeySet(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, ok := ks.set.Key(0)
+	if !ok {
+		t.Fatal("expected parsed key")
+	}
+	isPrivate, err := jwk.IsPrivateKey(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isPrivate {
+		t.Fatal("ParseKeySet retained private key material")
+	}
+
+	now := time.Now()
+	token := signJWT(t, key, "private-key", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if _, err := ks.Verify(token, now); err != nil {
+		t.Fatalf("public-normalized keyset should still verify: %v", err)
+	}
+}
+
+func TestKeySet_InvalidReceiverReturnsError(t *testing.T) {
+	var nilKeySet *KeySet
+	if _, err := nilKeySet.Verify("token", time.Now()); !errors.Is(err, ErrInvalidKeySet) {
+		t.Fatalf("nil KeySet Verify error = %v, want ErrInvalidKeySet", err)
+	}
+
+	var zero KeySet
+	if _, err := zero.Verify("token", time.Now()); !errors.Is(err, ErrInvalidKeySet) {
+		t.Fatalf("zero KeySet Verify error = %v, want ErrInvalidKeySet", err)
+	}
+}
+
 func TestVerify_ValidToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
@@ -182,6 +297,26 @@ func TestVerify_ValidToken(t *testing.T) {
 	}
 	if claims.Scopes != "production:manage" {
 		t.Errorf("scopes = %q, want production:manage", claims.Scopes)
+	}
+}
+
+func TestVerify_PopulatesJWTID(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"jti": "token-123",
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	claims, err := ks.Verify(token, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if claims.ID != "token-123" {
+		t.Fatalf("claims.ID = %q, want token-123", claims.ID)
 	}
 }
 
@@ -234,6 +369,21 @@ func TestVerify_ExpiredToken(t *testing.T) {
 	_, err := ks.Verify(token, now)
 	if err == nil {
 		t.Fatal("expected error for expired token")
+	}
+}
+
+func TestVerify_ZeroTimeUsesWallClock(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": time.Now().Add(-5 * time.Minute).Unix(),
+	})
+
+	_, err := ks.Verify(token, time.Time{})
+	if err == nil {
+		t.Fatal("expected error for expired token when now is zero")
 	}
 }
 
@@ -504,9 +654,181 @@ func TestDefaultHTTPClient_RetainsTransportDefaults(t *testing.T) {
 	if tr.MaxResponseHeaderBytes != 64*1024 {
 		t.Errorf("MaxResponseHeaderBytes = %d, want 65536 (kit override)", tr.MaxResponseHeaderBytes)
 	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Errorf("TLS MinVersion = %v, want %v", tr.TLSClientConfig, minimumTLSVersion)
+	}
 	if c.Timeout != defaultHTTPTimeout {
 		t.Errorf("client Timeout = %v, want %v", c.Timeout, defaultHTTPTimeout)
 	}
+}
+
+func TestDefaultHTTPClient_BlocksRedirects(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	resp, err := defaultHTTPClient().Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrJWKSRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want ErrJWKSRedirectBlocked", err)
+	}
+}
+
+func TestJWKSHTTPClient_CustomClientBlocksRedirectsByDefault(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	custom := srv.Client()
+	if custom.CheckRedirect != nil {
+		t.Fatal("test setup expected httptest client without redirect policy")
+	}
+
+	hardened := jwksHTTPClient(custom)
+	if hardened == custom {
+		t.Fatal("expected a cloned client when installing the JWKS redirect policy")
+	}
+	if custom.CheckRedirect != nil {
+		t.Fatal("jwksHTTPClient must not mutate the caller's client")
+	}
+
+	resp, err := hardened.Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrJWKSRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want ErrJWKSRedirectBlocked", err)
+	}
+}
+
+func TestJWKSHTTPClient_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	custom := srv.Client()
+	custom.Timeout = time.Second
+	custom.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	hardened := jwksHTTPClient(custom)
+	if hardened != custom {
+		t.Fatal("expected explicit redirect policy to keep caller's client")
+	}
+	resp, err := hardened.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+}
+
+func TestJWKSHTTPClient_CustomClientFillsMissingTimeout(t *testing.T) {
+	transport := &staticJWKSTransport{}
+	custom := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	hardened := jwksHTTPClient(custom)
+	if hardened == custom {
+		t.Fatal("expected custom client with zero timeout to be cloned")
+	}
+	if custom.Timeout != 0 {
+		t.Fatal("jwksHTTPClient must not mutate caller timeout")
+	}
+	if hardened.Timeout != defaultHTTPTimeout {
+		t.Fatalf("timeout = %s, want %s", hardened.Timeout, defaultHTTPTimeout)
+	}
+	if hardened.Transport != transport {
+		t.Fatal("expected custom transport to be preserved")
+	}
+	if hardened.CheckRedirect == nil {
+		t.Fatal("expected custom redirect policy to be preserved")
+	}
+}
+
+func TestJWKSHTTPClient_CustomClientFillsMissingTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("global default transport used")
+	})
+
+	custom := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	hardened := jwksHTTPClient(custom)
+	if hardened == custom {
+		t.Fatal("expected custom client with nil transport to be cloned")
+	}
+	if custom.Transport != nil {
+		t.Fatal("jwksHTTPClient must not mutate caller transport")
+	}
+	tr, ok := hardened.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport fallback", hardened.Transport)
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("TLS MinVersion = %v, want %x", tr.TLSClientConfig, minimumTLSVersion)
+	}
+}
+
+func TestDefaultHTTPClient_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	cfg := &tls.Config{ServerName: "jwks.internal.test"}
+	cfg.MinVersion = minimumTLSVersion - 1
+	base.TLSClientConfig = cfg
+	http.DefaultTransport = base
+
+	c := defaultHTTPClient()
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", c.Transport)
+	}
+	if tr.TLSClientConfig == cfg {
+		t.Fatal("JWKS client transport must own a cloned TLS config")
+	}
+	if cfg.MinVersion != minimumTLSVersion-1 {
+		t.Fatalf("caller TLS config was mutated: got MinVersion %x", cfg.MinVersion)
+	}
+	if tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("expected TLS floor %x, got %x", minimumTLSVersion, tr.TLSClientConfig.MinVersion)
+	}
+	if tr.TLSClientConfig.ServerName != "jwks.internal.test" {
+		t.Fatalf("expected ServerName to be preserved, got %q", tr.TLSClientConfig.ServerName)
+	}
+}
+
+func TestDefaultHTTPClient_PanicsWhenTLSMaxVersionBelowFloor(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.TLSClientConfig = &tls.Config{MaxVersion: minimumTLSVersion - 1}
+	http.DefaultTransport = base
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for impossible TLS version range")
+		}
+	}()
+	_ = defaultHTTPClient()
 }
 
 func TestNewProvider(t *testing.T) {
@@ -518,6 +840,193 @@ func TestNewProvider(t *testing.T) {
 	}
 	if p.KeySet() != nil {
 		t.Error("initial keyset should be nil")
+	}
+}
+
+func TestProvider_InvalidReceiverReturnsUnavailable(t *testing.T) {
+	var nilProvider *Provider
+	if got := nilProvider.KeySet(); got != nil {
+		t.Fatalf("nil KeySet = %v, want nil", got)
+	}
+	if got := nilProvider.LastSuccessfulFetch(); !got.IsZero() {
+		t.Fatalf("nil LastSuccessfulFetch = %v, want zero", got)
+	}
+	if got := nilProvider.Staleness(); got != 0 {
+		t.Fatalf("nil Staleness = %v, want 0", got)
+	}
+	if _, err := nilProvider.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("nil Verify error = %v, want ErrKeySetUnavailable", err)
+	}
+	if err := nilProvider.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "non-nil provider") {
+		t.Fatalf("nil Run error = %v, want non-nil provider error", err)
+	}
+
+	var zero Provider
+	if _, err := zero.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
+		t.Fatalf("zero Verify error = %v, want ErrKeySetUnavailable", err)
+	}
+	if err := zero.Run(nilContextForTest()); err == nil || !strings.Contains(err.Error(), "non-nil context") {
+		t.Fatalf("zero Run nil context error = %v, want non-nil context error", err)
+	}
+}
+
+func TestNewProvider_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil provider option")
+		}
+	}()
+	func() {
+		NewProvider("https://example.com/.well-known/jwks.json", nil, 5*time.Minute, nil)
+	}()
+}
+
+func TestNewProvider_RejectsInvalidJWKSURLs(t *testing.T) {
+	baseOpts := []ProviderOption{
+		WithExpectedIssuer("https://issuer.example.com"),
+		WithExpectedAudience("svc"),
+	}
+	tests := []struct {
+		name string
+		url  string
+		opts []ProviderOption
+		leak string
+	}{
+		{
+			name: "http without opt-in",
+			url:  "http://example.com/jwks",
+		},
+		{
+			name: "unsupported scheme with opt-in",
+			url:  "secret-token://example.com/jwks",
+			opts: []ProviderOption{WithAllowInsecureURL()},
+			leak: "secret-token",
+		},
+		{
+			name: "relative URL",
+			url:  "/jwks",
+		},
+		{
+			name: "userinfo credentials",
+			url:  "https://user:secret@example.com/jwks",
+		},
+		{
+			name: "query string",
+			url:  "https://example.com/jwks?token=secret",
+		},
+		{
+			name: "fragment",
+			url:  "https://example.com/jwks#kid",
+		},
+		{
+			name: "invalid port",
+			url:  "https://example.com:0/jwks",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := append([]ProviderOption{}, baseOpts...)
+			opts = append(opts, tt.opts...)
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic")
+				}
+				msg := fmt.Sprint(r)
+				if msg != "jwtutil: NewProvider JWKS URL is invalid" {
+					t.Fatalf("panic = %v, want stable JWKS URL marker", r)
+				}
+				if tt.leak != "" && strings.Contains(msg, tt.leak) {
+					t.Fatalf("panic leaked URL component %q: %v", tt.leak, r)
+				}
+			}()
+			_ = NewProvider(tt.url, nil, time.Minute, opts...)
+		})
+	}
+}
+
+func TestNewProvider_InvalidURLParseErrorDoesNotEchoValue(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "JWKS URL is invalid") {
+			t.Fatalf("panic = %v, want invalid URL marker", r)
+		}
+		if strings.Contains(msg, "secret-token") || strings.Contains(msg, "token=") || strings.Contains(msg, "%zz") {
+			t.Fatalf("panic leaked JWKS URL value: %q", msg)
+		}
+	}()
+
+	_ = NewProvider("https://example.com/%zz?token=secret-token", nil, time.Minute,
+		WithExpectedIssuer("https://issuer.example.com"),
+		WithExpectedAudience("api"),
+	)
+}
+
+func TestProviderRefreshLogDoesNotExposeURLOrRawError(t *testing.T) {
+	const jwksURL = "https://identity.example.com/realms/acme/.well-known/jwks.json"
+	p := &Provider{url: jwksURL}
+	err := fmt.Errorf("Get %q: dial tcp identity.example.com:443: token=secret", jwksURL)
+
+	rendered := withCapturedSlog(t, slog.LevelWarn, func() {
+		p.logRefreshFailure(err)
+	})
+
+	for _, forbidden := range []string{
+		jwksURL,
+		"identity.example.com",
+		"realms/acme",
+		".well-known/jwks.json",
+		"token=secret",
+		"dial tcp",
+		"Get",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("refresh log leaked %q in %s", forbidden, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "jwks_configured=true") {
+		t.Fatalf("refresh log missing configured marker: %s", rendered)
+	}
+	if !strings.Contains(rendered, "error_kind=fetch_failed") {
+		t.Fatalf("refresh log missing stable failure kind: %s", rendered)
+	}
+}
+
+func TestJWKSFetchErrorKind(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", want: "unknown"},
+		{name: "context canceled", err: context.Canceled, want: "context_canceled"},
+		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "redirect", err: ErrJWKSRedirectBlocked, want: "redirect_blocked"},
+		{name: "bad status", err: errors.New("jwks endpoint returned 503"), want: "bad_status"},
+		{name: "content type", err: errors.New("jwks endpoint returned unexpected content-type"), want: "unexpected_content_type"},
+		{name: "fallback", err: errors.New("connection refused"), want: "fetch_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := jwksFetchErrorKind(tt.err); got != tt.want {
+				t.Fatalf("jwksFetchErrorKind() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewProvider_AllowsHTTPWithExplicitOptIn(t *testing.T) {
+	p := NewProvider("http://127.0.0.1/jwks", nil, time.Minute,
+		WithExpectedIssuer("https://issuer.example.com"),
+		WithExpectedAudience("svc"),
+		WithAllowInsecureURL(),
+	)
+	if p == nil {
+		t.Fatal("expected provider")
 	}
 }
 
@@ -603,14 +1112,14 @@ func TestProvider_KeySetReturnsNilWhenStale(t *testing.T) {
 	}
 }
 
-func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
+func TestProvider_WithoutMaxStaleLimitDisablesCheck(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
 	p := NewProvider("https://example.com/jwks", nil, time.Minute,
 		WithAllowAnyIssuer(),
 		WithAllowAnyAudience(),
-		WithMaxStale(0), // disabled
+		WithoutMaxStaleLimit(),
 		withClock(clock),
 	)
 	p.mu.Lock()
@@ -620,6 +1129,19 @@ func TestProvider_MaxStaleZeroDisablesCheck(t *testing.T) {
 
 	if got := p.KeySet(); got == nil {
 		t.Fatal("KeySet must not return nil when max-stale is disabled")
+	}
+}
+
+func TestProvider_WithMaxStalePanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected WithMaxStale to panic")
+				}
+			}()
+			WithMaxStale(d)
+		})
 	}
 }
 
@@ -668,6 +1190,17 @@ func TestNewProviderWithKeySet(t *testing.T) {
 	if p.KeySet() != ks {
 		t.Error("expected keyset to be set")
 	}
+}
+
+func TestNewProviderWithKeySet_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil provider option")
+		}
+	}()
+	func() {
+		NewProviderWithKeySet(&KeySet{}, nil)
+	}()
 }
 
 func TestNewProviderWithKeySet_PanicsWithoutIssuerOrAudienceOpts(t *testing.T) {
@@ -731,6 +1264,103 @@ func TestNewProviderWithKeySet_AcceptsExplicitOptOuts(t *testing.T) {
 	}
 }
 
+type revocationCheckerFunc func(context.Context, *Claims) (bool, error)
+
+func (fn revocationCheckerFunc) IsRevoked(ctx context.Context, claims *Claims) (bool, error) {
+	return fn(ctx, claims)
+}
+
+type revocationContextKey struct{}
+
+func TestNewProvider_WithRevocationCheckerPanicsOnNil(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	_ = WithRevocationChecker(nil)
+}
+
+func TestProviderVerifyContext_RejectsRevokedToken(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"jti": "revoked-token",
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	provider := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithRevocationChecker(revocationCheckerFunc(func(ctx context.Context, claims *Claims) (bool, error) {
+			if ctx.Value(revocationContextKey{}) != "ctx" {
+				t.Fatalf("revocation checker did not receive request context")
+			}
+			if claims.ID != "revoked-token" {
+				t.Fatalf("claims.ID = %q, want revoked-token", claims.ID)
+			}
+			return true, nil
+		})),
+	)
+
+	_, err := provider.VerifyContext(context.WithValue(context.Background(), revocationContextKey{}, "ctx"), token, now)
+	if !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("VerifyContext error = %v, want ErrTokenRevoked", err)
+	}
+}
+
+func TestProviderVerifyContext_RejectsMissingJTIWhenRevocationEnabled(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	checkerCalled := false
+	provider := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithRevocationChecker(revocationCheckerFunc(func(context.Context, *Claims) (bool, error) {
+			checkerCalled = true
+			return false, nil
+		})),
+	)
+
+	_, err := provider.VerifyContext(context.Background(), token, now)
+	if !errors.Is(err, ErrMissingTokenID) {
+		t.Fatalf("VerifyContext error = %v, want ErrMissingTokenID", err)
+	}
+	if checkerCalled {
+		t.Fatal("revocation checker must not be called for missing jti")
+	}
+}
+
+func TestProviderVerifyContext_PropagatesRevocationError(t *testing.T) {
+	key := testKey(t)
+	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"jti": "token-1",
+		"sub": "user-1",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	want := errors.New("cache unavailable")
+	provider := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithRevocationChecker(revocationCheckerFunc(func(context.Context, *Claims) (bool, error) {
+			return false, want
+		})),
+	)
+
+	_, err := provider.VerifyContext(context.Background(), token, now)
+	if !errors.Is(err, want) {
+		t.Fatalf("VerifyContext error = %v, want %v", err, want)
+	}
+}
+
 func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 	key := testKey(t)
 	jwksData := testJWKS(t, key, "kid-1")
@@ -748,7 +1378,9 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.Run(ctx)
+		if err := p.Run(ctx); err != nil {
+			t.Errorf("Run returned %v", err)
+		}
 		close(done)
 	}()
 
@@ -782,6 +1414,73 @@ func TestProvider_Run_FetchFromTestServer(t *testing.T) {
 	<-done
 }
 
+func TestProvider_RunRejectsSecondStart(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	waitForProviderRunStarted(t, p)
+
+	err = p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestProvider_RunRejectsRestartAfterCancel(t *testing.T) {
+	key := testKey(t)
+	ks, err := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewProviderWithKeySet(ks,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	waitForProviderRunStarted(t, p)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	err = p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+}
+
+func waitForProviderRunStarted(t *testing.T, p *Provider) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		p.runMu.Lock()
+		started := p.started
+		p.runMu.Unlock()
+		if started {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Provider.Run did not start")
+}
+
 func TestProvider_Run_RetryOnFailure(t *testing.T) {
 	key := testKey(t)
 	jwksData := testJWKS(t, key, "kid-1")
@@ -808,7 +1507,9 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.Run(ctx)
+		if err := p.Run(ctx); err != nil {
+			t.Errorf("Run returned %v", err)
+		}
 		close(done)
 	}()
 
@@ -824,6 +1525,170 @@ func TestProvider_Run_RetryOnFailure(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestProviderFetch_RejectsAmbiguousContentType(t *testing.T) {
+	key := testKey(t)
+	jwksData := testJWKS(t, key, "kid-1")
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Content-Type", "application/json")
+		w.Header().Add("Content-Type", "text/html")
+		_, _ = w.Write(jwksData)
+	})
+	defer srv.Close()
+
+	p := NewProvider(srv.URL, srv.Client(), time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected ambiguous content-type error")
+	}
+	if !strings.Contains(err.Error(), "multiple content-type") {
+		t.Fatalf("expected multiple content-type error, got %v", err)
+	}
+	if p.KeySet() != nil {
+		t.Fatal("expected keyset to remain unset")
+	}
+}
+
+func TestProviderFetch_UnexpectedContentTypeDoesNotEchoHeader(t *testing.T) {
+	key := testKey(t)
+	jwksData := testJWKS(t, key, "kid-1")
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; token=secret-token")
+		_, _ = w.Write(jwksData)
+	})
+	defer srv.Close()
+
+	p := NewProvider(srv.URL, srv.Client(), time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected unexpected content-type error")
+	}
+	if !strings.Contains(err.Error(), "unexpected content-type") {
+		t.Fatalf("expected unexpected content-type error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "text/html") {
+		t.Fatalf("fetch error leaked content-type header: %v", err)
+	}
+	if p.KeySet() != nil {
+		t.Fatal("expected keyset to remain unset")
+	}
+}
+
+func TestProviderFetch_OversizedJWKSBodyUsesStableError(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), (64<<10)+1))
+	})
+	defer srv.Close()
+
+	p := NewProvider(srv.URL, srv.Client(), time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected oversized JWKS body error")
+	}
+	if !strings.Contains(err.Error(), "jwks body exceeds maximum size") {
+		t.Fatalf("expected stable oversized JWKS error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "65536") || strings.Contains(err.Error(), "65537") {
+		t.Fatalf("JWKS body error leaked size limits: %v", err)
+	}
+}
+
+func TestProviderFetch_DefaultClientBlocksRedirects(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	p := NewProvider(srv.URL, nil, time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if !errors.Is(err, ErrJWKSRedirectBlocked) {
+		t.Fatalf("fetch error = %v, want ErrJWKSRedirectBlocked", err)
+	}
+	if p.KeySet() != nil {
+		t.Fatal("expected keyset to remain unset")
+	}
+}
+
+func TestProviderFetch_CustomClientBlocksRedirectsByDefault(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	custom := srv.Client()
+	if custom.CheckRedirect != nil {
+		t.Fatal("test setup expected httptest client without redirect policy")
+	}
+	p := NewProvider(srv.URL, custom, time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if !errors.Is(err, ErrJWKSRedirectBlocked) {
+		t.Fatalf("fetch error = %v, want ErrJWKSRedirectBlocked", err)
+	}
+	if p.KeySet() != nil {
+		t.Fatal("expected keyset to remain unset")
+	}
+	if custom.CheckRedirect != nil {
+		t.Fatal("NewProvider must not mutate the caller's client")
+	}
+	if p.httpClient == custom {
+		t.Fatal("expected provider to use a cloned client with JWKS redirect policy")
+	}
+}
+
+func TestProviderFetch_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
+	srv := newTestJWKSServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jwks", http.StatusFound)
+	})
+	defer srv.Close()
+
+	custom := srv.Client()
+	custom.Timeout = time.Second
+	custom.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	p := NewProvider(srv.URL, custom, time.Hour,
+		WithAllowAnyIssuer(),
+		WithAllowAnyAudience(),
+		WithAllowInsecureURL())
+
+	err := p.fetch(context.Background())
+	if err == nil {
+		t.Fatal("expected non-200 redirect response error")
+	}
+	if errors.Is(err, ErrJWKSRedirectBlocked) {
+		t.Fatalf("fetch error = %v, did not expect ErrJWKSRedirectBlocked", err)
+	}
+	if !strings.Contains(err.Error(), "jwks endpoint returned 302") {
+		t.Fatalf("fetch error = %v, want 302 response error", err)
+	}
+	if p.KeySet() != nil {
+		t.Fatal("expected keyset to remain unset")
+	}
+	if p.httpClient != custom {
+		t.Fatal("expected provider to keep explicit custom redirect policy")
+	}
 }
 
 func TestVerify_NoPermissions(t *testing.T) {
@@ -899,6 +1764,9 @@ func TestPermissionsClaim_MalformedRejectsToken(t *testing.T) {
 		if !strings.Contains(err.Error(), "malformed permissions claim") {
 			t.Errorf("error must identify the malformed claim; got: %v", err)
 		}
+		if strings.Contains(err.Error(), "not-an-array") {
+			t.Errorf("error leaked malformed claim value: %v", err)
+		}
 	})
 
 	if !strings.Contains(captured, "level=WARN") {
@@ -906,6 +1774,9 @@ func TestPermissionsClaim_MalformedRejectsToken(t *testing.T) {
 	}
 	if !strings.Contains(captured, "permissions claim malformed") {
 		t.Errorf("expected permissions-claim warning, got: %s", captured)
+	}
+	if strings.Contains(captured, "not-an-array") {
+		t.Errorf("warning leaked malformed claim value: %s", captured)
 	}
 }
 
@@ -927,6 +1798,9 @@ func TestPermissionsClaim_NumericArrayElementRejectsToken(t *testing.T) {
 	_, err := ks.Verify(token, now)
 	if err == nil {
 		t.Fatal("expected verification to fail on numeric permissions element")
+	}
+	if strings.Contains(err.Error(), "element") || strings.Contains(err.Error(), "int") {
+		t.Fatalf("error leaked malformed permissions detail: %v", err)
 	}
 }
 
@@ -966,6 +1840,9 @@ func TestScopesClaim_MalformedRejectsToken(t *testing.T) {
 	_, err := ks.Verify(token, now)
 	if err == nil {
 		t.Fatal("expected verification to fail on numeric scopes claim")
+	}
+	if strings.Contains(err.Error(), "42") || strings.Contains(err.Error(), "int") {
+		t.Fatalf("error leaked malformed scopes detail: %v", err)
 	}
 }
 
@@ -1039,6 +1916,12 @@ func TestDefaultHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type staticJWKSTransport struct{}
+
+func (*staticJWKSTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+}
 
 // TestNewProviderWithKeySet_DoesNotMutateSharedKeySet exercises the R4 bug:
 // when two providers share one parsed *KeySet, constructing the second
@@ -1182,3 +2065,5 @@ func TestProvider_Verify_KeySetUnavailable(t *testing.T) {
 		t.Fatalf("expected ErrKeySetUnavailable when keyset is stale; got %v", err)
 	}
 }
+
+func nilContextForTest() context.Context { return nil }

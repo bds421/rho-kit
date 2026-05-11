@@ -12,22 +12,31 @@ import (
 var _ slog.LogValuer = RabbitMQConfig{}
 
 func TestRabbitMQConfig_LogValue_Redacts(t *testing.T) {
-	cfg := RabbitMQConfig{URL: "amqp://user:pass@localhost:5672/vhost"}
+	cfg := RabbitMQConfig{URL: "amqp://token-user:rabbit-secret@tenant-rabbit.internal:5672/tenant-vhost?token=query-secret#frag"}
 	val := cfg.LogValue()
 	s := val.String()
-	assert.NotContains(t, s, "pass")
-	assert.Contains(t, s, "localhost")
+	assert.NotContains(t, s, "token-user")
+	assert.NotContains(t, s, "rabbit-secret")
+	assert.NotContains(t, s, "query-secret")
+	assert.NotContains(t, s, "tenant-rabbit.internal")
+	assert.NotContains(t, s, "tenant-vhost")
+	assert.Contains(t, s, "url_configured=true")
+	assert.Contains(t, s, "url_valid=true")
+	assert.Contains(t, s, "host_configured=true")
+	assert.Contains(t, s, "user_configured=true")
+	assert.Contains(t, s, "password_configured=true")
+	assert.Contains(t, s, "vhost_configured=true")
 }
 
 func TestRabbitMQConfig_LogValue_InvalidURL(t *testing.T) {
 	cfg := RabbitMQConfig{URL: "://invalid"}
 	val := cfg.LogValue()
-	assert.Equal(t, "[INVALID URL]", val.String())
+	assert.Contains(t, val.String(), "url_valid=false")
 }
 
 func TestRabbitMQConfig_LogValue_NotConfigured(t *testing.T) {
 	cfg := RabbitMQConfig{}
-	assert.Equal(t, "[NOT CONFIGURED]", cfg.LogValue().String())
+	assert.Contains(t, cfg.LogValue().String(), "url_configured=false")
 }
 
 func TestRabbitMQConfig_AMQPURL_FromURL(t *testing.T) {
@@ -175,6 +184,12 @@ func TestValidateAMQPURL(t *testing.T) {
 		{"valid amqp", "amqp://user:pass@localhost:5672/", false},
 		{"valid amqps", "amqps://user:pass@host:5671/", false},
 		{"empty", "", true},
+		{"missing host", "amqps:///vhost", true},
+		{"empty hostname", "amqps://user:pass@:5671/vhost", true},
+		{"empty port", "amqps://user:pass@host:/vhost", true},
+		{"zero port", "amqps://user:pass@host:0/vhost", true},
+		{"too large port", "amqps://user:pass@host:65536/vhost", true},
+		{"zone identifier", "amqps://user:pass@[fe80::1%25lo0]:5671/vhost", true},
 		{"wrong scheme http", "http://localhost:5672/", true},
 		{"wrong scheme ftp", "ftp://localhost/", true},
 	}
@@ -188,4 +203,20 @@ func TestValidateAMQPURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateAMQPURL_ParseErrorDoesNotEchoValue(t *testing.T) {
+	err := ValidateAMQPURL("TEST_URL", "amqps://rabbit/%zz?token=secret-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TEST_URL is invalid")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "token=")
+	assert.NotContains(t, err.Error(), "%zz")
+}
+
+func TestValidateAMQPURL_SchemeErrorDoesNotEchoValue(t *testing.T) {
+	err := ValidateAMQPURL("TEST_URL", "secret-token://rabbit")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TEST_URL scheme must be amqp or amqps")
+	assert.NotContains(t, err.Error(), "secret-token")
 }

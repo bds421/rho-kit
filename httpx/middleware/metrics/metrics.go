@@ -23,12 +23,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	mw "github.com/bds421/rho-kit/httpx/v2/middleware"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // HTTPMetrics holds Prometheus collectors for HTTP request monitoring.
@@ -83,28 +85,54 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := mw.NewResponseRecorder(w)
 
+		defer func() {
+			recovered := recover()
+
+			// Hijacked connections (WebSocket upgrades) bypass HTTP semantics —
+			// the recorder's StatusCode is meaningless. Skip metric recording.
+			if rec.WasHijacked() {
+				if recovered != nil {
+					panic(recovered)
+				}
+				return
+			}
+
+			statusCode := rec.Status()
+			if recovered != nil && !rec.WroteHeader() {
+				statusCode = http.StatusInternalServerError
+			}
+
+			duration := time.Since(start).Seconds()
+			method := promutil.HTTPMethodLabel(r.Method)
+			status := strconv.Itoa(statusCode)
+
+			// Use r.Pattern (Go 1.22+) to get the registered route pattern
+			// instead of r.URL.Path which would cause cardinality explosion.
+			path := routePatternLabel(r.Pattern)
+
+			m.requestsTotal.WithLabelValues(method, path, status).Inc()
+			m.requestDuration.WithLabelValues(method, path).Observe(duration)
+
+			if recovered != nil {
+				panic(recovered)
+			}
+		}()
+
 		next.ServeHTTP(rec, r)
-
-		// Hijacked connections (WebSocket upgrades) bypass HTTP semantics —
-		// the recorder's StatusCode is meaningless. Skip metric recording.
-		if rec.WasHijacked() {
-			return
-		}
-
-		duration := time.Since(start).Seconds()
-		method := r.Method
-		status := strconv.Itoa(rec.Status())
-
-		// Use r.Pattern (Go 1.22+) to get the registered route pattern
-		// instead of r.URL.Path which would cause cardinality explosion.
-		path := r.Pattern
-		if path == "" {
-			path = "unmatched"
-		}
-
-		m.requestsTotal.WithLabelValues(method, path, status).Inc()
-		m.requestDuration.WithLabelValues(method, path).Observe(duration)
 	})
+}
+
+func routePatternLabel(pattern string) string {
+	if pattern == "" {
+		return "unmatched"
+	}
+	if method, rest, ok := strings.Cut(pattern, " "); ok && promutil.HTTPMethodLabel(method) == method && rest != "" {
+		pattern = rest
+	}
+	if err := promutil.ValidateStaticLabelValue("path", pattern); err != nil {
+		return "invalid"
+	}
+	return pattern
 }
 
 var (
@@ -130,7 +158,7 @@ func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.C
 		if errors.As(err, &are) {
 			return are.ExistingCollector
 		}
-		panic(err)
+		panic("httpx/metrics: metric registration failed")
 	}
 	return c
 }

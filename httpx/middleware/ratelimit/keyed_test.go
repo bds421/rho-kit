@@ -1,8 +1,11 @@
 package ratelimit
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,6 +90,167 @@ func TestKeyedRateLimiter_Cleanup(t *testing.T) {
 	}
 }
 
+func TestValidateKeyRejectsUnsafeKeys(t *testing.T) {
+	tests := map[string]string{
+		"empty":        "",
+		"too long":     strings.Repeat("a", MaxKeyBytes+1),
+		"null":         "tenant\x00a",
+		"newline":      "tenant\na",
+		"carriage":     "tenant\ra",
+		"space":        "tenant a",
+		"tab":          "tenant\ta",
+		"invalid utf8": string([]byte{0xff}),
+	}
+	for name, key := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateKey(key)
+			if !errors.Is(err, ErrInvalidKey) {
+				t.Fatalf("ValidateKey(%q) did not return ErrInvalidKey", key)
+			}
+			if name == "too long" && (strings.Contains(err.Error(), "256") || strings.Contains(err.Error(), "257")) {
+				t.Fatalf("key length error leaked limits: %v", err)
+			}
+		})
+	}
+}
+
+func TestKeyedRateLimiter_AllowKeyRejectsInvalidKeysWithoutStoring(t *testing.T) {
+	rl := NewKeyedRateLimiter(1, time.Minute)
+
+	allowed, retryAfter, err := rl.AllowKey(strings.Repeat("a", MaxKeyBytes+1))
+	if allowed {
+		t.Fatal("invalid key should not be allowed")
+	}
+	if retryAfter != 0 {
+		t.Fatalf("retryAfter = %d, want 0 for invalid key", retryAfter)
+	}
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("AllowKey error = %v, want ErrInvalidKey", err)
+	}
+	if strings.Contains(err.Error(), "256") || strings.Contains(err.Error(), "257") {
+		t.Fatalf("AllowKey error leaked key lengths: %v", err)
+	}
+	if got := keyedEntryCount(rl); got != 0 {
+		t.Fatalf("invalid key was stored; entries = %d", got)
+	}
+}
+
+func TestKeyedRateLimiter_AllowFailsClosedOnInvalidKey(t *testing.T) {
+	rl := NewKeyedRateLimiter(1, time.Minute)
+
+	allowed, retryAfter := rl.Allow("")
+	if allowed {
+		t.Fatal("invalid key should fail closed")
+	}
+	if retryAfter < 1 {
+		t.Fatalf("retryAfter = %d, want >= 1", retryAfter)
+	}
+	if got := keyedEntryCount(rl); got != 0 {
+		t.Fatalf("invalid key was stored; entries = %d", got)
+	}
+}
+
+func TestKeyedRateLimiter_AllowKeyRejectsUninitializedLimiter(t *testing.T) {
+	var zero KeyedRateLimiter
+	_, _, err := zero.AllowKey("key")
+	if !errors.Is(err, ErrInvalidLimiter) {
+		t.Fatalf("AllowKey error = %v, want ErrInvalidLimiter", err)
+	}
+}
+
+func TestKeyedRateLimiter_RunStopsOnCancel(t *testing.T) {
+	rl := NewKeyedRateLimiter(5, 10*time.Millisecond)
+	_, _, err := rl.AllowKey("key")
+	if err != nil {
+		t.Fatalf("AllowKey returned %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rl.Run(ctx) }()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop after context cancel")
+	}
+}
+
+func TestKeyedRateLimiter_RunRejectsNilContext(t *testing.T) {
+	rl := NewKeyedRateLimiter(5, 10*time.Millisecond)
+	var ctx context.Context
+	err := rl.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
+		t.Fatalf("expected non-nil context error, got %v", err)
+	}
+}
+
+func TestKeyedRateLimiter_RunRejectsInvalidLimiter(t *testing.T) {
+	var rl KeyedRateLimiter
+	if err := rl.Run(context.Background()); !errors.Is(err, ErrInvalidLimiter) {
+		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
+	}
+}
+
+func TestKeyedRateLimiter_RunRejectsSecondStart(t *testing.T) {
+	rl := NewKeyedRateLimiter(5, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rl.Run(ctx) }()
+	waitForKeyedRateLimiterRunStarted(t, rl)
+
+	err := rl.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+}
+
+func TestKeyedRateLimiter_RunRejectsRestartAfterCancel(t *testing.T) {
+	rl := NewKeyedRateLimiter(5, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rl.Run(ctx) }()
+	waitForKeyedRateLimiterRunStarted(t, rl)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	err := rl.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected already started error, got %v", err)
+	}
+}
+
+func waitForKeyedRateLimiterRunStarted(t *testing.T, rl *KeyedRateLimiter) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rl.runMu.Lock()
+		started := rl.started
+		rl.runMu.Unlock()
+		if started {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("KeyedRateLimiter.Run did not start")
+}
+
 func TestKeyedRateLimitMiddleware(t *testing.T) {
 	rl := NewKeyedRateLimiter(2, time.Minute)
 
@@ -127,6 +291,73 @@ func TestKeyedRateLimitMiddleware(t *testing.T) {
 	}
 }
 
+func TestKeyedRateLimitMiddleware_InvalidKeyReturns400WithoutStoring(t *testing.T) {
+	rl := NewKeyedRateLimiter(2, time.Minute)
+	called := false
+	handler := KeyedRateLimitMiddleware(rl, func(r *http.Request) string {
+		return r.Header.Get("X-API-Key")
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", strings.Repeat("a", MaxKeyBytes+1))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler must not run for invalid rate-limit keys")
+	}
+	if got := keyedEntryCount(rl); got != 0 {
+		t.Fatalf("invalid key was stored; entries = %d", got)
+	}
+}
+
+func TestKeyedRateLimitMiddleware_PanicsOnNilInputs(t *testing.T) {
+	t.Run("nil limiter", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on nil limiter")
+			}
+		}()
+		KeyedRateLimitMiddleware(nil, func(*http.Request) string { return "key" })
+	})
+	t.Run("nil key func", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on nil key func")
+			}
+		}()
+		KeyedRateLimitMiddleware(NewKeyedRateLimiter(1, time.Minute), nil)
+	})
+}
+
+func TestKeyedRateLimitMiddleware_KeyFuncPanicReturns503(t *testing.T) {
+	rl := NewKeyedRateLimiter(2, time.Minute)
+	called := false
+	handler := KeyedRateLimitMiddleware(rl, func(*http.Request) string {
+		panic("key failed")
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler must not run when key function panics")
+	}
+}
+
 func TestWithKeyedClock_PanicsOnNil(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -134,4 +365,24 @@ func TestWithKeyedClock_PanicsOnNil(t *testing.T) {
 		}
 	}()
 	_ = WithKeyedClock(nil)
+}
+
+func TestNewKeyedRateLimiter_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_ = NewKeyedRateLimiter(1, time.Minute, nil)
+}
+
+func keyedEntryCount(rl *KeyedRateLimiter) int {
+	var count int
+	for i := range rl.shards {
+		s := &rl.shards[i]
+		s.mu.Lock()
+		count += s.entries.Len()
+		s.mu.Unlock()
+	}
+	return count
 }

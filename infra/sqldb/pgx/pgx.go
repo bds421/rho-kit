@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -88,12 +89,38 @@ type Config struct {
 	HealthCheckPeriod time.Duration
 }
 
+// LogValue implements slog.LogValuer to prevent accidental logging of
+// database credentials embedded in DSNs.
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("dsn_configured", c.DSN != ""),
+		slog.Bool("allow_plaintext_loopback_for_tests", c.AllowPlaintextLoopbackForTests),
+		slog.Bool("allow_sslmode_require", c.AllowSSLModeRequire),
+		slog.Int("max_conns", int(c.MaxConns)),
+		slog.Int("min_conns", int(c.MinConns)),
+		slog.Duration("max_conn_lifetime", c.MaxConnLifetime),
+		slog.Duration("max_conn_idle_time", c.MaxConnIdleTime),
+		slog.Duration("health_check_period", c.HealthCheckPeriod),
+	)
+}
+
 // Pool wraps *pgxpool.Pool. Use [Pool.Pool] to access the underlying
 // pgxpool for advanced operations the kit doesn't expose directly.
 type Pool struct {
 	pool *pgxpool.Pool
 	dsn  string
 }
+
+const (
+	// MaxCopyRows caps one COPY helper call. Larger imports should chunk so
+	// cancellation, retries, and resource usage stay predictable.
+	MaxCopyRows = 100_000
+	// MaxCopyColumns caps the COPY column list to a portable schema shape.
+	MaxCopyColumns = 256
+	// maxCopyIdentifierBytes matches PostgreSQL's default identifier length
+	// before server-side truncation, avoiding surprising quoted identifiers.
+	maxCopyIdentifierBytes = 63
+)
 
 // Connect parses cfg, enforces TLS, and constructs a pool. Validation
 // errors include the offending knob so misconfigurations surface at
@@ -107,6 +134,9 @@ type Pool struct {
 // values. Parsing first, enforcing on the parsed config, eliminates
 // that class of bug.
 func Connect(ctx context.Context, cfg Config) (*Pool, error) {
+	if ctx == nil {
+		return nil, errors.New("pgx: Connect requires a non-nil context")
+	}
 	if cfg.DSN == "" {
 		return nil, errors.New("pgx: DSN must not be empty")
 	}
@@ -153,10 +183,18 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 // Pool returns the underlying pgxpool. Use sparingly — anything the
 // kit wants to be opinionated about should grow a method on [Pool]
 // instead.
-func (p *Pool) Pool() *pgxpool.Pool { return p.pool }
+func (p *Pool) Pool() *pgxpool.Pool {
+	if p == nil {
+		return nil
+	}
+	return p.pool
+}
 
 // Close releases all pool connections. Safe to call multiple times.
 func (p *Pool) Close() error {
+	if p == nil {
+		return nil
+	}
 	if p.pool != nil {
 		p.pool.Close()
 	}
@@ -166,7 +204,7 @@ func (p *Pool) Close() error {
 // Ping issues a no-op query to verify the pool is live. Use in
 // readiness probes.
 func (p *Pool) Ping(ctx context.Context) error {
-	if p.pool == nil {
+	if p == nil || p.pool == nil {
 		return errors.New("pgx: pool is closed")
 	}
 	return p.pool.Ping(ctx)
@@ -185,7 +223,7 @@ func (p *Pool) Ping(ctx context.Context) error {
 // For < 1000 rows, a parameterized INSERT is usually faster because
 // it amortizes connection setup.
 func (p *Pool) Copy(ctx context.Context, table string, columns []string, rows [][]any) (int64, error) {
-	if p.pool == nil {
+	if p == nil || p.pool == nil {
 		return 0, errors.New("pgx: pool is closed")
 	}
 	if table == "" {
@@ -198,6 +236,12 @@ func (p *Pool) Copy(ctx context.Context, table string, columns []string, rows []
 	if err != nil {
 		return 0, err
 	}
+	if err := validateCopyColumns(columns); err != nil {
+		return 0, err
+	}
+	if err := validateCopyRows(columns, rows); err != nil {
+		return 0, err
+	}
 	return p.pool.CopyFrom(ctx,
 		ident,
 		columns,
@@ -207,23 +251,61 @@ func (p *Pool) Copy(ctx context.Context, table string, columns []string, rows []
 
 // parseCopyIdentifier splits a possibly schema-qualified table name into
 // a pgx.Identifier whose Sanitize() emits "schema"."table". A single
-// segment is returned as a one-element identifier. Any segment that is
-// empty or contains an embedded dot/quote is rejected so callers cannot
-// accidentally smuggle SQL through the identifier path.
+// segment is returned as a one-element identifier. Each segment must be a
+// portable PostgreSQL identifier so callers cannot accidentally rely on
+// server-side truncation or quoted punctuation.
 func parseCopyIdentifier(table string) (pgx.Identifier, error) {
 	parts := strings.Split(table, ".")
 	if len(parts) > 2 {
-		return nil, fmt.Errorf("pgx: COPY table %q must be either \"name\" or \"schema.name\"", table)
+		return nil, fmt.Errorf("pgx: COPY table must be either \"name\" or \"schema.name\"")
 	}
 	for _, p := range parts {
-		if p == "" {
-			return nil, fmt.Errorf("pgx: COPY table %q has an empty schema or name component", table)
-		}
-		if strings.ContainsAny(p, "\"\x00") {
-			return nil, fmt.Errorf("pgx: COPY table %q contains an invalid character", table)
+		if !validCopyIdentifierSegment(p) {
+			return nil, fmt.Errorf("pgx: COPY table contains an invalid identifier")
 		}
 	}
 	return pgx.Identifier(parts), nil
+}
+
+func validateCopyColumns(columns []string) error {
+	if len(columns) > MaxCopyColumns {
+		return fmt.Errorf("pgx: COPY column count exceeds maximum")
+	}
+	for _, column := range columns {
+		if !validCopyIdentifierSegment(column) {
+			return fmt.Errorf("pgx: COPY column contains an invalid identifier")
+		}
+	}
+	return nil
+}
+
+func validateCopyRows(columns []string, rows [][]any) error {
+	if len(rows) > MaxCopyRows {
+		return fmt.Errorf("pgx: COPY row count exceeds maximum")
+	}
+	for _, row := range rows {
+		if len(row) != len(columns) {
+			return fmt.Errorf("pgx: COPY row width must match column count")
+		}
+	}
+	return nil
+}
+
+func validCopyIdentifierSegment(s string) bool {
+	if s == "" || len(s) > maxCopyIdentifierBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Notification is the kit-stable shape of a LISTEN/NOTIFY delivery.
@@ -244,8 +326,11 @@ type Notification struct {
 // the second result channel; callers that need transparent
 // reconnection should wrap Listen in a backoff loop.
 func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notification, <-chan error, error) {
-	if p.pool == nil {
+	if p == nil || p.pool == nil {
 		return nil, nil, errors.New("pgx: pool is closed")
+	}
+	if ctx == nil {
+		return nil, nil, errors.New("pgx: Listen requires a non-nil context")
 	}
 	if len(channels) == 0 {
 		return nil, nil, errors.New("pgx: Listen requires at least one channel")
@@ -259,7 +344,7 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 	for _, ch := range channels {
 		if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{ch}.Sanitize()); err != nil {
 			conn.Release()
-			return nil, nil, fmt.Errorf("pgx: LISTEN %q: %w", ch, err)
+			return nil, nil, fmt.Errorf("pgx: LISTEN failed: %w", err)
 		}
 	}
 
@@ -272,10 +357,10 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 			// UNLISTEN before releasing the connection back to the
 			// pool. Without this, the next pool acquirer reuses a
 			// connection that is still subscribed to our channels and
-			// receives stray notifications. Use a fresh background ctx
-			// because the parent ctx is typically cancelled at this
-			// point.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// receives stray notifications. The cleanup context
+			// survives parent cancellation while retaining context
+			// values for pgx hooks and observability wrappers.
+			cleanupCtx, cancel := listenCleanupContext(ctx, 2*time.Second)
 			_, _ = conn.Exec(cleanupCtx, "UNLISTEN *")
 			cancel()
 			conn.Release()
@@ -297,10 +382,17 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 	return out, errCh, nil
 }
 
+func listenCleanupContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
 // Notify sends a NOTIFY on channel with the given payload. Acquires
 // one connection from the pool for the round trip.
 func (p *Pool) Notify(ctx context.Context, channel, payload string) error {
-	if p.pool == nil {
+	if p == nil || p.pool == nil {
 		return errors.New("pgx: pool is closed")
 	}
 	if channel == "" {
@@ -362,10 +454,10 @@ func requireLoopbackHost(host string) error {
 	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	ip := net.ParseIP(stripped)
 	if ip == nil {
-		return fmt.Errorf("DSN host %q is not a loopback address", host)
+		return fmt.Errorf("DSN host is not a loopback address")
 	}
 	if !ip.IsLoopback() {
-		return fmt.Errorf("DSN host %q is not a loopback address", host)
+		return fmt.Errorf("DSN host is not a loopback address")
 	}
 	return nil
 }

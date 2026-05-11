@@ -31,12 +31,25 @@ func scan(root string, ruleSet []rules.Rule) ([]rules.Finding, error) {
 			return err
 		}
 		if d.IsDir() {
+			if filepath.Clean(path) == filepath.Clean(root) {
+				return nil
+			}
 			if d.Name() == "vendor" || d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			findings = append(findings, rules.Finding{
+				Rule:     "symlinked-go-file",
+				Severity: rules.Warning,
+				File:     path,
+				Line:     0,
+				Message:  "symlinked Go file skipped to keep scan inside root",
+			})
 			return nil
 		}
 		gen, genErr := isGeneratedFile(path)

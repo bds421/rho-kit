@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,21 +19,32 @@ var _ storage.Lister = (*LocalBackend)(nil)
 // Objects are discovered via filepath.WalkDir under the root directory.
 func (b *LocalBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
-		if prefix != "" {
-			if err := storage.ValidatePrefix(prefix); err != nil {
-				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
-				return
-			}
+		if err := storage.ValidatePrefix(prefix); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+			return
+		}
+		if err := storage.ValidateListOptions(opts); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+			return
 		}
 
 		walkRoot := b.root
+		if err := b.rejectSymlinkPath(walkRoot); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: unsafe root: %w", err))
+			return
+		}
 		if prefix != "" {
-			walkRoot = filepath.Join(b.root, filepath.FromSlash(prefix))
-			// Verify the resolved path is still under root to prevent traversal.
-			cleanWalk := filepath.Clean(walkRoot)
-			cleanRoot := filepath.Clean(b.root)
-			if cleanWalk != cleanRoot && !strings.HasPrefix(cleanWalk+string(filepath.Separator), cleanRoot+string(filepath.Separator)) {
-				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: prefix escapes root directory"))
+			var err error
+			walkRoot, err = b.keyPath(strings.TrimSuffix(prefix, "/"))
+			if err != nil {
+				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+				return
+			}
+			if err := b.rejectSymlinkPath(walkRoot); err != nil {
+				if os.IsNotExist(err) {
+					return
+				}
+				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: unsafe prefix: %w", err))
 				return
 			}
 		}
@@ -50,7 +62,7 @@ func (b *LocalBackend) List(ctx context.Context, prefix string, opts storage.Lis
 				}
 				// Surface permission errors and other non-trivial walk errors
 				// so callers can distinguish "no results" from "access denied".
-				if !yield(storage.ObjectInfo{}, walkErr) {
+				if !yield(storage.ObjectInfo{}, localFileError("walk object", walkErr)) {
 					stopped = true
 					return fs.SkipAll
 				}
@@ -61,11 +73,18 @@ func (b *LocalBackend) List(ctx context.Context, prefix string, opts storage.Lis
 			if d.IsDir() {
 				return nil
 			}
+			if d.Type()&os.ModeSymlink != 0 {
+				if !yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: refusing symlink object")) {
+					stopped = true
+					return fs.SkipAll
+				}
+				return nil
+			}
 
 			// Convert absolute path back to storage key.
 			rel, err := filepath.Rel(b.root, path)
 			if err != nil {
-				return err
+				return localPathError("resolve object path")
 			}
 			key := filepath.ToSlash(rel)
 
@@ -81,7 +100,7 @@ func (b *LocalBackend) List(ctx context.Context, prefix string, opts storage.Lis
 
 			info, err := d.Info()
 			if err != nil {
-				return err
+				return localFileError("inspect object", err)
 			}
 
 			obj := storage.ObjectInfo{

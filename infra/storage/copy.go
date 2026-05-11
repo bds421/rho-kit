@@ -8,9 +8,10 @@ import (
 
 // Copier is an optional extension for backends that support native
 // server-side copy (e.g. S3 CopyObject, local filesystem copy).
-// Check capability via type assertion:
+// Check capability via [AsCopier] so decorators with [Unwrapper] support are
+// handled consistently:
 //
-//	if c, ok := backend.(storage.Copier); ok {
+//	if c, ok := storage.AsCopier(backend); ok {
 //	    err := c.Copy(ctx, "src.txt", "dst.txt")
 //	}
 type Copier interface {
@@ -23,6 +24,9 @@ type Copier interface {
 // If the backend implements [Copier], the native copy is used.
 // Otherwise, it falls back to Get → Put.
 func Copy(ctx context.Context, s Storage, srcKey, dstKey string) error {
+	if s == nil {
+		return fmt.Errorf("storage.Copy: backend is required")
+	}
 	if err := ValidateKey(srcKey); err != nil {
 		return fmt.Errorf("storage.Copy: invalid source key: %w", err)
 	}
@@ -30,7 +34,7 @@ func Copy(ctx context.Context, s Storage, srcKey, dstKey string) error {
 		return fmt.Errorf("storage.Copy: invalid destination key: %w", err)
 	}
 
-	if c, ok := s.(Copier); ok {
+	if c, ok := AsCopier(s); ok {
 		return c.Copy(ctx, srcKey, dstKey)
 	}
 
@@ -55,6 +59,12 @@ func Move(ctx context.Context, s Storage, srcKey, dstKey string) error {
 // CopyAcross transfers an object from one backend to another.
 // Always uses Get(src) → Put(dst) since the backends may be different types.
 func CopyAcross(ctx context.Context, src Storage, srcKey string, dst Storage, dstKey string) error {
+	if src == nil {
+		return fmt.Errorf("storage.CopyAcross: source backend is required")
+	}
+	if dst == nil {
+		return fmt.Errorf("storage.CopyAcross: destination backend is required")
+	}
 	if err := ValidateKey(srcKey); err != nil {
 		return fmt.Errorf("storage.CopyAcross: invalid source key: %w", err)
 	}
@@ -66,9 +76,15 @@ func CopyAcross(ctx context.Context, src Storage, srcKey string, dst Storage, ds
 
 // genericCopy performs Get from src → Put to dst, passing through ObjectMeta.
 func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, dstKey string) error {
+	if src == nil {
+		return fmt.Errorf("source backend is required")
+	}
+	if dst == nil {
+		return fmt.Errorf("destination backend is required")
+	}
 	rc, meta, err := src.Get(ctx, srcKey)
 	if err != nil {
-		return fmt.Errorf("get source %q: %w", srcKey, err)
+		return fmt.Errorf("get source: %w", err)
 	}
 	defer func() { _ = rc.Close() }()
 
@@ -79,29 +95,10 @@ func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, d
 	// backends mutating the map cannot corrupt the source's view —
 	// the same fix already applied in the encryption + migration copy
 	// paths, brought to the generic Copy.
-	putMeta := ObjectMeta{
-		ContentType: meta.ContentType,
-		Size:        meta.Size,
-		Custom:      cloneCustomMeta(meta.Custom),
-	}
+	putMeta := CloneObjectMeta(meta)
 
 	if err := dst.Put(ctx, dstKey, io.Reader(rc), putMeta); err != nil {
-		return fmt.Errorf("put destination %q: %w", dstKey, err)
+		return fmt.Errorf("put destination: %w", err)
 	}
 	return nil
-}
-
-// cloneCustomMeta returns a shallow copy of the custom-metadata map
-// (audit FR-081). Storage copy paths previously aliased the source's
-// map, so a destination validator/backend mutating it would also
-// corrupt the source's view and make retries order-dependent.
-func cloneCustomMeta(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }

@@ -80,7 +80,56 @@ A divergent version pin (e.g. `app` pins `crypto/envelope v1.2.0`
 while `crypto/paseto` pins `crypto/envelope v1.1.0` transitively)
 produces an NX-Release validation error and blocks the release.
 
-### 1.4 Verifying the policy
+### 1.4 Direct dependency source allowlist
+
+Every non-rho-kit direct Go dependency must appear in
+[`dependency-allowlist.txt`](dependency-allowlist.txt). The allowlist
+uses exact module paths only; wildcard domains such as `github.com/*`
+are intentionally unsupported. Internal modules under
+`github.com/bds421/rho-kit/` are allowed implicitly because `go.work`
+and local `replace` directives keep them in-tree.
+
+CI runs:
+
+```bash
+make check-dependency-allowlist
+```
+
+That target invokes
+[`tools/check-direct-dependency-allowlist.sh`](../../tools/check-direct-dependency-allowlist.sh),
+which scans every tracked or newly-added `go.mod`, extracts direct
+`require` entries, fails on unreviewed module paths, and also fails on
+stale allowlist entries. This makes the allowlist an exact review
+ledger: adding a direct dependency requires a policy diff in the same
+PR, and removing a direct dependency shrinks the trusted source set.
+
+Transitive dependencies are not listed here. They are covered by the
+SBOM, `govulncheck`, `osv-scanner`, and license policy (§5, §7, §8).
+
+### 1.5 Heavy dependency boundary guard
+
+Some dependencies are approved sources but still must remain isolated to
+adapter-specific modules. Redis, pgx, cloud-storage SDKs, cloud-KMS SDKs,
+messaging SDKs, OpenFGA, Temporal, River, and Testcontainers must not
+quietly move into generic modules such as `core`, `data`, `infra`, or
+`httpx`.
+
+CI runs:
+
+```bash
+make check-dependency-boundaries
+```
+
+That target invokes
+[`tools/check-heavy-dependency-boundaries.sh`](../../tools/check-heavy-dependency-boundaries.sh),
+which scans every tracked or newly-added `go.mod` and rejects direct
+edges to those dependency clusters unless the module is the matching
+adapter, the `app` composition root where explicitly allowed, or an
+integration/test helper module. If a new adapter boundary is intentional,
+the PR must update the gate with reviewer sign-off instead of relying on
+comments in `go.mod`.
+
+### 1.6 Verifying the policy
 
 ```bash
 # Find any pseudo-versions in go.sum:
@@ -94,6 +143,12 @@ grep -h "^go " */go.mod */*/go.mod | sort -u
 
 # List toolchain versions across modules (same):
 grep -h "^toolchain " */go.mod */*/go.mod | sort -u
+
+# Check reviewed direct dependency sources:
+make check-dependency-allowlist
+
+# Check heavy optional SDKs stay behind adapter/test boundaries:
+make check-dependency-boundaries
 ```
 
 CI runs the equivalent checks in [`ci.yml`](../../.github/workflows/ci.yml)'s
@@ -200,9 +255,16 @@ Every Dependabot PR must pass before merge:
 - [ ] CI green: lint, test, build, **vuln, sbom**.
 - [ ] The dep's release notes have been read by the reviewer (link
       is in the PR body — added by Dependabot's `include-changelog: true`).
-- [ ] If the dep introduces a new transitive dep, that dep is on
-      the allowed list (§8) — checked manually until the
-      allowed-list CI rule lands (see THREAT_MODEL §8 GAP-10).
+- [ ] If the PR introduces a new direct Go dependency, the same PR
+      updates `docs/audit/dependency-allowlist.txt`; CI enforces this
+      via `make check-dependency-allowlist`.
+- [ ] If the PR moves Redis, pgx, cloud, messaging, KMS, OpenFGA,
+      Temporal, River, or Testcontainers deps into a new module, the
+      module boundary is reviewed and `make check-dependency-boundaries`
+      still passes.
+- [ ] New transitive deps are reviewed through SBOM / vuln / license
+      output; promote a transitive dep to the direct allowlist only if
+      a module starts requiring it directly.
 - [ ] If the dep is one of the kit's "tier-1" deps (anything in
       `crypto/`, `golang.org/x/crypto`, `golang.org/x/net`, `gopkg.in/jose`,
       `github.com/lestrrat-go/jwx`, anything below the cgo
@@ -605,6 +667,8 @@ they can downgrade a dep version. Mitigation:
 
 | Date | Author | Change |
 |---|---|---|
+| 2026-05 | Theme-6+ hardening | Added heavy optional SDK boundary enforcement through `make check-dependency-boundaries`. |
+| 2026-05 | Theme-6+ hardening | Added exact direct Go dependency source allowlist and CI enforcement through `make check-dependency-allowlist`. |
 | 2026-05 | Theme-5 author | Initial supply-chain policy document. Pinning policy, replace-directive rationale, dependabot cadence, build flags, CycloneDX SBOM, key inventory, vuln-response SLO, license allowlist, security contact. Forward-references to Theme 5.1 (Sigstore signing, license-allowlist CI rule). |
 
 ---

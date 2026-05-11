@@ -15,13 +15,18 @@ const (
 	MetricAllocs Metric = "allocs/op"
 )
 
+var supportedMetrics = [...]Metric{MetricNs, MetricBytes, MetricAllocs}
+
 // SupportedMetrics enumerates every Metric the tool understands.
-// parseFailOn validates user input against this list.
-var SupportedMetrics = []Metric{MetricNs, MetricBytes, MetricAllocs}
+// It returns a detached copy so callers cannot mutate the process-wide
+// validation set.
+func SupportedMetrics() []Metric {
+	return append([]Metric(nil), supportedMetrics[:]...)
+}
 
 // IsValidMetric reports whether m is one of SupportedMetrics.
 func IsValidMetric(m Metric) bool {
-	for _, s := range SupportedMetrics {
+	for _, s := range supportedMetrics {
 		if s == m {
 			return true
 		}
@@ -36,7 +41,7 @@ type Diff struct {
 	Baseline         float64
 	Current          float64
 	PctChange        float64 // (current - baseline) / baseline * 100; 0 when baseline is 0
-	Regressed        bool    // true when PctChange exceeds the configured threshold OR baseline was zero and current is positive
+	Regressed        bool    // true when a tracked metric regressed, starts from zero, or its benchmark is missing
 	NewBench         bool    // present in current but not baseline
 	MissingBench     bool    // present in baseline but absent in current
 	ZeroBaseline     bool    // baseline was zero and current is positive — regression has no percentage but an absolute increase
@@ -45,8 +50,9 @@ type Diff struct {
 
 // Compare aligns baseline against current by name and produces a Diff
 // per (benchmark, metric) pair tracked in `metrics`. A Diff is marked
-// Regressed when its PctChange exceeds thresholdPct AND the metric
-// appears in `failOn`.
+// Regressed when the metric appears in `failOn` and its PctChange
+// exceeds thresholdPct, the baseline was zero and current is positive,
+// or the benchmark is missing from current output.
 func Compare(baseline, current []Result, metrics []Metric, failOn map[Metric]struct{}, thresholdPct float64) []Diff {
 	baseByName := indexByName(baseline)
 	curByName := indexByName(current)
@@ -58,7 +64,14 @@ func Compare(baseline, current []Result, metrics []Metric, failOn map[Metric]str
 			seen[name] = true
 			c, ok := curByName[name]
 			if !ok {
-				out = append(out, Diff{Name: name, Metric: m, Baseline: getMetric(b, m), MissingBench: true})
+				_, track := failOn[m]
+				out = append(out, Diff{
+					Name:         name,
+					Metric:       m,
+					Baseline:     getMetric(b, m),
+					MissingBench: true,
+					Regressed:    track,
+				})
 				continue
 			}
 			out = append(out, mkDiff(name, m, b, c, failOn, thresholdPct))
@@ -127,6 +140,8 @@ func Format(diffs []Diff) string {
 	for _, d := range diffs {
 		status := "ok"
 		switch {
+		case d.Regressed && d.MissingBench:
+			status = "REGRESSED (missing benchmark)"
 		case d.Regressed && d.ZeroBaseline:
 			status = fmt.Sprintf("REGRESSED (regression from zero, +%.2f)", d.AbsoluteIncrease)
 		case d.Regressed:

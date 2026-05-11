@@ -4,19 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
-
-// requestIDPattern mirrors the package-level rule in data/approval. The
-// pattern is duplicated rather than exported because the rule is an
-// internal invariant — callers should not be able to bypass the safe-
-// charset guard by constructing IDs that match a custom regexp.
-var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 // ErrDuplicateID is returned when [Store.Create] is called with an id
 // that already exists in the store.
@@ -51,15 +44,21 @@ func New(opts ...Option) *Store {
 		clock:    time.Now,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("approval/memory: option must not be nil")
+		}
 		o(s)
 	}
 	return s
 }
 
 // Create persists a new request in StatePending. Rejects requests
-// without a future ExpiresAt — see validateForCreate.
+// without a future ExpiresAt — see [approval.ValidateForCreate].
 func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request, error) {
-	if err := validateForCreate(r, s.clock()); err != nil {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateForCreate(r, s.clock()); err != nil {
 		return approval.Request{}, err
 	}
 
@@ -67,7 +66,7 @@ func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request,
 	defer s.mu.Unlock()
 
 	if _, dup := s.requests[r.ID]; dup {
-		return approval.Request{}, fmt.Errorf("%w: %s", ErrDuplicateID, r.ID)
+		return approval.Request{}, ErrDuplicateID
 	}
 
 	r.State = approval.StatePending
@@ -76,19 +75,23 @@ func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request,
 	}
 	r.CreatedAt = r.CreatedAt.UTC()
 	r.ExpiresAt = r.ExpiresAt.UTC()
+	r = cloneRequest(r)
 	s.requests[r.ID] = r
-	return r, nil
+	return cloneRequest(r), nil
 }
 
 // Get returns the request by id.
 func (s *Store) Get(_ context.Context, id string) (approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.requests[id]
 	if !ok {
 		return approval.Request{}, approval.ErrNotFound
 	}
-	return r, nil
+	return cloneRequest(r), nil
 }
 
 // List returns matching requests newest-first by CreatedAt. Returns
@@ -96,6 +99,9 @@ func (s *Store) Get(_ context.Context, id string) (approval.Request, error) {
 // [approval.Query.TenantID] or opt into AllTenants — see audit
 // FR-053 for why cross-tenant listings must be explicit.
 func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
@@ -112,7 +118,7 @@ func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, e
 		if !match(r, q) {
 			continue
 		}
-		matched = append(matched, r)
+		matched = append(matched, cloneRequest(r))
 	}
 	sort.Slice(matched, func(i, j int) bool {
 		ti, tj := matched[i].CreatedAt, matched[j].CreatedAt
@@ -130,8 +136,14 @@ func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, e
 // Decide records an approver's decision. See [approval.Store] for the
 // full contract.
 func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
-	if decidedBy == "" {
-		return approval.Request{}, approval.ErrInvalidApprover
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateDecision(decidedBy); err != nil {
+		return approval.Request{}, err
+	}
+	if err := approval.ValidateReason(reason); err != nil {
+		return approval.Request{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,7 +164,7 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 		r.State = approval.StateExpired
 		r.DecidedAt = now.UTC()
 		s.requests[id] = r
-		return approval.Request{}, fmt.Errorf("%w: request expired at %s", approval.ErrInvalidTransition, r.ExpiresAt.UTC().Format(time.RFC3339))
+		return approval.Request{}, fmt.Errorf("%w: request expired", approval.ErrInvalidTransition)
 	}
 
 	target := approval.StateApproved
@@ -166,12 +178,12 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 		r.DecidedBy = decidedBy
 		r.Reason = reason
 		s.requests[id] = r
-		return r, nil
+		return cloneRequest(r), nil
 	}
 
 	// Terminal state: refuse to move out.
 	if r.State.IsTerminal() {
-		return approval.Request{}, fmt.Errorf("%w: cannot transition out of %s", approval.ErrInvalidTransition, r.State)
+		return approval.Request{}, fmt.Errorf("%w: cannot transition out of terminal state", approval.ErrInvalidTransition)
 	}
 
 	// approved -> rejected (or vice-versa) is also rejected: a flipped
@@ -185,11 +197,14 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 	r.Reason = reason
 	r.DecidedAt = s.clock().UTC()
 	s.requests[id] = r
-	return r, nil
+	return cloneRequest(r), nil
 }
 
 // MarkExecuted moves an approved request to executed.
 func (s *Store) MarkExecuted(_ context.Context, id string) (approval.Request, error) {
+	if err := s.ready(); err != nil {
+		return approval.Request{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -199,36 +214,27 @@ func (s *Store) MarkExecuted(_ context.Context, id string) (approval.Request, er
 	}
 
 	if r.State == approval.StateExecuted {
-		return r, nil
+		return cloneRequest(r), nil
 	}
 	if r.State != approval.StateApproved {
-		return approval.Request{}, fmt.Errorf("%w: MarkExecuted requires source state %s, got %s", approval.ErrInvalidTransition, approval.StateApproved, r.State)
+		return approval.Request{}, fmt.Errorf("%w: request is not approved", approval.ErrInvalidTransition)
 	}
 
 	r.State = approval.StateExecuted
 	s.requests[id] = r
-	return r, nil
+	return cloneRequest(r), nil
 }
 
-// validateForCreate is a thin wrapper that maps to the package-level
-// validation contract. Requires non-zero, future ExpiresAt — direct
-// store callers must opt into a deadline because permanent pending
-// approvals defeat the kit's bounded-decision-window invariant.
-func validateForCreate(r approval.Request, now time.Time) error {
-	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
-		return approval.ErrInvalidRequest
+func cloneRequest(r approval.Request) approval.Request {
+	if r.Payload != nil {
+		r.Payload = append(r.Payload[:0:0], r.Payload...)
 	}
-	if !requestIDPattern.MatchString(r.ID) {
-		return approval.ErrInvalidRequest
-	}
-	if r.State != "" && r.State != approval.StatePending {
-		return approval.ErrInvalidRequest
-	}
-	if r.ExpiresAt.IsZero() {
-		return approval.ErrInvalidRequest
-	}
-	if !r.ExpiresAt.After(now) {
-		return approval.ErrInvalidRequest
+	return r
+}
+
+func (s *Store) ready() error {
+	if s == nil || s.requests == nil || s.clock == nil {
+		return approval.ErrInvalidStore
 	}
 	return nil
 }

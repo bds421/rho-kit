@@ -71,6 +71,24 @@ func TestMiddleware_IncludesRequestID(t *testing.T) {
 	}
 }
 
+func TestMiddleware_RedactsRequestPath(t *testing.T) {
+	logger, buf := newCapturingLogger()
+	mw := Middleware(WithLogger(logger))
+	handler := mw(panicHandler("oops"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/reset/secret-token", nil)
+	handler.ServeHTTP(rec, req)
+
+	out := buf.String()
+	if !strings.Contains(out, `"<redacted`) {
+		t.Errorf("expected redacted path marker in log: %q", out)
+	}
+	if strings.Contains(out, "secret-token") || strings.Contains(out, "/reset/secret-token") {
+		t.Errorf("request path leaked into panic log: %q", out)
+	}
+}
+
 func TestMiddleware_AbortHandlerNotRecovered(t *testing.T) {
 	logger, buf := newCapturingLogger()
 	mw := Middleware(WithLogger(logger))
@@ -136,6 +154,23 @@ func TestMiddleware_MetricsCounterIncrements(t *testing.T) {
 	}
 }
 
+func TestMiddleware_MetricsBucketsInvalidMethod(t *testing.T) {
+	metrics := NewMetrics(prometheus.NewRegistry())
+
+	mw := Middleware(WithLogger(slog.New(slog.NewJSONHandler(io.Discard, nil))), WithMetrics(metrics))
+	handler := mw(panicHandler("counted"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Method = "BREW"
+	handler.ServeHTTP(rec, req)
+
+	count := readCounter(t, metrics.panics.WithLabelValues("OTHER"))
+	if count != 1 {
+		t.Errorf("panic counter for OTHER = %v, want 1", count)
+	}
+}
+
 func TestMiddleware_OutermostCatchesPanicInInnerMiddleware(t *testing.T) {
 	logger, buf := newCapturingLogger()
 
@@ -156,8 +191,11 @@ func TestMiddleware_OutermostCatchesPanicInInnerMiddleware(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
-	if !strings.Contains(buf.String(), "inner middleware exploded") {
-		t.Errorf("expected panic value in log; got: %q", buf.String())
+	if strings.Contains(buf.String(), "inner middleware exploded") {
+		t.Errorf("panic value leaked into log: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "<redacted panic value: string>") {
+		t.Errorf("expected redacted panic marker in log; got: %q", buf.String())
 	}
 }
 
@@ -176,6 +214,31 @@ func TestMiddleware_CustomBody(t *testing.T) {
 
 	if got := rec.Body.String(); got != `{"custom":"zzz"}` {
 		t.Errorf("body = %q, want custom builder output", got)
+	}
+}
+
+func TestMiddleware_CustomBodyPanicFallsBack(t *testing.T) {
+	logger, buf := newCapturingLogger()
+	mw := Middleware(
+		WithLogger(logger),
+		WithBody(func(_ *http.Request, _ any) []byte {
+			panic("body failed")
+		}),
+	)
+	handler := mw(panicHandler("zzz"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"INTERNAL"`) {
+		t.Errorf("body did not fall back to default: %q", rec.Body.String())
+	}
+	if !strings.Contains(buf.String(), "body builder panicked") {
+		t.Errorf("expected body-builder panic log, got: %q", buf.String())
 	}
 }
 
@@ -214,6 +277,15 @@ func TestMiddleware_NoPanicNoRecovery(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("logger received output without a panic: %q", buf.String())
 	}
+}
+
+func TestMiddleware_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	Middleware(nil)
 }
 
 func readCounter(t *testing.T, c prometheus.Counter) float64 {

@@ -96,32 +96,30 @@ func (b *Builder) Validate() error {
 			return fmt.Errorf("keyed rate limiter name is required")
 		}
 		if spec.requests <= 0 {
-			return fmt.Errorf("keyed rate limiter %q must allow at least 1 request", spec.name)
+			return fmt.Errorf("keyed rate limiter must allow at least 1 request")
 		}
 		if spec.window <= 0 {
-			return fmt.Errorf("keyed rate limiter %q window must be > 0", spec.name)
+			return fmt.Errorf("keyed rate limiter window must be > 0")
 		}
 	}
 
-	// H-4: WithTenantBudget without WithMultiTenant fails open silently —
-	// the default TenantKeyFunc returns no key, the budget middleware
-	// short-circuits, and no enforcement happens.
+	// H-4: WithTenantBudget without WithMultiTenant cannot derive the
+	// default tenant key. Keep this as a startup error instead of
+	// letting every request fail later at the budget middleware.
 	if b.budgetSpec != nil && b.tenantSpec == nil {
-		return fmt.Errorf("WithTenantBudget requires WithMultiTenant — without it the default TenantKeyFunc returns no key and budget enforcement is silently skipped")
+		return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) so the default budget key can be derived from the tenant context")
 	}
 
 	// R3-H: WithTenantBudget enforces a per-tenant budget that keys on
-	// the tenant ID. If the tenant middleware lets requests through
-	// without a tenant, the budget middleware sees no key and bypasses
-	// — the same hole that a missing tenant on safe methods opens. Pin
-	// the strict combination at construction so the bypass cannot
-	// re-emerge through misconfiguration.
+	// the tenant ID. Pin the strict combination at construction so
+	// callers do not discover missing tenant context only after the
+	// request reaches the budget middleware.
 	if b.budgetSpec != nil && b.tenantSpec != nil {
 		if !b.tenantSpec.required {
-			return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) — a non-required tenant lets requests bypass the budget by omitting the tenant header")
+			return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) because budget enforcement needs a tenant key on every charged request")
 		}
 		if b.tenantSpec.allowMissingTenantOnSafeMethods {
-			return fmt.Errorf("WithTenantBudget is incompatible with WithAllowMissingTenantOnSafeMethods — a safe-method bypass lets GET/HEAD/OPTIONS skip both tenant validation and budget charging")
+			return fmt.Errorf("WithTenantBudget is incompatible with WithAllowMissingTenantOnSafeMethods because budget enforcement needs a tenant key on every charged request")
 		}
 	}
 
@@ -160,7 +158,7 @@ func (b *Builder) validateProductionSafety() error {
 	// requires loopback; non-loopback binds — wildcard, private,
 	// public — all need explicit WithInternalNonLoopback.
 	if !isLoopbackHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host=%q is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call WithInternalNonLoopback when network isolation is enforced", b.cfg.Internal.Host)
+		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call WithInternalNonLoopback when network isolation is enforced")
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by
@@ -170,10 +168,14 @@ func (b *Builder) validateProductionSafety() error {
 	// of truth for what counts as a hardened TLS configuration.
 
 	// Tracing: full sampling is a collector-cost foot-gun.
-	if b.tracingCfg != nil && b.tracingCfg.SampleRate > 0.1 {
-		return fmt.Errorf("tracing SampleRate=%.2f exceeds 0.1; lower the rate and override per-trace via the OTel SDK if you need bursts", b.tracingCfg.SampleRate)
+	if b.tracingCfg != nil {
+		if err := b.tracingCfg.Validate(); err != nil {
+			return err
+		}
+		if b.tracingCfg.SampleRate > 0.1 {
+			return fmt.Errorf("tracing SampleRate=%.2f exceeds 0.1; lower the rate and override per-trace via the OTel SDK if you need bursts", b.tracingCfg.SampleRate)
+		}
 	}
 
 	return nil
 }
-

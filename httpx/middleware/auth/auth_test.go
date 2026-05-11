@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,10 +31,56 @@ func headerOnlyMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func allowS2SImpersonationForTest() MTLSIdentityOption {
+	return WithS2SImpersonationGuard(func(*http.Request, string, string) error {
+		return nil
+	})
+}
+
+func TestWithAllowedSANsClonesInput(t *testing.T) {
+	sans := []string{"svc-a.internal", "spiffe://example.org/svc-a"}
+	opt := WithAllowedSANs(sans)
+	sans[0] = "mutated.internal"
+	sans[1] = "spiffe://example.org/mutated"
+
+	var cfg mtlsIdentityConfig
+	opt(&cfg)
+
+	if _, ok := cfg.allowedSANDNS["svc-a.internal"]; !ok {
+		t.Fatalf("allowed DNS SANs = %v, want svc-a.internal", cfg.allowedSANDNS)
+	}
+	if _, ok := cfg.allowedSANDNS["mutated.internal"]; ok {
+		t.Fatalf("allowed DNS SANs retained mutated input: %v", cfg.allowedSANDNS)
+	}
+	if _, ok := cfg.allowedSANURIs["spiffe://example.org/svc-a"]; !ok {
+		t.Fatalf("allowed URI SANs = %v, want spiffe://example.org/svc-a", cfg.allowedSANURIs)
+	}
+	if _, ok := cfg.allowedSANURIs["spiffe://example.org/mutated"]; ok {
+		t.Fatalf("allowed URI SANs retained mutated input: %v", cfg.allowedSANURIs)
+	}
+}
+
+func TestWithAllowedCNsClonesInput(t *testing.T) {
+	cns := []string{"svc-a"}
+	opt := WithAllowedCNs(cns)
+	cns[0] = "mutated"
+
+	var cfg mtlsIdentityConfig
+	opt(&cfg)
+
+	if _, ok := cfg.allowedCNs["svc-a"]; !ok {
+		t.Fatalf("allowed CNs = %v, want svc-a", cfg.allowedCNs)
+	}
+	if _, ok := cfg.allowedCNs["mutated"]; ok {
+		t.Fatalf("allowed CNs retained mutated input: %v", cfg.allowedCNs)
+	}
+}
+
 // fakePeerCert creates a mock x509.Certificate with the given CN for testing.
 func fakePeerCert(cn string) *x509.Certificate {
 	return &x509.Certificate{
-		Subject: pkix.Name{CommonName: cn},
+		Subject:     pkix.Name{CommonName: cn},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 }
 
@@ -79,6 +126,35 @@ func TestHeaderMode_WithHeader(t *testing.T) {
 	}
 	if capturedUserID != testUUID {
 		t.Errorf("UserID = %q, want %q", capturedUserID, testUUID)
+	}
+}
+
+func TestRequireHeaderUser_GuardPanicRejects(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("guard panic escaped: %v", r)
+			}
+		}()
+		requireHeaderUser(rec, req, "cn:backend", func(*http.Request, string, string) error {
+			panic("guard failed")
+		}, next)
+	}()
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler must not run when impersonation guard panics")
 	}
 }
 
@@ -140,6 +216,55 @@ func TestHeaderMode_EmptyHeader(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for empty header, got %d", rec.Code)
+	}
+}
+
+func TestHeaderMode_DuplicateHeader(t *testing.T) {
+	called := false
+	handler := headerOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add("X-User-Id", testUUID)
+	req.Header.Add("X-User-Id", "550e8400-e29b-41d4-a716-446655440001")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for duplicate X-User-Id header, got %d", rec.Code)
+	}
+	if called {
+		t.Error("next handler should not be called for duplicate X-User-Id headers")
+	}
+}
+
+func TestHeaderMode_RejectsAmbiguousIdentityValues(t *testing.T) {
+	tests := map[string]string{
+		"edge whitespace":     " " + testUUID + " ",
+		"internal whitespace": testUUID[:8] + " " + testUUID[9:],
+		"comma combined":      testUUID + ",550e8400-e29b-41d4-a716-446655440001",
+		"control":             testUUID + "\n",
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			handler := headerOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("X-User-Id", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d", rec.Code)
+			}
+			if called {
+				t.Fatal("next handler should not be called for ambiguous X-User-Id")
+			}
+		})
 	}
 }
 
@@ -297,6 +422,72 @@ func TestRequireUserWithJWT_InvalidToken(t *testing.T) {
 	}
 }
 
+func TestRequireUserWithJWT_RejectsDuplicateAuthorization(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": testUUID,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add("Authorization", "Bearer "+token)
+	req.Header.Add("Authorization", "Bearer invalid.jwt.token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for duplicate Authorization headers, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler should not be called for duplicate Authorization headers")
+	}
+}
+
+func TestRequireUserWithJWT_RejectsAmbiguousAuthorization(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	for name, value := range map[string]string{
+		"edge whitespace":  " Bearer token",
+		"token whitespace": "Bearer token ",
+		"internal space":   "Bearer token extra",
+		"comma":            "Bearer token,other",
+		"control":          "Bearer token\n",
+		"oversized":        "Bearer " + strings.Repeat("a", maxBearerTokenLen+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for ambiguous Authorization, got %d", rec.Code)
+			}
+			if called {
+				t.Fatal("next handler should not be called for ambiguous Authorization")
+			}
+		})
+	}
+}
+
 func TestRequireUserWithJWT_ExpiredToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
@@ -428,7 +619,20 @@ func TestRequireS2SAuth_PanicsOnEmptyCNs(t *testing.T) {
 			t.Fatal("expected panic for empty CN list")
 		}
 	}()
-	RequireS2SAuth(provider, nil)
+	RequireS2SAuth(provider, nil, allowS2SImpersonationForTest())
+}
+
+func TestRequireS2SAuth_PanicsWithoutImpersonationGuard(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when mTLS S2S auth has no impersonation guard")
+		}
+	}()
+	RequireS2SAuth(provider, []string{"backend"})
 }
 
 func TestRequireS2SAuth_ValidJWT(t *testing.T) {
@@ -437,7 +641,7 @@ func TestRequireS2SAuth_ValidJWT(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	var capturedUserID string
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedUserID = UserID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -468,7 +672,7 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	var capturedUserID string
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedUserID = UserID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -491,13 +695,75 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 	}
 }
 
+func TestRequireS2SAuth_ImpersonationGuardRejects(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	guardCalled := false
+	handler := RequireS2SAuth(provider, []string{"backend"}, WithS2SImpersonationGuard(func(_ *http.Request, identity, userID string) error {
+		guardCalled = true
+		if identity != "cn:backend" {
+			t.Fatalf("identity = %q, want cn:backend", identity)
+		}
+		if userID != testUUID {
+			t.Fatalf("userID = %q, want %q", userID, testUUID)
+		}
+		return http.ErrAbortHandler
+	}))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guard rejection, got %d", rec.Code)
+	}
+	if !guardCalled {
+		t.Fatal("impersonation guard was not called")
+	}
+	if called {
+		t.Fatal("next handler must not be called when impersonation guard rejects")
+	}
+}
+
+func TestRequireS2SAuth_RejectsDuplicateXUserID(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Add("X-User-Id", testUUID)
+	req.Header.Add("X-User-Id", "550e8400-e29b-41d4-a716-446655440001")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for duplicate X-User-Id headers, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler should not be called for duplicate X-User-Id headers")
+	}
+}
+
 func TestRequireS2SAuth_UnknownCN(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
@@ -520,7 +786,7 @@ func TestRequireS2SAuth_NoTLS(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
@@ -543,7 +809,7 @@ func TestRequireS2SAuth_TLSButNoPeerCerts(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
@@ -566,7 +832,7 @@ func TestRequireS2SAuth_InvalidJWT(t *testing.T) {
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -577,6 +843,63 @@ func TestRequireS2SAuth_InvalidJWT(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for invalid JWT on S2S middleware, got %d", rec.Code)
+	}
+}
+
+func TestRequireS2SAuth_RejectsMalformedAuthorizationBeforeMTLSFallback(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for malformed Authorization before mTLS fallback, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler should not be called for malformed Authorization")
+	}
+}
+
+func TestRequireS2SAuth_RejectsDuplicateAuthorizationBeforeMTLSFallback(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	called := false
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	now := time.Now()
+	token := signJWT(t, key, "kid-1", map[string]any{
+		"sub": testUUID,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	req := withMTLS(httptest.NewRequest(http.MethodGet, "/", nil), "backend")
+	req.Header.Add("Authorization", "Bearer "+token)
+	req.Header.Add("Authorization", "Bearer invalid.jwt.token")
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for duplicate Authorization before mTLS fallback, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("next handler should not be called for duplicate Authorization")
 	}
 }
 
@@ -591,7 +914,7 @@ func TestRequireS2SAuth_MTLS_SetsTrustedMarker(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	var sawTrusted bool
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawTrusted = IsTrustedS2S(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -620,7 +943,7 @@ func TestRequireS2SAuth_JWT_DoesNotSetTrustedMarker(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	var sawTrusted bool
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawTrusted = IsTrustedS2S(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -649,7 +972,7 @@ func TestRequireS2SAuth_MultipleCNsAllowed(t *testing.T) {
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireS2SAuth(provider, []string{"backend", "notification-service"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend", "notification-service"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -938,6 +1261,30 @@ func TestWithPermissions(t *testing.T) {
 	}
 }
 
+func TestWithPermissions_ClonesInputAndOutput(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	perms := []string{"general:view", "users:manage"}
+	ctx := WithPermissions(req.Context(), perms)
+
+	perms[0] = "admin:all"
+	got := Permissions(ctx)
+	if got[0] != "general:view" {
+		t.Fatalf("Permissions() reflected caller mutation: %v", got)
+	}
+	if !hasPermissionFast(ctx, "general:view") {
+		t.Fatal("permission set lost original permission")
+	}
+	if hasPermissionFast(ctx, "admin:all") {
+		t.Fatal("permission set adopted mutated permission")
+	}
+
+	got[0] = "mutated"
+	again := Permissions(ctx)
+	if again[0] != "general:view" {
+		t.Fatalf("Permissions() returned mutable context slice: %v", again)
+	}
+}
+
 func TestRequirePermission_PanicsOnEmpty(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -983,7 +1330,7 @@ func TestRequireS2SAuth_PanicsOnSingleEmptyCN(t *testing.T) {
 			t.Fatal("expected panic for []string{\"\"}")
 		}
 	}()
-	RequireS2SAuth(provider, []string{""})
+	RequireS2SAuth(provider, []string{""}, allowS2SImpersonationForTest())
 }
 
 func TestRequireS2SAuth_PanicsOnWhitespaceCN(t *testing.T) {
@@ -996,7 +1343,7 @@ func TestRequireS2SAuth_PanicsOnWhitespaceCN(t *testing.T) {
 			t.Fatal("expected panic for []string{\"  \"}")
 		}
 	}()
-	RequireS2SAuth(provider, []string{"  "})
+	RequireS2SAuth(provider, []string{"  "}, allowS2SImpersonationForTest())
 }
 
 func TestRequireS2SAuth_TrimsCN(t *testing.T) {
@@ -1004,7 +1351,7 @@ func TestRequireS2SAuth_TrimsCN(t *testing.T) {
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireS2SAuth(provider, []string{"  backend  "})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"  backend  "}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1024,13 +1371,14 @@ func TestRequireS2SAuth_RejectsSANOnlyCertWithCNAllowlist(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireS2SAuth(provider, []string{"backend"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireS2SAuth(provider, []string{"backend"}, allowS2SImpersonationForTest())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: ""},
-		DNSNames: []string{"some-other.internal"},
+		Subject:     pkix.Name{CommonName: ""},
+		DNSNames:    []string{"some-other.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
 	req.Header.Set("X-User-Id", testUUID)
@@ -1066,7 +1414,20 @@ func TestRequireS2SAuthWithIdentity_PanicsOnNoIdentities(t *testing.T) {
 			t.Fatal("expected panic when neither CNs nor SANs are supplied")
 		}
 	}()
-	RequireS2SAuthWithIdentity(provider)
+	RequireS2SAuthWithIdentity(provider, allowS2SImpersonationForTest())
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsWithoutImpersonationGuard(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when mTLS identity auth has no impersonation guard")
+		}
+	}()
+	RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{"svc-a.internal"}))
 }
 
 func TestRequireS2SAuthWithIdentity_PanicsOnAllEmptyEntries(t *testing.T) {
@@ -1080,9 +1441,127 @@ func TestRequireS2SAuthWithIdentity_PanicsOnAllEmptyEntries(t *testing.T) {
 		}
 	}()
 	RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedCNs([]string{"", "  "}),
 		WithAllowedSANs([]string{"", "   "}),
 	)
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsOnInvalidSANEntries(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	for _, san := range []string{
+		"svc name.internal",
+		"svc/internal",
+		"svc_name.internal",
+		"-svc.internal",
+		"svc-.internal",
+		"*.internal",
+		string([]byte{'s', 'v', 'c', 0xff}),
+		"spiffe://example.org/svc-a?debug=true",
+		"spiffe://user@example.org/svc-a",
+		"spiffe://example.org/svc-a#frag",
+	} {
+		t.Run(san, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic for invalid SAN allowlist entry")
+				}
+			}()
+			RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{san}))
+		})
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsOnInvalidCNEntries(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	for _, cn := range []string{
+		"svc\nname",
+		"svc\tname",
+		"svc\x00name",
+		string([]byte{'s', 'v', 'c', 0xff}),
+	} {
+		t.Run(cn, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic for invalid CN allowlist entry")
+				}
+			}()
+			RequireS2SAuthWithIdentity(provider, WithAllowedCNs([]string{cn}))
+		})
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_InvalidIdentityPanicDoesNotEchoValue(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	tests := []struct {
+		name string
+		want string
+		fn   func()
+	}{
+		{
+			name: "uri san",
+			want: "middleware: WithAllowedSANs invalid URI SAN",
+			fn: func() {
+				RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{"spiffe://example.org/%zz?token=secret-token"}))
+			},
+		},
+		{
+			name: "cn",
+			want: "middleware: WithAllowedCNs invalid CN",
+			fn: func() {
+				RequireS2SAuthWithIdentity(provider, WithAllowedCNs([]string{"svc\nsecret-token"}))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic for invalid identity allowlist entry")
+				}
+				msg, ok := r.(string)
+				if !ok || msg != tt.want {
+					t.Fatalf("panic = %#v, want %q", r, tt.want)
+				}
+				if strings.Contains(msg, "secret-token") || strings.Contains(msg, "token=") || strings.Contains(msg, "%zz") {
+					t.Fatalf("panic leaked identity value: %q", msg)
+				}
+			}()
+			tt.fn()
+		})
+	}
+}
+
+func TestRequireS2SAuthWithIdentity_PanicsOnNilOption(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil option")
+		}
+	}()
+	RequireS2SAuthWithIdentity(provider, nil)
+}
+
+func TestWithS2SImpersonationGuard_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil impersonation guard")
+		}
+	}()
+	WithS2SImpersonationGuard(nil)
 }
 
 func TestRequireS2SAuthWithIdentity_SANDNSMatch(t *testing.T) {
@@ -1091,14 +1570,16 @@ func TestRequireS2SAuthWithIdentity_SANDNSMatch(t *testing.T) {
 	provider := newTestProvider(ks)
 
 	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedSANs([]string{"svc-a.internal"}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: ""},
-		DNSNames: []string{"svc-a.internal"},
+		Subject:     pkix.Name{CommonName: ""},
+		DNSNames:    []string{"svc-a.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
 	req.Header.Set("X-User-Id", testUUID)
@@ -1110,12 +1591,40 @@ func TestRequireS2SAuthWithIdentity_SANDNSMatch(t *testing.T) {
 	}
 }
 
+func TestRequireS2SAuthWithIdentity_SANDNSMatchIsCaseInsensitive(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
+		WithAllowedSANs([]string{"SVC-A.INTERNAL"}),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cert := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: ""},
+		DNSNames:    []string{"svc-a.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+	req.Header.Set("X-User-Id", testUUID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for case-insensitive SAN DNS match, got %d", rec.Code)
+	}
+}
+
 func TestRequireS2SAuthWithIdentity_SANURIMatch(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedSANs([]string{"spiffe://example.org/svc-a"}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1126,8 +1635,9 @@ func TestRequireS2SAuthWithIdentity_SANURIMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	cert := &x509.Certificate{
-		Subject: pkix.Name{CommonName: "ignored"},
-		URIs:    []*url.URL{uri},
+		Subject:     pkix.Name{CommonName: "ignored"},
+		URIs:        []*url.URL{uri},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
 	req.Header.Set("X-User-Id", testUUID)
@@ -1146,6 +1656,7 @@ func TestRequireS2SAuthWithIdentity_NoMatchOnEither(t *testing.T) {
 
 	called := false
 	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedCNs([]string{"svc-cn"}),
 		WithAllowedSANs([]string{"svc-other.internal"}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1153,8 +1664,9 @@ func TestRequireS2SAuthWithIdentity_NoMatchOnEither(t *testing.T) {
 	}))
 
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "stranger"},
-		DNSNames: []string{"stranger.internal"},
+		Subject:     pkix.Name{CommonName: "stranger"},
+		DNSNames:    []string{"stranger.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
 	req.Header.Set("X-User-Id", testUUID)
@@ -1169,12 +1681,54 @@ func TestRequireS2SAuthWithIdentity_NoMatchOnEither(t *testing.T) {
 	}
 }
 
+func TestRequireS2SAuthWithIdentity_RejectsCertWithoutClientAuthEKU(t *testing.T) {
+	key := testKey(t)
+	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
+	provider := newTestProvider(ks)
+
+	for _, tt := range []struct {
+		name string
+		eku  []x509.ExtKeyUsage
+	}{
+		{name: "no EKU", eku: nil},
+		{name: "server auth only", eku: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			handler := RequireS2SAuthWithIdentity(provider,
+				allowS2SImpersonationForTest(),
+				WithAllowedSANs([]string{"svc-a.internal"}),
+			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+
+			cert := &x509.Certificate{
+				Subject:     pkix.Name{CommonName: ""},
+				DNSNames:    []string{"svc-a.internal"},
+				ExtKeyUsage: tt.eku,
+			}
+			req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
+			req.Header.Set("X-User-Id", testUUID)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for cert without client-auth EKU, got %d", rec.Code)
+			}
+			if called {
+				t.Fatal("next handler must not be called for a cert without client-auth EKU")
+			}
+		})
+	}
+}
+
 func TestRequireS2SAuthWithIdentity_SANPreferredOverCN(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedCNs([]string{"svc-cn"}),
 		WithAllowedSANs([]string{"svc-san.internal"}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1182,8 +1736,9 @@ func TestRequireS2SAuthWithIdentity_SANPreferredOverCN(t *testing.T) {
 	}))
 
 	cert := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "svc-cn"},
-		DNSNames: []string{"svc-san.internal"},
+		Subject:     pkix.Name{CommonName: "svc-cn"},
+		DNSNames:    []string{"svc-san.internal"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	req := withMTLSCert(httptest.NewRequest(http.MethodGet, "/", nil), cert)
 	req.Header.Set("X-User-Id", testUUID)
@@ -1202,6 +1757,7 @@ func TestRequireS2SAuthWithIdentity_TrimsAndSkipsEmpty(t *testing.T) {
 
 	// Mix of empty/whitespace and one real entry — handler must still build and accept.
 	handler := RequireS2SAuthWithIdentity(provider,
+		allowS2SImpersonationForTest(),
 		WithAllowedCNs([]string{"", "  ", "  backend  "}),
 		WithAllowedSANs([]string{""}),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

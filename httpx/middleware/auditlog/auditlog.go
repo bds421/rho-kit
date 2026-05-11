@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/middleware"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
@@ -26,34 +28,34 @@ type config struct {
 
 // WithActorExtractor sets a function that extracts the actor identity from the
 // request (e.g., from JWT claims). Default: returns "anonymous".
-// A nil fn is ignored so the default actor extractor is preserved.
 func WithActorExtractor(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("auditlog: WithActorExtractor requires a non-nil function")
+	}
 	return func(c *config) {
-		if fn != nil {
-			c.actorExtractor = fn
-		}
+		c.actorExtractor = fn
 	}
 }
 
 // WithPathFilter sets a function that decides whether a path should be audited.
 // Return true to audit, false to skip. Default: skips /health, /ready, /metrics.
-// A nil fn is ignored so the default path filter is preserved.
 func WithPathFilter(fn func(string) bool) Option {
+	if fn == nil {
+		panic("auditlog: WithPathFilter requires a non-nil function")
+	}
 	return func(c *config) {
-		if fn != nil {
-			c.pathFilter = fn
-		}
+		c.pathFilter = fn
 	}
 }
 
 // WithStatusFilter sets a function that decides whether a response status should
 // be audited. Return true to audit. Default: audits all statuses.
-// A nil fn is ignored so the default status filter is preserved.
 func WithStatusFilter(fn func(int) bool) Option {
+	if fn == nil {
+		panic("auditlog: WithStatusFilter requires a non-nil function")
+	}
 	return func(c *config) {
-		if fn != nil {
-			c.statusFilter = fn
-		}
+		c.statusFilter = fn
 	}
 }
 
@@ -64,26 +66,31 @@ func WithStatusFilter(fn func(int) bool) Option {
 // posture. Pass the same list as the access-log middleware so the two
 // surfaces agree on what counts as the originating client.
 func WithTrustedProxies(nets []*net.IPNet) Option {
-	return func(c *config) { c.trustedProxies = nets }
+	copied := cloneIPNets(nets)
+	return func(c *config) { c.trustedProxies = cloneIPNets(copied) }
 }
 
 // WithClientIPFunc fully overrides the client-IP resolver. Useful for
 // platforms whose proxy chain doesn't follow the standard
 // X-Forwarded-For shape. The default is
 // clientip.ClientIPWithTrustedProxies(r, trustedProxies).
-// A nil fn is ignored so the default client-IP resolver is preserved.
 func WithClientIPFunc(fn func(*http.Request) string) Option {
+	if fn == nil {
+		panic("auditlog: WithClientIPFunc requires a non-nil function")
+	}
 	return func(c *config) {
-		if fn != nil {
-			c.clientIPFunc = fn
-		}
+		c.clientIPFunc = fn
 	}
 }
 
 func defaultPathFilter(path string) bool {
-	return !strings.HasPrefix(path, "/health") &&
-		!strings.HasPrefix(path, "/ready") &&
-		!strings.HasPrefix(path, "/metrics")
+	return !isDefaultOpsPath(path, "/health") &&
+		!isDefaultOpsPath(path, "/ready") &&
+		!isDefaultOpsPath(path, "/metrics")
+}
+
+func isDefaultOpsPath(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 // Middleware returns HTTP middleware that automatically audits requests.
@@ -105,6 +112,9 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 		statusFilter:   func(_ int) bool { return true },
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("auditlog: Middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.clientIPFunc == nil {
@@ -116,12 +126,12 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !cfg.pathFilter(r.URL.Path) {
+			if !safePathFilter(cfg.pathFilter, httpx.RequestPath(r)) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+			rec := middleware.NewResponseRecorder(w)
 			panicked := false
 			defer func() {
 				if rcv := recover(); rcv != nil {
@@ -148,26 +158,27 @@ func Middleware(l *auditlog.Logger, opts ...Option) func(http.Handler) http.Hand
 // happy path (handler returned cleanly) and the panic path (deferred
 // recovery) can share the same code without duplicating the filter and
 // extractor logic.
-func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *statusRecorder, cfg config, panicked bool) {
-	if !panicked && !cfg.statusFilter(rec.statusCode) {
+func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *middleware.ResponseRecorder, cfg config, panicked bool) {
+	statusCode := rec.Status()
+	if !panicked && !safeStatusFilter(cfg.statusFilter, statusCode) {
 		return
 	}
 
 	status := "success"
 	if panicked {
 		status = "failure"
-	} else if rec.statusCode >= 400 {
+	} else if statusCode >= 400 {
 		status = "failure"
 	}
 
-	auditCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 
 	ev := auditlog.Event{
-		IPAddress: cfg.clientIPFunc(r),
-		Actor:     cfg.actorExtractor(r),
-		Action:    r.Method,
-		Resource:  r.URL.Path,
+		IPAddress: safeAuditIPAddress(safeClientIP(cfg.clientIPFunc, r)),
+		Actor:     safeAuditActor(safeActor(cfg.actorExtractor, r)),
+		Action:    safeAuditToken(r.Method, auditlog.MaxActionBytes, "method"),
+		Resource:  safeAuditResource(r),
 		Status:    status,
 	}
 	if panicked {
@@ -181,28 +192,17 @@ func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *statusRecorder, c
 // entry shares the same bytes.
 var panicMetadataJSON = []byte(`{"error":"panic"}`)
 
-type statusRecorder struct {
-	http.ResponseWriter
-	statusCode  int
-	wroteHeader bool
-}
-
-func (sr *statusRecorder) WriteHeader(code int) {
-	if sr.wroteHeader {
-		return
+func cloneIPNets(in []*net.IPNet) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(in))
+	for _, n := range in {
+		if n == nil {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &net.IPNet{
+			IP:   append(net.IP(nil), n.IP...),
+			Mask: append(net.IPMask(nil), n.Mask...),
+		})
 	}
-	sr.statusCode = code
-	sr.wroteHeader = true
-	sr.ResponseWriter.WriteHeader(code)
-}
-
-func (sr *statusRecorder) Write(b []byte) (int, error) {
-	if !sr.wroteHeader {
-		sr.WriteHeader(http.StatusOK)
-	}
-	return sr.ResponseWriter.Write(b)
-}
-
-func (sr *statusRecorder) Unwrap() http.ResponseWriter {
-	return sr.ResponseWriter
+	return out
 }

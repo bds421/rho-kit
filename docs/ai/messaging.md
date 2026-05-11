@@ -1,6 +1,6 @@
 # Messaging — Cross-Service Durable Messaging
 
-Packages: `infra/messaging` (interfaces), `messaging/amqpbackend` (RabbitMQ), `messaging/redisbackend` (Redis Streams), `messaging/membroker` (unit tests)
+Packages: `infra/messaging` (interfaces), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
 
 ## When to Use
 
@@ -9,10 +9,13 @@ Use `infra/messaging` for **cross-service durable messaging**. The root package 
 | Backend | Use when |
 |---|---|
 | `amqpbackend` | Complex routing (topic/fanout/headers), DLX retry, publisher confirms, buffered publishing |
+| `natsbackend` | NATS JetStream persistence, pull consumers, high-throughput event streams |
 | `redisbackend` | Redis Streams pub/sub (lighter weight, no extra broker) |
 | `membroker` | Unit tests (in-memory, synchronous drain) |
 
 If you only need in-process event dispatch, use `runtime/eventbus` instead.
+If the message must be committed atomically with a database write, use
+`infra/outbox` instead of direct publish or `BufferedPublisher`.
 
 ## Quick Start (AMQP)
 
@@ -53,14 +56,40 @@ app.New(...).
 conn, err := amqpbackend.Dial(url, logger,
     amqpbackend.WithLazyConnect(),           // non-blocking startup (default in Builder)
     amqpbackend.WithMaxReconnectAttempts(0), // 0 = unlimited
-    amqpbackend.WithTLS(tlsConfig),          // mTLS
+    amqpbackend.WithTLS(tlsConfig),          // mTLS; amqp:// is upgraded to amqps://
     amqpbackend.OnReconnect(func(c amqpbackend.Connector) error {
         return amqpbackend.DeclareAll(c, specs...) // re-declare after reconnect
     }),
 )
 ```
 
+`Dial` rejects plaintext `amqp://` unless `WithTLS` is supplied or
+`WithAllowPlaintext()` is set explicitly for local tests. Prefer
+`amqps://` URLs in deployed configuration. Custom TLS configs are
+cloned and raised to a TLS 1.2 minimum; stricter caller settings are
+preserved.
+
 Reconnect backoff: 3s base, 2x multiplier, 60s max, ±25% jitter.
+
+## Connection (NATS)
+
+```go
+conn, err := natsbackend.Connect(ctx, natsbackend.Config{
+    URL: "tls://nats.internal:4222",
+    Name: "orders",
+    TLS: tlsConfig, // optional custom trust/client certs; cloned with TLS 1.2+ floor
+})
+```
+
+`Connect` rejects plaintext unauthenticated NATS unless TLS, auth
+credentials, or `AllowInsecure` is configured. Use `AllowInsecure` only
+for trusted single-host development setups. NATS URLs must use
+`nats://`, `tls://`, `ws://`, or `wss://`, include a host, and must not
+embed credentials, query parameters, or fragments; use `Username`,
+`Token`, `CredentialsFile`, or `NKeyFile` for authentication.
+`natsbackend.Config.Clone`, `Connect`, and `app.Builder.WithNATS`
+snapshot caller-owned config; custom TLS configs are cloned with the TLS
+1.2+ floor, and `ExtraOptions` slices are copied before storage/dial.
 
 ## Messages
 
@@ -72,6 +101,73 @@ var order Order
 msg.DecodePayload(&order) // JSON decode
 msg.CorrelationID()        // shorthand
 ```
+
+Message metadata is validated before it reaches a broker or local
+buffer. IDs and types are required UTF-8 tokens with no whitespace or
+control bytes (`ID` <= 255 bytes, `Type` <= 256 bytes), payloads must
+be valid JSON when set, and headers must be portable HTTP-style field
+names with values capped at 8 KiB and no NUL/CR/LF bytes. Prefer
+`messaging.NewMessage`; call `messaging.ValidateMessage` when you must
+construct a `Message` manually.
+
+Publish routes use the same shared boundary across AMQP, NATS, Redis,
+`membroker`, and `BufferedPublisher`: exchange names are required,
+routing keys may be empty only for fanout/exchange-only publishes, each
+part is capped at 255 bytes, and whitespace, control bytes, and invalid
+UTF-8 are rejected before a backend sees the message. Use
+`messaging.ValidatePublishRoute(exchange, routingKey)` when accepting
+operator-supplied route configuration outside the Builder.
+
+## Message Size Limits
+
+All messaging publishers enforce `messaging.DefaultMaxMessageBytes`
+(1 MiB) before a message reaches the broker or the buffered-publisher
+state file. The shared `messaging.MessageSizeLimiter` includes the JSON
+message body plus transport headers in the estimate, so oversized
+headers cannot bypass the body cap.
+
+Use Builder methods for the golden path:
+
+```go
+app.New("orders", version, cfg.BaseConfig).
+    WithRabbitMQ(cfg.AMQPURL).
+    WithNATS(natsCfg).
+    WithMaxMessageBytes(512 << 10).                         // default for Builder-created publishers
+    WithRouteMaxMessageBytes("orders", "order.bulk", 8<<20) // exact route override
+```
+
+Manual publishers expose the same pattern:
+
+```go
+pub := amqpbackend.NewPublisher(conn, logger,
+    amqpbackend.WithMaxMessageBytes(512<<10),
+    amqpbackend.WithRouteMaxMessageBytes("orders", "order.bulk", 8<<20),
+)
+
+natsPub := natsbackend.NewPublisher(conn,
+    natsbackend.WithMaxMessageBytes(512<<10),
+)
+
+redisPub := redisbackend.NewPublisher(streamProducer,
+    redisbackend.WithMaxMessageBytes(512<<10),
+)
+
+tests := membroker.New(membroker.WithMaxMessageBytes(512 << 10))
+```
+
+`messaging.NewBufferedPublisher` checks the same policy before direct
+publish or buffering, preventing an over-large poison message from being
+persisted and retried forever:
+
+```go
+buffered := messaging.NewBufferedPublisher(pub, conn, logger,
+    messaging.WithBufferedStateFile("/var/data/buffered.json"),
+    messaging.WithBufferedMaxMessageBytes(512<<10),
+)
+```
+
+Use `WithoutMaxMessageBytes` / `WithoutBufferedMaxMessageBytes` only
+when another protocol or product contract already enforces a smaller cap.
 
 ## Topology Declaration (AMQP)
 
@@ -96,6 +192,10 @@ amqpbackend.DeclareExchanges(conn, messaging.ExchangeSpec{
 // Pure computation (no broker connection needed):
 bindings, _ := messaging.ComputeBindings(spec1, spec2) // for consumer-only services
 ```
+
+`DeclareAll`, `ComputeBindings`, and `FindBinding` return detached binding
+snapshots. Mutating the original `BindingSpec` slice or `RetryPolicy` pointer
+after setup does not change the returned consumer bindings.
 
 When `RetryPolicy` is set, DeclareAll creates:
 - `{exchange}.retry` exchange + `{queue}.retry` queue (TTL → re-routes to main exchange)
@@ -162,7 +262,11 @@ pub := messaging.NewBufferedPublisher(publisher, conn, logger,
     messaging.WithBufferedMaxSize(10_000),
     messaging.WithBufferedStateFile("/var/data/buffered.json"), // crash-safe persistence
 )
-go pub.Run(ctx) // background drain loop
+go func() {
+    if err := pub.Run(ctx); err != nil {
+        logger.Error("buffered publisher stopped", "err", err)
+    }
+}() // background drain loop
 
 pub.Publish(ctx, "orders", "order.created", msg)
 ```
@@ -171,22 +275,82 @@ pub.Publish(ctx, "orders", "order.created", msg)
 - Buffer path: appends to buffer on any failure condition.
 - Drain loop: every 5s, processes up to 100 messages per cycle.
 - State file: atomic write (temp + rename), survives crashes.
+- Run loop: start exactly one per publisher; `Run` rejects nil contexts,
+  uninitialized publishers, duplicate starts, and restarts after stop.
+- Shutdown final drain uses a timeout-bounded detached run context, so broker
+  wrappers still receive tenant, trace, logger, and other context values after
+  cancellation.
+
+## Transactional Outbox
+
+Use `infra/outbox` when a domain write and downstream publish must succeed
+or fail as one logical operation.
+
+```go
+store := mypg.NewOutboxStore(pool)
+writer := outbox.NewWriter(store, outbox.WithRequireTransaction(requireTx))
+
+err := pool.BeginTxFunc(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+    txCtx := withTx(ctx, tx)
+    if err := createOrder(txCtx, tx, order); err != nil {
+        return err
+    }
+    return writer.Write(txCtx, outbox.WriteParams{
+        Topic:       "orders",
+        RoutingKey:  "order.created",
+        MessageID:   order.ID,
+        MessageType: "order.created",
+        Payload:     payload,
+    })
+})
+```
+
+Run one or more relays as lifecycle components:
+
+```go
+relay := outbox.NewRelay(store, publisher, logger,
+    outbox.WithRetention(7*24*time.Hour),
+    outbox.WithFailedRetention(30*24*time.Hour),
+)
+runner.Add(relay)
+```
+
+The relay polls pending rows, retries transient failures with exponential
+backoff, marks exhausted rows as failed, recovers stale processing rows, and
+cleans old published/failed rows on startup plus periodic cleanup ticks. Keep
+`WithFailedRetention` long enough for incident review.
 
 ## Debug HTTP Handlers (AMQP)
 
-For development/staging environments, `amqpbackend/debughttp` provides HTTP handlers to test messaging flows without a RabbitMQ client. Import the optional `debughttp` package:
+For development environments, `amqpbackend/debughttp` provides HTTP handlers to test messaging flows without a RabbitMQ client. Always mount them through `debughttp.Guard`; the guard only opens in the literal `development` environment and requires an authenticator.
 
 ```go
 import "github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2"
 
+debugAuth := debughttp.BasicAuth(map[string]string{
+    cfg.DebugUser: cfg.DebugPassword,
+})
+
 // Dispatch a message directly to a consumer handler (bypasses RabbitMQ):
-mux.HandleFunc("POST /debug/consume", debughttp.ConsumeHandler(handlers, logger))
+mux.Handle("POST /debug/consume", debughttp.Guard(
+    cfg.Environment,
+    debugAuth,
+    debughttp.ConsumeHandler(handlers, logger),
+))
 
 // List registered consumer message types:
-mux.HandleFunc("GET /debug/consume/types", debughttp.ConsumeTypesHandler(handlers))
+mux.Handle("GET /debug/consume/types", debughttp.Guard(
+    cfg.Environment,
+    debugAuth,
+    debughttp.ConsumeTypesHandler(handlers),
+))
 
 // Publish a message to a RabbitMQ exchange via REST:
-mux.HandleFunc("POST /debug/publish", debughttp.PublishHandler(infra.Publisher, allowedExchanges, logger))
+mux.Handle("POST /debug/publish", debughttp.Guard(
+    cfg.Environment,
+    debugAuth,
+    debughttp.PublishHandler(infra.Publisher, []string{"orders"}, logger),
+))
 ```
 
 ## Environment Variables
@@ -195,7 +359,7 @@ Configure via URL (takes precedence) or individual fields:
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `RABBITMQ_URL` | No* | — | Full AMQP URL, takes precedence over individual fields |
+| `RABBITMQ_URL` | No* | — | Full AMQP URL, takes precedence over individual fields; prefer `amqps://` |
 | `RABBITMQ_HOST` | No* | — | Hostname (used when RABBITMQ_URL is not set) |
 | `RABBITMQ_PORT` | No | `5672` | Port |
 | `RABBITMQ_USER` | No | `guest` | Username |
@@ -209,6 +373,9 @@ Loaded via `amqpbackend.LoadRabbitMQFields()`. Use `cfg.RabbitMQ.AMQPURL()` to g
 ## Anti-Patterns
 
 - **Never** ACK messages on transient errors — return the error so retry/DLX handles it.
+- **Never** use plaintext AMQP in production — use `amqps://` or Builder TLS; `WithAllowPlaintext()` is only for explicit local/test opt-in.
+- **Never** lower broker TLS below TLS 1.2 — AMQP and NATS custom TLS configs are cloned and validated.
+- **Never** put NATS credentials in the URL — use typed auth fields so logs stay redacted.
 - **Never** use `apperror.Permanent` for transient failures — it skips all retries.
 - **Never** create Publisher/Consumer outside the Router closure — the connection may not be ready.
 - **Never** share AMQP channels across goroutines — Publisher serializes internally.
@@ -227,4 +394,4 @@ func TestMessaging(t *testing.T) {
 }
 ```
 
-Import path: `messaging/amqpbackend/rabbitmqtest`.
+Import path: `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest`.

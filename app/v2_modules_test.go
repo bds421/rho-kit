@@ -13,6 +13,7 @@ import (
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
+	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
@@ -104,10 +105,20 @@ func TestWithTenantBudget_BuildsMiddleware(t *testing.T) {
 	assert.Same(t, b.budgetSpec.store.(*stubBudget), b.budgetSpecStore())
 }
 
+func TestWithTenantBudget_ClonesOptions(t *testing.T) {
+	opts := []httpxbudget.Option{httpxbudget.WithScope("tenant")}
+
+	b := New("test", "v1", BaseConfig{}).WithTenantBudget(&stubBudget{}, opts...)
+	opts[0] = nil
+
+	require.NotNil(t, b.budgetSpec)
+	require.Len(t, b.budgetSpec.opts, 1)
+	assert.NotNil(t, b.budgetSpec.opts[0])
+}
+
 // R3-H: WithTenantBudget combined with the safe-method bypass would
-// let GETs skip both tenant validation and budget charging. Validate
-// must reject the combination so it cannot re-emerge through
-// misconfiguration.
+// send some charged routes to budget enforcement without a tenant key.
+// Validate must reject the combination at startup.
 func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithMultiTenant(nil, true).
@@ -119,8 +130,8 @@ func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
 }
 
 // R3-H: WithTenantBudget combined with required=false on the tenant
-// middleware lets requests bypass the budget entirely by omitting the
-// header. Validate must reject this.
+// middleware would send some charged routes to budget enforcement
+// without a tenant key. Validate must reject this.
 func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithMultiTenant(nil, false).
@@ -133,7 +144,7 @@ func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
 // R3-H: WithTenantBudget + WithMultiTenant(..., required=true) is the
 // canonical, accepted shape. End-to-end exercise: GET without
 // X-Tenant-Id must receive 400 (the tenant middleware rejects it
-// before the budget middleware can be silently bypassed).
+// before the budget middleware has to reject a missing key).
 func TestWithTenantBudget_RejectsGETWithoutTenant(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
 		WithMultiTenant(nil, true).

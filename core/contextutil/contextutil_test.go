@@ -20,6 +20,16 @@ func TestKey_SetGet(t *testing.T) {
 	assert.Equal(t, "hello", val)
 }
 
+func TestKey_SetNilContextUsesBackground(t *testing.T) {
+	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
+	ctx := testStringKey.Set(nil, "hello")
+	require.NotNil(t, ctx)
+
+	val, ok := testStringKey.Get(ctx)
+	require.True(t, ok)
+	assert.Equal(t, "hello", val)
+}
+
 func TestKey_Missing(t *testing.T) {
 	val, ok := testStringKey.Get(context.Background())
 	assert.False(t, ok)
@@ -27,8 +37,15 @@ func TestKey_Missing(t *testing.T) {
 }
 
 func TestKey_MustGet_Panics(t *testing.T) {
-	assert.Panics(t, func() {
+	assert.PanicsWithValue(t, "contextutil: required key is not present in context; ensure the value was set upstream", func() {
 		testStringKey.MustGet(context.Background())
+	})
+}
+
+func TestKey_MustGetPanicDoesNotReflectName(t *testing.T) {
+	key := contextutil.NewKey[string]("secret-token")
+	assert.PanicsWithValue(t, "contextutil: required key is not present in context; ensure the value was set upstream", func() {
+		key.MustGet(context.Background())
 	})
 }
 

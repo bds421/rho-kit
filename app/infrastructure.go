@@ -5,21 +5,23 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
-	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
+	kitflags "github.com/bds421/rho-kit/flags/v2"
+	"github.com/bds421/rho-kit/httpx/v2"
 	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
-	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -110,7 +112,7 @@ func TestInfrastructure() Infrastructure {
 	return Infrastructure{
 		Logger:             slog.Default(),
 		EventBus:           eventbus.New(),
-		HTTPClient:         &http.Client{},
+		HTTPClient:         httpx.NewHTTPClient(10*time.Second, nil),
 		Background:         func(_ string, _ func(ctx context.Context) error) {},
 		SetCustomReadiness: func(_ http.Handler) {},
 		AddHealthCheck:     func(_ health.DependencyCheck) {},

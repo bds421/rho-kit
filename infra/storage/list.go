@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"time"
 )
@@ -33,9 +34,10 @@ type ListOptions struct {
 }
 
 // Lister is an optional extension for backends that support listing objects.
-// Check capability via type assertion:
+// Check capability via [AsLister] so decorators with [Unwrapper] support are
+// handled consistently:
 //
-//	if l, ok := backend.(storage.Lister); ok {
+//	if l, ok := storage.AsLister(backend); ok {
 //	    for info, err := range l.List(ctx, "uploads/", storage.ListOptions{}) {
 //	        // ...
 //	    }
@@ -48,4 +50,19 @@ type Lister interface {
 	//
 	// Pass an empty prefix to list all objects.
 	List(ctx context.Context, prefix string, opts ListOptions) iter.Seq2[ObjectInfo, error]
+}
+
+// ValidateListOptions checks list pagination controls before they reach a
+// backend API. StartAfter is a storage-key cursor and MaxKeys must be
+// non-negative; zero means unlimited.
+func ValidateListOptions(opts ListOptions) error {
+	if opts.MaxKeys < 0 {
+		return fmt.Errorf("%w: storage list MaxKeys must be >= 0", ErrValidation)
+	}
+	if opts.StartAfter != "" {
+		if err := ValidateKey(opts.StartAfter); err != nil {
+			return fmt.Errorf("storage list StartAfter is invalid: %w", err)
+		}
+	}
+	return nil
 }

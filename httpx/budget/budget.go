@@ -29,6 +29,12 @@
 // best-effort behavior: failed delta charges are logged but the
 // response is still returned.
 //
+// Transport errors retain the pre-charge by default. A timeout, broken pipe,
+// or response-header error can happen after the upstream has already performed
+// paid work, so automatic refunds are not a safe spend-control default. Use
+// [WithRefundOnTransportError] only for upstreams that guarantee failed
+// requests are never charged.
+//
 // # Sentinel error
 //
 // When the budget rejects the pre-charge or a hard-enforced delta
@@ -44,15 +50,23 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/budget"
+	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
+	"golang.org/x/net/http/httpguts"
 )
 
 // ErrBudgetExceeded is the sentinel returned by RoundTrip when the
 // pre-charge fails or, under [EnforcementHard], when the actual-cost
 // delta cannot be charged. Callers compare with [errors.Is].
 var ErrBudgetExceeded = errors.New("httpx/budget: budget exceeded")
+
+// ErrInvalidRequest is returned when the transport is asked to process a
+// structurally invalid request.
+var ErrInvalidRequest = errors.New("httpx/budget: invalid request")
 
 // Logger is the minimal interface accepted by [WithLogger]. *slog.Logger
 // satisfies it.
@@ -90,6 +104,7 @@ type config struct {
 	logger         Logger
 	enforcement    Enforcement
 	cleanupTimeout time.Duration
+	refundOnError  bool
 }
 
 // WithEstimateHeader names a request header whose integer value is
@@ -98,6 +113,9 @@ type config struct {
 // dispatch). When the header is absent or unparseable the default
 // amount is charged instead.
 func WithEstimateHeader(name string) Option {
+	if name != "" && !httpguts.ValidHeaderFieldName(name) {
+		panic("httpx/budget: WithEstimateHeader requires a valid HTTP header field name")
+	}
 	return func(c *config) { c.estimateHeader = name }
 }
 
@@ -106,12 +124,18 @@ func WithEstimateHeader(name string) Option {
 // between the estimate and the actual after the upstream returns.
 // Set "" to disable reconciliation.
 func WithActualHeader(name string) Option {
+	if name != "" && !httpguts.ValidHeaderFieldName(name) {
+		panic("httpx/budget: WithActualHeader requires a valid HTTP header field name")
+	}
 	return func(c *config) { c.actualHeader = name }
 }
 
 // WithDefaultAmount sets the per-request charge when no estimate
 // header is set. Default: 1.
 func WithDefaultAmount(n int64) Option {
+	if n < 0 {
+		panic("httpx/budget: WithDefaultAmount requires a non-negative amount")
+	}
 	return func(c *config) { c.defaultAmount = n }
 }
 
@@ -131,25 +155,40 @@ func WithLogger(l Logger) Option {
 // WithEnforcement selects how the wrapper reacts when the actual-cost
 // delta cannot be charged. Default: [EnforcementHard].
 func WithEnforcement(e Enforcement) Option {
+	switch e {
+	case EnforcementHard, EnforcementAuditOnly:
+	default:
+		panic("httpx/budget: WithEnforcement requires a known enforcement mode")
+	}
 	return func(c *config) { c.enforcement = e }
 }
 
 // WithCleanupTimeout bounds the post-response refund and reconcile
 // path. The cleanup context is detached from the request context
 // (so cancellation cannot strand accounting) and capped at d.
-// Values <= 0 are ignored. Default: 2s.
+// The duration must be positive. Default: 2s.
 func WithCleanupTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("httpx/budget: WithCleanupTimeout requires a positive duration")
+	}
 	return func(c *config) {
-		if d <= 0 {
-			return
-		}
 		c.cleanupTimeout = d
 	}
 }
 
+// WithRefundOnTransportError refunds the optimistic pre-charge when the
+// wrapped RoundTripper returns an error before a response is available.
+//
+// Leave this disabled for spend-control use cases unless the upstream's
+// contract guarantees that failed requests are never charged.
+func WithRefundOnTransportError() Option {
+	return func(c *config) { c.refundOnError = true }
+}
+
 // Wrap returns a RoundTripper that pre-charges `b` for `key` on every
 // request and reconciles the actual cost (when configured) on the
-// response. base may be nil; defaults to [http.DefaultTransport].
+// response. base may be nil; defaults to a kit transport with the
+// outbound TLS floor and connection-pool defaults applied.
 //
 // Panics on nil budget or empty key — neither is a safe runtime
 // recovery condition.
@@ -157,11 +196,11 @@ func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) h
 	if b == nil {
 		panic("httpx/budget: budget must not be nil")
 	}
-	if key == "" {
-		panic("httpx/budget: key must not be empty")
+	if err := budget.ValidateKey(key); err != nil {
+		panic("httpx/budget: key is invalid")
 	}
 	if base == nil {
-		base = http.DefaultTransport
+		base = transportdefaults.New(nil, 0, "httpx/budget: Wrap")
 	}
 	cfg := config{
 		defaultAmount:  1,
@@ -170,6 +209,9 @@ func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) h
 		cleanupTimeout: defaultCleanupTimeout,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("budget: Wrap option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.defaultAmount < 0 {
@@ -186,6 +228,9 @@ type transport struct {
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, ErrInvalidRequest
+	}
 	estimate := t.estimate(req)
 
 	allowed, _, _, err := t.b.Consume(req.Context(), t.key, estimate)
@@ -198,7 +243,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		t.cleanupRefund(req.Context(), estimate, err)
+		if t.cfg.refundOnError {
+			t.cleanupRefund(req.Context(), estimate, err)
+		}
 		return nil, err
 	}
 
@@ -219,8 +266,8 @@ func (t *transport) estimate(req *http.Request) int64 {
 	if t.cfg.estimateHeader == "" {
 		return t.cfg.defaultAmount
 	}
-	v := req.Header.Get(t.cfg.estimateHeader)
-	if v == "" {
+	v, _, ok := singletonHeaderValue(req.Header, t.cfg.estimateHeader)
+	if !ok {
 		return t.cfg.defaultAmount
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
@@ -239,14 +286,19 @@ func (t *transport) estimate(req *http.Request) int64 {
 // surfaces the error. Header parse failures, refund-side errors,
 // and audit-only mode never produce an error.
 func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estimate int64) error {
-	v := resp.Header.Get(t.cfg.actualHeader)
-	if v == "" {
+	v, present, ok := singletonHeaderValue(resp.Header, t.cfg.actualHeader)
+	if !present {
+		return nil
+	}
+	if !ok {
+		t.cfg.logger.Warn("httpx/budget: ambiguous actual header",
+			"header", t.cfg.actualHeader)
 		return nil
 	}
 	actual, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || actual < 0 {
 		t.cfg.logger.Warn("httpx/budget: malformed actual header",
-			"header", t.cfg.actualHeader, "value", v)
+			"header", t.cfg.actualHeader, redact.String("value", v))
 		return nil
 	}
 	delta := actual - estimate
@@ -263,7 +315,7 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 	ok, _, _, cerr := t.b.Consume(ctx, t.key, delta)
 	if cerr != nil {
 		t.cfg.logger.Warn("httpx/budget: reconcile charge failed",
-			"key", t.key, "delta", delta, "err", cerr)
+			redact.String("key", t.key), "delta", delta, redact.ErrorKey("err", cerr))
 		if t.cfg.enforcement == EnforcementHard {
 			t.cleanupRefund(reqCtx, estimate, cerr)
 			return fmt.Errorf("httpx/budget: reconcile: %w", cerr)
@@ -272,13 +324,28 @@ func (t *transport) reconcile(reqCtx context.Context, resp *http.Response, estim
 	}
 	if !ok {
 		t.cfg.logger.Warn("httpx/budget: reconcile delta exceeded budget",
-			"key", t.key, "delta", delta)
+			redact.String("key", t.key), "delta", delta)
 		if t.cfg.enforcement == EnforcementHard {
 			t.cleanupRefund(reqCtx, estimate, nil)
 			return ErrBudgetExceeded
 		}
 	}
 	return nil
+}
+
+func singletonHeaderValue(h http.Header, name string) (value string, present bool, ok bool) {
+	values := h.Values(name)
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 {
+		return "", true, false
+	}
+	value = strings.TrimSpace(values[0])
+	if value == "" {
+		return "", true, false
+	}
+	return value, true, true
 }
 
 // cleanupRefund credits `amount` back to the budget on a cleanup
@@ -294,12 +361,12 @@ func (t *transport) cleanupRefund(reqCtx context.Context, amount int64, cause er
 	_, ok, err := budget.Refund(ctx, t.b, t.key, amount)
 	if err != nil {
 		t.cfg.logger.Warn("httpx/budget: refund failed",
-			"key", t.key, "amount", amount, "err", err, "cause", cause)
+			redact.String("key", t.key), "amount", amount, redact.ErrorKey("err", err), redact.ErrorKey("cause", cause))
 		return
 	}
 	if !ok {
 		t.cfg.logger.Warn("httpx/budget: refund unavailable on backend",
-			"key", t.key, "amount", amount, "cause", cause)
+			redact.String("key", t.key), "amount", amount, redact.ErrorKey("cause", cause))
 	}
 }
 

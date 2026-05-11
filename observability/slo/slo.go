@@ -160,7 +160,7 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 			panic("slo: SLO name must not be empty")
 		}
 		if _, exists := seen[s.Name]; exists {
-			panic(fmt.Sprintf("slo: duplicate SLO name %q", s.Name))
+			panic("slo: duplicate SLO name")
 		}
 		seen[s.Name] = struct{}{}
 	}

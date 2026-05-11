@@ -45,12 +45,18 @@
 // destructive operations; missing or empty actor at request time
 // produces 401 Unauthorized.
 //
+// Prefer extracting actors from authenticated request context. If a
+// deployment must trust a proxy-stamped actor header, wire
+// [WithActorFromHeader] so duplicate, comma-combined, whitespace, and
+// control-character values are rejected consistently with the rest of
+// the kit's identity-header handling.
+//
 // # Body size cap
 //
 // Bodies larger than MaxBodyBytes are rejected with 413 Payload Too
 // Large. The default is 64 KiB; override via [WithMaxBodyBytes]. The
 // cap exists because the body lives in the approval store (postgres
-// JSONB column or a memory map) until the request is decided — an
+// BYTEA column or a memory map) until the request is decided — an
 // uncapped middleware would happily persist a 5 GiB request body.
 //
 // asvs: V4.2.1, V13.4.1

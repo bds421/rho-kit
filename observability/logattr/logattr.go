@@ -8,13 +8,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
-// Error returns an "error" attribute. Prefer this over slog.String("error", ...).
+// Error returns a redacted "error" attribute. Prefer this over slog.String("error", ...).
 func Error(err error) slog.Attr {
-	return slog.Any("error", err)
+	return redact.Error(err)
 }
 
 // Component returns a "component" attribute identifying a lifecycle component.
@@ -27,9 +30,9 @@ func RequestID(id string) slog.Attr {
 	return slog.String("request_id", id)
 }
 
-// Addr returns an "addr" attribute (host:port).
+// Addr returns a redacted "addr" attribute (host:port).
 func Addr(addr string) slog.Attr {
-	return slog.String("addr", addr)
+	return redact.String("addr", addr)
 }
 
 // Attempt returns an "attempt" attribute for retry logging.
@@ -47,9 +50,9 @@ func Method(m string) slog.Attr {
 	return slog.String("method", m)
 }
 
-// Path returns a "path" attribute for HTTP paths.
+// Path returns a redacted "path" attribute for HTTP paths.
 func Path(p string) slog.Attr {
-	return slog.String("path", p)
+	return redact.String("path", p)
 }
 
 // StatusCode returns a "status" attribute for HTTP status codes.
@@ -57,9 +60,9 @@ func StatusCode(code int) slog.Attr {
 	return slog.Int("status", code)
 }
 
-// Instance returns an "instance" attribute for named instances (DB, cache, etc.).
+// Instance returns a redacted "instance" attribute for named instances (DB, cache, etc.).
 func Instance(name string) slog.Attr {
-	return slog.String("instance", name)
+	return redact.String("instance", name)
 }
 
 // Duration returns a "duration" attribute for request/operation durations.
@@ -77,9 +80,9 @@ func SpanID(id string) slog.Attr {
 	return slog.String("span_id", id)
 }
 
-// UserID returns a "user_id" attribute.
+// UserID returns a redacted "user_id" attribute.
 func UserID(id string) slog.Attr {
-	return slog.String("user_id", id)
+	return redact.String("user_id", id)
 }
 
 // Count returns a "count" attribute for batch operations.
@@ -87,29 +90,29 @@ func Count(n int) slog.Attr {
 	return slog.Int("count", n)
 }
 
-// Operation returns an "operation" attribute for audit/action logging.
+// Operation returns a redacted "operation" attribute for audit/action logging.
 func Operation(name string) slog.Attr {
-	return slog.String("operation", name)
+	return redact.String("operation", name)
 }
 
-// Queue returns a "queue" attribute for message queue logging.
+// Queue returns a redacted "queue" attribute for message queue logging.
 func Queue(name string) slog.Attr {
-	return slog.String("queue", name)
+	return redact.String("queue", name)
 }
 
-// Topic returns a "topic" attribute for message bus logging.
+// Topic returns a redacted "topic" attribute for message bus logging.
 func Topic(name string) slog.Attr {
-	return slog.String("topic", name)
+	return redact.String("topic", name)
 }
 
-// Stream returns a "stream" attribute for event stream logging.
+// Stream returns a redacted "stream" attribute for event stream logging.
 func Stream(name string) slog.Attr {
-	return slog.String("stream", name)
+	return redact.String("stream", name)
 }
 
-// URL returns a "url" attribute for HTTP client logging.
-func URL(u string) slog.Attr {
-	return slog.String("url", u)
+// URL returns a redacted "url" attribute for HTTP client logging.
+func URL(raw string) slog.Attr {
+	return slog.String("url", redactedURL(raw))
 }
 
 // Secret returns a redaction-safe attribute for sensitive values
@@ -169,6 +172,16 @@ func redactedValue(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	digest := hex.EncodeToString(sum[:])[:8]
 	return fmt.Sprintf("<redacted %d bytes sha256:%s>", len(value), digest)
+}
+
+func redactedURL(raw string) string {
+	if raw == "" {
+		return redact.StringValue(raw)
+	}
+	if _, err := url.Parse(raw); err != nil {
+		return "[INVALID URL]"
+	}
+	return redact.StringValue(raw)
 }
 
 func maskEmail(addr string) string {

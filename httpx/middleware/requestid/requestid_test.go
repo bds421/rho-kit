@@ -53,6 +53,27 @@ func TestWithRequestID_UsesIncomingHeader(t *testing.T) {
 	}
 }
 
+func TestWithRequestID_RejectsDuplicateHeader(t *testing.T) {
+	var capturedID string
+	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = contextutil.RequestID(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Add(Header, "incoming-id-123")
+	req.Header.Add(Header, "incoming-id-456")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedID == "incoming-id-123" || capturedID == "incoming-id-456" {
+		t.Errorf("duplicate request ID header should be replaced, got %q", capturedID)
+	}
+	if capturedID == "" {
+		t.Error("a new ID should be generated for duplicated input")
+	}
+}
+
 func TestWithRequestID_RejectsLongID(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +112,26 @@ func TestWithRequestID_RejectsControlChars(t *testing.T) {
 	}
 }
 
+func TestWithRequestID_RejectsFreeFormHeader(t *testing.T) {
+	var capturedID string
+	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = contextutil.RequestID(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(Header, "alice@example.com/reset/token=secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedID == "alice@example.com/reset/token=secret" {
+		t.Error("free-form request ID should be rejected")
+	}
+	if rec.Header().Get(Header) == "alice@example.com/reset/token=secret" {
+		t.Error("invalid request ID should not be echoed in response header")
+	}
+}
+
 func TestWithRequestID_AcceptsMaxLength(t *testing.T) {
 	var capturedID string
 	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +167,11 @@ func TestIsValidRequestID(t *testing.T) {
 		{"non-ascii", "abc\x80def", false},
 		{"contains space", "abc 123", false},
 		{"only spaces", "   ", false},
+		{"slash path", "/reset/token", false},
+		{"email", "alice@example.com", false},
+		{"key value", "token=secret", false},
+		{"comma list", "a,b", false},
+		{"colon", "trace:span", false},
 	}
 
 	for _, tt := range tests {

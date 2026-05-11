@@ -22,7 +22,7 @@ func NewVersionedHandler(handlers map[SchemaVersion]Handler) Handler {
 	dispatch := make(map[SchemaVersion]Handler, len(handlers))
 	for v, h := range handlers {
 		if h == nil {
-			panic(fmt.Sprintf("versioned handler: nil handler for schema version %d", v))
+			panic("versioned handler: nil handler")
 		}
 		dispatch[v] = h
 	}
@@ -30,8 +30,7 @@ func NewVersionedHandler(handlers map[SchemaVersion]Handler) Handler {
 	return func(ctx context.Context, d Delivery) error {
 		h, ok := dispatch[d.SchemaVersion]
 		if !ok {
-			return fmt.Errorf("no handler registered for schema version %d (message type %s, id %s)",
-				d.SchemaVersion, d.Message.Type, d.Message.ID)
+			return fmt.Errorf("no handler registered for schema version %d", d.SchemaVersion)
 		}
 		return h(ctx, d)
 	}

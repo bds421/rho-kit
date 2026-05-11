@@ -35,8 +35,8 @@ type HealthServer struct {
 // NewHealthServer creates a HealthServer that delegates to the given checker.
 // Panics if checker is nil to fail fast on misconfiguration.
 func NewHealthServer(checker *health.Checker) *HealthServer {
-	if checker == nil {
-		panic("grpcx: NewHealthServer requires a non-nil health.Checker")
+	if err := health.ValidateChecker(checker); err != nil {
+		panic("grpcx: NewHealthServer requires a valid health.Checker")
 	}
 	return &HealthServer{checker: checker}
 }

@@ -95,3 +95,19 @@ func TestChain_Immutable(t *testing.T) {
 	// Original should not be modified
 	assert.Equal(t, 1, chain.Len())
 }
+
+func TestNewChain_ClonesMiddlewareSlice(t *testing.T) {
+	middlewares := []func(http.Handler) http.Handler{addHeader("X-A", "1")}
+	chain := NewChain(middlewares...)
+	middlewares[0] = addHeader("X-B", "2")
+
+	handler := chain.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	assert.Equal(t, "1", rec.Header().Get("X-A"))
+	assert.Empty(t, rec.Header().Get("X-B"))
+}

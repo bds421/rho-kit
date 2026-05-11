@@ -6,10 +6,25 @@ import (
 {{- if .MCP}}
 	"context"
 {{- end}}
+{{- if .Tenant}}
+	"fmt"
+{{- end}}
 	"log/slog"
 	"net/http"
 
 	kitapp "github.com/bds421/rho-kit/app/v2"
+{{- if .Tenant}}
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
+	rediscache "github.com/bds421/rho-kit/data/cache/rediscache/v2"
+	redisstore "github.com/bds421/rho-kit/data/idempotency/redisstore/v2"
+	sharedcache "github.com/bds421/rho-kit/data/v2/cache"
+	tenantcache "github.com/bds421/rho-kit/data/v2/cache/tenant"
+	sharedidempotency "github.com/bds421/rho-kit/data/v2/idempotency"
+	tenantidempotency "github.com/bds421/rho-kit/data/v2/idempotency/tenant"
+	httpidempotency "github.com/bds421/rho-kit/httpx/v2/middleware/idempotency"
+	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
+	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
+{{- end}}
 {{- if .Postgres}}
 
 	"github.com/bds421/rho-kit/core/v2/config"
@@ -64,6 +79,40 @@ func newMCPServer() *mcp.Server {
 	return srv
 }
 {{- end}}
+{{- if .Tenant}}
+
+type tenantResources struct {
+	Cache       sharedcache.Cache
+	Idempotency sharedidempotency.Store
+}
+
+func newTenantResources(redis *kitredis.Connection) (tenantResources, error) {
+	if redis == nil {
+		return tenantResources{}, fmt.Errorf("tenant resources require Redis")
+	}
+	baseCache, err := rediscache.NewRedisCache(redis.Client(), "{{.ServiceName}}-cache")
+	if err != nil {
+		return tenantResources{}, err
+	}
+	return tenantResources{
+		Cache: tenantcache.Wrap(baseCache),
+		Idempotency: tenantidempotency.Wrap(redisstore.New(
+			redis.Client(),
+			redisstore.WithKeyPrefix("{{.ServiceName}}:idempotency:"),
+		)),
+	}, nil
+}
+
+func tenantIDForIdempotency(r *http.Request) string {
+	// Replace this with the authenticated subject once JWT/PASETO auth is
+	// wired. Until then, tenant ID is the narrowest identity the scaffold has.
+	id, ok := coretenant.FromContext(r.Context())
+	if !ok {
+		return ""
+	}
+	return id.String()
+}
+{{- end}}
 
 // Run wires the service via [app.Builder] and blocks until the
 // service exits. The Builder installs the kit's production-safety
@@ -72,16 +121,33 @@ func newMCPServer() *mcp.Server {
 // has a documented WithoutXxx opt-out, but production deployments must
 // not use those casually.
 //
+{{- if .Tenant}}
+// The router-only skeleton below starts with tenant Redis/cache/idempotency
+// already wired. Add messaging modules with the matching Builder methods
+// (WithRabbitMQ, WithNATS, ...). The Builder composes the middleware chain
+// so adding modules does not change router code.
+{{- else}}
 // The router-only skeleton below mounts a single readiness handler.
 // Add Redis / messaging / cache modules with the matching Builder
 // methods (WithRedis, WithRabbitMQ, WithNATS, ...). The Builder
 // composes the middleware chain so adding modules does not change
 // router code.
+{{- end}}
 func Run(_ *slog.Logger) error {
 	cfg, err := kitapp.LoadBaseConfig(8080)
 	if err != nil {
 		return err
 	}
+{{- if .Tenant}}
+	redisFields, err := kitredis.LoadRedisFields()
+	if err != nil {
+		return err
+	}
+	redisOpts, err := redisFields.Redis.Options()
+	if err != nil {
+		return err
+	}
+{{- end}}
 
 	b := kitapp.New("{{.ServiceName}}", "", cfg)
 {{- if .Postgres}}
@@ -92,13 +158,27 @@ func Run(_ *slog.Logger) error {
 	dsn := config.MustGetSecret("DATABASE_URL", "")
 	b = b.WithPostgres(pgxbackend.Config{DSN: dsn}).WithMigrations(migrations.FS)
 {{- end}}
+{{- if .Tenant}}
+
+	b = b.
+		WithRedis(redisOpts).
+		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"), true)
+{{- end}}
 
 	return b.
-		Router(func(_ kitapp.Infrastructure) http.Handler {
+		Router(func(infra kitapp.Infrastructure) http.Handler {
+{{- if .Tenant}}
+			tenantDeps, err := newTenantResources(infra.Redis)
+			if err != nil {
+				panic("tenant resources: " + err.Error())
+			}
+{{- end}}
 			mux := http.NewServeMux()
+{{- if not .Tenant}}
 			mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
+{{- end}}
 {{- if .MCP}}
 
 			// Mount the MCP JSON-RPC endpoint. Builder.WithJWT /
@@ -107,7 +187,17 @@ func Run(_ *slog.Logger) error {
 			// mux automatically — nothing extra to do here.
 			mux.Handle("/mcp", newMCPServer().HTTP())
 {{- end}}
+{{- if .Tenant}}
+			// Route constructors should receive tenantDeps.Cache instead
+			// of a raw Redis client so tenant scoping stays centralized.
+			_ = tenantDeps.Cache
+			return httpidempotency.Middleware(tenantDeps.Idempotency,
+				httpidempotency.WithUserExtractor(tenantIDForIdempotency),
+				httpidempotency.WithSemanticHeaders("X-Tenant-Id"),
+			)(mux)
+{{- else}}
 			return mux
+{{- end}}
 		}).
 		Run()
 }

@@ -2,15 +2,61 @@ package reqsign
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
+	kithttpx "github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
+
+type closeTrackingReadCloser struct {
+	*bytes.Reader
+	closed bool
+}
+
+func (b *closeTrackingReadCloser) Close() error {
+	b.closed = true
+	return nil
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("tenant-secret-body") }
+func (failingReadCloser) Close() error             { return nil }
+
+func TestRequireSignedRequest_ReadBodyLogRedactsError(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	handler := RequireSignedRequest(testStore(), freshNonceStoreOpt())(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Body = failingReadCloser{}
+	req = req.WithContext(kithttpx.SetLogger(req.Context(), logger))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"error"`) {
+		t.Fatalf("expected error attribute in log, got %q", out)
+	}
+	if strings.Contains(out, "tenant-secret-body") {
+		t.Fatalf("reqsign log leaked raw read error: %q", out)
+	}
+}
 
 func TestMiddleware(t *testing.T) {
 	store := testStore()
@@ -137,5 +183,45 @@ func TestMiddleware(t *testing.T) {
 				t.Errorf("downstream body = %q, want %q", downstreamBody, tt.body)
 			}
 		})
+	}
+}
+
+func TestRequireSignedRequest_ClosesOriginalBodyAfterRewind(t *testing.T) {
+	store := testStore()
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	signer := signing.NewSigner(signing.WithClock(fixedClock(now)))
+
+	body := []byte(`{"action":"test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	if err := SignRequest(req, body, store, WithSigner(signer)); err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+	originalBody := &closeTrackingReadCloser{Reader: bytes.NewReader(body)}
+	req.Body = originalBody
+	req.ContentLength = int64(len(body))
+
+	var downstreamBody []byte
+	handler := RequireSignedRequest(store, WithVerifySigner(signer), freshNonceStoreOpt())(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var err error
+			downstreamBody, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("downstream read: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !originalBody.closed {
+		t.Fatal("original request body was not closed after middleware rewound the body")
+	}
+	if !bytes.Equal(downstreamBody, body) {
+		t.Fatalf("downstream body = %q, want %q", downstreamBody, body)
 	}
 }

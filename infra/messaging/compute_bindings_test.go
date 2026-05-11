@@ -1,6 +1,7 @@
 package messaging_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,38 @@ func TestComputeBindings_NilRetryGetsDefault(t *testing.T) {
 	assert.Equal(t, "ex.retry", bindings[0].RetryExchange)
 }
 
+func TestComputeBindings_DefaultRetryDoesNotMutateInput(t *testing.T) {
+	specs := []messaging.BindingSpec{
+		{
+			Exchange:     "ex",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "q",
+			RoutingKey:   "rk",
+		},
+	}
+
+	bindings, err := messaging.ComputeBindings(specs...)
+	require.NoError(t, err)
+	require.Len(t, bindings, 1)
+
+	assert.Nil(t, specs[0].Retry)
+	require.NotNil(t, bindings[0].Retry)
+	assert.Equal(t, 3, bindings[0].Retry.MaxRetries)
+}
+
+func TestNormalizeBindingSpecs_WarningDoesNotReflectQueueName(t *testing.T) {
+	specs := []messaging.BindingSpec{{
+		Exchange:     "ex",
+		ExchangeType: messaging.ExchangeDirect,
+		Queue:        "secret-token",
+		RoutingKey:   "rk",
+	}}
+
+	warnings := messaging.NormalizeBindingSpecs(specs)
+	require.Len(t, warnings, 1)
+	assert.NotContains(t, strings.ToLower(warnings[0]), "secret-token")
+}
+
 func TestValidateBindingSpecs_RetryAndWithoutRetryConflict(t *testing.T) {
 	specs := []messaging.BindingSpec{
 		{
@@ -188,7 +221,34 @@ func TestComputeBindings_OriginalSpecPreserved(t *testing.T) {
 	assert.Equal(t, spec.Queue, bindings[0].Queue)
 	assert.Equal(t, spec.RoutingKey, bindings[0].RoutingKey)
 	assert.Equal(t, spec.ExchangeType, bindings[0].ExchangeType)
+	require.NotNil(t, bindings[0].Retry)
+	assert.NotSame(t, retry, bindings[0].Retry)
 	assert.Equal(t, retry, bindings[0].Retry)
+
+	retry.MaxRetries = 99
+	retry.Delay = time.Minute
+	assert.Equal(t, 3, bindings[0].Retry.MaxRetries)
+	assert.Equal(t, time.Second, bindings[0].Retry.Delay)
+}
+
+func TestFindBinding_ClonesRetryPolicy(t *testing.T) {
+	retry := &messaging.RetryPolicy{MaxRetries: 3, Delay: time.Second}
+	binding := messaging.Binding{
+		BindingSpec: messaging.BindingSpec{
+			Exchange:   "ex",
+			Queue:      "q",
+			RoutingKey: "rk",
+			Retry:      retry,
+		},
+	}
+
+	found, err := messaging.FindBinding([]messaging.Binding{binding}, "rk")
+	require.NoError(t, err)
+	require.NotNil(t, found.Retry)
+	assert.NotSame(t, retry, found.Retry)
+
+	retry.MaxRetries = 99
+	assert.Equal(t, 3, found.Retry.MaxRetries)
 }
 
 // --- ComputeBindings validation errors ---
@@ -287,8 +347,65 @@ func TestComputeBindings_ValidationErrors(t *testing.T) {
 			_, err := messaging.ComputeBindings(tt.spec)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.errMsg)
+			assert.NotContains(t, err.Error(), "-1s")
+			assert.NotContains(t, err.Error(), "0s")
 		})
 	}
+}
+
+func TestValidateBindingSpecs_DoesNotReflectBindingMetadata(t *testing.T) {
+	tests := map[string][]messaging.BindingSpec{
+		"unsupported exchange type": {{
+			Exchange:     "events",
+			ExchangeType: "secret-token",
+			Queue:        "queue",
+			RoutingKey:   "rk",
+		}},
+		"missing routing key": {{
+			Exchange:     "secret-token",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "queue",
+		}},
+		"retry conflict": {{
+			Exchange:     "events",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "secret-token",
+			RoutingKey:   "rk",
+			Retry:        &messaging.RetryPolicy{MaxRetries: 1, Delay: time.Second},
+			WithoutRetry: true,
+		}},
+		"retry max retries": {{
+			Exchange:     "events",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "secret-token",
+			RoutingKey:   "rk",
+			Retry:        &messaging.RetryPolicy{MaxRetries: 0, Delay: time.Second},
+		}},
+		"retry delay": {{
+			Exchange:     "events",
+			ExchangeType: messaging.ExchangeDirect,
+			Queue:        "secret-token",
+			RoutingKey:   "rk",
+			Retry:        &messaging.RetryPolicy{MaxRetries: 1},
+		}},
+	}
+
+	for name, specs := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := messaging.ValidateBindingSpecs(specs)
+			require.Error(t, err)
+			assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
+		})
+	}
+}
+
+func TestFindBinding_DoesNotReflectRoutingKey(t *testing.T) {
+	_, err := messaging.FindBinding([]messaging.Binding{{
+		BindingSpec: messaging.BindingSpec{RoutingKey: "known"},
+	}}, "secret-token")
+
+	require.Error(t, err)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
 }
 
 func TestComputeBindings_ValidationError_ReturnsNilBindings(t *testing.T) {

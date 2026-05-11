@@ -19,9 +19,12 @@ func NewMemoryStore() *MemoryStore {
 
 // Append adds an event to the in-memory store.
 func (m *MemoryStore) Append(_ context.Context, event Event) error {
+	if err := ValidateEvent(event); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.events = append(m.events, event)
+	m.events = append(m.events, cloneEvent(event))
 	return nil
 }
 
@@ -53,7 +56,7 @@ func (m *MemoryStore) Query(_ context.Context, filter Filter, cursor string, lim
 			continue
 		}
 
-		matched = append(matched, e)
+		matched = append(matched, cloneEvent(e))
 		if len(matched) > limit {
 			break
 		}
@@ -72,9 +75,7 @@ func (m *MemoryStore) Query(_ context.Context, filter Filter, cursor string, lim
 func (m *MemoryStore) Events() []Event {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	cp := make([]Event, len(m.events))
-	copy(cp, m.events)
-	return cp
+	return cloneEvents(m.events)
 }
 
 // Reset clears all stored events. Test helper.

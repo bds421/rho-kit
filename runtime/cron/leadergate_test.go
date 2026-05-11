@@ -42,6 +42,33 @@ func TestWithLeaderGate_SkipsWhenNotLeader(t *testing.T) {
 	_ = s.Stop(context.Background())
 }
 
+func TestWithLeaderGate_PanicSkipsJob(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	s := New(nil, WithRegistry(reg), WithLeaderGate(func() bool {
+		panic("leader backend failed")
+	}))
+
+	var ran atomic.Int32
+	s.Add("gated-job", "@every 1h", func(_ context.Context) error {
+		ran.Add(1)
+		return nil
+	})
+
+	entries := s.cron.Entries()
+	require.NotEmpty(t, entries)
+	require.NotPanics(t, func() {
+		entries[0].Job.Run()
+	})
+
+	require.Equal(t, int32(0), ran.Load(), "job must not run when leader gate panics")
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t,
+		metricValue(families, "cron_job_skipped_not_leader_total", map[string]string{"name": "gated-job"}),
+		float64(1),
+	)
+}
+
 func TestWithLeaderGate_NoGateMeansAlwaysRun(t *testing.T) {
 	// Sanity: without WithLeaderGate the scheduler runs unconditionally.
 	reg := prometheus.NewRegistry()

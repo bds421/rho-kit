@@ -27,11 +27,12 @@ func TestInMemorySchemaRegistry_Register_DuplicateError(t *testing.T) {
 	reg := messaging.NewInMemorySchemaRegistry()
 	schema := json.RawMessage(`{"type":"object"}`)
 
-	require.NoError(t, reg.Register("order.created", 1, schema))
+	require.NoError(t, reg.Register("secret-token.created", 1, schema))
 
-	err := reg.Register("order.created", 1, schema)
+	err := reg.Register("secret-token.created", 1, schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already registered")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestInMemorySchemaRegistry_Register_EmptyTypeError(t *testing.T) {
@@ -58,9 +59,10 @@ func TestInMemorySchemaRegistry_Register_EmptySchemaError(t *testing.T) {
 func TestInMemorySchemaRegistry_Lookup_NotFound(t *testing.T) {
 	reg := messaging.NewInMemorySchemaRegistry()
 
-	_, err := reg.Lookup("order.created", 1)
+	_, err := reg.Lookup("secret-token.created", 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no schema found")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestInMemorySchemaRegistry_Lookup_ImmutableResult(t *testing.T) {

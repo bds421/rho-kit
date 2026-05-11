@@ -25,7 +25,7 @@ func (b *S3Backend) PresignGetURL(ctx context.Context, key string, ttl time.Dura
 		return "", fmt.Errorf("s3backend: presign TTL must be positive")
 	}
 	if ttl > maxPresignTTL {
-		return "", fmt.Errorf("s3backend: presign TTL %v exceeds maximum %v", ttl, maxPresignTTL)
+		return "", fmt.Errorf("s3backend: presign TTL exceeds maximum")
 	}
 
 	req, err := b.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
@@ -33,7 +33,7 @@ func (b *S3Backend) PresignGetURL(ctx context.Context, key string, ttl time.Dura
 		Key:    aws.String(key),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
-		return "", fmt.Errorf("s3backend: presign get %q: %w", key, err)
+		return "", storage.WrapSafe("s3backend: presign get failed", err)
 	}
 	return req.URL, nil
 }
@@ -55,7 +55,10 @@ func (b *S3Backend) PresignPutURL(ctx context.Context, key string, ttl time.Dura
 		return "", fmt.Errorf("s3backend: presign TTL must be positive")
 	}
 	if ttl > maxPresignTTL {
-		return "", fmt.Errorf("s3backend: presign TTL %v exceeds maximum %v", ttl, maxPresignTTL)
+		return "", fmt.Errorf("s3backend: presign TTL exceeds maximum")
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return "", err
 	}
 
 	contentType := meta.ContentType
@@ -67,12 +70,15 @@ func (b *S3Backend) PresignPutURL(ctx context.Context, key string, ttl time.Dura
 		Bucket:      aws.String(b.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
+		Metadata:    storage.CloneCustomMeta(meta.Custom),
 	}
-	applySSE(input, b.cfg)
+	if err := applySSE(input, b.cfg); err != nil {
+		return "", err
+	}
 
 	req, err := b.presigner.PresignPutObject(ctx, input, s3.WithPresignExpires(ttl))
 	if err != nil {
-		return "", fmt.Errorf("s3backend: presign put %q: %w", key, err)
+		return "", storage.WrapSafe("s3backend: presign put failed", err)
 	}
 	return req.URL, nil
 }

@@ -17,7 +17,14 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
+
+const MaxRequestPartLen = 512
 
 // Decider answers authorization questions. Implementations may be
 // engine-backed (OpenFGA, Cedar, Casbin), in-memory (the [Memory]
@@ -44,6 +51,20 @@ var ErrDenied = errors.New("authz: denied")
 // distinguish wiring errors from authorization denials.
 var ErrNoDecider = errors.New("authz: no decider configured")
 
+// ErrDeciderPanic is returned by [Allow] when the supplied Decider
+// panics while evaluating a request.
+var ErrDeciderPanic = errors.New("authz: decider panicked")
+
+// ErrInvalidRequest is returned when an authorization triple is not
+// well-formed enough to submit to a policy engine. It is also wrapped
+// with [ErrDenied] because malformed authorization questions must fail
+// closed.
+var ErrInvalidRequest = errors.New("authz: invalid request")
+
+// ErrInvalidContext is returned when a nil context is supplied to a
+// kit authorization helper.
+var ErrInvalidContext = errors.New("authz: context is nil")
+
 // Request bundles the inputs to a [Decider.Allow] call into a
 // struct-shaped form. Useful for callers that build requests
 // dynamically (e.g., from a route descriptor) and pass them down
@@ -55,16 +76,64 @@ type Request struct {
 }
 
 // Allow is a convenience wrapper that calls d.Allow with the fields
-// of req. Behaves identically to [Decider.Allow]; provided for
-// readability at call sites that already have a Request value.
+// of req. Normal Decider returns are passed through unchanged;
+// decider panics are converted to an [ErrDeciderPanic]-wrapped error.
+// Provided for readability at call sites that already have a Request
+// value.
 //
 // FR-036 [MED]: returns [ErrNoDecider] (not a panic) when d is nil.
 // Handlers using optional infrastructure get a typed configuration
 // error they can translate into a 503/500 instead of a panic-bound
 // 500 with no recovery information.
-func Allow(ctx context.Context, d Decider, req Request) error {
+func Allow(ctx context.Context, d Decider, req Request) (err error) {
 	if d == nil {
 		return ErrNoDecider
 	}
+	if ctx == nil {
+		return ErrInvalidContext
+	}
+	if err := ValidateRequest(req); err != nil {
+		return err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%w: %s", ErrDeciderPanic, redact.PanicValue(recovered))
+		}
+	}()
 	return d.Allow(ctx, req.Subject, req.Action, req.Resource)
+}
+
+// ValidateRequest validates an authorization triple before it reaches a
+// Decider implementation. The kit keeps this intentionally generic:
+// it does not impose an engine-specific tuple grammar, but it rejects
+// empty, overlong, invalid UTF-8, whitespace, and control characters.
+func ValidateRequest(req Request) error {
+	if err := validatePart("subject", req.Subject); err != nil {
+		return err
+	}
+	if err := validatePart("action", req.Action); err != nil {
+		return err
+	}
+	if err := validatePart("resource", req.Resource); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePart(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s must not be empty: %w", ErrInvalidRequest, name, ErrDenied)
+	}
+	if len(value) > MaxRequestPartLen {
+		return fmt.Errorf("%w: %s exceeds maximum length: %w", ErrInvalidRequest, name, ErrDenied)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s must be valid UTF-8: %w", ErrInvalidRequest, name, ErrDenied)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("%w: %s must not contain whitespace or control characters: %w", ErrInvalidRequest, name, ErrDenied)
+		}
+	}
+	return nil
 }

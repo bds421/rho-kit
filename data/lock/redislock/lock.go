@@ -23,7 +23,6 @@
 //	    }
 //	    return err
 //	}
-//
 package redislock
 
 import (
@@ -32,11 +31,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
@@ -77,6 +78,9 @@ type options struct {
 
 // WithTTL sets the lock expiration duration. Defaults to 30 seconds.
 func WithTTL(d time.Duration) Option {
+	if d <= 0 {
+		panic("redislock: WithTTL requires a positive duration")
+	}
 	return func(o *options) { o.ttl = d }
 }
 
@@ -84,6 +88,12 @@ func WithTTL(d time.Duration) Option {
 // Acquire will retry at the given interval for up to maxAttempts times
 // before returning (false, nil).
 func WithRetry(interval time.Duration, maxAttempts int) Option {
+	if interval <= 0 {
+		panic("redislock: WithRetry requires a positive interval")
+	}
+	if maxAttempts < 0 {
+		panic("redislock: WithRetry requires maxAttempts >= 0")
+	}
 	return func(o *options) {
 		o.retryInterval = interval
 		o.maxAttempts = maxAttempts
@@ -93,13 +103,14 @@ func WithRetry(interval time.Duration, maxAttempts int) Option {
 // WithMaxWait caps the total wall-clock time Acquire is willing to
 // spend retrying. Useful when the caller has no ctx deadline and wants
 // to bound retries by elapsed time rather than attempt count alone.
-// Zero (default) disables the cap; only ctx-cancellation and
-// maxAttempts apply.
+// Omit this option to leave the cap disabled; only ctx-cancellation
+// and maxAttempts apply.
 func WithMaxWait(d time.Duration) Option {
+	if d <= 0 {
+		panic("redislock: WithMaxWait requires a positive duration")
+	}
 	return func(o *options) {
-		if d > 0 {
-			o.maxWait = d
-		}
+		o.maxWait = d
 	}
 }
 
@@ -114,6 +125,8 @@ type Locker struct {
 	opts   options
 }
 
+var tokenRandReader io.Reader = rand.Reader
+
 // NewLocker creates a Locker bound to the given Redis client. The options
 // (TTL, retry interval, retry attempts) become the defaults for every
 // Acquire call. Panics if client is nil — a miswired locker would otherwise
@@ -124,6 +137,9 @@ func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
 	}
 	o := options{ttl: 30 * time.Second}
 	for _, fn := range opts {
+		if fn == nil {
+			panic("redislock: option must not be nil")
+		}
 		fn(&o)
 	}
 	return &Locker{client: client, opts: o}
@@ -137,10 +153,14 @@ func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
 // Returns (nil, false, ctx.Err()) if the context is cancelled while waiting
 // to retry.
 func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	token, err := generateToken()
+	if err != nil {
+		return nil, false, err
+	}
 	h := &handle{
 		client: lc.client,
 		key:    key,
-		token:  generateToken(),
+		token:  token,
 		opts:   lc.opts,
 	}
 
@@ -188,18 +208,19 @@ func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, err
 // lock was lost mid-fn (TTL expired), [lock.ErrLockLost] is joined with
 // fn's error so callers can inspect both via errors.Is.
 //
-// Release uses a fresh background context (not the caller's ctx) so the lock
-// is released even if fn exhausted a deadline or was cancelled.
+// Release uses a timeout-bounded detached caller context so the lock is
+// released even if fn exhausted a deadline or was cancelled, while preserving
+// context values used by tracing/logging wrappers.
 func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) (retErr error) {
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
 		return fmt.Errorf("lock: acquire failed: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("lock: could not acquire lock %q", key)
+		return errors.New("lock: could not acquire lock")
 	}
 
-	defer releaseAndJoin(l, key, &retErr)
+	defer releaseAndJoin(ctx, l, &retErr)
 	return fn(ctx)
 }
 
@@ -208,8 +229,8 @@ func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.
 // normal return / error return. Backend Release errors that aren't
 // ErrLockLost are logged rather than returned, because fn's error (if any)
 // is more actionable for the caller and the lock will TTL out regardless.
-func releaseAndJoin(l lock.Lock, key string, retErr *error) {
-	relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func releaseAndJoin(ctx context.Context, l lock.Lock, retErr *error) {
+	relCtx, cancel := detachedReleaseContext(ctx, 5*time.Second)
 	defer cancel()
 	relErr := l.Release(relCtx)
 	if errors.Is(relErr, lock.ErrLockLost) {
@@ -222,10 +243,16 @@ func releaseAndJoin(l lock.Lock, key string, retErr *error) {
 	}
 	if relErr != nil {
 		slog.Error("lock: failed to release after WithLock",
-			"key", key,
-			"error", relErr,
+			redact.Error(relErr),
 		)
 	}
+}
+
+func detachedReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 // handle is the internal lock-state struct that backs the [lock.Lock]
@@ -249,10 +276,10 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 		return value, fmt.Errorf("lock: acquire failed: %w", err)
 	}
 	if !ok {
-		return value, fmt.Errorf("lock: could not acquire lock %q", key)
+		return value, errors.New("lock: could not acquire lock")
 	}
 
-	defer releaseAndJoin(l, key, &retErr)
+	defer releaseAndJoin(ctx, l, &retErr)
 	return fn(ctx)
 }
 
@@ -319,10 +346,10 @@ func (l *handle) tryAcquire(ctx context.Context) (bool, error) {
 	return false, fmt.Errorf("lock: acquire failed: %w", err)
 }
 
-func generateToken() string {
+func generateToken() (string, error) {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("lock: failed to generate token: " + err.Error())
+	if _, err := io.ReadFull(tokenRandReader, b); err != nil {
+		return "", fmt.Errorf("redislock: generate lock token: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

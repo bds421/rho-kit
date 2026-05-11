@@ -72,6 +72,30 @@ func TestWithMaxSendMsgSize_PanicsOnZero(t *testing.T) {
 	})
 }
 
+func TestNewServer_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcx.NewServer(nil)
+	})
+}
+
+func TestWithUnaryInterceptors_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcx.WithUnaryInterceptors(nil)
+	})
+}
+
+func TestWithStreamInterceptors_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcx.WithStreamInterceptors(nil)
+	})
+}
+
+func TestWithGRPCServerOptions_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		grpcx.WithGRPCServerOptions(nil)
+	})
+}
+
 // panickingHealth panics on Check — used to verify NewServer's default
 // recovery interceptor catches panics without an explicit Recovery option.
 type panickingHealth struct {

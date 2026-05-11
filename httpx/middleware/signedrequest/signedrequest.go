@@ -11,8 +11,8 @@
 //	X-Signature:           hmac-sha256=<base64 mac>
 //
 // The MAC is computed over a deterministic canonical string composed
-// of method, path, host, timestamp, nonce, sha256(body), and any
-// extra headers the operator pinned via [WithRequiredHeaders].
+// of method, path, host, Content-Type, timestamp, nonce, sha256(body),
+// and any extra headers the operator pinned via [WithRequiredHeaders].
 //
 // Replay protection requires a [NonceStore]. The middleware refuses
 // to start without one: replay-vulnerable signing is worse than no
@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"golang.org/x/net/http/httpguts"
+
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // Header names. Exported so client-side packages can use the same constants.
@@ -46,13 +48,40 @@ const (
 	HeaderKeyID     = "X-Signature-Key-Id"
 	HeaderSignature = "X-Signature"
 
-	signaturePrefix = "hmac-sha256="
+	signaturePrefix            = "hmac-sha256="
+	canonicalContentTypeHeader = "Content-Type"
+
+	signatureMaxLen = len(signaturePrefix) + 44 // base64.StdEncoding.EncodedLen(sha256.Size)
+	timestampMaxLen = 20                        // max int64 decimal length
+	keyIDMaxLen     = 256
 )
 
 // minSecretLen matches HMAC-SHA256 output size and the floor enforced by
 // crypto/signing. Sub-32-byte secrets resolved from the operator's secret
 // store are rejected so a misconfigured deployment fails closed.
 const minSecretLen = 32
+
+var fallbackMAC [sha256.Size]byte
+
+type safeCauseError struct {
+	msg   string
+	cause error
+}
+
+func (e safeCauseError) Error() string {
+	return e.msg
+}
+
+func (e safeCauseError) Unwrap() error {
+	return e.cause
+}
+
+func safeWrap(msg string, cause error) error {
+	if cause == nil {
+		return errors.New(msg)
+	}
+	return safeCauseError{msg: msg, cause: cause}
+}
 
 // Sentinel errors. Verify is internal; the middleware translates these
 // into 400/401/413 responses.
@@ -64,6 +93,7 @@ var (
 	ErrNonceInvalid     = errors.New("signedrequest: nonce malformed or wrong length")
 	ErrBodyTooLarge     = errors.New("signedrequest: body exceeds maximum")
 	ErrSecretTooShort   = errors.New("signedrequest: resolved secret is shorter than the 32-byte HMAC-SHA256 minimum")
+	ErrInvalidRequest   = errors.New("signedrequest: invalid request")
 )
 
 // nonceMaxLen caps the wire-level nonce header. The kit's signing
@@ -149,15 +179,15 @@ func WithMaxClockSkew(d time.Duration) Option {
 // a confusing missing-header error and almost certainly indicates a
 // wiring bug.
 func WithRequiredHeaders(names ...string) Option {
+	canonical := make([]string, 0, len(names))
 	for _, n := range names {
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic(fmt.Sprintf("signedrequest: WithRequiredHeaders requires a valid HTTP header field name (got %q)", n))
+			panic("signedrequest: WithRequiredHeaders requires a valid HTTP header field name")
 		}
+		canonical = append(canonical, strings.ToLower(n))
 	}
 	return func(c *config) {
-		for _, n := range names {
-			c.requiredHeaders = append(c.requiredHeaders, strings.ToLower(n))
-		}
+		c.requiredHeaders = append(c.requiredHeaders, canonical...)
 	}
 }
 
@@ -205,6 +235,9 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 		now:          time.Now,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("signedrequest: Middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -220,12 +253,21 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 }
 
 func verify(r *http.Request, cfg *config) error {
-	ts := r.Header.Get(HeaderTimestamp)
-	nonce := r.Header.Get(HeaderNonce)
-	keyID := r.Header.Get(HeaderKeyID)
-	sig := r.Header.Get(HeaderSignature)
-	if ts == "" || nonce == "" || keyID == "" || sig == "" {
-		return ErrMissingHeaders
+	ts, err := requiredSingletonHeaderBounded(r, HeaderTimestamp, timestampMaxLen)
+	if err != nil {
+		return err
+	}
+	nonce, err := requiredSingletonHeaderBounded(r, HeaderNonce, nonceMaxLen)
+	if err != nil {
+		return err
+	}
+	keyID, err := requiredSingletonHeaderBounded(r, HeaderKeyID, keyIDMaxLen)
+	if err != nil {
+		return err
+	}
+	sig, err := requiredSingletonHeaderBounded(r, HeaderSignature, signatureMaxLen)
+	if err != nil {
+		return err
 	}
 	// FR-026 [MED]: validate nonce format/length before it can become
 	// a Redis key. The wire contract is "16 random bytes,
@@ -237,30 +279,33 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrNonceInvalid
 	}
 	for _, h := range cfg.requiredHeaders {
-		if r.Header.Get(h) == "" {
-			return fmt.Errorf("%w (required header %q)", ErrMissingHeaders, h)
+		if err := validateRequiredHeaderValue(r, h); err != nil {
+			return err
 		}
+	}
+	if err := validateOptionalHeaderValue(r, canonicalContentTypeHeader); err != nil {
+		return err
+	}
+	if err := validateCanonicalRequest(r); err != nil {
+		return err
 	}
 
 	tsUnix, err := strconv.ParseInt(ts, 10, 64)
 	if err != nil {
 		return ErrTimestampInvalid
 	}
-	now := cfg.now()
-	delta := now.Unix() - tsUnix
-	if delta < 0 {
-		delta = -delta
-	}
-	if time.Duration(delta)*time.Second > cfg.maxClockSkew {
+	if !timestampWithinSkew(tsUnix, cfg.now(), cfg.maxClockSkew) {
 		return ErrTimestampInvalid
 	}
 
-	if !strings.HasPrefix(sig, signaturePrefix) {
-		return ErrSignatureInvalid
-	}
-	gotMAC, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(sig, signaturePrefix))
+	gotMAC, err := decodeSignatureMAC(sig)
 	if err != nil {
 		return ErrSignatureInvalid
+	}
+
+	body, err := readBody(r, cfg.bodyMaxSize)
+	if err != nil {
+		return err
 	}
 
 	secret, err := cfg.resolver(keyID)
@@ -269,11 +314,6 @@ func verify(r *http.Request, cfg *config) error {
 	}
 	if len(secret) < minSecretLen {
 		return ErrSecretTooShort
-	}
-
-	body, err := readBody(r, cfg.bodyMaxSize)
-	if err != nil {
-		return err
 	}
 
 	canonical := buildCanonical(r, ts, nonce, body, cfg.requiredHeaders)
@@ -292,21 +332,43 @@ func verify(r *http.Request, cfg *config) error {
 	return nil
 }
 
+func timestampWithinSkew(tsUnix int64, now time.Time, skew time.Duration) bool {
+	ts := time.Unix(tsUnix, 0)
+	if ts.After(now) {
+		return ts.Sub(now) <= skew
+	}
+	return now.Sub(ts) <= skew
+}
+
+func decodeSignatureMAC(sig string) ([]byte, error) {
+	if !strings.HasPrefix(sig, signaturePrefix) {
+		return nil, ErrSignatureInvalid
+	}
+	gotMAC, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(sig, signaturePrefix))
+	if err != nil {
+		return nil, ErrSignatureInvalid
+	}
+	if len(gotMAC) != sha256.Size {
+		return fallbackMAC[:], nil
+	}
+	return gotMAC, nil
+}
+
 func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrBodyTooLarge):
-		http.Error(w, "request entity too large", http.StatusRequestEntityTooLarge)
-	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid), errors.Is(err, ErrNonceInvalid):
-		http.Error(w, "bad request", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request entity too large")
+	case errors.Is(err, ErrMissingHeaders), errors.Is(err, ErrTimestampInvalid), errors.Is(err, ErrNonceInvalid), errors.Is(err, ErrInvalidRequest):
+		httpx.WriteError(w, http.StatusBadRequest, "bad request")
 	case errors.Is(err, ErrSignatureInvalid), errors.Is(err, ErrNonceReplayed):
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 	case errors.Is(err, ErrSecretTooShort):
 		// Operator misconfiguration: the resolver returned a too-short key.
 		// 500 keeps the failure mode visible without leaking which key ID
 		// was tried.
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -314,13 +376,18 @@ func writeError(w http.ResponseWriter, err error) {
 // the downstream handler still sees the data. Returns ErrBodyTooLarge
 // when the limit is exceeded.
 func readBody(r *http.Request, max int64) ([]byte, error) {
-	if r.Body == nil {
+	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	limited := io.LimitReader(r.Body, max+1)
+	originalBody := r.Body
+	limited := io.LimitReader(originalBody, max+1)
 	buf, err := io.ReadAll(limited)
+	closeErr := originalBody.Close()
 	if err != nil {
-		return nil, fmt.Errorf("signedrequest: read body: %w", err)
+		return nil, safeWrap("signedrequest: read body failed", err)
+	}
+	if closeErr != nil {
+		return nil, safeWrap("signedrequest: close body failed", closeErr)
 	}
 	if int64(len(buf)) > max {
 		return nil, ErrBodyTooLarge
@@ -333,10 +400,13 @@ func readBody(r *http.Request, max int64) ([]byte, error) {
 // signer and verifier. Format documented at the package level.
 func buildCanonical(r *http.Request, ts, nonce string, body []byte, requiredHeaders []string) []byte {
 	bodyHash := sha256.Sum256(body)
+	host, _ := canonicalRequestHost(r)
+	contentType, _ := optionalSingletonHeader(r, canonicalContentTypeHeader)
 	parts := []string{
-		strings.ToUpper(r.Method),
+		r.Method,
 		r.URL.RequestURI(),
-		strings.ToLower(r.Host),
+		host,
+		contentType,
 		ts,
 		nonce,
 		hex.EncodeToString(bodyHash[:]),
@@ -345,10 +415,106 @@ func buildCanonical(r *http.Request, ts, nonce string, body []byte, requiredHead
 		hdrs := append([]string(nil), requiredHeaders...)
 		sort.Strings(hdrs)
 		for _, h := range hdrs {
-			parts = append(parts, h+":"+r.Header.Get(h))
+			value, _ := requiredSingletonHeader(r, h)
+			parts = append(parts, h+":"+value)
 		}
 	}
 	return []byte(strings.Join(parts, "\n"))
+}
+
+func validateCanonicalRequest(r *http.Request) error {
+	if r == nil {
+		return fmt.Errorf("%w: nil request", ErrInvalidRequest)
+	}
+	if r.URL == nil {
+		return fmt.Errorf("%w: nil URL", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHeaderFieldName(r.Method) {
+		return fmt.Errorf("%w: invalid method", ErrInvalidRequest)
+	}
+	if strings.ContainsAny(r.URL.RequestURI(), "\r\n") {
+		return fmt.Errorf("%w: request URI contains CR/LF", ErrInvalidRequest)
+	}
+	if _, err := canonicalRequestHost(r); err != nil {
+		return err
+	}
+	return nil
+}
+
+func canonicalRequestHost(r *http.Request) (string, error) {
+	host := r.Host
+	if host == "" && r.URL != nil {
+		host = r.URL.Host
+	}
+	if host == "" {
+		return "", fmt.Errorf("%w: empty host", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHostHeader(host) {
+		return "", fmt.Errorf("%w: invalid host", ErrInvalidRequest)
+	}
+	return strings.ToLower(host), nil
+}
+
+func validateRequiredHeaderValue(r *http.Request, name string) error {
+	_, err := requiredSingletonHeader(r, name)
+	return err
+}
+
+func validateOptionalHeaderValue(r *http.Request, name string) error {
+	_, err := optionalSingletonHeader(r, name)
+	return err
+}
+
+func optionalSingletonHeader(r *http.Request, name string) (string, error) {
+	values := r.Header.Values(name)
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf("%w: header has multiple values", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHeaderFieldValue(values[0]) {
+		return "", fmt.Errorf("%w: header contains invalid characters", ErrInvalidRequest)
+	}
+	return values[0], nil
+}
+
+func requiredSingletonHeader(r *http.Request, name string) (string, error) {
+	return requiredSingletonHeaderBounded(r, name, 0)
+}
+
+func requiredSingletonHeaderBounded(r *http.Request, name string, maxLen int) (string, error) {
+	values := r.Header.Values(name)
+	if len(values) == 0 {
+		return "", fmt.Errorf("%w: required header is missing", ErrMissingHeaders)
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf("%w: required header has multiple values", ErrInvalidRequest)
+	}
+	value := values[0]
+	if value == "" {
+		return "", fmt.Errorf("%w: required header is missing or empty", ErrMissingHeaders)
+	}
+	if err := validateStrictHeaderValue(value, maxLen); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func validateStrictHeaderValue(value string, maxLen int) error {
+	if maxLen > 0 && len(value) > maxLen {
+		return fmt.Errorf("%w: required header exceeds maximum size", ErrInvalidRequest)
+	}
+	if !httpguts.ValidHeaderFieldValue(value) {
+		return fmt.Errorf("%w: required header contains invalid characters", ErrInvalidRequest)
+	}
+	if maxLen > 0 && strings.TrimSpace(value) != value {
+		return fmt.Errorf("%w: required header contains surrounding whitespace", ErrInvalidRequest)
+	}
+	if maxLen > 0 && strings.Contains(value, ",") {
+		return fmt.Errorf("%w: required header contains an ambiguous comma", ErrInvalidRequest)
+	}
+	return nil
 }
 
 func hmacSHA256(secret, msg []byte) []byte {
@@ -360,15 +526,45 @@ func hmacSHA256(secret, msg []byte) []byte {
 // SignCanonical computes the kit-format signature for outbound calls.
 // Exported so the client-side wrapper (httpx/sign) can use the same
 // canonical string as the verifier.
-func SignCanonical(secret []byte, r *http.Request, ts, nonce string, body []byte, requiredHeaders []string) string {
-	mac := hmacSHA256(secret, buildCanonical(r, ts, nonce, body, normalizeHeaders(requiredHeaders)))
-	return signaturePrefix + base64.StdEncoding.EncodeToString(mac)
+func SignCanonical(secret []byte, r *http.Request, ts, nonce string, body []byte, requiredHeaders []string) (string, error) {
+	if len(secret) < minSecretLen {
+		return "", ErrSecretTooShort
+	}
+	if err := validateCanonicalRequest(r); err != nil {
+		return "", err
+	}
+	if ts == "" {
+		return "", fmt.Errorf("%w: missing timestamp", ErrMissingHeaders)
+	}
+	if err := validateStrictHeaderValue(ts, timestampMaxLen); err != nil {
+		return "", err
+	}
+	if !validNonce(nonce) {
+		return "", ErrNonceInvalid
+	}
+	headers, err := normalizeHeaders(requiredHeaders)
+	if err != nil {
+		return "", err
+	}
+	for _, h := range headers {
+		if err := validateRequiredHeaderValue(r, h); err != nil {
+			return "", err
+		}
+	}
+	if err := validateOptionalHeaderValue(r, canonicalContentTypeHeader); err != nil {
+		return "", err
+	}
+	mac := hmacSHA256(secret, buildCanonical(r, ts, nonce, body, headers))
+	return signaturePrefix + base64.StdEncoding.EncodeToString(mac), nil
 }
 
-func normalizeHeaders(hs []string) []string {
+func normalizeHeaders(hs []string) ([]string, error) {
 	out := make([]string, len(hs))
 	for i, h := range hs {
+		if !httpguts.ValidHeaderFieldName(h) {
+			return nil, fmt.Errorf("%w: invalid required header", ErrInvalidRequest)
+		}
 		out[i] = strings.ToLower(h)
 	}
-	return out
+	return out, nil
 }

@@ -48,6 +48,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/tink-crypto/tink-go/v2/aead/subtle"
 	"github.com/tink-crypto/tink-go/v2/tink"
@@ -74,10 +76,12 @@ var aadDomainSep = []byte("rho-kit/envelope/v2")
 // Sentinel errors. Verify-style checks all wrap one of these so callers
 // can branch without parsing the underlying error message.
 var (
-	ErrMalformed      = errors.New("envelope: malformed blob")
-	ErrUnsupportedVer = errors.New("envelope: unsupported blob version")
-	ErrTruncated      = errors.New("envelope: truncated blob")
-	ErrAuthFailed     = errors.New("envelope: authentication failed")
+	ErrMalformed        = errors.New("envelope: malformed blob")
+	ErrUnsupportedVer   = errors.New("envelope: unsupported blob version")
+	ErrTruncated        = errors.New("envelope: truncated blob")
+	ErrAuthFailed       = errors.New("envelope: authentication failed")
+	ErrInvalidEncryptor = errors.New("envelope: encryptor is not initialized")
+	ErrInvalidContext   = errors.New("envelope: context must not be nil")
 )
 
 // KEK abstracts a key-encryption-key provider. Implementations are
@@ -125,6 +129,9 @@ func New(kek KEK) *Encryptor {
 // or any other context that must not be mixable with another row's
 // ciphertext.
 func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
+	if err := e.validate(ctx); err != nil {
+		return nil, err
+	}
 	dek := make([]byte, dekLen)
 	if _, err := rand.Read(dek); err != nil {
 		return nil, fmt.Errorf("envelope: read DEK: %w", err)
@@ -138,8 +145,11 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("envelope: wrap DEK: %w", err)
 	}
-	if len(keyID) > 255 {
-		return nil, fmt.Errorf("envelope: KEK keyID exceeds 255 bytes")
+	if err := validateKeyID(keyID); err != nil {
+		return nil, err
+	}
+	if len(wrapped) == 0 {
+		return nil, fmt.Errorf("envelope: KEK returned empty wrapped DEK")
 	}
 	if len(wrapped) > 0xFFFF {
 		return nil, fmt.Errorf("envelope: wrapped DEK exceeds 64 KiB")
@@ -172,6 +182,9 @@ func (e *Encryptor) Encrypt(ctx context.Context, plaintext, aad []byte) ([]byte,
 // authenticates+decrypts the payload. aad must match what was passed
 // to [Encryptor.Encrypt].
 func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, error) {
+	if err := e.validate(ctx); err != nil {
+		return nil, err
+	}
 	_, keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
@@ -182,11 +195,11 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 
 	dek, err := e.kek.Unwrap(ctx, keyID, wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("envelope: unwrap DEK (keyID=%s): %w", keyID, err)
+		return nil, fmt.Errorf("envelope: unwrap DEK: %w", err)
 	}
 	defer zeroBytes(dek)
 	if len(dek) != dekLen {
-		return nil, fmt.Errorf("envelope: DEK length %d != %d", len(dek), dekLen)
+		return nil, fmt.Errorf("envelope: invalid DEK length")
 	}
 
 	bodyAEAD, err := newBodyAEAD(dek)
@@ -220,6 +233,9 @@ func (e *Encryptor) Decrypt(ctx context.Context, blob, aad []byte) ([]byte, erro
 // either fails KEK.Unwrap or yields a wrong DEK that fails the body's
 // GCM-Open at decrypt time.
 func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
+	if err := e.validate(ctx); err != nil {
+		return nil, err
+	}
 	_, keyID, wrapped, body, err := parseBlob(blob)
 	if err != nil {
 		return nil, err
@@ -230,11 +246,11 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 
 	dek, err := e.kek.Unwrap(ctx, keyID, wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("envelope: unwrap DEK (keyID=%s): %w", keyID, err)
+		return nil, fmt.Errorf("envelope: unwrap DEK: %w", err)
 	}
 	defer zeroBytes(dek)
 	if len(dek) != dekLen {
-		return nil, fmt.Errorf("envelope: DEK length %d != %d", len(dek), dekLen)
+		return nil, fmt.Errorf("envelope: invalid DEK length")
 	}
 
 	// Wrap returns (keyID, wrapped) atomically: see Encrypt for the
@@ -243,8 +259,11 @@ func (e *Encryptor) Rewrap(ctx context.Context, blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("envelope: re-wrap DEK: %w", err)
 	}
-	if len(newKeyID) > 255 {
-		return nil, fmt.Errorf("envelope: KEK keyID exceeds 255 bytes")
+	if err := validateKeyID(newKeyID); err != nil {
+		return nil, err
+	}
+	if len(newWrapped) == 0 {
+		return nil, fmt.Errorf("envelope: KEK returned empty wrapped DEK")
 	}
 	if len(newWrapped) > 0xFFFF {
 		return nil, fmt.Errorf("envelope: wrapped DEK exceeds 64 KiB")
@@ -291,6 +310,9 @@ func parseBlob(blob []byte) (header []byte, keyID string, wrappedDEK, body []byt
 		return nil, "", nil, nil, ErrTruncated
 	}
 	keyID = string(blob[off : off+kL])
+	if err := validateKeyID(keyID); err != nil {
+		return nil, "", nil, nil, ErrMalformed
+	}
 	off += kL
 	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
 	off += 2
@@ -298,10 +320,31 @@ func parseBlob(blob []byte) (header []byte, keyID string, wrappedDEK, body []byt
 		return nil, "", nil, nil, ErrTruncated
 	}
 	wrappedDEK = blob[off : off+wL]
+	if len(wrappedDEK) == 0 {
+		return nil, "", nil, nil, ErrMalformed
+	}
 	off += wL
 	header = blob[:off]
 	body = blob[off:]
 	return header, keyID, wrappedDEK, body, nil
+}
+
+func validateKeyID(keyID string) error {
+	if keyID == "" {
+		return fmt.Errorf("envelope: KEK returned empty keyID")
+	}
+	if len(keyID) > 255 {
+		return fmt.Errorf("envelope: KEK keyID exceeds 255 bytes")
+	}
+	if !utf8.ValidString(keyID) {
+		return fmt.Errorf("envelope: KEK keyID must be valid UTF-8")
+	}
+	for _, r := range keyID {
+		if r == 0 || unicode.IsControl(r) {
+			return fmt.Errorf("envelope: KEK keyID contains control characters")
+		}
+	}
+	return nil
 }
 
 // combineAAD prefixes the caller's AAD with a fixed domain separator
@@ -333,4 +376,14 @@ func newBodyAEAD(dek []byte) (tink.AEAD, error) {
 		return nil, fmt.Errorf("envelope: build AEAD: %w", err)
 	}
 	return a, nil
+}
+
+func (e *Encryptor) validate(ctx context.Context) error {
+	if e == nil || e.kek == nil {
+		return ErrInvalidEncryptor
+	}
+	if ctx == nil {
+		return ErrInvalidContext
+	}
+	return nil
 }

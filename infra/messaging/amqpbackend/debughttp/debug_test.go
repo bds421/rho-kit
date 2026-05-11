@@ -48,6 +48,57 @@ func TestConsumeHandler_Success(t *testing.T) {
 	assert.Equal(t, "order.created", received.Message.Type)
 }
 
+func TestConsumeHandler_PanicsOnNilHandlers(t *testing.T) {
+	require.Panics(t, func() {
+		ConsumeHandler(nil, discardLogger())
+	})
+}
+
+func TestConsumeHandler_PanicsOnNilHandlerValue(t *testing.T) {
+	require.PanicsWithValue(t, "debughttp: ConsumeHandler requires non-nil handlers", func() {
+		ConsumeHandler(map[string]messaging.Handler{"order.created": nil}, discardLogger())
+	})
+}
+
+func TestConsumeHandler_DetachesHandlersMap(t *testing.T) {
+	calledOriginal := false
+	handlers := map[string]messaging.Handler{
+		"order.created": func(_ context.Context, _ messaging.Delivery) error {
+			calledOriginal = true
+			return nil
+		},
+	}
+
+	h := ConsumeHandler(handlers, discardLogger())
+	handlers["order.created"] = func(_ context.Context, _ messaging.Delivery) error {
+		t.Fatal("mutated handler map was used")
+		return nil
+	}
+	delete(handlers, "order.created")
+
+	req := httptest.NewRequest(http.MethodPost, "/debug/consume", bytes.NewBufferString(`{"type":"order.created","payload":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.True(t, calledOriginal)
+}
+
+func TestConsumeHandler_NilLoggerUsesDefault(t *testing.T) {
+	handlers := map[string]messaging.Handler{
+		"order.created": func(_ context.Context, _ messaging.Delivery) error { return nil },
+	}
+	req := httptest.NewRequest(http.MethodPost, "/debug/consume", bytes.NewBufferString(`{"type":"order.created","payload":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	ConsumeHandler(handlers, nil)(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestConsumeHandler_InvalidJSON(t *testing.T) {
 	handlers := map[string]messaging.Handler{}
 
@@ -79,7 +130,7 @@ func TestConsumeHandler_UnknownType(t *testing.T) {
 		"order.created": func(_ context.Context, _ messaging.Delivery) error { return nil },
 	}
 
-	body := `{"type":"user.deleted","payload":{}}`
+	body := `{"type":"user.deleted.secret-token","payload":{}}`
 	req := httptest.NewRequest(http.MethodPost, "/debug/consume", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -88,6 +139,7 @@ func TestConsumeHandler_UnknownType(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "unknown message type")
+	assert.NotContains(t, rec.Body.String(), "user.deleted.secret-token")
 }
 
 func TestConsumeHandler_HandlerError(t *testing.T) {
@@ -151,6 +203,12 @@ func TestConsumeTypesHandler_EmptyHandlers(t *testing.T) {
 	assert.Empty(t, resp.Types)
 }
 
+func TestConsumeTypesHandler_PanicsOnNilHandlers(t *testing.T) {
+	require.Panics(t, func() {
+		ConsumeTypesHandler(nil)
+	})
+}
+
 // --- PublishHandler ---
 
 type fakePublisher struct {
@@ -186,6 +244,23 @@ func TestPublishHandler_Success(t *testing.T) {
 
 	assert.Equal(t, "events", pub.lastExchange)
 	assert.Equal(t, "order.created", pub.lastRoutingKey)
+}
+
+func TestPublishHandler_PanicsOnNilPublisher(t *testing.T) {
+	require.Panics(t, func() {
+		PublishHandler(nil, []string{"*"}, discardLogger())
+	})
+}
+
+func TestPublishHandler_NilLoggerUsesDefault(t *testing.T) {
+	pub := &fakePublisher{}
+	req := httptest.NewRequest(http.MethodPost, "/debug/publish", bytes.NewBufferString(`{"exchange":"events","routing_key":"order.created","payload":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	PublishHandler(pub, []string{"*"}, nil)(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestPublishHandler_InvalidJSON(t *testing.T) {
@@ -272,4 +347,130 @@ func TestPublishHandler_ExchangeAllowed(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "allowed-exchange", pub.lastExchange)
+}
+
+func TestGuard_PanicsOnNilHandler(t *testing.T) {
+	assert.Panics(t, func() {
+		Guard("development", func(*http.Request) bool { return true }, nil)
+	})
+}
+
+func TestGuard_HidesWhenNonDevelopment(t *testing.T) {
+	called := false
+	h := Guard("production", func(*http.Request) bool { return true }, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.False(t, called)
+}
+
+func TestGuard_HidesWhenAuthFails(t *testing.T) {
+	called := false
+	h := Guard("development", func(*http.Request) bool { return false }, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, `Basic realm="rho-kit debug"`, rec.Header().Get("WWW-Authenticate"))
+	assert.False(t, called)
+}
+
+func TestGuard_AllowsWhenDevelopmentAndAuthenticated(t *testing.T) {
+	h := Guard("development", func(*http.Request) bool { return true }, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestBasicAuth(t *testing.T) {
+	auth := BasicAuth(map[string]string{"alice": "secret", "bob": "hunter2"})
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.SetBasicAuth("alice", "secret")
+	assert.True(t, auth(req))
+
+	req = httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.SetBasicAuth("alice", "wrong")
+	assert.False(t, auth(req))
+
+	req = httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.SetBasicAuth("mallory", "secret")
+	assert.False(t, auth(req))
+
+	req = httptest.NewRequest(http.MethodGet, "/debug", nil)
+	assert.False(t, auth(req))
+}
+
+func TestBasicAuth_PanicsOnInvalidConfig(t *testing.T) {
+	assert.Panics(t, func() { BasicAuth(nil) })
+	assert.Panics(t, func() { BasicAuth(map[string]string{}) })
+	assert.Panics(t, func() { BasicAuth(map[string]string{"": "secret"}) })
+	assert.Panics(t, func() { BasicAuth(map[string]string{"alice": ""}) })
+}
+
+func TestAllowFromHeader(t *testing.T) {
+	auth := AllowFromHeader("X-Debug-Token", "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.Header.Set("X-Debug-Token", "secret")
+	assert.True(t, auth(req))
+
+	req = httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.Header.Set("X-Debug-Token", "wrong")
+	assert.False(t, auth(req))
+}
+
+func TestAllowFromHeader_RejectsDuplicateHeader(t *testing.T) {
+	auth := AllowFromHeader("X-Debug-Token", "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+	req.Header.Add("X-Debug-Token", "secret")
+	req.Header.Add("X-Debug-Token", "attacker")
+
+	assert.False(t, auth(req))
+}
+
+func TestAllowFromHeader_RejectsAmbiguousHeaderValues(t *testing.T) {
+	auth := AllowFromHeader("X-Debug-Token", "secret")
+
+	for name, value := range map[string]string{
+		"edge whitespace": " secret",
+		"internal space":  "sec ret",
+		"comma combined":  "secret,attacker",
+		"control":         "secret\n",
+		"invalid utf8":    string([]byte{'s', 'e', 'c', 'r', 'e', 't', 0xff}),
+		"horizontal tab":  "sec\tret",
+		"unicode newline": "secret\u2028",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/debug", nil)
+			req.Header.Set("X-Debug-Token", value)
+
+			assert.False(t, auth(req))
+		})
+	}
+}
+
+func TestAllowFromHeader_PanicsOnInvalidConfig(t *testing.T) {
+	assert.Panics(t, func() { AllowFromHeader("", "secret") })
+	assert.Panics(t, func() { AllowFromHeader("Bad Header", "secret") })
+	assert.Panics(t, func() { AllowFromHeader("X-Debug-Token", "") })
+	assert.Panics(t, func() { AllowFromHeader("X-Debug-Token", "secret\n") })
+	assert.Panics(t, func() { AllowFromHeader("X-Debug-Token", "sec ret") })
+	assert.Panics(t, func() { AllowFromHeader("X-Debug-Token", "secret,attacker") })
+	assert.Panics(t, func() { AllowFromHeader("X-Debug-Token", string([]byte{'s', 'e', 'c', 'r', 'e', 't', 0xff})) })
 }

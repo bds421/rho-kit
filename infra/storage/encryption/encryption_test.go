@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"io"
+	"iter"
 	"testing"
 	"time"
 
@@ -15,17 +18,29 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 )
 
-func testKey() []byte {
+func testKey(t *testing.T) []byte {
+	t.Helper()
 	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
 	return key
+}
+
+func TestWithMaxConcurrentEncryptions_PanicsOnNonPositive(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
+			require.Panics(t, func() {
+				WithMaxConcurrentEncryptions(n)
+			})
+		})
+	}
 }
 
 func TestEncryptedStorage_RoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	key := testKey()
+	key := testKey(t)
 	backend := membackend.New()
 	enc := New(backend, StaticKey(key))
 
@@ -52,12 +67,166 @@ func TestEncryptedStorage_RoundTrip(t *testing.T) {
 	assert.Equal(t, int64(len(original)), meta.Size)
 }
 
+func TestEncryptedStorage_PutRejectsNilReader(t *testing.T) {
+	t.Parallel()
+	enc := New(membackend.New(), StaticKey(testKey(t)))
+
+	err := enc.Put(context.Background(), "nil.txt", nil, storage.ObjectMeta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrValidation)
+}
+
+func TestEncryptedStorage_PutReadErrorDoesNotReflectCause(t *testing.T) {
+	t.Parallel()
+	readErr := errors.New("read failed for secret-token")
+	enc := New(membackend.New(), StaticKey(testKey(t)))
+
+	err := enc.Put(context.Background(), "reader.txt", errReader{err: readErr}, storage.ObjectMeta{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, readErr)
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "read failed")
+}
+
+func TestEncryptedStorage_KeyProviderErrorDoesNotReflectCause(t *testing.T) {
+	t.Parallel()
+	keyErr := errors.New("key provider failed for secret-token")
+	enc := New(membackend.New(), errKeyProvider{err: keyErr})
+
+	err := enc.Put(context.Background(), "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, keyErr)
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "key provider failed")
+}
+
+func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("put", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend put failed for secret-token")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return backendErr },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		err := enc.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend put failed")
+	})
+
+	t.Run("get", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend get failed for secret-token")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return nil, storage.ObjectMeta{}, backendErr
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		_, _, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend get failed")
+	})
+
+	t.Run("get reader", func(t *testing.T) {
+		t.Parallel()
+		readErr := errors.New("ciphertext read failed for secret-token")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return io.NopCloser(errReader{err: readErr}), storage.ObjectMeta{}, nil
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		_, _, err := enc.Get(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, readErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "ciphertext read failed")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend delete failed for secret-token")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+			},
+			del: func(context.Context, string) error { return backendErr },
+			ex:  func(context.Context, string) (bool, error) { return false, nil },
+		}, StaticKey(testKey(t)))
+
+		err := enc.Delete(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend delete failed")
+	})
+
+	t.Run("exists", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend exists failed for secret-token")
+		enc := New(&noListerBackend{
+			put: func(context.Context, string, io.Reader, storage.ObjectMeta) error { return nil },
+			get: func(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+				return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+			},
+			del: func(context.Context, string) error { return nil },
+			ex:  func(context.Context, string) (bool, error) { return false, backendErr },
+		}, StaticKey(testKey(t)))
+
+		_, err := enc.Exists(ctx, "file.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "backend exists failed")
+	})
+
+	t.Run("list", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("backend list failed for secret-token")
+		enc := New(&failingListBackend{MemBackend: membackend.New(), err: backendErr}, StaticKey(testKey(t)))
+		lister, ok := storage.AsLister(enc)
+		require.True(t, ok)
+
+		var seenErr error
+		for _, err := range lister.List(ctx, "", storage.ListOptions{}) {
+			seenErr = err
+			break
+		}
+
+		require.Error(t, seenErr)
+		assert.ErrorIs(t, seenErr, backendErr)
+		assert.NotContains(t, seenErr.Error(), "secret-token")
+		assert.NotContains(t, seenErr.Error(), "backend list failed")
+	})
+}
+
 func TestEncryptedStorage_WrongKey(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	key1 := testKey()
-	key2 := testKey()
+	key1 := testKey(t)
+	key2 := testKey(t)
 	backend := membackend.New()
 
 	enc1 := New(backend, StaticKey(key1))
@@ -76,7 +245,7 @@ func TestEncryptedStorage_ExistsAndDelete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	key := testKey()
+	key := testKey(t)
 	backend := membackend.New()
 	enc := New(backend, StaticKey(key))
 
@@ -95,11 +264,24 @@ func TestEncryptedStorage_ExistsAndDelete(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestEncryptedStorage_CopyGetErrorDoesNotReflectSourceKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	enc := New(membackend.New(), StaticKey(testKey(t)))
+	copier, ok := enc.(storage.Copier)
+	require.True(t, ok)
+
+	err := copier.Copy(ctx, "secret-token.txt", "dst.txt")
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
 func TestEncryptedStorage_EmptyContent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	key := testKey()
+	key := testKey(t)
 	backend := membackend.New()
 	enc := New(backend, StaticKey(key))
 
@@ -126,7 +308,7 @@ func TestEncryptedStorage_AAD_BindsToStorageKey(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	key := testKey()
+	key := testKey(t)
 	backend := membackend.New()
 	enc := New(backend, StaticKey(key))
 
@@ -158,7 +340,7 @@ func TestEncryptedStorage_AAD_BindsToStorageKey(t *testing.T) {
 func TestEncryptedStorage_New_PanicsOnNilBackend(t *testing.T) {
 	t.Parallel()
 	assert.PanicsWithValue(t, "encryption: backend must not be nil", func() {
-		New(nil, StaticKey(testKey()))
+		New(nil, StaticKey(testKey(t)))
 	})
 }
 
@@ -166,6 +348,13 @@ func TestEncryptedStorage_New_PanicsOnNilKeys(t *testing.T) {
 	t.Parallel()
 	assert.PanicsWithValue(t, "encryption: keys provider must not be nil", func() {
 		New(membackend.New(), nil)
+	})
+}
+
+func TestEncryptedStorage_New_PanicsOnNilOption(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "encryption: option must not be nil", func() {
+		New(membackend.New(), StaticKey(testKey(t)), nil)
 	})
 }
 
@@ -199,7 +388,7 @@ func TestAsPresigned_BlockedByEncryption(t *testing.T) {
 	// would let callers upload plaintext directly to the bucket and
 	// download raw ciphertext, bypassing encryption-at-rest.
 	backend := &presignedMemBackend{MemBackend: membackend.New()}
-	enc := New(backend, StaticKey(testKey()))
+	enc := New(backend, StaticKey(testKey(t)))
 
 	_, ok := storage.AsPresigned(enc)
 	assert.False(t, ok, "encryption must block AsPresigned from reaching underlying presigner")
@@ -209,7 +398,7 @@ func TestAsPublicURLer_BlockedByEncryption(t *testing.T) {
 	t.Parallel()
 	// Same hazard as presigned: a raw public URL would serve ciphertext.
 	backend := &publicURLBackend{MemBackend: membackend.New()}
-	enc := New(backend, StaticKey(testKey()))
+	enc := New(backend, StaticKey(testKey(t)))
 
 	_, ok := storage.AsPublicURLer(enc)
 	assert.False(t, ok, "encryption must block AsPublicURLer from reaching underlying URLer")
@@ -224,7 +413,7 @@ func TestAsCopier_EncryptionDoesDecryptReencrypt(t *testing.T) {
 	// would preserve source AAD on the destination key, making the destination
 	// undecryptable.
 	backend := membackend.New()
-	enc := New(backend, StaticKey(testKey()))
+	enc := New(backend, StaticKey(testKey(t)))
 
 	original := []byte("payload to copy")
 	require.NoError(t, enc.Put(ctx, "src", bytes.NewReader(original), storage.ObjectMeta{}))
@@ -245,9 +434,24 @@ func TestAsCopier_EncryptionDoesDecryptReencrypt(t *testing.T) {
 func TestAsLister_EncryptionForwardsWhenBackendSupports(t *testing.T) {
 	t.Parallel()
 	// MemBackend implements Lister, so encryption must expose Lister too.
-	enc := New(membackend.New(), StaticKey(testKey()))
+	enc := New(membackend.New(), StaticKey(testKey(t)))
 	_, ok := storage.AsLister(enc)
 	assert.True(t, ok, "encryption must forward Lister when backend supports it")
+}
+
+func TestAsLister_EncryptionRejectsInvalidListOptions(t *testing.T) {
+	t.Parallel()
+	enc := New(membackend.New(), StaticKey(testKey(t)))
+	lister, ok := storage.AsLister(enc)
+	require.True(t, ok)
+
+	var seenErr error
+	for _, err := range lister.List(context.Background(), "", storage.ListOptions{MaxKeys: -1}) {
+		seenErr = err
+		break
+	}
+
+	require.ErrorIs(t, seenErr, storage.ErrValidation)
 }
 
 // noListerBackend wraps MemBackend but hides Lister/Copier to test that
@@ -275,6 +479,33 @@ func (b *noListerBackend) Exists(ctx context.Context, key string) (bool, error) 
 	return b.ex(ctx, key)
 }
 
+type errKeyProvider struct {
+	err error
+}
+
+func (p errKeyProvider) EncryptionKey(context.Context) ([]byte, error) {
+	return nil, p.err
+}
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+type failingListBackend struct {
+	*membackend.MemBackend
+	err error
+}
+
+func (b *failingListBackend) List(context.Context, string, storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	return func(yield func(storage.ObjectInfo, error) bool) {
+		yield(storage.ObjectInfo{}, b.err)
+	}
+}
+
 func TestAsPresigned_BlockedByEncryption_DeepStack(t *testing.T) {
 	t.Parallel()
 	// The documented production stack is retry -> circuitbreaker -> encryption
@@ -286,7 +517,7 @@ func TestAsPresigned_BlockedByEncryption_DeepStack(t *testing.T) {
 	// encryption layer alone, which is what the deeper stack would also see
 	// because retry/CB ask AsPresigned of the underlying chain.
 	backend := &presignedMemBackend{MemBackend: membackend.New()}
-	enc := New(backend, StaticKey(testKey()))
+	enc := New(backend, StaticKey(testKey(t)))
 	_, ok := storage.AsPresigned(enc)
 	assert.False(t, ok)
 }
@@ -300,7 +531,7 @@ func TestAsLister_EncryptionDoesNotClaimWhenBackendLacks(t *testing.T) {
 		del: mem.Delete,
 		ex:  mem.Exists,
 	}
-	enc := New(hidden, StaticKey(testKey()))
+	enc := New(hidden, StaticKey(testKey(t)))
 	_, ok := storage.AsLister(enc)
 	assert.False(t, ok, "encryption must NOT claim Lister when underlying lacks it")
 }

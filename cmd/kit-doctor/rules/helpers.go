@@ -21,7 +21,7 @@ func importAliasesFor(file *ast.File, importPath string) map[string]struct{} {
 			continue
 		}
 		if imp.Name == nil {
-			out[path.Base(raw)] = struct{}{}
+			out[defaultImportName(raw)] = struct{}{}
 			continue
 		}
 		switch imp.Name.Name {
@@ -34,6 +34,29 @@ func importAliasesFor(file *ast.File, importPath string) map[string]struct{} {
 	return out
 }
 
+func defaultImportName(importPath string) string {
+	name := path.Base(importPath)
+	if isSemanticImportVersion(name) {
+		parent := path.Base(path.Dir(importPath))
+		if parent != "." && parent != "/" {
+			return parent
+		}
+	}
+	return name
+}
+
+func isSemanticImportVersion(name string) bool {
+	if len(name) < 2 || name[0] != 'v' {
+		return false
+	}
+	for _, r := range name[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func isMethodCall(call *ast.CallExpr, name string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -42,7 +65,7 @@ func isMethodCall(call *ast.CallExpr, name string) bool {
 	return sel.Sel.Name == name
 }
 
-func isPackageCall(call *ast.CallExpr, pkg, fn string) bool {
+func isPackageAliasCall(call *ast.CallExpr, aliases map[string]struct{}, fn string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -54,7 +77,20 @@ func isPackageCall(call *ast.CallExpr, pkg, fn string) bool {
 	if !ok {
 		return false
 	}
-	return ident.Name == pkg
+	if _, ok := aliases[ident.Name]; !ok {
+		return false
+	}
+	return ident.Obj == nil || ident.Obj.Kind == ast.Pkg
+}
+
+func isPackageAlias(ident *ast.Ident, aliases map[string]struct{}) bool {
+	if ident == nil {
+		return false
+	}
+	if _, ok := aliases[ident.Name]; !ok {
+		return false
+	}
+	return ident.Obj == nil || ident.Obj.Kind == ast.Pkg
 }
 
 // chainHas reports whether any of the named methods appears as a

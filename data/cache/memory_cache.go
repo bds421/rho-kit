@@ -55,15 +55,16 @@ type nxClaim struct {
 type MemoryCacheOption func(*MemoryCache)
 
 // WithMaxSize sets the maximum number of entries by treating each entry
-// as cost=1. Values <= 0 are ignored. Implies WithEntryCost — when set,
-// the default byte-based cost accounting is disabled and the cache is
-// bounded by entry count instead.
+// as cost=1. Implies WithEntryCost — when set, the default byte-based cost
+// accounting is disabled and the cache is bounded by entry count instead.
+// The value must be positive.
 func WithMaxSize(n int) MemoryCacheOption {
+	if n <= 0 {
+		panic("cache: WithMaxSize requires n > 0")
+	}
 	return func(mc *MemoryCache) {
-		if n > 0 {
-			mc.maxSize = n
-			mc.entryCost = true
-		}
+		mc.maxSize = n
+		mc.entryCost = true
 	}
 }
 
@@ -80,28 +81,31 @@ func WithEntryCost() MemoryCacheOption {
 // WithMaxCost sets the maximum total cache cost.
 // Use WithCostFunc or WithByteCost to control how costs are computed.
 func WithMaxCost(cost int64) MemoryCacheOption {
+	if cost <= 0 {
+		panic("cache: WithMaxCost requires cost > 0")
+	}
 	return func(mc *MemoryCache) {
-		if cost > 0 {
-			mc.maxCost = cost
-		}
+		mc.maxCost = cost
 	}
 }
 
 // WithNumCounters sets the number of TinyLFU counters (recommended: 10x items).
 func WithNumCounters(n int64) MemoryCacheOption {
+	if n <= 0 {
+		panic("cache: WithNumCounters requires n > 0")
+	}
 	return func(mc *MemoryCache) {
-		if n > 0 {
-			mc.numCounters = n
-		}
+		mc.numCounters = n
 	}
 }
 
 // WithBufferItems sets the get buffer size (default: 64).
 func WithBufferItems(n int64) MemoryCacheOption {
+	if n <= 0 {
+		panic("cache: WithBufferItems requires n > 0")
+	}
 	return func(mc *MemoryCache) {
-		if n > 0 {
-			mc.bufferItems = n
-		}
+		mc.bufferItems = n
 	}
 }
 
@@ -140,6 +144,9 @@ func WithIgnoreInternalCost(ignore bool) MemoryCacheOption {
 // background goroutine; failing to do so leaks a goroutine for the lifetime
 // of the process.
 func WithCleanupInterval(d time.Duration) MemoryCacheOption {
+	if d <= 0 {
+		panic("cache: WithCleanupInterval requires a positive duration")
+	}
 	return func(mc *MemoryCache) {
 		mc.cleanupInterval = d
 	}
@@ -154,6 +161,9 @@ func WithCleanupInterval(d time.Duration) MemoryCacheOption {
 func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	mc := &MemoryCache{metricsEnabled: true}
 	for _, o := range opts {
+		if o == nil {
+			return nil, fmt.Errorf("cache: NewMemoryCache option must not be nil")
+		}
 		o(mc)
 	}
 
@@ -238,6 +248,9 @@ func (mc *MemoryCache) sweepNXClaims() {
 // stopBackgroundSweeper closes the nxClaims sweeper. Safe to call
 // multiple times; the existing Close() invokes it.
 func (mc *MemoryCache) stopBackgroundSweeper() {
+	if mc == nil {
+		return
+	}
 	mc.closeOnce.Do(func() {
 		if mc.stopSweeper != nil {
 			close(mc.stopSweeper)
@@ -250,13 +263,16 @@ func (mc *MemoryCache) stopBackgroundSweeper() {
 func MustNewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 	mc, err := NewMemoryCache(opts...)
 	if err != nil {
-		panic(err)
+		panic("cache: memory cache configuration is invalid")
 	}
 	return mc
 }
 
 // Get retrieves a value. Returns ErrCacheMiss if not found or expired.
 func (mc *MemoryCache) Get(_ context.Context, key string) ([]byte, error) {
+	if err := mc.ready(); err != nil {
+		return nil, err
+	}
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
@@ -274,11 +290,14 @@ func (mc *MemoryCache) Get(_ context.Context, key string) ([]byte, error) {
 // Set stores a value with an expiration. Zero TTL means no expiration.
 // Returns an error if TTL is negative (likely a programming error).
 func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := mc.ready(); err != nil {
+		return err
+	}
 	if err := ValidateKey(key); err != nil {
 		return err
 	}
 	if ttl < 0 {
-		return fmt.Errorf("cache set: TTL must not be negative (got %v)", ttl)
+		return fmt.Errorf("cache set: TTL must not be negative")
 	}
 	stored := make([]byte, len(value))
 	copy(stored, value)
@@ -296,6 +315,9 @@ func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time
 // Sync blocks until all pending set operations are visible.
 // This is primarily useful in tests to ensure deterministic read-after-write.
 func (mc *MemoryCache) Sync() {
+	if mc == nil || mc.cache == nil {
+		return
+	}
 	mc.cache.Wait()
 }
 
@@ -303,6 +325,12 @@ func (mc *MemoryCache) Sync() {
 // backend doesn't expose a true multi-get, but the fan-out runs lock-free.
 // Missing keys are silently absent from the result.
 func (mc *MemoryCache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+	if err := mc.ready(); err != nil {
+		return nil, err
+	}
+	if err := ValidateBulkKeys(keys); err != nil {
+		return nil, err
+	}
 	out := make(map[string][]byte, len(keys))
 	for _, k := range keys {
 		v, err := mc.Get(ctx, k)
@@ -320,6 +348,12 @@ func (mc *MemoryCache) MGet(ctx context.Context, keys []string) (map[string][]by
 // MSet implements [BulkCache] by fanning out per-key Set calls. Stops at the
 // first error; partial writes may be visible.
 func (mc *MemoryCache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+	if err := mc.ready(); err != nil {
+		return err
+	}
+	if err := ValidateBulkItems(items); err != nil {
+		return err
+	}
 	for k, v := range items {
 		if err := mc.Set(ctx, k, v, ttl); err != nil {
 			return err
@@ -338,6 +372,9 @@ func (mc *MemoryCache) MSet(ctx context.Context, items map[string][]byte, ttl ti
 // that follow-up SetNX calls see the claim independent of Ristretto's
 // admission decisions and buffer flushes.
 func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	if err := mc.ready(); err != nil {
+		return false, err
+	}
 	if err := ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -373,6 +410,9 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 
 // Delete removes a key.
 func (mc *MemoryCache) Delete(_ context.Context, key string) error {
+	if err := mc.ready(); err != nil {
+		return err
+	}
 	if err := ValidateKey(key); err != nil {
 		return err
 	}
@@ -383,6 +423,9 @@ func (mc *MemoryCache) Delete(_ context.Context, key string) error {
 
 // Exists checks whether a non-expired key exists.
 func (mc *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
+	if err := mc.ready(); err != nil {
+		return false, err
+	}
 	if err := ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -396,7 +439,17 @@ func (mc *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
 // do so leaks goroutines. In server lifecycle code, register Close as a
 // shutdown hook or use defer.
 func (mc *MemoryCache) Close() error {
+	if err := mc.ready(); err != nil {
+		return err
+	}
 	mc.stopBackgroundSweeper()
 	mc.cache.Close()
+	return nil
+}
+
+func (mc *MemoryCache) ready() error {
+	if mc == nil || mc.cache == nil {
+		return ErrInvalidCache
+	}
 	return nil
 }

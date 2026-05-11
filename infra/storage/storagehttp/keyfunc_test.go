@@ -24,8 +24,22 @@ func TestUUIDKeyFunc(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(key, "avatars/"))
 		assert.True(t, strings.HasSuffix(key, ".jpg"))
+		require.NoError(t, storage.ValidateKey(key))
 		// UUID is 36 chars + "/" + prefix + ext.
 		assert.Len(t, key, len("avatars/")+36+len(".jpg"))
+	})
+
+	t.Run("trims trailing slash from valid prefix", func(t *testing.T) {
+		t.Parallel()
+		fn := UUIDKeyFunc("avatars/")
+		r := httptest.NewRequest("POST", "/upload", nil)
+		meta := storage.ObjectMeta{ContentType: "image/jpeg"}
+
+		key, err := fn(r, "photo.jpg", meta)
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(key, "avatars/"))
+		assert.False(t, strings.Contains(key, "//"))
+		require.NoError(t, storage.ValidateKey(key))
 	})
 
 	t.Run("works without prefix", func(t *testing.T) {
@@ -112,6 +126,31 @@ func TestUUIDKeyFunc(t *testing.T) {
 		// path.Ext("evil/../../etc/passwd") returns "" — no extension to leak.
 		assert.False(t, strings.Contains(key, ".."))
 		assert.False(t, strings.Contains(key, "passwd"))
+	})
+
+	t.Run("panics on invalid prefixes", func(t *testing.T) {
+		t.Parallel()
+		for _, prefix := range []string{
+			"/avatars",
+			"avatars/..",
+			"avatars//2026",
+			`avatars\2026`,
+		} {
+			prefix := prefix
+			t.Run(prefix, func(t *testing.T) {
+				t.Parallel()
+				assert.Panics(t, func() {
+					UUIDKeyFunc(prefix)
+				})
+			})
+		}
+	})
+
+	t.Run("invalid prefix panic does not reflect prefix", func(t *testing.T) {
+		t.Parallel()
+		assert.PanicsWithValue(t, "storagehttp: invalid UUIDKeyFunc prefix", func() {
+			UUIDKeyFunc("secret-token/..")
+		})
 	})
 }
 

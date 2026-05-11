@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -27,21 +28,53 @@ type CursorResult[T any] struct {
 	HasMore    bool   `json:"has_more"`
 }
 
-// MaxCursorLen caps the byte length of an incoming cursor query
-// parameter. Real cursors are short (a row ID, a base64-encoded
-// timestamp pair); a multi-megabyte cursor is invariably abuse.
-// Setting a cap protects downstream validators from spending CPU
-// scanning a giant string before they realise it's malformed.
-const MaxCursorLen = 4096
+const (
+	// MaxCursorLen caps the byte length of an incoming cursor query
+	// parameter. Real cursors are short (a row ID, a base64-encoded
+	// timestamp pair); a multi-megabyte cursor is invariably abuse.
+	// Setting a cap protects downstream validators from spending CPU
+	// scanning a giant string before they realise it's malformed.
+	MaxCursorLen = 4096
+
+	minCursorSignerSecretLen = 32
+)
+
+var (
+	// ErrInvalidRequest is returned by pagination parsers when the request
+	// or request URL is nil.
+	ErrInvalidRequest = errors.New("pagination: invalid request")
+	// ErrCursorTooLong is returned by [ParseCursorParams] when the cursor
+	// query parameter exceeds [MaxCursorLen].
+	ErrCursorTooLong = errors.New("pagination: cursor exceeds maximum length")
+	// ErrAmbiguousQueryParam is returned by pagination parsers when a
+	// pagination query parameter appears more than once.
+	ErrAmbiguousQueryParam = errors.New("pagination: ambiguous query parameter")
+	// ErrInvalidLimitConfig is returned by pagination parsers when the caller
+	// passes non-positive default or maximum limits.
+	ErrInvalidLimitConfig = errors.New("pagination: invalid limit configuration")
+)
 
 // ParseCursorParams extracts cursor and limit from query parameters.
-// Clamps limit between 1 and maxLimit, defaulting to defaultLimit.
-// Cursors longer than [MaxCursorLen] are silently truncated to empty,
-// which the downstream cursor validator will reject.
-func ParseCursorParams(r *http.Request, defaultLimit, maxLimit int) CursorParams {
-	q := r.URL.Query()
+// It clamps limit to maxLimit, defaults empty/invalid/non-positive client
+// limits to defaultLimit, and rejects cursor values longer than [MaxCursorLen].
+func ParseCursorParams(r *http.Request, defaultLimit, maxLimit int) (CursorParams, error) {
+	if defaultLimit <= 0 {
+		return CursorParams{}, fmt.Errorf("%w: defaultLimit must be positive", ErrInvalidLimitConfig)
+	}
+	if maxLimit <= 0 {
+		return CursorParams{}, fmt.Errorf("%w: maxLimit must be positive", ErrInvalidLimitConfig)
+	}
 
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	q, err := requestQuery(r)
+	if err != nil {
+		return CursorParams{}, err
+	}
+
+	rawLimit, err := singleQueryValue(q, "limit")
+	if err != nil {
+		return CursorParams{}, err
+	}
+	limit, _ := strconv.Atoi(rawLimit)
 	if limit <= 0 {
 		limit = defaultLimit
 	}
@@ -49,15 +82,36 @@ func ParseCursorParams(r *http.Request, defaultLimit, maxLimit int) CursorParams
 		limit = maxLimit
 	}
 
-	cursor := q.Get("cursor")
+	cursor, err := singleQueryValue(q, "cursor")
+	if err != nil {
+		return CursorParams{}, err
+	}
 	if len(cursor) > MaxCursorLen {
-		cursor = ""
+		return CursorParams{}, ErrCursorTooLong
 	}
 
 	return CursorParams{
 		Cursor: cursor,
 		Limit:  limit,
+	}, nil
+}
+
+func requestQuery(r *http.Request) (url.Values, error) {
+	if r == nil || r.URL == nil {
+		return nil, ErrInvalidRequest
 	}
+	return r.URL.Query(), nil
+}
+
+func singleQueryValue(q url.Values, key string) (string, error) {
+	values := q[key]
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) > 1 {
+		return "", ErrAmbiguousQueryParam
+	}
+	return values[0], nil
 }
 
 // BuildResult constructs a CursorResult from a slice fetched with limit+1.
@@ -92,7 +146,7 @@ func ValidateCursorUUID(cursor string) error {
 		return nil
 	}
 	if _, err := uuid.Parse(cursor); err != nil {
-		return fmt.Errorf("invalid cursor format: must be a valid UUID: %w", err)
+		return fmt.Errorf("invalid cursor format: must be a valid UUID")
 	}
 	return nil
 }
@@ -121,8 +175,8 @@ type CursorSigner struct {
 // NewCursorSigner creates a CursorSigner. The secret must be at least 32
 // bytes; shorter inputs are rejected.
 func NewCursorSigner(secret []byte) (*CursorSigner, error) {
-	if len(secret) < 32 {
-		return nil, fmt.Errorf("pagination: cursor signer secret must be at least 32 bytes (got %d)", len(secret))
+	if len(secret) < minCursorSignerSecretLen {
+		return nil, fmt.Errorf("pagination: cursor signer secret must be at least 32 bytes")
 	}
 	cp := make([]byte, len(secret))
 	copy(cp, secret)
@@ -133,15 +187,20 @@ func NewCursorSigner(secret []byte) (*CursorSigner, error) {
 func MustNewCursorSigner(secret []byte) *CursorSigner {
 	s, err := NewCursorSigner(secret)
 	if err != nil {
-		panic(err.Error())
+		panic("pagination: cursor signer secret is invalid")
 	}
 	return s
 }
 
+func (s *CursorSigner) ready() bool {
+	return s != nil && len(s.secret) >= minCursorSignerSecretLen
+}
+
 // Encode signs the raw cursor payload (typically a UUID or other PK string).
-// Returns "" when payload is empty (first page).
+// Returns "" when payload is empty (first page), or when the signer was not
+// constructed with [NewCursorSigner].
 func (s *CursorSigner) Encode(payload string) string {
-	if payload == "" {
+	if payload == "" || !s.ready() {
 		return ""
 	}
 	mac := hmac.New(sha256.New, s.secret)
@@ -160,6 +219,9 @@ func (s *CursorSigner) Encode(payload string) string {
 func (s *CursorSigner) Decode(cursor string) (string, error) {
 	if cursor == "" {
 		return "", nil
+	}
+	if !s.ready() {
+		return "", ErrCursorInvalid
 	}
 	idx := strings.IndexByte(cursor, '.')
 	if idx < 0 {

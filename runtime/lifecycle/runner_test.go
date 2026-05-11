@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,6 +94,60 @@ func TestRunner_ComponentError(t *testing.T) {
 	assert.Contains(t, err.Error(), "component failed")
 }
 
+func TestRunner_ComponentCleanExitStopsOthers(t *testing.T) {
+	r := NewRunner(slog.Default())
+	other := newTestComponent()
+	startedFinite := make(chan struct{})
+
+	r.AddFunc("finite", func(context.Context) error {
+		close(startedFinite)
+		return nil
+	})
+	r.Add("other", other)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(context.Background())
+	}()
+
+	select {
+	case <-startedFinite:
+	case <-time.After(time.Second):
+		t.Fatal("finite component did not start")
+	}
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Run hung after clean component exit")
+	}
+	assert.True(t, other.stopped.Load(), "clean component exit must trigger coordinated shutdown")
+}
+
+func TestRunner_AllComponentsCleanExitDoesNotHang(t *testing.T) {
+	r := NewRunner(slog.Default())
+	r.AddFunc("finite", func(context.Context) error { return nil })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Run hung after all components returned nil")
+	}
+}
+
+func TestRunner_RunRejectsNilContext(t *testing.T) {
+	err := NewRunner(slog.Default()).Run(nil) //nolint:staticcheck // exercising the explicit nil-context guard
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
 func TestRunner_AddFunc(t *testing.T) {
 	logger := slog.Default()
 	r := NewRunner(logger)
@@ -118,6 +173,18 @@ func TestRunner_AddFunc(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestNewRunner_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewRunner(slog.Default(), nil)
+	})
+}
+
+func TestWithBeforeStop_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		WithBeforeStop(nil)
+	})
+}
+
 func TestRunner_StopTimeout(t *testing.T) {
 	r := NewRunner(slog.Default(), WithStopTimeout(100*time.Millisecond))
 
@@ -137,10 +204,66 @@ func TestRunner_StopTimeout(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestWithStopTimeout_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithStopTimeout(d)
+			})
+		})
+	}
+}
+
 func TestHTTPServer_NilPanics(t *testing.T) {
 	assert.Panics(t, func() {
 		HTTPServer(nil)
 	})
+}
+
+func TestHTTPServer_PanicsOnUnsafeServer(t *testing.T) {
+	safe := func() *http.Server {
+		return &http.Server{
+			Addr:              "127.0.0.1:0",
+			Handler:           http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+			ReadHeaderTimeout: time.Second,
+		}
+	}
+
+	tests := map[string]func(*http.Server){
+		"empty addr":                  func(s *http.Server) { s.Addr = "" },
+		"nil handler":                 func(s *http.Server) { s.Handler = nil },
+		"missing read header timeout": func(s *http.Server) { s.ReadHeaderTimeout = 0 },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := safe()
+			mutate(srv)
+			assert.Panics(t, func() {
+				HTTPServer(srv)
+			})
+		})
+	}
+}
+
+func TestHTTPServer_StopRejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	err := HTTPServer(&http.Server{
+		Addr:              "127.0.0.1:0",
+		Handler:           http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		ReadHeaderTimeout: time.Second,
+	}).Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestFuncComponent_StartRejectsNilContext(t *testing.T) {
+	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+		return nil
+	}}
+	var ctx context.Context
+	err := fc.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
 }
 
 func TestFuncComponent_Stop(t *testing.T) {
@@ -150,6 +273,55 @@ func TestFuncComponent_Stop(t *testing.T) {
 	}}
 	err := fc.Stop(context.Background())
 	assert.NoError(t, err)
+}
+
+func TestFuncComponent_StartRejectsSecondStart(t *testing.T) {
+	started := make(chan struct{})
+	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- fc.Start(ctx) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("FuncComponent did not start")
+	}
+
+	err := fc.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestFuncComponent_StartRejectsAfterStopBeforeStart(t *testing.T) {
+	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+		return nil
+	}}
+
+	require.NoError(t, fc.Stop(context.Background()))
+
+	err := fc.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already stopped")
+}
+
+func TestFuncComponent_StopRejectsNilContext(t *testing.T) {
+	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+		return nil
+	}}
+	var ctx context.Context
+	err := fc.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
 }
 
 // orderedComponent records its name to a shared slice when Stop is called,
@@ -256,7 +428,7 @@ func TestRunner_AddFuncPanicsOnNilFn(t *testing.T) {
 func TestRunner_PanicRecovery(t *testing.T) {
 	logger := slog.Default()
 	r := NewRunner(logger)
-	r.Add("panicker", &panicComponent{})
+	r.Add("panicker-secret-token", &panicComponent{})
 
 	err := r.Run(context.Background())
 	if err == nil {
@@ -264,15 +436,39 @@ func TestRunner_PanicRecovery(t *testing.T) {
 	}
 
 	panicValue := "something went very wrong"
-	if !strings.Contains(err.Error(), panicValue) {
-		t.Errorf("error %q does not contain panic value %q", err.Error(), panicValue)
+	if strings.Contains(err.Error(), panicValue) {
+		t.Errorf("error %q leaks panic value %q", err.Error(), panicValue)
+	}
+	if !strings.Contains(err.Error(), "<redacted panic value: string>") {
+		t.Errorf("error %q does not contain redacted panic marker", err.Error())
 	}
 
-	// Verify the error mentions the component name as well.
-	if !strings.Contains(err.Error(), "panicker") {
-		t.Errorf("error %q does not mention component name %q", err.Error(), "panicker")
+	if strings.Contains(err.Error(), "panicker-secret-token") || strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("error %q leaks component name", err.Error())
 	}
 
 	// Consume the variable to satisfy errcheck / staticcheck.
 	_ = fmt.Sprintf("%v", err)
+}
+
+func TestRunner_BeforeStopPanicReturnedAsError(t *testing.T) {
+	r := NewRunner(slog.Default(), WithBeforeStop(func(context.Context) {
+		panic("hook failed")
+	}))
+	c := newTestComponent()
+	r.Add("worker", c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx)
+	}()
+
+	require.Eventually(t, c.started.Load, time.Second, 10*time.Millisecond)
+	cancel()
+
+	err := <-done
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BeforeStop panicked")
+	assert.True(t, c.stopped.Load(), "component teardown must still run after hook panic")
 }

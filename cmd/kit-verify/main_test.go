@@ -1,14 +1,91 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNewProbeHTTPClient_BlocksRedirects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	resp, err := newProbeHTTPClient(2*time.Second, false).Get(srv.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, errRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want errRedirectBlocked", err)
+	}
+}
+
+func TestNewProbeHTTPClient_TLSConfig(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	callerTLSConfig := &tls.Config{
+		MinVersion: tls.VersionTLS10,
+		ServerName: "probe.internal.test",
+		NextProtos: []string{"h2"},
+	}
+	base.TLSClientConfig = callerTLSConfig
+	http.DefaultTransport = base
+
+	client := newProbeHTTPClient(2*time.Second, true)
+	callerTLSConfig.NextProtos[0] = "mutated"
+
+	tr, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "transport type = %T", client.Transport)
+	require.NotNil(t, tr.TLSClientConfig)
+	require.NotSame(t, callerTLSConfig, tr.TLSClientConfig)
+	assert.Equal(t, uint16(tls.VersionTLS12), tr.TLSClientConfig.MinVersion)
+	assert.Equal(t, uint16(tls.VersionTLS10), callerTLSConfig.MinVersion)
+	assert.True(t, tr.TLSClientConfig.InsecureSkipVerify)
+	assert.Equal(t, "probe.internal.test", tr.TLSClientConfig.ServerName)
+	require.NotEmpty(t, tr.TLSClientConfig.NextProtos)
+	assert.Equal(t, "h2", tr.TLSClientConfig.NextProtos[0])
+}
+
+func TestNewProbeHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = probeRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("global default transport used")
+	})
+
+	client := newProbeHTTPClient(2*time.Second, false)
+	if _, ok := client.Transport.(*http.Transport); !ok {
+		t.Fatalf("transport = %T, want *http.Transport fallback", client.Transport)
+	}
+}
+
+func TestNewProbeHTTPClient_PanicsWhenTLSMaxVersionBelowFloor(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.TLSClientConfig = &tls.Config{MaxVersion: tls.VersionTLS11}
+	http.DefaultTransport = base
+
+	require.PanicsWithValue(t, "kit-verify: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer", func() {
+		newProbeHTTPClient(2*time.Second, false)
+	})
+}
+
+type probeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f probeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestRunAll_AllPass(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,4 +209,147 @@ func TestJWTProbe_404IsUnknown(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+func TestRunAllWithConfig_UsesCustomProbePaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/svc/health":
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+		case "/svc/public":
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("X-Request-Id", "test-rid-1")
+			if cid := r.Header.Get("X-Correlation-Id"); cid != "" {
+				w.Header().Set("X-Correlation-Id", cid)
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/svc/auth/me":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/svc/state/change":
+			if r.Header.Get("Content-Type") != "application/json" {
+				w.WriteHeader(http.StatusUnsupportedMediaType)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case "/svc/limited":
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	base, err := url.Parse(srv.URL + "/svc")
+	require.NoError(t, err)
+
+	results := runAllWithConfig(&http.Client{Timeout: 2 * time.Second}, probeConfig{
+		base:          base,
+		readinessPath: "/health",
+		headersPath:   "/public",
+		jwtPath:       "/auth/me",
+		csrfPath:      "/state/change",
+		rateLimitPath: "/limited",
+	})
+
+	for _, r := range results {
+		assert.Equalf(t, StatusPass, r.Status, "probe %s status=%s detail=%s", r.Probe, r.Status, r.Detail)
+	}
+}
+
+func TestProbeConfigURL_JoinsBasePathAndProbeQuery(t *testing.T) {
+	base, err := url.Parse("https://example.test/service/")
+	require.NoError(t, err)
+	cfg := probeConfig{base: base}
+
+	assert.Equal(t, "https://example.test/service/ready?deep=1", cfg.url("/ready?deep=1"))
+	assert.Equal(t, "https://example.test/service/", cfg.url("/"))
+}
+
+func TestParseConfig_RejectsInvalidFormatTimeoutAndProbePath(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		want      string
+		forbidden string
+	}{
+		{
+			name:      "format",
+			args:      []string{"-url=https://example.test", "-format=yaml"},
+			want:      "-format must be text or json",
+			forbidden: "yaml",
+		},
+		{
+			name:      "timeout",
+			args:      []string{"-url=https://example.test", "-timeout-ms=0"},
+			want:      "-timeout-ms must be positive",
+			forbidden: "0",
+		},
+		{
+			name:      "path",
+			args:      []string{"-url=https://example.test", "-jwt-path=https://attacker.test/whoami"},
+			want:      "-jwt-path must be an origin-form path",
+			forbidden: "attacker.test",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, err := parseConfig(tc.args, &stderr)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), tc.forbidden)
+		})
+	}
+}
+
+func TestRun_RejectsUnsupportedURLScheme(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-url=ftp://example.test"}, &stdout, &stderr)
+
+	assert.Equal(t, 2, code)
+	assert.Empty(t, stdout.String())
+	assert.Contains(t, stderr.String(), "-url scheme must be http or https")
+	assert.NotContains(t, stderr.String(), "ftp")
+}
+
+func TestCSRFProbe_401IsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	base, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	var status Status
+	var detail string
+	for _, p := range probes {
+		if p.Name == "csrf-rejects-state-changing-without-token" {
+			status, detail = p.Run(&http.Client{Timeout: 2 * time.Second}, probeConfig{
+				base:          base,
+				readinessPath: "/ready",
+				headersPath:   "/",
+				jwtPath:       "/api/v1/whoami",
+				csrfPath:      "/api/v1/state",
+				rateLimitPath: "/",
+			})
+			break
+		}
+	}
+
+	require.NotEmpty(t, status, "CSRF probe not found")
+	assert.Equal(t, StatusFail, status)
+	assert.Contains(t, detail, "auth rejected")
+}
+
+func TestProbeFailureDetailsDoNotReflectURLOrHeaderValues(t *testing.T) {
+	status, detail := expectHeader(http.DefaultClient, "http://127.0.0.1:1/?token=secret-token", "X-Secret-Header", "secret-value")
+
+	require.Equal(t, StatusFail, status)
+	assert.NotContains(t, detail, "127.0.0.1")
+	assert.NotContains(t, detail, "secret-token")
+	assert.NotContains(t, detail, "secret-value")
 }

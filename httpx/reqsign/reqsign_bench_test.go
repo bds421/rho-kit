@@ -46,6 +46,6 @@ func BenchmarkCanonicalBytes(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_ = canonicalBytes(http.MethodPost, "/api/deploy?env=prod&region=us-east-1", body, "abc123nonce==")
+		_ = canonicalBytes(http.MethodPost, "/api/deploy?env=prod&region=us-east-1", "api.example.com", "application/json", body, "abc123nonce==")
 	}
 }

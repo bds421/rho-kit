@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"unicode/utf8"
 )
 
 // Pre-defined charsets exposed as string constants so importers cannot
@@ -38,17 +39,18 @@ const MaxLength = 1 << 20
 // callers that treat that case as fatal should use [MustString] instead.
 //
 // Length must be non-negative and at most [MaxLength]; charset must be
-// non-empty; otherwise an error is returned.
+// non-empty, valid UTF-8, and contain no duplicate runes; otherwise an
+// error is returned.
 func RuneSequence(length int, charset string) (string, error) {
 	if length < 0 {
-		return "", fmt.Errorf("randstr: length must be non-negative, got %d", length)
+		return "", fmt.Errorf("randstr: length must be non-negative")
 	}
 	if length > MaxLength {
-		return "", fmt.Errorf("randstr: length %d exceeds MaxLength %d", length, MaxLength)
+		return "", fmt.Errorf("randstr: length exceeds maximum")
 	}
-	runes := []rune(charset)
-	if len(runes) == 0 {
-		return "", fmt.Errorf("randstr: charset must not be empty")
+	runes, err := validateCharset(charset)
+	if err != nil {
+		return "", err
 	}
 	if length == 0 {
 		return "", nil
@@ -69,13 +71,32 @@ func RuneSequence(length int, charset string) (string, error) {
 	return string(out), nil
 }
 
+func validateCharset(charset string) ([]rune, error) {
+	if charset == "" {
+		return nil, fmt.Errorf("randstr: charset must not be empty")
+	}
+	if !utf8.ValidString(charset) {
+		return nil, fmt.Errorf("randstr: charset must be valid UTF-8")
+	}
+
+	runes := []rune(charset)
+	seen := make(map[rune]struct{}, len(runes))
+	for _, r := range runes {
+		if _, ok := seen[r]; ok {
+			return nil, fmt.Errorf("randstr: charset contains duplicate rune")
+		}
+		seen[r] = struct{}{}
+	}
+	return runes, nil
+}
+
 // MustString is the panicking variant of [RuneSequence]. Use only in startup
 // paths, tests, or call sites where a [crypto/rand] failure is unrecoverable
 // — never on the request path.
 func MustString(length int, charset string) string {
 	s, err := RuneSequence(length, charset)
 	if err != nil {
-		panic(err)
+		panic("randstr: random string generation failed")
 	}
 	return s
 }

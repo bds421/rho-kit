@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 
+	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/observability/v2/slo"
 )
 
@@ -58,7 +59,7 @@ func Handler(checker *slo.Checker) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			httpx.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 

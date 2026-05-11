@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,6 +41,54 @@ func TestNewHTTP_RegistersAllFour(t *testing.T) {
 	assert.True(t, names["http_errors_total"])
 	assert.True(t, names["http_request_duration_seconds"])
 	assert.True(t, names["http_requests_in_flight"])
+}
+
+func TestNewHTTP_ReusesRegisteredCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	first := NewHTTP(reg)
+	second := NewHTTP(reg)
+
+	second.Requests.WithLabelValues("/x", "GET", "200").Inc()
+	second.Errors.WithLabelValues("/x", "GET", "5xx").Inc()
+	second.Duration.WithLabelValues("/x", "GET").Observe(0.1)
+	second.InFlight.Inc()
+
+	assert.Same(t, first.Requests, second.Requests)
+	assert.Same(t, first.Errors, second.Errors)
+	assert.Same(t, first.Duration, second.Duration)
+	assert.Same(t, first.InFlight, second.InFlight)
+	assert.Equal(t, 1.0, testutil.ToFloat64(first.Requests.WithLabelValues("/x", "GET", "200")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(first.Errors.WithLabelValues("/x", "GET", "5xx")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(first.InFlight))
+}
+
+func TestDefaultBuckets_ReturnDetachedCopies(t *testing.T) {
+	httpBuckets := HTTPLatencyBuckets()
+	require.NotEmpty(t, httpBuckets)
+	httpFirst := httpBuckets[0]
+	httpBuckets[0] = 999
+	assert.Equal(t, httpFirst, HTTPLatencyBuckets()[0])
+
+	batchBuckets := BatchDurationBuckets()
+	require.NotEmpty(t, batchBuckets)
+	batchFirst := batchBuckets[0]
+	batchBuckets[0] = 999
+	assert.Equal(t, batchFirst, BatchDurationBuckets()[0])
+}
+
+func TestNewHTTP_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewHTTP(prometheus.NewRegistry(), nil)
+	})
+}
+
+func TestNewHTTP_PanicsOnInvalidMetricNameParts(t *testing.T) {
+	assert.Panics(t, func() {
+		NewHTTP(prometheus.NewRegistry(), WithHTTPNamespace("my-service"))
+	})
+	assert.Panics(t, func() {
+		NewHTTP(prometheus.NewRegistry(), WithHTTPSubsystem("http api"))
+	})
 }
 
 func TestHTTPMiddleware_Records2xxAsRequestNotError(t *testing.T) {
@@ -82,6 +131,60 @@ func TestHTTPMiddleware_NilRouteExtractorYieldsUnknown(t *testing.T) {
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/anything", nil))
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.Requests.WithLabelValues("unknown", "GET", "200")))
+}
+
+func TestHTTPMiddleware_InvalidRouteAndMethodAreBucketed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTP(reg)
+	h := m.Middleware(func(*http.Request) string { return "bad\nroute" })(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	req.Method = "BREW"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.Requests.WithLabelValues("invalid", "OTHER", "200")))
+	observer, err := m.Duration.GetMetricWithLabelValues("invalid", "OTHER")
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	require.NoError(t, observer.(prometheus.Metric).Write(metric))
+	assert.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount())
+}
+
+func TestHTTPMiddleware_RouteExtractorPanicRecordsUnknown(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTP(reg)
+	h := m.Middleware(func(*http.Request) string {
+		panic("route exploded")
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/anything", nil))
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.Requests.WithLabelValues("unknown", "GET", "202")))
+}
+
+func TestHTTPMiddleware_RouteExtractorPanicDoesNotReplaceHandlerPanic(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTP(reg)
+	handlerPanic := assert.AnError
+	h := m.Middleware(func(*http.Request) string {
+		panic("route exploded")
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		assert.Same(t, handlerPanic, got)
+		assert.Equal(t, 1.0, testutil.ToFloat64(m.Requests.WithLabelValues("unknown", "GET", "500")))
+		assert.Equal(t, 1.0, testutil.ToFloat64(m.Errors.WithLabelValues("unknown", "GET", "5xx")))
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/anything", nil))
 }
 
 func TestHTTPMiddleware_InFlightRisesAndFalls(t *testing.T) {
@@ -141,6 +244,40 @@ func TestNewBatch_RegistersAndSubsystemDefaultsToName(t *testing.T) {
 	assert.True(t, names["outbox_run_duration_seconds"])
 }
 
+func TestNewBatch_ReusesRegisteredCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	first := NewBatch(reg, "outbox")
+	second := NewBatch(reg, "outbox")
+
+	second.Runs.WithLabelValues("relay", "success").Inc()
+	second.Duration.WithLabelValues("relay").Observe(0.1)
+	second.InFlight.Inc()
+
+	assert.Same(t, first.Runs, second.Runs)
+	assert.Same(t, first.Duration, second.Duration)
+	assert.Same(t, first.InFlight, second.InFlight)
+	assert.Equal(t, 1.0, testutil.ToFloat64(first.Runs.WithLabelValues("relay", "success")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(first.InFlight))
+}
+
+func TestNewBatch_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewBatch(prometheus.NewRegistry(), "outbox", nil)
+	})
+}
+
+func TestNewBatch_PanicsOnInvalidMetricNameParts(t *testing.T) {
+	assert.Panics(t, func() {
+		NewBatch(prometheus.NewRegistry(), "nightly-job")
+	})
+	assert.Panics(t, func() {
+		NewBatch(prometheus.NewRegistry(), "nightly", WithBatchNamespace("ops metrics"))
+	})
+	assert.Panics(t, func() {
+		NewBatch(prometheus.NewRegistry(), "nightly", WithBatchSubsystem("batch-jobs"))
+	})
+}
+
 func TestNewBatch_BucketsOverride(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewBatch(reg, "test", WithBatchBuckets([]float64{1, 10, 100}))
@@ -150,28 +287,117 @@ func TestNewBatch_BucketsOverride(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestWithHTTPBuckets_ClonesInput(t *testing.T) {
+	buckets := []float64{1, 10}
+	opt := WithHTTPBuckets(buckets)
+	buckets[0] = 0.001
+
+	m := NewHTTP(prometheus.NewRegistry(), opt)
+	observer, err := m.Duration.GetMetricWithLabelValues("/route", "GET")
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	require.NoError(t, observer.(prometheus.Metric).Write(metric))
+	assert.Equal(t, []float64{1, 10}, histogramBucketBounds(metric))
+}
+
+func TestWithHTTPBuckets_OptionReuseClonesOutput(t *testing.T) {
+	opt := WithHTTPBuckets([]float64{1, 10})
+
+	var cfg1 httpConfig
+	opt(&cfg1)
+	var cfg2 httpConfig
+	opt(&cfg2)
+
+	cfg1.buckets[0] = 0.001
+	assert.Equal(t, []float64{1, 10}, cfg2.buckets)
+}
+
+func TestWithBatchBuckets_ClonesInput(t *testing.T) {
+	buckets := []float64{1, 10}
+	opt := WithBatchBuckets(buckets)
+	buckets[0] = 0.001
+
+	m := NewBatch(prometheus.NewRegistry(), "test", opt)
+	observer, err := m.Duration.GetMetricWithLabelValues("job")
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	require.NoError(t, observer.(prometheus.Metric).Write(metric))
+	assert.Equal(t, []float64{1, 10}, histogramBucketBounds(metric))
+}
+
+func TestWithBatchBuckets_OptionReuseClonesOutput(t *testing.T) {
+	opt := WithBatchBuckets([]float64{1, 10})
+
+	var cfg1 batchConfig
+	opt(&cfg1)
+	var cfg2 batchConfig
+	opt(&cfg2)
+
+	cfg1.buckets[0] = 0.001
+	assert.Equal(t, []float64{1, 10}, cfg2.buckets)
+}
+
 func TestWithHTTPBuckets_PanicsOnInvalid(t *testing.T) {
-	cases := map[string][]float64{
-		"empty":        {},
-		"non-positive": {0, 1, 2},
-		"negative":     {-1, 1, 2},
-		"unsorted":     {1, 0.5, 2},
-		"duplicate":    {1, 1, 2},
+	cases := map[string]struct {
+		buckets   []float64
+		want      string
+		forbidden []string
+	}{
+		"empty": {
+			buckets: []float64{},
+			want:    "redmetrics: buckets must not be empty",
+		},
+		"non-positive": {
+			buckets:   []float64{0, 1, 2},
+			want:      "redmetrics: buckets must be positive",
+			forbidden: []string{"0"},
+		},
+		"negative": {
+			buckets:   []float64{-1, 1, 2},
+			want:      "redmetrics: buckets must be positive",
+			forbidden: []string{"-1"},
+		},
+		"unsorted": {
+			buckets:   []float64{1, 0.5, 2},
+			want:      "redmetrics: buckets must be strictly increasing",
+			forbidden: []string{"0.5"},
+		},
+		"duplicate": {
+			buckets: []float64{1, 1, 2},
+			want:    "redmetrics: buckets must be strictly increasing",
+		},
 	}
-	for name, buckets := range cases {
-		buckets := buckets
+	for name, tt := range cases {
+		tt := tt
 		t.Run(name, func(t *testing.T) {
-			assert.Panics(t, func() {
-				WithHTTPBuckets(buckets)
-			})
+			defer func() {
+				rec := recover()
+				require.NotNil(t, rec)
+				msg, ok := rec.(string)
+				require.True(t, ok, "panic value must be a stable string, got %T", rec)
+				assert.Equal(t, tt.want, msg)
+				for _, value := range tt.forbidden {
+					assert.NotContains(t, msg, value)
+				}
+			}()
+			WithHTTPBuckets(tt.buckets)
 		})
 	}
 }
 
 func TestWithBatchBuckets_PanicsOnInvalid(t *testing.T) {
-	assert.Panics(t, func() { WithBatchBuckets(nil) })
-	assert.Panics(t, func() { WithBatchBuckets([]float64{0.5, 0.4}) })
-	assert.Panics(t, func() { WithBatchBuckets([]float64{0, 1}) })
+	assert.PanicsWithValue(t, "redmetrics: buckets must not be empty", func() { WithBatchBuckets(nil) })
+	assert.PanicsWithValue(t, "redmetrics: buckets must be strictly increasing", func() { WithBatchBuckets([]float64{0.5, 0.4}) })
+	assert.PanicsWithValue(t, "redmetrics: buckets must be positive", func() { WithBatchBuckets([]float64{0, 1}) })
+}
+
+func histogramBucketBounds(metric *dto.Metric) []float64 {
+	h := metric.GetHistogram()
+	out := make([]float64, 0, len(h.GetBucket()))
+	for _, bucket := range h.GetBucket() {
+		out = append(out, bucket.GetUpperBound())
+	}
+	return out
 }
 
 // flushableRecorder wraps httptest.ResponseRecorder so it satisfies

@@ -8,6 +8,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
+
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
 // GRPCMetrics holds Prometheus collectors for gRPC server monitoring.
@@ -85,8 +87,16 @@ func (m *GRPCMetrics) StreamInterceptor() grpc.StreamServerInterceptor {
 // record updates metrics for a completed RPC.
 func (m *GRPCMetrics) record(method string, err error, duration time.Duration) {
 	code := statusCode(err)
+	method = grpcMethodLabel(method)
 	m.handledTotal.WithLabelValues(method, code).Inc()
 	m.handlingSeconds.WithLabelValues(method).Observe(duration.Seconds())
+}
+
+func grpcMethodLabel(method string) string {
+	if err := promutil.ValidateStaticLabelValue("grpc method", method); err != nil {
+		return "invalid"
+	}
+	return method
 }
 
 // statusCode extracts the gRPC status code string from an error.
@@ -110,7 +120,7 @@ func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.C
 		if errors.As(err, &are) {
 			return are.ExistingCollector
 		}
-		panic(err)
+		panic("grpcx/metrics: metric registration failed")
 	}
 	return c
 }

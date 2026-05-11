@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,10 +102,102 @@ func TestScheduler_ContextCancelledOnStop(t *testing.T) {
 	assert.Error(t, stored.Err())
 }
 
+func TestScheduler_StartRejectsNilContext(t *testing.T) {
+	s := New(nil)
+	var ctx context.Context
+	err := s.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestScheduler_StartRejectsSecondStart(t *testing.T) {
+	s := New(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(ctx) }()
+	waitForSchedulerStarted(t, s)
+
+	err := s.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+
+	cancel()
+	require.NoError(t, <-startDone)
+}
+
+func TestScheduler_StartRejectsRestartAfterStop(t *testing.T) {
+	s := New(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(ctx) }()
+	waitForSchedulerStarted(t, s)
+
+	require.NoError(t, s.Stop(context.Background()))
+	require.NoError(t, <-startDone)
+
+	err := s.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already started")
+}
+
+func TestScheduler_StartRejectsAfterStopBeforeStart(t *testing.T) {
+	s := New(nil)
+
+	require.NoError(t, s.Stop(context.Background()))
+
+	err := s.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already stopped")
+}
+
+func TestScheduler_StopRejectsNilContext(t *testing.T) {
+	s := New(nil)
+	var ctx context.Context
+	err := s.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
 func TestScheduler_InvalidSchedulePanics(t *testing.T) {
 	s := New(nil)
 	assert.Panics(t, func() {
 		s.Add("bad", "not-a-cron-expr", func(_ context.Context) error { return nil })
+	})
+}
+
+func TestScheduler_InvalidSchedulePanicDoesNotReflectInputs(t *testing.T) {
+	s := New(nil)
+	defer func() {
+		rec := recover()
+		require.NotNil(t, rec)
+		msg, ok := rec.(string)
+		require.True(t, ok, "panic must be a stable string, got %T", rec)
+		assert.Equal(t, "cron: invalid schedule for job", msg)
+		assert.NotContains(t, msg, "secret-token")
+	}()
+
+	s.Add("job-secret-token", "not-a-cron-expr-secret-token", func(_ context.Context) error { return nil })
+}
+
+func TestScheduler_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		New(nil, nil)
+	})
+}
+
+func TestWithLocation_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		WithLocation(nil)
+	})
+}
+
+func TestWithLeaderGate_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		WithLeaderGate(nil)
 	})
 }
 
@@ -120,6 +213,22 @@ func TestScheduler_AddPanicsOnEmptyName(t *testing.T) {
 	assert.PanicsWithValue(t, "cron: Scheduler.Add requires a non-empty name", func() {
 		s.Add("", "@every 1m", func(_ context.Context) error { return nil })
 	})
+}
+
+func TestScheduler_AddPanicsOnUnsafeName(t *testing.T) {
+	tests := []string{
+		"bad\nname",
+		string([]byte{0xff}),
+		strings.Repeat("a", 257),
+	}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := New(nil)
+			assert.Panics(t, func() {
+				s.Add(name, "@every 1m", func(_ context.Context) error { return nil })
+			})
+		})
+	}
 }
 
 func TestScheduler_DurationMetric(t *testing.T) {
@@ -180,6 +289,16 @@ func matchLabels(pairs []*io_prometheus_client.LabelPair, want map[string]string
 	return true
 }
 
+func waitForSchedulerStarted(t *testing.T, s *Scheduler) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		s.mu.RLock()
+		started := s.started
+		s.mu.RUnlock()
+		return started
+	}, time.Second, time.Millisecond)
+}
+
 func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	s := New(nil, WithRegistry(reg))
@@ -217,8 +336,8 @@ func TestScheduler_SetJobTimeout_PanicsOnNonPositive(t *testing.T) {
 	// panics so the wiring bug surfaces.
 	reg := prometheus.NewRegistry()
 	s := New(nil, WithRegistry(reg))
-	assert.Panics(t, func() { s.SetJobTimeout("zero", 0) })
-	assert.Panics(t, func() { s.SetJobTimeout("neg", -1*time.Second) })
+	assert.PanicsWithValue(t, "cron: SetJobTimeout requires d > 0", func() { s.SetJobTimeout("zero", 0) })
+	assert.PanicsWithValue(t, "cron: SetJobTimeout requires d > 0", func() { s.SetJobTimeout("neg", -1*time.Second) })
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -227,5 +346,18 @@ func TestScheduler_SetJobTimeout_PanicsOnNonPositive(t *testing.T) {
 	}
 	if _, ok := s.jobTimeouts["neg"]; ok {
 		t.Fatal("negative duration should not be stored")
+	}
+}
+
+func TestScheduler_SetJobTimeout_PanicsOnUnsafeName(t *testing.T) {
+	s := New(nil)
+	assert.Panics(t, func() {
+		s.SetJobTimeout("bad\nname", time.Second)
+	})
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.jobTimeouts["bad\nname"]; ok {
+		t.Fatal("unsafe job name should not be stored")
 	}
 }

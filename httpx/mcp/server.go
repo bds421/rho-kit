@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/validate"
 )
 
@@ -81,7 +82,7 @@ func (s *Server) HTTP() http.Handler {
 		body, err := readBody(r, s.cfg.maxRequestBytes)
 		if err != nil {
 			writeJSONRPCError(w, http.StatusOK, json.RawMessage("null"),
-				rpcErrParseError, fmt.Sprintf("failed to read request body: %v", err))
+				rpcErrParseError, safeReadBodyMessage(err))
 			return
 		}
 
@@ -99,7 +100,7 @@ func (s *Server) HTTP() http.Handler {
 			// Spec exception: parse errors permit id:null even when
 			// the caller's id was unparseable.
 			writeJSONRPCError(w, http.StatusOK, json.RawMessage("null"),
-				rpcErrParseError, "invalid JSON: "+err.Error())
+				rpcErrParseError, "invalid JSON")
 			return
 		}
 		// JSON-RPC 2.0 notifications: a request without an `id` member
@@ -167,7 +168,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCReq
 		entry, ok := s.lookup(req.Method)
 		if !ok {
 			writeJSONRPCError(w, http.StatusOK, req.ID,
-				rpcErrMethodNotFound, fmt.Sprintf("method %q not found", req.Method))
+				rpcErrMethodNotFound, "method not found")
 			return
 		}
 		s.invoke(w, r, req, req.Method, entry, req.Params, false)
@@ -221,7 +222,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req jso
 	entry, ok := s.lookup(params.Name)
 	if !ok {
 		writeJSONRPCError(w, http.StatusOK, req.ID,
-			rpcErrMethodNotFound, fmt.Sprintf("tool %q not found", params.Name))
+			rpcErrMethodNotFound, "tool not found")
 		return
 	}
 	args := params.Arguments
@@ -304,9 +305,11 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 // payload contains a field not present on the tool's input struct.
 // We surface it as -32602 with a generic message rather than the
 // decoder's "json: unknown field \"foo\"" text — that text leaks
-// the input-struct shape to untrusted callers (security review
-// L-4). The original decoder error is logged server-side.
+// the input-struct shape to untrusted callers and caller-controlled
+// log streams (security review L-4).
 var errUnknownField = errors.New("mcp: request contained an unknown field")
+
+var errInvalidArguments = errors.New("mcp: invalid arguments")
 
 // buildDispatch constructs a type-erased dispatch function for a
 // typed [Handler]. Validation runs against the freshly-decoded In
@@ -321,20 +324,16 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&in); err != nil {
 				if strings.Contains(err.Error(), "unknown field") {
-					// Wrap the original so the server-side
-					// log can include it via errors.Unwrap,
-					// but mapErrorToRPC sees the sentinel
-					// and returns the sanitised message.
-					return nil, fmt.Errorf("%w: %v", errUnknownField, err)
+					return nil, errUnknownField
 				}
-				return nil, apperror.NewValidation("invalid arguments: " + err.Error())
+				return nil, errInvalidArguments
 			}
 			// Trailing JSON guard: `{"x":1} {"y":2}` is not valid
 			// JSON-RPC params even though dec.Decode happily reads
 			// the first object. Probe for a second token; only EOF
 			// is acceptable.
 			if _, err := dec.Token(); err != io.EOF {
-				return nil, apperror.NewValidation("invalid arguments: trailing data after JSON value")
+				return nil, errInvalidArguments
 			}
 		}
 		if err := validate.Struct(in); err != nil {
@@ -391,20 +390,23 @@ func (s *Server) mapErrorToRPC(ctx context.Context, err error) (int, string) {
 	case errors.Is(err, errUnknownField):
 		// L-4: do not echo the field name back to the caller.
 		// The decoder's "json: unknown field \"foo\"" string
-		// reveals the input-struct shape; the wrapped error
-		// retains the detail server-side for forensics.
+		// reveals the input-struct shape and is caller-controlled
+		// log content.
 		s.logInternalError(ctx, "mcp: rejected request with unknown field", err)
 		return rpcErrInvalidParams, "invalid request"
+	case errors.Is(err, errInvalidArguments):
+		return rpcErrInvalidParams, "invalid arguments"
 	case apperror.IsValidation(err):
 		// Surface field-level details when present so the agent
 		// learns which argument was wrong without a fresh round
-		// trip.
+		// trip. Message-only validation errors are free-form handler
+		// text, so keep the JSON-RPC response stable.
 		if ve, ok := apperror.AsValidation(err); ok && len(ve.Fields) > 0 {
 			return rpcErrInvalidParams, ve.Error()
 		}
-		return rpcErrInvalidParams, err.Error()
+		return rpcErrInvalidParams, "invalid request"
 	case apperror.IsNotFound(err):
-		return rpcErrInvalidParams, err.Error()
+		return rpcErrInvalidParams, "resource not found"
 	case apperror.IsAuthRequired(err):
 		// JSON-RPC has no dedicated auth code; -32000 reserved
 		// for server-defined errors. We use -32601 (method not
@@ -430,14 +432,14 @@ func (s *Server) mapErrorToRPC(ctx context.Context, err error) (int, string) {
 // correlate the log line with the response the caller received.
 func (s *Server) logInternalError(ctx context.Context, msg string, err error) {
 	s.cfg.logger.ErrorContext(ctx, msg,
-		"error", err,
+		redact.Error(err),
 	)
 }
 
 // readBody enforces the configured body cap.
 func readBody(r *http.Request, max int64) ([]byte, error) {
 	if r.Body == nil {
-		return nil, errors.New("missing request body")
+		return nil, errMissingRequestBody
 	}
 	defer func() { _ = r.Body.Close() }()
 	if max <= 0 {
@@ -449,9 +451,33 @@ func readBody(r *http.Request, max int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(body)) > max {
-		return nil, fmt.Errorf("request body exceeds %d bytes", max)
+		return nil, requestBodyTooLargeError{max: max}
 	}
 	return body, nil
+}
+
+var errMissingRequestBody = errors.New("missing request body")
+
+type requestBodyTooLargeError struct {
+	max int64
+}
+
+func (e requestBodyTooLargeError) Error() string {
+	return "request body exceeds maximum size"
+}
+
+func safeReadBodyMessage(err error) string {
+	if err == nil {
+		return "failed to read request body"
+	}
+	if errors.Is(err, errMissingRequestBody) {
+		return errMissingRequestBody.Error()
+	}
+	var tooLarge requestBodyTooLargeError
+	if errors.As(err, &tooLarge) {
+		return tooLarge.Error()
+	}
+	return "failed to read request body"
 }
 
 // isJSONArray returns true when the body's first non-whitespace byte
@@ -474,7 +500,7 @@ func isJSONArray(body []byte) bool {
 func writeJSONRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	buf, err := json.Marshal(result)
 	if err != nil {
-		writeJSONRPCError(w, http.StatusOK, id, rpcErrInternalError, "marshal result: "+err.Error())
+		writeJSONRPCError(w, http.StatusOK, id, rpcErrInternalError, "internal error")
 		return
 	}
 	writeJSONRPCRaw(w, id, buf)

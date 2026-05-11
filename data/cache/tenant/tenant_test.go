@@ -3,6 +3,8 @@ package tenant
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,12 +68,12 @@ func TestWrap_IsolatesTenants(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("w-value"), got)
 
-	// Inner store must contain both fully-qualified keys. The length
-	// prefix (`<len(id)>:`) sits between "tenant:" and the ID itself —
-	// see scopedKey for the rationale.
-	_, ok := inner.store["tenant:4:acme:session"]
+	// Inner store must contain both fully-qualified keys. Variable
+	// fields are length-prefixed by core/tenant.Key — see scopedKey for
+	// the rationale.
+	_, ok := inner.store["tenant:4:acme:7:session"]
 	assert.True(t, ok, "expected acme key to exist in inner store")
-	_, ok = inner.store["tenant:7:widgets:session"]
+	_, ok = inner.store["tenant:7:widgets:7:session"]
 	assert.True(t, ok, "expected widgets key to exist in inner store")
 }
 
@@ -93,22 +95,49 @@ func TestWrap_DeleteIsolatesTenants(t *testing.T) {
 	assert.True(t, exists, "widgets key should be untouched")
 }
 
-func TestWrap_PanicsOnMissingTenant(t *testing.T) {
+func TestWrap_MissingTenantReturnsError(t *testing.T) {
 	w := Wrap(newFakeCache())
 
-	assertPanics := func(t *testing.T, name string, f func()) {
-		t.Helper()
-		defer func() {
-			r := recover()
-			assert.NotNilf(t, r, "%s did not panic", name)
-		}()
-		f()
-	}
+	_, err := w.Get(context.Background(), "k")
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
 
-	assertPanics(t, "Get", func() { _, _ = w.Get(context.Background(), "k") })
-	assertPanics(t, "Set", func() { _ = w.Set(context.Background(), "k", []byte("v"), time.Minute) })
-	assertPanics(t, "Delete", func() { _ = w.Delete(context.Background(), "k") })
-	assertPanics(t, "Exists", func() { _, _ = w.Exists(context.Background(), "k") })
+	err = w.Set(context.Background(), "k", []byte("v"), time.Minute)
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+
+	err = w.Delete(context.Background(), "k")
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+
+	exists, err := w.Exists(context.Background(), "k")
+	assert.False(t, exists)
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+}
+
+func TestWrap_RejectsEmptyRawKey(t *testing.T) {
+	w := Wrap(newFakeCache())
+	ctx := ctxWith("acme")
+
+	_, err := w.Get(ctx, "")
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+
+	err = w.Set(ctx, "", []byte("v"), time.Minute)
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+
+	err = w.Delete(ctx, "")
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+
+	exists, err := w.Exists(ctx, "")
+	assert.False(t, exists)
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+}
+
+func TestWrap_RejectsScopedKeyTooLong(t *testing.T) {
+	inner := newFakeCache()
+	w := Wrap(inner)
+	ctx := coretenant.WithID(context.Background(), coretenant.NewIDUnchecked(strings.Repeat("t", coretenant.MaxIDLen)))
+
+	err := w.Set(ctx, strings.Repeat("k", cache.MaxKeyLen), []byte("v"), time.Minute)
+	assert.ErrorIs(t, err, cache.ErrKeyTooLong)
+	assert.Empty(t, inner.store, "oversized scoped keys must not reach the inner cache")
 }
 
 func TestWrap_NilInnerPanics(t *testing.T) {
@@ -124,6 +153,30 @@ func TestWrap_MissReachesCaller(t *testing.T) {
 	w := Wrap(newFakeCache())
 	_, err := w.Get(ctxWith("acme"), "missing")
 	assert.True(t, errors.Is(err, cache.ErrCacheMiss), "expected ErrCacheMiss, got %v", err)
+}
+
+func TestScoped_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := ctxWith("acme")
+
+	for name, s := range map[string]*scoped{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.Get(ctx, "key")
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+
+			err = s.Set(ctx, "key", []byte("value"), time.Minute)
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+
+			err = s.Delete(ctx, "key")
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+
+			exists, err := s.Exists(ctx, "key")
+			assert.False(t, exists)
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+		})
+	}
 }
 
 // fakeBulkCache extends fakeCache with the BulkCache interface so we
@@ -188,8 +241,8 @@ func TestWrap_PreservesBulkCache(t *testing.T) {
 	}, time.Minute))
 	assert.Equal(t, 1, inner.msetCalls, "MSet must reach inner BulkCache once")
 
-	_, ok1 := inner.store["tenant:4:acme:k1"]
-	_, ok2 := inner.store["tenant:4:acme:k2"]
+	_, ok1 := inner.store["tenant:4:acme:2:k1"]
+	_, ok2 := inner.store["tenant:4:acme:2:k2"]
 	assert.True(t, ok1 && ok2, "MSet must store tenant-scoped keys in inner")
 
 	got, err := bulk.MGet(ctx, []string{"k1", "k2", "missing"})
@@ -213,6 +266,72 @@ func TestWrap_PreservesBulkCache(t *testing.T) {
 	ok, err = bulk.SetNX(ctxWith("widgets"), "claim", []byte("widgets-claim"), time.Minute)
 	require.NoError(t, err)
 	assert.True(t, ok, "different tenant must not collide with prior claim")
+}
+
+func TestScopedBulk_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := ctxWith("acme")
+
+	for name, s := range map[string]*scopedBulk{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.MGet(ctx, []string{"key"})
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+
+			err = s.MSet(ctx, map[string][]byte{"key": []byte("value")}, time.Minute)
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+
+			ok, err := s.SetNX(ctx, "key", []byte("value"), time.Minute)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, cache.ErrInvalidCache)
+		})
+	}
+}
+
+func TestScopedBulk_RejectsEmptyRawKey(t *testing.T) {
+	bulk := Wrap(newFakeBulkCache()).(cache.BulkCache)
+	ctx := ctxWith("acme")
+
+	_, err := bulk.MGet(ctx, []string{"valid", ""})
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+
+	err = bulk.MSet(ctx, map[string][]byte{"": []byte("value")}, time.Minute)
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+
+	ok, err := bulk.SetNX(ctx, "", []byte("value"), time.Minute)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, cache.ErrKeyEmpty)
+}
+
+func oversizedTenantKeysForTest() []string {
+	keys := make([]string, cache.MaxBulkKeys+1)
+	for i := range keys {
+		keys[i] = "key-" + strconv.Itoa(i)
+	}
+	return keys
+}
+
+func oversizedTenantItemsForTest() map[string][]byte {
+	items := make(map[string][]byte, cache.MaxBulkKeys+1)
+	for i := 0; i <= cache.MaxBulkKeys; i++ {
+		items["key-"+strconv.Itoa(i)] = []byte("value")
+	}
+	return items
+}
+
+func TestScopedBulk_RejectsOversizedBatchesBeforeScoping(t *testing.T) {
+	inner := newFakeBulkCache()
+	bulk := Wrap(inner).(cache.BulkCache)
+	ctx := ctxWith("acme")
+
+	_, err := bulk.MGet(ctx, oversizedTenantKeysForTest())
+	assert.ErrorIs(t, err, cache.ErrBulkTooLarge)
+	assert.Equal(t, 0, inner.mgetCalls)
+
+	err = bulk.MSet(ctx, oversizedTenantItemsForTest(), time.Minute)
+	assert.ErrorIs(t, err, cache.ErrBulkTooLarge)
+	assert.Equal(t, 0, inner.msetCalls)
 }
 
 // TestWrap_NonBulkInner_KeepsCacheOnly verifies that wrapping a plain

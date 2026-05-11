@@ -69,6 +69,22 @@ func TestNewID_RejectsWhitespace(t *testing.T) {
 	}
 }
 
+func TestNewID_RejectionDoesNotEchoOffendingCharacter(t *testing.T) {
+	cases := map[string]string{
+		"whitespace": "secret-token tenant",
+		"forbidden":  "secret-token/tenant",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewID(input)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalid)
+			assert.NotContains(t, err.Error(), "secret-token")
+			assert.NotContains(t, err.Error(), "/")
+		})
+	}
+}
+
 func TestNewID_AcceptsAlphanum(t *testing.T) {
 	cases := []string{
 		"acme",
@@ -121,6 +137,8 @@ func TestValidateID_RejectsOverlongIDs(t *testing.T) {
 	err := ValidateID(overMax)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalid)
+	assert.NotContains(t, err.Error(), "256")
+	assert.NotContains(t, err.Error(), "257")
 }
 
 func TestNewID_RejectsOverlongIDs(t *testing.T) {
@@ -157,6 +175,16 @@ func TestWithID_RoundTrip(t *testing.T) {
 	assert.Equal(t, id, got)
 }
 
+func TestWithID_NilContextUsesBackground(t *testing.T) {
+	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
+	ctx := WithID(nil, ID("acme"))
+	require.NotNil(t, ctx)
+
+	got, ok := FromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, ID("acme"), got)
+}
+
 func TestWithID_ZeroIDNotPropagated(t *testing.T) {
 	// Storing the zero value should not appear as "present" — it would
 	// flip into an empty-string scope on the consumer side, which is a
@@ -164,6 +192,44 @@ func TestWithID_ZeroIDNotPropagated(t *testing.T) {
 	ctx := WithID(context.Background(), ID(""))
 	_, ok := FromContext(ctx)
 	assert.False(t, ok)
+}
+
+func TestWithID_ZeroIDNilContextReturnsBackground(t *testing.T) {
+	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
+	ctx := WithID(nil, ID(""))
+	require.NotNil(t, ctx)
+
+	_, ok := FromContext(ctx)
+	assert.False(t, ok)
+}
+
+func TestWithID_RefusesDifferentExistingTenant(t *testing.T) {
+	ctx := WithID(context.Background(), ID("acme"))
+
+	require.Panics(t, func() {
+		_ = WithID(ctx, ID("widgets"))
+	})
+
+	got, err := Required(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, ID("acme"), got)
+}
+
+func TestWithID_AllowsSameExistingTenant(t *testing.T) {
+	ctx := WithID(context.Background(), ID("acme"))
+	next := WithID(ctx, ID("acme"))
+
+	assert.True(t, ctx == next)
+}
+
+func TestWithIDChecked_ReturnsErrAlreadySet(t *testing.T) {
+	ctx := WithID(context.Background(), ID("acme"))
+
+	next, err := WithIDChecked(ctx, ID("widgets"))
+	assert.True(t, ctx == next)
+	assert.ErrorIs(t, err, ErrAlreadySet)
+	assert.NotContains(t, err.Error(), "acme")
+	assert.NotContains(t, err.Error(), "widgets")
 }
 
 func TestRequired_AbsentReturnsErrMissing(t *testing.T) {
@@ -176,4 +242,70 @@ func TestRequired_PresentReturnsID(t *testing.T) {
 	got, err := Required(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, ID("acme"), got)
+}
+
+func TestKey_BuildsLengthPrefixedTenantKey(t *testing.T) {
+	ctx := WithID(context.Background(), ID("acme"))
+
+	key, err := Key(ctx, "profile", "user:123")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant:4:acme:7:profile:8:user:123", key)
+}
+
+func TestKey_MissingTenantReturnsErrMissing(t *testing.T) {
+	key, err := Key(context.Background(), "profile")
+	assert.Empty(t, key)
+	assert.ErrorIs(t, err, ErrMissing)
+}
+
+func TestKeyFor_RejectsInvalidParts(t *testing.T) {
+	cases := map[string][]string{
+		"no parts":     {},
+		"empty":        {""},
+		"newline":      {"bad\nkey"},
+		"space":        {"bad key"},
+		"tab":          {"bad\tkey"},
+		"null":         {"bad\x00key"},
+		"invalid utf8": {string([]byte{'b', 0xff})},
+		"overlong":     {strings.Repeat("a", MaxKeyPartLen+1)},
+	}
+	for name, parts := range cases {
+		t.Run(name, func(t *testing.T) {
+			key, err := KeyFor(ID("acme"), parts...)
+			assert.Empty(t, key)
+			assert.ErrorIs(t, err, ErrKeyInvalid)
+			if name == "overlong" {
+				assert.NotContains(t, err.Error(), "1024")
+				assert.NotContains(t, err.Error(), "1025")
+			}
+		})
+	}
+}
+
+func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {
+	cases := []ID{
+		NewIDUnchecked("tenant\nid"),
+		NewIDUnchecked("tenant id"),
+		NewIDUnchecked("tenant\tid"),
+		NewIDUnchecked("tenant\x00id"),
+		NewIDUnchecked(string([]byte{'t', 0xff})),
+		NewIDUnchecked(strings.Repeat("a", MaxKeyPartLen+1)),
+	}
+	for _, id := range cases {
+		key, err := KeyFor(id, "profile")
+		assert.Empty(t, key)
+		assert.ErrorIs(t, err, ErrKeyInvalid)
+	}
+}
+
+func TestKeyFor_ColonInputsDoNotCollide(t *testing.T) {
+	ab, err := KeyFor(NewIDUnchecked("a:b"), "c")
+	require.NoError(t, err)
+
+	a, err := KeyFor(NewIDUnchecked("a"), "b:c")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, ab, a)
+	assert.Equal(t, "tenant:3:a:b:1:c", ab)
+	assert.Equal(t, "tenant:1:a:3:b:c", a)
 }

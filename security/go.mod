@@ -6,7 +6,7 @@
 // across them. See AGENTS.md "Module shape".
 module github.com/bds421/rho-kit/security/v2
 
-go 1.26
+go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0

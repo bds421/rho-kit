@@ -23,48 +23,63 @@ func (b *LocalBackend) Copy(_ context.Context, srcKey, dstKey string) error {
 		return err
 	}
 
-	srcPath := b.keyPath(srcKey)
-	dstPath := b.keyPath(dstKey)
+	srcPath, err := b.existingRegularPath(srcKey)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("localbackend: copy: %w", storage.ErrObjectNotFound)
+		}
+		return err
+	}
+	dstPath, err := b.keyPath(dstKey)
+	if err != nil {
+		return err
+	}
 
 	src, err := os.Open(srcPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("localbackend: copy %q: %w", srcKey, storage.ErrObjectNotFound)
+			return fmt.Errorf("localbackend: copy: %w", storage.ErrObjectNotFound)
 		}
-		return fmt.Errorf("localbackend: copy open %q: %w", srcKey, err)
+		return localFileError("copy open", err)
 	}
 	defer func() { _ = src.Close() }()
 
+	if err := b.rejectSymlinkPath(filepath.Dir(dstPath)); err != nil {
+		return fmt.Errorf("localbackend: copy unsafe parent: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil {
-		return fmt.Errorf("localbackend: copy mkdir %q: %w", dstKey, err)
+		return localFileError("copy mkdir", err)
+	}
+	if err := b.rejectSymlinkPath(filepath.Dir(dstPath)); err != nil {
+		return fmt.Errorf("localbackend: copy unsafe parent: %w", err)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dstPath), ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("localbackend: copy temp file: %w", err)
+		return localFileError("copy temp file", err)
 	}
 	tmpPath := tmp.Name()
 
 	if _, err := io.Copy(tmp, src); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: copy write %q: %w", dstKey, err)
+		return localFileError("copy write", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: copy sync %q: %w", dstKey, err)
+		return localFileError("copy sync", err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: copy close %q: %w", dstKey, err)
+		return localFileError("copy close", err)
 	}
 	if err := os.Rename(tmpPath, dstPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("localbackend: copy rename %q: %w", dstKey, err)
+		return localFileError("copy rename", err)
 	}
 	if err := fsyncDir(filepath.Dir(dstPath)); err != nil {
-		return fmt.Errorf("localbackend: copy fsync dir for %q: %w", dstKey, err)
+		return localFileError("copy fsync dir", err)
 	}
 
 	return nil

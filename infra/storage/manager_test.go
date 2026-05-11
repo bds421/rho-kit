@@ -1,6 +1,9 @@
 package storage_test
 
 import (
+	"context"
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +72,23 @@ func TestManager(t *testing.T) {
 		assert.False(t, mgr.Has("nope"))
 	})
 
+	t.Run("nil Close is no-op", func(t *testing.T) {
+		t.Parallel()
+		var mgr *storage.Manager
+		assert.NoError(t, mgr.Close())
+	})
+
+	t.Run("Close error does not reflect disk name", func(t *testing.T) {
+		t.Parallel()
+		mgr := storage.NewManager()
+		mgr.Register("secret-token-disk", closeFailBackend{})
+
+		err := mgr.Close()
+
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
 	t.Run("panics on empty name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
@@ -78,26 +98,34 @@ func TestManager(t *testing.T) {
 	t.Run("panics on nil backend", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.Panics(t, func() { mgr.Register("test", nil) })
+		assert.PanicsWithValue(t, "storage.Manager: backend must not be nil", func() {
+			mgr.Register("test-secret-token", nil)
+		})
 	})
 
 	t.Run("panics on duplicate name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		mgr.Register("dup", newTestBackend(t))
-		assert.Panics(t, func() { mgr.Register("dup", newTestBackend(t)) })
+		mgr.Register("dup-secret-token", newTestBackend(t))
+		assert.PanicsWithValue(t, "storage.Manager: disk already registered", func() {
+			mgr.Register("dup-secret-token", newTestBackend(t))
+		})
 	})
 
 	t.Run("panics on unregistered disk", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.Panics(t, func() { mgr.Disk("nonexistent") })
+		assert.PanicsWithValue(t, "storage.Manager: disk not registered", func() {
+			mgr.Disk("nonexistent-secret-token")
+		})
 	})
 
 	t.Run("panics on SetDefault with unregistered name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.Panics(t, func() { mgr.SetDefault("nonexistent") })
+		assert.PanicsWithValue(t, "storage.Manager: default disk is not registered", func() {
+			mgr.SetDefault("nonexistent-secret-token")
+		})
 	})
 
 	t.Run("panics on Default with no backends", func(t *testing.T) {
@@ -116,3 +144,19 @@ func TestManager(t *testing.T) {
 		assert.Equal(t, b, mgr.Default())
 	})
 }
+
+type closeFailBackend struct{}
+
+func (closeFailBackend) Put(context.Context, string, io.Reader, storage.ObjectMeta) error {
+	return nil
+}
+
+func (closeFailBackend) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, storage.ErrObjectNotFound
+}
+
+func (closeFailBackend) Delete(context.Context, string) error { return nil }
+
+func (closeFailBackend) Exists(context.Context, string) (bool, error) { return false, nil }
+
+func (closeFailBackend) Close() error { return errors.New("close failed") }

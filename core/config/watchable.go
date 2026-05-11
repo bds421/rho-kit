@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Watchable holds a config value that can be atomically swapped with
@@ -73,7 +75,7 @@ func (w *Watchable[T]) Set(val T) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("config: subscriber panicked", "panic", r)
+					slog.Error("config: subscriber panicked", redact.Panic(r))
 				}
 			}()
 			fn(old, val)

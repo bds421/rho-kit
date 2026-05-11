@@ -2,6 +2,7 @@ package budget_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,31 @@ func TestMiddleware_PanicsOnNegativeAmount(t *testing.T) {
 		}
 	}()
 	mw.Middleware(&fakeBudget{allowed: true}, mw.WithAmount(-1))
+}
+
+func TestMiddleware_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	mw.Middleware(&fakeBudget{allowed: true}, nil)
+}
+
+func TestWithKeyFunc_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil key func")
+		}
+	}()
+	mw.WithKeyFunc(nil)
+}
+
+func TestWithScope_PanicsOnInvalidHeaderValue(t *testing.T) {
+	assert.PanicsWithValue(t,
+		"middleware/budget: WithScope requires a valid HTTP header value",
+		func() { mw.WithScope("tenant\r\nX-Injected: secret-token") },
+	)
 }
 
 func TestMiddleware_AllowsWhenBudgetAdmits(t *testing.T) {
@@ -129,13 +155,38 @@ func TestMiddleware_PassesThroughOnNoKey(t *testing.T) {
 	// KeyFunc returns ok=false => no charge, no headers, no upstream call.
 	b := &fakeBudget{}
 	keyFn := func(*http.Request) (string, bool) { return "", false }
-	h := mw.Middleware(b, mw.WithKeyFunc(keyFn))(okHandler())
+	h := mw.Middleware(b, mw.WithKeyFunc(keyFn), mw.WithAllowMissingKey())(okHandler())
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, b.calls,
 		"middleware must not call Consume when KeyFunc returns false")
+}
+
+func TestMiddleware_MissingKeyRejectedByDefault(t *testing.T) {
+	b := &fakeBudget{}
+	keyFn := func(*http.Request) (string, bool) { return "", false }
+	h := mw.Middleware(b, mw.WithKeyFunc(keyFn))(okHandler())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, b.calls, "invalid/missing keys must be rejected before backend use")
+	assertJSONError(t, rec, "budget key required")
+}
+
+func TestMiddleware_InvalidKeyRejectedBeforeBackend(t *testing.T) {
+	b := &fakeBudget{allowed: true}
+	h := mw.Middleware(b, mw.WithKeyFunc(staticKey("bad key")))(okHandler())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, b.calls, "invalid budget keys must not reach backend implementations")
+	assertJSONError(t, rec, "invalid budget key")
 }
 
 func TestMiddleware_BackendErrorReturns503(t *testing.T) {
@@ -146,6 +197,27 @@ func TestMiddleware_BackendErrorReturns503(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
 		"surface backend errors as 503 rather than fail-open")
+	assertJSONError(t, rec, "budget unavailable")
+}
+
+func TestMiddleware_KeyFuncPanicReturns503(t *testing.T) {
+	b := &fakeBudget{allowed: true}
+	called := false
+	h := mw.Middleware(b, mw.WithKeyFunc(func(*http.Request) (string, bool) {
+		panic("key failed")
+	}))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() {
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	})
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.False(t, called)
+	assert.Empty(t, b.calls)
+	assertJSONError(t, rec, "budget unavailable")
 }
 
 func TestMiddleware_AmountOverride(t *testing.T) {
@@ -176,9 +248,19 @@ func TestTenantKeyFunc_ReadsCtx(t *testing.T) {
 }
 
 func TestTenantKeyFunc_PassesWithoutTenant(t *testing.T) {
-	// When no tenant is on the ctx the request passes through unchanged.
+	// Missing tenant is fail-closed by default: otherwise a missing
+	// upstream tenant resolver silently bypasses budget enforcement.
 	b := &fakeBudget{}
 	h := mw.Middleware(b)(okHandler())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, b.calls)
+}
+
+func TestTenantKeyFunc_PassesWithoutTenantWhenExplicitlyAllowed(t *testing.T) {
+	b := &fakeBudget{}
+	h := mw.Middleware(b, mw.WithAllowMissingKey())(okHandler())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -196,4 +278,19 @@ func TestMiddleware_BackendInvalidKeyError(t *testing.T) {
 
 func staticKey(s string) mw.KeyFunc {
 	return func(*http.Request) (string, bool) { return s, true }
+}
+
+func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, want, body.Error)
+	assert.NotEmpty(t, body.Code)
 }

@@ -13,6 +13,19 @@ type testState struct {
 	Count int    `json:"count"`
 }
 
+func assertErrorDoesNotContainPaths(t *testing.T, err error, paths ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, path := range paths {
+		if path != "" && strings.Contains(msg, path) {
+			t.Fatalf("error reflected path %q: %q", path, msg)
+		}
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	got, err := LoadOrZero[testState](filepath.Join(t.TempDir(), "does-not-exist.json"))
 	if err != nil {
@@ -50,6 +63,72 @@ func TestLoad_ValidFile(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"name":"secret","count":7}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "state.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := Load[testState](link)
+	if err == nil {
+		t.Fatal("expected symlink load to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, target, dir)
+}
+
+func TestLoad_RejectsSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "state.json"), []byte(`{"name":"secret","count":7}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := Load[testState](filepath.Join(link, "state.json"))
+	if err == nil {
+		t.Fatal("expected symlink parent load to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, outside, dir)
+}
+
+func TestLoad_RejectsSymlinkAncestorWithExistingChild(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sub", "state.json"), []byte(`{"name":"secret","count":7}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, _, err := Load[testState](filepath.Join(link, "sub", "state.json"))
+	if err == nil {
+		t.Fatal("expected symlink ancestor load to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, outside, dir)
+}
+
 func TestSave_CreatesDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "dir")
 	path := filepath.Join(dir, "state.json")
@@ -79,6 +158,84 @@ func TestSave_Overwrites(t *testing.T) {
 	}
 	if got.Name != "second" || got.Count != 2 {
 		t.Fatalf("expected second write, got %+v", got)
+	}
+}
+
+func TestSave_RejectsSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"name":"target","count":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "state.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := Save(link, testState{Name: "changed", Count: 2})
+	if err == nil {
+		t.Fatal("expected symlink save to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, target, dir)
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"name":"target","count":1}` {
+		t.Fatalf("target was modified through symlink: %s", data)
+	}
+}
+
+func TestSave_RejectsSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := Save(filepath.Join(link, "sub", "state.json"), testState{Name: "changed", Count: 2})
+	if err == nil {
+		t.Fatal("expected symlink parent save to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, outside, dir)
+
+	_, statErr := os.Stat(filepath.Join(outside, "sub"))
+	if !os.IsNotExist(statErr) {
+		t.Fatalf("outside directory was modified through symlink: %v", statErr)
+	}
+}
+
+func TestSave_RejectsSymlinkAncestorWithExistingChild(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := Save(filepath.Join(link, "sub", "state.json"), testState{Name: "changed", Count: 2})
+	if err == nil {
+		t.Fatal("expected symlink ancestor save to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+	assertErrorDoesNotContainPaths(t, err, link, outside, dir)
+
+	_, statErr := os.Stat(filepath.Join(outside, "sub", "state.json"))
+	if !os.IsNotExist(statErr) {
+		t.Fatalf("outside file was modified through symlink: %v", statErr)
 	}
 }
 
@@ -137,6 +294,7 @@ func TestLoad_ReadPermissionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unreadable file")
 	}
+	assertErrorDoesNotContainPaths(t, err, path, dir)
 }
 
 func TestSave_MarshalError(t *testing.T) {
@@ -163,6 +321,7 @@ func TestSave_ReadOnlyDir(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for read-only directory")
 	}
+	assertErrorDoesNotContainPaths(t, err, path, readOnly, dir)
 }
 
 func TestLoad_EmptyJSON(t *testing.T) {
@@ -216,6 +375,7 @@ func TestSave_MkdirAllFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when MkdirAll fails due to blocking file")
 	}
+	assertErrorDoesNotContainPaths(t, err, path, blocker, dir)
 }
 
 func TestSave_RenameFailure(t *testing.T) {
@@ -232,6 +392,7 @@ func TestSave_RenameFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when rename target is a directory")
 	}
+	assertErrorDoesNotContainPaths(t, err, target, dir)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -287,6 +448,7 @@ func TestSave_WriteErrorLargePayload(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected write error for payload exceeding RLIMIT_FSIZE")
 	}
+	assertErrorDoesNotContainPaths(t, err, path, dir)
 }
 
 func TestSave_PrimitiveTypes(t *testing.T) {

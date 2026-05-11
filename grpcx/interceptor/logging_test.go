@@ -161,6 +161,45 @@ func TestExtractIDs_RejectsControlChars(t *testing.T) {
 		"log line should record the fresh request_id, not the poisoned input")
 }
 
+func TestExtractIDs_RejectsDuplicateAndFreeFormIDs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	md := metadata.MD{
+		"x-correlation-id": []string{"trace-a", "trace-b"},
+		"x-request-id":     []string{"alice@example.com/reset/token=secret"},
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	ic := interceptor.LoggingUnary(logger)
+
+	var observedCID, observedRID string
+	_, err := ic(
+		ctx,
+		nil,
+		&grpc.UnaryServerInfo{FullMethod: "/test.Service/Method"},
+		func(handlerCtx context.Context, _ any) (any, error) {
+			observedCID = contextutil.CorrelationID(handlerCtx)
+			observedRID = contextutil.RequestID(handlerCtx)
+			return nil, nil
+		},
+	)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "trace-a", observedCID)
+	assert.NotEqual(t, "trace-b", observedCID)
+	assert.NotContains(t, observedRID, "alice@example.com")
+	assert.NotContains(t, observedRID, "token=secret")
+	assert.NotEmpty(t, observedCID)
+	assert.NotEmpty(t, observedRID)
+
+	var logEntry map[string]any
+	err = json.Unmarshal(buf.Bytes(), &logEntry)
+	require.NoError(t, err)
+	assert.Equal(t, observedCID, logEntry["correlation_id"])
+	assert.Equal(t, observedRID, logEntry["request_id"])
+}
+
 func TestLoggingStream_LogsMethod(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

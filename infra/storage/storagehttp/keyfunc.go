@@ -1,8 +1,10 @@
 package storagehttp
 
 import (
+	"fmt"
 	"net/http"
 	"path"
+	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/google/uuid"
@@ -27,15 +29,23 @@ type KeyFunc = func(r *http.Request, filename string, meta storage.ObjectMeta) (
 //	UUIDKeyFunc("avatars") → "avatars/550e8400-e29b-41d4-a716-446655440000.jpg"
 //	UUIDKeyFunc("")        → "550e8400-e29b-41d4-a716-446655440000.jpg"
 func UUIDKeyFunc(prefix string) KeyFunc {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		panic("storagehttp: invalid UUIDKeyFunc prefix")
+	}
+	prefix = strings.TrimSuffix(prefix, "/")
+
 	return func(_ *http.Request, filename string, meta storage.ObjectMeta) (string, error) {
 		ext := extensionFromContentType(meta.ContentType)
 		if ext == "" {
 			ext = extensionFromFilename(filename)
 		}
-		id := uuid.Must(uuid.NewV7()).String()
-		key := id + ext
+		id, err := uuid.NewV7()
+		if err != nil {
+			return "", fmt.Errorf("storagehttp: generate object key ID: %w", err)
+		}
+		key := id.String() + ext
 		if prefix != "" {
-			key = path.Join(prefix, key)
+			key = prefix + "/" + key
 		}
 		return key, nil
 	}

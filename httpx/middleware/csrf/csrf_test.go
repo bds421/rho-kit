@@ -1,14 +1,22 @@
 package csrf
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type secretFailingReader struct{}
+
+func (secretFailingReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable: secret-token")
+}
 
 // --- Double-submit cookie CSRF (csrf.New) tests ---
 
@@ -18,6 +26,22 @@ func testSecret() []byte {
 		secret[i] = byte(i + 1)
 	}
 	return secret
+}
+
+func TestWithSecretClonesInput(t *testing.T) {
+	secret := testSecret()
+	opt := WithSecret(secret)
+	secret[0] = 99
+
+	var cfg config
+	opt(&cfg)
+
+	require.Equal(t, byte(1), cfg.secret[0])
+	cfg.secret[0] = 77
+
+	var cfg2 config
+	opt(&cfg2)
+	require.Equal(t, byte(1), cfg2.secret[0])
 }
 
 func okHandler() http.Handler {
@@ -77,6 +101,33 @@ func TestNew_POSTRejectedWithoutHeader(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+func TestNew_TokenMintFailureReturns500(t *testing.T) {
+	prev := tokenRandReader
+	tokenRandReader = secretFailingReader{}
+	t.Cleanup(func() { tokenRandReader = prev })
+
+	handler := New(WithSecret(testSecret()))(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Empty(t, rec.Header().Values("Set-Cookie"))
+	assert.Contains(t, rec.Body.String(), "csrf: token mint failed")
+	assert.NotContains(t, rec.Body.String(), "secret-token")
+}
+
+func TestNew_DevSecretGenerationPanicIsStable(t *testing.T) {
+	prev := tokenRandReader
+	tokenRandReader = secretFailingReader{}
+	t.Cleanup(func() { tokenRandReader = prev })
+
+	assert.PanicsWithValue(t, "csrf: failed to generate HMAC secret", func() {
+		New(WithDevSecret())
+	})
+}
+
 func TestNew_POSTSucceedsWithValidToken(t *testing.T) {
 	secret := testSecret()
 	mw := New(WithSecret(secret))
@@ -90,6 +141,27 @@ func TestNew_POSTSucceedsWithValidToken(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_POSTRejectedWithDuplicateCSRFHeader(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret))
+	called := false
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Add("X-CSRF-Token", token)
+	req.Header.Add("X-CSRF-Token", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.False(t, called)
 }
 
 func TestNew_POSTRejectedWithMismatchedToken(t *testing.T) {
@@ -169,6 +241,22 @@ func TestNew_CustomNames(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestNew_CustomHeaderNameNotReflectedInError(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithHeaderName("X-Secret-CSRF-Header"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "missing CSRF header")
+	assert.NotContains(t, rec.Body.String(), "X-Secret-CSRF-Header")
+}
+
 func TestNew_SecureFlag(t *testing.T) {
 	mw := New(WithSecret(testSecret()), WithSecure(true))
 	handler := mw(okHandler())
@@ -240,6 +328,26 @@ func TestNew_SkipCheck_POSTWithoutBearerTokenRequiresCSRF(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_SkipCheckPanicEnforcesCSRF(t *testing.T) {
+	called := false
+	mw := New(WithSecret(testSecret()), WithSkipCheck(func(*http.Request) bool {
+		panic("skip failed")
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() {
+		handler.ServeHTTP(rec, req)
+	})
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.False(t, called)
 }
 
 func TestNew_SkipCheck_POSTWithAPIKeySkipsCSRF(t *testing.T) {
@@ -389,6 +497,12 @@ func TestHasBearerToken_CaseInsensitive(t *testing.T) {
 		{"too short", "Bearer", false},
 		{"space only", "Bearer ", false},
 		{"lowercase space only", "bearer ", false},
+		{"edge whitespace", " Bearer token123", false},
+		{"token whitespace", "Bearer token123 ", false},
+		{"internal token whitespace", "Bearer token 123", false},
+		{"comma combined", "Bearer token123,other", false},
+		{"control", "Bearer token123\n", false},
+		{"invalid utf8", string([]byte{'B', 'e', 'a', 'r', 'e', 'r', ' ', 0xff}), false},
 	}
 
 	for _, tt := range tests {
@@ -398,6 +512,57 @@ func TestHasBearerToken_CaseInsensitive(t *testing.T) {
 				req.Header.Set("Authorization", tt.header)
 			}
 			assert.Equal(t, tt.want, HasBearerToken(req))
+		})
+	}
+}
+
+func TestHasBearerToken_RejectsDuplicateAuthorization(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Add("Authorization", "Bearer token123")
+	req.Header.Add("Authorization", "Bearer token456")
+
+	assert.False(t, HasBearerToken(req))
+}
+
+func TestHasBearerToken_NilRequest(t *testing.T) {
+	assert.False(t, HasBearerToken(nil))
+}
+
+func TestHasAPIKey_NilRequest(t *testing.T) {
+	assert.False(t, HasAPIKey("X-API-Key")(nil))
+}
+
+func TestNew_SkipCheck_DuplicateAuthorizationRequiresCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Add("Authorization", "Bearer token123")
+	req.Header.Add("Authorization", "Bearer token456")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_SkipCheck_AmbiguousAuthorizationRequiresCSRF(t *testing.T) {
+	mw := New(WithSecret(testSecret()), WithSkipCheck(HasBearerToken))
+	handler := mw(okHandler())
+
+	for name, value := range map[string]string{
+		"edge whitespace":  " Bearer token123",
+		"token whitespace": "Bearer token123 ",
+		"internal space":   "Bearer token 123",
+		"comma":            "Bearer token123,other",
+		"control":          "Bearer token123\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.Header.Set("Authorization", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusForbidden, rec.Code)
 		})
 	}
 }
@@ -428,6 +593,41 @@ func TestHasAPIKey_WhitespaceOnlyHeaderValue(t *testing.T) {
 	req.Header.Set("X-API-Key", "   \t  ")
 
 	assert.False(t, predicate(req), "whitespace-only API key should be rejected")
+}
+
+func TestHasAPIKey_RejectsDuplicateHeader(t *testing.T) {
+	predicate := HasAPIKey("X-API-Key")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Add("X-API-Key", "secret")
+	req.Header.Add("X-API-Key", "secret")
+
+	assert.False(t, predicate(req))
+}
+
+func TestHasAPIKey_RejectsAmbiguousHeaderValues(t *testing.T) {
+	predicate := HasAPIKey("X-API-Key")
+
+	for name, value := range map[string]string{
+		"edge whitespace":        " secret",
+		"internal space":         "secret value",
+		"comma combined":         "secret,other",
+		"control":                "secret\n",
+		"invalid utf8":           string([]byte{'s', 'e', 'c', 'r', 'e', 't', 0xff}),
+		"horizontal tab":         "secret\tvalue",
+		"carriage return":        "secret\rvalue",
+		"unicode line separator": "secret\u2028value",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.Header.Set("X-API-Key", value)
+
+			assert.False(t, predicate(req))
+		})
+	}
+}
+
+func TestHasAPIKey_PanicsOnInvalidHeader(t *testing.T) {
+	assert.Panics(t, func() { HasAPIKey("Bad Header") })
 }
 
 func TestNew_SkipCheck_LastPredicateWins(t *testing.T) {
@@ -517,6 +717,21 @@ func TestRequireJSONContentType_POST_WithCharset(t *testing.T) {
 	}
 }
 
+func TestRequireJSONContentType_POST_WithStructuredJSON(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"value"}`))
+	req.Header.Set("Content-Type", "application/merge-patch+json; charset=utf-8")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST with structured +json Content-Type should pass, got %d", rec.Code)
+	}
+}
+
 func TestRequireJSONContentType_POST_WithoutJSON_NoBody(t *testing.T) {
 	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -573,6 +788,44 @@ func TestRequireJSONContentType_POST_WrongContentType(t *testing.T) {
 
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("POST with text/plain should be 415, got %d", rec.Code)
+	}
+}
+
+func TestRequireJSONContentType_POST_DuplicateContentType(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"value"}`))
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("POST with duplicate Content-Type should be 415, got %d", rec.Code)
+	}
+}
+
+func TestRequireJSONContentType_POST_InvalidContentTypeHeaderValue(t *testing.T) {
+	handler := RequireJSONContentType(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for name, value := range map[string]string{
+		"control":      "application/json\n",
+		"invalid utf8": string([]byte{'a', 'p', 'p', 'l', 'i', 'c', 'a', 't', 'i', 'o', 'n', '/', 'j', 's', 'o', 'n', 0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"value"}`))
+			req.Header.Set("Content-Type", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("POST with invalid Content-Type should be 415, got %d", rec.Code)
+			}
+		})
 	}
 }
 
@@ -804,6 +1057,149 @@ func TestNew_AllowedOrigins_CaseInsensitiveHost(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestWithAllowedOrigins_PanicsOnNoNonEmptyOrigins(t *testing.T) {
+	assert.Panics(t, func() {
+		WithAllowedOrigins("", " \t ")
+	})
+}
+
+func TestWithAllowedOrigins_PanicsOnInvalidOrigins(t *testing.T) {
+	for _, origin := range []string{
+		"https://app.example.com/",
+		"https://app.example.com/path",
+		"https://app.example.com?x=1",
+		"https://user@app.example.com",
+		"https://app.example.com:bad",
+		"https://app.example.com:+443",
+		"ftp://app.example.com",
+	} {
+		t.Run(strings.ReplaceAll(origin, "/", "_"), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithAllowedOrigins(origin)
+			})
+		})
+	}
+}
+
+func TestWithAllowedOrigins_InvalidOriginDoesNotEchoValue(t *testing.T) {
+	assert.PanicsWithValue(t, "csrf: WithAllowedOrigins invalid origin", func() {
+		WithAllowedOrigins("https://app.example.com/%zz?token=secret-token")
+	})
+}
+
+func TestWithAllowedOriginsOptionReuseDoesNotShareMap(t *testing.T) {
+	opt := WithAllowedOrigins("https://app.example.com")
+
+	var cfg1 config
+	opt(&cfg1)
+	var cfg2 config
+	opt(&cfg2)
+
+	cfg1.allowedOrigins["https://mutated.example.com"] = struct{}{}
+	_, ok := cfg2.allowedOrigins["https://mutated.example.com"]
+	assert.False(t, ok)
+}
+
+func TestNew_AllowedOrigins_RejectsUnlistedOriginEvenWithAllowedReferer(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "https://evil.attacker.com")
+	req.Header.Set("Referer", "https://app.example.com/some/path")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_AllowedOrigins_RejectsNullOriginEvenWithAllowedReferer(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Referer", "https://app.example.com/some/path")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_AllowedOrigins_RejectsDuplicateOriginHeaders(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Add("Origin", "https://app.example.com")
+	req.Header.Add("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_AllowedOrigins_RejectsMalformedRuntimeOrigin(t *testing.T) {
+	secret := testSecret()
+	mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(secret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	req.Header.Set("Origin", "https://app.example.com:+443")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_AllowedOrigins_RejectsInvalidRuntimeOriginHeaderValues(t *testing.T) {
+	for name, tt := range map[string]struct {
+		header string
+		value  string
+	}{
+		"origin control":       {"Origin", "https://app.example.com\n"},
+		"origin invalid utf8":  {"Origin", string([]byte("https://app.example.com\xff"))},
+		"referer control":      {"Referer", "https://app.example.com/path\n"},
+		"referer invalid utf8": {"Referer", string([]byte("https://app.example.com/path\xff"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			secret := testSecret()
+			mw := New(WithSecret(secret), WithAllowedOrigins("https://app.example.com"))
+			called := false
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			token := generateSignedToken(secret)
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+			req.Header.Set("X-CSRF-Token", token)
+			req.Header.Set(tt.header, tt.value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusForbidden, rec.Code)
+			assert.False(t, called)
+		})
+	}
+}
+
 // --- Mandatory secret unconditionally ---
 
 func TestNew_PanicsWithoutSecret(t *testing.T) {
@@ -850,9 +1246,93 @@ func TestNew_DefaultsSecureToTrue(t *testing.T) {
 	assert.True(t, cookies[0].Secure, "CSRF cookie must be Secure by default (FR-020)")
 }
 
+func TestNew_SessionExtractorPanicRejects(t *testing.T) {
+	called := false
+	mw := New(WithSecret(testSecret()), WithSessionExtractor(func(*http.Request) string {
+		panic("session failed")
+	}))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() {
+		handler.ServeHTTP(rec, req)
+	})
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.False(t, called)
+	assert.Empty(t, rec.Header().Values("Set-Cookie"))
+}
+
 func TestNew_SameSiteNoneWithSecureIsAllowed(t *testing.T) {
 	mw := New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithSecure(true))
 	assert.NotNil(t, mw)
+}
+
+func TestOptions_PanicOnInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "cookie name", fn: func() { WithCookieName("bad cookie") }},
+		{name: "header name", fn: func() { WithHeaderName("bad header") }},
+		{name: "short secret", fn: func() { WithSecret([]byte("short")) }},
+		{name: "same site", fn: func() { WithSameSite(http.SameSite(99)) }},
+		{name: "path empty", fn: func() { WithPath("") }},
+		{name: "path relative", fn: func() { WithPath("relative") }},
+		{name: "session extractor", fn: func() { WithSessionExtractor(nil) }},
+		{name: "session ttl zero", fn: func() { WithSessionTTL(0) }},
+		{name: "session ttl negative", fn: func() { WithSessionTTL(-time.Second) }},
+		{name: "skip check", fn: func() { WithSkipCheck(nil) }},
+		{name: "new nil option", fn: func() { New(nil) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Panics(t, tt.fn)
+		})
+	}
+}
+
+func TestOptions_PanicsDoNotReflectInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "cookie name", fn: func() { WithCookieName("bad cookie secret-token") }},
+		{name: "header name", fn: func() { WithHeaderName("bad header secret-token") }},
+		{name: "path", fn: func() { WithPath("secret-token") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				rec := recover()
+				require.NotNil(t, rec)
+				msg, ok := rec.(string)
+				require.True(t, ok, "panic must be a stable string, got %T", rec)
+				assert.NotContains(t, msg, "secret-token")
+			}()
+			tt.fn()
+		})
+	}
+}
+
+func TestWithSameSitePanicDoesNotReflectMode(t *testing.T) {
+	assert.PanicsWithValue(t, "csrf: WithSameSite requires a valid SameSite mode", func() {
+		WithSameSite(http.SameSite(99))
+	})
+}
+
+func TestGenerateSignedTokenPanicIsStable(t *testing.T) {
+	prev := tokenRandReader
+	tokenRandReader = secretFailingReader{}
+	t.Cleanup(func() { tokenRandReader = prev })
+
+	assert.PanicsWithValue(t, "csrf: failed to generate random token", func() {
+		generateSignedToken(testSecret())
+	})
 }
 
 // --- SkipCheck regen bug ---

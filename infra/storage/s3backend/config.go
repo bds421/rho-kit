@@ -5,17 +5,18 @@ import (
 	"log/slog"
 
 	"github.com/bds421/rho-kit/core/v2/config"
-	"github.com/bds421/rho-kit/crypto/v2/masking"
+	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 // S3Config holds AWS S3 connection settings.
 type S3Config struct {
-	Region          string
-	Bucket          string
-	Endpoint        string // empty for real AWS; set for localstack/minio
-	ForcePathStyle  bool   // required for localstack and minio
-	AccessKeyID     string
-	SecretAccessKey string
+	Region                string
+	Bucket                string
+	Endpoint              string // empty for real AWS; set for localstack/minio
+	ForcePathStyle        bool   // required for localstack and minio
+	AllowInsecureEndpoint bool   // permits http:// endpoints for local emulators
+	AccessKeyID           string
+	SecretAccessKey       string
 
 	// SSE controls server-side encryption applied to PutObject and signed
 	// into presigned PUT URLs. Empty disables (the bucket may still apply
@@ -53,11 +54,15 @@ type S3Config struct {
 func (c S3Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("region", c.Region),
-		slog.String("bucket", c.Bucket),
-		slog.String("endpoint", c.Endpoint),
+		slog.Bool("bucket_configured", c.Bucket != ""),
+		slog.Bool("endpoint_configured", c.Endpoint != ""),
+		slog.Bool("url_template_configured", c.URLTemplate != ""),
 		slog.Bool("force_path_style", c.ForcePathStyle),
-		slog.String("access_key_id", masking.MaskString(c.AccessKeyID, 4)),
-		slog.String("secret_access_key", "[REDACTED]"),
+		slog.Bool("allow_insecure_endpoint", c.AllowInsecureEndpoint),
+		slog.Bool("access_key_id_configured", c.AccessKeyID != ""),
+		slog.Bool("secret_access_key_configured", c.SecretAccessKey != ""),
+		slog.String("sse", c.SSE),
+		slog.Bool("sse_kms_key_configured", c.SSEKMSKeyID != ""),
 	)
 }
 
@@ -67,25 +72,30 @@ func (c S3Config) LogValue() slog.Value {
 //   - STORAGE_S3_REGION (required, e.g. "eu-central-1")
 //   - STORAGE_S3_BUCKET (required)
 //   - STORAGE_S3_ENDPOINT (optional, for localstack/minio)
+//   - STORAGE_S3_URL_TEMPLATE (optional, HTTPS public URL template)
 //   - STORAGE_S3_FORCE_PATH_STYLE (optional bool, default false)
+//   - STORAGE_S3_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
 //   - {envPrefix}_S3_ACCESS_KEY_ID (required)
 //   - {envPrefix}_S3_SECRET_ACCESS_KEY (required, supports _FILE suffix)
 func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 	p := &config.Parser{}
 	forcePathStyle := p.Bool("STORAGE_S3_FORCE_PATH_STYLE", false)
+	allowInsecureEndpoint := p.Bool("STORAGE_S3_ALLOW_INSECURE_ENDPOINT", false)
 	if err := p.Err(); err != nil {
 		return S3Config{}, err
 	}
 
 	cfg := S3Config{
-		Region:          config.Get("STORAGE_S3_REGION", ""),
-		Bucket:          config.Get("STORAGE_S3_BUCKET", ""),
-		Endpoint:        config.Get("STORAGE_S3_ENDPOINT", ""),
-		ForcePathStyle:  forcePathStyle,
-		AccessKeyID:     config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
-		SecretAccessKey: config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
-		SSE:             config.Get("STORAGE_S3_SSE", "AES256"),
-		SSEKMSKeyID:     config.Get("STORAGE_S3_SSE_KMS_KEY_ID", ""),
+		Region:                config.Get("STORAGE_S3_REGION", ""),
+		Bucket:                config.Get("STORAGE_S3_BUCKET", ""),
+		Endpoint:              config.Get("STORAGE_S3_ENDPOINT", ""),
+		URLTemplate:           config.Get("STORAGE_S3_URL_TEMPLATE", ""),
+		ForcePathStyle:        forcePathStyle,
+		AllowInsecureEndpoint: allowInsecureEndpoint,
+		AccessKeyID:           config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
+		SecretAccessKey:       config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
+		SSE:                   config.Get("STORAGE_S3_SSE", "AES256"),
+		SSEKMSKeyID:           config.Get("STORAGE_S3_SSE_KMS_KEY_ID", ""),
 	}
 
 	if err := cfg.Validate(environment); err != nil {
@@ -110,6 +120,15 @@ func (c S3Config) Validate(environment string) error {
 	if c.SecretAccessKey == "" {
 		return fmt.Errorf("S3_SECRET_ACCESS_KEY is required")
 	}
+	if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+		return err
+	}
+	if err := validateURLTemplate(c.URLTemplate, c.Bucket, c.Region); err != nil {
+		return err
+	}
+	if err := validateSSEConfig(c); err != nil {
+		return err
+	}
 
 	// Credential-strength check is unconditional — production-safe
 	// defaults are the only mode (see docs/RELEASE_NOTES_v2.md).
@@ -117,10 +136,6 @@ func (c S3Config) Validate(environment string) error {
 		return err
 	}
 	_ = environment // accepted for API compatibility; no longer consulted
-
-	if c.SSE == "aws:kms" && c.SSEKMSKeyID == "" {
-		return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID is required when STORAGE_S3_SSE=aws:kms")
-	}
 
 	return nil
 }

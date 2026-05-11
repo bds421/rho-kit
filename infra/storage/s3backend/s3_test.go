@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,9 +81,10 @@ func (m *mockS3Client) CopyObject(ctx context.Context, params *s3.CopyObjectInpu
 
 // mockPresigner implements S3Presigner for unit tests.
 type mockPresigner struct {
-	getURL string
-	putURL string
-	err    error
+	getURL   string
+	putURL   string
+	err      error
+	putInput *s3.PutObjectInput
 }
 
 func (m *mockPresigner) PresignGetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
@@ -92,10 +94,11 @@ func (m *mockPresigner) PresignGetObject(_ context.Context, _ *s3.GetObjectInput
 	return &v4.PresignedHTTPRequest{URL: m.getURL}, nil
 }
 
-func (m *mockPresigner) PresignPutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+func (m *mockPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
+	m.putInput = input
 	return &v4.PresignedHTTPRequest{URL: m.putURL}, nil
 }
 
@@ -148,16 +151,20 @@ func TestS3Backend_Put(t *testing.T) {
 
 	t.Run("returns error on S3 failure", func(t *testing.T) {
 		t.Parallel()
+		backendErr := errors.New("network error for secret-token")
 		client := &mockS3Client{
 			putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
-				return nil, errors.New("network error")
+				return nil, backendErr
 			},
 		}
 		b := newTestBackend(client)
 
-		err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
+		err := b.Put(ctx, "secret-token.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
 		assert.Contains(t, err.Error(), "s3backend: put")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "network error")
 	})
 
 	t.Run("rejects empty key", func(t *testing.T) {
@@ -177,6 +184,105 @@ func TestS3Backend_Put(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, storage.ErrValidation))
 	})
+
+	t.Run("closes validator-owned reader when SDK does not consume body", func(t *testing.T) {
+		t.Parallel()
+		closed := false
+		client := &mockS3Client{
+			putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client, WithValidators(func(context.Context, io.Reader, *storage.ObjectMeta) (io.Reader, error) {
+			return &trackingReadCloser{Reader: strings.NewReader("validated"), closed: &closed}, nil
+		}))
+
+		err := b.Put(ctx, "file.txt", strings.NewReader("original"), storage.ObjectMeta{})
+		require.NoError(t, err)
+		assert.True(t, closed)
+	})
+
+	t.Run("does not close caller-owned reader without validators", func(t *testing.T) {
+		t.Parallel()
+		closed := false
+		client := &mockS3Client{
+			putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client)
+		r := &trackingReadCloser{Reader: strings.NewReader("caller-owned"), closed: &closed}
+
+		err := b.Put(ctx, "file.txt", r, storage.ObjectMeta{})
+		require.NoError(t, err)
+		assert.False(t, closed)
+	})
+
+	t.Run("rejects invalid metadata before upload", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		client := &mockS3Client{
+			putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				called = true
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client)
+
+		err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{
+			Custom: map[string]string{"bad key": "value"},
+		})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, storage.ErrValidation))
+		assert.False(t, called)
+	})
+
+	t.Run("applies configured KMS encryption", func(t *testing.T) {
+		t.Parallel()
+		var capturedInput *s3.PutObjectInput
+		client := &mockS3Client{
+			putFn: func(_ context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				capturedInput = input
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client, WithConfig(S3Config{
+			SSE:         "aws:kms",
+			SSEKMSKeyID: "arn:aws:kms:eu-central-1:123456789012:key/abc",
+		}))
+
+		err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
+		require.NoError(t, err)
+		assert.Equal(t, types.ServerSideEncryptionAwsKms, capturedInput.ServerSideEncryption)
+		assert.Equal(t, "arn:aws:kms:eu-central-1:123456789012:key/abc", aws.ToString(capturedInput.SSEKMSKeyId))
+	})
+
+	t.Run("rejects invalid encryption config before upload", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		client := &mockS3Client{
+			putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				called = true
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client, WithConfig(S3Config{SSE: "AES-256"}))
+
+		err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "STORAGE_S3_SSE")
+		assert.False(t, called)
+	})
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r *trackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
 }
 
 func TestS3Backend_Get(t *testing.T) {
@@ -185,13 +291,14 @@ func TestS3Backend_Get(t *testing.T) {
 
 	t.Run("returns content and metadata", func(t *testing.T) {
 		t.Parallel()
+		customMeta := map[string]string{"author": "test"}
 		client := &mockS3Client{
 			getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
 				return &s3.GetObjectOutput{
 					Body:          io.NopCloser(bytes.NewReader([]byte("hello"))),
 					ContentType:   aws.String("text/plain"),
 					ContentLength: aws.Int64(5),
-					Metadata:      map[string]string{"author": "test"},
+					Metadata:      customMeta,
 				}, nil
 			},
 		}
@@ -207,6 +314,9 @@ func TestS3Backend_Get(t *testing.T) {
 		assert.Equal(t, "text/plain", meta.ContentType)
 		assert.Equal(t, int64(5), meta.Size)
 		assert.Equal(t, "test", meta.Custom["author"])
+
+		meta.Custom["author"] = "mutated"
+		assert.Equal(t, "test", customMeta["author"], "Get must return a detached custom metadata map")
 	})
 
 	t.Run("returns ErrObjectNotFound on NoSuchKey", func(t *testing.T) {
@@ -218,9 +328,28 @@ func TestS3Backend_Get(t *testing.T) {
 		}
 		b := newTestBackend(client)
 
-		_, _, err := b.Get(ctx, "missing")
+		_, _, err := b.Get(ctx, "secret-token.txt")
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, storage.ErrObjectNotFound))
+		assert.NotContains(t, err.Error(), "secret-token")
+	})
+
+	t.Run("returns stable error on S3 failure", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("download failed for secret-token")
+		client := &mockS3Client{
+			getFn: func(_ context.Context, _ *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+				return nil, backendErr
+			},
+		}
+		b := newTestBackend(client)
+
+		_, _, err := b.Get(ctx, "secret-token.txt")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
+		assert.Contains(t, err.Error(), "s3backend: get")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "download failed")
 	})
 }
 
@@ -238,16 +367,20 @@ func TestS3Backend_Delete(t *testing.T) {
 
 	t.Run("returns error on S3 failure", func(t *testing.T) {
 		t.Parallel()
+		backendErr := errors.New("access denied for secret-token")
 		client := &mockS3Client{
 			deleteFn: func(_ context.Context, _ *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
-				return nil, errors.New("access denied")
+				return nil, backendErr
 			},
 		}
 		b := newTestBackend(client)
 
-		err := b.Delete(ctx, "file.txt")
+		err := b.Delete(ctx, "secret-token.txt")
 		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
 		assert.Contains(t, err.Error(), "s3backend: delete")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "access denied")
 	})
 }
 
@@ -276,6 +409,25 @@ func TestS3Backend_Exists(t *testing.T) {
 		ok, err := b.Exists(ctx, "missing")
 		require.NoError(t, err)
 		assert.False(t, ok)
+	})
+
+	t.Run("returns stable error on S3 failure", func(t *testing.T) {
+		t.Parallel()
+		backendErr := errors.New("access denied for secret-token")
+		client := &mockS3Client{
+			headFn: func(_ context.Context, _ *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				return nil, backendErr
+			},
+		}
+		b := newTestBackend(client)
+
+		ok, err := b.Exists(ctx, "secret-token.txt")
+		require.Error(t, err)
+		assert.False(t, ok)
+		assert.ErrorIs(t, err, backendErr)
+		assert.Contains(t, err.Error(), "s3backend: exists")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "access denied")
 	})
 }
 
@@ -308,6 +460,21 @@ func TestS3Backend_PresignGetURL(t *testing.T) {
 		_, err := b.PresignGetURL(ctx, "file.txt", 2*time.Hour)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exceeds maximum")
+		assert.NotContains(t, err.Error(), "2h0m0s")
+		assert.NotContains(t, err.Error(), "1h0m0s")
+	})
+
+	t.Run("presigner error does not reflect key", func(t *testing.T) {
+		t.Parallel()
+		signErr := errors.New("signer down for secret-token")
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{err: signErr}, "bucket")
+
+		_, err := b.PresignGetURL(ctx, "secret-token.txt", 15*time.Minute)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, signErr)
+		assert.Contains(t, err.Error(), "s3backend: presign get")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "signer down")
 	})
 }
 
@@ -317,11 +484,17 @@ func TestS3Backend_PresignPutURL(t *testing.T) {
 
 	t.Run("returns presigned URL", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{putURL: "https://example.com/upload"}, "bucket")
+		presigner := &mockPresigner{putURL: "https://example.com/upload"}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket")
 
-		url, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{ContentType: "image/png"})
+		url, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{
+			ContentType: "image/png",
+			Custom:      map[string]string{"tenant-id": "acme"},
+		})
 		require.NoError(t, err)
 		assert.Equal(t, "https://example.com/upload", url)
+		require.NotNil(t, presigner.putInput)
+		assert.Equal(t, map[string]string{"tenant-id": "acme"}, presigner.putInput.Metadata)
 	})
 
 	t.Run("rejects TTL exceeding maximum", func(t *testing.T) {
@@ -331,6 +504,44 @@ func TestS3Backend_PresignPutURL(t *testing.T) {
 		_, err := b.PresignPutURL(ctx, "file.txt", 24*time.Hour, storage.ObjectMeta{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exceeds maximum")
+		assert.NotContains(t, err.Error(), "24h0m0s")
+		assert.NotContains(t, err.Error(), "1h0m0s")
+	})
+
+	t.Run("rejects invalid metadata", func(t *testing.T) {
+		t.Parallel()
+		presigner := &mockPresigner{}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket")
+
+		_, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{ContentType: "image/png\nx"})
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, storage.ErrValidation))
+		assert.Nil(t, presigner.putInput)
+	})
+
+	t.Run("rejects invalid encryption config", func(t *testing.T) {
+		t.Parallel()
+		presigner := &mockPresigner{}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket", WithConfig(S3Config{SSE: "AES-256"}))
+
+		_, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{ContentType: "image/png"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "STORAGE_S3_SSE")
+		assert.Nil(t, presigner.putInput)
+	})
+
+	t.Run("presigner error does not reflect key", func(t *testing.T) {
+		t.Parallel()
+		signErr := errors.New("signer down for secret-token")
+		presigner := &mockPresigner{err: signErr}
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket")
+
+		_, err := b.PresignPutURL(ctx, "secret-token.txt", 15*time.Minute, storage.ObjectMeta{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, signErr)
+		assert.Contains(t, err.Error(), "s3backend: presign put")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "signer down")
 	})
 }
 
@@ -343,8 +554,22 @@ func TestS3Backend_HealthCheck(t *testing.T) {
 		b := newTestBackend(&mockS3Client{})
 
 		check := HealthCheck(b)
+		assert.Regexp(t, `^s3-[0-9a-f]{12}$`, check.Name)
+		assert.NotContains(t, check.Name, "test")
+		assert.NotContains(t, check.Name, "bucket")
 		assert.Equal(t, "healthy", check.Check(ctx))
 		assert.False(t, check.Critical)
+	})
+
+	t.Run("does not expose bucket name in check name", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "media.bucket-prod")
+
+		check := HealthCheck(b)
+		assert.Regexp(t, `^s3-[0-9a-f]{12}$`, check.Name)
+		assert.NotContains(t, check.Name, "media")
+		assert.NotContains(t, check.Name, "bucket")
+		assert.NotContains(t, check.Name, "prod")
 	})
 
 	t.Run("unhealthy when HeadBucket fails", func(t *testing.T) {
@@ -453,18 +678,43 @@ func TestS3Backend_List(t *testing.T) {
 
 	t.Run("yields error on S3 failure", func(t *testing.T) {
 		t.Parallel()
+		backendErr := errors.New("access denied for secret-token")
 		client := &mockS3Client{
 			listFn: func(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
-				return nil, errors.New("access denied")
+				return nil, backendErr
 			},
 		}
 		b := newTestBackend(client)
 
-		for _, err := range b.List(ctx, "", storage.ListOptions{}) {
+		for _, err := range b.List(ctx, "secret-token/", storage.ListOptions{}) {
 			require.Error(t, err)
+			assert.ErrorIs(t, err, backendErr)
 			assert.Contains(t, err.Error(), "s3backend: list")
+			assert.NotContains(t, err.Error(), "secret-token")
+			assert.NotContains(t, err.Error(), "access denied")
 			break
 		}
+	})
+
+	t.Run("rejects invalid options before calling S3", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		client := &mockS3Client{
+			listFn: func(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+				calls++
+				return &s3.ListObjectsV2Output{}, nil
+			},
+		}
+		b := newTestBackend(client)
+
+		var seenErr error
+		for _, err := range b.List(ctx, "", storage.ListOptions{MaxKeys: -1}) {
+			seenErr = err
+			break
+		}
+
+		require.ErrorIs(t, seenErr, storage.ErrValidation)
+		assert.Equal(t, 0, calls)
 	})
 }
 
@@ -491,6 +741,43 @@ func TestS3Backend_Copy(t *testing.T) {
 		assert.Equal(t, "dst/file.txt", aws.ToString(capturedInput.Key))
 	})
 
+	t.Run("applies configured KMS encryption to destination", func(t *testing.T) {
+		t.Parallel()
+		var capturedInput *s3.CopyObjectInput
+		client := &mockS3Client{
+			copyFn: func(_ context.Context, input *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+				capturedInput = input
+				return &s3.CopyObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client, WithConfig(S3Config{
+			SSE:         "aws:kms",
+			SSEKMSKeyID: "arn:aws:kms:eu-central-1:123456789012:key/abc",
+		}))
+
+		err := b.Copy(ctx, "src/file.txt", "dst/file.txt")
+		require.NoError(t, err)
+		assert.Equal(t, types.ServerSideEncryptionAwsKms, capturedInput.ServerSideEncryption)
+		assert.Equal(t, "arn:aws:kms:eu-central-1:123456789012:key/abc", aws.ToString(capturedInput.SSEKMSKeyId))
+	})
+
+	t.Run("rejects invalid encryption config before copy", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		client := &mockS3Client{
+			copyFn: func(_ context.Context, _ *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
+				called = true
+				return &s3.CopyObjectOutput{}, nil
+			},
+		}
+		b := newTestBackend(client, WithConfig(S3Config{SSE: "AES-256"}))
+
+		err := b.Copy(ctx, "src.txt", "dst.txt")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "STORAGE_S3_SSE")
+		assert.False(t, called)
+	})
+
 	t.Run("rejects empty key", func(t *testing.T) {
 		t.Parallel()
 		b := newTestBackend(&mockS3Client{})
@@ -501,16 +788,21 @@ func TestS3Backend_Copy(t *testing.T) {
 
 	t.Run("returns error on S3 failure", func(t *testing.T) {
 		t.Parallel()
+		backendErr := errors.New("not found for secret-token and other-secret")
 		client := &mockS3Client{
 			copyFn: func(_ context.Context, _ *s3.CopyObjectInput) (*s3.CopyObjectOutput, error) {
-				return nil, errors.New("not found")
+				return nil, backendErr
 			},
 		}
 		b := newTestBackend(client)
 
-		err := b.Copy(ctx, "src.txt", "dst.txt")
+		err := b.Copy(ctx, "secret-token.txt", "other-secret.txt")
 		require.Error(t, err)
+		assert.ErrorIs(t, err, backendErr)
 		assert.Contains(t, err.Error(), "s3backend: copy")
+		assert.NotContains(t, err.Error(), "secret-token")
+		assert.NotContains(t, err.Error(), "other-secret")
+		assert.NotContains(t, err.Error(), "not found")
 	})
 }
 
@@ -530,6 +822,72 @@ func TestS3Backend_URL(t *testing.T) {
 		assert.Equal(t, "https://cdn.example.com/my-bucket/photos/cat.jpg", u)
 	})
 
+	t.Run("custom endpoint uses active bucket even when config omits bucket", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+			Endpoint: "https://cdn.example.com",
+		}))
+
+		u, err := b.URL(ctx, "photos/cat.jpg")
+		require.NoError(t, err)
+		assert.Equal(t, "https://cdn.example.com/my-bucket/photos/cat.jpg", u)
+	})
+
+	t.Run("custom endpoint validates custom-client config before building URL", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name    string
+			cfg     S3Config
+			wantErr string
+		}{
+			{
+				name: "http requires opt-in",
+				cfg: S3Config{
+					Endpoint: "http://localhost:9000",
+				},
+				wantErr: "must use https",
+			},
+			{
+				name: "credentials rejected",
+				cfg: S3Config{
+					Endpoint: "https://user:pass@cdn.example.com",
+				},
+				wantErr: "must not contain credentials",
+			},
+			{
+				name: "query rejected",
+				cfg: S3Config{
+					Endpoint: "https://cdn.example.com?token=abc",
+				},
+				wantErr: "must not contain query or fragment components",
+			},
+			{
+				name: "insecure endpoint opt-in",
+				cfg: S3Config{
+					Endpoint:              "http://localhost:9000",
+					AllowInsecureEndpoint: true,
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(tt.cfg))
+
+				u, err := b.URL(ctx, "photos/cat.jpg")
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), tt.wantErr)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, "http://localhost:9000/my-bucket/photos/cat.jpg", u)
+			})
+		}
+	})
+
 	t.Run("AWS uses virtual-hosted style", func(t *testing.T) {
 		t.Parallel()
 		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
@@ -542,11 +900,41 @@ func TestS3Backend_URL(t *testing.T) {
 		assert.Equal(t, "https://my-bucket.s3.eu-central-1.amazonaws.com/photos/cat.jpg", u)
 	})
 
+	t.Run("URL template renders validated public URL", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+			Region:      "eu-central-1",
+			URLTemplate: "https://cdn.example.com/{bucket}",
+		}))
+
+		u, err := b.URL(ctx, "photos/cat.jpg")
+		require.NoError(t, err)
+		assert.Equal(t, "https://cdn.example.com/my-bucket/photos/cat.jpg", u)
+	})
+
+	t.Run("URL template rejects unsafe public URL", func(t *testing.T) {
+		t.Parallel()
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+			Region:      "eu-central-1",
+			URLTemplate: "javascript:alert(1)",
+		}))
+
+		_, err := b.URL(ctx, "photos/cat.jpg")
+		require.Error(t, err)
+	})
+
 	t.Run("rejects empty key", func(t *testing.T) {
 		t.Parallel()
 		b := newTestBackend(&mockS3Client{})
 
 		_, err := b.URL(ctx, "")
+		assert.Error(t, err)
+	})
+
+	t.Run("nil backend returns error", func(t *testing.T) {
+		t.Parallel()
+		var b *S3Backend
+		_, err := b.URL(ctx, "photos/cat.jpg")
 		assert.Error(t, err)
 	})
 }
@@ -569,5 +957,12 @@ func TestNewWithClient_PanicsOnNilPresigner(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() {
 		NewWithClient(&mockS3Client{}, nil, "bucket")
+	})
+}
+
+func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		NewWithClient(&mockS3Client{}, &mockPresigner{}, "bucket", nil)
 	})
 }

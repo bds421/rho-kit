@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/infra/v2/messaging"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
@@ -22,6 +23,8 @@ type messagingModule struct {
 	publisher *amqpbackend.Publisher
 	consumer  messaging.MessageConsumer
 	logger    *slog.Logger
+
+	messageSizeLimiter messaging.MessageSizeLimiter
 }
 
 // newMessagingModule creates a RabbitMQ module with the given URL.
@@ -54,7 +57,7 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	m.conn = conn
 
-	pub := amqpbackend.NewPublisher(conn, mc.Logger)
+	pub := amqpbackend.NewPublisher(conn, mc.Logger, amqpbackend.WithMessageSizeLimiter(m.messageSizeLimiter))
 	m.publisher = pub
 	m.consumer = amqpbackend.NewConsumer(conn, pub, mc.Logger)
 
@@ -86,7 +89,7 @@ func (m *messagingModule) Close(_ context.Context) error {
 		return nil
 	}
 	if err := m.conn.Close(); err != nil {
-		m.logger.Warn("error closing rabbitmq", "error", err)
+		m.logger.Warn("error closing rabbitmq", redact.Error(err))
 		return err
 	}
 	return nil

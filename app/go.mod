@@ -10,11 +10,11 @@ require (
 	github.com/bds421/rho-kit/flags/v2 v2.0.0
 	github.com/bds421/rho-kit/grpcx/v2 v2.0.0
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0
-	github.com/bds421/rho-kit/infra/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/bds421/rho-kit/runtime/v2 v2.0.0
 	github.com/bds421/rho-kit/security/v2 v2.0.0
@@ -22,6 +22,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/net v0.53.0
 	google.golang.org/grpc v1.80.0
 )
 
@@ -52,6 +53,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.0.0 // indirect
@@ -93,11 +95,10 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

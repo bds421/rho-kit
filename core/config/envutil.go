@@ -6,7 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Get returns the value of the environment variable named by key,
@@ -35,16 +36,11 @@ func Get(key, fallback string) string {
 // degrade gracefully.
 func GetSecret(key, fallback string) (string, error) {
 	if filePath := os.Getenv(key + "_FILE"); filePath != "" {
-		data, err := os.ReadFile(filePath)
+		v, err := readSecretFile(filePath)
 		if err != nil {
-			return "", fmt.Errorf("config: secret file %s for %s_FILE is unreadable: %w", filePath, key, err)
+			return "", fmt.Errorf("config: secret file for %s_FILE is unreadable: %w", key, err)
 		}
-		// Match the same trim semantics as the struct-tag loader: strip only
-		// trailing line terminators that secret-mounting tools append, never
-		// significant whitespace.
-		if v := strings.TrimRight(string(data), "\r\n"); v != "" {
-			return v, nil
-		}
+		return v, nil
 	}
 	return Get(key, fallback), nil
 }
@@ -56,8 +52,8 @@ func MustGetSecret(key, fallback string) string {
 	v, err := GetSecret(key, fallback)
 	if err != nil {
 		slog.Error("secret file configured but unreadable",
-			"key", key+"_FILE", "error", err)
-		panic(err.Error())
+			redact.String("key", key+"_FILE"), redact.Error(err))
+		panic("config: secret file is unreadable")
 	}
 	return v
 }
@@ -71,7 +67,7 @@ func GetInt(key string, fallback int) (int, error) {
 	}
 	i, err := strconv.Atoi(v)
 	if err != nil {
-		return 0, fmt.Errorf("invalid integer for %s=%q: %w", key, v, err)
+		return 0, fmt.Errorf("invalid integer for %s", key)
 	}
 	return i, nil
 }
@@ -85,7 +81,7 @@ func GetBool(key string, fallback bool) (bool, error) {
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return false, fmt.Errorf("invalid boolean for %s=%q: %w", key, v, err)
+		return false, fmt.Errorf("invalid boolean for %s", key)
 	}
 	return b, nil
 }
@@ -99,7 +95,7 @@ func GetFloat64(key string, fallback float64) (float64, error) {
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid float for %s=%q: %w", key, v, err)
+		return 0, fmt.Errorf("invalid float for %s", key)
 	}
 	return f, nil
 }

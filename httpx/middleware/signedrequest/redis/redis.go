@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -15,6 +17,10 @@ import (
 // kit's NonceStore contract. If the interface ever drifts the build
 // fails here, not at the consumer's [signedrequest.Middleware] call.
 var _ signedrequest.NonceStore = (*RedisNonceStore)(nil)
+
+// ErrInvalidStore is returned when SeenOrStore is invoked on a nil or
+// otherwise uninitialized RedisNonceStore.
+var ErrInvalidStore = errors.New("signedrequest/redis: store is not initialized")
 
 // defaultKeyPrefix is the namespace under which nonces are stored.
 // "signedrequest:nonce:" mirrors the kit's package path so a single
@@ -41,15 +47,18 @@ type Option func(*RedisNonceStore)
 // prefix when the same Redis is shared by independent services so
 // a nonce observed by one cannot reject a fresh request to another.
 //
-// Panics if the prefix is empty or longer than [maxKeyPrefixLen]
-// (audit FR-027) — pathological prefixes inflate every Redis key
+// Panics if the prefix is empty, invalid, or longer than [maxKeyPrefixLen]
+// (audit FR-027) — pathological prefixes inflate/corrupt every Redis key
 // and have caused production OOMs in our incident history.
 func WithKeyPrefix(p string) Option {
 	if p == "" {
 		panic("signedrequest/redis: WithKeyPrefix requires a non-empty prefix")
 	}
 	if len(p) > maxKeyPrefixLen {
-		panic(fmt.Sprintf("signedrequest/redis: WithKeyPrefix prefix length %d exceeds %d", len(p), maxKeyPrefixLen))
+		panic("signedrequest/redis: WithKeyPrefix prefix exceeds maximum length")
+	}
+	if containsInvalidStringBytes(p) {
+		panic("signedrequest/redis: WithKeyPrefix prefix contains invalid characters")
 	}
 	return func(s *RedisNonceStore) { s.prefix = p }
 }
@@ -105,6 +114,9 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 		},
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("signedrequest/redis: option must not be nil")
+		}
 		o(s)
 	}
 	return s
@@ -119,14 +131,20 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 //     translates this into a 500; the package does NOT fail open.
 //
 // FR-027 [LOW]: rejects nonces longer than the verifier's wire
-// limit so a caller bypassing the middleware (e.g. test harness)
-// cannot construct unbounded Redis keys.
+// limit and non-portable bytes so a caller bypassing the middleware
+// (e.g. test harness) cannot construct unbounded or corrupt Redis keys.
 func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
+	if err := s.ready(); err != nil {
+		return false, err
+	}
 	if nonce == "" {
 		return false, errors.New("signedrequest/redis: empty nonce")
 	}
 	if len(nonce) > maxNonceLen {
-		return false, fmt.Errorf("signedrequest/redis: nonce length %d exceeds %d", len(nonce), maxNonceLen)
+		return false, errors.New("signedrequest/redis: nonce exceeds maximum length")
+	}
+	if containsInvalidStringBytes(nonce) {
+		return false, errors.New("signedrequest/redis: nonce contains invalid characters")
 	}
 	ctx, cancel := s.ctx()
 	defer cancel()
@@ -138,6 +156,19 @@ func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
 	return ok, nil
 }
 
+func (s *RedisNonceStore) ready() error {
+	if s == nil ||
+		s.client == nil ||
+		s.ttl <= 0 ||
+		s.prefix == "" ||
+		len(s.prefix) > maxKeyPrefixLen ||
+		containsInvalidStringBytes(s.prefix) ||
+		s.ctx == nil {
+		return ErrInvalidStore
+	}
+	return nil
+}
+
 // maxNonceLen caps the wire-level nonce length we are willing to
 // accept as a Redis key suffix. Mirrors the verifier's cap (audit
 // FR-026 / FR-027); the redis store independently enforces this so
@@ -146,4 +177,16 @@ const maxNonceLen = 64
 
 func (s *RedisNonceStore) key(nonce string) string {
 	return s.prefix + nonce
+}
+
+func containsInvalidStringBytes(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }

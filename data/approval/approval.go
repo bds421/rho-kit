@@ -6,6 +6,10 @@ import (
 	"errors"
 	"regexp"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
 
 // MaxIDLen caps Request.ID length (audit FR-055). The Postgres schema
@@ -21,6 +25,17 @@ const MaxIDLen = 36
 // risk. 64 KiB is comfortably above any realistic API payload while
 // preventing accidental large persistence.
 const MaxPayloadSize = 64 * 1024
+
+// Store field length caps mirror the Postgres schema so the memory and
+// Postgres stores expose the same API contract. Validate at the package
+// boundary instead of letting only one backend surface late database errors.
+const (
+	MaxTenantIDLen = 255
+	MaxActorLen    = 255
+	MaxActionLen   = 255
+	MaxResourceLen = 500
+	MaxReasonLen   = 4096
+)
 
 // requestIDPattern bounds Request.ID to a safe character set: ASCII
 // letters, digits, hyphen, and underscore. UUIDs (with hyphens), ULIDs,
@@ -58,10 +73,18 @@ var (
 	ErrInvalidRequest = errors.New("approval: request is missing required fields")
 
 	// ErrInvalidApprover is returned by [Store.Decide] when decidedBy
-	// is empty. A blank approver makes the audit record useless and
-	// hides the responsible operator behind state transitions on
-	// destructive operations.
-	ErrInvalidApprover = errors.New("approval: decidedBy must not be empty")
+	// is empty or otherwise invalid. A blank approver makes the audit
+	// record useless and hides the responsible operator behind state
+	// transitions on destructive operations.
+	ErrInvalidApprover = errors.New("approval: decidedBy is invalid")
+
+	// ErrInvalidReason is returned by [Store.Decide] when the optional
+	// reason is malformed or exceeds [MaxReasonLen].
+	ErrInvalidReason = errors.New("approval: reason is invalid")
+
+	// ErrInvalidStore is returned when a Store method is invoked on a nil
+	// or otherwise uninitialized store implementation.
+	ErrInvalidStore = errors.New("approval: store is not initialized")
 )
 
 // Request represents a destructive operation pending human approval.
@@ -92,27 +115,37 @@ func (s State) IsTerminal() bool {
 	return s == StateExecuted || s == StateExpired
 }
 
-// ErrQueryTenantRequired is returned by Store.List when the caller
-// passes a [Query] with no [Query.TenantID] and has not opted into
-// [Query.AllTenants]. Cross-tenant approval listings are valid for
-// admin / forensics tooling but must be opt-in (audit FR-053).
-var ErrQueryTenantRequired = errors.New("approval: query requires TenantID or AllTenants=true")
+var (
+	// ErrQueryTenantRequired is returned by Store.List when the caller
+	// passes a [Query] with no [Query.TenantID] and has not opted into
+	// [Query.AllTenants]. Cross-tenant approval listings are valid for
+	// admin / forensics tooling but must be opt-in (audit FR-053).
+	ErrQueryTenantRequired = errors.New("approval: query requires TenantID or AllTenants=true")
+
+	// ErrQueryScopeConflict is returned when a [Query] sets both
+	// [Query.TenantID] and [Query.AllTenants]. Tenant-scoped and
+	// cross-tenant reads are intentionally mutually exclusive so
+	// privileged callers cannot accidentally hide a wiring bug behind
+	// store-specific filter precedence.
+	ErrQueryScopeConflict = errors.New("approval: query must not set both TenantID and AllTenants=true")
+)
 
 // Query controls which requests [Store.List] returns. Filters compose
 // with AND semantics; an empty filter field is unconstrained. The
-// caller MUST set either [Query.TenantID] (single-tenant query) or
-// [Query.AllTenants]=true (explicit cross-tenant query); a zero
-// query is rejected with [ErrQueryTenantRequired].
+// caller MUST set exactly one of [Query.TenantID] (single-tenant query)
+// or [Query.AllTenants]=true (explicit cross-tenant query); a zero query
+// is rejected with [ErrQueryTenantRequired], and a query that sets both
+// scope modes is rejected with [ErrQueryScopeConflict].
 type Query struct {
 	// TenantID restricts to a single tenant. Required unless
-	// AllTenants is true.
+	// AllTenants is true. Mutually exclusive with AllTenants.
 	TenantID string
 
 	// AllTenants opts into a cross-tenant listing. Set this only on
 	// admin / forensics tooling that genuinely needs to see approval
 	// requests across customers — it bypasses the tenant scoping
-	// that the rest of the kit enforces. Ignored when TenantID is
-	// set. Audit FR-053 [HIGH]: pre-2.0, the absence of this flag
+	// that the rest of the kit enforces. Mutually exclusive with
+	// TenantID. Audit FR-053 [HIGH]: pre-2.0, the absence of this flag
 	// meant a handler that forgot to set TenantID silently leaked
 	// approval requests across tenants.
 	AllTenants bool
@@ -129,6 +162,9 @@ type Query struct {
 // Implementations of [Store.List] MUST call this before issuing the
 // underlying query.
 func (q Query) Validate() error {
+	if q.TenantID != "" && q.AllTenants {
+		return ErrQueryScopeConflict
+	}
 	if q.TenantID == "" && !q.AllTenants {
 		return ErrQueryTenantRequired
 	}
@@ -185,13 +221,17 @@ type Store interface {
 	MarkExecuted(ctx context.Context, id string) (Request, error)
 }
 
-// validate enforces required-field invariants for new requests.
+// ValidateForCreate enforces required-field invariants for new requests.
 //
 // ExpiresAt MUST be set and in the future. Direct store callers can
 // otherwise create permanent pending approvals that never auto-expire,
 // which defeats the kit's bounded-decision-window invariant.
-func validate(r Request, now time.Time) error {
-	if r.TenantID == "" || r.Actor == "" || r.Action == "" {
+func ValidateForCreate(r Request, now time.Time) error {
+	if !validTenantID(r.TenantID) ||
+		!validTextField(r.Actor, MaxActorLen, true) ||
+		!validLineField(r.Action, MaxActionLen, true) ||
+		!validTextField(r.Resource, MaxResourceLen, false) ||
+		!validReason(r.Reason) {
 		return ErrInvalidRequest
 	}
 	if len(r.ID) > MaxIDLen || !requestIDPattern.MatchString(r.ID) {
@@ -210,4 +250,76 @@ func validate(r Request, now time.Time) error {
 		return ErrInvalidRequest
 	}
 	return nil
+}
+
+// ValidateDecision enforces the shared decider metadata contract used by all
+// store implementations before they write decided_by.
+func ValidateDecision(decidedBy string) error {
+	if !validTextField(decidedBy, MaxActorLen, true) {
+		return ErrInvalidApprover
+	}
+	return nil
+}
+
+// ValidateReason enforces the optional approval decision reason contract.
+// Reasons are free text, but remain bounded and single-line so audit views
+// and logs cannot be flooded or line-spoofed by direct Store callers.
+func ValidateReason(reason string) error {
+	if !validReason(reason) {
+		return ErrInvalidReason
+	}
+	return nil
+}
+
+func validate(r Request, now time.Time) error {
+	return ValidateForCreate(r, now)
+}
+
+func validTenantID(s string) bool {
+	if len(s) > MaxTenantIDLen {
+		return false
+	}
+	return coretenant.ValidateID(s) == nil
+}
+
+func validTextField(s string, maxLen int, required bool) bool {
+	if s == "" {
+		return !required
+	}
+	if len(s) > maxLen || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validLineField(s string, maxLen int, required bool) bool {
+	if s == "" {
+		return !required
+	}
+	if len(s) > maxLen || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validReason(reason string) bool {
+	if len(reason) > MaxReasonLen || !utf8.ValidString(reason) {
+		return false
+	}
+	for _, r := range reason {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

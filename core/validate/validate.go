@@ -78,7 +78,7 @@ func Struct(s any) error {
 
 	validationErrors, ok := err.(validator.ValidationErrors)
 	if !ok {
-		return apperror.NewValidation(err.Error())
+		return apperror.NewOperationFailedWithCause("validate: validator returned unexpected error", err)
 	}
 
 	fields := make([]apperror.FieldError, 0, len(validationErrors))
@@ -119,7 +119,7 @@ func RegisterValidation(tag string, fn validator.Func) error {
 	regMu.Lock()
 	defer regMu.Unlock()
 	if frozen.Load() {
-		return fmt.Errorf("validate: RegisterValidation(%q) called after Struct(); this is not safe for concurrent use — call during init only", tag)
+		return fmt.Errorf("validate: RegisterValidation called after Struct(); this is not safe for concurrent use — call during init only")
 	}
 	return get().RegisterValidation(tag, fn)
 }

@@ -89,6 +89,27 @@ func TestFromContext_fallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestFromContext_NilContextFallsBackToDefault(t *testing.T) {
+	//nolint:staticcheck // Deliberately exercises the nil-safe read path.
+	got := FromContext(nil)
+	if got == nil {
+		t.Error("FromContext should return non-nil default logger for nil context")
+	}
+}
+
+func TestWithContext_NilContextUsesBackground(t *testing.T) {
+	logger := slog.Default().With("test_key", "test_val")
+	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
+	ctx := WithContext(nil, logger)
+
+	if ctx == nil {
+		t.Fatal("WithContext(nil, logger) returned nil")
+	}
+	if got := FromContext(ctx); got != logger {
+		t.Error("FromContext should return the stored logger")
+	}
+}
+
 func TestWithAttrs(t *testing.T) {
 	logger := slog.Default()
 	ctx := WithContext(context.Background(), logger)
@@ -101,6 +122,20 @@ func TestWithAttrs(t *testing.T) {
 	// Verify the enriched logger is stored in context.
 	got := FromContext(ctx)
 	if got != enriched {
+		t.Error("FromContext should return the enriched logger")
+	}
+}
+
+func TestWithAttrs_NilContext(t *testing.T) {
+	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
+	ctx, enriched := WithAttrs(nil, "user_id", "abc-123")
+	if ctx == nil {
+		t.Fatal("WithAttrs(nil, ...) returned nil context")
+	}
+	if enriched == nil {
+		t.Fatal("expected non-nil enriched logger")
+	}
+	if got := FromContext(ctx); got != enriched {
 		t.Error("FromContext should return the enriched logger")
 	}
 }

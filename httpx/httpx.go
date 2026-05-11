@@ -8,26 +8,42 @@ import (
 	"io"
 	"log"
 	"log/slog"
-	"net"
+	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/net/http/httpguts"
 )
 
 // defaultMaxIdleConnsPerHost overrides the stdlib default of 2, which causes
 // connection churn when a service makes many concurrent requests to a single
 // downstream. 100 matches the typical service-to-service workload without
 // being so large that misbehaving downstreams hog file descriptors.
-const defaultMaxIdleConnsPerHost = 100
+const defaultMaxIdleConnsPerHost = transportdefaults.DefaultMaxIdleConnsPerHost
+
+const minimumTLSVersion = transportdefaults.MinimumTLSVersion
 
 // ClientOption configures the kit-wide HTTP client transport.
 type ClientOption func(*clientConfig)
 
 type clientConfig struct {
 	idleConnTimeout time.Duration
+	checkRedirect   func(*http.Request, []*http.Request) error
 }
+
+// ErrRedirectBlocked is returned by kit-created HTTP clients when a response
+// attempts to redirect but redirect following was not explicitly enabled.
+var ErrRedirectBlocked = errors.New("httpx: redirects are disabled by default")
+
+// ErrRedirectLimitExceeded is returned when an explicitly-enabled redirect
+// chain exceeds the configured hop limit.
+var ErrRedirectLimitExceeded = errors.New("httpx: redirect limit exceeded")
 
 // WithIdleConnTimeout sets the maximum amount of time an idle (keep-alive)
 // connection will remain idle before closing itself. The stdlib default
@@ -38,7 +54,40 @@ type clientConfig struct {
 // Default 0 keeps the stdlib's 90s. Set to under your LB's cap (typically
 // 30s–60s) so the client closes first.
 func WithIdleConnTimeout(d time.Duration) ClientOption {
+	if d < 0 {
+		panic("httpx: WithIdleConnTimeout requires a non-negative duration")
+	}
 	return func(c *clientConfig) { c.idleConnTimeout = d }
+}
+
+// WithFollowRedirects enables bounded redirect following for kit-created HTTP
+// clients. By default redirects are blocked with [ErrRedirectBlocked], which
+// avoids surprising cross-host requests from internal service clients.
+func WithFollowRedirects(maxHops int) ClientOption {
+	if maxHops <= 0 {
+		panic("httpx: WithFollowRedirects requires maxHops > 0")
+	}
+	return func(c *clientConfig) { c.checkRedirect = boundedRedirectPolicy(maxHops) }
+}
+
+func redirectPolicyOrDefault(policy func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	if policy != nil {
+		return policy
+	}
+	return blockRedirect
+}
+
+func blockRedirect(_ *http.Request, _ []*http.Request) error {
+	return ErrRedirectBlocked
+}
+
+func boundedRedirectPolicy(maxHops int) func(*http.Request, []*http.Request) error {
+	return func(_ *http.Request, via []*http.Request) error {
+		if len(via) > maxHops {
+			return ErrRedirectLimitExceeded
+		}
+		return nil
+	}
 }
 
 // newKitTransport clones http.DefaultTransport and applies kit-wide overrides.
@@ -46,44 +95,16 @@ func WithIdleConnTimeout(d time.Duration) ClientOption {
 // (otelhttp wrappers, test doubles) cause the type assertion to fail; in that
 // case fall back to a fresh *http.Transport with stdlib-style defaults so
 // construction stays panic-free.
-func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
-	var transport *http.Transport
-	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = tr.Clone()
-	} else {
-		transport = newFallbackTransport()
-	}
-	transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
-	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
-	}
-	// Enforce a TLS 1.2 floor on the outbound client. An empty
-	// &tls.Config{} otherwise defaults to TLS 1.0, which is below the
-	// modern compliance baseline. Caller-set higher floors are honored.
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	} else if transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
-		transport.TLSClientConfig.MinVersion = tls.VersionTLS12
-	}
-	if cfg.idleConnTimeout > 0 {
-		transport.IdleConnTimeout = cfg.idleConnTimeout
-	}
-	return transport
+func cloneTLSConfigWithFloor(cfg *tls.Config, label string) *tls.Config {
+	return transportdefaults.CloneTLSConfigWithFloor(cfg, label)
 }
 
-func newFallbackTransport() *http.Transport {
-	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
+func newKitTransport(tlsConfig *tls.Config, cfg clientConfig) *http.Transport {
+	return newKitTransportWithLabel(tlsConfig, cfg, "httpx: NewHTTPClient")
+}
+
+func newKitTransportWithLabel(tlsConfig *tls.Config, cfg clientConfig, label string) *http.Transport {
+	return transportdefaults.New(tlsConfig, cfg.idleConnTimeout, label)
 }
 
 // NewHTTPClient returns an *http.Client with the given timeout and optional TLS
@@ -103,27 +124,32 @@ func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientO
 	}
 	var cfg clientConfig
 	for _, opt := range opts {
+		if opt == nil {
+			panic("httpx: NewHTTPClient option must not be nil")
+		}
 		opt(&cfg)
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: newKitTransport(tlsConfig, cfg),
+		Timeout:       timeout,
+		Transport:     newKitTransport(tlsConfig, cfg),
+		CheckRedirect: redirectPolicyOrDefault(cfg.checkRedirect),
 	}
 }
 
 // NewTracingHTTPClient returns an *http.Client instrumented with OpenTelemetry
 // spans for outbound requests. It uses the same TLS setup as NewHTTPClient.
 //
-// otelhttp.Option values are passed through to the OTel transport wrapper;
-// kit-level ClientOption values must be applied via the variadic ClientOption
-// returned by [WithClientOptions].
+// Redirects are blocked by default. Use [NewTracingHTTPClientWithOptions]
+// with [WithFollowRedirects] when a bounded redirect chain is intentional.
+// otelhttp.Option values are passed through to the OTel transport wrapper.
 func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
 	if timeout <= 0 {
 		panic("httpx: NewTracingHTTPClient requires a positive timeout — pass an explicit upper bound to avoid hung requests")
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig, clientConfig{}), opts...),
+		Timeout:       timeout,
+		Transport:     otelhttp.NewTransport(newKitTransportWithLabel(tlsConfig, clientConfig{}, "httpx: NewTracingHTTPClient"), opts...),
+		CheckRedirect: redirectPolicyOrDefault(nil),
 	}
 }
 
@@ -136,11 +162,15 @@ func NewTracingHTTPClientWithOptions(timeout time.Duration, tlsConfig *tls.Confi
 	}
 	var cfg clientConfig
 	for _, opt := range kitOpts {
+		if opt == nil {
+			panic("httpx: NewTracingHTTPClientWithOptions kit option must not be nil")
+		}
 		opt(&cfg)
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: otelhttp.NewTransport(newKitTransport(tlsConfig, cfg), otelOpts...),
+		Timeout:       timeout,
+		Transport:     otelhttp.NewTransport(newKitTransportWithLabel(tlsConfig, cfg, "httpx: NewTracingHTTPClientWithOptions"), otelOpts...),
+		CheckRedirect: redirectPolicyOrDefault(cfg.checkRedirect),
 	}
 }
 
@@ -156,13 +186,23 @@ type ServerOption func(*http.Server)
 // for the middleware and the server defaults to 35s, leaving 5s of
 // margin. If you raise the middleware timeout, raise this in lockstep.
 func WithWriteTimeout(d time.Duration) ServerOption {
+	if d < 0 {
+		panic("httpx: WithWriteTimeout requires a non-negative duration")
+	}
 	return func(s *http.Server) { s.WriteTimeout = d }
 }
 
-// WithTLSConfig sets the server TLS configuration for mTLS.
+// WithTLSConfig sets the server TLS configuration for mTLS. The config is
+// cloned and normalized to the kit TLS floor before installation.
 // When set, lifecycle.HTTPServer uses ListenAndServeTLS instead of ListenAndServe.
 func WithTLSConfig(cfg *tls.Config) ServerOption {
-	return func(s *http.Server) { s.TLSConfig = cfg }
+	if cfg == nil {
+		panic("httpx: WithTLSConfig requires a non-nil tls.Config")
+	}
+	owned := cloneTLSConfigWithFloor(cfg, "httpx: WithTLSConfig")
+	return func(s *http.Server) {
+		s.TLSConfig = cloneTLSConfigWithFloor(owned, "httpx: WithTLSConfig")
+	}
 }
 
 // WithErrorLog sets the logger used by net/http for protocol errors (TLS
@@ -171,6 +211,9 @@ func WithTLSConfig(cfg *tls.Config) ServerOption {
 // errors land in structured logs instead of plain stdout via the global
 // "log" package.
 func WithErrorLog(l *log.Logger) ServerOption {
+	if l == nil {
+		panic("httpx: WithErrorLog requires a non-nil logger")
+	}
 	return func(s *http.Server) { s.ErrorLog = l }
 }
 
@@ -182,6 +225,9 @@ func WithErrorLog(l *log.Logger) ServerOption {
 // structured logger rather than the global "log" package — without this,
 // raw client RemoteAddrs leak to stdout and pollute SIEMs.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
+	if addr == "" {
+		panic("httpx: NewServer requires a non-empty addr")
+	}
 	if handler == nil {
 		panic("httpx: NewServer requires a non-nil handler — net/http would otherwise serve http.DefaultServeMux and expose globally-registered handlers")
 	}
@@ -196,6 +242,9 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("httpx: NewServer option must not be nil")
+		}
 		opt(srv)
 	}
 	return srv
@@ -240,17 +289,18 @@ func writeJSONInternal(w http.ResponseWriter, status int, v any, logger *slog.Lo
 	}
 	buf, err := json.Marshal(v)
 	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal error","code":"INTERNAL"}` + "\n"))
 		return
 	}
 	w.WriteHeader(status)
 	if _, err = w.Write(buf); err != nil {
-		logger.Warn("httpx: response write failed", "error", err)
+		logger.Warn("httpx: response write failed", redact.Error(err))
 		return
 	}
 	if _, err = w.Write([]byte("\n")); err != nil {
-		logger.Warn("httpx: response write failed", "error", err)
+		logger.Warn("httpx: response write failed", redact.Error(err))
 	}
 }
 
@@ -263,6 +313,9 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 // ParseID extracts a uint "id" path parameter from the request.
 // Returns (0, false) for ID 0 since auto-increment databases never use it.
 func ParseID(r *http.Request) (uint, bool) {
+	if r == nil {
+		return 0, false
+	}
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil || id == 0 {
@@ -274,6 +327,10 @@ func ParseID(r *http.Request) (uint, bool) {
 // DecodeJSON reads and decodes a JSON request body with a size limit.
 // Returns false and writes an error response if decoding fails.
 //
+// The request must carry exactly one JSON Content-Type header (application/json
+// or a structured +json media type). This keeps the JSON boundary safe even
+// when callers mount typed handlers without the full default middleware stack.
+//
 // Unknown fields in the JSON body are rejected (DisallowUnknownFields).
 // This is intentional: strict parsing catches client-side typos early and
 // prevents silent data loss. If forward-compatible parsing is needed (e.g.,
@@ -283,6 +340,15 @@ func ParseID(r *http.Request) (uint, bool) {
 // Note: this replaces r.Body with an http.MaxBytesReader wrapper. Any
 // subsequent reads of r.Body will go through the size-limited reader.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r == nil || r.Body == nil {
+		WriteError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	if values := r.Header.Values("Content-Type"); len(values) != 1 || !IsJSONContentType(values[0]) {
+		WriteError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return false
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, MaxBodySize)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -308,6 +374,23 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
+// IsJSONContentType reports whether value is a JSON media type.
+//
+// Accepts application/json and structured syntax suffixes such as
+// application/problem+json and application/merge-patch+json. Parameters
+// like charset are allowed.
+func IsJSONContentType(value string) bool {
+	if value == "" || !utf8.ValidString(value) || !httpguts.ValidHeaderFieldValue(value) {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
 // SetIfNotNil adds the dereferenced value to the map if the pointer is non-nil.
 // Used by Update methods to build partial-update maps from optional request fields.
 func SetIfNotNil[T any](m map[string]any, key string, val *T) {
@@ -326,10 +409,16 @@ func httpStatusToCode(status int) string {
 		return "FORBIDDEN"
 	case http.StatusNotFound:
 		return "NOT_FOUND"
+	case http.StatusMethodNotAllowed:
+		return "METHOD_NOT_ALLOWED"
 	case http.StatusConflict:
 		return "CONFLICT"
+	case http.StatusRequestTimeout:
+		return "REQUEST_TIMEOUT"
 	case http.StatusRequestEntityTooLarge:
 		return "PAYLOAD_TOO_LARGE"
+	case http.StatusUnsupportedMediaType:
+		return "UNSUPPORTED_MEDIA_TYPE"
 	case http.StatusUnprocessableEntity:
 		return "UNPROCESSABLE_ENTITY"
 	case http.StatusTooManyRequests:

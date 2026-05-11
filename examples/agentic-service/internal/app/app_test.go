@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,24 @@ import (
 	budgetmem "github.com/bds421/rho-kit/data/v2/budget/memory"
 )
 
+type failingApprovalStore struct {
+	approval.Store
+}
+
+func (f failingApprovalStore) Create(context.Context, approval.Request) (approval.Request, error) {
+	return approval.Request{}, errors.New("postgres://user:secret@10.0.0.5/app failed")
+}
+
+type failingBudget struct{}
+
+func (f failingBudget) Consume(context.Context, string, int64) (bool, int64, time.Duration, error) {
+	return false, 0, 0, errors.New("unused")
+}
+
+func (f failingBudget) Peek(context.Context, string) (int64, error) {
+	return 0, errors.New("redis://:secret@10.0.0.5:6379 unavailable")
+}
+
 func newTestLogger(t *testing.T) actionlog.Logger {
 	t.Helper()
 	return actionlog.New(actionlogmem.New(), actionlog.NewStaticSecrets("v1", map[string][]byte{
@@ -27,6 +46,7 @@ func newTestLogger(t *testing.T) actionlog.Logger {
 }
 
 func TestRun_StartsAndShutsDown(t *testing.T) {
+	t.Setenv(demoTokenEnv, strings.Repeat("a", minDemoTokenLength))
 	// Run with an immediately-cancelled ctx so ListenAndServe returns
 	// quickly. Smoke test: the wiring compiles and survives a clean
 	// shutdown.
@@ -34,6 +54,52 @@ func TestRun_StartsAndShutsDown(t *testing.T) {
 	cancel()
 	err := Run(ctx)
 	require.NoError(t, err)
+}
+
+func TestRun_RequiresDemoToken(t *testing.T) {
+	t.Setenv(demoTokenEnv, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := Run(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), demoTokenEnv)
+}
+
+func TestRequireDemoBearerToken_RejectsMissingOrWrongToken(t *testing.T) {
+	token := []byte(strings.Repeat("a", minDemoTokenLength))
+	called := false
+	h := requireDemoBearerToken(token, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, header := range []string{"", "Bearer wrong"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+		assert.Equal(t, `Bearer realm="agentic-service-example"`, rec.Header().Get("WWW-Authenticate"))
+	}
+	assert.False(t, called)
+}
+
+func TestRequireDemoBearerToken_AllowsValidToken(t *testing.T) {
+	token := strings.Repeat("a", minDemoTokenLength)
+	h := requireDemoBearerToken([]byte(token), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
 func TestMCPServer_EchoToolRoundtrip(t *testing.T) {
@@ -134,6 +200,32 @@ func TestDangerousAction_CreatesApprovalRequest(t *testing.T) {
 	assert.Equal(t, approval.StatePending, got.State)
 }
 
+func TestDangerousAction_StoreErrorDoesNotLeak(t *testing.T) {
+	h := dangerousAction(failingApprovalStore{})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/dangerous-action", nil)
+	req.Header.Set("X-Tenant-Id", "acme")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "internal error")
+	assert.NotContains(t, rec.Body.String(), "secret")
+	assert.NotContains(t, rec.Body.String(), "10.0.0.5")
+}
+
+func TestDangerousAction_MissingTenantUsesJSONError(t *testing.T) {
+	h := dangerousAction(approvalmem.New())
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/dangerous-action", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":"missing X-Tenant-Id","code":"VALIDATION"}`, rec.Body.String())
+}
+
 // TestBudgetStatus_ReturnsRemaining confirms the /admin/budget
 // endpoint returns the tenant's current budget remaining via the
 // Peek API. Demonstrates the read-only side of the budget primitive.
@@ -153,4 +245,30 @@ func TestBudgetStatus_ReturnsRemaining(t *testing.T) {
 	// JSON encodes int64 as float64; assert via the float form.
 	assert.Equal(t, float64(1000), resp["remaining"],
 		"a fresh tenant should have the full per-period cap available")
+}
+
+func TestBudgetStatus_BackendErrorDoesNotLeak(t *testing.T) {
+	h := budgetStatus(failingBudget{})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/budget", nil)
+	req.Header.Set("X-Tenant-Id", "acme")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "internal error")
+	assert.NotContains(t, rec.Body.String(), "secret")
+	assert.NotContains(t, rec.Body.String(), "10.0.0.5")
+}
+
+func TestBudgetStatus_MissingTenantUsesJSONError(t *testing.T) {
+	h := budgetStatus(budgetmem.New(1000, time.Minute))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/budget", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":"missing X-Tenant-Id","code":"VALIDATION"}`, rec.Body.String())
 }

@@ -1,6 +1,7 @@
 package amqpbackend
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -15,6 +16,16 @@ func DeclareExchanges(conn Connector, specs ...messaging.ExchangeSpec) error {
 	if len(specs) == 0 {
 		return nil
 	}
+	for _, s := range specs {
+		if err := messaging.ValidateExchangeName(s.Exchange); err != nil {
+			return err
+		}
+		switch s.ExchangeType {
+		case messaging.ExchangeDirect, messaging.ExchangeFanout, messaging.ExchangeTopic, messaging.ExchangeHeaders:
+		default:
+			return errors.New("unsupported exchange type")
+		}
+	}
 	ch, err := conn.Channel()
 	if err != nil {
 		return fmt.Errorf("get channel: %w", err)
@@ -22,9 +33,6 @@ func DeclareExchanges(conn Connector, specs ...messaging.ExchangeSpec) error {
 	defer func() { _ = ch.Close() }()
 
 	for _, s := range specs {
-		if s.Exchange == "" {
-			return fmt.Errorf("exchange name must not be empty")
-		}
 		if err := ch.ExchangeDeclare(
 			s.Exchange,
 			s.ExchangeType,
@@ -34,7 +42,7 @@ func DeclareExchanges(conn Connector, specs ...messaging.ExchangeSpec) error {
 			false, // no-wait
 			nil,
 		); err != nil {
-			return fmt.Errorf("declare exchange %q: %w", s.Exchange, err)
+			return fmt.Errorf("declare exchange: %w", err)
 		}
 	}
 	return nil
@@ -59,6 +67,7 @@ func DeclareTopology(conn Connector, b messaging.BindingSpec) (messaging.Binding
 // slog.Default warning is emitted. Set WithoutRetry=true on the BindingSpec
 // to opt out and keep ack-and-discard semantics.
 func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.Binding, error) {
+	bindings = messaging.CloneBindingSpecs(bindings)
 	for _, w := range messaging.NormalizeBindingSpecs(bindings) {
 		slog.Default().Warn("amqpbackend: " + w)
 	}
@@ -84,7 +93,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			false, // no-wait
 			nil,
 		); err != nil {
-			return nil, fmt.Errorf("declare exchange %q: %w", b.Exchange, err)
+			return nil, fmt.Errorf("declare exchange: %w", err)
 		}
 
 		db := messaging.Binding{BindingSpec: b}
@@ -117,7 +126,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			queueArgs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("declare queue %q: %w", b.Queue, err)
+			return nil, fmt.Errorf("declare queue: %w", err)
 		}
 
 		if err := ch.QueueBind(
@@ -127,7 +136,7 @@ func DeclareAll(conn Connector, bindings ...messaging.BindingSpec) ([]messaging.
 			false, // no-wait
 			nil,
 		); err != nil {
-			return nil, fmt.Errorf("bind queue %q to exchange %q: %w", b.Queue, b.Exchange, err)
+			return nil, fmt.Errorf("bind queue to exchange: %w", err)
 		}
 
 		result = append(result, db)
@@ -145,7 +154,7 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		messaging.ExchangeDirect,
 		true, false, false, false, nil,
 	); err != nil {
-		return fmt.Errorf("declare retry exchange %q: %w", db.RetryExchange, err)
+		return fmt.Errorf("declare retry exchange: %w", err)
 	}
 
 	// Retry queue — holds messages for the TTL delay, then dead-letters
@@ -160,11 +169,11 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("declare retry queue %q: %w", db.RetryQueue, err)
+		return fmt.Errorf("declare retry queue: %w", err)
 	}
 
 	if err := ch.QueueBind(db.RetryQueue, b.Queue, db.RetryExchange, false, nil); err != nil {
-		return fmt.Errorf("bind retry queue %q: %w", db.RetryQueue, err)
+		return fmt.Errorf("bind retry queue: %w", err)
 	}
 
 	// Dead exchange — routes permanently failed messages.
@@ -173,16 +182,16 @@ func declareRetryTopology(ch *amqp.Channel, b messaging.BindingSpec, db messagin
 		messaging.ExchangeDirect,
 		true, false, false, false, nil,
 	); err != nil {
-		return fmt.Errorf("declare dead exchange %q: %w", db.DeadExchange, err)
+		return fmt.Errorf("declare dead exchange: %w", err)
 	}
 
 	// Dead queue — permanent storage for inspection.
 	if _, err := ch.QueueDeclare(db.DeadQueue, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declare dead queue %q: %w", db.DeadQueue, err)
+		return fmt.Errorf("declare dead queue: %w", err)
 	}
 
 	if err := ch.QueueBind(db.DeadQueue, b.Queue, db.DeadExchange, false, nil); err != nil {
-		return fmt.Errorf("bind dead queue %q: %w", db.DeadQueue, err)
+		return fmt.Errorf("bind dead queue: %w", err)
 	}
 
 	return nil

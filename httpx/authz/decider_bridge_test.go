@@ -40,6 +40,15 @@ func TestFromDecider_DeniedMapsToFalseNilErr(t *testing.T) {
 	assert.False(t, allowed)
 }
 
+func TestFromDecider_InvalidRequestMapsToDenied(t *testing.T) {
+	m := kitauthz.NewMemory()
+	p := httpxauthz.FromDecider(m)
+
+	allowed, err := p.Allowed(context.Background(), "alice", "read", "bad resource")
+	require.NoError(t, err, "malformed authz triples must fail closed as denial in HTTP middleware")
+	assert.False(t, allowed)
+}
+
 type erroringDecider struct{ err error }
 
 func (e erroringDecider) Allow(_ context.Context, _, _, _ string) error { return e.err }
@@ -52,4 +61,25 @@ func TestFromDecider_EngineErrorSurfaces(t *testing.T) {
 	assert.False(t, allowed)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, want), "engine errors must propagate, not be swallowed")
+}
+
+type panickingDecider struct{}
+
+func (panickingDecider) Allow(context.Context, string, string, string) error {
+	panic("policy cache corrupt")
+}
+
+func TestFromDecider_DeciderPanicSurfacesAsError(t *testing.T) {
+	p := httpxauthz.FromDecider(panickingDecider{})
+
+	var (
+		allowed bool
+		err     error
+	)
+	assert.NotPanics(t, func() {
+		allowed, err = p.Allowed(context.Background(), "alice", "read", "doc:1")
+	})
+	assert.False(t, allowed)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, kitauthz.ErrDeciderPanic))
 }

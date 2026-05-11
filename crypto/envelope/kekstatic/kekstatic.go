@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // KEK is an in-memory KEK that holds one or more named keys. The
@@ -39,11 +41,11 @@ type KEK struct {
 // New returns a KEK with the given keyID active and no other keys
 // available. masterKey must be 32 bytes (AES-256).
 func New(keyID string, masterKey []byte) (*KEK, error) {
-	if keyID == "" {
-		return nil, errors.New("kekstatic: keyID must not be empty")
+	if err := validateKeyID(keyID); err != nil {
+		return nil, err
 	}
 	if len(masterKey) != 32 {
-		return nil, fmt.Errorf("kekstatic: masterKey must be 32 bytes, got %d", len(masterKey))
+		return nil, fmt.Errorf("kekstatic: masterKey must be 32 bytes")
 	}
 	k := &KEK{
 		keys:    map[string][]byte{keyID: append([]byte(nil), masterKey...)},
@@ -55,16 +57,22 @@ func New(keyID string, masterKey []byte) (*KEK, error) {
 // AddKey registers an additional master key under keyID. The new key is
 // not made active — callers can [KEK.Rotate] to switch when ready.
 func (k *KEK) AddKey(keyID string, masterKey []byte) error {
-	if keyID == "" {
-		return errors.New("kekstatic: keyID must not be empty")
+	if k == nil {
+		return errors.New("kekstatic: KEK must not be nil")
+	}
+	if err := validateKeyID(keyID); err != nil {
+		return err
 	}
 	if len(masterKey) != 32 {
-		return fmt.Errorf("kekstatic: masterKey must be 32 bytes, got %d", len(masterKey))
+		return fmt.Errorf("kekstatic: masterKey must be 32 bytes")
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.keys == nil {
+		k.keys = make(map[string][]byte)
+	}
 	if _, exists := k.keys[keyID]; exists {
-		return fmt.Errorf("kekstatic: keyID %q already registered", keyID)
+		return fmt.Errorf("kekstatic: keyID already registered")
 	}
 	k.keys[keyID] = append([]byte(nil), masterKey...)
 	return nil
@@ -75,10 +83,13 @@ func (k *KEK) AddKey(keyID string, masterKey []byte) error {
 // the new keyID; existing blobs continue to decrypt via the older key
 // until they are rewrapped.
 func (k *KEK) Rotate(keyID string) error {
+	if k == nil {
+		return errors.New("kekstatic: KEK must not be nil")
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if _, exists := k.keys[keyID]; !exists {
-		return fmt.Errorf("kekstatic: keyID %q not registered", keyID)
+		return fmt.Errorf("kekstatic: keyID not registered")
 	}
 	k.current = keyID
 	return nil
@@ -92,17 +103,27 @@ func (k *KEK) Rotate(keyID string) error {
 // config-reload diff that compared old and new keysets and called
 // RemoveKey on each removed entry without first rotating.
 func (k *KEK) RemoveKey(keyID string) error {
+	if k == nil {
+		return errors.New("kekstatic: KEK must not be nil")
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.current == keyID {
-		return fmt.Errorf("kekstatic: cannot remove the active keyID %q; rotate to a different active key first", keyID)
+		return fmt.Errorf("kekstatic: cannot remove the active keyID; rotate to a different active key first")
 	}
+	if _, exists := k.keys[keyID]; !exists {
+		return fmt.Errorf("kekstatic: keyID not registered")
+	}
+	zeroBytes(k.keys[keyID])
 	delete(k.keys, keyID)
 	return nil
 }
 
 // KeyID returns the active key identifier.
 func (k *KEK) KeyID() string {
+	if k == nil {
+		return ""
+	}
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 	return k.current
@@ -123,6 +144,9 @@ func (k *KEK) KeyID() string {
 // rotation race that would record a header keyID different from the
 // one bound as AAD.
 func (k *KEK) Wrap(_ context.Context, dek []byte) (string, []byte, error) {
+	if k == nil {
+		return "", nil, errors.New("kekstatic: KEK must not be nil")
+	}
 	// Build the GCM under the lock so a concurrent RemoveKey or future
 	// zero-on-removal hardening cannot mutate the slice while we use it.
 	k.mu.RLock()
@@ -155,11 +179,14 @@ func (k *KEK) Wrap(_ context.Context, dek []byte) (string, []byte, error) {
 // keyIDs fail authentication even when the underlying master bytes
 // match.
 func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, error) {
+	if k == nil {
+		return nil, errors.New("kekstatic: KEK must not be nil")
+	}
 	k.mu.RLock()
 	master := k.keys[keyID]
 	k.mu.RUnlock()
 	if master == nil {
-		return nil, fmt.Errorf("kekstatic: unknown keyID %q", keyID)
+		return nil, fmt.Errorf("kekstatic: unknown keyID")
 	}
 
 	gcm, err := newGCM(master)
@@ -189,4 +216,28 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 		return nil, fmt.Errorf("kekstatic: gcm new: %w", err)
 	}
 	return gcm, nil
+}
+
+func validateKeyID(keyID string) error {
+	if keyID == "" {
+		return errors.New("kekstatic: keyID must not be empty")
+	}
+	if len(keyID) > 255 {
+		return fmt.Errorf("kekstatic: keyID exceeds 255 bytes")
+	}
+	if !utf8.ValidString(keyID) {
+		return errors.New("kekstatic: keyID must be valid UTF-8")
+	}
+	for _, r := range keyID {
+		if r == 0 || unicode.IsControl(r) {
+			return errors.New("kekstatic: keyID contains control characters")
+		}
+	}
+	return nil
+}
+
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }

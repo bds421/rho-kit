@@ -7,9 +7,10 @@ import (
 
 // MultipartUploader is an optional interface for backends that support
 // chunked uploads of large files (e.g. S3 multipart upload).
-// Check capability via type assertion:
+// Check capability via [AsMultipartUploader] so decorators with [Unwrapper]
+// support are handled consistently:
 //
-//	if mu, ok := backend.(storage.MultipartUploader); ok {
+//	if mu, ok := storage.AsMultipartUploader(backend); ok {
 //	    upload, err := mu.InitUpload(ctx, key, meta)
 //	    // ... upload parts ...
 //	    err = mu.CompleteUpload(ctx, upload)

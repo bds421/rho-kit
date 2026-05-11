@@ -1,12 +1,15 @@
 package httpx
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +48,9 @@ func TestWriteJSON_MarshalError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if !strings.Contains(rec.Body.String(), "internal error") {
 		t.Fatalf("expected internal error in body, got: %s", rec.Body.String())
 	}
@@ -67,8 +73,11 @@ func TestWriteError(t *testing.T) {
 		{http.StatusBadRequest, "VALIDATION"},
 		{http.StatusUnauthorized, "UNAUTHORIZED"},
 		{http.StatusNotFound, "NOT_FOUND"},
+		{http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED"},
 		{http.StatusConflict, "CONFLICT"},
+		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
 		{http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE"},
+		{http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE"},
 		{http.StatusUnprocessableEntity, "UNPROCESSABLE_ENTITY"},
 		{http.StatusTooManyRequests, "RATE_LIMITED"},
 		{http.StatusInternalServerError, "INTERNAL"},
@@ -98,6 +107,24 @@ func TestWriteError(t *testing.T) {
 
 // --- ParsePathID ---
 
+func TestRequestPath_UsesEscapedPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v1/files/a%2Fb", nil)
+	if got := RequestPath(req); got != "/v1/files/a%2Fb" {
+		t.Fatalf("RequestPath = %q, want escaped path", got)
+	}
+}
+
+func TestRequestPath_NilSafe(t *testing.T) {
+	if got := RequestPath(nil); got != "" {
+		t.Fatalf("RequestPath(nil) = %q, want empty", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.URL = nil
+	if got := RequestPath(req); got != "" {
+		t.Fatalf("RequestPath(nil URL) = %q, want empty", got)
+	}
+}
+
 func TestParsePathID_ValidUUID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test/01961234-5678-7abc-8def-0123456789ab", nil)
 	req.SetPathValue("id", "01961234-5678-7abc-8def-0123456789ab")
@@ -126,6 +153,25 @@ func TestParsePathID_InvalidUUID(t *testing.T) {
 	}
 }
 
+func TestParsePathID_NilRequest(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	_, ok := ParsePathID(rec, nil, "id")
+	if ok {
+		t.Fatal("expected ok=false for nil request")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestParsePathID_NilRequestAndWriter(t *testing.T) {
+	_, ok := ParsePathID(nil, nil, "id")
+	if ok {
+		t.Fatal("expected ok=false for nil request")
+	}
+}
+
 // --- ParseID ---
 
 func TestParseID_Valid(t *testing.T) {
@@ -148,6 +194,13 @@ func TestParseID_Invalid(t *testing.T) {
 	_, ok := ParseID(req)
 	if ok {
 		t.Fatal("expected ok=false for non-numeric ID")
+	}
+}
+
+func TestParseID_NilRequest(t *testing.T) {
+	_, ok := ParseID(nil)
+	if ok {
+		t.Fatal("expected ok=false for nil request")
 	}
 }
 
@@ -191,6 +244,28 @@ func TestParseBoolParam(t *testing.T) {
 	}
 }
 
+func TestParseBoolParam_InvalidRequestOrAmbiguousKey(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *http.Request
+		key  string
+	}{
+		{name: "nil request", req: nil, key: "enabled"},
+		{name: "nil URL", req: &http.Request{}, key: "enabled"},
+		{name: "empty key", req: httptest.NewRequest(http.MethodGet, "/test?=true", nil), key: ""},
+		{name: "missing key", req: httptest.NewRequest(http.MethodGet, "/test", nil), key: "enabled"},
+		{name: "duplicate key", req: httptest.NewRequest(http.MethodGet, "/test?enabled=true&enabled=false", nil), key: "enabled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseBoolParam(tt.req, tt.key); got != nil {
+				t.Fatalf("ParseBoolParam returned %v, want nil", *got)
+			}
+		})
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // --- DecodeJSON ---
@@ -216,6 +291,7 @@ func TestDecodeJSON_Success(t *testing.T) {
 func TestDecodeJSON_InvalidJSON(t *testing.T) {
 	body := `{invalid`
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	var dst struct{}
@@ -234,6 +310,7 @@ func TestDecodeJSON_TooLarge(t *testing.T) {
 	largeValue := strings.Repeat("A", MaxBodySize+100)
 	body := strings.NewReader(`{"data":"` + largeValue + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	var dst struct {
@@ -351,7 +428,7 @@ func TestWriteServiceError_OperationFailed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-	WriteServiceError(rec, req, logger, apperror.NewOperationFailed("payment declined"))
+	WriteServiceError(rec, req, logger, apperror.NewOperationFailed("pq: password auth failed for postgres://user:secret@10.0.0.5/app"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
@@ -362,8 +439,11 @@ func TestWriteServiceError_OperationFailed(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("failed to decode body: %v", err)
 	}
-	if body.Error != "payment declined" {
-		t.Fatalf("expected 'payment declined', got %q", body.Error)
+	if body.Error != "internal error" {
+		t.Fatalf("expected 'internal error', got %q", body.Error)
+	}
+	if strings.Contains(rec.Body.String(), "secret") || strings.Contains(rec.Body.String(), "10.0.0.5") {
+		t.Fatalf("operation failure response leaked internal details: %q", rec.Body.String())
 	}
 }
 
@@ -628,8 +708,11 @@ func TestHttpStatusToCode(t *testing.T) {
 		{http.StatusBadRequest, "VALIDATION"},
 		{http.StatusUnauthorized, "UNAUTHORIZED"},
 		{http.StatusNotFound, "NOT_FOUND"},
+		{http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED"},
 		{http.StatusConflict, "CONFLICT"},
+		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
 		{http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE"},
+		{http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE"},
 		{http.StatusUnprocessableEntity, "UNPROCESSABLE_ENTITY"},
 		{http.StatusTooManyRequests, "RATE_LIMITED"},
 		{http.StatusInternalServerError, "INTERNAL"},
@@ -679,6 +762,7 @@ func TestNewServer_WithCustomWriteTimeout(t *testing.T) {
 
 func TestDecodeJSON_EmptyBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	var dst struct {
@@ -693,7 +777,137 @@ func TestDecodeJSON_EmptyBody(t *testing.T) {
 	}
 }
 
+func TestDecodeJSON_NilRequest(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	var dst struct{}
+	ok := DecodeJSON(rec, nil, &dst)
+	if ok {
+		t.Fatal("expected ok=false for nil request")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestDecodeJSON_NilBody(t *testing.T) {
+	req := &http.Request{
+		Header: http.Header{"Content-Type": {"application/json"}},
+	}
+	rec := httptest.NewRecorder()
+
+	var dst struct{}
+	ok := DecodeJSON(rec, req, &dst)
+	if ok {
+		t.Fatal("expected ok=false for nil body")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestDecodeJSON_RejectsMissingContentType(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	ok := DecodeJSON(rec, req, &dst)
+	if ok {
+		t.Fatal("expected ok=false for missing Content-Type")
+	}
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d", rec.Code)
+	}
+}
+
+func TestDecodeJSON_RejectsWrongContentType(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	ok := DecodeJSON(rec, req, &dst)
+	if ok {
+		t.Fatal("expected ok=false for text/plain Content-Type")
+	}
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d", rec.Code)
+	}
+}
+
+func TestDecodeJSON_RejectsDuplicateContentType(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	ok := DecodeJSON(rec, req, &dst)
+	if ok {
+		t.Fatal("expected ok=false for duplicate Content-Type")
+	}
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d", rec.Code)
+	}
+}
+
+func TestDecodeJSON_RejectsInvalidContentTypeHeaderValue(t *testing.T) {
+	for name, value := range map[string]string{
+		"control":      "application/json\n",
+		"invalid utf8": string([]byte{'a', 'p', 'p', 'l', 'i', 'c', 'a', 't', 'i', 'o', 'n', '/', 'j', 's', 'o', 'n', 0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+			req.Header.Set("Content-Type", value)
+			rec := httptest.NewRecorder()
+
+			var dst struct {
+				Name string `json:"name"`
+			}
+			ok := DecodeJSON(rec, req, &dst)
+			if ok {
+				t.Fatal("expected ok=false for invalid Content-Type")
+			}
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("expected 415, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestDecodeJSON_AcceptsStructuredJSONContentType(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+	req.Header.Set("Content-Type", "application/merge-patch+json; charset=utf-8")
+	rec := httptest.NewRecorder()
+
+	var dst struct {
+		Name string `json:"name"`
+	}
+	ok := DecodeJSON(rec, req, &dst)
+	if !ok {
+		t.Fatal("expected ok=true for +json Content-Type")
+	}
+	if dst.Name != "test" {
+		t.Fatalf("expected name=test, got %s", dst.Name)
+	}
+}
+
 // --- NewServer panic on nil handler ---
+
+func TestNewServer_PanicsOnEmptyAddr(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty address")
+		}
+	}()
+	NewServer("", http.NewServeMux())
+}
 
 func TestNewServer_PanicsOnNilHandler(t *testing.T) {
 	defer func() {
@@ -702,6 +916,94 @@ func TestNewServer_PanicsOnNilHandler(t *testing.T) {
 		}
 	}()
 	NewServer(":0", nil)
+}
+
+func TestNewServer_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil option")
+		}
+	}()
+	NewServer(":0", http.NewServeMux(), nil)
+}
+
+func TestWithWriteTimeout_PanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative write timeout")
+		}
+	}()
+	WithWriteTimeout(-time.Second)
+}
+
+func TestWithTLSConfig_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil TLS config")
+		}
+	}()
+	WithTLSConfig(nil)
+}
+
+func TestWithTLSConfig_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
+	cfg := &tls.Config{
+		NextProtos: []string{"h2"},
+	}
+	cfg.MinVersion = minimumTLSVersion - 1
+
+	srv := NewServer(":0", http.NewServeMux(), WithTLSConfig(cfg))
+	if srv.TLSConfig == cfg {
+		t.Fatal("server must own a cloned TLS config")
+	}
+	if cfg.MinVersion != minimumTLSVersion-1 {
+		t.Fatalf("caller TLS config was mutated: got MinVersion %x", cfg.MinVersion)
+	}
+	if srv.TLSConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("expected server TLS floor %x, got %x", minimumTLSVersion, srv.TLSConfig.MinVersion)
+	}
+	if got := strings.Join(srv.TLSConfig.NextProtos, ","); got != "h2" {
+		t.Fatalf("expected cloned TLS config to preserve NextProtos, got %q", got)
+	}
+}
+
+func TestWithTLSConfig_ClonesAtOptionCreation(t *testing.T) {
+	cfg := &tls.Config{
+		NextProtos: []string{"h2"},
+		ServerName: "before.example",
+	}
+	opt := WithTLSConfig(cfg)
+
+	cfg.NextProtos[0] = "http/1.1"
+	cfg.ServerName = "after.example"
+
+	srv := NewServer(":0", http.NewServeMux(), opt)
+	if got := strings.Join(srv.TLSConfig.NextProtos, ","); got != "h2" {
+		t.Fatalf("expected option to snapshot NextProtos, got %q", got)
+	}
+	if srv.TLSConfig.ServerName != "before.example" {
+		t.Fatalf("expected option to snapshot ServerName, got %q", srv.TLSConfig.ServerName)
+	}
+}
+
+func TestWithTLSConfig_PanicsWhenMaxVersionBelowFloor(t *testing.T) {
+	cfg := &tls.Config{}
+	cfg.MaxVersion = minimumTLSVersion - 1
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for impossible TLS version range")
+		}
+	}()
+	NewServer(":0", http.NewServeMux(), WithTLSConfig(cfg))
+}
+
+func TestWithErrorLog_PanicsOnNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil error logger")
+		}
+	}()
+	WithErrorLog(nil)
 }
 
 // --- NewHTTPClient panic on non-positive timeout ---
@@ -724,6 +1026,118 @@ func TestNewHTTPClient_PanicsOnNegativeTimeout(t *testing.T) {
 	NewHTTPClient(-1*time.Second, nil)
 }
 
+func TestNewHTTPClient_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil option")
+		}
+	}()
+	NewHTTPClient(time.Second, nil, nil)
+}
+
+func TestNewHTTPClient_BlocksRedirectsByDefault(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+
+	resp, err := NewHTTPClient(time.Second, nil).Get(srv.URL + "/start")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want ErrRedirectBlocked", err)
+	}
+}
+
+func TestNewHTTPClient_WithFollowRedirects(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+	client := NewHTTPClient(time.Second, nil, WithFollowRedirects(1))
+
+	resp, err := client.Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatalf("Get redirect: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if got := string(body); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
+	}
+}
+
+func TestNewHTTPClient_WithFollowRedirectsStopsAtHopLimit(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+	client := NewHTTPClient(time.Second, nil, WithFollowRedirects(1))
+
+	resp, err := client.Get(srv.URL + "/chain-a")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectLimitExceeded) {
+		t.Fatalf("Get redirect error = %v, want ErrRedirectLimitExceeded", err)
+	}
+}
+
+func TestWithFollowRedirects_PanicsOnNonPositive(t *testing.T) {
+	tests := []int{0, -1}
+	for _, maxHops := range tests {
+		t.Run(strconv.Itoa(maxHops), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			WithFollowRedirects(maxHops)
+		})
+	}
+}
+
+func TestNewHTTPClient_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
+	cfg := &tls.Config{
+		ServerName: "api.internal.test",
+	}
+	cfg.MinVersion = minimumTLSVersion - 1
+
+	client := NewHTTPClient(time.Second, cfg)
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if tr.TLSClientConfig == cfg {
+		t.Fatal("client transport must own a cloned TLS config")
+	}
+	if cfg.MinVersion != minimumTLSVersion-1 {
+		t.Fatalf("caller TLS config was mutated: got MinVersion %x", cfg.MinVersion)
+	}
+	if tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("expected client TLS floor %x, got %x", minimumTLSVersion, tr.TLSClientConfig.MinVersion)
+	}
+	if tr.TLSClientConfig.ServerName != "api.internal.test" {
+		t.Fatalf("expected cloned TLS config to preserve ServerName, got %q", tr.TLSClientConfig.ServerName)
+	}
+}
+
+func TestNewHTTPClient_PanicsWhenTLSMaxVersionBelowFloor(t *testing.T) {
+	cfg := &tls.Config{}
+	cfg.MaxVersion = minimumTLSVersion - 1
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for impossible TLS version range")
+		}
+	}()
+	NewHTTPClient(time.Second, cfg)
+}
+
+func TestWithIdleConnTimeout_PanicsOnNegative(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative idle timeout")
+		}
+	}()
+	WithIdleConnTimeout(-time.Second)
+}
+
 func TestNewTracingHTTPClient_PanicsOnZeroTimeout(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -733,6 +1147,18 @@ func TestNewTracingHTTPClient_PanicsOnZeroTimeout(t *testing.T) {
 	NewTracingHTTPClient(0, nil)
 }
 
+func TestNewTracingHTTPClient_BlocksRedirectsByDefault(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+
+	resp, err := NewTracingHTTPClient(time.Second, nil).Get(srv.URL + "/start")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want ErrRedirectBlocked", err)
+	}
+}
+
 func TestNewTracingHTTPClientWithOptions_PanicsOnZeroTimeout(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -740,6 +1166,29 @@ func TestNewTracingHTTPClientWithOptions_PanicsOnZeroTimeout(t *testing.T) {
 		}
 	}()
 	NewTracingHTTPClientWithOptions(0, nil, nil)
+}
+
+func TestNewTracingHTTPClientWithOptions_WithFollowRedirects(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+	client := NewTracingHTTPClientWithOptions(time.Second, nil, []ClientOption{WithFollowRedirects(1)})
+
+	resp, err := client.Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatalf("Get redirect: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestNewTracingHTTPClientWithOptions_PanicsOnNilKitOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil kit option")
+		}
+	}()
+	NewTracingHTTPClientWithOptions(time.Second, nil, []ClientOption{nil})
 }
 
 // --- newKitTransport handles replaced http.DefaultTransport ---
@@ -805,6 +1254,116 @@ func TestNewResilientHTTPClient_HandlesReplacedDefaultTransport(t *testing.T) {
 	}
 }
 
+func TestNewResilientHTTPClient_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
+	cfg := &tls.Config{ServerName: "api.internal.test"}
+	cfg.MinVersion = minimumTLSVersion - 1
+
+	client := NewResilientHTTPClient(WithResilientTLS(cfg))
+	cb, ok := client.Transport.(*circuitBreakerTransport)
+	if !ok {
+		t.Fatalf("expected *circuitBreakerTransport, got %T", client.Transport)
+	}
+	tr, ok := cb.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected inner *http.Transport, got %T", cb.base)
+	}
+	if tr.TLSClientConfig == cfg {
+		t.Fatal("resilient client transport must own a cloned TLS config")
+	}
+	if cfg.MinVersion != minimumTLSVersion-1 {
+		t.Fatalf("caller TLS config was mutated: got MinVersion %x", cfg.MinVersion)
+	}
+	if tr.TLSClientConfig.MinVersion != minimumTLSVersion {
+		t.Fatalf("expected resilient client TLS floor %x, got %x", minimumTLSVersion, tr.TLSClientConfig.MinVersion)
+	}
+	if tr.TLSClientConfig.ServerName != "api.internal.test" {
+		t.Fatalf("expected cloned TLS config to preserve ServerName, got %q", tr.TLSClientConfig.ServerName)
+	}
+	if tr.MaxIdleConnsPerHost != defaultMaxIdleConnsPerHost {
+		t.Fatalf("expected MaxIdleConnsPerHost %d, got %d", defaultMaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
+	}
+}
+
+func TestWithResilientTLS_ClonesAtOptionCreation(t *testing.T) {
+	cfg := &tls.Config{
+		NextProtos: []string{"h2"},
+		ServerName: "before.example",
+	}
+	opt := WithResilientTLS(cfg)
+
+	cfg.NextProtos[0] = "http/1.1"
+	cfg.ServerName = "after.example"
+
+	client := NewResilientHTTPClient(opt)
+	cb, ok := client.Transport.(*circuitBreakerTransport)
+	if !ok {
+		t.Fatalf("expected *circuitBreakerTransport, got %T", client.Transport)
+	}
+	tr, ok := cb.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected inner *http.Transport, got %T", cb.base)
+	}
+	if got := strings.Join(tr.TLSClientConfig.NextProtos, ","); got != "h2" {
+		t.Fatalf("expected option to snapshot NextProtos, got %q", got)
+	}
+	if tr.TLSClientConfig.ServerName != "before.example" {
+		t.Fatalf("expected option to snapshot ServerName, got %q", tr.TLSClientConfig.ServerName)
+	}
+}
+
+func TestNewResilientHTTPClient_WithIdleConnTimeout(t *testing.T) {
+	client := NewResilientHTTPClient(WithResilientIdleConnTimeout(15 * time.Second))
+	cb, ok := client.Transport.(*circuitBreakerTransport)
+	if !ok {
+		t.Fatalf("expected *circuitBreakerTransport, got %T", client.Transport)
+	}
+	tr, ok := cb.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected inner *http.Transport, got %T", cb.base)
+	}
+	if tr.IdleConnTimeout != 15*time.Second {
+		t.Fatalf("expected IdleConnTimeout 15s, got %v", tr.IdleConnTimeout)
+	}
+}
+
+func TestNewResilientHTTPClient_PanicsWhenTLSMaxVersionBelowFloor(t *testing.T) {
+	cfg := &tls.Config{}
+	cfg.MaxVersion = minimumTLSVersion - 1
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for impossible TLS version range")
+		}
+	}()
+	NewResilientHTTPClient(WithResilientTLS(cfg))
+}
+
+func TestNewResilientHTTPClient_BlocksRedirectsByDefault(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+
+	resp, err := NewResilientHTTPClient().Get(srv.URL + "/start")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrRedirectBlocked) {
+		t.Fatalf("Get redirect error = %v, want ErrRedirectBlocked", err)
+	}
+}
+
+func TestNewResilientHTTPClient_WithFollowRedirects(t *testing.T) {
+	srv := newClientRedirectTestServer(t)
+	client := NewResilientHTTPClient(WithResilientFollowRedirects(1))
+
+	resp, err := client.Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatalf("Get redirect: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
 func TestWithCBShouldTrip_PanicsOnNil(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -821,4 +1380,65 @@ func TestWithCBOnStateChange_PanicsOnNil(t *testing.T) {
 		}
 	}()
 	WithCBOnStateChange(nil)
+}
+
+func TestResilientOptions_PanicOnInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "timeout zero", fn: func() { WithResilientTimeout(0) }},
+		{name: "timeout negative", fn: func() { WithResilientTimeout(-time.Second) }},
+		{name: "tls nil", fn: func() { WithResilientTLS(nil) }},
+		{name: "idle timeout negative", fn: func() { WithResilientIdleConnTimeout(-time.Second) }},
+		{name: "threshold zero", fn: func() { WithCBThreshold(0) }},
+		{name: "threshold negative", fn: func() { WithCBThreshold(-1) }},
+		{name: "reset zero", fn: func() { WithCBResetTimeout(0) }},
+		{name: "reset negative", fn: func() { WithCBResetTimeout(-time.Second) }},
+		{name: "redirects zero", fn: func() { WithResilientFollowRedirects(0) }},
+		{name: "redirects negative", fn: func() { WithResilientFollowRedirects(-1) }},
+		{name: "deadline option nil", fn: func() { NewResilientHTTPClient(WithDeadlineBudget(nil)) }},
+		{name: "resilient option nil", fn: func() { NewResilientHTTPClient(nil) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			tt.fn()
+		})
+	}
+}
+
+func TestWithoutResilientTimeout(t *testing.T) {
+	client := NewResilientHTTPClient(WithoutResilientTimeout())
+	if client.Timeout != 0 {
+		t.Fatalf("expected timeout disabled, got %v", client.Timeout)
+	}
+}
+
+func newClientRedirectTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	})
+	mux.HandleFunc("/next", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/chain-a", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/chain-b", http.StatusFound)
+	})
+	mux.HandleFunc("/chain-b", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/chain-c", http.StatusFound)
+	})
+	mux.HandleFunc("/chain-c", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("done"))
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }

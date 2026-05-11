@@ -75,7 +75,7 @@ func TestHTTPMetrics_CounterIncrement(t *testing.T) {
 	}
 
 	var metric dto.Metric
-	require.NoError(t, m.requestsTotal.WithLabelValues("GET", "GET /test", "200").Write(&metric))
+	require.NoError(t, m.requestsTotal.WithLabelValues("GET", "/test", "200").Write(&metric))
 	assert.Equal(t, float64(3), metric.GetCounter().GetValue(),
 		"counter should reflect 3 requests")
 }
@@ -96,10 +96,99 @@ func TestHTTPMetrics_DurationObserved(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	var metric dto.Metric
-	observer := m.requestDuration.WithLabelValues("POST", "POST /submit")
+	observer := m.requestDuration.WithLabelValues("POST", "/submit")
 	require.NoError(t, observer.(prometheus.Metric).Write(&metric))
 	assert.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount(),
 		"histogram should have 1 observation")
+}
+
+func TestHTTPMetrics_MethodQualifiedPatternUsesPathLabel(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTPMetrics(reg)
+
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Pattern = "PATCH /widgets/{id}"
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPatch, "/widgets/42", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	var metric dto.Metric
+	require.NoError(t, m.requestsTotal.WithLabelValues("PATCH", "/widgets/{id}", "204").Write(&metric))
+	assert.Equal(t, float64(1), metric.GetCounter().GetValue())
+}
+
+func TestHTTPMetrics_InvalidMethodAndPatternAreBucketed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTPMetrics(reg)
+
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Pattern = "bad\npattern"
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/bad", nil)
+	req.Method = "BREW"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	var metric dto.Metric
+	require.NoError(t, m.requestsTotal.WithLabelValues("OTHER", "invalid", "202").Write(&metric))
+	assert.Equal(t, float64(1), metric.GetCounter().GetValue())
+}
+
+func TestHTTPMetrics_Records500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTPMetrics(reg)
+	handlerPanic := assert.AnError
+
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Pattern = "GET /panic"
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		assert.Same(t, handlerPanic, got)
+
+		var metric dto.Metric
+		require.NoError(t, m.requestsTotal.WithLabelValues("GET", "/panic", "500").Write(&metric))
+		assert.Equal(t, float64(1), metric.GetCounter().GetValue())
+
+		metric.Reset()
+		observer := m.requestDuration.WithLabelValues("GET", "/panic")
+		require.NoError(t, observer.(prometheus.Metric).Write(&metric))
+		assert.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount())
+	}()
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+}
+
+func TestHTTPMetrics_PanicAfterHeaderRecordsWrittenStatus(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewHTTPMetrics(reg)
+	handlerPanic := assert.AnError
+
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Pattern = "GET /created-then-panic"
+		w.WriteHeader(http.StatusCreated)
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		assert.Same(t, handlerPanic, got)
+
+		var metric dto.Metric
+		require.NoError(t, m.requestsTotal.WithLabelValues("GET", "/created-then-panic", "201").Write(&metric))
+		assert.Equal(t, float64(1), metric.GetCounter().GetValue())
+	}()
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/created-then-panic", nil))
 }
 
 func TestHTTPMetrics_InFlightReturnsToZero(t *testing.T) {

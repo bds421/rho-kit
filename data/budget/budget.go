@@ -53,17 +53,29 @@ package budget
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-// ErrInvalidKey is returned when key is empty. (An empty key
-// collapses every caller into a single bucket — almost certainly a
-// bug rather than the intent.)
-var ErrInvalidKey = errors.New("budget: key must not be empty")
+// MaxKeyLen caps budget keys across all backends. Redis can accept much
+// larger keys, but long attacker-controlled tenant/user keys inflate memory,
+// logs, and network traffic. Keep the portable budget contract bounded.
+const MaxKeyLen = 256
+
+// ErrInvalidKey is returned when key is empty, oversized, invalid UTF-8,
+// or contains whitespace/control characters. (An empty key collapses every
+// caller into a single bucket — almost certainly a bug rather than the intent.)
+var ErrInvalidKey = errors.New("budget: key is invalid")
 
 // ErrInvalidAmount is returned when amount is negative. Zero is
 // allowed (a no-op consume / "is anything left?" probe).
 var ErrInvalidAmount = errors.New("budget: amount must not be negative")
+
+// ErrInvalidBudget is returned when a Budget method/helper is invoked
+// with a nil or otherwise uninitialized budget implementation.
+var ErrInvalidBudget = errors.New("budget: budget is not initialized")
 
 // Budget tracks consumption of an arbitrary numeric quantity
 // against a per-key cap for the current period.
@@ -83,6 +95,29 @@ type Budget interface {
 	// Peek returns current remaining budget without charging. Useful
 	// for advisory headers (X-Budget-Remaining) and dashboards.
 	Peek(ctx context.Context, key string) (remaining int64, err error)
+}
+
+// ValidateKey enforces the portable budget key contract shared by all
+// backends. Keys are arbitrary UTF-8 identifiers (tenant IDs, user IDs,
+// route-scoped budget names) but must be non-empty, bounded, and not contain
+// whitespace/control characters.
+func ValidateKey(key string) error {
+	if key == "" ||
+		len(key) > MaxKeyLen ||
+		!utf8.ValidString(key) ||
+		containsInvalidKeyRune(key) {
+		return ErrInvalidKey
+	}
+	return nil
+}
+
+func containsInvalidKeyRune(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // Refunder is implemented by [Budget] backends that support
@@ -112,15 +147,31 @@ type Refunder interface {
 // errors regardless of optional backend capability — a bad refund
 // must not look like a harmless unsupported refund.
 func Refund(ctx context.Context, b Budget, key string, amount int64) (remaining int64, ok bool, err error) {
-	if key == "" {
-		return 0, false, ErrInvalidKey
+	if err := ValidateKey(key); err != nil {
+		return 0, false, err
 	}
 	if amount < 0 {
 		return 0, false, ErrInvalidAmount
+	}
+	if isNilBudget(b) {
+		return 0, false, ErrInvalidBudget
 	}
 	if r, isRefunder := b.(Refunder); isRefunder {
 		rem, rerr := r.Refund(ctx, key, amount)
 		return rem, true, rerr
 	}
 	return 0, false, nil
+}
+
+func isNilBudget(b Budget) bool {
+	if b == nil {
+		return true
+	}
+	v := reflect.ValueOf(b)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }

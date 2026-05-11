@@ -25,6 +25,7 @@ import (
 
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
+	"github.com/bds421/rho-kit/httpx/v2"
 )
 
 // scopeHeader names the response header that disambiguates *which*
@@ -61,13 +62,13 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, err := coretenant.Required(r.Context())
 			if err != nil {
-				writePlainError(w, http.StatusBadRequest, err.Error())
+				httpx.WriteError(w, http.StatusBadRequest, "tenant: required tenant ID is missing")
 				return
 			}
 
 			allowed, retryAfter, err := lim.Allow(r.Context(), string(id))
 			if err != nil {
-				writePlainError(w, http.StatusInternalServerError, "rate limit check failed")
+				httpx.WriteError(w, http.StatusInternalServerError, "rate limit check failed")
 				return
 			}
 			if !allowed {
@@ -79,21 +80,10 @@ func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 					}
 					w.Header().Set("Retry-After", strconv.Itoa(seconds))
 				}
-				writePlainError(w, http.StatusTooManyRequests, "tenant rate limit exceeded")
+				httpx.WriteError(w, http.StatusTooManyRequests, "tenant rate limit exceeded")
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// writePlainError writes a minimal JSON error so this package stays
-// out of httpx's import graph. We mirror httpx.WriteError's body
-// shape ({"error": "..."}) closely enough for clients to parse, but
-// keep the implementation hermetic — the full kit-wide error envelope
-// belongs in httpx. strconv.Quote handles JSON-safe escaping of msg.
-func writePlainError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":` + strconv.Quote(msg) + `}`))
 }

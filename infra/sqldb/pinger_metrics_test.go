@@ -3,15 +3,42 @@ package sqldb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"testing"
 	"time"
 
-	_ "github.com/glebarez/go-sqlite"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const testDriverName = "rho-kit-sqldb-test"
+
+func init() {
+	sql.Register(testDriverName, testDriver{})
+}
+
+type testDriver struct{}
+
+func (testDriver) Open(string) (driver.Conn, error) {
+	return testConn{}, nil
+}
+
+type testConn struct{}
+
+func (testConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("test driver: prepare not implemented")
+}
+
+func (testConn) Close() error {
+	return nil
+}
+
+func (testConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("test driver: begin not implemented")
+}
 
 // TestNewPoolMetrics verifies that NewPoolMetrics creates and registers all collectors.
 func TestNewPoolMetrics(t *testing.T) {
@@ -36,10 +63,19 @@ func TestNewPoolMetrics(t *testing.T) {
 	assert.Equal(t, float64(10), wait)
 }
 
+func TestNewPoolMetrics_PanicsOnInvalidNamespace(t *testing.T) {
+	assert.Panics(t, func() {
+		NewPoolMetrics("my-service", prometheus.NewRegistry())
+	})
+	assert.Panics(t, func() {
+		NewPoolMetrics("tenant metrics", prometheus.NewRegistry())
+	})
+}
+
 // TestExportPoolMetrics_ExportsStats verifies that ExportPoolMetrics sets
 // the open and idle connection gauges after the first tick.
 func TestExportPoolMetrics_ExportsStats(t *testing.T) {
-	sqlDB, err := sql.Open("sqlite", ":memory:")
+	sqlDB, err := sql.Open(testDriverName, "")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 

@@ -63,14 +63,8 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 	if tw.written {
 		return
 	}
-	// Reject invalid status codes matching net/http behaviour.
-	// Note: code 0 is silently ignored (maps to 200 in writeToReal),
-	// matching the default behaviour when Write() is called without
-	// WriteHeader(). Explicit WriteHeader(0) is a handler bug — but
-	// returning an error here would diverge from the http.ResponseWriter
-	// interface which has no error return.
 	if code < 100 || code > 999 {
-		return
+		panic("invalid WriteHeader code")
 	}
 	tw.code = code
 }

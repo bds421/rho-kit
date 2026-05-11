@@ -6,19 +6,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
+
+const minimumTLSVersion = tls.VersionTLS12
 
 // Connection manages an AMQP connection with automatic reconnection.
 type Connection struct {
 	url                  string
 	tlsConfig            *tls.Config
+	allowPlaintext       bool
 	conn                 *amqp.Connection
 	mu                   sync.RWMutex
 	logger               *slog.Logger
@@ -48,6 +54,9 @@ type DialOption func(*Connection)
 // exponential backoff. Use this for services that must stay alive regardless
 // of how long RabbitMQ is down.
 func WithMaxReconnectAttempts(n int) DialOption {
+	if n < 0 {
+		panic("amqpbackend: WithMaxReconnectAttempts requires n >= 0")
+	}
 	return func(c *Connection) {
 		c.maxReconnectAttempts = n
 	}
@@ -57,6 +66,9 @@ func WithMaxReconnectAttempts(n int) DialOption {
 // The callback receives a Connector so it can open channels to re-declare
 // topology. Errors are logged but do not prevent consumers from retrying.
 func OnReconnect(fn func(Connector) error) DialOption {
+	if fn == nil {
+		panic("amqpbackend: OnReconnect requires a non-nil callback")
+	}
 	return func(c *Connection) {
 		c.onReconnect = fn
 	}
@@ -64,10 +76,22 @@ func OnReconnect(fn func(Connector) error) DialOption {
 
 // WithTLS configures mTLS for the AMQP connection. When set, the connection
 // uses amqp.DialTLS instead of amqp.Dial, presenting a client certificate
-// and verifying the server against the provided CA.
+// and verifying the server against the provided CA. The config is cloned and
+// raised to a TLS 1.2 minimum; caller-set stricter floors are preserved.
 func WithTLS(cfg *tls.Config) DialOption {
+	cfg = cloneTLSConfigWithFloor(cfg, "amqpbackend: WithTLS")
 	return func(c *Connection) {
 		c.tlsConfig = cfg
+	}
+}
+
+// WithAllowPlaintext permits an amqp:// connection without TLS. Use
+// only for local tests or an explicitly reviewed private network. By
+// default, Dial rejects plaintext AMQP because credentials and message
+// payloads cross the broker connection.
+func WithAllowPlaintext() DialOption {
+	return func(c *Connection) {
+		c.allowPlaintext = true
 	}
 }
 
@@ -106,11 +130,20 @@ func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, err
 	}
 
 	for _, opt := range opts {
+		if opt == nil {
+			panic("amqp: Dial option must not be nil")
+		}
 		opt(c)
 	}
 
+	normalizedURL, err := normalizeDialURL(c.url, c.tlsConfig != nil, c.allowPlaintext)
+	if err != nil {
+		return nil, err
+	}
+	c.url = normalizedURL
+
 	if c.lazyConnect {
-		logger.Info("amqp lazy connect enabled, connecting in background", "url", sanitizeURL(url))
+		logger.Info("amqp lazy connect enabled, connecting in background", "url_configured", url != "")
 		c.startReconnect()
 		return c, nil
 	}
@@ -129,8 +162,44 @@ func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, err
 	return c, nil
 }
 
+func normalizeDialURL(rawURL string, tlsConfigured, allowPlaintext bool) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("amqp URL is invalid")
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("amqp URL must be an absolute amqp(s) URL")
+	}
+	switch u.Scheme {
+	case "amqps":
+		return u.String(), nil
+	case "amqp":
+		if tlsConfigured {
+			u.Scheme = "amqps"
+			return u.String(), nil
+		}
+		if allowPlaintext {
+			return u.String(), nil
+		}
+		return "", fmt.Errorf("amqp URL must use amqps or WithTLS; use WithAllowPlaintext only for explicit local/test opt-in")
+	default:
+		return "", fmt.Errorf("amqp URL scheme must be amqp or amqps")
+	}
+}
+
+func cloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
+	if err != nil {
+		panic("amqpbackend: TLS MaxVersion must allow TLS 1.2 or newer")
+	}
+	return cloned
+}
+
 // Channel opens a new AMQP channel on the current connection.
 func (c *Connection) Channel() (*amqp.Channel, error) {
+	if c == nil {
+		return nil, fmt.Errorf("connection is not available")
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -155,6 +224,12 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 // Polls at 100ms intervals; the cost of a tighter loop isn't justified in
 // practice (reconnects take seconds, not milliseconds).
 func (c *Connection) WaitForConnection(ctx context.Context) error {
+	if c == nil || c.closed == nil {
+		return fmt.Errorf("amqp: WaitForConnection: connection is not initialized")
+	}
+	if ctx == nil {
+		return fmt.Errorf("amqp: WaitForConnection: context must not be nil")
+	}
 	const poll = 100 * time.Millisecond
 	t := time.NewTicker(poll)
 	defer t.Stop()
@@ -175,9 +250,14 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 // Close terminates the AMQP connection and stops reconnection attempts.
 // It is safe to call Close multiple times.
 func (c *Connection) Close() error {
+	if c == nil {
+		return nil
+	}
 	var closeErr error
 	c.closeOnce.Do(func() {
-		close(c.closed)
+		if c.closed != nil {
+			close(c.closed)
+		}
 
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -194,10 +274,15 @@ func (c *Connection) Close() error {
 // Healthy reports whether the AMQP connection is alive and has not been
 // permanently lost. It is safe for concurrent use.
 func (c *Connection) Healthy() bool {
-	select {
-	case <-c.dead:
+	if c == nil {
 		return false
-	default:
+	}
+	if c.dead != nil {
+		select {
+		case <-c.dead:
+			return false
+		default:
+		}
 	}
 
 	c.mu.RLock()
@@ -210,6 +295,9 @@ func (c *Connection) Healthy() bool {
 // lost after exhausting all reconnection attempts. If maxReconnectAttempts
 // is 0 (unlimited), this channel is never closed.
 func (c *Connection) Dead() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
 	return c.dead
 }
 
@@ -218,6 +306,9 @@ func (c *Connection) Dead() <-chan struct{} {
 // closed when Dial returns. For lazy connections, select on this to know
 // when the broker becomes available.
 func (c *Connection) Connected() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
 	return c.connected
 }
 
@@ -248,7 +339,7 @@ func (c *Connection) watchConnection(conn *amqp.Connection, gen uint64) {
 			}
 			return
 		}
-		c.logger.Error("amqp connection lost", "error", amqpErr)
+		c.logger.Error("amqp connection lost", redact.Error(amqpErr))
 		c.startReconnect()
 	}
 }
@@ -274,7 +365,7 @@ func (c *Connection) startReconnect() {
 }
 
 func (c *Connection) reconnect() {
-	bo := retry.WorkerPolicy.NewBackoff()
+	bo := retry.WorkerPolicy().NewBackoff()
 	attempts := 0
 
 	for {
@@ -301,7 +392,8 @@ func (c *Connection) reconnect() {
 
 		conn, err := c.dial()
 		if err != nil {
-			c.logger.Error("amqp reconnect failed", "error", err, "attempt", attempts+1, "url", sanitizeURL(c.url))
+			c.logger.Error("amqp reconnect failed",
+				redact.Error(err), "attempt", attempts+1, "url_configured", c.url != "")
 			attempts++
 			continue
 		}
@@ -315,7 +407,7 @@ func (c *Connection) reconnect() {
 		// Close() which also acquires mu and closes c.conn.
 		if old != nil {
 			if err := old.Close(); err != nil {
-				c.logger.Debug("failed to close old amqp connection", "error", err)
+				c.logger.Debug("failed to close old amqp connection", redact.Error(err))
 			}
 		}
 		c.mu.Unlock()
@@ -332,8 +424,8 @@ func (c *Connection) reconnect() {
 		go c.watchConnection(conn, gen)
 
 		if c.onReconnect != nil {
-			if err := c.onReconnect(c); err != nil {
-				c.logger.Error("onReconnect callback failed, will retry connection", "error", err)
+			if err := c.callOnReconnect(); err != nil {
+				c.logger.Error("onReconnect callback failed, will retry connection", redact.Error(err))
 				// Topology declaration failed — the connection is alive but
 				// unusable (exchanges/queues may not exist). Close and retry
 				// to prevent silent message loss.
@@ -375,6 +467,23 @@ func (c *Connection) reconnect() {
 	}
 }
 
+func (c *Connection) callOnReconnect() (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger := c.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("amqp onReconnect callback panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			err = fmt.Errorf("onReconnect panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	return c.onReconnect(c)
+}
+
 // dial opens an AMQP connection, using TLS when configured.
 func (c *Connection) dial() (*amqp.Connection, error) {
 	if c.tlsConfig != nil {
@@ -384,14 +493,14 @@ func (c *Connection) dial() (*amqp.Connection, error) {
 }
 
 // sanitizeURL strips credentials from an AMQP URL for safe logging.
-// Returns the URL with any userinfo replaced by "***:***".
+// Returns the URL with userinfo, query, and fragment components removed.
 func sanitizeURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "***"
 	}
-	if u.User != nil {
-		u.User = url.UserPassword("***", "***")
-	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
 	return u.String()
 }

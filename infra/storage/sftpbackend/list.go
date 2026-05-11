@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 	"path"
 	"strings"
@@ -26,21 +27,33 @@ var _ storage.Lister = (*SFTPBackend)(nil)
 // with prefix. Directories are walked recursively.
 func (b *SFTPBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
-		if prefix != "" {
-			if err := storage.ValidatePrefix(prefix); err != nil {
-				yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
-				return
-			}
+		if err := storage.ValidatePrefix(prefix); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
+			return
+		}
+		if err := storage.ValidateListOptions(opts); err != nil {
+			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
+			return
 		}
 
 		_, span := otel.Tracer(tracerName).Start(ctx, "sftp.List")
 		defer span.End()
-		span.SetAttributes(attribute.String("storage.prefix", prefix))
+		span.SetAttributes(attribute.Int("storage.prefix_len", len(prefix)))
 
 		client, err := b.getClient()
 		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: list: %w", err))
+			opErr := storage.WrapSafe("sftpbackend: list connection failed", err)
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+			yield(storage.ObjectInfo{}, opErr)
+			return
+		}
+		if err := b.rejectSymlinkPath(client, b.cfg.RootPath); err != nil {
+			if isNotExist(err) {
+				return
+			}
+			opErr := fmt.Errorf("sftpbackend: unsafe root: %w", err)
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+			yield(storage.ObjectInfo{}, opErr)
 			return
 		}
 
@@ -55,7 +68,7 @@ func (b *SFTPBackend) List(ctx context.Context, prefix string, opts storage.List
 		b.metrics.observeOp(b.instance, "list", start, walkErr)
 
 		if walkErr != nil {
-			span.SetStatus(codes.Error, walkErr.Error())
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(walkErr))
 		}
 	}
 }
@@ -80,12 +93,20 @@ func (b *SFTPBackend) walkDir(
 		if isNotExist(err) {
 			return nil // prefix directory doesn't exist — empty result
 		}
-		yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: readdir %q: %w", dir, err))
-		return err
+		opErr := sftpRemoteError("readdir", err)
+		yield(storage.ObjectInfo{}, opErr)
+		return opErr
 	}
 
 	for _, entry := range entries {
 		entryPath := path.Join(dir, entry.Name())
+		if entry.Mode()&fs.ModeSymlink != 0 {
+			err := fmt.Errorf("sftpbackend: refusing symlink object")
+			if !yield(storage.ObjectInfo{}, err) {
+				return errIterStopped
+			}
+			return err
+		}
 
 		if entry.IsDir() {
 			// Only descend if the directory could contain matching keys.
@@ -154,7 +175,7 @@ func relPath(base, target string) (string, error) {
 	}
 
 	if !strings.HasPrefix(target, basePrefix) {
-		return target, fmt.Errorf("target %q is not under base %q", target, base)
+		return target, fmt.Errorf("target is not under base")
 	}
 
 	return strings.TrimPrefix(target, basePrefix), nil

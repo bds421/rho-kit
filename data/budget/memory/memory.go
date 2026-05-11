@@ -67,10 +67,18 @@ func WithClock(now func() time.Time) Option {
 
 // WithSweeper overrides the interval at which the background sweeper
 // removes buckets whose period has rolled over and that carry no live
-// state. interval <= 0 disables the sweeper entirely (the caller is
-// responsible for bounding cardinality).
+// state. The interval must be positive; use [WithoutSweeper] to opt out.
 func WithSweeper(interval time.Duration) Option {
+	if interval <= 0 {
+		panic("budget/memory: WithSweeper requires a positive interval")
+	}
 	return func(b *Budget) { b.sweepInterval = interval }
+}
+
+// WithoutSweeper disables the background sweeper. Use only when the
+// caller bounds key cardinality externally.
+func WithoutSweeper() Option {
+	return func(b *Budget) { b.sweepInterval = 0 }
 }
 
 // New constructs a Budget allowing up to `cap` units per `period`.
@@ -98,6 +106,9 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 		doneCh:        make(chan struct{}),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("budget/memory: option must not be nil")
+		}
 		o(b)
 	}
 	if b.now == nil {
@@ -111,10 +122,20 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 	return b
 }
 
+func (b *Budget) ready() error {
+	if b == nil || b.cap <= 0 || b.period <= 0 || b.now == nil {
+		return budget.ErrInvalidBudget
+	}
+	return nil
+}
+
 // Stop terminates the background sweeper. Safe to call multiple
 // times. After Stop, the budget continues to admit and refund as
 // normal but no longer evicts cold keys.
 func (b *Budget) Stop() {
+	if b == nil || b.stopCh == nil || b.doneCh == nil {
+		return
+	}
 	b.stopOnce.Do(func() {
 		close(b.stopCh)
 		<-b.doneCh
@@ -170,8 +191,11 @@ func (b *Budget) loadOrInitBucket(key string, currentPeriod int64) *bucket {
 // Consume implements [budget.Budget]. amount==0 returns the current
 // remaining without changing state.
 func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
-	if key == "" {
-		return false, 0, 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return false, 0, 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return false, 0, 0, err
 	}
 	if amount < 0 {
 		return false, 0, 0, budget.ErrInvalidAmount
@@ -219,8 +243,11 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 
 // Peek implements [budget.Budget]. Unknown keys return the full cap.
 func (b *Budget) Peek(_ context.Context, key string) (int64, error) {
-	if key == "" {
-		return 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return 0, err
 	}
 	now := b.now()
 	periodID, _ := b.periodOf(now)
@@ -246,8 +273,11 @@ func (b *Budget) Peek(_ context.Context, key string) (int64, error) {
 // no-op (there is nothing to refund); refunds past the cap clamp at
 // `cap` so the budget never inflates above its configured limit.
 func (b *Budget) Refund(_ context.Context, key string, amount int64) (int64, error) {
-	if key == "" {
-		return 0, budget.ErrInvalidKey
+	if err := b.ready(); err != nil {
+		return 0, err
+	}
+	if err := budget.ValidateKey(key); err != nil {
+		return 0, err
 	}
 	if amount < 0 {
 		return 0, budget.ErrInvalidAmount
@@ -278,6 +308,9 @@ func (b *Budget) Refund(_ context.Context, key string, amount int64) (int64, err
 
 // Len returns the number of tracked keys. Useful in tests.
 func (b *Budget) Len() int {
+	if b == nil {
+		return 0
+	}
 	n := 0
 	b.buckets.Range(func(_, _ any) bool {
 		n++

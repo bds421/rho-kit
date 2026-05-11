@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"net/http"
+	"runtime/debug"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
@@ -46,18 +48,18 @@ func (s *Server) auditPrecheck(ctx context.Context, tool string) (ok bool) {
 	if s.cfg.actionLogger == nil {
 		return true
 	}
-	tenantID, present := s.cfg.tenantExtractor(ctx)
+	tenantID, present := s.extractTenant(ctx)
 	if present && tenantID != "" {
 		return true
 	}
 	if s.cfg.strictAudit {
 		s.cfg.logger.Error("mcp: refusing tool dispatch; no tenant on context (strict audit mode)",
-			"tool", tool,
+			redact.String("tool", tool),
 		)
 		return false
 	}
 	s.cfg.logger.Warn("mcp: skipping action log entry; no tenant on context (loose audit mode)",
-		"tool", tool,
+		redact.String("tool", tool),
 	)
 	return true
 }
@@ -94,12 +96,12 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		return nil
 	}
 
-	tenantID, ok := s.cfg.tenantExtractor(ctx)
+	tenantID, ok := s.extractTenant(ctx)
 	if !ok || tenantID == "" {
 		return nil
 	}
 
-	actor := s.cfg.actorExtractor(r)
+	actor := s.extractActor(r)
 
 	outcome := actionlog.OutcomeSuccess
 	reason := ""
@@ -121,7 +123,7 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 	}
 
 	if s.cfg.asyncAudit {
-		s.enqueueAuditJob(auditJob{entry: entry, tool: tool, tenantID: tenantID})
+		s.enqueueAuditJob(auditJob{ctx: ctx, entry: entry, tool: tool, tenantID: tenantID})
 		return nil
 	}
 
@@ -136,6 +138,41 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 	)
 	defer cancel()
 	return s.appendActionLog(appendCtx, entry, tool, tenantID)
+}
+
+func (s *Server) extractTenant(ctx context.Context) (tenantID string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.cfg.logger.Error("mcp: tenant extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			tenantID, ok = "", false
+		}
+	}()
+	return s.cfg.tenantExtractor(ctx)
+}
+
+func (s *Server) extractActor(r *http.Request) (actor string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.cfg.logger.Error("mcp: actor extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			actor = AnonymousActor
+		}
+	}()
+	actor = s.cfg.actorExtractor(r)
+	if !validActionLogTextField(actor, actionlog.MaxActorLen, true) {
+		if actor != "" {
+			s.cfg.logger.Warn("mcp: actor extractor returned invalid actor id; using anonymous actor",
+				"actor_len", len(actor),
+			)
+		}
+		return AnonymousActor
+	}
+	return actor
 }
 
 // enqueueAuditJob hands an audit append to the worker pool. If the
@@ -157,8 +194,8 @@ func (s *Server) enqueueAuditJob(job auditJob) {
 	if s.auditStopped.Load() {
 		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit dropped; server stopped",
-			"tool", job.tool,
-			"tenant_id", job.tenantID,
+			redact.String("tool", job.tool),
+			redact.String("tenant_id", job.tenantID),
 		)
 		return
 	}
@@ -167,8 +204,8 @@ func (s *Server) enqueueAuditJob(job auditJob) {
 	default:
 		s.auditDropped.Add(1)
 		s.cfg.logger.Warn("mcp: async audit queue full; dropping entry",
-			"tool", job.tool,
-			"tenant_id", job.tenantID,
+			redact.String("tool", job.tool),
+			redact.String("tenant_id", job.tenantID),
 		)
 	}
 }
@@ -178,9 +215,9 @@ func (s *Server) enqueueAuditJob(job auditJob) {
 func (s *Server) appendActionLog(ctx context.Context, entry actionlog.Entry, tool, tenantID string) error {
 	if _, err := s.cfg.actionLogger.Append(ctx, entry); err != nil {
 		s.cfg.logger.Error("mcp: action log append failed",
-			"tool", tool,
-			"tenant_id", tenantID,
-			"error", err,
+			redact.String("tool", tool),
+			redact.String("tenant_id", tenantID),
+			redact.Error(err),
 		)
 		return err
 	}

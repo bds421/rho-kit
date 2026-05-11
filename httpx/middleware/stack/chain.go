@@ -25,7 +25,7 @@ type Chain struct {
 // NewChain creates a middleware chain. Middlewares are applied in the order
 // given: the first middleware wraps the outermost layer.
 func NewChain(middlewares ...func(http.Handler) http.Handler) Chain {
-	return Chain{middlewares: middlewares}
+	return Chain{middlewares: append([]func(http.Handler) http.Handler(nil), middlewares...)}
 }
 
 // Append returns a new Chain with additional middleware appended (applied

@@ -2,13 +2,36 @@ package reqsign
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bds421/rho-kit/crypto/v2/signing"
 )
+
+type transportReadErrorBody struct {
+	err error
+}
+
+func (b transportReadErrorBody) Read([]byte) (int, error) {
+	return 0, b.err
+}
+
+func (b transportReadErrorBody) Close() error {
+	return nil
+}
+
+type transportCloseErrorBody struct {
+	*bytes.Reader
+	err error
+}
+
+func (b transportCloseErrorBody) Close() error {
+	return b.err
+}
 
 func TestSigningTransport_SetsHeaders(t *testing.T) {
 	store := testStore()
@@ -42,6 +65,20 @@ func TestSigningTransport_SetsHeaders(t *testing.T) {
 	}
 	if captured.Header.Get(HeaderKeyID) != "primary" {
 		t.Errorf("X-Signature-KeyID = %q, want %q", captured.Header.Get(HeaderKeyID), "primary")
+	}
+}
+
+func TestSigningTransport_ClonesOptions(t *testing.T) {
+	opts := []SignOption{WithSignMaxBodySize(1024)}
+
+	transport := NewSigningTransport(nil, testStore(), opts...)
+	opts[0] = nil
+
+	if len(transport.opts) != 1 {
+		t.Fatalf("opts len = %d, want 1", len(transport.opts))
+	}
+	if transport.opts[0] == nil {
+		t.Fatal("transport option was aliased to caller slice")
 	}
 }
 
@@ -119,6 +156,51 @@ func TestSigningTransport_OversizedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for oversized body, got nil")
 	}
+	assertBodyTooLargeStable(t, err, "1048576", "1048577")
+}
+
+func TestSigningTransport_BufferBodyErrorsAreStable(t *testing.T) {
+	readErr := errors.New("reader failed for secret-token")
+	readReq, _ := http.NewRequest(http.MethodPost, "http://example.com/api/upload", nil)
+	readReq.Body = transportReadErrorBody{err: readErr}
+
+	body, err := bufferBody(readReq, 1024)
+	if err == nil {
+		t.Fatal("expected read error")
+	}
+	if body != nil {
+		t.Fatalf("body = %q, want nil", body)
+	}
+	if err.Error() != "reqsign: read request body failed" {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !errors.Is(err, readErr) {
+		t.Fatalf("expected wrapped read cause, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("read error leaked request data: %v", err)
+	}
+
+	closeErr := errors.New("close failed for secret-token")
+	closeReq, _ := http.NewRequest(http.MethodPost, "http://example.com/api/upload", nil)
+	closeReq.Body = transportCloseErrorBody{Reader: bytes.NewReader([]byte("body")), err: closeErr}
+
+	body, err = bufferBody(closeReq, 1024)
+	if err == nil {
+		t.Fatal("expected close error")
+	}
+	if body != nil {
+		t.Fatalf("body = %q, want nil", body)
+	}
+	if err.Error() != "reqsign: close request body failed" {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected wrapped close cause, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("close error leaked request data: %v", err)
+	}
 }
 
 func TestSigningTransport_NilBase(t *testing.T) {
@@ -127,6 +209,19 @@ func TestSigningTransport_NilBase(t *testing.T) {
 	transport := NewSigningTransport(nil, store)
 	if transport.base == nil {
 		t.Error("expected default transport when nil base passed")
+	}
+}
+
+func TestSigningTransport_NilBaseUsesKitTransportWhenDefaultTransportReplaced(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("global default transport used")
+	})
+
+	transport := NewSigningTransport(nil, testStore())
+	if _, ok := transport.base.(*http.Transport); !ok {
+		t.Fatalf("nil base = %T, want *http.Transport fallback", transport.base)
 	}
 }
 

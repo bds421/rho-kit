@@ -1,8 +1,15 @@
 package redisstore
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
 // TestNew_NilClientPanics verifies the constructor fails fast rather
@@ -14,6 +21,86 @@ func TestNew_NilClientPanics(t *testing.T) {
 		}
 	}()
 	_ = New(nil)
+}
+
+func TestNew_NilOptionPanics(t *testing.T) {
+	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil option")
+		}
+	}()
+	_ = New(client, nil)
+}
+
+func TestWithKeyPrefix_PanicsOnInvalid(t *testing.T) {
+	for _, prefix := range []string{
+		"",
+		strings.Repeat("x", maxKeyPrefixLen+1),
+		"bad\nprefix",
+		"bad\x00prefix",
+		"bad prefix",
+		"bad\tprefix",
+		string([]byte{0xff, 0xfe}),
+	} {
+		t.Run("invalid", func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic for invalid prefix")
+				}
+				if len(prefix) > maxKeyPrefixLen {
+					msg, _ := r.(string)
+					if strings.Contains(msg, "128") || strings.Contains(msg, "129") {
+						t.Fatalf("panic leaked prefix lengths: %q", msg)
+					}
+				}
+			}()
+			_ = WithKeyPrefix(prefix)
+		})
+	}
+}
+
+func TestRedisStore_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, store := range map[string]*RedisStore{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, mismatch, err := store.Get(ctx, "k", nil)
+			if resp != nil || mismatch || !errors.Is(err, idempotency.ErrInvalidStore) {
+				t.Fatalf("Get = resp=%v mismatch=%v err=%v, want ErrInvalidStore", resp, mismatch, err)
+			}
+
+			token, mismatch, ok, err := store.TryLock(ctx, "k", nil, time.Minute)
+			if token != "" || mismatch || ok || !errors.Is(err, idempotency.ErrInvalidStore) {
+				t.Fatalf("TryLock = token=%q mismatch=%v ok=%v err=%v, want ErrInvalidStore", token, mismatch, ok, err)
+			}
+
+			if err := store.Set(ctx, "k", "t", idempotency.CachedResponse{}, time.Minute); !errors.Is(err, idempotency.ErrInvalidStore) {
+				t.Fatalf("Set = %v, want ErrInvalidStore", err)
+			}
+
+			if err := store.Unlock(ctx, "k", "t"); !errors.Is(err, idempotency.ErrInvalidStore) {
+				t.Fatalf("Unlock = %v, want ErrInvalidStore", err)
+			}
+		})
+	}
+}
+
+func TestRedisStore_SetRejectsInvalidCachedResponseBeforeRedisUse(t *testing.T) {
+	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store := New(client)
+
+	err := store.Set(context.Background(), "k", "token", idempotency.CachedResponse{StatusCode: 99}, time.Minute)
+	if !errors.Is(err, idempotency.ErrInvalidCachedResponse) {
+		t.Fatalf("Set invalid response = %v, want ErrInvalidCachedResponse", err)
+	}
 }
 
 // TestTTLMillisRoundUp guards the TTL precision fix: Redis SET PX accepts

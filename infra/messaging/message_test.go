@@ -2,6 +2,8 @@ package messaging_test
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -61,10 +63,65 @@ func TestNewMessage_EmptyType(t *testing.T) {
 	assert.Contains(t, err.Error(), "type must not be empty")
 }
 
+func TestNewMessage_InvalidType(t *testing.T) {
+	for _, msgType := range []string{
+		"bad type",
+		"bad\nline",
+		strings.Repeat("x", messaging.MaxMessageTypeBytes+1),
+		string([]byte{'o', 'k', 0xff}),
+	} {
+		t.Run(msgType, func(t *testing.T) {
+			_, err := messaging.NewMessage(msgType, nil)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, messaging.ErrInvalidMessage)
+		})
+	}
+}
+
 func TestNewMessage_UnmarshalablePayload(t *testing.T) {
 	_, err := messaging.NewMessage("test.event", make(chan int))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal payload")
+}
+
+func TestValidateMessage(t *testing.T) {
+	valid := messaging.Message{
+		ID:      "msg-1",
+		Type:    "test.event",
+		Payload: json.RawMessage(`{"ok":true}`),
+		Headers: map[string]string{"X-Trace": "trace-1"},
+	}
+	require.NoError(t, messaging.ValidateMessage(valid))
+
+	for name, mutate := range map[string]func(*messaging.Message){
+		"empty id":       func(m *messaging.Message) { m.ID = "" },
+		"id whitespace":  func(m *messaging.Message) { m.ID = "msg 1" },
+		"id too long":    func(m *messaging.Message) { m.ID = strings.Repeat("m", messaging.MaxMessageIDBytes+1) },
+		"id invalid utf": func(m *messaging.Message) { m.ID = string([]byte{'m', 0xff}) },
+		"empty type":     func(m *messaging.Message) { m.Type = "" },
+		"type newline":   func(m *messaging.Message) { m.Type = "test\nevent" },
+		"type too long":  func(m *messaging.Message) { m.Type = strings.Repeat("t", messaging.MaxMessageTypeBytes+1) },
+		"invalid json":   func(m *messaging.Message) { m.Payload = json.RawMessage(`{"broken"`) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := valid.Clone()
+			mutate(&msg)
+			err := messaging.ValidateMessage(msg)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, messaging.ErrInvalidMessage)
+			if strings.Contains(name, "too long") {
+				assert.NotContains(t, err.Error(), "255")
+				assert.NotContains(t, err.Error(), "256")
+				assert.NotContains(t, err.Error(), "257")
+			}
+		})
+	}
+
+	invalidHeader := valid.Clone()
+	invalidHeader.Headers = map[string]string{"Bad Header": "value"}
+	err := messaging.ValidateMessage(invalidHeader)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, messaging.ErrInvalidMessageHeader)
 }
 
 func TestMessage_WithHeader(t *testing.T) {
@@ -76,6 +133,91 @@ func TestMessage_WithHeader(t *testing.T) {
 
 	// Original should be unmodified (immutability)
 	assert.Empty(t, msg.CorrelationID())
+}
+
+func TestMessage_WithHeader_PanicsOnInvalidHeader(t *testing.T) {
+	msg, err := messaging.NewMessage("test.event", "hello")
+	require.NoError(t, err)
+
+	assert.Panics(t, func() { msg.WithHeader("", "value") })
+	assert.Panics(t, func() { msg.WithHeader("Bad Header", "value") })
+	assert.Panics(t, func() { msg.WithHeader("X-Trace", "bad\nvalue") })
+	assert.Panics(t, func() {
+		msg.WithHeader("X-Trace", strings.Repeat("x", messaging.MaxMessageHeaderValueBytes+1))
+	})
+}
+
+func TestValidateMessageHeaders(t *testing.T) {
+	t.Parallel()
+
+	valid := map[string]string{
+		"X-Request-Id":     "req-1",
+		"traceparent":      "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+		"x_custom.header":  "value",
+		"X-Schema-Version": "3",
+	}
+	require.NoError(t, messaging.ValidateMessageHeaders(valid))
+
+	for name, headers := range map[string]map[string]string{
+		"empty name":      {"": "value"},
+		"space in name":   {"Bad Header": "value"},
+		"colon in name":   {"Bad:Header": "value"},
+		"newline value":   {"X-Trace": "bad\nvalue"},
+		"oversize name":   {strings.Repeat("a", messaging.MaxMessageHeaderNameBytes+1): "value"},
+		"oversize value":  {"X-Trace": strings.Repeat("x", messaging.MaxMessageHeaderValueBytes+1)},
+		"non-ascii name":  {"X-Tenant-\xc3\x84": "value"},
+		"null byte value": {"X-Trace": "bad\x00value"},
+		"invalid utf8":    {"X-Trace": string([]byte{'o', 'k', 0xff})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := messaging.ValidateMessageHeaders(headers)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, messaging.ErrInvalidMessageHeader))
+			if strings.Contains(name, "oversize") {
+				assert.NotContains(t, err.Error(), "128")
+				assert.NotContains(t, err.Error(), "129")
+				assert.NotContains(t, err.Error(), "8192")
+				assert.NotContains(t, err.Error(), "8193")
+			}
+		})
+	}
+}
+
+func TestValidateMessageHeaders_DoesNotReflectHeaderMetadata(t *testing.T) {
+	t.Parallel()
+
+	for name, headers := range map[string]map[string]string{
+		"invalid name":  {"Bad Header secret-token": "value"},
+		"invalid value": {"X-Secret-Token": "bad\nvalue"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := messaging.ValidateMessageHeaders(headers)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, messaging.ErrInvalidMessageHeader), "err=%v", err)
+			assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
+		})
+	}
+}
+
+func TestMessage_CloneDetachesPayloadAndHeaders(t *testing.T) {
+	msg := messaging.Message{
+		ID:      "msg-1",
+		Type:    "test.event",
+		Payload: []byte(`{"key":"value"}`),
+		Headers: map[string]string{"X-Trace-Id": "trace-1"},
+	}
+
+	cloned := msg.Clone()
+	msg.Payload[8] = 'X'
+	msg.Headers["X-Trace-Id"] = "mutated"
+
+	assert.JSONEq(t, `{"key":"value"}`, string(cloned.Payload))
+	assert.Equal(t, "trace-1", cloned.Headers["X-Trace-Id"])
+
+	cloned.Payload[8] = 'Y'
+	cloned.Headers["X-Trace-Id"] = "clone-mutated"
+	assert.Equal(t, byte('X'), msg.Payload[8])
+	assert.Equal(t, "mutated", msg.Headers["X-Trace-Id"])
 }
 
 func TestMessage_WithHeader_PreservesExisting(t *testing.T) {
@@ -97,13 +239,14 @@ func TestMessage_CorrelationID_Empty(t *testing.T) {
 
 func TestMessage_DecodePayload_Error(t *testing.T) {
 	msg := messaging.Message{
-		ID:      "test-id",
+		ID:      "secret-token-id",
 		Payload: []byte(`not valid json`),
 	}
 	var target map[string]string
 	err := msg.DecodePayload(&target)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decode payload")
+	assert.NotContains(t, err.Error(), "secret-token")
 }
 
 func TestMessage_WithSchemaVersion(t *testing.T) {

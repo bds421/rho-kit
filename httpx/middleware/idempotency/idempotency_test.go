@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,31 @@ func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
 	_ = store
 }
 
+func TestMiddleware_ResponseOverflowLogRedactsRawKey(t *testing.T) {
+	store := idem.NewMemoryStore()
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithLogger(logger),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxCapturedBodySize+1))
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/pay", nil)
+	req.Header.Set("Idempotency-Key", "tenant-secret-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	out := buf.String()
+	if !strings.Contains(out, `"key"`) {
+		t.Fatalf("expected key attribute in log, got %q", out)
+	}
+	if strings.Contains(out, "tenant-secret-key") {
+		t.Fatalf("idempotency log leaked raw key: %q", out)
+	}
+}
+
 // TestIdempotency_EmptyUserReturns400_NotShared verifies that when an extractor
 // is configured but returns "" at runtime (anonymous request, missing auth ctx,
 // JWT minted without sub), the middleware fails closed with 400 rather than
@@ -153,6 +179,72 @@ func TestIdempotency_EmptyUserReturns400_NotShared(t *testing.T) {
 	}
 	if rec2.Body.String() != `{"served":true}` {
 		t.Fatalf("authenticated body = %q, want fresh response", rec2.Body.String())
+	}
+}
+
+func TestIdempotency_UserExtractorPanicReturns400_NotShared(t *testing.T) {
+	store := idem.NewMemoryStore()
+	callCount := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Middleware(store, WithUserExtractor(func(*http.Request) string {
+		panic("extract failed")
+	}))(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"v":1}`))
+	req.Header.Set("Idempotency-Key", "shared-key")
+	rec := httptest.NewRecorder()
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("extractor panic escaped: %v", r)
+			}
+		}()
+		handler.ServeHTTP(rec, req)
+	}()
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if callCount != 0 {
+		t.Fatalf("inner handler called %d times, want 0", callCount)
+	}
+}
+
+func TestIdempotency_InvalidUserIdentityReturns400_NotShared(t *testing.T) {
+	for name, userID := range map[string]string{
+		"edge whitespace": " user-a",
+		"internal space":  "user a",
+		"control":         "user-a\n",
+		"invalid utf8":    string([]byte{'u', 0xff}),
+		"too long":        strings.Repeat("a", idem.MaxKeyLen+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := idem.NewMemoryStore()
+			callCount := 0
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				callCount++
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := Middleware(store, WithUserExtractor(func(*http.Request) string {
+				return userID
+			}))(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"v":1}`))
+			req.Header.Set("Idempotency-Key", "valid-key")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			if callCount != 0 {
+				t.Fatalf("inner handler called %d times, want 0", callCount)
+			}
+		})
 	}
 }
 
@@ -246,7 +338,7 @@ func TestFirstRequestPassesThroughAndCaches(t *testing.T) {
 
 	// The store key is fingerprinted with method+path+query+key, so look up the hashed key.
 	keyReq := httptest.NewRequest(http.MethodPost, "/orders", nil)
-	storeKey := fingerprintKey(keyReq, "key-1", "", nil)
+	storeKey := mustFingerprintKey(t, keyReq, "key-1", "", nil)
 	cached, _, err := store.Get(context.Background(), storeKey, nil)
 	if err != nil {
 		t.Fatalf("store.Get error: %v", err)
@@ -347,6 +439,80 @@ func TestPOSTWithoutHeaderReturns400(t *testing.T) {
 	}
 }
 
+func TestPOSTWithBlankHeaderReturns400(t *testing.T) {
+	store := idem.NewMemoryStore()
+	called := false
+	handler := Middleware(store, WithAllowSharedKeys())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req.Header.Set("Idempotency-Key", " \t ")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("handler should not be called for blank Idempotency-Key")
+	}
+}
+
+func TestPOSTWithDuplicateHeaderReturns400(t *testing.T) {
+	store := idem.NewMemoryStore()
+	called := false
+	handler := Middleware(store, WithAllowSharedKeys())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
+	req.Header.Add("Idempotency-Key", "key-a")
+	req.Header.Add("Idempotency-Key", "key-b")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("handler should not be called for duplicate Idempotency-Key headers")
+	}
+}
+
+func TestPOSTWithAmbiguousHeaderReturns400(t *testing.T) {
+	for name, value := range map[string]string{
+		"edge whitespace": " key-a",
+		"internal space":  "key a",
+		"comma":           "key-a,key-b",
+		"control":         "key-a\n",
+		"invalid utf8":    string([]byte{'k', 0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := idem.NewMemoryStore()
+			called := false
+			handler := Middleware(store, WithAllowSharedKeys())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/orders", nil)
+			req.Header.Set("Idempotency-Key", value)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			if called {
+				t.Fatal("handler should not be called for ambiguous Idempotency-Key")
+			}
+		})
+	}
+}
+
 func TestCustomHeaderName(t *testing.T) {
 	store := idem.NewMemoryStore()
 	handler := Middleware(store, WithAllowSharedKeys(), WithHeader("X-Request-Token"))(newTestHandler("ok", http.StatusOK))
@@ -358,6 +524,9 @@ func TestCustomHeaderName(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if strings.Contains(rec.Body.String(), "X-Request-Token") {
+		t.Fatalf("response leaked custom header name: %q", rec.Body.String())
 	}
 
 	// With custom header succeeds
@@ -634,7 +803,7 @@ func TestPanicInHandlerReleasesLock(t *testing.T) {
 	// The lock should have been released, allowing a new TryLock.
 	// Use the fingerprinted key that the middleware actually stores.
 	keyReq := httptest.NewRequest(http.MethodPost, "/", nil)
-	storeKey := fingerprintKey(keyReq, "panic-key", "", nil)
+	storeKey := mustFingerprintKey(t, keyReq, "panic-key", "", nil)
 	_, _, locked, err := store.TryLock(context.Background(), storeKey, nil, time.Minute)
 	if err != nil {
 		t.Fatalf("TryLock error: %v", err)
@@ -686,6 +855,87 @@ func TestBodyFingerprint_MismatchReturns422(t *testing.T) {
 	handler.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusUnprocessableEntity {
 		t.Errorf("second request status = %d, want 422", rec2.Code)
+	}
+}
+
+func TestBodyFingerprint_ContentHeadersAffectFingerprint(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		header      string
+		firstValue  string
+		secondValue string
+	}{
+		{
+			name:        "content type",
+			header:      "Content-Type",
+			firstValue:  "application/x-www-form-urlencoded",
+			secondValue: "text/plain",
+		},
+		{
+			name:        "content encoding",
+			header:      "Content-Encoding",
+			firstValue:  "gzip",
+			secondValue: "identity",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := idem.NewMemoryStore()
+			calls := 0
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte("created"))
+			})
+			handler := Middleware(store, WithAllowSharedKeys())(inner)
+
+			req1 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`a=b`))
+			req1.Header.Set("Idempotency-Key", "content-header-key")
+			req1.Header.Set(tc.header, tc.firstValue)
+			rec1 := httptest.NewRecorder()
+			handler.ServeHTTP(rec1, req1)
+			if rec1.Code != http.StatusCreated {
+				t.Fatalf("first request status = %d, want 201", rec1.Code)
+			}
+
+			req2 := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`a=b`))
+			req2.Header.Set("Idempotency-Key", "content-header-key")
+			req2.Header.Set(tc.header, tc.secondValue)
+			rec2 := httptest.NewRecorder()
+			handler.ServeHTTP(rec2, req2)
+			if rec2.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("second request status = %d, want 422", rec2.Code)
+			}
+			if calls != 1 {
+				t.Fatalf("handler called %d times, want first request only", calls)
+			}
+		})
+	}
+}
+
+func TestBodyFingerprint_RejectsAmbiguousContentHeaders(t *testing.T) {
+	for _, header := range []string{"Content-Type", "Content-Encoding"} {
+		t.Run(header, func(t *testing.T) {
+			store := idem.NewMemoryStore()
+			called := false
+			handler := Middleware(store, WithAllowSharedKeys())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`a=b`))
+			req.Header.Set("Idempotency-Key", "ambiguous-content-header")
+			req.Header.Add(header, "one")
+			req.Header.Add(header, "two")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if called {
+				t.Fatal("handler must not run when fingerprint headers are ambiguous")
+			}
+		})
 	}
 }
 
@@ -936,13 +1186,112 @@ func TestPostHandlerTimeout_HungStoreDoesNotPinGoroutine(t *testing.T) {
 	}
 }
 
+type postHandlerContextKey struct{}
+
+type contextRecordingStore struct {
+	inner  idem.Store
+	value  any
+	ctxErr error
+}
+
+func newContextRecordingStore() *contextRecordingStore {
+	return &contextRecordingStore{inner: idem.NewMemoryStore()}
+}
+
+func (s *contextRecordingStore) Get(ctx context.Context, key string, fingerprint []byte) (*idem.CachedResponse, bool, error) {
+	return s.inner.Get(ctx, key, fingerprint)
+}
+
+func (s *contextRecordingStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	return s.inner.TryLock(ctx, key, fingerprint, ttl)
+}
+
+func (s *contextRecordingStore) Set(ctx context.Context, key, token string, resp idem.CachedResponse, ttl time.Duration) error {
+	s.value = ctx.Value(postHandlerContextKey{})
+	s.ctxErr = ctx.Err()
+	return s.inner.Set(ctx, key, token, resp, ttl)
+}
+
+func (s *contextRecordingStore) Unlock(ctx context.Context, key, token string) error {
+	return s.inner.Unlock(ctx, key, token)
+}
+
+func TestPostHandlerContextPreservesRequestValuesAfterCancellation(t *testing.T) {
+	store := newContextRecordingStore()
+	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler("ok", http.StatusOK))
+
+	parent := context.WithValue(context.Background(), postHandlerContextKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	req.Header.Set("Idempotency-Key", "context-key")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if store.value != "trace-123" {
+		t.Fatalf("post-handler context value = %v, want trace-123", store.value)
+	}
+	if store.ctxErr != nil {
+		t.Fatalf("post-handler context inherited cancellation: %v", store.ctxErr)
+	}
+}
+
 func TestWithPostHandlerTimeout_PanicsOnNonPositive(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
+		r := recover()
+		if r == nil {
 			t.Fatal("expected panic for non-positive timeout")
+		}
+		if strings.Contains(r.(string), "0s") {
+			t.Fatalf("panic leaked invalid duration: %q", r)
 		}
 	}()
 	WithPostHandlerTimeout(0)
+}
+
+func TestOptions_PanicOnInvalidInput(t *testing.T) {
+	store := idem.NewMemoryStore()
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "nil middleware option", fn: func() { Middleware(store, nil) }},
+		{name: "nil metrics", fn: func() { WithMetrics(nil) }},
+		{name: "invalid method", fn: func() { WithRequiredMethods("bad method") }},
+		{name: "nil user extractor", fn: func() { WithUserExtractor(nil) }},
+		{name: "empty semantic header", fn: func() { WithSemanticHeaders("") }},
+		{name: "empty preserve header", fn: func() { WithPreserveHeaders("") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			tt.fn()
+		})
+	}
+}
+
+func TestWithPreserveHeaders_ClonesInput(t *testing.T) {
+	names := []string{"X-Replayable"}
+	opt := WithPreserveHeaders(names...)
+	names[0] = "X-Mutated"
+
+	cfg := defaultConfig()
+	opt(&cfg)
+
+	if !cfg.preserveHeaders["X-Replayable"] {
+		t.Fatalf("preserveHeaders missing original header: %v", cfg.preserveHeaders)
+	}
+	if cfg.preserveHeaders["X-Mutated"] {
+		t.Fatalf("preserveHeaders retained mutated header: %v", cfg.preserveHeaders)
+	}
 }
 
 // flushTrackingWriter records whether Flush was forwarded. It also
@@ -1009,6 +1358,15 @@ func TestResponseCapture_ForwardsHijack(t *testing.T) {
 	}
 }
 
+func mustFingerprintKey(t *testing.T, r *http.Request, rawKey, userID string, semanticHeaders []string) string {
+	t.Helper()
+	key, err := fingerprintKey(r, rawKey, userID, semanticHeaders)
+	if err != nil {
+		t.Fatalf("fingerprintKey: %v", err)
+	}
+	return key
+}
+
 // FR-029 [HIGH]: Two requests sharing the same Idempotency-Key and
 // body but differing in query string MUST NOT collide on the same
 // cache slot. Pre-fix, only method+path+rawKey participated, so
@@ -1017,8 +1375,8 @@ func TestFingerprintKey_QueryStringDistinguishesRequests(t *testing.T) {
 	r1 := httptest.NewRequest(http.MethodPost, "/pay?dry_run=true", nil)
 	r2 := httptest.NewRequest(http.MethodPost, "/pay?dry_run=false", nil)
 
-	k1 := fingerprintKey(r1, "key-1", "user-a", nil)
-	k2 := fingerprintKey(r2, "key-1", "user-a", nil)
+	k1 := mustFingerprintKey(t, r1, "key-1", "user-a", nil)
+	k2 := mustFingerprintKey(t, r2, "key-1", "user-a", nil)
 	if k1 == k2 {
 		t.Fatal("expected distinct fingerprints for differing query strings")
 	}
@@ -1033,10 +1391,24 @@ func TestFingerprintKey_QueryStringOrderingEquivalent(t *testing.T) {
 	r1 := httptest.NewRequest(http.MethodPost, "/orders?b=1&a=2", nil)
 	r2 := httptest.NewRequest(http.MethodPost, "/orders?a=2&b=1", nil)
 
-	k1 := fingerprintKey(r1, "key-1", "user-a", nil)
-	k2 := fingerprintKey(r2, "key-1", "user-a", nil)
+	k1 := mustFingerprintKey(t, r1, "key-1", "user-a", nil)
+	k2 := mustFingerprintKey(t, r2, "key-1", "user-a", nil)
 	if k1 != k2 {
 		t.Fatalf("expected identical fingerprints for query reorderings, got %s vs %s", k1, k2)
+	}
+}
+
+func TestFingerprintKey_EscapedPathDistinguishesEncodedDelimiters(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodPost, "/objects/a%2Fb", nil)
+	r2 := httptest.NewRequest(http.MethodPost, "/objects/a/b", nil)
+	if r1.URL.EscapedPath() == r2.URL.EscapedPath() {
+		t.Fatalf("test setup expected distinct escaped paths, got %q", r1.URL.EscapedPath())
+	}
+
+	k1 := mustFingerprintKey(t, r1, "key-1", "user-a", nil)
+	k2 := mustFingerprintKey(t, r2, "key-1", "user-a", nil)
+	if k1 == k2 {
+		t.Fatal("expected distinct fingerprints for encoded slash vs literal path separator")
 	}
 }
 
@@ -1051,8 +1423,8 @@ func TestFingerprintKey_SemanticHeadersDistinguishRequests(t *testing.T) {
 	r2.Header.Set("X-Tenant-Id", "tenant-b")
 
 	headers := []string{"X-Tenant-Id"}
-	k1 := fingerprintKey(r1, "key-1", "", headers)
-	k2 := fingerprintKey(r2, "key-1", "", headers)
+	k1 := mustFingerprintKey(t, r1, "key-1", "", headers)
+	k2 := mustFingerprintKey(t, r2, "key-1", "", headers)
 	if k1 == k2 {
 		t.Fatal("expected distinct fingerprints for differing X-Tenant-Id values")
 	}
@@ -1060,7 +1432,7 @@ func TestFingerprintKey_SemanticHeadersDistinguishRequests(t *testing.T) {
 	// Same value across two requests: same fingerprint.
 	r3 := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	r3.Header.Set("X-Tenant-Id", "tenant-a")
-	k3 := fingerprintKey(r3, "key-1", "", headers)
+	k3 := mustFingerprintKey(t, r3, "key-1", "", headers)
 	if k1 != k3 {
 		t.Fatalf("expected identical fingerprints for same X-Tenant-Id, got %s vs %s", k1, k3)
 	}
@@ -1073,15 +1445,111 @@ func TestFingerprintKey_SemanticHeadersAreCaseInsensitive(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	r.Header.Set("x-tenant-id", "tenant-a") // lowercased
 	headers := []string{"X-Tenant-Id"}      // mixed
-	k := fingerprintKey(r, "key-1", "", headers)
+	k := mustFingerprintKey(t, r, "key-1", "", headers)
 
 	rRef := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	rRef.Header.Set("X-Tenant-Id", "tenant-a")
-	kRef := fingerprintKey(rRef, "key-1", "", headers)
+	kRef := mustFingerprintKey(t, rRef, "key-1", "", headers)
 
 	if k != kRef {
 		t.Fatalf("expected case-insensitive header match, got %s vs %s", k, kRef)
 	}
+}
+
+func TestFingerprintKey_RejectsAmbiguousSemanticHeaders(t *testing.T) {
+	headers := []string{"X-Tenant-Id"}
+	cases := []struct {
+		name  string
+		setup func(*http.Request)
+	}{
+		{
+			name:  "missing",
+			setup: func(*http.Request) {},
+		},
+		{
+			name: "blank",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Tenant-Id", " \t ")
+			},
+		},
+		{
+			name: "duplicate",
+			setup: func(r *http.Request) {
+				r.Header.Add("X-Tenant-Id", "tenant-a")
+				r.Header.Add("X-Tenant-Id", "tenant-b")
+			},
+		},
+		{
+			name: "comma alias source",
+			setup: func(r *http.Request) {
+				r.Header.Add("X-Tenant-Id", "tenant-a,tenant-b")
+				r.Header.Add("X-Tenant-Id", "tenant-c")
+			},
+		},
+		{
+			name: "edge whitespace",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Tenant-Id", " tenant-a")
+			},
+		},
+		{
+			name: "control",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Tenant-Id", "tenant-a\n")
+			},
+		},
+		{
+			name: "invalid utf8",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Tenant-Id", string([]byte{'t', 0xff}))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/orders", nil)
+			tc.setup(r)
+			key, err := fingerprintKey(r, "key-1", "", headers)
+			if err == nil {
+				t.Fatalf("expected semantic header error, got key %q", key)
+			}
+			if strings.Contains(err.Error(), "X-Tenant-Id") {
+				t.Fatalf("semantic header error leaked header name: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestOptionalSingletonHeaderValueDoesNotEchoHeaderName(t *testing.T) {
+	headerName := "X-Secret-Token-Header"
+
+	t.Run("duplicate", func(t *testing.T) {
+		h := http.Header{}
+		h.Add(headerName, "one")
+		h.Add(headerName, "two")
+
+		_, err := optionalSingletonHeaderValue(h, headerName)
+		if err == nil {
+			t.Fatal("expected duplicate header error")
+		}
+		if strings.Contains(err.Error(), headerName) || strings.Contains(err.Error(), "Secret-Token") {
+			t.Fatalf("error leaked header name: %q", err.Error())
+		}
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		h := http.Header{}
+		h.Set(headerName, "bad\nvalue")
+
+		_, err := optionalSingletonHeaderValue(h, headerName)
+		if err == nil {
+			t.Fatal("expected invalid header value error")
+		}
+		if strings.Contains(err.Error(), headerName) || strings.Contains(err.Error(), "Secret-Token") {
+			t.Fatalf("error leaked header name: %q", err.Error())
+		}
+	})
 }
 
 // End-to-end: when WithSemanticHeaders is configured, a second
@@ -1127,6 +1595,59 @@ func TestMiddleware_SemanticHeaders_PreventsCrossTenantReplay(t *testing.T) {
 	}
 }
 
+func TestMiddleware_SemanticHeaders_RejectsMissingBlankOrDuplicate(t *testing.T) {
+	store := idem.NewMemoryStore()
+	calls := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Middleware(store,
+		WithAllowSharedKeys(),
+		WithoutBodyFingerprint(),
+		WithSemanticHeaders("X-Tenant-Id"),
+	)(inner)
+
+	cases := []struct {
+		name  string
+		setup func(*http.Request)
+	}{
+		{
+			name:  "missing",
+			setup: func(*http.Request) {},
+		},
+		{
+			name: "blank",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Tenant-Id", " \t ")
+			},
+		},
+		{
+			name: "duplicate",
+			setup: func(r *http.Request) {
+				r.Header.Add("X-Tenant-Id", "tenant-a")
+				r.Header.Add("X-Tenant-Id", "tenant-b")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/orders", nil)
+			r.Header.Set("Idempotency-Key", "shared-key-"+tc.name)
+			tc.setup(r)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", w.Code)
+			}
+		})
+	}
+	if calls != 0 {
+		t.Fatalf("inner handler called %d times, want 0", calls)
+	}
+}
+
 // Without WithSemanticHeaders, the kit's default is conservative:
 // only method/path/query/raw-key/user participate. This is the
 // behaviour the audit flagged as unsafe for multi-tenant routing
@@ -1165,9 +1686,50 @@ func TestWithSemanticHeaders_PanicsOnInvalid(t *testing.T) {
 	_ = WithSemanticHeaders("not a valid header name with spaces")
 }
 
-func TestWithSemanticHeaders_EmptyNamesIgnored(t *testing.T) {
+func TestWithSemanticHeaders_PanicsOnEmptyName(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on empty header name")
+		}
+	}()
+	_ = WithSemanticHeaders("")
+}
+
+func TestOptionPanicsDoNotReflectInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{name: "header", fn: func() { WithHeader("bad header secret-token") }},
+		{name: "method", fn: func() { WithRequiredMethods("bad method secret-token") }},
+		{name: "semantic", fn: func() { WithSemanticHeaders("bad header secret-token") }},
+		{name: "preserve", fn: func() { WithPreserveHeaders("bad header secret-token") }},
+		{name: "ttl", fn: func() { WithTTL(-123 * time.Second) }},
+		{name: "post handler timeout", fn: func() { WithPostHandlerTimeout(-456 * time.Second) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				rec := recover()
+				if rec == nil {
+					t.Fatal("expected panic")
+				}
+				msg, ok := rec.(string)
+				if !ok {
+					t.Fatalf("panic = %T, want string", rec)
+				}
+				if strings.Contains(msg, "secret-token") || strings.Contains(msg, "123") || strings.Contains(msg, "456") {
+					t.Fatalf("panic leaked invalid value: %q", msg)
+				}
+			}()
+			tt.fn()
+		})
+	}
+}
+
+func TestWithSemanticHeaders_CanonicalizesNames(t *testing.T) {
 	cfg := defaultConfig()
-	WithSemanticHeaders("", "X-Tenant-Id", "")(&cfg)
+	WithSemanticHeaders("X-Tenant-Id")(&cfg)
 	if len(cfg.semanticHeaders) != 1 || cfg.semanticHeaders[0] != "X-Tenant-Id" {
 		t.Fatalf("expected single canonicalised header, got %v", cfg.semanticHeaders)
 	}

@@ -2,37 +2,44 @@ package concurrency
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"runtime/debug"
 	"sync"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"golang.org/x/sync/errgroup"
 )
 
+var (
+	// ErrNilContext is returned when FanOut or FanOutSettled receives a nil context.
+	ErrNilContext = errors.New("concurrency: context must not be nil")
+	// ErrNilFunction is returned when a submitted function is nil.
+	ErrNilFunction = errors.New("concurrency: function must not be nil")
+)
+
 // PanicError indicates a goroutine panicked during execution.
-// In Go 1.21+, panic(nil) is wrapped by the runtime in *runtime.PanicNilError,
-// so PanicError.Value will be non-nil.
 type PanicError struct {
 	// Index is the position of the goroutine in the input slice.
 	Index int
-	// Value is the value passed to panic().
-	Value any
+	// RedactedValue is the sanitized panic marker. The raw recovered
+	// panic payload is never exposed because it may contain secrets,
+	// request bodies, tokens, or domain objects.
+	RedactedValue string
 	// Stack is the stack trace captured at the point of the panic.
 	Stack string
 }
 
 func (e *PanicError) Error() string {
-	return fmt.Sprintf("concurrency: goroutine %d panicked: %v", e.Index, e.Value)
+	return fmt.Sprintf("concurrency: goroutine %d panicked: %s", e.Index, e.safeRedactedValue())
 }
 
-// Unwrap returns the panic value as an error if it implements the error
-// interface, enabling errors.Is and errors.As through the error chain.
-func (e *PanicError) Unwrap() error {
-	if err, ok := e.Value.(error); ok {
-		return err
+func (e *PanicError) safeRedactedValue() string {
+	if e.RedactedValue != "" {
+		return e.RedactedValue
 	}
-	return nil
+	return redact.PanicValue(nil)
 }
 
 // Result holds the outcome of a single function executed by [FanOutSettled].
@@ -54,17 +61,17 @@ type config struct {
 // WithMaxGoroutines sets the concurrency limit:
 //   - n >= 1: limit to n concurrent goroutines.
 //   - n == 0: explicit opt-out — unbounded concurrency (one goroutine per fn).
-//   - n < 0: ignored.
+//   - n < 0: panic at configuration time.
 //
 // If WithMaxGoroutines is not supplied, [FanOut] and [FanOutSettled] default
 // to runtime.GOMAXPROCS(0) * 2 to prevent goroutine exhaustion when fns is
 // derived from external input. Pass WithMaxGoroutines(0) only when you know
 // fns is bounded and you need every task in flight simultaneously.
 func WithMaxGoroutines(n int) FanOutOption {
+	if n < 0 {
+		panic("concurrency: WithMaxGoroutines requires n >= 0")
+	}
 	return func(c *config) {
-		if n < 0 {
-			return
-		}
 		c.maxGoroutines = n
 		c.maxGoroutinesSet = true
 	}
@@ -73,6 +80,9 @@ func WithMaxGoroutines(n int) FanOutOption {
 func buildConfig(opts []FanOutOption) config {
 	var cfg config
 	for _, opt := range opts {
+		if opt == nil {
+			panic("concurrency: FanOut option must not be nil")
+		}
 		opt(&cfg)
 	}
 	if !cfg.maxGoroutinesSet {
@@ -99,8 +109,16 @@ func buildConfig(opts []FanOutOption) config {
 //
 // A nil or empty fns slice returns an empty (non-nil) slice and no error.
 func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...FanOutOption) ([]T, error) {
+	if ctx == nil {
+		return nil, ErrNilContext
+	}
 	if len(fns) == 0 {
 		return []T{}, nil
+	}
+	for i, fn := range fns {
+		if fn == nil {
+			return nil, fmt.Errorf("%w at index %d", ErrNilFunction, i)
+		}
 	}
 
 	cfg := buildConfig(opts)
@@ -116,11 +134,7 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 		g.Go(func() (retErr error) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					retErr = &PanicError{
-						Index: i,
-						Value: rec,
-						Stack: string(debug.Stack()),
-					}
+					retErr = newPanicError(i, rec)
 				}
 			}()
 
@@ -159,6 +173,9 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 	if len(fns) == 0 {
 		return []Result[T]{}
 	}
+	if ctx == nil {
+		return settledErrorResults[T](len(fns), ErrNilContext)
+	}
 
 	cfg := buildConfig(opts)
 
@@ -172,6 +189,10 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 	}
 
 	for i, fn := range fns {
+		if fn == nil {
+			results[i] = Result[T]{Err: fmt.Errorf("%w at index %d", ErrNilFunction, i)}
+			continue
+		}
 		wg.Add(1)
 
 		if sem != nil {
@@ -197,11 +218,7 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 			defer func() {
 				if rec := recover(); rec != nil {
 					results[i] = Result[T]{
-						Err: &PanicError{
-							Index: i,
-							Value: rec,
-							Stack: string(debug.Stack()),
-						},
+						Err: newPanicError(i, rec),
 					}
 				}
 			}()
@@ -217,4 +234,20 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 
 	wg.Wait()
 	return results
+}
+
+func settledErrorResults[T any](n int, err error) []Result[T] {
+	results := make([]Result[T], n)
+	for i := range results {
+		results[i].Err = err
+	}
+	return results
+}
+
+func newPanicError(index int, rec any) *PanicError {
+	return &PanicError{
+		Index:         index,
+		RedactedValue: redact.PanicValue(rec),
+		Stack:         string(debug.Stack()),
+	}
 }

@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +29,29 @@ func TestAllow_RejectsEmptyKey(t *testing.T) {
 	ok, _, err := l.Allow(context.Background(), "")
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+}
+
+func TestAllow_RejectsInvalidKey(t *testing.T) {
+	client, _ := newTestClient(t)
+	l := New(client, time.Second, 5)
+
+	cases := []string{
+		"tenant\nid",
+		"tenant\rid",
+		"tenant\x00id",
+		string([]byte{'t', 'e', 'n', 0xff}),
+		strings.Repeat("a", ratelimit.MaxKeyLen+1),
+	}
+	for _, key := range cases {
+		ok, retry, err := l.Allow(context.Background(), key)
+		assert.False(t, ok)
+		assert.Zero(t, retry)
+		assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+		if len(key) > ratelimit.MaxKeyLen {
+			assert.NotContains(t, err.Error(), "256")
+			assert.NotContains(t, err.Error(), "257")
+		}
+	}
 }
 
 func TestAllow_AdmitsBurstAtSameInstant(t *testing.T) {
@@ -63,6 +87,27 @@ func TestAllow_AdmitsAfterDrip(t *testing.T) {
 	cur = cur.Add(time.Second)
 	ok, _, _ = l.Allow(context.Background(), "alice")
 	assert.True(t, ok, "after one period the next event must admit")
+}
+
+func TestAllow_SubMicrosecondRateRoundsUpConservatively(t *testing.T) {
+	client, _ := newTestClient(t)
+	cur := time.Unix(1_700_000_000, 0)
+	l := New(client, time.Nanosecond, 1, WithClock(func() time.Time { return cur }))
+
+	ok, _, err := l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	cur = cur.Add(time.Nanosecond)
+	ok, retry, err := l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	require.False(t, ok, "sub-microsecond rates are rounded up instead of collapsing at modern Unix timestamps")
+	require.GreaterOrEqual(t, retry, time.Microsecond)
+
+	cur = cur.Add(retry)
+	ok, _, err = l.Allow(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.True(t, ok)
 }
 
 func TestAllow_KeysIsolated(t *testing.T) {
@@ -143,6 +188,66 @@ func TestNew_PanicsOnTTLLessThanPeriod(t *testing.T) {
 		}
 	}()
 	New(client, 5*time.Minute, 1, WithKeyTTL(time.Second))
+}
+
+func TestCeilDurationSeconds_DoesNotOverflow(t *testing.T) {
+	assert.Equal(t, int64(1), ceilDurationSeconds(time.Nanosecond))
+	assert.Equal(t, int64(2), ceilDurationSeconds(time.Second+time.Nanosecond))
+	assert.Equal(t, int64(maxDurationValue/time.Second)+1, ceilDurationSeconds(maxDurationValue))
+}
+
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	client, _ := newTestClient(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	New(client, time.Second, 1, nil)
+}
+
+func TestInvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		l    *Limiter
+	}{
+		{"nil", nil},
+		{"zero", &Limiter{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, retry, err := tc.l.Allow(ctx, "k")
+			assert.False(t, ok)
+			assert.Equal(t, time.Duration(0), retry)
+			assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
+		})
+	}
+}
+
+func TestWithKeyTTL_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithKeyTTL(0) })
+	assert.Panics(t, func() { WithKeyTTL(-time.Second) })
+}
+
+func TestWithKeyPrefix_PanicsOnInvalid(t *testing.T) {
+	cases := []string{
+		"",
+		"tenant\n",
+		"tenant\r",
+		"tenant\x00",
+		"tenant key:",
+		"tenant\tkey:",
+		string([]byte{'p', 0xff}),
+		strings.Repeat("a", maxKeyPrefixLen+1),
+	}
+	for _, prefix := range cases {
+		assert.Panics(t, func() { WithKeyPrefix(prefix) })
+	}
+	assert.PanicsWithValue(t,
+		"ratelimit/redis: WithKeyPrefix prefix exceeds maximum length",
+		func() { WithKeyPrefix(strings.Repeat("a", maxKeyPrefixLen+1)) },
+	)
 }
 
 func TestAllow_RetryAtAdvertisedBoundaryAdmits(t *testing.T) {

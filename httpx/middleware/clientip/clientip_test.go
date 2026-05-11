@@ -1,7 +1,10 @@
 package clientip
 
 import (
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +18,20 @@ func TestClientIP_RemoteAddrOnly(t *testing.T) {
 	}
 }
 
+func TestClientIP_NilRequestReturnsEmpty(t *testing.T) {
+	if got := ClientIP(nil); got != "" {
+		t.Errorf("ClientIP(nil) = %q, want empty", got)
+	}
+}
+
+func TestClientIP_InvalidRemoteAddrReturnsEmpty(t *testing.T) {
+	req := &http.Request{RemoteAddr: "not an ip", Header: make(http.Header)}
+
+	if got := ClientIP(req); got != "" {
+		t.Errorf("ClientIP invalid remote = %q, want empty", got)
+	}
+}
+
 func TestClientIP_XRealIP_FromTrustedProxy(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "127.0.0.1:8080"
@@ -23,6 +40,31 @@ func TestClientIP_XRealIP_FromTrustedProxy(t *testing.T) {
 	got := ClientIP(req)
 	if got != "203.0.113.50" {
 		t.Errorf("ClientIP = %q, want %q", got, "203.0.113.50")
+	}
+}
+
+func TestClientIP_XRealIP_DuplicateDoesNotBlockXForwardedFor(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:8080"
+	req.Header.Add("X-Real-IP", "203.0.113.50")
+	req.Header.Add("X-Real-IP", "198.51.100.10")
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+
+	got := ClientIP(req)
+	if got != "203.0.113.99" {
+		t.Errorf("ClientIP = %q, want X-Forwarded-For when X-Real-IP is duplicated", got)
+	}
+}
+
+func TestClientIP_XRealIP_InvalidDoesNotBlockXForwardedFor(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:8080"
+	req.Header.Set("X-Real-IP", "not-an-ip")
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+
+	got := ClientIP(req)
+	if got != "203.0.113.99" {
+		t.Errorf("ClientIP = %q, want X-Forwarded-For when X-Real-IP is invalid", got)
 	}
 }
 
@@ -85,6 +127,29 @@ func TestClientIP_ExplicitTrustedProxies_HonoursXForwardedFor(t *testing.T) {
 	}
 }
 
+func TestClientIP_XForwardedFor_MultipleHeaderLinesAreOneChain(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:8080"
+	req.Header.Add("X-Forwarded-For", "203.0.113.50")
+	req.Header.Add("X-Forwarded-For", "10.0.0.2")
+
+	got := ClientIP(req)
+	if got != "10.0.0.2" {
+		t.Errorf("ClientIP = %q, want right-most untrusted IP across all XFF values", got)
+	}
+}
+
+func TestClientIP_TrustedProxyNilEntryFailsClosed(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:8080"
+	req.Header.Set("X-Forwarded-For", "203.0.113.50")
+
+	got := ClientIPWithTrustedProxies(req, []*net.IPNet{nil})
+	if got != "10.0.0.1" {
+		t.Errorf("ClientIP = %q, want RemoteAddr when trusted proxy entry is nil", got)
+	}
+}
+
 func TestClientIP_XForwardedFor_AllTrusted(t *testing.T) {
 	// With 10.0.0.0/8 explicitly trusted, all XFF entries are trusted →
 	// fallback to RemoteAddr.
@@ -103,9 +168,12 @@ func TestClientIP_XForwardedFor_AllTrusted(t *testing.T) {
 }
 
 func TestParseTrustedProxiesStrict_RejectsInvalid(t *testing.T) {
-	_, err := ParseTrustedProxiesStrict([]string{"not-a-cidr"})
+	_, err := ParseTrustedProxiesStrict([]string{"not-a-cidr-secret-token"})
 	if err == nil {
 		t.Fatal("expected error for invalid CIDR")
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "not-a-cidr") {
+		t.Fatalf("error leaked trusted proxy entry: %v", err)
 	}
 }
 
@@ -116,6 +184,39 @@ func TestParseTrustedProxiesStrict_AcceptsValid(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 networks, got %d", len(got))
+	}
+}
+
+func TestParseTrustedProxies_RejectsInvalid(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for invalid trusted proxy")
+		}
+	}()
+	_ = ParseTrustedProxies([]string{"not-a-cidr"})
+}
+
+func TestParseTrustedProxies_EmptyUsesDefault(t *testing.T) {
+	got := ParseTrustedProxies(nil)
+	if len(got) == 0 {
+		t.Fatal("expected default trusted proxy ranges")
+	}
+	if !isTrustedAddr("127.0.0.1:8080", got) {
+		t.Fatal("expected loopback address to be trusted by default")
+	}
+}
+
+func TestParseTrustedProxies_EmptyReturnsDefensiveCopy(t *testing.T) {
+	got := ParseTrustedProxies(nil)
+	got[0].IP = net.ParseIP("0.0.0.0")
+	got[0].Mask = net.CIDRMask(0, 32)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.Header.Set("X-Real-IP", "198.51.100.99")
+
+	if client := ClientIP(req); client != "203.0.113.10" {
+		t.Fatalf("mutating returned default proxies changed package defaults: got %q", client)
 	}
 }
 

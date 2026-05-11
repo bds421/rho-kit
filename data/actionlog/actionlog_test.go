@@ -2,7 +2,11 @@ package actionlog
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +96,18 @@ func newTestSecrets(t *testing.T) *StaticSecrets {
 	return NewStaticSecrets("k1", map[string][]byte{"k1": key})
 }
 
+type stubSecrets struct {
+	current string
+	keys    map[string][]byte
+}
+
+func (s stubSecrets) CurrentKeyID() string { return s.current }
+
+func (s stubSecrets) Resolve(keyID string) ([]byte, bool) {
+	k, ok := s.keys[keyID]
+	return k, ok
+}
+
 func TestAppend_SetsIDAndTimestamp(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
@@ -130,6 +146,129 @@ func TestAppend_RejectsMissingFields(t *testing.T) {
 	}
 }
 
+func TestAppend_RejectsInvalidBoundedFields(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	base := Entry{
+		TenantID: "tenant",
+		Actor:    "agent",
+		Action:   "user.delete",
+		Resource: "users/42",
+		Reason:   "ok",
+		Outcome:  OutcomeSuccess,
+	}
+	cases := []struct {
+		name string
+		mut  func(*Entry)
+	}{
+		{"id too long", func(e *Entry) { e.ID = strings.Repeat("a", MaxIDLen+1) }},
+		{"tenant too long", func(e *Entry) { e.TenantID = strings.Repeat("t", MaxTenantIDLen+1) }},
+		{"tenant invalid token", func(e *Entry) { e.TenantID = "tenant/1" }},
+		{"actor too long", func(e *Entry) { e.Actor = strings.Repeat("a", MaxActorLen+1) }},
+		{"actor invalid utf8", func(e *Entry) { e.Actor = string([]byte{0xff}) }},
+		{"actor contains nul", func(e *Entry) { e.Actor = "agent\x001" }},
+		{"actor contains newline", func(e *Entry) { e.Actor = "agent\n1" }},
+		{"actor contains space", func(e *Entry) { e.Actor = "agent 1" }},
+		{"actor contains tab", func(e *Entry) { e.Actor = "agent\t1" }},
+		{"action too long", func(e *Entry) { e.Action = strings.Repeat("x", MaxActionLen+1) }},
+		{"action contains carriage return", func(e *Entry) { e.Action = "user\rdelete" }},
+		{"action contains space", func(e *Entry) { e.Action = "user delete" }},
+		{"resource too long", func(e *Entry) { e.Resource = strings.Repeat("r", MaxResourceLen+1) }},
+		{"resource contains newline", func(e *Entry) { e.Resource = "users\n42" }},
+		{"resource contains space", func(e *Entry) { e.Resource = "users 42" }},
+		{"reason too long", func(e *Entry) { e.Reason = strings.Repeat("r", MaxReasonLen+1) }},
+		{"reason invalid utf8", func(e *Entry) { e.Reason = string([]byte{0xff}) }},
+		{"reason contains nul", func(e *Entry) { e.Reason = "reason\x00bad" }},
+		{"metadata too large", func(e *Entry) { e.Metadata = map[string]any{"blob": strings.Repeat("x", MaxMetadataBytes+1)} }},
+		{"metadata too many entries", func(e *Entry) {
+			e.Metadata = make(map[string]any, MaxMetadataEntries+1)
+			for i := 0; i < MaxMetadataEntries+1; i++ {
+				e.Metadata[fmt.Sprintf("k%d", i)] = i
+			}
+		}},
+		{"metadata invalid key", func(e *Entry) { e.Metadata = map[string]any{"bad key": "value"} }},
+		{"metadata invalid string", func(e *Entry) { e.Metadata = map[string]any{"k": "bad\x00value"} }},
+		{"metadata too deep", func(e *Entry) {
+			var cur any = "leaf"
+			for i := 0; i < MaxMetadataDepth+1; i++ {
+				cur = []any{cur}
+			}
+			e.Metadata = map[string]any{"deep": cur}
+		}},
+		{"metadata cycle", func(e *Entry) {
+			m := map[string]any{}
+			m["self"] = m
+			e.Metadata = m
+		}},
+		{"metadata unsupported value", func(e *Entry) { e.Metadata = map[string]any{"fn": func() {}} }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			entry := base
+			c.mut(&entry)
+			_, err := logger.Append(context.Background(), entry)
+			assert.ErrorIs(t, err, ErrInvalidEntry)
+			if c.name == "id too long" {
+				assert.NotContains(t, err.Error(), "128")
+				assert.NotContains(t, err.Error(), "129")
+			}
+		})
+	}
+}
+
+func TestAppend_RejectsLongSignatureKeyID(t *testing.T) {
+	logger := New(newMemStore(), stubSecrets{
+		current: strings.Repeat("k", MaxSignatureKeyIDLen+1),
+		keys: map[string][]byte{
+			strings.Repeat("k", MaxSignatureKeyIDLen+1): []byte("0123456789abcdef0123456789abcdef"),
+		},
+	})
+
+	_, err := logger.Append(context.Background(), Entry{
+		TenantID: "t",
+		Actor:    "a",
+		Action:   "x",
+		Outcome:  OutcomeSuccess,
+	})
+	assert.ErrorIs(t, err, ErrInvalidEntry)
+}
+
+func TestAppend_RejectsControlBytesInSignatureKeyID(t *testing.T) {
+	logger := New(newMemStore(), stubSecrets{
+		current: "k\n1",
+		keys: map[string][]byte{
+			"k\n1": []byte("0123456789abcdef0123456789abcdef"),
+		},
+	})
+
+	_, err := logger.Append(context.Background(), Entry{
+		TenantID: "t",
+		Actor:    "a",
+		Action:   "x",
+		Outcome:  OutcomeSuccess,
+	})
+	assert.ErrorIs(t, err, ErrInvalidEntry)
+}
+
+func TestValidateStoredEntry(t *testing.T) {
+	valid := Entry{
+		ID:             "entry-1",
+		TenantID:       "tenant",
+		Actor:          "agent",
+		Action:         "user.delete",
+		Outcome:        OutcomeSuccess,
+		SignatureKeyID: "k1",
+	}
+	assert.NoError(t, ValidateStoredEntry("tenant", valid))
+	assert.ErrorIs(t, ValidateStoredEntry("", valid), ErrInvalidEntry)
+	assert.ErrorIs(t, ValidateStoredEntry("other", valid), ErrInvalidEntry)
+
+	invalid := valid
+	invalid.Metadata = map[string]any{"bad key": "value"}
+	assert.ErrorIs(t, ValidateStoredEntry("tenant", invalid), ErrInvalidEntry)
+}
+
 func TestAppend_RejectsBadOutcome(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
@@ -152,6 +291,72 @@ func TestGet_VerifiesSignature(t *testing.T) {
 	got, err := logger.Get(context.Background(), written.ID)
 	require.NoError(t, err)
 	assert.Equal(t, written, got)
+}
+
+func TestAppend_ClonesMetadataBeforeStore(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+	metadata := map[string]any{
+		"reason": "original",
+		"nested": map[string]any{"key": "value"},
+	}
+
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t",
+		Actor:    "a",
+		Action:   "x",
+		Outcome:  OutcomeSuccess,
+		Metadata: metadata,
+	})
+	require.NoError(t, err)
+
+	metadata["reason"] = "mutated"
+	metadata["nested"].(map[string]any)["key"] = "mutated"
+	written.Metadata["reason"] = "returned"
+	written.Metadata["nested"].(map[string]any)["key"] = "returned"
+
+	got, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", got.Metadata["reason"])
+	assert.Equal(t, "value", got.Metadata["nested"].(map[string]any)["key"])
+
+	got.Metadata["reason"] = "get-mutated"
+	got.Metadata["nested"].(map[string]any)["key"] = "get-mutated"
+	gotAgain, err := logger.Get(context.Background(), written.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", gotAgain.Metadata["reason"])
+	assert.Equal(t, "value", gotAgain.Metadata["nested"].(map[string]any)["key"])
+}
+
+func TestEntryClone_DetachesMetadata(t *testing.T) {
+	metadata := map[string]any{
+		"nested": map[string]any{"key": "value"},
+		"list":   []any{map[string]any{"item": "value"}},
+	}
+	cloned := Entry{Metadata: metadata}.Clone()
+
+	metadata["nested"].(map[string]any)["key"] = "mutated"
+	metadata["list"].([]any)[0].(map[string]any)["item"] = "mutated"
+
+	assert.Equal(t, "value", cloned.Metadata["nested"].(map[string]any)["key"])
+	assert.Equal(t, "value", cloned.Metadata["list"].([]any)[0].(map[string]any)["item"])
+}
+
+func TestEntryClone_DoesNotPanicOnCyclicMetadata(t *testing.T) {
+	metadata := map[string]any{}
+	metadata["self"] = metadata
+	originalPtr := reflect.ValueOf(metadata).Pointer()
+
+	var cloned Entry
+	assert.NotPanics(t, func() {
+		cloned = Entry{Metadata: metadata}.Clone()
+	})
+	require.NotNil(t, cloned.Metadata)
+	clonedPtr := reflect.ValueOf(cloned.Metadata).Pointer()
+	self, ok := cloned.Metadata["self"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEqual(t, originalPtr, clonedPtr)
+	assert.Equal(t, clonedPtr, reflect.ValueOf(self).Pointer())
 }
 
 func TestGet_DetectsTamper(t *testing.T) {
@@ -196,6 +401,61 @@ func TestVerify_RejectsUnknownKeyID(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnknownKeyID)
 }
 
+func TestAppend_RejectsShortCustomSecret(t *testing.T) {
+	logger := New(newMemStore(), stubSecrets{
+		current: "secret-token",
+		keys:    map[string][]byte{"secret-token": []byte("too-short")},
+	})
+
+	_, err := logger.Append(context.Background(), Entry{
+		TenantID: "t",
+		Actor:    "a",
+		Action:   "x",
+		Outcome:  OutcomeSuccess,
+	})
+	assert.ErrorIs(t, err, ErrSecretTooShort)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestSign_RejectsEmptyCurrentKeyIDFromCustomSecrets(t *testing.T) {
+	logger := New(newMemStore(), stubSecrets{
+		current: "",
+		keys:    map[string][]byte{"": make([]byte, 32)},
+	})
+
+	sig, keyID, err := logger.Sign(Entry{
+		ID:         "e1",
+		TenantID:   "t",
+		Actor:      "a",
+		Action:     "x",
+		Outcome:    OutcomeSuccess,
+		OccurredAt: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+	})
+	assert.ErrorIs(t, err, ErrUnknownKeyID)
+	assert.Empty(t, sig)
+	assert.Empty(t, keyID)
+}
+
+func TestVerify_RejectsShortCustomSecret(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+	e, err := logger.Append(context.Background(), Entry{
+		TenantID: "t",
+		Actor:    "a",
+		Action:   "x",
+		Outcome:  OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	weakLogger := New(store, stubSecrets{
+		current: "k1",
+		keys:    map[string][]byte{"k1": []byte("too-short")},
+	})
+
+	err = weakLogger.Verify(e)
+	assert.ErrorIs(t, err, ErrSecretTooShort)
+}
+
 func TestList_FailsClosedOnTamperedEntry(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
@@ -227,6 +487,21 @@ func TestList_RejectsZeroQuery(t *testing.T) {
 	assert.ErrorIs(t, err, ErrQueryTenantRequired)
 }
 
+func TestList_RejectsQueryScopeConflict(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+	_, err := logger.List(context.Background(), Query{TenantID: "t", AllTenants: true})
+	assert.ErrorIs(t, err, ErrQueryScopeConflict)
+}
+
+func TestQueryValidate(t *testing.T) {
+	assert.ErrorIs(t, (Query{}).Validate(), ErrQueryTenantRequired)
+	assert.ErrorIs(t, (Query{Actor: "a"}).Validate(), ErrQueryTenantRequired)
+	assert.NoError(t, (Query{TenantID: "t"}).Validate())
+	assert.NoError(t, (Query{AllTenants: true}).Validate())
+	assert.ErrorIs(t, (Query{TenantID: "t", AllTenants: true}).Validate(), ErrQueryScopeConflict)
+}
+
 func TestList_AllTenantsOptIn(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
@@ -241,6 +516,26 @@ func TestList_AllTenantsOptIn(t *testing.T) {
 	got, err := logger.List(context.Background(), Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
+}
+
+func TestList_VerificationErrorDoesNotReflectEntryID(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t), WithIDFunc(func() string { return "secret-token" }))
+	written, err := logger.Append(context.Background(), Entry{
+		TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	tampered := store.entries[written.ID]
+	tampered.Signature = "tampered"
+	store.entries[written.ID] = tampered
+	store.mu.Unlock()
+
+	_, err = logger.List(context.Background(), Query{TenantID: "t"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSignatureInvalid)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
 }
 
 func TestVerifyChain_DetectsDeletion(t *testing.T) {
@@ -264,6 +559,29 @@ func TestVerifyChain_DetectsDeletion(t *testing.T) {
 
 	err := logger.VerifyChain(context.Background(), "t")
 	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestVerifyChain_ErrorDoesNotReflectTenantOrEntryID(t *testing.T) {
+	store := newMemStore()
+	logger := New(store, newTestSecrets(t))
+
+	for i := 0; i < 3; i++ {
+		_, err := logger.Append(context.Background(), Entry{
+			TenantID: "secret-token", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	store.mu.Lock()
+	middleID := store.order[1]
+	delete(store.entries, middleID)
+	store.order = append(store.order[:1], store.order[2:]...)
+	store.mu.Unlock()
+
+	err := logger.VerifyChain(context.Background(), "secret-token")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
 }
 
 func TestVerifyChain_DetectsReorder(t *testing.T) {
@@ -327,6 +645,14 @@ func TestStaticSecrets_ResolveReturnsCopy(t *testing.T) {
 	again, ok := ss.Resolve("k1")
 	require.True(t, ok)
 	assert.Equal(t, byte('0'), again[0], "Resolve must return a defensive copy")
+}
+
+func TestStaticSecrets_NilReceiverFailsClosed(t *testing.T) {
+	var ss *StaticSecrets
+	assert.Empty(t, ss.CurrentKeyID())
+	got, ok := ss.Resolve("k1")
+	assert.False(t, ok)
+	assert.Nil(t, got)
 }
 
 // TestSign_NewlineInjectionDoesNotCollide is the regression test for
@@ -450,6 +776,36 @@ func TestRotation_VerifiesEntriesSignedWithOlderKey(t *testing.T) {
 func TestNew_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { New(nil, newTestSecrets(t)) })
 	assert.Panics(t, func() { New(newMemStore(), nil) })
+	assert.Panics(t, func() { New(newMemStore(), newTestSecrets(t), nil) })
+}
+
+func TestSignedLogger_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		log  *signedLogger
+	}{
+		{"nil", nil},
+		{"zero", &signedLogger{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.log.Append(ctx, Entry{TenantID: "t", Actor: "a", Action: "x", Outcome: OutcomeSuccess})
+			assert.ErrorIs(t, err, ErrInvalidStore)
+
+			_, err = tc.log.Get(ctx, "id")
+			assert.ErrorIs(t, err, ErrInvalidStore)
+
+			_, err = tc.log.List(ctx, Query{TenantID: "t"})
+			assert.ErrorIs(t, err, ErrInvalidStore)
+
+			_, _, err = tc.log.Sign(Entry{})
+			assert.ErrorIs(t, err, ErrInvalidStore)
+
+			assert.ErrorIs(t, tc.log.Verify(Entry{}), ErrInvalidStore)
+			assert.ErrorIs(t, tc.log.VerifyChain(ctx, "t"), ErrInvalidStore)
+		})
+	}
 }
 
 func TestWithClock_PanicsOnNil(t *testing.T) {
@@ -458,6 +814,26 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 
 func TestWithIDFunc_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithIDFunc(nil) })
+}
+
+func TestWithIDFuncE_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { WithIDFuncE(nil) })
+}
+
+func TestAppend_ReturnsIDGenerationError(t *testing.T) {
+	want := errors.New("id source unavailable")
+	logger := New(newMemStore(), newTestSecrets(t), WithIDFuncE(func() (string, error) {
+		return "", want
+	}))
+
+	_, err := logger.Append(context.Background(), Entry{
+		TenantID: "tenant",
+		Actor:    "alice",
+		Action:   "file.delete",
+		Outcome:  OutcomeDenied,
+	})
+
+	assert.ErrorIs(t, err, want)
 }
 
 // TestVerifyChain_SpansKeyRotation is the regression test for the
@@ -505,8 +881,8 @@ func TestNewStaticSecrets_PanicsOnUnknownCurrent(t *testing.T) {
 }
 
 func TestNewStaticSecrets_PanicsOnShortKey(t *testing.T) {
-	assert.Panics(t, func() {
-		NewStaticSecrets("v1", map[string][]byte{"v1": []byte("too-short")})
+	assert.PanicsWithValue(t, "actionlog: NewStaticSecrets: secret must be at least 32 bytes", func() {
+		NewStaticSecrets("secret-token", map[string][]byte{"secret-token": []byte("too-short")})
 	})
 }
 

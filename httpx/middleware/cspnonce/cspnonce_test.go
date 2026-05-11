@@ -2,6 +2,8 @@ package cspnonce
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -70,6 +72,48 @@ func TestMiddleware_ReportOnlyHeaderName(t *testing.T) {
 	assert.NotEmpty(t, rr.Header().Get("Content-Security-Policy-Report-Only"))
 }
 
+func TestMiddleware_NonceGenerationFailureUsesJSONError(t *testing.T) {
+	old := nonceRandReader
+	nonceRandReader = errReader{}
+	t.Cleanup(func() { nonceRandReader = old })
+
+	handler := Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler should not run when nonce generation fails")
+	}))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	assert.Equal(t, "csp nonce generation failed", body.Error)
+	assert.NotEmpty(t, body.Code)
+}
+
+func TestMiddleware_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		Middleware(nil)
+	})
+}
+
+func TestWithBasePolicy_PanicsOnInvalidHeaderValue(t *testing.T) {
+	assert.Panics(t, func() {
+		WithBasePolicy("default-src 'self'\r\nX-Evil: injected")
+	})
+}
+
+func TestWithBasePolicy_PanicsOnOuterWhitespace(t *testing.T) {
+	assert.Panics(t, func() {
+		WithBasePolicy(" default-src 'self'")
+	})
+}
+
 func TestFromContext_AbsentMiddlewareReturnsEmpty(t *testing.T) {
 	assert.Empty(t, FromContext(context.Background()))
 }
@@ -94,10 +138,25 @@ func TestInjectNonce_PreservesOtherDirectives(t *testing.T) {
 	assert.Contains(t, got, "style-src 'self' 'nonce-X'")
 }
 
+func TestInjectNonce_RecognizesDirectiveWhitespace(t *testing.T) {
+	got := injectNonce("default-src 'none'; script-src\t'self'; style-src\t\t'self'", "X")
+
+	assert.Contains(t, got, "script-src\t'self' 'nonce-X'")
+	assert.Contains(t, got, "style-src\t\t'self' 'nonce-X'")
+	assert.Equal(t, 1, strings.Count(got, "script-src"))
+	assert.Equal(t, 1, strings.Count(got, "style-src"))
+}
+
 func TestInjectNonce_EmptyPolicyProducesScriptAndStyle(t *testing.T) {
 	got := injectNonce("", "X")
 	assert.Contains(t, got, "script-src 'self' 'nonce-X'")
 	assert.Contains(t, got, "style-src 'self' 'nonce-X'")
 	assert.Equal(t, 1, strings.Count(got, "script-src"))
 	assert.Equal(t, 1, strings.Count(got, "style-src"))
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable: secret-token")
 }

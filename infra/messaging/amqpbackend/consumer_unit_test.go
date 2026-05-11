@@ -49,6 +49,12 @@ func (f *fakeDeadLetterPublisher) PublishRaw(_ context.Context, exchange, routin
 	return f.err
 }
 
+type panicDeadLetterPublisher struct{}
+
+func (panicDeadLetterPublisher) PublishRaw(context.Context, string, string, []byte, string) error {
+	panic("dead-letter publisher exploded")
+}
+
 func newTestConsumer(dlPublisher DeadLetterPublisher, hooks ConsumerHooks) *Consumer {
 	return &Consumer{
 		logger:    discardLogger(),
@@ -210,7 +216,7 @@ func TestConsumer_HandleFailure_PermanentError_DeadLettersWhenDLEConfigured(t *t
 	msg, _ := messaging.NewMessage("test.event", "payload")
 	delivery := makeAMQPDelivery(ack, msg)
 	binding := messaging.Binding{
-		BindingSpec: messaging.BindingSpec{Queue: "test-queue", RoutingKey: "test.event"},
+		BindingSpec:  messaging.BindingSpec{Queue: "test-queue", RoutingKey: "test.event"},
 		DeadExchange: "test-exchange.dead",
 	}
 
@@ -258,6 +264,29 @@ func TestConsumer_HandleFailure_Retry_Nacks(t *testing.T) {
 
 	assert.True(t, ack.nacked)
 	assert.True(t, retryCalled)
+}
+
+func TestConsumer_HandleFailure_RetryHookPanic_DoesNotPanic(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	c := newTestConsumer(nil, ConsumerHooks{
+		OnRetry: func(_, _, _ string, _ int) {
+			panic("hook exploded")
+		},
+	})
+	msg, _ := messaging.NewMessage("test.event", "payload")
+	delivery := makeAMQPDelivery(ack, msg)
+	binding := messaging.Binding{
+		BindingSpec: messaging.BindingSpec{
+			Queue:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+		},
+	}
+
+	assert.NotPanics(t, func() {
+		c.handleFailure(context.Background(), delivery, msg, binding, errors.New("transient"))
+	})
+	assert.True(t, ack.nacked, "hook panic must not prevent retry nack")
 }
 
 func TestConsumer_HandleFailure_DeadLetter_PublishesAndAcks(t *testing.T) {
@@ -339,6 +368,43 @@ func TestConsumer_HandleFailure_DeadLetter_PublishFails_Nacks(t *testing.T) {
 
 	assert.True(t, dlPub.called)
 	assert.True(t, ack.nacked, "should nack when dead-letter publish fails")
+	assert.False(t, ack.acked)
+}
+
+func TestConsumer_HandleFailure_DeadLetterPublisherPanic_Nacks(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	c := newTestConsumer(panicDeadLetterPublisher{}, ConsumerHooks{})
+	msg, _ := messaging.NewMessage("test.event", "payload")
+
+	body, _ := json.Marshal(msg)
+	delivery := amqp.Delivery{
+		Acknowledger: ack,
+		Body:         body,
+		Exchange:     "test-exchange",
+		RoutingKey:   "test.event",
+		Headers: amqp.Table{
+			"x-death": []any{
+				amqp.Table{
+					"queue":  "test-queue",
+					"reason": "rejected",
+					"count":  int64(3),
+				},
+			},
+		},
+	}
+	binding := messaging.Binding{
+		BindingSpec: messaging.BindingSpec{
+			Queue:      "test-queue",
+			RoutingKey: "test.event",
+			Retry:      &messaging.RetryPolicy{MaxRetries: 3},
+		},
+		DeadExchange: "test-exchange.dead",
+	}
+
+	assert.NotPanics(t, func() {
+		c.handleFailure(context.Background(), delivery, msg, binding, errors.New("too many retries"))
+	})
+	assert.True(t, ack.nacked, "dead-letter publisher panic should follow publish-failure path")
 	assert.False(t, ack.acked)
 }
 
@@ -581,6 +647,12 @@ func (noopConnector) Close() error                    { return nil }
 func TestNewConsumer_PanicsOnNilConnector(t *testing.T) {
 	assert.Panics(t, func() {
 		NewConsumer(nil, nil, discardLogger())
+	})
+}
+
+func TestNewConsumer_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		NewConsumer(noopConnector{}, nil, discardLogger(), nil)
 	})
 }
 

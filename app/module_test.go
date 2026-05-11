@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -86,10 +87,11 @@ func TestWithModule_PanicsOnDuplicateName(t *testing.T) {
 		r := recover()
 		require.NotNil(t, r, "expected panic for duplicate module name")
 		assert.Contains(t, fmt.Sprint(r), "duplicate module name")
+		assert.NotContains(t, fmt.Sprint(r), "secret-token")
 	}()
 	New("test-svc", "v0.1.0", BaseConfig{}).
-		WithModule(newStubModule("mymod")).
-		WithModule(newStubModule("mymod"))
+		WithModule(newStubModule("mymod-secret-token")).
+		WithModule(newStubModule("mymod-secret-token"))
 }
 
 func TestWithModule_FluentChaining(t *testing.T) {
@@ -113,8 +115,9 @@ func TestModuleContext_Module_Panics_WhenNotFound(t *testing.T) {
 		r := recover()
 		require.NotNil(t, r, "expected panic for unknown module")
 		assert.Contains(t, fmt.Sprint(r), "not found")
+		assert.NotContains(t, fmt.Sprint(r), "secret-token")
 	}()
-	mc.Module("nonexistent")
+	mc.Module("nonexistent-secret-token")
 }
 
 func TestModuleContext_Module_ReturnsModule(t *testing.T) {
@@ -169,6 +172,23 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 	assert.Equal(t, []string{"init-first", "init-second", "close-second", "close-first"}, order)
 }
 
+func TestCloseModules_LogRedactsModuleNameAndError(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	m := newStubModule("close-mod-secret-token")
+	m.closeFn = func(context.Context) error {
+		return errors.New("close failed token=tenant-secret")
+	}
+
+	closeModules(context.Background(), []Module{m}, logger)
+
+	got := logs.String()
+	assert.Contains(t, got, "module close error")
+	assert.Contains(t, got, "<redacted")
+	assert.NotContains(t, got, "close-mod-secret-token")
+	assert.NotContains(t, got, "tenant-secret")
+}
+
 func TestInitModules_FailureClosesInitialized(t *testing.T) {
 	var closedModules []string
 
@@ -178,7 +198,7 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 		return nil
 	}
 
-	m2 := newStubModule("fail-mod")
+	m2 := newStubModule("fail-mod-secret-token")
 	m2.initFn = func(_ context.Context, _ ModuleContext) error {
 		return errors.New("init boom")
 	}
@@ -205,8 +225,8 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fail-mod")
 	assert.Contains(t, err.Error(), "init boom")
+	assert.NotContains(t, err.Error(), "secret-token")
 	assert.Nil(t, cleanup)
 
 	// Only the first module (already init'd) should have been closed.
@@ -328,7 +348,7 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 		return nil
 	}
 
-	mod2 := newStubModule("bad-mod")
+	mod2 := newStubModule("bad-mod-secret-token")
 	mod2.initFn = func(_ context.Context, _ ModuleContext) error {
 		return errors.New("connection refused")
 	}
@@ -345,8 +365,9 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 
 	err := b.Run()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "bad-mod")
 	assert.Contains(t, err.Error(), "connection refused")
+	assert.NotContains(t, err.Error(), "bad-mod-secret-token")
+	assert.NotContains(t, err.Error(), "secret-token")
 	assert.True(t, closed.Load(), "good-mod should have been closed")
 }
 
@@ -496,7 +517,7 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 		return nil
 	}
 
-	m2 := newStubModule("panic-init-mod")
+	m2 := newStubModule("panic-init-mod-secret-token")
 	m2.initFn = func(_ context.Context, _ ModuleContext) error {
 		panic("init boom")
 	}
@@ -513,8 +534,10 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "panic-init-mod")
-	assert.Contains(t, err.Error(), "init boom")
+	assert.Contains(t, err.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, err.Error(), "panic-init-mod-secret-token")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "init boom")
 	assert.Nil(t, cleanup)
 
 	// The first module should have been cleaned up despite the panic.
@@ -601,10 +624,10 @@ func TestBaseModule_EmbeddingPattern(t *testing.T) {
 
 func TestInitModules_DuplicateNamePanics(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	m1 := &stubModule{name: "dup"}
-	m2 := &stubModule{name: "dup"}
+	m1 := &stubModule{name: "dup-secret-token"}
+	m2 := &stubModule{name: "dup-secret-token"}
 
-	assert.Panics(t, func() {
+	assert.PanicsWithValue(t, "app: duplicate module name (builtin + user modules must have unique names)", func() {
 		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{})
 	})
 }

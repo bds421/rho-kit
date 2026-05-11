@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/v2/budget"
 	budgetredis "github.com/bds421/rho-kit/data/budget/redis/v2"
+	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
 func newTestClient(t *testing.T) (goredis.UniversalClient, *miniredis.Miniredis) {
@@ -44,6 +45,16 @@ func TestNew_PanicsOnZeroCap(t *testing.T) {
 	budgetredis.New(client, 0, time.Hour)
 }
 
+func TestNew_PanicsOnLuaUnsafeCap(t *testing.T) {
+	client, _ := newTestClient(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on cap above Lua exact integer range")
+		}
+	}()
+	budgetredis.New(client, int64(1<<53), time.Hour)
+}
+
 func TestNew_PanicsOnZeroPeriod(t *testing.T) {
 	client, _ := newTestClient(t)
 	defer func() {
@@ -64,12 +75,93 @@ func TestNew_PanicsOnTTLLessThanPeriod(t *testing.T) {
 	budgetredis.New(client, 100, time.Hour, budgetredis.WithKeyTTL(time.Minute))
 }
 
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	client, _ := newTestClient(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	budgetredis.New(client, 100, time.Hour, nil)
+}
+
+func TestWithKeyPrefix_PanicsOnInvalid(t *testing.T) {
+	for _, prefix := range []string{
+		"",
+		"bad\nprefix",
+		"bad\x00prefix",
+		"bad prefix",
+		"bad\tprefix",
+		string([]byte{0xff, 0xfe}),
+		strings.Repeat("a", 129),
+	} {
+		t.Run("invalid", func(t *testing.T) {
+			defer func() {
+				r := recover()
+				require.NotNil(t, r, "expected panic")
+				if len(prefix) > 128 {
+					msg, _ := r.(string)
+					assert.NotContains(t, msg, "128")
+					assert.NotContains(t, msg, "129")
+				}
+			}()
+			budgetredis.WithKeyPrefix(prefix)
+		})
+	}
+}
+
+func TestInvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		b    *budgetredis.Budget
+	}{
+		{"nil", nil},
+		{"zero", &budgetredis.Budget{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, rem, retry, err := tc.b.Consume(ctx, "k", 1)
+			assert.False(t, ok)
+			assert.Equal(t, int64(0), rem)
+			assert.Equal(t, time.Duration(0), retry)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+
+			rem, err = tc.b.Peek(ctx, "k")
+			assert.Equal(t, int64(0), rem)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+
+			rem, err = tc.b.Refund(ctx, "k", 1)
+			assert.Equal(t, int64(0), rem)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+		})
+	}
+}
+
 func TestConsume_RejectsEmptyKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
 	ok, _, _, err := b.Consume(context.Background(), "", 1)
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestConsume_RejectsInvalidKey(t *testing.T) {
+	client, _ := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	for _, key := range []string{
+		strings.Repeat("a", budget.MaxKeyLen+1),
+		"tenant\x00acme",
+		"tenant acme",
+		"tenant\tacme",
+		string([]byte{0xff, 0xfe}),
+	} {
+		t.Run("invalid", func(t *testing.T) {
+			ok, _, _, err := b.Consume(context.Background(), key, 1)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, budget.ErrInvalidKey)
+		})
+	}
 }
 
 func TestConsume_RejectsNegativeAmount(t *testing.T) {
@@ -135,6 +227,13 @@ func TestPeek_RejectsEmptyKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
 	_, err := b.Peek(context.Background(), "")
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestPeek_RejectsInvalidKey(t *testing.T) {
+	client, _ := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	_, err := b.Peek(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1))
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
@@ -267,7 +366,7 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 	ctx := context.Background()
 
 	_, _, _, _ = b.Consume(ctx, "alice", 5)
-	rem, err := b.Refund(ctx, "alice", 999)
+	rem, err := b.Refund(ctx, "alice", math.MaxInt64)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem)
 }
@@ -284,6 +383,13 @@ func TestRefund_RejectsEmptyKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	b := budgetredis.New(client, 100, time.Hour)
 	_, err := b.Refund(context.Background(), "", 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestRefund_RejectsInvalidKey(t *testing.T) {
+	client, _ := newTestClient(t)
+	b := budgetredis.New(client, 100, time.Hour)
+	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 

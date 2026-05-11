@@ -118,6 +118,11 @@ func schemaFor(t reflect.Type, visiting map[reflect.Type]bool) (map[string]any, 
 		if t.Elem().Kind() == reflect.Uint8 {
 			return map[string]any{"type": "string"}, nil
 		}
+		if visiting[t] {
+			return nil, fmt.Errorf("%w: recursive array or slice type", ErrCyclicSchema)
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
 		items, err := schemaFor(t.Elem(), visiting)
 		if err != nil {
 			return nil, err
@@ -130,8 +135,13 @@ func schemaFor(t reflect.Type, visiting map[reflect.Type]bool) (map[string]any, 
 	case reflect.Map:
 		// JSON-Schema only models string-keyed maps.
 		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("%w: map with non-string key %s", ErrUnsupportedType, t.Key())
+			return nil, fmt.Errorf("%w: map key must be string", ErrUnsupportedType)
 		}
+		if visiting[t] {
+			return nil, fmt.Errorf("%w: recursive map type", ErrCyclicSchema)
+		}
+		visiting[t] = true
+		defer delete(visiting, t)
 		valSchema, err := schemaFor(t.Elem(), visiting)
 		if err != nil {
 			return nil, err
@@ -152,7 +162,7 @@ func schemaFor(t reflect.Type, visiting map[reflect.Type]bool) (map[string]any, 
 		return structSchema(t, visiting)
 
 	default:
-		return nil, fmt.Errorf("%w: %s (kind %s)", ErrUnsupportedType, t.String(), t.Kind())
+		return nil, fmt.Errorf("%w: unsupported schema type", ErrUnsupportedType)
 	}
 }
 
@@ -162,7 +172,7 @@ func schemaFor(t reflect.Type, visiting map[reflect.Type]bool) (map[string]any, 
 // reference themselves.
 func structSchema(t reflect.Type, visiting map[reflect.Type]bool) (map[string]any, error) {
 	if visiting[t] {
-		return nil, fmt.Errorf("%w: %s", ErrCyclicSchema, t.String())
+		return nil, fmt.Errorf("%w: recursive struct type", ErrCyclicSchema)
 	}
 	visiting[t] = true
 	// Defer-revert so siblings of the cycling type still parse.

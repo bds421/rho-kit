@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries
+.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
@@ -84,8 +84,8 @@ clean:
 	rm -f $(COVERAGE_FILE)
 	go clean -cache -testcache
 
-## ci: Run the full CI pipeline locally (lint + test + build + tracked-binaries check)
-ci: check-no-binaries lint test-race build
+## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries lint test-race build
 
 ## check-publishable: Static pre-tag gate — fail if any go.mod still pins internal modules at v0.0.0
 check-publishable:
@@ -97,3 +97,11 @@ check-publishable:
 # directories. Run as part of `make ci` and pre-commit.
 check-no-binaries:
 	@bash tools/check-no-binaries.sh
+
+## check-dependency-allowlist: Reject unreviewed direct external Go dependencies.
+check-dependency-allowlist:
+	@bash tools/check-direct-dependency-allowlist.sh
+
+## check-dependency-boundaries: Keep heavy optional SDKs in adapter/test modules.
+check-dependency-boundaries:
+	@bash tools/check-heavy-dependency-boundaries.sh

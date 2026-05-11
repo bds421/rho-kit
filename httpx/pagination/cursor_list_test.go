@@ -224,6 +224,27 @@ func TestNewCursorSigner_RejectsShortSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for <32-byte secret")
 	}
+	if strings.Contains(err.Error(), "5") {
+		t.Fatalf("cursor signer error leaked supplied secret length: %v", err)
+	}
+}
+
+func TestCursorSigner_ZeroValueFailsClosed(t *testing.T) {
+	var zero CursorSigner
+	if got := zero.Encode("id-1"); got != "" {
+		t.Fatalf("zero-value Encode returned %q, want empty", got)
+	}
+	if _, err := zero.Decode("payload.signature"); !errors.Is(err, ErrCursorInvalid) {
+		t.Fatalf("zero-value Decode error = %v, want ErrCursorInvalid", err)
+	}
+
+	var nilSigner *CursorSigner
+	if got := nilSigner.Encode("id-1"); got != "" {
+		t.Fatalf("nil Encode returned %q, want empty", got)
+	}
+	if _, err := nilSigner.Decode("payload.signature"); !errors.Is(err, ErrCursorInvalid) {
+		t.Fatalf("nil Decode error = %v, want ErrCursorInvalid", err)
+	}
 }
 
 func TestCursorSigner_EncodeEmptyReturnsEmpty(t *testing.T) {
@@ -264,6 +285,166 @@ func TestHandleCursorList_invalidCursor(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "invalid cursor") || strings.Contains(body, "not-a-uuid") {
+		t.Fatalf("body = %q, want generic invalid cursor without raw cursor", body)
+	}
+}
+
+func TestHandleCursorList_oversizedCursorReturns400WithoutCallingListFn(t *testing.T) {
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, cursor string, limit int) ([]testItem, error) {
+				listFnCalled = true
+				return nil, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor="+strings.Repeat("a", MaxCursorLen+1), nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if listFnCalled {
+		t.Fatal("ListFn should not be called for oversized cursor")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "invalid cursor") {
+		t.Fatalf("body = %q, want invalid cursor", body)
+	}
+}
+
+func TestHandleCursorList_ambiguousQueryReturns400WithoutCallingListFn(t *testing.T) {
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, cursor string, limit int) ([]testItem, error) {
+				listFnCalled = true
+				return nil, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor=a&cursor=b", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if listFnCalled {
+		t.Fatal("ListFn should not be called for ambiguous query")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "invalid pagination query") {
+		t.Fatalf("body = %q, want invalid pagination query", body)
+	}
+}
+
+func TestHandleCursorList_invalidLimitConfigReturns500WithoutCallingListFn(t *testing.T) {
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 0,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, cursor string, limit int) ([]testItem, error) {
+				listFnCalled = true
+				return nil, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if listFnCalled {
+		t.Fatal("ListFn should not be called for invalid limit config")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "internal error") {
+		t.Fatalf("body = %q, want internal error", body)
+	}
+}
+
+func TestHandleCursorList_InvalidSignerReturns500WithoutCallingListFn(t *testing.T) {
+	var signer CursorSigner
+	listFnCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, _ string, _ int) ([]testItem, error) {
+				listFnCalled = true
+				return []testItem{{ID: "1", Name: "a"}}, nil
+			},
+			IDFn:   func(i testItem) string { return i.ID },
+			Signer: &signer,
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if listFnCalled {
+		t.Fatal("ListFn should not be called for invalid signer")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "internal error") {
+		t.Fatalf("body = %q, want internal error", body)
+	}
+}
+
+func TestHandleCursorList_ValidatorErrorDoesNotLeak(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleCursorList(w, r, CursorListOpts[testItem]{
+			DefaultLimit: 10,
+			MaxLimit:     100,
+			ListFn: func(_ context.Context, cursor string, limit int) ([]testItem, error) {
+				t.Error("ListFn should not be called for invalid cursor")
+				return nil, nil
+			},
+			IDFn: func(i testItem) string { return i.ID },
+			Validator: func(string) error {
+				return errors.New("cursor lookup failed: redis://user:secret@10.0.0.5/0")
+			},
+			Logger: slog.Default(),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?cursor=opaque-token", nil)
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "invalid cursor") {
+		t.Fatalf("body = %q, want invalid cursor", body)
+	}
+	for _, leak := range []string{"redis://", "secret", "10.0.0.5", "opaque-token"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("body leaked %q: %q", leak, body)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,6 +117,76 @@ func TestDo_onRetryCalled(t *testing.T) {
 	}
 	if attempts[0] != 1 || attempts[1] != 2 {
 		t.Fatalf("unexpected attempt sequence: %v", attempts)
+	}
+}
+
+func TestDo_OnRetryPanicDoesNotStopRetries(t *testing.T) {
+	var calls int
+	err := Do(context.Background(), func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return errors.New("transient")
+		}
+		return nil
+	},
+		WithMaxRetries(2),
+		WithBaseDelay(time.Millisecond),
+		WithMaxDelay(time.Millisecond),
+		WithJitter(0),
+		WithOnRetry(func(error, int, time.Duration) {
+			panic("retry hook exploded")
+		}),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected retry after OnRetry panic, got %d calls", calls)
+	}
+}
+
+func TestDo_RetryIfPanicStopsRetrying(t *testing.T) {
+	sentinel := errors.New("transient")
+	var calls int
+	err := Do(context.Background(), func(context.Context) error {
+		calls++
+		return sentinel
+	}, WithRetryIf(func(error) bool {
+		panic("predicate exploded")
+	}))
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected original error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected no retry after RetryIf panic, got %d calls", calls)
+	}
+}
+
+func TestDo_DelayOverridePanicFallsBack(t *testing.T) {
+	var calls int
+	err := Do(context.Background(), func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return errors.New("transient")
+		}
+		return nil
+	},
+		WithMaxRetries(2),
+		WithBaseDelay(time.Millisecond),
+		WithMaxDelay(time.Millisecond),
+		WithJitter(0),
+		WithDelayOverride(func(error) time.Duration {
+			panic("delay hook exploded")
+		}),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected retry after DelayOverride panic, got %d calls", calls)
 	}
 }
 
@@ -331,6 +402,127 @@ func TestLoop_NilLoggerNormalized(t *testing.T) {
 	}
 }
 
+func TestLoop_RestartsAfterWorkerPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Loop(ctx, slog.Default(), "test", func(context.Context) error {
+			if calls.Add(1) == 1 {
+				panic("worker exploded")
+			}
+			cancel()
+			return nil
+		}, WithBaseDelay(time.Millisecond), WithMaxDelay(time.Millisecond), WithJitter(0))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Loop did not return after restart")
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("expected Loop to restart after panic, got %d calls", got)
+	}
+}
+
+func TestLoop_OnRetryPanicDoesNotStopLoop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Loop(ctx, slog.Default(), "test", func(context.Context) error {
+			if calls.Add(1) == 1 {
+				return errors.New("transient")
+			}
+			cancel()
+			return nil
+		},
+			WithBaseDelay(time.Millisecond),
+			WithMaxDelay(time.Millisecond),
+			WithJitter(0),
+			WithOnRetry(func(error, int, time.Duration) {
+				panic("retry hook exploded")
+			}),
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Loop did not continue after OnRetry panic")
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("expected Loop to continue after OnRetry panic, got %d calls", got)
+	}
+}
+
+func TestLoop_RetryIfPanicStopsLoop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Loop(ctx, slog.Default(), "test", func(context.Context) error {
+			calls.Add(1)
+			return errors.New("transient")
+		}, WithRetryIf(func(error) bool {
+			panic("predicate exploded")
+		}))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Loop did not stop after RetryIf panic")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected one call before RetryIf panic stopped loop, got %d", got)
+	}
+}
+
+func TestLoop_DelayOverridePanicFallsBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Loop(ctx, slog.Default(), "test", func(context.Context) error {
+			if calls.Add(1) == 1 {
+				return errors.New("transient")
+			}
+			cancel()
+			return nil
+		},
+			WithBaseDelay(time.Millisecond),
+			WithMaxDelay(time.Millisecond),
+			WithJitter(0),
+			WithDelayOverride(func(error) time.Duration {
+				panic("delay hook exploded")
+			}),
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Loop did not continue after DelayOverride panic")
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("expected Loop to continue after DelayOverride panic, got %d calls", got)
+	}
+}
+
 func TestLoop_PanicsOnNilFn(t *testing.T) {
 	defer func() {
 		if rcv := recover(); rcv == nil {
@@ -340,6 +532,124 @@ func TestLoop_PanicsOnNilFn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	Loop(ctx, slog.Default(), "test", nil)
+}
+
+func TestDo_PanicsOnNilFn(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when Do called with nil fn")
+		}
+	}()
+	_ = Do(context.Background(), nil)
+}
+
+func TestDo_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when Do called with nil option")
+		}
+	}()
+	_ = Do(context.Background(), func(context.Context) error { return nil }, nil)
+}
+
+func TestDoWith_PanicsOnNilFn(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when DoWith called with nil fn")
+		}
+	}()
+	_ = DoWith(context.Background(), DefaultPolicy(), nil)
+}
+
+func TestDoWith_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when DoWith called with nil option")
+		}
+	}()
+	_ = DoWith(context.Background(), DefaultPolicy(), func(context.Context) error { return nil }, nil)
+}
+
+func TestDefaultPolicies_ReturnFreshValues(t *testing.T) {
+	p := DefaultPolicy()
+	p.MaxRetries = 0
+	p.RetryIf = nil
+
+	fresh := DefaultPolicy()
+	if fresh.MaxRetries != 3 {
+		t.Fatalf("DefaultPolicy() reflected caller mutation: %+v", fresh)
+	}
+	if fresh.RetryIf == nil {
+		t.Fatal("DefaultPolicy() lost RetryIf predicate")
+	}
+
+	worker := WorkerPolicy()
+	worker.MaxRetries = 0
+	if got := WorkerPolicy().MaxRetries; got != -1 {
+		t.Fatalf("WorkerPolicy() reflected caller mutation: MaxRetries=%d", got)
+	}
+}
+
+func TestDoWith_PanicsOnInvalidPolicy(t *testing.T) {
+	defer func() {
+		rcv := recover()
+		if rcv == nil {
+			t.Fatal("expected panic for invalid policy")
+		}
+		if rcv != "retry: invalid policy" {
+			t.Fatalf("panic = %q, want %q", rcv, "retry: invalid policy")
+		}
+	}()
+	_ = DoWith(context.Background(), Policy{
+		MaxRetries: 1,
+		BaseDelay:  0,
+		MaxDelay:   time.Millisecond,
+		Factor:     1,
+	}, func(context.Context) error { return nil })
+}
+
+func TestMustValidatePolicyPanicDoesNotReflectContext(t *testing.T) {
+	defer func() {
+		rcv := recover()
+		if rcv != "retry: invalid policy" {
+			t.Fatalf("panic = %q, want %q", rcv, "retry: invalid policy")
+		}
+	}()
+
+	mustValidatePolicy("secret-token", Policy{})
+}
+
+func TestLoop_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic when Loop called with nil option")
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Loop(ctx, slog.Default(), "test", func(context.Context) error { return nil }, nil)
+}
+
+func TestLoop_PanicsOnInvalidPolicyOption(t *testing.T) {
+	defer func() {
+		rcv := recover()
+		if rcv == nil {
+			t.Fatal("expected panic for invalid policy option")
+		}
+		msg, ok := rcv.(string)
+		if !ok {
+			t.Fatalf("panic = %T, want string", rcv)
+		}
+		if msg != "retry: WithMaxElapsedTime requires d >= 0" {
+			t.Fatalf("panic = %q, want %q", msg, "retry: WithMaxElapsedTime requires d >= 0")
+		}
+		if strings.Contains(msg, "-1s") {
+			t.Fatalf("panic reflected invalid duration: %q", msg)
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Loop(ctx, slog.Default(), "test", func(context.Context) error { return nil }, WithMaxElapsedTime(-time.Second))
 }
 
 func TestPolicy_Delay(t *testing.T) {
@@ -373,4 +683,50 @@ func TestPolicy_Delay(t *testing.T) {
 	if d10 != 1*time.Second {
 		t.Errorf("Delay(10) = %v, want 1s (capped)", d10)
 	}
+}
+
+func TestPolicy_ValidateRejectsInvalidValues(t *testing.T) {
+	valid := DefaultPolicy()
+	tests := []struct {
+		name      string
+		p         Policy
+		forbidden string
+	}{
+		{name: "base delay", p: func() Policy { p := valid; p.BaseDelay = 0; return p }(), forbidden: "0s"},
+		{name: "max delay", p: func() Policy { p := valid; p.MaxDelay = 0; return p }(), forbidden: "0s"},
+		{name: "factor", p: func() Policy { p := valid; p.Factor = 0.5; return p }(), forbidden: "0.5"},
+		{name: "negative jitter", p: func() Policy { p := valid; p.Jitter = -0.1; return p }(), forbidden: "-0.1"},
+		{name: "large jitter", p: func() Policy { p := valid; p.Jitter = 1.1; return p }(), forbidden: "1.1"},
+		{name: "stable reset", p: func() Policy { p := valid; p.StableReset = -time.Millisecond; return p }(), forbidden: "-1ms"},
+		{name: "max elapsed", p: func() Policy { p := valid; p.MaxElapsedTime = -time.Millisecond; return p }(), forbidden: "-1ms"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.p.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if strings.Contains(err.Error(), tt.forbidden) {
+				t.Fatalf("validation error reflected invalid value: %q", err)
+			}
+		})
+	}
+}
+
+func TestPolicy_NewBackoffPanicsOnInvalidPolicy(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic for invalid policy")
+		}
+	}()
+	_ = (Policy{}).NewBackoff()
+}
+
+func TestPolicy_DelayPanicsOnInvalidPolicy(t *testing.T) {
+	defer func() {
+		if rcv := recover(); rcv == nil {
+			t.Fatal("expected panic for invalid policy")
+		}
+	}()
+	_ = (Policy{}).Delay(0)
 }

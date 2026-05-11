@@ -3,7 +3,6 @@ package flags
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/open-feature/go-sdk/openfeature"
@@ -41,6 +40,7 @@ func NewMemoryProvider() *MemoryProvider {
 
 // SetBool registers a boolean value for key.
 func (p *MemoryProvider) SetBool(key string, v bool) {
+	mustValidateKey(key)
 	p.mu.Lock()
 	p.bools[key] = v
 	p.mu.Unlock()
@@ -48,6 +48,7 @@ func (p *MemoryProvider) SetBool(key string, v bool) {
 
 // SetString registers a string value for key.
 func (p *MemoryProvider) SetString(key, v string) {
+	mustValidateKey(key)
 	p.mu.Lock()
 	p.strs[key] = v
 	p.mu.Unlock()
@@ -55,6 +56,7 @@ func (p *MemoryProvider) SetString(key, v string) {
 
 // SetInt registers an integer value for key.
 func (p *MemoryProvider) SetInt(key string, v int64) {
+	mustValidateKey(key)
 	p.mu.Lock()
 	p.ints[key] = v
 	p.mu.Unlock()
@@ -62,6 +64,7 @@ func (p *MemoryProvider) SetInt(key string, v int64) {
 
 // SetFloat registers a float value for key.
 func (p *MemoryProvider) SetFloat(key string, v float64) {
+	mustValidateKey(key)
 	p.mu.Lock()
 	p.floats[key] = v
 	p.mu.Unlock()
@@ -74,9 +77,10 @@ func (p *MemoryProvider) SetFloat(key string, v float64) {
 // provider lock. Non-marshallable values (channels, funcs) panic at
 // SetObject so the configuration error surfaces at startup.
 func (p *MemoryProvider) SetObject(key string, v any) {
+	mustValidateKey(key)
 	frozen, err := deepCopyJSON(v)
 	if err != nil {
-		panic(fmt.Sprintf("flags/memory: SetObject(%q): %v", key, err))
+		panic("flags/memory: SetObject value must be JSON-marshallable")
 	}
 	p.mu.Lock()
 	p.objs[key] = frozen
@@ -111,6 +115,9 @@ func (p *MemoryProvider) Hooks() []openfeature.Hook { return nil }
 
 // BooleanEvaluation implements [openfeature.FeatureProvider].
 func (p *MemoryProvider) BooleanEvaluation(_ context.Context, flag string, fallback bool, _ openfeature.FlattenedContext) openfeature.BoolResolutionDetail {
+	if invalid, ok := invalidKeyDetail(flag); ok {
+		return openfeature.BoolResolutionDetail{Value: fallback, ProviderResolutionDetail: invalid}
+	}
 	p.mu.RLock()
 	v, ok := p.bools[flag]
 	p.mu.RUnlock()
@@ -119,6 +126,9 @@ func (p *MemoryProvider) BooleanEvaluation(_ context.Context, flag string, fallb
 
 // StringEvaluation implements [openfeature.FeatureProvider].
 func (p *MemoryProvider) StringEvaluation(_ context.Context, flag string, fallback string, _ openfeature.FlattenedContext) openfeature.StringResolutionDetail {
+	if invalid, ok := invalidKeyDetail(flag); ok {
+		return openfeature.StringResolutionDetail{Value: fallback, ProviderResolutionDetail: invalid}
+	}
 	p.mu.RLock()
 	v, ok := p.strs[flag]
 	p.mu.RUnlock()
@@ -127,6 +137,9 @@ func (p *MemoryProvider) StringEvaluation(_ context.Context, flag string, fallba
 
 // FloatEvaluation implements [openfeature.FeatureProvider].
 func (p *MemoryProvider) FloatEvaluation(_ context.Context, flag string, fallback float64, _ openfeature.FlattenedContext) openfeature.FloatResolutionDetail {
+	if invalid, ok := invalidKeyDetail(flag); ok {
+		return openfeature.FloatResolutionDetail{Value: fallback, ProviderResolutionDetail: invalid}
+	}
 	p.mu.RLock()
 	v, ok := p.floats[flag]
 	p.mu.RUnlock()
@@ -135,6 +148,9 @@ func (p *MemoryProvider) FloatEvaluation(_ context.Context, flag string, fallbac
 
 // IntEvaluation implements [openfeature.FeatureProvider].
 func (p *MemoryProvider) IntEvaluation(_ context.Context, flag string, fallback int64, _ openfeature.FlattenedContext) openfeature.IntResolutionDetail {
+	if invalid, ok := invalidKeyDetail(flag); ok {
+		return openfeature.IntResolutionDetail{Value: fallback, ProviderResolutionDetail: invalid}
+	}
 	p.mu.RLock()
 	v, ok := p.ints[flag]
 	p.mu.RUnlock()
@@ -146,6 +162,9 @@ func (p *MemoryProvider) IntEvaluation(_ context.Context, flag string, fallback 
 // FR-035 [LOW]: returns a fresh JSON-decoded copy on every read so
 // callers cannot mutate provider-held state.
 func (p *MemoryProvider) ObjectEvaluation(_ context.Context, flag string, fallback any, _ openfeature.FlattenedContext) openfeature.InterfaceResolutionDetail {
+	if invalid, ok := invalidKeyDetail(flag); ok {
+		return openfeature.InterfaceResolutionDetail{Value: fallback, ProviderResolutionDetail: invalid}
+	}
 	p.mu.RLock()
 	v, ok := p.objs[flag]
 	p.mu.RUnlock()
@@ -168,6 +187,22 @@ func detail(found bool) openfeature.ProviderResolutionDetail {
 		return openfeature.ProviderResolutionDetail{Reason: openfeature.StaticReason}
 	}
 	return openfeature.ProviderResolutionDetail{Reason: openfeature.DefaultReason}
+}
+
+func invalidKeyDetail(flag string) (openfeature.ProviderResolutionDetail, bool) {
+	if err := ValidateKey(flag); err != nil {
+		return openfeature.ProviderResolutionDetail{
+			ResolutionError: openfeature.NewParseErrorResolutionError(err.Error()),
+			Reason:          openfeature.ErrorReason,
+		}, true
+	}
+	return openfeature.ProviderResolutionDetail{}, false
+}
+
+func mustValidateKey(key string) {
+	if err := ValidateKey(key); err != nil {
+		panic("flags/memory: invalid key")
+	}
 }
 
 func pickBool(ok bool, v, fallback bool) bool {

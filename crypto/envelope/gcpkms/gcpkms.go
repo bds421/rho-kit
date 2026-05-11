@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log/slog"
 
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/kms/apiv1/kmspb"
@@ -77,6 +78,16 @@ type Config struct {
 	AdditionalAuthenticatedData []byte
 }
 
+// LogValue implements slog.LogValuer to avoid logging cloud key resources or
+// AAD bytes, which often contain project, tenant, table, or row identifiers.
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("key_resource_configured", c.KeyResource != ""),
+		slog.Bool("aad_configured", len(c.AdditionalAuthenticatedData) > 0),
+		slog.Int("aad_bytes", len(c.AdditionalAuthenticatedData)),
+	)
+}
+
 // New builds a KEK from cfg using the given KMS client. Returns an
 // error if KeyResource is empty.
 func New(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
@@ -86,12 +97,17 @@ func New(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
 	if cfg.KeyResource == "" {
 		return nil, errors.New("gcpkms: Config.KeyResource must not be empty")
 	}
-	return &KEK{c: c, key: cfg.KeyResource, aad: cfg.AdditionalAuthenticatedData}, nil
+	return &KEK{c: c, key: cfg.KeyResource, aad: append([]byte(nil), cfg.AdditionalAuthenticatedData...)}, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the parent key resource
 // — telemetry only.
-func (k *KEK) KeyID() string { return k.key }
+func (k *KEK) KeyID() string {
+	if k == nil {
+		return ""
+	}
+	return k.key
+}
 
 // Wrap implements [envelope.KEK]. Calls GCP KMS Encrypt and returns
 // the version-qualified resource name (e.g.
@@ -100,11 +116,14 @@ func (k *KEK) KeyID() string { return k.key }
 // checksums on both the request (plaintext + AAD) and response
 // (ciphertext) per Google's transit-integrity guidelines.
 func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
+	if err := k.validate(ctx); err != nil {
+		return "", nil, err
+	}
 	req := &kmspb.EncryptRequest{
-		Name:                           k.key,
-		Plaintext:                      dek,
-		PlaintextCrc32C:                crc32c(dek),
-		AdditionalAuthenticatedData:    k.aad,
+		Name:                              k.key,
+		Plaintext:                         dek,
+		PlaintextCrc32C:                   crc32c(dek),
+		AdditionalAuthenticatedData:       k.aad,
 		AdditionalAuthenticatedDataCrc32C: crc32c(k.aad),
 	}
 	resp, err := k.c.Encrypt(ctx, req)
@@ -127,7 +146,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	}
 	ciphertext := resp.GetCiphertext()
 	if got, want := crc32.Checksum(ciphertext, crc32cTable), uint32(resp.GetCiphertextCrc32C().GetValue()); got != want {
-		return "", nil, fmt.Errorf("%w: response ciphertext CRC32C mismatch (got=%x want=%x); response bytes corrupted in flight", ErrChecksumMismatch, got, want)
+		return "", nil, responseChecksumMismatchError("ciphertext")
 	}
 	return resp.GetName(), ciphertext, nil
 }
@@ -137,6 +156,12 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 // CRC32C checksums on both the request (ciphertext + AAD) and
 // response (plaintext).
 func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
+	if err := k.validate(ctx); err != nil {
+		return nil, err
+	}
+	if keyID == "" {
+		return nil, errors.New("gcpkms: keyID must not be empty")
+	}
 	req := &kmspb.DecryptRequest{
 		Name:                              keyID,
 		Ciphertext:                        wrapped,
@@ -150,9 +175,13 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	}
 	plaintext := resp.GetPlaintext()
 	if got, want := crc32.Checksum(plaintext, crc32cTable), uint32(resp.GetPlaintextCrc32C().GetValue()); got != want {
-		return nil, fmt.Errorf("%w: response plaintext CRC32C mismatch (got=%x want=%x); response bytes corrupted in flight", ErrChecksumMismatch, got, want)
+		return nil, responseChecksumMismatchError("plaintext")
 	}
 	return plaintext, nil
+}
+
+func responseChecksumMismatchError(kind string) error {
+	return fmt.Errorf("%w: response %s CRC32C mismatch; response bytes corrupted in flight", ErrChecksumMismatch, kind)
 }
 
 // crc32c returns a wrapped Int64 holding the Castagnoli CRC32C of
@@ -169,3 +198,13 @@ func crc32c(data []byte) *wrapperspb.Int64Value {
 
 // Compile-time guard.
 var _ envelope.KEK = (*KEK)(nil)
+
+func (k *KEK) validate(ctx context.Context) error {
+	if k == nil || k.c == nil || k.key == "" {
+		return errors.New("gcpkms: KEK is not initialized")
+	}
+	if ctx == nil {
+		return errors.New("gcpkms: context must not be nil")
+	}
+	return nil
+}

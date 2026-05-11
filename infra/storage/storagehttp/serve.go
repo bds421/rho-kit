@@ -9,7 +9,9 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -47,10 +49,20 @@ type ServeOptions struct {
 // The returned error should be logged but cannot be translated into an
 // HTTP error response at that point.
 func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, key string, opts ServeOptions) error {
+	if w == nil {
+		return fmt.Errorf("storagehttp: response writer is required")
+	}
+	if r == nil {
+		return fmt.Errorf("storagehttp: request is required")
+	}
 	if backend == nil {
 		return fmt.Errorf("storagehttp: backend is required")
 	}
 	if err := storage.ValidateKey(key); err != nil {
+		return err
+	}
+	serveCfg, err := normalizeServeOptions(key, opts)
+	if err != nil {
 		return err
 	}
 
@@ -60,31 +72,15 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 	}
 	defer func() { _ = rc.Close() }()
 
-	filename := opts.Filename
-	if filename == "" {
-		filename = path.Base(key)
-	}
-
-	contentType := meta.ContentType
-	if contentType == "" {
-		contentType = mime.TypeByExtension(path.Ext(filename))
-	}
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	contentType := responseContentType(meta.ContentType, serveCfg.filename, key)
 
 	// Restrict Content-Disposition to a safe allowlist to prevent header injection.
-	disposition := opts.ContentDisposition
-	if disposition != "inline" && disposition != "attachment" {
-		disposition = "inline"
-	}
-
-	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{
-		"filename": filename,
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(serveCfg.disposition, map[string]string{
+		"filename": serveCfg.filename,
 	}))
 
-	if opts.CacheControl != "" {
-		w.Header().Set("Cache-Control", opts.CacheControl)
+	if serveCfg.cacheControl != "" {
+		w.Header().Set("Cache-Control", serveCfg.cacheControl)
 	}
 
 	// Set ETag for conditional-GET support.
@@ -101,7 +97,7 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		}
 		if strings.ContainsAny(stripped, "\r\n\x00\"") {
 			slog.Warn("storagehttp: ETag contains invalid characters, skipping",
-				"key", key)
+				redact.String("key", key))
 		} else {
 			// Ensure ETag is quoted per RFC 7232.
 			if len(etag) < 2 || etag[0] != '"' || etag[len(etag)-1] != '"' {
@@ -111,7 +107,7 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 
 			// Check If-None-Match for conditional-GET (304 Not Modified).
 			// Handles the common single-ETag case and the multi-value/W/ prefix cases.
-			if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatch(inm, etag) {
+			if inm := strings.Join(r.Header.Values("If-None-Match"), ","); inm != "" && etagMatch(inm, etag) {
 				w.WriteHeader(http.StatusNotModified)
 				return nil
 			}
@@ -132,7 +128,7 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 		if modTime.IsZero() {
 			modTime = time.Time{}
 		}
-		http.ServeContent(w, r, filename, modTime, rs)
+		http.ServeContent(w, r, serveCfg.filename, modTime, rs)
 		return nil
 	}
 
@@ -148,6 +144,69 @@ func ServeFile(w http.ResponseWriter, r *http.Request, backend storage.Storage, 
 	w.Header().Set("Content-Type", contentType)
 	_, err = io.Copy(w, rc)
 	return err
+}
+
+type serveConfig struct {
+	disposition  string
+	filename     string
+	cacheControl string
+}
+
+func normalizeServeOptions(key string, opts ServeOptions) (serveConfig, error) {
+	disposition := opts.ContentDisposition
+	if disposition != "inline" && disposition != "attachment" {
+		disposition = "inline"
+	}
+	filename := safeDownloadFilename(opts.Filename, path.Base(key))
+	cacheControl := strings.TrimSpace(opts.CacheControl)
+	if cacheControl != "" && !safeHeaderValue(cacheControl) {
+		return serveConfig{}, fmt.Errorf("storagehttp: Cache-Control contains invalid characters")
+	}
+	return serveConfig{
+		disposition:  disposition,
+		filename:     filename,
+		cacheControl: cacheControl,
+	}, nil
+}
+
+func safeDownloadFilename(name, fallback string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = fallback
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(name)
+
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			continue
+		}
+		b.WriteRune(r)
+		if b.Len() >= 128 {
+			break
+		}
+	}
+	cleaned := strings.TrimSpace(b.String())
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "download"
+	}
+	return cleaned
+}
+
+func safeHeaderValue(value string) bool {
+	if len(value) > 512 {
+		return false
+	}
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // etagMatch checks if serverETag matches any ETag in the If-None-Match header value.
@@ -196,4 +255,19 @@ func stripWeakPrefix(s string) string {
 		return s[2:]
 	}
 	return s
+}
+
+func responseContentType(metaContentType, filename, key string) string {
+	contentType := strings.TrimSpace(metaContentType)
+	if contentType != "" {
+		if err := storage.ValidateObjectMeta(storage.ObjectMeta{ContentType: contentType}); err == nil {
+			return contentType
+		}
+		slog.Warn("storagehttp: Content-Type metadata is invalid, falling back",
+			redact.String("key", key))
+	}
+	if byExt := mime.TypeByExtension(path.Ext(filename)); byExt != "" {
+		return byExt
+	}
+	return "application/octet-stream"
 }

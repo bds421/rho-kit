@@ -7,13 +7,19 @@ import (
 	"time"
 )
 
+const defaultPostTimeoutWait = 100 * time.Millisecond
+
 // Option configures the Timeout middleware.
 type Option func(*timeoutOptions)
 
 type timeoutOptions struct {
 	maxBuffer             int
-	hard                  bool
+	postTimeoutWait       time.Duration
 	allowWebSocketUpgrade bool
+}
+
+type handlerResult struct {
+	panicValue any
 }
 
 // WithWebSocketUpgradeBypass opts the route into bypassing the timeout
@@ -39,25 +45,25 @@ func WithMaxBufferSize(size int) Option {
 	return func(o *timeoutOptions) { o.maxBuffer = size }
 }
 
-// WithHard enables hard-timeout mode: when the deadline fires, the
-// middleware writes the 503 response and returns IMMEDIATELY, without
-// waiting for the handler goroutine to exit. The handler's later writes
-// flow into the buffered timeoutWriter — which already returns
-// http.ErrHandlerTimeout — so no double-write reaches the real
-// ResponseWriter, but the goroutine continues running until it returns
-// of its own accord.
+// WithPostTimeoutWait sets how long the middleware waits for the handler
+// to observe cancellation after writing the timeout response. The default
+// is 100ms. Set d to 0 to return immediately after the 503 is written.
 //
-// Use ONLY when you've measured handlers that can ignore ctx.Done() (legacy
-// code, third-party libraries) and accept the goroutine-leak cost. Holding
-// the HTTP goroutine alive is preferable to leaking it indefinitely; the
-// hard mode trades determinism (the connection is freed on deadline) for
-// resource accounting (the handler goroutine outlives the request).
-//
-// Default mode is cooperative: the middleware writes 503 then waits for
-// the handler to exit. Cooperative mode is safer when handlers honor
-// ctx.Done() — which is what the kit assumes by default.
+// Panics if d is negative.
+func WithPostTimeoutWait(d time.Duration) Option {
+	if d < 0 {
+		panic("timeout: WithPostTimeoutWait requires d >= 0")
+	}
+	return func(o *timeoutOptions) { o.postTimeoutWait = d }
+}
+
+// WithHard enables immediate-return mode: when the deadline fires, the
+// middleware writes the 503 response and returns without waiting for the
+// handler goroutine to exit. Later writes flow into the buffered
+// timeoutWriter, which returns http.ErrHandlerTimeout, so no double-write
+// reaches the real ResponseWriter.
 func WithHard() Option {
-	return func(o *timeoutOptions) { o.hard = true }
+	return WithPostTimeoutWait(0)
 }
 
 // Timeout wraps an http.Handler with a write deadline.
@@ -69,18 +75,20 @@ func WithHard() Option {
 // stdlib always sets Content-Type: text/plain on timeout, which is incorrect for
 // JSON API responses.
 //
-// IMPORTANT: Handlers MUST respect context cancellation. After the timeout fires,
-// the context is cancelled and the middleware waits for the handler goroutine to
-// exit before returning. A handler that ignores ctx.Done() will block the HTTP
-// response indefinitely, effectively leaking the goroutine and the connection.
-// If your handler delegates to slow I/O, ensure it selects on ctx.Done() or uses
-// context-aware clients (e.g., database drivers, HTTP clients).
+// Handlers must still respect context cancellation. After the timeout fires,
+// the context is cancelled and the middleware waits briefly for the handler
+// goroutine to exit before returning. If your handler delegates to slow I/O,
+// ensure it selects on ctx.Done() or uses context-aware clients such as
+// database drivers or HTTP clients.
 func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	if d <= 0 {
 		panic("timeout: duration must be positive")
 	}
-	cfg := timeoutOptions{}
+	cfg := timeoutOptions{postTimeoutWait: defaultPostTimeoutWait}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("timeout: option must not be nil")
+		}
 		opt(&cfg)
 	}
 	return func(next http.Handler) http.Handler {
@@ -91,7 +99,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 			// could send `Upgrade: websocket` against a non-WS route
 			// to run unbounded. Routes that genuinely upgrade should
 			// be mounted via a builder that sets the option.
-			if cfg.allowWebSocketUpgrade && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			if cfg.allowWebSocketUpgrade && isWebSocketUpgrade(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -99,7 +107,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 			ctx, cancel := context.WithTimeout(r.Context(), d)
 			defer cancel()
 
-			done := make(chan struct{})
+			done := make(chan handlerResult, 1)
 			tw := &timeoutWriter{
 				w:         w,
 				h:         make(http.Header),
@@ -107,30 +115,52 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 			}
 
 			go func() {
+				var result handlerResult
+				defer func() {
+					if rv := recover(); rv != nil {
+						result.panicValue = rv
+					}
+					done <- result
+				}()
 				next.ServeHTTP(tw, r.WithContext(ctx))
-				close(done)
 			}()
 
 			select {
-			case <-done:
+			case result := <-done:
+				if result.panicValue != nil {
+					panic(result.panicValue)
+				}
 				tw.writeToReal()
 			case <-ctx.Done():
 				tw.writeTimeout()
-				if cfg.hard {
-					// Hard mode: return immediately. The handler goroutine
-					// keeps running until it exits on its own; later writes
-					// go to the buffered timeoutWriter which already returns
-					// ErrHandlerTimeout, so no double-write hits the real
-					// ResponseWriter. Acceptable when handlers can ignore
-					// ctx.Done() and the leak is the lesser evil.
+				if cfg.postTimeoutWait == 0 {
 					return
 				}
-				// Cooperative mode (default): wait for the handler goroutine
-				// to finish. The context is already cancelled so well-behaved
-				// handlers will exit promptly. This prevents the goroutine
-				// from outliving the ResponseWriter.
-				<-done
+				timer := time.NewTimer(cfg.postTimeoutWait)
+				defer timer.Stop()
+				select {
+				case result := <-done:
+					if result.panicValue != nil {
+						panic(result.panicValue)
+					}
+				case <-timer.C:
+				}
 			}
 		})
 	}
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	upgrade := r.Header.Values("Upgrade")
+	if len(upgrade) != 1 || !strings.EqualFold(strings.TrimSpace(upgrade[0]), "websocket") {
+		return false
+	}
+	for _, value := range r.Header.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
 }

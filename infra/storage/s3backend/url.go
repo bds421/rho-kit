@@ -23,24 +23,32 @@ func (b *S3Backend) URL(_ context.Context, key string) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
 	}
+	if b == nil || b.bucket == "" {
+		return "", fmt.Errorf("s3backend: backend is not initialized")
+	}
 
 	// Percent-encode each path segment of the key to produce a valid URL.
 	encodedKey := encodeKeyPath(key)
 
 	if b.cfg.Endpoint != "" {
+		if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", b.cfg.Endpoint, b.cfg.AllowInsecureEndpoint); err != nil {
+			return "", err
+		}
 		// Custom endpoint (localstack, minio, CDN) — always use path-style.
 		endpoint := strings.TrimRight(b.cfg.Endpoint, "/")
-		return fmt.Sprintf("%s/%s/%s", endpoint, b.cfg.Bucket, encodedKey), nil
+		return fmt.Sprintf("%s/%s/%s", endpoint, b.bucket, encodedKey), nil
 	}
 
 	if tpl := b.cfg.URLTemplate; tpl != "" {
-		host := strings.NewReplacer("{bucket}", b.cfg.Bucket, "{region}", b.cfg.Region).Replace(tpl)
-		host = strings.TrimRight(host, "/")
-		return host + "/" + encodedKey, nil
+		base, err := renderURLTemplate(tpl, b.bucket, b.cfg.Region)
+		if err != nil {
+			return "", err
+		}
+		return base + "/" + encodedKey, nil
 	}
 
 	// Standard AWS — use virtual-hosted style.
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", b.cfg.Bucket, b.cfg.Region, encodedKey), nil
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", b.bucket, b.cfg.Region, encodedKey), nil
 }
 
 // encodeKeyPath percent-encodes each segment of a storage key path
@@ -51,4 +59,24 @@ func encodeKeyPath(key string) string {
 		segments[i] = url.PathEscape(seg)
 	}
 	return strings.Join(segments, "/")
+}
+
+func validateURLTemplate(tpl, bucket, region string) error {
+	if tpl == "" {
+		return nil
+	}
+	_, err := renderURLTemplate(tpl, bucket, region)
+	return err
+}
+
+func renderURLTemplate(tpl, bucket, region string) (string, error) {
+	base := strings.NewReplacer("{bucket}", bucket, "{region}", region).Replace(tpl)
+	base = strings.TrimRight(base, "/")
+	if strings.ContainsAny(base, "{}") {
+		return "", fmt.Errorf("s3backend: STORAGE_S3_URL_TEMPLATE contains unknown placeholder")
+	}
+	if err := storage.ValidateEndpointURL("STORAGE_S3_URL_TEMPLATE", base, false); err != nil {
+		return "", err
+	}
+	return base, nil
 }

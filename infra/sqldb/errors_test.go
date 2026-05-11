@@ -2,6 +2,7 @@ package sqldb
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,26 @@ func TestValidateColumn_Unsafe(t *testing.T) {
 			ValidateColumn(col)
 		}()
 	}
+}
+
+func TestValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			t.Fatal("expected panic")
+		}
+		msg, ok := rec.(string)
+		if !ok {
+			t.Fatalf("panic = %T, want string", rec)
+		}
+		if msg != "database: unsafe column name" {
+			t.Fatalf("panic = %q, want stable unsafe-column message", msg)
+		}
+		if strings.Contains(msg, "secret-token") {
+			t.Fatalf("panic leaked unsafe column name: %q", msg)
+		}
+	}()
+	ValidateColumn("secret-token; DROP TABLE users")
 }
 
 func TestEscapeLike_NoSpecialChars(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 )
 
@@ -58,8 +59,8 @@ func StartProcessors(
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Error("queue processor panicked",
-						"queue", binding.Queue,
-						"panic", r,
+						redact.String("queue", binding.Queue),
+						redact.Panic(r),
 						"stack", string(debug.Stack()),
 					)
 					if shutdownFn != nil {

@@ -53,9 +53,9 @@ func NewSFTPMetrics(reg prometheus.Registerer) *SFTPMetrics {
 		),
 	}
 
-	promutil.RegisterCollector(reg, m.opDuration)
-	promutil.RegisterCollector(reg, m.opErrors)
-	promutil.RegisterCollector(reg, m.connectionHealthy)
+	m.opDuration = promutil.MustRegisterOrGet(reg, m.opDuration)
+	m.opErrors = promutil.MustRegisterOrGet(reg, m.opErrors)
+	m.connectionHealthy = promutil.MustRegisterOrGet(reg, m.connectionHealthy)
 
 	return m
 }

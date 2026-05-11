@@ -167,3 +167,11 @@ func TestNewHealthServer_PanicsOnNil(t *testing.T) {
 		grpcx.NewHealthServer(nil)
 	})
 }
+
+func TestNewHealthServer_PanicsOnInvalidChecker(t *testing.T) {
+	assert.PanicsWithValue(t, "grpcx: NewHealthServer requires a valid health.Checker", func() {
+		grpcx.NewHealthServer(&health.Checker{
+			Checks: []health.DependencyCheck{{Name: "secret-token"}},
+		})
+	})
+}

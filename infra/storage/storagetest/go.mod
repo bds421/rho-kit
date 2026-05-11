@@ -7,7 +7,10 @@ require (
 	github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
+	golang.org/x/crypto v0.50.0
 )
+
+require github.com/tink-crypto/tink-go/v2 v2.6.0 // indirect
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -32,11 +35,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7 // indirect
 	github.com/aws/smithy-go v1.24.1 // indirect
-	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/infra/v2 v2.0.0
-	github.com/bds421/rho-kit/io/v2 v2.0.0
-	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -91,7 +94,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.42.0 // indirect
 	go.opentelemetry.io/otel/trace v1.42.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

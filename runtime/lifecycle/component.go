@@ -28,6 +28,15 @@ func HTTPServer(srv *http.Server) Component {
 	if srv == nil {
 		panic("lifecycle: HTTPServer requires a non-nil *http.Server")
 	}
+	if srv.Addr == "" {
+		panic("lifecycle: HTTPServer requires http.Server.Addr to be set")
+	}
+	if srv.Handler == nil {
+		panic("lifecycle: HTTPServer requires a non-nil Handler")
+	}
+	if srv.ReadHeaderTimeout <= 0 {
+		panic("lifecycle: HTTPServer requires ReadHeaderTimeout > 0")
+	}
 	return &httpServerComponent{srv: srv}
 }
 
@@ -39,6 +48,9 @@ func (h *httpServerComponent) Start(_ context.Context) error {
 }
 
 func (h *httpServerComponent) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("lifecycle: HTTPServer.Stop requires a non-nil context")
+	}
 	return h.srv.Shutdown(ctx)
 }
 
@@ -55,11 +67,15 @@ type FuncComponent struct {
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when StartFn returns
 	started bool          // set under mu; rejects re-entry
+	stopped bool          // set under mu; rejects Start after Stop-before-Start
 }
 
 func (f *FuncComponent) Start(ctx context.Context) error {
 	if f.StartFn == nil {
 		panic("lifecycle: FuncComponent.StartFn must not be nil")
+	}
+	if ctx == nil {
+		return errors.New("lifecycle: FuncComponent.Start requires a non-nil context")
 	}
 	f.mu.Lock()
 	if f.started {
@@ -68,6 +84,10 @@ func (f *FuncComponent) Start(ctx context.Context) error {
 		// awaiting the previous run's completion. FuncComponent is
 		// intentionally one-shot.
 		return errors.New("lifecycle: FuncComponent already started")
+	}
+	if f.stopped {
+		f.mu.Unlock()
+		return errors.New("lifecycle: FuncComponent already stopped")
 	}
 	f.started = true
 	ctx, cancel := context.WithCancel(ctx)
@@ -83,9 +103,13 @@ func (f *FuncComponent) Start(ctx context.Context) error {
 }
 
 func (f *FuncComponent) Stop(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("lifecycle: FuncComponent.Stop requires a non-nil context")
+	}
 	f.mu.Lock()
 	cancel := f.cancel
 	done := f.done
+	f.stopped = true
 	f.mu.Unlock()
 	if cancel != nil {
 		cancel()

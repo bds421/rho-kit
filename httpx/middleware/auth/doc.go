@@ -6,8 +6,11 @@
 //     provider. Rejects every other auth mode (X-User-Id headers, mTLS).
 //   - RequireS2SAuth: accepts EITHER a Bearer JWT (same rules) OR a
 //     verified mTLS client cert with an allow-listed CN paired with an
-//     X-User-Id header. The mTLS branch is the only path that stamps the
-//     trusted-S2S marker (see "Authorization" below).
+//     X-User-Id header approved by WithS2SImpersonationGuard. The mTLS branch
+//     is the only path that stamps the trusted-S2S marker (see "Authorization"
+//     below).
+//     The X-User-Id value must be a singleton identity token: no duplicate
+//     header lines, comma-combined values, whitespace, or control characters.
 //
 // # Authorization
 //

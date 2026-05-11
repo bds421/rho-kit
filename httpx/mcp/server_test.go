@@ -32,6 +32,10 @@ type echoOut struct {
 	Echoed string `json:"echoed"`
 }
 
+type timeIn struct {
+	At time.Time `json:"at"`
+}
+
 func echoHandler(_ context.Context, in echoIn) (echoOut, error) {
 	return echoOut{Echoed: in.Message}, nil
 }
@@ -41,6 +45,24 @@ func newTestServer(t *testing.T, opts ...mcp.ServerOption) *mcp.Server {
 	s := mcp.NewServer(opts...)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 	return s
+}
+
+func TestNewServer_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		mcp.NewServer(nil)
+	})
+}
+
+func TestRegister_PanicsOnNilOption(t *testing.T) {
+	s := mcp.NewServer()
+	assert.Panics(t, func() {
+		_ = mcp.Register[echoIn, echoOut](s, "echo", echoHandler, nil)
+	})
+}
+
+func TestWithActorFromHeader_PanicsOnInvalidHeaderName(t *testing.T) {
+	assert.Panics(t, func() { mcp.WithActorFromHeader("") })
+	assert.Panics(t, func() { mcp.WithActorFromHeader("Bad Header") })
 }
 
 func doRPC(t *testing.T, h http.Handler, body string) map[string]any {
@@ -54,6 +76,18 @@ func doRPC(t *testing.T, h http.Handler, body string) map[string]any {
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	return resp
+}
+
+type failingReadCloser struct {
+	err error
+}
+
+func (f failingReadCloser) Read([]byte) (int, error) {
+	return 0, f.err
+}
+
+func (f failingReadCloser) Close() error {
+	return nil
 }
 
 func TestServer_RoundTrip_Echo(t *testing.T) {
@@ -106,11 +140,68 @@ func TestServer_ValidationFailure_ReturnsInvalidParams(t *testing.T) {
 	assert.Contains(t, msg, "message", "error message must mention the missing field")
 }
 
+func TestServer_MessageValidationErrorDoesNotReflectHandlerText(t *testing.T) {
+	s := mcp.NewServer()
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "validate", func(context.Context, echoIn) (echoOut, error) {
+		return echoOut{}, apperror.NewValidation("secret-token is invalid")
+	}))
+
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"validate","params":{"message":"x"},"id":3}`)
+
+	require.NotNil(t, resp["error"])
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32602, rpcErr["code"])
+	assert.Equal(t, "invalid request", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
+}
+
+func TestServer_NotFoundErrorDoesNotReflectHandlerText(t *testing.T) {
+	s := mcp.NewServer()
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "lookup", func(context.Context, echoIn) (echoOut, error) {
+		return echoOut{}, apperror.NewNotFound("secret-token-entity", "secret-token-id")
+	}))
+
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"lookup","params":{"message":"x"},"id":3}`)
+
+	require.NotNil(t, resp["error"])
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32602, rpcErr["code"])
+	assert.Equal(t, "resource not found", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
+}
+
+func TestServer_DecodeFailureDoesNotReflectArgumentValue(t *testing.T) {
+	s := mcp.NewServer()
+	require.NoError(t, mcp.Register[timeIn, echoOut](s, "time", func(context.Context, timeIn) (echoOut, error) {
+		return echoOut{}, nil
+	}))
+
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"time","params":{"at":"secret-token"},"id":3}`)
+
+	require.NotNil(t, resp["error"])
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32602, rpcErr["code"])
+	assert.Equal(t, "invalid arguments", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
+	assert.NotContains(t, rpcErr["message"], "parsing time")
+}
+
 func TestServer_UnknownTool(t *testing.T) {
 	s := newTestServer(t)
-	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"nope","id":4}`)
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"secret-token-method","id":4}`)
 	rpcErr := resp["error"].(map[string]any)
 	assert.EqualValues(t, -32601, rpcErr["code"])
+	assert.Equal(t, "method not found", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
+}
+
+func TestServer_UnknownToolsCallNameDoesNotReflectToolName(t *testing.T) {
+	s := newTestServer(t)
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"secret-token-tool","arguments":{}},"id":4}`)
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32601, rpcErr["code"])
+	assert.Equal(t, "tool not found", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
 }
 
 func TestServer_RejectsBatchRequests(t *testing.T) {
@@ -132,15 +223,37 @@ func TestServer_RejectsNonPOST(t *testing.T) {
 
 func TestServer_InvalidJSON_ReturnsParseError(t *testing.T) {
 	s := newTestServer(t)
-	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0",`)
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"secret-token",`)
 	rpcErr := resp["error"].(map[string]any)
 	assert.EqualValues(t, -32700, rpcErr["code"])
+	assert.Equal(t, "invalid JSON", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "secret-token")
+	assert.NotContains(t, rpcErr["message"], "invalid character")
+}
+
+func TestServer_ReadBodyErrorDoesNotLeakRawDetails(t *testing.T) {
+	s := newTestServer(t)
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r.Body = failingReadCloser{err: errors.New("read tcp 10.0.0.5:443: secret backend token")}
+	w := httptest.NewRecorder()
+
+	s.HTTP().ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32700, rpcErr["code"])
+	assert.Equal(t, "failed to read request body", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "10.0.0.5")
+	assert.NotContains(t, rpcErr["message"], "secret")
 }
 
 func TestServer_HandlerErrorMappedToOperationFailed(t *testing.T) {
 	// Default and conflict branches sanitise the error text to
 	// avoid leaking infrastructure detail (security review M-1).
-	// The full error must still appear in the server-side log.
+	// Server-side logs preserve error type for triage without copying
+	// backend diagnostics.
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
@@ -157,20 +270,37 @@ func TestServer_HandlerErrorMappedToOperationFailed(t *testing.T) {
 		"default branch must not leak raw error text to JSON-RPC caller")
 
 	logged := logBuf.String()
-	assert.Contains(t, logged, "boom: pq: relation",
-		"server-side log must retain the full error for forensics")
+	assert.Contains(t, logged, "<redacted error")
+	assert.NotContains(t, logged, "boom: pq: relation")
 }
 
 func TestServer_RejectsCyclicTypeAtRegistration(t *testing.T) {
-	type cyclicIn struct {
-		Self *cyclicIn `json:"self"`
+	type secretTokenCyclicIn struct {
+		Self *secretTokenCyclicIn `json:"self"`
 	}
 	s := mcp.NewServer()
-	err := mcp.Register[cyclicIn, echoOut](s, "cyclic", func(_ context.Context, _ cyclicIn) (echoOut, error) {
+	err := mcp.Register[secretTokenCyclicIn, echoOut](s, "secret-token-tool", func(_ context.Context, _ secretTokenCyclicIn) (echoOut, error) {
 		return echoOut{}, nil
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, mcp.ErrCyclicSchema))
+	assert.NotContains(t, err.Error(), "secret-token-tool")
+	assert.NotContains(t, err.Error(), "secretTokenCyclicIn")
+}
+
+func TestServer_RejectsUnsupportedTypeWithoutReflectingName(t *testing.T) {
+	type secretTokenUnsupportedIn struct {
+		C chan int `json:"c"`
+	}
+	s := mcp.NewServer()
+	err := mcp.Register[secretTokenUnsupportedIn, echoOut](s, "secret-token-tool", func(_ context.Context, _ secretTokenUnsupportedIn) (echoOut, error) {
+		return echoOut{}, nil
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, mcp.ErrUnsupportedType))
+	assert.NotContains(t, err.Error(), "secret-token-tool")
+	assert.NotContains(t, err.Error(), "secretTokenUnsupportedIn")
+	assert.NotContains(t, err.Error(), "chan")
 }
 
 func TestServer_RejectsDuplicateName(t *testing.T) {
@@ -178,12 +308,37 @@ func TestServer_RejectsDuplicateName(t *testing.T) {
 	err := mcp.Register[echoIn, echoOut](s, "echo", echoHandler)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already registered")
+	assert.NotContains(t, err.Error(), "echo")
 }
 
 func TestServer_RejectsEmptyName(t *testing.T) {
 	s := mcp.NewServer()
 	err := mcp.Register[echoIn, echoOut](s, "", echoHandler)
 	require.Error(t, err)
+}
+
+func TestServer_RejectsInvalidToolNames(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{name: "space", tool: "bad name"},
+		{name: "tab", tool: "bad\tname"},
+		{name: "control", tool: "bad\x00name"},
+		{name: "invalid utf8", tool: string([]byte{0xff})},
+		{name: "leading punctuation", tool: ".hidden"},
+		{name: "colon", tool: "tool:name"},
+		{name: "too long", tool: strings.Repeat("a", mcp.MaxToolNameLen+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mcp.NewServer()
+			err := mcp.Register[echoIn, echoOut](s, tt.tool, echoHandler)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid tool name")
+			assert.NotContains(t, err.Error(), tt.tool)
+		})
+	}
 }
 
 func TestServer_RejectsNilHandler(t *testing.T) {
@@ -224,6 +379,51 @@ func TestServer_DestructiveFlagAddsVendorExtension(t *testing.T) {
 	assert.Equal(t, true, schema["x-destructive"])
 }
 
+func TestRegister_RejectsInvalidSchemaOverrides(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  mcp.ToolOption
+	}{
+		{name: "invalid input JSON", opt: mcp.WithInputSchema(json.RawMessage(`{`))},
+		{name: "input array", opt: mcp.WithInputSchema(json.RawMessage(`[]`))},
+		{name: "output null", opt: mcp.WithOutputSchema(json.RawMessage(`null`))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mcp.NewServer()
+			err := mcp.Register[echoIn, echoOut](s, "secret-token-tool", echoHandler, tt.opt)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "schema")
+			assert.NotContains(t, err.Error(), "secret-token-tool")
+		})
+	}
+}
+
+func TestRegister_CopiesSchemaOverridesAndToolsReturn(t *testing.T) {
+	s := mcp.NewServer()
+	inputSchema := json.RawMessage(`{"type":"object","title":"original"}`)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler,
+		mcp.WithInputSchema(inputSchema),
+	))
+
+	for i := range inputSchema {
+		inputSchema[i] = ' '
+	}
+	tools := s.Tools()
+	require.Len(t, tools, 1)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(tools[0].InputSchema, &schema))
+	assert.Equal(t, "original", schema["title"])
+
+	for i := range tools[0].InputSchema {
+		tools[0].InputSchema[i] = ' '
+	}
+	tools = s.Tools()
+	require.NoError(t, json.Unmarshal(tools[0].InputSchema, &schema),
+		"mutating a Tools() result must not mutate the server catalog")
+	assert.Equal(t, "original", schema["title"])
+}
+
 func TestServer_BodyCap_RespectsLimit(t *testing.T) {
 	s := newTestServer(t, mcp.WithMaxRequestBytes(64))
 	huge := strings.Repeat("a", 200)
@@ -236,6 +436,8 @@ func TestServer_BodyCap_RespectsLimit(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	rpcErr := resp["error"].(map[string]any)
 	assert.EqualValues(t, -32700, rpcErr["code"])
+	assert.Equal(t, "request body exceeds maximum size", rpcErr["message"])
+	assert.NotContains(t, rpcErr["message"], "64")
 }
 
 // --- Action-log integration -------------------------------------------------
@@ -283,7 +485,7 @@ func TestServer_ActionLog_SuccessfulCallWritesEntry(t *testing.T) {
 	assert.Equal(t, "echo", e.Metadata["tool"])
 
 	// Sanity check the store roundtripped one row.
-	listed, err := store.List(context.Background(), actionlog.Query{})
+	listed, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-123"})
 	require.NoError(t, err)
 	assert.Len(t, listed, 1)
 }
@@ -346,6 +548,27 @@ func TestServer_ActionLog_StrictMode_NoTenant_RefusesDispatch(t *testing.T) {
 	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no audit entry should be written when tool was refused")
+}
+
+func TestServer_ActionLog_StrictMode_TenantExtractorPanicRefusesDispatch(t *testing.T) {
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		mcp.WithTenantExtractor(func(context.Context) (string, bool) {
+			panic("tenant failed")
+		}),
+	)
+
+	calls := 0
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", invokeCounterHandler(&calls)))
+
+	resp := doRPC(t, s.HTTP(),
+		`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`)
+
+	require.NotNil(t, resp["error"], "expected JSON-RPC error when tenant extractor panics")
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32603, rpcErr["code"])
+	assert.Equal(t, 0, calls, "tool must not execute when strict audit tenant extraction panics")
 }
 
 func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T) {
@@ -436,6 +659,40 @@ func (l *asyncBlockingLogger) VerifyChain(ctx context.Context, tenantID string) 
 	return l.inner.VerifyChain(ctx, tenantID)
 }
 
+type auditContextKey struct{}
+
+type contextRecordingLogger struct {
+	inner  actionlog.Logger
+	value  any
+	ctxErr error
+}
+
+func (l *contextRecordingLogger) Append(ctx context.Context, e actionlog.Entry) (actionlog.Entry, error) {
+	l.value = ctx.Value(auditContextKey{})
+	l.ctxErr = ctx.Err()
+	return l.inner.Append(ctx, e)
+}
+
+func (l *contextRecordingLogger) Get(ctx context.Context, id string) (actionlog.Entry, error) {
+	return l.inner.Get(ctx, id)
+}
+
+func (l *contextRecordingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+	return l.inner.List(ctx, q)
+}
+
+func (l *contextRecordingLogger) Sign(e actionlog.Entry) (string, string, error) {
+	return l.inner.Sign(e)
+}
+
+func (l *contextRecordingLogger) Verify(e actionlog.Entry) error {
+	return l.inner.Verify(e)
+}
+
+func (l *contextRecordingLogger) VerifyChain(ctx context.Context, tenantID string) error {
+	return l.inner.VerifyChain(ctx, tenantID)
+}
+
 func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 	// L-3 fix: WithAsyncAudit(true) spawns the audit append in a
 	// background goroutine so MCP latency does not depend on the
@@ -482,6 +739,35 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entriesLate, 1, "async append must eventually write the entry")
 	assert.Equal(t, "mcp.echo", entriesLate[0].Action)
+}
+
+func TestServer_ActionLog_AsyncMode_PreservesContextValuesAfterCancellation(t *testing.T) {
+	innerLogger, _ := newTestActionLogger(t)
+	logger := &contextRecordingLogger{inner: innerLogger}
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditWorkers(1),
+		mcp.WithAsyncAuditQueue(1),
+	)
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+
+	parent := context.WithValue(context.Background(), auditContextKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`)).
+		WithContext(ctx)
+	w := httptest.NewRecorder()
+	withTenantHandler(s.HTTP(), "tenant-async-context").ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, s.Stop(stopCtx))
+
+	assert.Equal(t, "trace-123", logger.value)
+	assert.NoError(t, logger.ctxErr)
 }
 
 func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
@@ -537,7 +823,11 @@ func TestServer_DisallowUnknownFields_ReturnsGenericMessage(t *testing.T) {
 
 	logged := logBuf.String()
 	assert.Contains(t, logged, "unknown field",
-		"server-side log retains the original decoder error for forensics")
+		"server-side log should retain the stable rejection reason")
+	assert.NotContains(t, logged, "extra",
+		"server-side log must not retain the caller-controlled field name")
+	assert.NotContains(t, logged, "json:",
+		"server-side log must not retain the decoder's raw error text")
 }
 
 func TestDefaultActorExtractor_NoLongerTrustsHeader(t *testing.T) {
@@ -616,6 +906,119 @@ func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "fixed-actor", entries[0].Actor)
+}
+
+func TestServer_ActorExtractorPanicFallsBackToAnonymous(t *testing.T) {
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t,
+		mcp.WithActionLogger(logger),
+		mcp.WithActorExtractor(func(*http.Request) string {
+			panic("actor failed")
+		}),
+	)
+	h := withTenantHandler(s.HTTP(), "tenant-actor-panic")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-panic"})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+}
+
+func TestServer_ActorExtractorInvalidFallsBackToAnonymous(t *testing.T) {
+	tests := []struct {
+		name  string
+		actor string
+	}{
+		{name: "space", actor: "bad actor"},
+		{name: "control", actor: "bad\x00actor"},
+		{name: "too long", actor: strings.Repeat("a", actionlog.MaxActorLen+1)},
+		{name: "invalid utf8", actor: string([]byte{0xff})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, _ := newTestActionLogger(t)
+			s := newTestServer(t,
+				mcp.WithActionLogger(logger),
+				mcp.WithActorExtractor(func(*http.Request) string { return tt.actor }),
+			)
+			h := withTenantHandler(s.HTTP(), "tenant-actor-invalid")
+			r := httptest.NewRequest(http.MethodPost, "/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			require.Equal(t, http.StatusOK, w.Code)
+
+			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-invalid"})
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+		})
+	}
+}
+
+func TestWithActorFromHeader_AmbiguousHeaderFallsBackToAnonymous(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*http.Request)
+	}{
+		{
+			name: "duplicate",
+			setup: func(r *http.Request) {
+				r.Header.Add("X-Actor-Id", "alice")
+				r.Header.Add("X-Actor-Id", "bob")
+			},
+		},
+		{
+			name: "blank",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Actor-Id", " ")
+			},
+		},
+		{
+			name: "internal whitespace",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Actor-Id", "alice bob")
+			},
+		},
+		{
+			name: "comma combined",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Actor-Id", "alice,bob")
+			},
+		},
+		{
+			name: "control",
+			setup: func(r *http.Request) {
+				r.Header.Set("X-Actor-Id", "alice\nbob")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, _ := newTestActionLogger(t)
+			s := newTestServer(t,
+				mcp.WithActionLogger(logger),
+				mcp.WithActorFromHeader("X-Actor-Id"),
+			)
+			h := withTenantHandler(s.HTTP(), "tenant-actor-header")
+			r := httptest.NewRequest(http.MethodPost, "/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+			tt.setup(r)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			require.Equal(t, http.StatusOK, w.Code)
+
+			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-header"})
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+		})
+	}
 }
 
 // failingLogger always returns an error from Append. Used to prove
@@ -813,6 +1216,23 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-drain"})
 	require.NoError(t, err)
 	assert.Len(t, entries, 4)
+}
+
+func TestServer_StopRejectsNilContext(t *testing.T) {
+	logger, _ := newTestActionLogger(t)
+	s := mcp.NewServer(
+		mcp.WithActionLogger(logger),
+		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditWorkers(1),
+		mcp.WithAsyncAuditQueue(1),
+	)
+
+	var ctx context.Context
+	err := s.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+
+	require.NoError(t, s.Stop(context.Background()))
 }
 
 // TestServer_AsyncAudit_StopRace_NoLostJobs proves the round-3 fix:

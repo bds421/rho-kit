@@ -39,6 +39,43 @@ func TestAttrValues(t *testing.T) {
 	assert.Equal(t, int64(200), StatusCode(200).Value.Int64())
 }
 
+func TestErrorRedactsValue(t *testing.T) {
+	attr := Error(errors.New("backend token=tenant-secret"))
+
+	assert.Equal(t, "error", attr.Key)
+	got := attr.Value.String()
+	assert.Contains(t, got, "<redacted error")
+	assert.NotContains(t, got, "tenant-secret")
+}
+
+func TestPathRedactsValue(t *testing.T) {
+	attr := Path("/reset/secret-token")
+
+	assert.Equal(t, "path", attr.Key)
+	got := attr.Value.String()
+	assert.Contains(t, got, "<redacted")
+	assert.NotContains(t, got, "secret-token")
+}
+
+func TestRuntimeIdentifierAttrsRedactValues(t *testing.T) {
+	tests := []slog.Attr{
+		Addr("10.0.0.5:5432"),
+		Instance("tenant-primary-db"),
+		UserID("user-secret-123"),
+		Operation("tenant.delete-secret"),
+		Queue("tenant-secret-queue"),
+		Topic("tenant-secret-topic"),
+		Stream("tenant-secret-stream"),
+	}
+
+	for _, attr := range tests {
+		got := attr.Value.String()
+		assert.Contains(t, got, "<redacted", attr.Key)
+		assert.NotContains(t, got, "secret", attr.Key)
+		assert.NotContains(t, got, "10.0.0.5", attr.Key)
+	}
+}
+
 func TestSecret_RedactsValue(t *testing.T) {
 	// FR-085 [LOW]: Secret no longer carries a SHA-256 prefix —
 	// brute-forceable for low-entropy values. Tests update to the
@@ -66,6 +103,32 @@ func TestSecretWithDigest_StableHashAcrossCalls(t *testing.T) {
 
 func TestSecret_Empty(t *testing.T) {
 	assert.Equal(t, "<redacted empty>", Secret("k", "").Value.String())
+}
+
+func TestURL_RedactsSensitiveComponents(t *testing.T) {
+	got := URL("https://token-user:secret@example.com/api?token=query-secret#frag").Value.String()
+
+	assert.Contains(t, got, "<redacted")
+	assert.NotContains(t, got, "example.com")
+	assert.NotContains(t, got, "/api")
+	assert.NotContains(t, got, "token-user")
+	assert.NotContains(t, got, "secret")
+	assert.NotContains(t, got, "query-secret")
+	assert.NotContains(t, got, "frag")
+}
+
+func TestURL_RelativePathDropsQueryAndFragment(t *testing.T) {
+	got := URL("/api/users?token=secret#frag").Value.String()
+
+	assert.Contains(t, got, "<redacted")
+	assert.NotContains(t, got, "/api/users")
+	assert.NotContains(t, got, "token=secret")
+	assert.NotContains(t, got, "frag")
+}
+
+func TestURL_EmptyAndInvalid(t *testing.T) {
+	assert.Equal(t, "<redacted empty>", URL("").Value.String())
+	assert.Equal(t, "[INVALID URL]", URL("://invalid").Value.String())
 }
 
 func TestEmail_Masking(t *testing.T) {

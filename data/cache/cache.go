@@ -3,9 +3,9 @@ package cache
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrCacheMiss is returned when a key is not found in the cache.
@@ -18,23 +18,44 @@ var ErrCacheMiss = errors.New("cache: key not found")
 // or treat the write as critical.
 var ErrAdmissionRejected = errors.New("cache: write rejected by admission policy")
 
+// ErrInvalidCache is returned when a cache helper or method is invoked with
+// a nil or otherwise uninitialized cache implementation.
+var ErrInvalidCache = errors.New("cache: cache is not initialized")
+
+// ErrInvalidComputeFunc is returned when GetOrCompute is invoked without a
+// ComputeFunc.
+var ErrInvalidComputeFunc = errors.New("cache: ComputeFunc must not be nil")
+
 // ErrKeyEmpty is returned when a cache key is empty.
 var ErrKeyEmpty = errors.New("cache: key must not be empty")
 
 // ErrKeyTooLong is returned when a cache key exceeds MaxKeyLen bytes.
 var ErrKeyTooLong = errors.New("cache: key exceeds maximum length")
 
-// ErrKeyInvalidChars is returned when a cache key contains null bytes,
-// newlines, or carriage returns.
+// ErrKeyInvalidChars is returned when a cache key contains invalid UTF-8,
+// whitespace, or control characters.
 var ErrKeyInvalidChars = errors.New("cache: key contains invalid characters")
+
+// ErrBulkTooLarge is returned when a bulk cache operation is asked to process
+// too many keys in one call.
+var ErrBulkTooLarge = errors.New("cache: bulk operation exceeds maximum key count")
 
 // MaxKeyLen is the maximum allowed length for cache keys.
 const MaxKeyLen = 1024
 
+// MaxKeyPrefixLen is the largest prefix accepted by typed/cache-compute
+// wrappers. Keeping prefixes to half the key budget guarantees direct caller
+// keys retain at least half the portable key space.
+const MaxKeyPrefixLen = MaxKeyLen / 2
+
+// MaxBulkKeys caps MGet/MSet batch sizes so callers cannot accidentally build
+// unbounded maps or send oversized backend command batches.
+const MaxBulkKeys = 4096
+
 // ValidateKey checks that a cache key is safe for use. This prevents:
 //   - Empty keys: always a programming error
-//   - Null bytes: can truncate C strings in some backends
-//   - Newlines/carriage returns: can break protocol framing
+//   - Invalid UTF-8: corrupts logs and metric/debug output
+//   - Whitespace/control characters: can break logs, CLIs, and protocol framing
 //   - Excessively long keys: waste memory and indicate dynamic data
 //
 // All Cache implementations should call this in their public methods to
@@ -45,10 +66,63 @@ func ValidateKey(key string) error {
 		return ErrKeyEmpty
 	}
 	if len(key) > MaxKeyLen {
-		return fmt.Errorf("%w (%d bytes, max %d)", ErrKeyTooLong, len(key), MaxKeyLen)
+		return ErrKeyTooLong
 	}
-	if strings.ContainsAny(key, "\x00\n\r") {
+	if containsInvalidKeyRune(key) {
 		return ErrKeyInvalidChars
+	}
+	return nil
+}
+
+// ValidateKeyPrefix checks that a cache key prefix is safe to concatenate
+// with caller keys. Empty prefixes are allowed for wrappers that intentionally
+// share the backend keyspace.
+func ValidateKeyPrefix(prefix string) error {
+	if len(prefix) > MaxKeyPrefixLen {
+		return errors.New("cache prefix exceeds maximum length")
+	}
+	if containsInvalidKeyRune(prefix) {
+		return ErrKeyInvalidChars
+	}
+	return nil
+}
+
+func containsInvalidKeyRune(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateBulkKeys checks every key and enforces [MaxBulkKeys]. Empty batches
+// are allowed and should behave as a no-op.
+func ValidateBulkKeys(keys []string) error {
+	if len(keys) > MaxBulkKeys {
+		return ErrBulkTooLarge
+	}
+	for _, k := range keys {
+		if err := ValidateKey(k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateBulkItems checks every key in a bulk set and enforces [MaxBulkKeys].
+// Values are backend-specific and are validated by the concrete cache.
+func ValidateBulkItems(items map[string][]byte) error {
+	if len(items) > MaxBulkKeys {
+		return ErrBulkTooLarge
+	}
+	for k := range items {
+		if err := ValidateKey(k); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -106,6 +180,12 @@ type BulkCache interface {
 // the backend does not implement [BulkCache]. Missing keys are silently
 // absent from the result.
 func MGet(ctx context.Context, c Cache, keys []string) (map[string][]byte, error) {
+	if c == nil {
+		return nil, ErrInvalidCache
+	}
+	if err := ValidateBulkKeys(keys); err != nil {
+		return nil, err
+	}
 	if bc, ok := c.(BulkCache); ok {
 		return bc.MGet(ctx, keys)
 	}
@@ -126,6 +206,12 @@ func MGet(ctx context.Context, c Cache, keys []string) (map[string][]byte, error
 // MSet stores multiple items, falling back to per-key Set when the backend
 // does not implement [BulkCache]. Stops at the first error.
 func MSet(ctx context.Context, c Cache, items map[string][]byte, ttl time.Duration) error {
+	if c == nil {
+		return ErrInvalidCache
+	}
+	if err := ValidateBulkItems(items); err != nil {
+		return err
+	}
 	if bc, ok := c.(BulkCache); ok {
 		return bc.MSet(ctx, items, ttl)
 	}
@@ -142,6 +228,9 @@ func MSet(ctx context.Context, c Cache, items map[string][]byte, ttl time.Durati
 // note that the fallback is NOT atomic across replicas; only the
 // BulkCache-native implementation provides cross-process compute-once.
 func SetNX(ctx context.Context, c Cache, key string, value []byte, ttl time.Duration) (bool, error) {
+	if c == nil {
+		return false, ErrInvalidCache
+	}
 	if bc, ok := c.(BulkCache); ok {
 		return bc.SetNX(ctx, key, value, ttl)
 	}

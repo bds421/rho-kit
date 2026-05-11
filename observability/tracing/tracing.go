@@ -6,8 +6,12 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -94,6 +98,139 @@ type Config struct {
 	MaxExportBatchSize int
 }
 
+// LogValue implements slog.LogValuer to prevent accidental logging of
+// collector authentication headers.
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("service_name", c.ServiceName),
+		slog.String("service_version", c.ServiceVersion),
+		slog.String("environment", c.Environment),
+		slog.String("endpoint", redactedEndpoint(c.Endpoint)),
+		slog.Bool("insecure", c.Insecure),
+		slog.Float64("sample_rate", c.SampleRate),
+		slog.Bool("enable_baggage", c.EnableBaggage),
+		slog.Duration("init_timeout", c.InitTimeout),
+		slog.Bool("on_init_fallback_configured", c.OnInitFallback != nil),
+		slog.Bool("headers_configured", len(c.Headers) > 0),
+		slog.String("compression", c.Compression),
+		slog.Duration("batch_timeout", c.BatchTimeout),
+		slog.Int("max_queue_size", c.MaxQueueSize),
+		slog.Int("max_export_batch_size", c.MaxExportBatchSize),
+	)
+}
+
+func redactedEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	if strings.TrimSpace(endpoint) != endpoint || strings.Contains(endpoint, "://") || strings.ContainsAny(endpoint, "/?#@") {
+		return "[INVALID ENDPOINT]"
+	}
+	for _, r := range endpoint {
+		if r < 0x20 || r == 0x7f {
+			return "[INVALID ENDPOINT]"
+		}
+	}
+	return endpoint
+}
+
+// Validate checks tracing configuration that would otherwise be accepted
+// silently by the OTLP exporter or SDK defaults.
+func (c Config) Validate() error {
+	if c.Endpoint == "" {
+		return nil
+	}
+	if c.ServiceName == "" {
+		return errors.New("tracing: ServiceName is required when Endpoint is set")
+	}
+	if err := validateEndpoint(c.Endpoint); err != nil {
+		return err
+	}
+	if c.SampleRate < 0 || c.SampleRate > 1 {
+		return fmt.Errorf("tracing: SampleRate must be between 0 and 1 (got %.4f)", c.SampleRate)
+	}
+	if c.Compression != "" && c.Compression != "gzip" {
+		return fmt.Errorf("tracing: Compression must be empty or gzip")
+	}
+	if c.BatchTimeout < 0 {
+		return errors.New("tracing: BatchTimeout must not be negative")
+	}
+	if c.MaxQueueSize < 0 {
+		return errors.New("tracing: MaxQueueSize must not be negative")
+	}
+	if c.MaxExportBatchSize < 0 {
+		return errors.New("tracing: MaxExportBatchSize must not be negative")
+	}
+	if c.MaxQueueSize > 0 && c.MaxExportBatchSize > c.MaxQueueSize {
+		return errors.New("tracing: MaxExportBatchSize must be <= MaxQueueSize")
+	}
+	for k, v := range c.Headers {
+		if err := validateHeader(k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEndpoint(endpoint string) error {
+	if strings.TrimSpace(endpoint) != endpoint || endpoint == "" {
+		return fmt.Errorf("tracing: Endpoint must not be empty or padded with whitespace")
+	}
+	if strings.Contains(endpoint, "://") {
+		return fmt.Errorf("tracing: Endpoint must be host[:port], not a URL")
+	}
+	if strings.ContainsAny(endpoint, "/?#@") {
+		return fmt.Errorf("tracing: Endpoint must not contain path, query, fragment, or credentials")
+	}
+	for _, r := range endpoint {
+		if r <= 0x20 || r == 0x7f {
+			return fmt.Errorf("tracing: Endpoint contains invalid character")
+		}
+	}
+
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		if strings.Contains(err.Error(), "missing port in address") {
+			host = strings.Trim(endpoint, "[]")
+			port = ""
+		} else {
+			return fmt.Errorf("tracing: invalid Endpoint syntax")
+		}
+	}
+	if host == "" {
+		return fmt.Errorf("tracing: Endpoint host is required")
+	}
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n <= 0 || n > 65535 {
+			return fmt.Errorf("tracing: Endpoint port must be between 1 and 65535")
+		}
+	}
+	return nil
+}
+
+func validateHeader(key, value string) error {
+	if key == "" {
+		return errors.New("tracing: header key must not be empty")
+	}
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return errors.New("tracing: header key contains invalid character")
+		}
+	}
+	for _, r := range value {
+		if r == '\r' || r == '\n' || r == 0 {
+			return errors.New("tracing: header contains invalid value character")
+		}
+	}
+	return nil
+}
+
 // Provider wraps a TracerProvider and its shutdown function.
 type Provider struct {
 	tp *sdktrace.TracerProvider
@@ -107,6 +244,12 @@ func (p *Provider) Tracer(name string) trace.Tracer {
 // Shutdown flushes pending spans and releases resources.
 // Call this during graceful shutdown (with a deadline context).
 func (p *Provider) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("tracing: Shutdown requires a non-nil context")
+	}
+	if p == nil || p.tp == nil {
+		return errors.New("tracing: Shutdown requires an initialized Provider")
+	}
 	return p.tp.Shutdown(ctx)
 }
 
@@ -120,6 +263,13 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 // blocking service startup. Set Config.InitTimeout < 0 to disable the
 // bound and use the caller's ctx as-is.
 func Init(ctx context.Context, cfg Config) (*Provider, error) {
+	if ctx == nil {
+		return nil, errors.New("tracing: Init requires a non-nil context")
+	}
+	cfg.Headers = cloneStringMap(cfg.Headers)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Endpoint == "" {
 		return initNoop()
 	}
@@ -168,10 +318,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		if cfg.OnInitFallback != nil {
 			cfg.OnInitFallback(err)
 		} else {
-			slog.Default().Warn("tracing: OTLP exporter dial failed; falling back to noop provider",
-				"endpoint", cfg.Endpoint,
-				"error", err.Error(),
-			)
+			logExporterFallback(cfg.Endpoint, err)
 		}
 		return initNoop()
 	}
@@ -203,6 +350,41 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	otel.SetTextMapPropagator(propagators(cfg.EnableBaggage))
 
 	return &Provider{tp: tp}, nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	return out
+}
+
+func logExporterFallback(endpoint string, err error) {
+	slog.Default().Warn("tracing: OTLP exporter dial failed; falling back to noop provider",
+		"endpoint_configured", endpoint != "",
+		"error_kind", exporterErrorKind(err),
+	)
+}
+
+func exporterErrorKind(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	return "exporter_dial_failed"
 }
 
 // initNoop sets up a noop tracer provider for when tracing is disabled.

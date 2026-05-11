@@ -21,31 +21,33 @@ type deadlineBudgetConfig struct {
 }
 
 // WithSafetyMargin sets the duration subtracted from the caller's remaining
-// deadline to account for network overhead. Negative values are ignored.
+// deadline to account for network overhead. Negative values panic.
 // Default: 500ms.
 //
 // Setting the safety margin to 0 disables the margin entirely, giving the
 // outbound request the full remaining budget. This is useful when the caller
 // already accounts for overhead or in testing scenarios.
 func WithSafetyMargin(d time.Duration) DeadlineBudgetOption {
+	if d < 0 {
+		panic("httpx: WithSafetyMargin requires d >= 0")
+	}
 	return func(c *deadlineBudgetConfig) {
-		if d >= 0 {
-			c.safetyMargin = d
-		}
+		c.safetyMargin = d
 	}
 }
 
 // WithMinTimeout sets the minimum timeout for outbound requests. Even if the
 // caller's remaining budget minus safety margin is lower, this floor is used.
-// Zero and negative values are ignored. Default: 1s.
+// The duration must be positive. Default: 1s.
 //
 // Note: the parent context's deadline is always an upper bound. If the parent
 // has less time remaining than minTimeout, the parent deadline still applies.
 func WithMinTimeout(d time.Duration) DeadlineBudgetOption {
+	if d <= 0 {
+		panic("httpx: WithMinTimeout requires a positive duration")
+	}
 	return func(c *deadlineBudgetConfig) {
-		if d > 0 {
-			c.minTimeout = d
-		}
+		c.minTimeout = d
 	}
 }
 

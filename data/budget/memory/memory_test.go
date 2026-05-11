@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,11 +34,78 @@ func TestNew_PanicsOnZeroPeriod(t *testing.T) {
 	memory.New(100, 0)
 }
 
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	memory.New(100, time.Hour, nil)
+}
+
+func TestWithSweeper_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			require.Panics(t, func() {
+				memory.WithSweeper(d)
+			})
+		})
+	}
+}
+
+func TestInvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		b    *memory.Budget
+	}{
+		{"nil", nil},
+		{"zero", &memory.Budget{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, rem, retry, err := tc.b.Consume(ctx, "k", 1)
+			assert.False(t, ok)
+			assert.Equal(t, int64(0), rem)
+			assert.Equal(t, time.Duration(0), retry)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+
+			rem, err = tc.b.Peek(ctx, "k")
+			assert.Equal(t, int64(0), rem)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+
+			rem, err = tc.b.Refund(ctx, "k", 1)
+			assert.Equal(t, int64(0), rem)
+			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+
+			assert.NotPanics(t, tc.b.Stop)
+			assert.Equal(t, 0, tc.b.Len())
+		})
+	}
+}
+
 func TestConsume_RejectsEmptyKey(t *testing.T) {
 	b := memory.New(100, time.Hour)
 	ok, _, _, err := b.Consume(context.Background(), "", 1)
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestConsume_RejectsInvalidKey(t *testing.T) {
+	b := memory.New(100, time.Hour)
+	for _, key := range []string{
+		strings.Repeat("a", budget.MaxKeyLen+1),
+		"tenant\x00acme",
+		"tenant acme",
+		"tenant\tacme",
+		string([]byte{0xff, 0xfe}),
+	} {
+		t.Run("invalid", func(t *testing.T) {
+			ok, _, _, err := b.Consume(context.Background(), key, 1)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, budget.ErrInvalidKey)
+		})
+	}
 }
 
 func TestConsume_RejectsNegativeAmount(t *testing.T) {
@@ -95,6 +163,12 @@ func TestPeek_UnknownKeyReturnsFullCap(t *testing.T) {
 func TestPeek_RejectsEmptyKey(t *testing.T) {
 	b := memory.New(100, time.Hour)
 	_, err := b.Peek(context.Background(), "")
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestPeek_RejectsInvalidKey(t *testing.T) {
+	b := memory.New(100, time.Hour)
+	_, err := b.Peek(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1))
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
@@ -214,6 +288,12 @@ func TestRefund_RejectsEmptyKey(t *testing.T) {
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
+func TestRefund_RejectsInvalidKey(t *testing.T) {
+	b := memory.New(100, time.Hour)
+	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
 func TestRefund_RejectsNegative(t *testing.T) {
 	b := memory.New(100, time.Hour)
 	_, err := b.Refund(context.Background(), "alice", -1)
@@ -270,9 +350,10 @@ func TestConsume_NearMaxInt64DoesNotOverflow(t *testing.T) {
 // TestSweeper_RemovesStaleKeys exercises WithSweeper: a key whose
 // period has rolled over is dropped on the next sweep.
 func TestSweeper_RemovesStaleKeys(t *testing.T) {
-	cur := time.Unix(1_700_000_000, 0)
+	var cur atomic.Int64
+	cur.Store(time.Unix(1_700_000_000, 0).UnixNano())
 	b := memory.New(100, time.Minute,
-		memory.WithClock(func() time.Time { return cur }),
+		memory.WithClock(func() time.Time { return time.Unix(0, cur.Load()).UTC() }),
 		memory.WithSweeper(10*time.Millisecond),
 	)
 	t.Cleanup(b.Stop)
@@ -283,7 +364,7 @@ func TestSweeper_RemovesStaleKeys(t *testing.T) {
 	}
 	require.Equal(t, 3, b.Len())
 
-	cur = cur.Add(2 * time.Minute)
+	cur.Add(int64(2 * time.Minute))
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -342,7 +423,7 @@ func TestSweeperDisabled(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
 	b := memory.New(100, time.Minute,
 		memory.WithClock(func() time.Time { return cur }),
-		memory.WithSweeper(0),
+		memory.WithoutSweeper(),
 	)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 1)

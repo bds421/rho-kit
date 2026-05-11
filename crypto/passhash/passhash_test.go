@@ -25,11 +25,27 @@ func TestHash_RejectsEmptyPassword(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEmptyPassword)
 }
 
-func TestHash_RejectsZeroParameters(t *testing.T) {
-	bad := fastParams()
-	bad.Memory = 0
-	_, err := Hash("x", bad)
-	assert.Error(t, err)
+func TestHash_DefaultsZeroParameters(t *testing.T) {
+	enc, err := Hash("x", Params{})
+	require.NoError(t, err)
+
+	stored, _, _, err := parsePHC(enc)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultParams(), stored)
+}
+
+func TestHash_DefaultsZeroSaltAndKeyLengths(t *testing.T) {
+	p := fastParams()
+	p.SaltLen = 0
+	p.KeyLen = 0
+
+	enc, err := Hash("x", p)
+	require.NoError(t, err)
+
+	stored, _, _, err := parsePHC(enc)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultParams().SaltLen, stored.SaltLen)
+	assert.Equal(t, DefaultParams().KeyLen, stored.KeyLen)
 }
 
 func TestHash_PHCFormat(t *testing.T) {
@@ -88,6 +104,29 @@ func TestVerify_NeedsRehashWhenStoredWeaker(t *testing.T) {
 	assert.True(t, needsRehash)
 }
 
+func TestVerify_ZeroTargetDefaultsToDefaultParams(t *testing.T) {
+	enc, err := Hash("hunter2", fastParams())
+	require.NoError(t, err)
+
+	matched, needsRehash, err := Verify("hunter2", enc, Params{})
+	require.NoError(t, err)
+	assert.True(t, matched)
+	assert.True(t, needsRehash)
+}
+
+func TestVerify_PartialTargetDefaultsZeroFields(t *testing.T) {
+	stored := fastParams()
+	enc, err := Hash("hunter2", stored)
+	require.NoError(t, err)
+
+	target := stored
+	target.Memory = 0
+	matched, needsRehash, err := Verify("hunter2", enc, target)
+	require.NoError(t, err)
+	assert.True(t, matched)
+	assert.True(t, needsRehash)
+}
+
 func TestVerify_NoRehashWhenStoredEqualOrStronger(t *testing.T) {
 	p := fastParams()
 	enc, err := Hash("hunter2", p)
@@ -121,6 +160,7 @@ func TestVerify_RejectsExcessiveMemory(t *testing.T) {
 	encoded := "$argon2id$v=19$m=4294967295,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
 	matched, _, err := Verify("hunter2", encoded, fastParams())
 	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.NotContains(t, err.Error(), "4294967295")
 	assert.False(t, matched)
 }
 
@@ -128,6 +168,7 @@ func TestVerify_RejectsExcessiveIterations(t *testing.T) {
 	encoded := "$argon2id$v=19$m=8192,t=999999,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
 	matched, _, err := Verify("hunter2", encoded, fastParams())
 	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.NotContains(t, err.Error(), "999999")
 	assert.False(t, matched)
 }
 
@@ -135,7 +176,53 @@ func TestVerify_RejectsExcessiveParallelism(t *testing.T) {
 	encoded := "$argon2id$v=19$m=8192,t=1,p=255$YWFhYWFhYWFhYWFhYWFhYQ$YQ"
 	matched, _, err := Verify("hunter2", encoded, fastParams())
 	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+	assert.NotContains(t, err.Error(), "255")
 	assert.False(t, matched)
+}
+
+func TestHash_RejectsExcessiveParamsWithStableErrors(t *testing.T) {
+	tests := map[string]Params{
+		"memory":      {Memory: 1<<30 + 1, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+		"iterations":  {Memory: 8 * 1024, Iterations: 101, Parallelism: 1, SaltLen: 16, KeyLen: 32},
+		"parallelism": {Memory: 8 * 1024, Iterations: 1, Parallelism: 17, SaltLen: 16, KeyLen: 32},
+		"salt":        {Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 65, KeyLen: 32},
+		"key":         {Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 65},
+	}
+	for name, params := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Hash("hunter2", params)
+			require.Error(t, err)
+			for _, leak := range []string{"1073741825", "101", "17", "65", "64"} {
+				assert.NotContains(t, err.Error(), leak)
+			}
+		})
+	}
+}
+
+func TestVerify_RejectsZeroCostParametersBeforeArgon2(t *testing.T) {
+	cases := []string{
+		"$argon2id$v=19$m=0,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$YQ",
+		"$argon2id$v=19$m=8192,t=0,p=1$YWFhYWFhYWFhYWFhYQ$YQ",
+		"$argon2id$v=19$m=8192,t=1,p=0$YWFhYWFhYWFhYWFhYQ$YQ",
+	}
+	for _, encoded := range cases {
+		matched, _, err := Verify("hunter2", encoded, fastParams())
+		require.ErrorIs(t, err, ErrInvalidParams)
+		assert.False(t, matched)
+	}
+}
+
+func TestVerify_RejectsZeroLengthSaltOrHash(t *testing.T) {
+	cases := []string{
+		"$argon2id$v=19$m=8192,t=1,p=1$$YQ",
+		"$argon2id$v=19$m=8192,t=1,p=1$YWFhYWFhYWFhYWFhYWFhYQ$",
+		"$argon2id$v=19$m=8192,t=1,p=1$$",
+	}
+	for _, encoded := range cases {
+		matched, _, err := Verify("any-password", encoded, fastParams())
+		require.ErrorIs(t, err, ErrInvalidParams)
+		assert.False(t, matched)
+	}
 }
 
 func TestVerify_WithVerifyLimits_OverridesDefault(t *testing.T) {
@@ -146,6 +233,12 @@ func TestVerify_WithVerifyLimits_OverridesDefault(t *testing.T) {
 	tight := VerifyLimits{MaxMemory: 64 * 1024}
 	_, _, err := Verify("hunter2", encoded, fastParams(), WithVerifyLimits(tight))
 	require.ErrorIs(t, err, ErrParamsOutOfBounds)
+}
+
+func TestVerify_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		_, _, _ = Verify("hunter2", "not-a-hash", fastParams(), nil)
+	})
 }
 
 func TestVerify_NormalHashStillVerifies(t *testing.T) {

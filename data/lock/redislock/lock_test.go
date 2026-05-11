@@ -3,6 +3,7 @@ package redislock_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/data/v2/lock"
 	redislock "github.com/bds421/rho-kit/data/lock/redislock/v2"
+	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
 func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
@@ -21,6 +22,32 @@ func setupRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	return mr, client
+}
+
+func TestOptions_PanicOnInvalidValues(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithTTL zero":       func() { redislock.WithTTL(0) },
+		"WithTTL negative":   func() { redislock.WithTTL(-time.Second) },
+		"WithRetry zero":     func() { redislock.WithRetry(0, 1) },
+		"WithRetry negative": func() { redislock.WithRetry(-time.Second, 1) },
+		"WithRetry attempts": func() { redislock.WithRetry(time.Millisecond, -1) },
+		"WithMaxWait zero":   func() { redislock.WithMaxWait(0) },
+		"WithMaxWait negative": func() {
+			redislock.WithMaxWait(-time.Second)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Panics(t, fn)
+		})
+	}
+}
+
+func TestNewLocker_PanicsOnNilOption(t *testing.T) {
+	_, client := setupRedis(t)
+
+	assert.Panics(t, func() {
+		redislock.NewLocker(client, nil)
+	})
 }
 
 func TestLocker_AcquireReleaseRoundTrip(t *testing.T) {
@@ -155,6 +182,31 @@ func TestLocker_WithLockSuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, l.Release(ctx))
+}
+
+func TestLocker_ContentionErrorsDoNotReflectLockKey(t *testing.T) {
+	_, client := setupRedis(t)
+	ctx := context.Background()
+	lc := redislock.NewLocker(client)
+
+	held, ok, err := lc.Acquire(ctx, "tenant:secret-token")
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer func() { _ = held.Release(ctx) }()
+
+	err = lc.WithLock(ctx, "tenant:secret-token", func(context.Context) error {
+		t.Fatal("contended WithLock must not run callback")
+		return nil
+	})
+	require.Error(t, err)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
+
+	_, err = redislock.LockerWithValue(ctx, lc, "tenant:secret-token", func(context.Context) (int, error) {
+		t.Fatal("contended LockerWithValue must not run callback")
+		return 0, nil
+	})
+	require.Error(t, err)
+	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
 }
 
 func TestLocker_WithLockSurfacesErrLockLost(t *testing.T) {

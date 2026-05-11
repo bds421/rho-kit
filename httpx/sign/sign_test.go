@@ -2,9 +2,12 @@ package sign
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +21,33 @@ const (
 	keyID  = "prod-1"
 	secret = "this-is-32-bytes-of-test-secret!"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+type readErrorBody struct {
+	err error
+}
+
+func (b readErrorBody) Read([]byte) (int, error) {
+	return 0, b.err
+}
+
+func (b readErrorBody) Close() error {
+	return nil
+}
+
+type closeErrorBody struct {
+	*bytes.Reader
+	err error
+}
+
+func (b closeErrorBody) Close() error {
+	return b.err
+}
 
 // Round-trip end-to-end: client signs, server verifies. The most
 // useful guarantee a kit can give callers is "signer + verifier agree
@@ -74,9 +104,74 @@ func TestSign_RejectsEmptyKeyID(t *testing.T) {
 	})
 }
 
+func TestSign_RejectsUnsafeKeyID(t *testing.T) {
+	for _, id := range []string{
+		strings.Repeat("k", keyIDMaxLen+1),
+		"key\nid",
+		" key",
+		"key ",
+		"key,other",
+	} {
+		t.Run(id, func(t *testing.T) {
+			assert.Panics(t, func() {
+				Wrap(http.DefaultTransport, []byte(secret), id)
+			})
+		})
+	}
+	assert.PanicsWithValue(t, "sign: keyID is invalid", func() {
+		Wrap(http.DefaultTransport, []byte(secret), strings.Repeat("k", keyIDMaxLen+1))
+	})
+}
+
 func TestSign_WithBodyMaxSize_RejectsNonPositive(t *testing.T) {
 	assert.Panics(t, func() { WithBodyMaxSize(0) })
 	assert.Panics(t, func() { WithBodyMaxSize(-1) })
+}
+
+func TestSign_WithIncludeHeadersClonesInput(t *testing.T) {
+	names := []string{"X-Tenant-Id"}
+	opt := WithIncludeHeaders(names...)
+	names[0] = "X-Mutated"
+
+	var cfg config
+	opt(&cfg)
+
+	require.Equal(t, []string{"x-tenant-id"}, cfg.includeHeaders)
+}
+
+func TestSign_BufferBodyErrorsAreStable(t *testing.T) {
+	readErr := errors.New("reader failed for secret-token")
+	readReq := httptest.NewRequest(http.MethodPost, "http://example.test/upload", nil)
+	readReq.Body = readErrorBody{err: readErr}
+
+	body, err := bufferBody(readReq, 1024)
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Equal(t, "sign: read request body failed", err.Error())
+	assert.ErrorIs(t, err, readErr)
+	assert.NotContains(t, err.Error(), "secret-token")
+
+	closeErr := errors.New("close failed for secret-token")
+	closeReq := httptest.NewRequest(http.MethodPost, "http://example.test/upload", nil)
+	closeReq.Body = closeErrorBody{Reader: bytes.NewReader([]byte("body")), err: closeErr}
+
+	body, err = bufferBody(closeReq, 1024)
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Equal(t, "sign: close request body failed", err.Error())
+	assert.ErrorIs(t, err, closeErr)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestSign_BufferBodySizeErrorIsStable(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", bytes.NewReader([]byte("abcd")))
+
+	body, err := bufferBody(req, 3)
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Equal(t, "sign: body exceeds maximum size", err.Error())
+	assert.NotContains(t, err.Error(), "3")
+	assert.NotContains(t, err.Error(), "4")
 }
 
 func TestSign_NoBody(t *testing.T) {
@@ -99,6 +194,126 @@ func TestSign_WithClock_PanicsOnNil(t *testing.T) {
 
 func TestSign_WithNonceFn_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithNonceFn(nil) })
+}
+
+func TestSign_WithIncludeHeadersPanicDoesNotReflectInvalidName(t *testing.T) {
+	assert.PanicsWithValue(t,
+		"sign: WithIncludeHeaders requires a valid HTTP header field name",
+		func() { WithIncludeHeaders("Bad Header secret-token") },
+	)
+}
+
+func TestSign_RoundTripReturnsNonceError(t *testing.T) {
+	prev := nonceRandReader
+	nonceRandReader = failingReader{}
+	t.Cleanup(func() { nonceRandReader = prev })
+
+	rt := Wrap(roundTripFn(func(*http.Request) (*http.Response, error) {
+		t.Fatal("base transport should not be called when nonce generation fails")
+		return nil, nil
+	}), []byte(secret), keyID)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+	resp, err := rt.RoundTrip(req)
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "generate nonce")
+}
+
+func TestSign_WrapPanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		Wrap(http.DefaultTransport, []byte(secret), keyID, nil)
+	})
+}
+
+func TestSign_WrapNilBaseUsesKitTransportWhenDefaultTransportReplaced(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	http.DefaultTransport = roundTripFn(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("global default transport used")
+	})
+
+	rt := Wrap(nil, []byte(secret), keyID)
+	wrapped, ok := rt.(*transport)
+	require.True(t, ok)
+	if _, ok := wrapped.base.(*http.Transport); !ok {
+		t.Fatalf("nil base = %T, want *http.Transport fallback", wrapped.base)
+	}
+}
+
+func TestSign_RoundTripInvalidRequestReturnsError(t *testing.T) {
+	emptyMethod, err := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	require.NoError(t, err)
+	emptyMethod.Method = ""
+	invalidMethod, err := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	require.NoError(t, err)
+	invalidMethod.Method = "GET\nsecret-token"
+	invalidHost, err := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	require.NoError(t, err)
+	invalidHost.Host = "secret-token bad"
+
+	cases := []struct {
+		name     string
+		req      *http.Request
+		notInErr string
+	}{
+		{name: "nil request", req: nil},
+		{name: "nil URL", req: &http.Request{Method: http.MethodGet, Header: make(http.Header)}},
+		{name: "empty method", req: emptyMethod},
+		{name: "invalid method", req: invalidMethod, notInErr: "secret-token"},
+		{name: "empty host", req: &http.Request{Method: http.MethodGet, URL: &url.URL{Path: "/"}, Header: make(http.Header)}},
+		{name: "invalid host", req: invalidHost, notInErr: "secret-token"},
+		{
+			name: "CRLF request URI",
+			req: &http.Request{
+				Method: http.MethodGet,
+				URL:    &url.URL{Scheme: "https", Host: "example.test", Path: "/safe", RawQuery: "ok=1\r\nX-Evil: injected"},
+				Header: make(http.Header),
+			},
+			notInErr: "X-Evil",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			rt := Wrap(roundTripFn(func(*http.Request) (*http.Response, error) {
+				called = true
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+			}), []byte(secret), keyID)
+
+			resp, err := rt.RoundTrip(tc.req)
+			assert.Nil(t, resp)
+			assert.True(t, errors.Is(err, ErrInvalidRequest), "got %v", err)
+			assert.False(t, called)
+			if tc.notInErr != "" {
+				assert.NotContains(t, err.Error(), tc.notInErr)
+			}
+		})
+	}
+}
+
+func TestSign_RoundTripInitializesNilCloneHeader(t *testing.T) {
+	var captured *http.Request
+	intercept := roundTripFn(func(r *http.Request) (*http.Response, error) {
+		captured = r
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	rt := Wrap(intercept, []byte(secret), keyID)
+	req, err := http.NewRequest(http.MethodGet, "http://example.test/", nil)
+	require.NoError(t, err)
+	req.Header = nil
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.NotNil(t, captured)
+	assert.NotEmpty(t, captured.Header.Get(signedrequest.HeaderSignature))
 }
 
 // FR-023 [HIGH] regression: the wrapper used to read the body via a
@@ -206,4 +421,18 @@ func TestSign_IncludeHeaders_BoundIntoSignature(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestSign_IncludeHeadersRejectsInvalidHeaderValue(t *testing.T) {
+	rt := Wrap(roundTripFn(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}), []byte(secret), keyID, WithIncludeHeaders("X-Tenant-ID"))
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/api/x", bytes.NewReader([]byte("body")))
+	require.NoError(t, err)
+	req.Header.Set("X-Tenant-ID", "acme\r\nX-Evil: 1")
+
+	resp, err := rt.RoundTrip(req)
+	assert.Nil(t, resp)
+	assert.True(t, errors.Is(err, signedrequest.ErrInvalidRequest), "got %v", err)
 }

@@ -64,8 +64,8 @@ type Option func(*S3Backend)
 // Use a small static name like "avatars" or "documents".
 func WithInstance(name string) Option {
 	return func(b *S3Backend) {
-		if name == "" {
-			panic("s3backend: instance name must not be empty")
+		if err := storage.ValidateInstanceName(name); err != nil {
+			panic("s3backend: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -84,8 +84,9 @@ func WithConfig(cfg S3Config) Option {
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
+	copied := storage.CloneValidators(validators...)
 	return func(b *S3Backend) {
-		b.validators = append(b.validators, validators...)
+		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
@@ -103,10 +104,13 @@ func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
 	if cfg.Bucket == "" {
 		panic("s3backend: S3Config.Bucket is required")
 	}
+	if err := cfg.Validate(""); err != nil {
+		return nil, err
+	}
 
 	awsCfg, err := buildAWSConfig(context.Background(), cfg)
 	if err != nil {
-		return nil, fmt.Errorf("s3backend: build AWS config: %w", err)
+		return nil, storage.WrapSafe("s3backend: build AWS config failed", err)
 	}
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
@@ -124,6 +128,9 @@ func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
 		metrics:   defaultS3Metrics,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("s3backend: option must not be nil")
+		}
 		o(b)
 	}
 	return b, nil
@@ -149,6 +156,9 @@ func NewWithClient(client S3Client, presigner S3Presigner, bucket string, opts .
 		metrics:   defaultS3Metrics,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("s3backend: option must not be nil")
+		}
 		o(b)
 	}
 	return b
@@ -179,16 +189,23 @@ func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, meta stora
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
 
-	validated, err := storage.ApplyValidators(r, &meta, b.validators)
+	validated, err := storage.ApplyValidators(ctx, r, &meta, b.validators)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
+	if len(b.validators) > 0 {
+		defer func() { _ = storage.CloseValidatedReader(validated) }()
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
 		return err
 	}
 
@@ -202,20 +219,24 @@ func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, meta stora
 		Key:         aws.String(key),
 		Body:        validated,
 		ContentType: aws.String(contentType),
-		Metadata:    meta.Custom,
+		Metadata:    storage.CloneCustomMeta(meta.Custom),
 	}
 	if meta.Size > 0 {
 		input.ContentLength = aws.Int64(meta.Size)
 	}
-	applySSE(input, b.cfg)
+	if err := applySSE(input, b.cfg); err != nil {
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(err))
+		return err
+	}
 
 	start := now()
 	_, putErr := b.client.PutObject(ctx, input)
 	b.metrics.observeOp(b.instance, "put", start, putErr)
 
 	if putErr != nil {
-		span.SetStatus(codes.Error, putErr.Error())
-		return fmt.Errorf("s3backend: put %q: %w", key, putErr)
+		opErr := storage.WrapSafe("s3backend: put failed", putErr)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -226,7 +247,7 @@ func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -244,16 +265,17 @@ func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage
 		var noSuchKey *types.NoSuchKey
 		if errors.As(err, &noSuchKey) {
 			// NotFound is expected control flow, not an error — don't pollute traces.
-			return nil, storage.ObjectMeta{}, fmt.Errorf("s3backend: get %q: %w", key, storage.ErrObjectNotFound)
+			return nil, storage.ObjectMeta{}, fmt.Errorf("s3backend: get: %w", storage.ErrObjectNotFound)
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return nil, storage.ObjectMeta{}, fmt.Errorf("s3backend: get %q: %w", key, err)
+		opErr := storage.WrapSafe("s3backend: get failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return nil, storage.ObjectMeta{}, opErr
 	}
 
 	meta := storage.ObjectMeta{
 		ContentType: aws.ToString(out.ContentType),
 		ETag:        aws.ToString(out.ETag),
-		Custom:      out.Metadata,
+		Custom:      storage.CloneCustomMeta(out.Metadata),
 	}
 	if out.ContentLength != nil {
 		meta.Size = *out.ContentLength
@@ -270,7 +292,7 @@ func (b *S3Backend) Delete(ctx context.Context, key string) error {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -285,8 +307,9 @@ func (b *S3Backend) Delete(ctx context.Context, key string) error {
 	b.metrics.observeOp(b.instance, "delete", start, err)
 
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("s3backend: delete %q: %w", key, err)
+		opErr := storage.WrapSafe("s3backend: delete failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return opErr
 	}
 	return nil
 }
@@ -297,7 +320,7 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("storage.bucket", b.bucket),
-		attribute.String("storage.key", key),
+		attribute.Int("storage.key_len", len(key)),
 	)
 
 	if err := storage.ValidateKey(key); err != nil {
@@ -316,8 +339,9 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 		if errors.As(err, &notFound) {
 			return false, nil
 		}
-		span.SetStatus(codes.Error, err.Error())
-		return false, fmt.Errorf("s3backend: exists %q: %w", key, err)
+		opErr := storage.WrapSafe("s3backend: exists failed", err)
+		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
+		return false, opErr
 	}
 	return true, nil
 }
@@ -326,7 +350,26 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 // fields on a PutObjectInput based on the configured SSE policy. The default
 // is "AES256" so buckets without a default-encryption policy still receive
 // encrypted objects; callers can opt out by setting cfg.SSE = "".
-func applySSE(input *s3.PutObjectInput, cfg S3Config) {
+func validateSSEConfig(cfg S3Config) error {
+	switch cfg.SSE {
+	case "", "AES256":
+	case "aws:kms":
+		if cfg.SSEKMSKeyID == "" {
+			return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID is required when STORAGE_S3_SSE=aws:kms")
+		}
+	default:
+		return fmt.Errorf("STORAGE_S3_SSE must be one of empty, AES256, or aws:kms")
+	}
+	if cfg.SSEKMSKeyID != "" && cfg.SSE != "aws:kms" {
+		return fmt.Errorf("STORAGE_S3_SSE_KMS_KEY_ID requires STORAGE_S3_SSE=aws:kms")
+	}
+	return nil
+}
+
+func applySSE(input *s3.PutObjectInput, cfg S3Config) error {
+	if err := validateSSEConfig(cfg); err != nil {
+		return err
+	}
 	switch cfg.SSE {
 	case "":
 		// Opt-out: don't set anything, rely on bucket policy.
@@ -334,8 +377,23 @@ func applySSE(input *s3.PutObjectInput, cfg S3Config) {
 		input.ServerSideEncryption = types.ServerSideEncryptionAes256
 	case "aws:kms":
 		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
-		if cfg.SSEKMSKeyID != "" {
-			input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
-		}
+		input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
 	}
+	return nil
+}
+
+func applyCopySSE(input *s3.CopyObjectInput, cfg S3Config) error {
+	if err := validateSSEConfig(cfg); err != nil {
+		return err
+	}
+	switch cfg.SSE {
+	case "":
+		// Opt-out: don't set anything, rely on bucket policy.
+	case "AES256":
+		input.ServerSideEncryption = types.ServerSideEncryptionAes256
+	case "aws:kms":
+		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
+		input.SSEKMSKeyId = aws.String(cfg.SSEKMSKeyID)
+	}
+	return nil
 }

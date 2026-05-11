@@ -35,7 +35,7 @@ type StaticKeyProvider struct {
 // The key must be exactly 32 bytes (AES-256).
 func StaticKey(key []byte) KeyProvider {
 	if len(key) != 32 {
-		panic(fmt.Sprintf("encryption: key must be 32 bytes, got %d", len(key)))
+		panic("encryption: key must be 32 bytes")
 	}
 	keyCopy := make([]byte, 32)
 	copy(keyCopy, key)
@@ -92,16 +92,23 @@ type EncryptedStorage struct {
 type Option func(*EncryptedStorage)
 
 // WithMaxConcurrentEncryptions caps the number of in-flight Put encryptions.
-// Default: runtime.NumCPU(). Pass <= 0 to disable the cap (unsafe; the
-// audit-flagged DoS path uses ~512 MiB per concurrent Put at the default
-// MaxEncryptableSize).
+// Default: runtime.NumCPU(). The value must be positive; use
+// [WithoutMaxConcurrentEncryptions] only when an external admission
+// controller already bounds upload concurrency.
 func WithMaxConcurrentEncryptions(n int) Option {
+	if n <= 0 {
+		panic("storage/encryption: WithMaxConcurrentEncryptions requires n > 0")
+	}
 	return func(e *EncryptedStorage) {
-		if n <= 0 {
-			e.putSem = nil
-			return
-		}
 		e.putSem = make(chan struct{}, n)
+	}
+}
+
+// WithoutMaxConcurrentEncryptions disables the in-process encryption
+// concurrency cap.
+func WithoutMaxConcurrentEncryptions() Option {
+	return func(e *EncryptedStorage) {
+		e.putSem = nil
 	}
 }
 
@@ -144,6 +151,9 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 		putSem:  make(chan struct{}, runtime.NumCPU()),
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("encryption: option must not be nil")
+		}
 		opt(e)
 	}
 
@@ -207,6 +217,12 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
+	if r == nil {
+		return fmt.Errorf("%w: reader must not be nil", storage.ErrValidation)
+	}
+	if err := storage.ValidateObjectMeta(meta); err != nil {
+		return err
+	}
 
 	if e.putSem != nil {
 		select {
@@ -219,7 +235,7 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 
 	keyBytes, err := e.keys.EncryptionKey(ctx)
 	if err != nil {
-		return fmt.Errorf("encryption: get key: %w", err)
+		return storage.WrapSafe("encryption: get key failed", err)
 	}
 	defer zeroBytes(keyBytes)
 
@@ -228,7 +244,7 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 	// scrub plaintext from memory.
 	defer zeroBytes(plaintext)
 	if err != nil {
-		return fmt.Errorf("encryption: read plaintext: %w", err)
+		return storage.WrapSafe("encryption: read plaintext failed", err)
 	}
 	if int64(len(plaintext)) > MaxEncryptableSize {
 		return fmt.Errorf("encryption: content exceeds maximum encryptable size (%d bytes)", MaxEncryptableSize)
@@ -246,7 +262,10 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 	defer zeroBytes(ciphertext)
 
 	meta.Size = int64(len(ciphertext))
-	return e.backend.Put(ctx, key, bytes.NewReader(ciphertext), meta)
+	if err := e.backend.Put(ctx, key, bytes.NewReader(ciphertext), meta); err != nil {
+		return storage.WrapSafe("encryption: put failed", err)
+	}
+	return nil
 }
 
 // Get retrieves and decrypts the stored content.
@@ -256,7 +275,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	}
 	rc, meta, err := e.backend.Get(ctx, key)
 	if err != nil {
-		return nil, meta, err
+		return nil, meta, storage.WrapSafe("encryption: get failed", err)
 	}
 
 	// Limit ciphertext read to MaxEncryptableSize + GCM overhead (nonce + tag)
@@ -271,7 +290,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	// Defer zero immediately so all error paths below scrub ciphertext too.
 	defer zeroBytes(ciphertext)
 	if err != nil {
-		return nil, meta, fmt.Errorf("encryption: read ciphertext: %w", err)
+		return nil, meta, storage.WrapSafe("encryption: read ciphertext failed", err)
 	}
 	if int64(len(ciphertext)) > int64(maxCiphertextSize) {
 		return nil, meta, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
@@ -279,7 +298,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 
 	keyBytes, err := e.keys.EncryptionKey(ctx)
 	if err != nil {
-		return nil, meta, fmt.Errorf("encryption: get key: %w", err)
+		return nil, meta, storage.WrapSafe("encryption: get key failed", err)
 	}
 	defer zeroBytes(keyBytes)
 
@@ -315,7 +334,10 @@ func (e *EncryptedStorage) Delete(ctx context.Context, key string) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
-	return e.backend.Delete(ctx, key)
+	if err := e.backend.Delete(ctx, key); err != nil {
+		return storage.WrapSafe("encryption: delete failed", err)
+	}
+	return nil
 }
 
 // Exists delegates to the underlying backend.
@@ -323,7 +345,11 @@ func (e *EncryptedStorage) Exists(ctx context.Context, key string) (bool, error)
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
 	}
-	return e.backend.Exists(ctx, key)
+	ok, err := e.backend.Exists(ctx, key)
+	if err != nil {
+		return false, storage.WrapSafe("encryption: exists failed", err)
+	}
+	return ok, nil
 }
 
 // zeroBytes overwrites a byte slice with zeros to scrub key material from memory.
@@ -341,6 +367,16 @@ func zeroBytes(b []byte) {
 // The iterator rewrites Size to subtract GCM overhead (nonce + tag) so
 // callers see plaintext size, matching what Get returns.
 func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+	if err := storage.ValidatePrefix(prefix); err != nil {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: %w", err))
+		}
+	}
+	if err := storage.ValidateListOptions(opts); err != nil {
+		return func(yield func(storage.ObjectInfo, error) bool) {
+			yield(storage.ObjectInfo{}, fmt.Errorf("encryption: %w", err))
+		}
+	}
 	lister, ok := storage.AsLister(e.backend)
 	if !ok {
 		return func(yield func(storage.ObjectInfo, error) bool) {
@@ -350,10 +386,16 @@ func (e *EncryptedStorage) list(ctx context.Context, prefix string, opts storage
 	const gcmOverhead = 12 + 16
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		for info, err := range lister.List(ctx, prefix, opts) {
-			if err == nil && info.Size >= gcmOverhead {
+			if err != nil {
+				if !yield(storage.ObjectInfo{}, storage.WrapSafe("encryption: list failed", err)) {
+					return
+				}
+				continue
+			}
+			if info.Size >= gcmOverhead {
 				info.Size -= gcmOverhead
 			}
-			if !yield(info, err) {
+			if !yield(info, nil) {
 				return
 			}
 		}
@@ -378,27 +420,13 @@ func (e *EncryptedStorage) Copy(ctx context.Context, srcKey, dstKey string) erro
 
 	rc, meta, err := e.Get(ctx, srcKey)
 	if err != nil {
-		return fmt.Errorf("encryption: copy get %q: %w", srcKey, err)
+		return fmt.Errorf("encryption: copy get: %w", err)
 	}
 	defer func() { _ = rc.Close() }()
 
-	// FR-081 [LOW]: deep-copy custom metadata so the destination Put
-	// cannot mutate the source's map.
-	custom := meta.Custom
-	if custom != nil {
-		clone := make(map[string]string, len(custom))
-		for k, v := range custom {
-			clone[k] = v
-		}
-		custom = clone
-	}
-	putMeta := storage.ObjectMeta{
-		ContentType: meta.ContentType,
-		Size:        meta.Size,
-		Custom:      custom,
-	}
+	putMeta := storage.CloneObjectMeta(meta)
 	if err := e.Put(ctx, dstKey, rc, putMeta); err != nil {
-		return fmt.Errorf("encryption: copy put %q: %w", dstKey, err)
+		return fmt.Errorf("encryption: copy put: %w", err)
 	}
 	return nil
 }

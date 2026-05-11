@@ -126,22 +126,19 @@ func NewRedisMetrics(reg prometheus.Registerer) *RedisMetrics {
 		),
 	}
 
-	mustRegisterAll(reg,
-		m.commandDuration, m.commandErrors,
-		m.connectionPoolHits, m.connectionPoolMisses, m.connectionPoolTimeouts,
-		m.connectionPoolSize, m.connectionPoolIdle, m.connectionPoolStale,
-		m.reconnectAttempts, m.reconnectSuccesses, m.connectionHealthy,
-	)
+	m.commandDuration = promutil.MustRegisterOrGet(reg, m.commandDuration)
+	m.commandErrors = promutil.MustRegisterOrGet(reg, m.commandErrors)
+	m.connectionPoolHits = promutil.MustRegisterOrGet(reg, m.connectionPoolHits)
+	m.connectionPoolMisses = promutil.MustRegisterOrGet(reg, m.connectionPoolMisses)
+	m.connectionPoolTimeouts = promutil.MustRegisterOrGet(reg, m.connectionPoolTimeouts)
+	m.connectionPoolSize = promutil.MustRegisterOrGet(reg, m.connectionPoolSize)
+	m.connectionPoolIdle = promutil.MustRegisterOrGet(reg, m.connectionPoolIdle)
+	m.connectionPoolStale = promutil.MustRegisterOrGet(reg, m.connectionPoolStale)
+	m.reconnectAttempts = promutil.MustRegisterOrGet(reg, m.reconnectAttempts)
+	m.reconnectSuccesses = promutil.MustRegisterOrGet(reg, m.reconnectSuccesses)
+	m.connectionHealthy = promutil.MustRegisterOrGet(reg, m.connectionHealthy)
 
 	return m
-}
-
-// mustRegisterAll registers all collectors, silently reusing existing collectors
-// on AlreadyRegisteredError.
-func mustRegisterAll(reg prometheus.Registerer, cs ...prometheus.Collector) {
-	for _, c := range cs {
-		promutil.RegisterCollector(reg, c)
-	}
 }
 
 // defaultMetrics is the package-level metrics instance for backward compatibility.
@@ -253,7 +250,7 @@ func CollectPoolMetrics(client redis.UniversalClient, instance string) {
 
 func collectPoolMetrics(m *RedisMetrics, client redis.UniversalClient, instance string) {
 	if err := ValidateName(instance, "instance"); err != nil {
-		panic("redis: " + err.Error())
+		panic("redis: invalid instance name")
 	}
 	if client == nil {
 		return
@@ -297,12 +294,15 @@ func WithPoolMetrics(m *RedisMetrics) PoolCollectorOption {
 func StartPoolMetricsCollector(ctx context.Context, client redis.UniversalClient, instance string, interval time.Duration, opts ...PoolCollectorOption) {
 	cfg := poolCollectorConfig{metrics: defaultMetrics}
 	for _, o := range opts {
+		if o == nil {
+			panic("redis: pool metrics collector option must not be nil")
+		}
 		o(&cfg)
 	}
 
 	// Validate early so panics occur at call site, not asynchronously on first tick.
 	if err := ValidateName(instance, "instance"); err != nil {
-		panic("redis: " + err.Error())
+		panic("redis: invalid instance name")
 	}
 	if interval <= 0 {
 		panic("redis: pool metrics collector interval must be positive")

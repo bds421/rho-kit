@@ -86,9 +86,20 @@ func TestCompare_MissingBenchFlaggedMissing(t *testing.T) {
 	for _, d := range diffs {
 		if d.Name == "Gone" && d.MissingBench {
 			found = true
+			assert.True(t, d.Regressed, "missing tracked benchmarks must fail the gate")
 		}
 	}
 	assert.True(t, found, "benchmarks gone from current must be flagged missing")
+}
+
+func TestCompare_MissingBenchForUntrackedMetricDoesNotRegress(t *testing.T) {
+	base := []Result{{Name: "Gone", BPerOp: 200}}
+	cur := []Result{}
+
+	diffs := Compare(base, cur, []Metric{MetricBytes}, map[Metric]struct{}{MetricNs: {}}, 10)
+	require.Len(t, diffs, 1)
+	assert.True(t, diffs[0].MissingBench)
+	assert.False(t, diffs[0].Regressed, "missing untracked metrics may be reported but must not fail the gate")
 }
 
 func TestCompare_ZeroBaselineFlaggedAsRegression(t *testing.T) {
@@ -143,4 +154,23 @@ func TestFormat_RendersTable(t *testing.T) {
 	})
 	assert.Contains(t, out, "BenchmarkA")
 	assert.Contains(t, out, "REGRESSED")
+}
+
+func TestFormat_MissingRegressedBenchmarkIsExplicit(t *testing.T) {
+	out := Format([]Diff{
+		{Name: "BenchmarkGone", Metric: MetricNs, Baseline: 100, MissingBench: true, Regressed: true},
+	})
+	assert.Contains(t, out, "REGRESSED (missing benchmark)")
+}
+
+func TestSupportedMetrics_ReturnsDetachedCopy(t *testing.T) {
+	got := SupportedMetrics()
+	require.NotEmpty(t, got)
+
+	got[0] = Metric("bogus")
+
+	fresh := SupportedMetrics()
+	require.NotEmpty(t, fresh)
+	assert.Equal(t, MetricNs, fresh[0])
+	assert.True(t, IsValidMetric(MetricNs))
 }

@@ -1,0 +1,75 @@
+# Direct external Go module allowlist.
+#
+# One exact module path per line. Internal rho-kit modules are allowed
+# implicitly. Additions to this file are dependency-source approvals and
+# should be reviewed with the same care as the go.mod change that needs them.
+
+# Core crypto / token / validation primitives.
+aidanwoods.dev/go-paseto
+github.com/go-playground/validator/v10
+github.com/lestrrat-go/jwx/v3
+github.com/tink-crypto/tink-go/v2
+golang.org/x/crypto
+
+# Data, cache, SQL, migration, and queue backends.
+github.com/alicebob/miniredis/v2
+github.com/dgraph-io/ristretto/v2
+github.com/hashicorp/golang-lru/v2
+github.com/jackc/pgx/v5
+github.com/lib/pq
+github.com/pressly/goose/v3
+github.com/redis/go-redis/v9
+github.com/riverqueue/river
+github.com/riverqueue/river/riverdriver/riverpgxv5
+github.com/riverqueue/river/rivertype
+
+# Messaging, scheduling, and resilience.
+github.com/cenkalti/backoff/v5
+github.com/nats-io/nats.go
+github.com/open-feature/go-sdk
+github.com/openfga/go-sdk
+github.com/rabbitmq/amqp091-go
+github.com/robfig/cron/v3
+github.com/sony/gobreaker/v2
+go.temporal.io/sdk
+
+# HTTP, schema, identity, and file handling helpers.
+github.com/fsnotify/fsnotify
+github.com/gabriel-vasile/mimetype
+github.com/google/uuid
+github.com/jub0bs/cors
+github.com/pkg/sftp
+github.com/santhosh-tekuri/jsonschema/v6
+golang.org/x/net
+golang.org/x/sync
+google.golang.org/grpc
+google.golang.org/protobuf
+
+# Cloud/storage SDKs, kept in backend-specific modules.
+cloud.google.com/go/kms
+cloud.google.com/go/storage
+github.com/Azure/azure-sdk-for-go/sdk/storage/azblob
+github.com/aws/aws-sdk-go-v2
+github.com/aws/aws-sdk-go-v2/config
+github.com/aws/aws-sdk-go-v2/credentials
+github.com/aws/aws-sdk-go-v2/service/kms
+github.com/aws/aws-sdk-go-v2/service/s3
+google.golang.org/api
+
+# Observability.
+github.com/prometheus/client_golang
+github.com/prometheus/client_model
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+go.opentelemetry.io/otel
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
+go.opentelemetry.io/otel/sdk
+go.opentelemetry.io/otel/trace
+
+# Test infrastructure.
+github.com/stretchr/testify
+github.com/testcontainers/testcontainers-go
+github.com/testcontainers/testcontainers-go/modules/nats
+github.com/testcontainers/testcontainers-go/modules/postgres
+github.com/testcontainers/testcontainers-go/modules/rabbitmq
+github.com/testcontainers/testcontainers-go/modules/redis

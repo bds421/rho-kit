@@ -33,9 +33,10 @@
 // # Dead-letter
 //
 // After maxAttempts (default 10), an entry's status is set to "failed".
-// Failed entries remain in the store for manual inspection or retry.
-// Published entries are retained for the configured retention period
-// (default 7 days) and then cleaned up by the relay.
+// Failed entries remain in the store for manual inspection or retry until
+// the failed-retention window expires (default 30 days). Published entries
+// are retained for the configured retention period (default 7 days). The
+// relay cleans both states on startup and then periodically while running.
 //
 // # Usage
 //

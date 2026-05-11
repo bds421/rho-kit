@@ -2,6 +2,7 @@ package budget_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ type staticBudget struct {
 }
 
 func (s *staticBudget) Consume(_ context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
-	if key == "" {
-		return false, 0, 0, budget.ErrInvalidKey
+	if err := budget.ValidateKey(key); err != nil {
+		return false, 0, 0, err
 	}
 	if amount < 0 {
 		return false, 0, 0, budget.ErrInvalidAmount
@@ -34,8 +35,8 @@ func (s *staticBudget) Consume(_ context.Context, key string, amount int64) (boo
 }
 
 func (s *staticBudget) Peek(_ context.Context, key string) (int64, error) {
-	if key == "" {
-		return 0, budget.ErrInvalidKey
+	if err := budget.ValidateKey(key); err != nil {
+		return 0, err
 	}
 	return s.cap - s.used, nil
 }
@@ -45,6 +46,8 @@ func TestSentinels_Distinct(t *testing.T) {
 	// can errors.Is each branch.
 	assert.NotErrorIs(t, budget.ErrInvalidKey, budget.ErrInvalidAmount)
 	assert.NotErrorIs(t, budget.ErrInvalidAmount, budget.ErrInvalidKey)
+	assert.NotErrorIs(t, budget.ErrInvalidBudget, budget.ErrInvalidKey)
+	assert.NotErrorIs(t, budget.ErrInvalidBudget, budget.ErrInvalidAmount)
 }
 
 func TestBudget_InterfaceUsable(t *testing.T) {
@@ -61,6 +64,32 @@ func TestBudget_InvalidKeyFromInterface(t *testing.T) {
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 	_, err = b.Peek(context.Background(), "")
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+}
+
+func TestValidateKey_PortableContract(t *testing.T) {
+	valid := []string{
+		"tenant:acme",
+		strings.Repeat("a", budget.MaxKeyLen),
+	}
+	for _, key := range valid {
+		t.Run("valid/"+key[:min(len(key), 16)], func(t *testing.T) {
+			assert.NoError(t, budget.ValidateKey(key))
+		})
+	}
+
+	invalid := []string{
+		"",
+		strings.Repeat("a", budget.MaxKeyLen+1),
+		"tenant\x00acme",
+		"tenant acme",
+		"tenant\tacme",
+		string([]byte{0xff, 0xfe}),
+	}
+	for _, key := range invalid {
+		t.Run("invalid", func(t *testing.T) {
+			assert.ErrorIs(t, budget.ValidateKey(key), budget.ErrInvalidKey)
+		})
+	}
 }
 
 // refundingBudget exposes [budget.Refunder] in addition to the base
@@ -95,6 +124,18 @@ func TestRefund_FallsBackWhenBackendCannotRefund(t *testing.T) {
 	assert.False(t, ok, "non-Refunder backend must report ok=false, no error")
 }
 
+func TestRefund_RejectsNilBudget(t *testing.T) {
+	var nilBudget budget.Budget
+	_, ok, err := budget.Refund(context.Background(), nilBudget, "k", 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+	assert.False(t, ok)
+
+	var typedNil *refundingBudget
+	_, ok, err = budget.Refund(context.Background(), typedNil, "k", 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidBudget)
+	assert.False(t, ok)
+}
+
 // Validation runs at the helper level so callers see consistent
 // errors regardless of optional backend capability — a bad refund
 // must not look like a harmless unsupported refund.
@@ -102,6 +143,10 @@ func TestRefund_ValidatesArgumentsBeforeBackendDispatch(t *testing.T) {
 	plain := &staticBudget{cap: 100}
 
 	_, ok, err := budget.Refund(context.Background(), plain, "", 5)
+	assert.ErrorIs(t, err, budget.ErrInvalidKey)
+	assert.False(t, ok)
+
+	_, ok, err = budget.Refund(context.Background(), plain, strings.Repeat("a", budget.MaxKeyLen+1), 5)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 	assert.False(t, ok)
 

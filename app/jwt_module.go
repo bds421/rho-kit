@@ -56,7 +56,9 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	switch {
 	case m.cfg.allowAnyIssuer:
 		opts = append(opts, jwtutil.WithAllowAnyIssuer())
-		mc.Logger.Warn("jwt provider configured WITHOUT issuer enforcement", "jwks_url", m.cfg.jwksURL)
+		mc.Logger.Warn("jwt provider configured WITHOUT issuer enforcement",
+			"jwks_configured", m.cfg.jwksURL != "",
+		)
 	case m.cfg.expectedIssuer != "":
 		opts = append(opts, jwtutil.WithExpectedIssuer(m.cfg.expectedIssuer))
 	default:
@@ -69,7 +71,7 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 		// it on the first request the provider validates.
 		opts = append(opts, jwtutil.WithAllowAnyIssuer())
 		mc.Logger.Error("jwt provider built without issuer pin and without explicit opt-out — verifying tokens from any authority. Confused-deputy hazard: a token issued for service A is silently valid at service B. Use Builder.WithJWTIssuer (preferred) or Builder.WithoutJWTIssuer (explicit acknowledgement) to remove this log line.",
-			"jwks_url", m.cfg.jwksURL,
+			"jwks_configured", m.cfg.jwksURL != "",
 		)
 	}
 	if m.cfg.audience != "" {
@@ -90,13 +92,13 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	)
 
 	mc.Runner.AddFunc("jwt-provider", func(ctx context.Context) error {
-		m.provider.Run(ctx)
-		return nil
+		return m.provider.Run(ctx)
 	})
 
 	mc.Logger.Info("jwt provider configured",
-		"jwks_url", m.cfg.jwksURL,
-		"issuer", m.cfg.expectedIssuer,
+		"jwks_configured", m.cfg.jwksURL != "",
+		"issuer_configured", m.cfg.expectedIssuer != "",
+		"audience_configured", m.cfg.audience != "",
 		"allow_any_issuer", m.cfg.allowAnyIssuer,
 	)
 	return nil

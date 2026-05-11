@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
+	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
 // natsModule wires a [natsbackend.Connection] and an associated
@@ -24,16 +26,30 @@ type natsModule struct {
 	conn      *natsbackend.Connection
 	publisher *natsbackend.Publisher
 	logger    *slog.Logger
+
+	messageSizeLimiter messaging.MessageSizeLimiter
 }
 
 func newNatsModule(cfg natsbackend.Config) *natsModule {
 	if cfg.URL == "" {
 		panic("app: WithNATS requires a non-empty URL")
 	}
+	if err := natsbackend.ValidateURL(cfg.URL); err != nil {
+		panic("app: WithNATS requires a valid URL")
+	}
+	cfg = mustCloneNATSConfig(cfg)
 	return &natsModule{
 		BaseModule: NewBaseModule("nats"),
 		cfg:        cfg,
 	}
+}
+
+func mustCloneNATSConfig(cfg natsbackend.Config) natsbackend.Config {
+	cloned, err := cfg.Clone()
+	if err != nil {
+		panic("app: WithNATS requires a valid TLS config")
+	}
+	return cloned
 }
 
 func (m *natsModule) Init(ctx context.Context, mc ModuleContext) error {
@@ -44,9 +60,9 @@ func (m *natsModule) Init(ctx context.Context, mc ModuleContext) error {
 		return fmt.Errorf("nats module: %w", err)
 	}
 	m.conn = conn
-	m.publisher = conn.NewPublisher()
+	m.publisher = conn.NewPublisher(natsbackend.WithMessageSizeLimiter(m.messageSizeLimiter))
 
-	mc.Logger.Info("nats connection configured", "url", m.cfg.URL)
+	mc.Logger.Info("nats connection configured", "config", m.cfg)
 	return nil
 }
 
@@ -60,7 +76,7 @@ func (m *natsModule) Close(_ context.Context) error {
 		return nil
 	}
 	if err := m.conn.Close(); err != nil {
-		m.logger.Warn("error closing nats", "error", err)
+		m.logger.Warn("error closing nats", redact.Error(err))
 		return err
 	}
 	return nil

@@ -2,7 +2,9 @@ package logging
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,6 +30,75 @@ func TestLogger_WithClientIPResolverHonoursCustomResolver(t *testing.T) {
 	}
 }
 
+func TestLoggerWithOptions_ClonesExtraAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	extra := []func(*http.Request) slog.Attr{
+		func(*http.Request) slog.Attr { return slog.String("extra", "original") },
+	}
+	handler := LoggerWithOptions(logger, nil, nil, extra...)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	extra[0] = func(*http.Request) slog.Attr { return slog.String("extra", "mutated") }
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !bytes.Contains(buf.Bytes(), []byte("extra=original")) {
+		t.Fatalf("expected original extra attr, got: %s", buf.String())
+	}
+	if bytes.Contains(buf.Bytes(), []byte("extra=mutated")) {
+		t.Fatalf("unexpected mutated extra attr, got: %s", buf.String())
+	}
+}
+
+func TestLoggerWithOptions_ClonesTrustedProxies(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_, trusted, err := net.ParseCIDR("192.0.2.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := WithTrustedProxies([]*net.IPNet{trusted})
+	trusted.IP = net.ParseIP("10.0.0.0")
+
+	handler := LoggerWithOptions(logger, nil, []LoggerOption{opt})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !bytes.Contains(buf.Bytes(), []byte("remote=203.0.113.10")) {
+		t.Fatalf("expected original trusted proxy CIDR to be used, got: %s", buf.String())
+	}
+}
+
+func assertLogPathRedacted(t *testing.T, logOutput []byte, rawPath string) {
+	t.Helper()
+	if !bytes.Contains(logOutput, []byte("path=\"<redacted")) {
+		t.Fatalf("expected redacted path attr, got: %s", string(logOutput))
+	}
+	if rawPath != "" && bytes.Contains(logOutput, []byte(rawPath)) {
+		t.Fatalf("raw path %q leaked into log: %s", rawPath, string(logOutput))
+	}
+}
+
+func TestLoggerWithOptions_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	LoggerWithOptions(slog.Default(), nil, []LoggerOption{nil})
+}
+
 func TestLogger_NormalPath(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -44,8 +115,25 @@ func TestLogger_NormalPath(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("level=INFO")) {
 		t.Errorf("expected INFO level log, got: %s", logOutput)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("path=/api/test")) {
-		t.Errorf("expected path in log, got: %s", logOutput)
+	assertLogPathRedacted(t, buf.Bytes(), "/api/test")
+}
+
+func TestLogger_UsesEscapedPath(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := Logger(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/files/a%2Fb", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	assertLogPathRedacted(t, buf.Bytes(), "/api/files/a%2Fb")
+	if bytes.Contains(buf.Bytes(), []byte("path=/api/files/a/b")) {
+		t.Errorf("decoded path delimiter should not be logged, got: %s", logOutput)
 	}
 }
 
@@ -84,6 +172,61 @@ func TestLogger_ExtraAttrs(t *testing.T) {
 	logOutput := buf.String()
 	if !bytes.Contains(buf.Bytes(), []byte("custom=value")) {
 		t.Errorf("expected custom attr in log, got: %s", logOutput)
+	}
+}
+
+func TestLogger_ExtraAttrPanicDoesNotPanic(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := Logger(logger, nil,
+		func(*http.Request) slog.Attr {
+			panic("attr exploded")
+		},
+		func(*http.Request) slog.Attr {
+			return slog.String("keep", "this")
+		},
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	logOutput := buf.String()
+	if bytes.Contains(buf.Bytes(), []byte("attr=exploded")) {
+		t.Errorf("panicking attr should be omitted, got: %s", logOutput)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("keep=this")) {
+		t.Errorf("later attrs should still be logged, got: %s", logOutput)
+	}
+}
+
+func TestLogger_ClientIPResolverPanicDoesNotPanic(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := LoggerWithOptions(logger, nil,
+		[]LoggerOption{WithClientIPResolver(func(*http.Request) string {
+			panic("resolver exploded")
+		})},
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("remote=\"\"")) {
+		t.Errorf("expected empty remote after resolver panic, got: %s", buf.String())
 	}
 }
 
@@ -161,4 +304,57 @@ func TestLogger_CapturesStatus(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("status=404")) {
 		t.Errorf("expected status=404 in log, got: %s", buf.String())
 	}
+}
+
+func TestLogger_Logs500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	handlerPanic := errors.New("handler panic")
+
+	handler := Logger(logger, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		if got != handlerPanic {
+			t.Fatalf("panic = %v, want original panic", got)
+		}
+		logOutput := buf.String()
+		if !bytes.Contains(buf.Bytes(), []byte("status=500")) {
+			t.Fatalf("expected status=500 in panic access log, got: %s", logOutput)
+		}
+		if !bytes.Contains(buf.Bytes(), []byte("panicked=true")) {
+			t.Fatalf("expected panicked=true in access log, got: %s", logOutput)
+		}
+	}()
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+}
+
+func TestLogger_PanicAfterHeaderLogsWrittenStatusAndRepanics(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	handlerPanic := errors.New("handler panic")
+
+	handler := Logger(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		panic(handlerPanic)
+	}))
+
+	defer func() {
+		got := recover()
+		if got != handlerPanic {
+			t.Fatalf("panic = %v, want original panic", got)
+		}
+		logOutput := buf.String()
+		if !bytes.Contains(buf.Bytes(), []byte("status=202")) {
+			t.Fatalf("expected written status in panic access log, got: %s", logOutput)
+		}
+		if !bytes.Contains(buf.Bytes(), []byte("panicked=true")) {
+			t.Fatalf("expected panicked=true in access log, got: %s", logOutput)
+		}
+	}()
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/accepted", nil))
 }

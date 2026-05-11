@@ -29,6 +29,18 @@ func TestLiveness_Always200(t *testing.T) {
 	assert.Equal(t, "v1.2.3", body.Version)
 }
 
+func TestWriteJSONError(t *testing.T) {
+	t.Parallel()
+
+	rr := httptest.NewRecorder()
+	writeJSONError(rr, http.StatusInternalServerError)
+
+	require.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+	assert.JSONEq(t, `{"error":"internal error","code":"INTERNAL"}`, rr.Body.String())
+}
+
 func TestReadiness_HealthyReturns200(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +100,17 @@ func TestReadiness_DegradedReturns200(t *testing.T) {
 func TestReadiness_PanicsOnNilChecker(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() { Readiness(nil) })
+}
+
+func TestReadiness_PanicsOnInvalidChecker(t *testing.T) {
+	t.Parallel()
+	checker := &Checker{
+		Version: "v1",
+		Checks: []DependencyCheck{
+			{Name: "secret-token"},
+		},
+	}
+	assert.PanicsWithValue(t, "health: Readiness requires a valid *Checker", func() { Readiness(checker) })
 }
 
 func TestReadiness_UnhealthyReturns503(t *testing.T) {

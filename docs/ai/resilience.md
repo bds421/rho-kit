@@ -6,8 +6,8 @@ Packages: `resilience/retry`, `resilience/circuitbreaker`
 
 | Scenario | Use |
 |---|---|
-| Transient failures (network blips, 503s) | `retry.Do` with `DefaultPolicy` |
-| Long-running worker that must restart on failure | `retry.Loop` with `WorkerPolicy` |
+| Transient failures (network blips, 503s) | `retry.Do` with `DefaultPolicy()` |
+| Long-running worker that must restart on failure | `retry.Loop` with `WorkerPolicy()` |
 | External service degrading (cascading failure risk) | `resilience/circuitbreaker` |
 | External call that may fail and also flap | Both: circuit breaker wraps function, retry wraps CB |
 | Permanent errors (bad input, disabled feature) | Neither — use `apperror.NewPermanent()` |
@@ -18,10 +18,10 @@ Packages: `resilience/retry`, `resilience/circuitbreaker`
 
 ```go
 // Default: 3 retries, 1s base delay, 30s max, 2x factor, ±25% jitter
-retry.DefaultPolicy
+retry.DefaultPolicy()
 
 // Worker: unlimited retries, 3s base, 60s max, resets counter after 30s stable run
-retry.WorkerPolicy
+retry.WorkerPolicy()
 ```
 
 ### Single-Shot Retry
@@ -35,7 +35,7 @@ err := retry.Do(ctx, func(ctx context.Context) error {
 ### With Custom Policy
 
 ```go
-err := retry.DoWith(ctx, retry.DefaultPolicy, func(ctx context.Context) error {
+err := retry.DoWith(ctx, retry.DefaultPolicy(), func(ctx context.Context) error {
     return callAPI(ctx)
 },
     retry.WithMaxRetries(5),

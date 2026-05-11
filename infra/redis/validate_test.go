@@ -49,6 +49,24 @@ func TestValidateName(t *testing.T) {
 			wantErr: "invalid characters",
 		},
 		{
+			name:    "space",
+			input:   "bad name",
+			kind:    "stream",
+			wantErr: "invalid characters",
+		},
+		{
+			name:    "tab",
+			input:   "bad\tname",
+			kind:    "stream",
+			wantErr: "invalid characters",
+		},
+		{
+			name:    "invalid utf8",
+			input:   string([]byte{0xff, 0xfe}),
+			kind:    "stream",
+			wantErr: "invalid characters",
+		},
+		{
 			name:    "too long",
 			input:   strings.Repeat("x", maxNameLen+1),
 			kind:    "stream",

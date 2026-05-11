@@ -4,11 +4,14 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // deadLetter moves a failed message to the dead-letter stream, then ACKs it.
@@ -43,32 +46,32 @@ func (c *Consumer) deadLetter(ctx context.Context, stream, dlStream string, raw 
 		// Check which command failed for accurate logging.
 		if len(cmds) == 0 {
 			c.logger.Error("failed to execute dead-letter pipeline",
-				"stream", stream,
-				"dl_stream", dlStream,
-				"redis_id", raw.ID,
-				"error", err,
+				redact.String("stream", stream),
+				redact.String("dl_stream", dlStream),
+				redact.String("redis_id", raw.ID),
+				redact.Error(err),
 			)
 			return
 		}
 		if cmds[0].Err() != nil {
 			c.logger.Error("failed to dead-letter message",
-				"stream", stream,
-				"dl_stream", dlStream,
-				"redis_id", raw.ID,
-				"error", cmds[0].Err(),
+				redact.String("stream", stream),
+				redact.String("dl_stream", dlStream),
+				redact.String("redis_id", raw.ID),
+				redact.Error(cmds[0].Err()),
 			)
 			return // Don't count as dead-lettered if XADD failed.
 		}
 		if len(cmds) > 1 && cmds[1].Err() != nil {
 			c.logger.Error("failed to ACK dead-lettered message",
-				"stream", stream,
-				"redis_id", raw.ID,
-				"error", cmds[1].Err(),
+				redact.String("stream", stream),
+				redact.String("redis_id", raw.ID),
+				redact.Error(cmds[1].Err()),
 			)
 		}
 	}
 
-	c.metrics.messagesDeadLettered.WithLabelValues(stream, c.group).Inc()
+	c.metrics.messagesDeadLettered.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Inc()
 }
 
 // claimLoop periodically scans for pending messages that have been idle too
@@ -92,7 +95,7 @@ func (c *Consumer) claimLoop(ctx context.Context, stream, dlStream string, handl
 func (c *Consumer) claimStaleMessages(ctx context.Context, stream, dlStream string, handler Handler) {
 	// Update pending messages gauge for observability.
 	if pending, err := c.client.XPending(ctx, stream, c.group).Result(); err == nil {
-		c.metrics.pendingMessages.WithLabelValues(stream, c.group).Set(float64(pending.Count))
+		c.metrics.pendingMessages.WithLabelValues(streamMetricLabel(stream), groupMetricLabel(c.group)).Set(float64(pending.Count))
 	}
 
 	// NOTE: Redis 7+ XAUTOCLAIM returns a third element with IDs of PEL entries
@@ -114,8 +117,8 @@ func (c *Consumer) claimStaleMessages(ctx context.Context, stream, dlStream stri
 		if err != nil {
 			if ctx.Err() == nil {
 				c.logger.Error("xautoclaim failed",
-					"stream", stream,
-					"error", err,
+					redact.String("stream", stream),
+					redact.Error(err),
 				)
 			}
 			return
@@ -178,8 +181,8 @@ func (c *Consumer) batchDeliveryCounts(ctx context.Context, stream string, msgs 
 
 	if err != nil {
 		c.logger.Warn("batch delivery count fetch failed, assuming 1 for all",
-			"stream", stream,
-			"error", err,
+			redact.String("stream", stream),
+			redact.Error(err),
 		)
 		for _, m := range msgs {
 			counts[m.ID] = 1
@@ -216,9 +219,9 @@ func (c *Consumer) getDeliveryCount(ctx context.Context, stream, messageID strin
 
 	if err != nil {
 		c.logger.Warn("failed to get delivery count, assuming 1",
-			"stream", stream,
-			"redis_id", messageID,
-			"error", err,
+			redact.String("stream", stream),
+			redact.String("redis_id", messageID),
+			redact.Error(err),
 		)
 		return 1
 	}
@@ -230,33 +233,46 @@ func (c *Consumer) getDeliveryCount(ctx context.Context, stream, messageID strin
 }
 
 // parseMessage converts a raw Redis stream entry to a Message.
-func parseMessage(raw goredis.XMessage) Message {
+func parseMessage(raw goredis.XMessage) (Message, error) {
 	msg := Message{
 		RedisStreamID: raw.ID,
 	}
 
 	if v, ok := raw.Values["id"].(string); ok {
 		msg.ID = v
+	} else if _, exists := raw.Values["id"]; exists {
+		return msg, fmt.Errorf("%w: id field must be a string", ErrInvalidMessage)
 	}
 	if v, ok := raw.Values["type"].(string); ok {
 		msg.Type = v
+	} else if _, exists := raw.Values["type"]; exists {
+		return msg, fmt.Errorf("%w: type field must be a string", ErrInvalidMessage)
 	}
 	if v, ok := raw.Values["payload"].(string); ok {
 		msg.Payload = json.RawMessage(v)
+	} else if _, exists := raw.Values["payload"]; exists {
+		return msg, fmt.Errorf("%w: payload field must be a string", ErrInvalidMessage)
 	}
 	if v, ok := raw.Values["ts"].(string); ok {
-		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-			msg.Timestamp = t
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return msg, fmt.Errorf("%w: timestamp must be RFC3339Nano: %w", ErrInvalidMessage, err)
 		}
+		msg.Timestamp = t
+	} else if _, exists := raw.Values["ts"]; exists {
+		return msg, fmt.Errorf("%w: timestamp field must be a string", ErrInvalidMessage)
 	}
 	if v, ok := raw.Values["headers"].(string); ok {
 		headers := make(map[string]string)
-		if err := json.Unmarshal([]byte(v), &headers); err == nil {
-			msg.Headers = headers
+		if err := json.Unmarshal([]byte(v), &headers); err != nil {
+			return msg, fmt.Errorf("%w: headers must be a JSON object: %w", ErrInvalidMessage, err)
 		}
+		msg.Headers = headers
+	} else if _, exists := raw.Values["headers"]; exists {
+		return msg, fmt.Errorf("%w: headers field must be a string", ErrInvalidMessage)
 	}
 
-	return msg
+	return msg, nil
 }
 
 // isGroupExistsError detects the "BUSYGROUP Consumer Group name already exists"

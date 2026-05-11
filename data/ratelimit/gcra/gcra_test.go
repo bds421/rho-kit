@@ -2,6 +2,8 @@ package gcra
 
 import (
 	"context"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,24 @@ func TestAllow_RejectsEmptyKey(t *testing.T) {
 	allowed, _, err := l.Allow(context.Background(), "")
 	assert.False(t, allowed)
 	assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+}
+
+func TestAllow_RejectsInvalidKey(t *testing.T) {
+	l := New(time.Second, 5)
+
+	cases := []string{
+		"tenant\nid",
+		"tenant\rid",
+		"tenant\x00id",
+		string([]byte{'t', 'e', 'n', 0xff}),
+		strings.Repeat("a", ratelimit.MaxKeyLen+1),
+	}
+	for _, key := range cases {
+		allowed, retry, err := l.Allow(context.Background(), key)
+		assert.False(t, allowed)
+		assert.Zero(t, retry)
+		assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
+	}
 }
 
 func TestAllow_AdmitsBurstAtStart(t *testing.T) {
@@ -76,6 +96,32 @@ func TestNew_PanicsOnInvalidParams(t *testing.T) {
 	assert.Panics(t, func() { New(-time.Second, 1) })
 }
 
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() { New(time.Second, 1, nil) })
+}
+
+func TestInvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		l    *Limiter
+	}{
+		{"nil", nil},
+		{"zero", &Limiter{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, retry, err := tc.l.Allow(ctx, "k")
+			assert.False(t, ok)
+			assert.Equal(t, time.Duration(0), retry)
+			assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
+
+			assert.NotPanics(t, tc.l.Stop)
+			assert.Equal(t, 0, tc.l.Len())
+		})
+	}
+}
+
 func TestRetryAfter_PositiveWhenDenied(t *testing.T) {
 	now := time.Now()
 	l := New(time.Second, 1, WithClock(func() time.Time { return now }))
@@ -104,14 +150,24 @@ func TestNew_PanicsWhenRateRoundsToZero(t *testing.T) {
 		"period (10ns) / burst (100) rounds to 0 — must panic")
 }
 
+func TestWithSweeper_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithSweeper(d)
+			})
+		})
+	}
+}
+
 // TestSweeper_RemovesColdKeys exercises the bounded-cardinality
 // guarantee. Keys whose theoretical arrival time has elapsed must be
 // reclaimed by the sweeper.
 func TestSweeper_RemovesColdKeys(t *testing.T) {
-	now := time.Now()
-	cur := now
+	var cur atomic.Int64
+	cur.Store(time.Now().UnixNano())
 	l := New(time.Second, 1,
-		WithClock(func() time.Time { return cur }),
+		WithClock(func() time.Time { return time.Unix(0, cur.Load()) }),
 		WithSweeper(10*time.Millisecond),
 	)
 	t.Cleanup(l.Stop)
@@ -123,7 +179,7 @@ func TestSweeper_RemovesColdKeys(t *testing.T) {
 	}
 	require.Equal(t, 3, l.Len())
 
-	cur = cur.Add(2 * time.Second)
+	cur.Add(int64(2 * time.Second))
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

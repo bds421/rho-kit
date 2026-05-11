@@ -37,6 +37,7 @@ var (
 	ErrMalformed         = errors.New("passhash: malformed encoded hash")
 	ErrUnsupportedFormat = errors.New("passhash: unsupported encoded format (only argon2id v=19)")
 	ErrParamsOutOfBounds = errors.New("passhash: stored argon2 params exceed the verifier's accepted bounds")
+	ErrInvalidParams     = errors.New("passhash: argon2 params must be positive")
 )
 
 // MaxPasswordLen caps the password length both Hash and Verify will
@@ -133,6 +134,33 @@ type Params struct {
 	KeyLen      uint32 // bytes; default 32
 }
 
+func (p Params) validatePositive() error {
+	if p.Memory == 0 || p.Iterations == 0 || p.Parallelism == 0 || p.SaltLen == 0 || p.KeyLen == 0 {
+		return ErrInvalidParams
+	}
+	return nil
+}
+
+func (p Params) withDefaults() Params {
+	d := DefaultParams()
+	if p.Memory == 0 {
+		p.Memory = d.Memory
+	}
+	if p.Iterations == 0 {
+		p.Iterations = d.Iterations
+	}
+	if p.Parallelism == 0 {
+		p.Parallelism = d.Parallelism
+	}
+	if p.SaltLen == 0 {
+		p.SaltLen = d.SaltLen
+	}
+	if p.KeyLen == 0 {
+		p.KeyLen = d.KeyLen
+	}
+	return p
+}
+
 // DefaultParams returns the OWASP-recommended argon2id parameters
 // (subject to per-release re-calibration). Use these unless you have
 // benchmarked weaker parameters and decided to accept the tradeoff.
@@ -168,14 +196,9 @@ func Hash(password string, p Params) (string, error) {
 	if len(password) > MaxPasswordLen {
 		return "", ErrPasswordTooLong
 	}
-	if p.SaltLen == 0 {
-		p.SaltLen = DefaultParams().SaltLen
-	}
-	if p.KeyLen == 0 {
-		p.KeyLen = DefaultParams().KeyLen
-	}
-	if p.Memory == 0 || p.Iterations == 0 || p.Parallelism == 0 {
-		return "", fmt.Errorf("passhash: Memory/Iterations/Parallelism must be > 0")
+	p = p.withDefaults()
+	if err := p.validatePositive(); err != nil {
+		return "", err
 	}
 	// FR-045 [MED]: also cap hashing parameters with the same
 	// VerifyLimits ceiling. A typo or attacker-influenced Params
@@ -184,19 +207,19 @@ func Hash(password string, p Params) (string, error) {
 	// of bounds applies to both Hash and Verify.
 	hashLimits := DefaultVerifyLimits()
 	if p.Memory > hashLimits.MaxMemory {
-		return "", fmt.Errorf("passhash: Memory %d exceeds limit %d", p.Memory, hashLimits.MaxMemory)
+		return "", fmt.Errorf("passhash: Memory exceeds limit")
 	}
 	if p.Iterations > hashLimits.MaxIterations {
-		return "", fmt.Errorf("passhash: Iterations %d exceeds limit %d", p.Iterations, hashLimits.MaxIterations)
+		return "", fmt.Errorf("passhash: Iterations exceeds limit")
 	}
 	if p.Parallelism > hashLimits.MaxParallelism {
-		return "", fmt.Errorf("passhash: Parallelism %d exceeds limit %d", p.Parallelism, hashLimits.MaxParallelism)
+		return "", fmt.Errorf("passhash: Parallelism exceeds limit")
 	}
 	if p.SaltLen > hashLimits.MaxSaltLen {
-		return "", fmt.Errorf("passhash: SaltLen %d exceeds limit %d", p.SaltLen, hashLimits.MaxSaltLen)
+		return "", fmt.Errorf("passhash: SaltLen exceeds limit")
 	}
 	if p.KeyLen > hashLimits.MaxKeyLen {
-		return "", fmt.Errorf("passhash: KeyLen %d exceeds limit %d", p.KeyLen, hashLimits.MaxKeyLen)
+		return "", fmt.Errorf("passhash: KeyLen exceeds limit")
 	}
 
 	salt := make([]byte, p.SaltLen)
@@ -246,17 +269,23 @@ func Verify(password, encoded string, target Params, opts ...VerifyOption) (matc
 
 	cfg := verifyConfig{limits: DefaultVerifyLimits()}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("passhash: Verify option must not be nil")
+		}
 		opt(&cfg)
 	}
 	cfg.limits = cfg.limits.withDefaults()
+	target = target.withDefaults()
 
 	stored, salt, hash, err := parsePHC(encoded)
 	if err != nil {
 		return false, false, err
 	}
+	if err := stored.validatePositive(); err != nil {
+		return false, false, err
+	}
 	if !cfg.limits.accepts(stored) {
-		return false, false, fmt.Errorf("%w: m=%d t=%d p=%d saltLen=%d keyLen=%d",
-			ErrParamsOutOfBounds, stored.Memory, stored.Iterations, stored.Parallelism, stored.SaltLen, stored.KeyLen)
+		return false, false, ErrParamsOutOfBounds
 	}
 
 	candidate := argon2.IDKey([]byte(password), salt, stored.Iterations, stored.Memory, stored.Parallelism, uint32(len(hash)))

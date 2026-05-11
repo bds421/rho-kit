@@ -22,35 +22,50 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// HTTPLatencyBuckets is the default Histogram bucket set for HTTP
+// httpLatencyBuckets is the default Histogram bucket set for HTTP
 // requests: 5ms → 30s spread on a roughly geometric scale, fine
 // resolution under 1s where most healthy traffic lives, coarser past 5s
 // where tail-latency is the only signal that matters.
 //
 // Override via [WithHTTPBuckets] for endpoints with very different
 // SLOs (e.g. file uploads).
-var HTTPLatencyBuckets = []float64{
+var httpLatencyBuckets = []float64{
 	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
 	1, 2.5, 5, 10, 30,
 }
 
-// BatchDurationBuckets is the default Histogram bucket set for batch /
+// HTTPLatencyBuckets returns the default Histogram bucket set for HTTP
+// requests. The returned slice is detached and safe to mutate.
+func HTTPLatencyBuckets() []float64 {
+	return append([]float64(nil), httpLatencyBuckets...)
+}
+
+// batchDurationBuckets is the default Histogram bucket set for batch /
 // cron jobs: 0.1s → 1h spread that captures both fast jobs (queue
 // drains) and slow jobs (nightly reports). The first kit version used
 // HTTP-shaped buckets which made every batch run land in the >10s
 // bucket — useless for tracking regressions.
-var BatchDurationBuckets = []float64{
+var batchDurationBuckets = []float64{
 	0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600,
+}
+
+// BatchDurationBuckets returns the default Histogram bucket set for batch /
+// cron jobs. The returned slice is detached and safe to mutate.
+func BatchDurationBuckets() []float64 {
+	return append([]float64(nil), batchDurationBuckets...)
 }
 
 // HTTPMetrics holds the four collectors of an HTTP RED set.
@@ -88,8 +103,9 @@ func WithHTTPSubsystem(s string) HTTPOption {
 // Prometheus would otherwise panic at registration with a less actionable
 // message; we validate up front so misconfiguration surfaces at boot.
 func WithHTTPBuckets(buckets []float64) HTTPOption {
-	validateBuckets("WithHTTPBuckets", buckets)
-	return func(c *httpConfig) { c.buckets = buckets }
+	validateBuckets(buckets)
+	buckets = append([]float64(nil), buckets...)
+	return func(c *httpConfig) { c.buckets = append([]float64(nil), buckets...) }
 }
 
 // NewHTTP constructs the standard HTTP RED metric set and registers it
@@ -97,11 +113,16 @@ func WithHTTPBuckets(buckets []float64) HTTPOption {
 func NewHTTP(reg prometheus.Registerer, opts ...HTTPOption) *HTTPMetrics {
 	cfg := httpConfig{
 		subsystem: "http",
-		buckets:   HTTPLatencyBuckets,
+		buckets:   HTTPLatencyBuckets(),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("redmetrics: HTTP option must not be nil")
+		}
 		o(&cfg)
 	}
+	validateMetricNamePart("HTTP namespace", cfg.namespace)
+	validateMetricNamePart("HTTP subsystem", cfg.subsystem)
 
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: cfg.namespace,
@@ -133,10 +154,10 @@ func NewHTTP(reg prometheus.Registerer, opts ...HTTPOption) *HTTPMetrics {
 	})
 
 	if reg != nil {
-		promutil.RegisterCollector(reg, requests)
-		promutil.RegisterCollector(reg, errs)
-		promutil.RegisterCollector(reg, duration)
-		promutil.RegisterCollector(reg, inflight)
+		requests = promutil.MustRegisterOrGet(reg, requests)
+		errs = promutil.MustRegisterOrGet(reg, errs)
+		duration = promutil.MustRegisterOrGet(reg, duration)
+		inflight = promutil.MustRegisterOrGet(reg, inflight)
 	}
 
 	return &HTTPMetrics{
@@ -172,11 +193,8 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 			// can still log and respond.
 			defer func() {
 				rr := recover()
-				route := routeFor(r)
-				if route == "" {
-					route = "unknown"
-				}
-				method := r.Method
+				route := safeRouteLabel(routeFor, r)
+				method := promutil.HTTPMethodLabel(r.Method)
 				status := rec.status
 				if rr != nil {
 					// If headers were not yet written, force a 500 for
@@ -202,6 +220,29 @@ func (m *HTTPMetrics) Middleware(routeFor func(*http.Request) string) func(http.
 			next.ServeHTTP(rec, r)
 		})
 	}
+}
+
+func safeRouteLabel(routeFor func(*http.Request) string, r *http.Request) (route string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("redmetrics: route extractor panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			route = "unknown"
+		}
+	}()
+	return routeLabel(routeFor(r))
+}
+
+func routeLabel(route string) string {
+	if route == "" {
+		return "unknown"
+	}
+	if err := promutil.ValidateStaticLabelValue("route", route); err != nil {
+		return "invalid"
+	}
+	return route
 }
 
 func statusClass(status int) string {
@@ -331,24 +372,25 @@ func WithBatchSubsystem(s string) BatchOption {
 // Buckets must be non-empty, strictly increasing, and all positive. See
 // [WithHTTPBuckets] for rationale.
 func WithBatchBuckets(buckets []float64) BatchOption {
-	validateBuckets("WithBatchBuckets", buckets)
-	return func(c *batchConfig) { c.buckets = buckets }
+	validateBuckets(buckets)
+	buckets = append([]float64(nil), buckets...)
+	return func(c *batchConfig) { c.buckets = append([]float64(nil), buckets...) }
 }
 
 // validateBuckets enforces the invariants Prometheus assumes for histogram
 // buckets — non-empty, strictly increasing, all positive. Panics with a
 // clear, attributable message so the caller can fix the option site.
-func validateBuckets(option string, buckets []float64) {
+func validateBuckets(buckets []float64) {
 	if len(buckets) == 0 {
-		panic(fmt.Sprintf("redmetrics: %s: buckets must not be empty", option))
+		panic("redmetrics: buckets must not be empty")
 	}
 	prev := 0.0
 	for i, b := range buckets {
 		if b <= 0 {
-			panic(fmt.Sprintf("redmetrics: %s: buckets[%d]=%v must be positive", option, i, b))
+			panic("redmetrics: buckets must be positive")
 		}
 		if i > 0 && b <= prev {
-			panic(fmt.Sprintf("redmetrics: %s: buckets must be strictly increasing (buckets[%d]=%v <= buckets[%d]=%v)", option, i, b, i-1, prev))
+			panic("redmetrics: buckets must be strictly increasing")
 		}
 		prev = b
 	}
@@ -361,11 +403,16 @@ func validateBuckets(option string, buckets []float64) {
 func NewBatch(reg prometheus.Registerer, name string, opts ...BatchOption) *BatchMetrics {
 	cfg := batchConfig{
 		subsystem: name,
-		buckets:   BatchDurationBuckets,
+		buckets:   BatchDurationBuckets(),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("redmetrics: Batch option must not be nil")
+		}
 		o(&cfg)
 	}
+	validateMetricNamePart("Batch namespace", cfg.namespace)
+	validateMetricNamePart("Batch subsystem", cfg.subsystem)
 
 	runs := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: cfg.namespace,
@@ -390,10 +437,16 @@ func NewBatch(reg prometheus.Registerer, name string, opts ...BatchOption) *Batc
 	})
 
 	if reg != nil {
-		promutil.RegisterCollector(reg, runs)
-		promutil.RegisterCollector(reg, duration)
-		promutil.RegisterCollector(reg, inflight)
+		runs = promutil.MustRegisterOrGet(reg, runs)
+		duration = promutil.MustRegisterOrGet(reg, duration)
+		inflight = promutil.MustRegisterOrGet(reg, inflight)
 	}
 
 	return &BatchMetrics{Runs: runs, Duration: duration, InFlight: inflight}
+}
+
+func validateMetricNamePart(field, value string) {
+	if err := promutil.ValidateMetricNamePart(field, value); err != nil {
+		panic("redmetrics: metric name part is invalid")
+	}
 }

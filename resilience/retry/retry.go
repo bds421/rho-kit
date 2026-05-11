@@ -7,11 +7,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Policy configures retry behaviour.
@@ -75,7 +77,7 @@ type Policy struct {
 	DelayOverride func(err error) time.Duration
 }
 
-// DefaultPolicy is a sensible default: 3 retries, 1s base, 30s max, 2x factor,
+// DefaultPolicy returns a sensible default: 3 retries, 1s base, 30s max, 2x factor,
 // ±25% jitter, and a RetryIf predicate that skips apperror.Permanent errors.
 //
 // The RetryIf default matters: without it (nil), every error — including
@@ -83,24 +85,28 @@ type Policy struct {
 // would be retried, which is rarely correct for a generic helper. Callers
 // that genuinely want "retry every error" must pass WithRetryIf(nil) or a
 // custom predicate.
-var DefaultPolicy = Policy{
-	MaxRetries: 3,
-	BaseDelay:  1 * time.Second,
-	MaxDelay:   30 * time.Second,
-	Factor:     2.0,
-	Jitter:     0.25,
-	RetryIf:    RetryIfNotPermanent,
+func DefaultPolicy() Policy {
+	return Policy{
+		MaxRetries: 3,
+		BaseDelay:  1 * time.Second,
+		MaxDelay:   30 * time.Second,
+		Factor:     2.0,
+		Jitter:     0.25,
+		RetryIf:    RetryIfNotPermanent,
+	}
 }
 
-// WorkerPolicy is tuned for long-running worker loops: unlimited retries,
+// WorkerPolicy returns a policy tuned for long-running worker loops: unlimited retries,
 // stability detection, matching the existing redis/messaging patterns.
-var WorkerPolicy = Policy{
-	MaxRetries:  -1, // unlimited
-	BaseDelay:   3 * time.Second,
-	MaxDelay:    60 * time.Second,
-	Factor:      2.0,
-	Jitter:      0.25,
-	StableReset: 30 * time.Second,
+func WorkerPolicy() Policy {
+	return Policy{
+		MaxRetries:  -1, // unlimited
+		BaseDelay:   3 * time.Second,
+		MaxDelay:    60 * time.Second,
+		Factor:      2.0,
+		Jitter:      0.25,
+		StableReset: 30 * time.Second,
+	}
 }
 
 // Option configures a Policy.
@@ -116,7 +122,7 @@ func WithMaxRetries(n int) Option { return func(p *Policy) { p.MaxRetries = n } 
 // always a wiring bug.
 func WithBaseDelay(d time.Duration) Option {
 	if d <= 0 {
-		panic(fmt.Sprintf("retry: WithBaseDelay requires d > 0 (got %s)", d))
+		panic("retry: WithBaseDelay requires d > 0")
 	}
 	return func(p *Policy) { p.BaseDelay = d }
 }
@@ -128,7 +134,7 @@ func WithBaseDelay(d time.Duration) Option {
 // bound.
 func WithMaxDelay(d time.Duration) Option {
 	if d <= 0 {
-		panic(fmt.Sprintf("retry: WithMaxDelay requires d > 0 (got %s)", d))
+		panic("retry: WithMaxDelay requires d > 0")
 	}
 	return func(p *Policy) { p.MaxDelay = d }
 }
@@ -140,7 +146,7 @@ func WithMaxDelay(d time.Duration) Option {
 // which defeats the backoff and is always a wiring bug.
 func WithFactor(f float64) Option {
 	if f < 1 {
-		panic(fmt.Sprintf("retry: WithFactor requires f >= 1 (got %v)", f))
+		panic("retry: WithFactor requires f >= 1")
 	}
 	return func(p *Policy) { p.Factor = f }
 }
@@ -148,6 +154,9 @@ func WithFactor(f float64) Option {
 // WithMaxElapsedTime aborts retries once cumulative wall-clock time
 // reaches d. Zero disables the cap.
 func WithMaxElapsedTime(d time.Duration) Option {
+	if d < 0 {
+		panic("retry: WithMaxElapsedTime requires d >= 0")
+	}
 	return func(p *Policy) { p.MaxElapsedTime = d }
 }
 
@@ -176,7 +185,12 @@ func WithJitter(f float64) Option {
 
 // WithStableReset enables stability detection: if the function runs for at
 // least d before failing, the delay resets to BaseDelay.
-func WithStableReset(d time.Duration) Option { return func(p *Policy) { p.StableReset = d } }
+func WithStableReset(d time.Duration) Option {
+	if d < 0 {
+		panic("retry: WithStableReset requires d >= 0")
+	}
+	return func(p *Policy) { p.StableReset = d }
+}
 
 // WithRetryIf sets a predicate that decides whether an error should be retried.
 func WithRetryIf(fn func(err error) bool) Option { return func(p *Policy) { p.RetryIf = fn } }
@@ -193,15 +207,21 @@ func RetryIfNotPermanent(err error) bool {
 }
 
 // Do executes fn and retries on error according to the given options.
-// The default policy is DefaultPolicy; options override individual fields.
+// The default policy is DefaultPolicy(); options override individual fields.
 // Returns the last error if all retries are exhausted or ctx is cancelled.
 //
 // Note: when StableReset and MaxRetries are both set, the attempt counter
 // resets after a stable run, effectively allowing more than MaxRetries total
 // attempts across stability cycles. Use MaxRetries alone for a firm cap.
 func Do(ctx context.Context, fn func(ctx context.Context) error, opts ...Option) error {
-	p := DefaultPolicy
+	if fn == nil {
+		panic("retry: Do requires a non-nil fn")
+	}
+	p := DefaultPolicy()
 	for _, o := range opts {
+		if o == nil {
+			panic("retry: Do option must not be nil")
+		}
 		o(&p)
 	}
 	return doWithPolicy(ctx, p, fn)
@@ -209,7 +229,13 @@ func Do(ctx context.Context, fn func(ctx context.Context) error, opts ...Option)
 
 // DoWith executes fn using a specific base policy (overridden by opts).
 func DoWith(ctx context.Context, base Policy, fn func(ctx context.Context) error, opts ...Option) error {
+	if fn == nil {
+		panic("retry: DoWith requires a non-nil fn")
+	}
 	for _, o := range opts {
+		if o == nil {
+			panic("retry: DoWith option must not be nil")
+		}
 		o(&base)
 	}
 	return doWithPolicy(ctx, base, fn)
@@ -217,7 +243,7 @@ func DoWith(ctx context.Context, base Policy, fn func(ctx context.Context) error
 
 // Loop runs fn in an infinite restart loop with exponential backoff, logging
 // errors between restarts. Blocks until ctx is cancelled.
-// Uses WorkerPolicy as default; options override individual fields.
+// Uses WorkerPolicy() as default; options override individual fields.
 func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ctx context.Context) error, opts ...Option) {
 	if fn == nil {
 		panic("retry: Loop requires a non-nil fn")
@@ -225,10 +251,14 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 	if logger == nil {
 		logger = slog.Default()
 	}
-	p := WorkerPolicy
+	p := WorkerPolicy()
 	for _, o := range opts {
+		if o == nil {
+			panic("retry: Loop option must not be nil")
+		}
 		o(&p)
 	}
+	mustValidatePolicy("retry: Loop policy", p)
 
 	bo := newBackOff(p)
 	attempt := 0
@@ -240,7 +270,7 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		}
 
 		start := time.Now()
-		err := fn(ctx)
+		err := callLoopFunc(fn, ctx)
 
 		if ctx.Err() != nil {
 			return
@@ -254,7 +284,7 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 			return
 		}
 
-		if p.RetryIf != nil && !p.RetryIf(err) {
+		if p.RetryIf != nil && !callRetryIf(logger, component, p.RetryIf, err) {
 			logger.Error(component+" stopped with non-retryable error", "error", err)
 			return
 		}
@@ -272,13 +302,13 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 
 		wait := bo.NextBackOff()
 		if p.DelayOverride != nil {
-			if override := p.DelayOverride(err); override > 0 {
+			if override := callDelayOverride(logger, component, p.DelayOverride, err); override > 0 {
 				wait = override
 			}
 		}
 
 		if p.OnRetry != nil {
-			p.OnRetry(err, attempt+1, wait)
+			callOnRetry(logger, component, p.OnRetry, err, attempt+1, wait)
 		}
 
 		logger.Warn(component+" stopped, restarting",
@@ -298,11 +328,60 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 	}
 }
 
+func callLoopFunc(fn func(context.Context) error, ctx context.Context) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("retry: worker panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	return fn(ctx)
+}
+
+func callRetryIf(logger *slog.Logger, component string, fn func(error) bool, err error) (retry bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error(component+" RetryIf callback panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			retry = false
+		}
+	}()
+	return fn(err)
+}
+
+func callDelayOverride(logger *slog.Logger, component string, fn func(error) time.Duration, err error) (delay time.Duration) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error(component+" DelayOverride callback panicked",
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+			delay = 0
+		}
+	}()
+	return fn(err)
+}
+
+func callOnRetry(logger *slog.Logger, component string, fn func(error, int, time.Duration), err error, attempt int, delay time.Duration) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Error(component+" OnRetry callback panicked",
+				redact.Panic(rec),
+				"attempt", attempt,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	fn(err, attempt, delay)
+}
+
 // Delay computes the backoff delay for a given attempt using the policy.
 // Attempt 0 returns BaseDelay, attempt 1 returns BaseDelay*Factor, etc.
 // For attempts beyond the backoff sequence, MaxDelay is returned.
 // Negative attempts are clamped to 0.
 func (p Policy) Delay(attempt int) time.Duration {
+	mustValidatePolicy("retry: Policy.Delay", p)
 	if attempt < 0 {
 		attempt = 0
 	}
@@ -318,6 +397,7 @@ func (p Policy) Delay(attempt int) time.Duration {
 }
 
 func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) error) error {
+	mustValidatePolicy("retry: Do policy", p)
 	bo := newBackOff(p)
 	attempt := 0
 	loopStart := time.Now()
@@ -337,7 +417,7 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if p.RetryIf != nil && !p.RetryIf(err) {
+		if p.RetryIf != nil && !callRetryIf(slog.Default(), "retry", p.RetryIf, err) {
 			return err
 		}
 
@@ -360,13 +440,13 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 
 		wait := bo.NextBackOff()
 		if p.DelayOverride != nil {
-			if override := p.DelayOverride(err); override > 0 {
+			if override := callDelayOverride(slog.Default(), "retry", p.DelayOverride, err); override > 0 {
 				wait = override
 			}
 		}
 
 		if p.OnRetry != nil {
-			p.OnRetry(err, attempt+1, wait)
+			callOnRetry(slog.Default(), "retry", p.OnRetry, err, attempt+1, wait)
 		}
 
 		timer := time.NewTimer(wait)
@@ -391,6 +471,7 @@ type Backoff struct {
 // NewBackoff creates a Backoff configured from the policy's parameters.
 // Call Next() to get successive delays and Reset() to restart the sequence.
 func (p Policy) NewBackoff() *Backoff {
+	mustValidatePolicy("retry: Policy.NewBackoff", p)
 	return &Backoff{bo: newBackOff(p)}
 }
 
@@ -417,4 +498,35 @@ func newBackOff(p Policy) *backoff.ExponentialBackOff {
 	bo.Multiplier = p.Factor
 	bo.RandomizationFactor = p.Jitter
 	return bo
+}
+
+func mustValidatePolicy(_ string, p Policy) {
+	if err := p.Validate(); err != nil {
+		panic("retry: invalid policy")
+	}
+}
+
+// Validate returns an error when a Policy contains invalid timing or backoff
+// settings. Constructors and execution helpers panic on this error so retry
+// misconfiguration fails fast rather than creating tight retry loops.
+func (p Policy) Validate() error {
+	if p.BaseDelay <= 0 {
+		return fmt.Errorf("base delay must be > 0")
+	}
+	if p.MaxDelay <= 0 {
+		return fmt.Errorf("max delay must be > 0")
+	}
+	if p.Factor < 1 {
+		return fmt.Errorf("factor must be >= 1")
+	}
+	if p.Jitter < 0 || p.Jitter > 1 {
+		return fmt.Errorf("jitter must be between 0 and 1")
+	}
+	if p.StableReset < 0 {
+		return fmt.Errorf("stable reset must be >= 0")
+	}
+	if p.MaxElapsedTime < 0 {
+		return fmt.Errorf("max elapsed time must be >= 0")
+	}
+	return nil
 }

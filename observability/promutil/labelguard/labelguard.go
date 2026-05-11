@@ -87,6 +87,9 @@ func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	}
 	cfg := config{registerer: prometheus.DefaultRegisterer}
 	for _, o := range opts {
+		if o == nil {
+			panic("labelguard: option must not be nil")
+		}
 		o(&cfg)
 	}
 
@@ -95,8 +98,14 @@ func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	// map after construction — important for long-lived guards.
 	idx := make(map[string]map[string]struct{}, len(allowed))
 	for label, vals := range allowed {
+		if err := promutil.ValidateStaticLabelValue("label name", label); err != nil {
+			panic("labelguard: allowlist label is invalid")
+		}
 		set := make(map[string]struct{}, len(vals))
 		for _, v := range vals {
+			if err := promutil.ValidateStaticLabelValue("allowed value for "+label, v); err != nil {
+				panic("labelguard: allowlist value is invalid")
+			}
 			set[v] = struct{}{}
 		}
 		idx[label] = set
@@ -128,7 +137,7 @@ func registerOrReuse(reg prometheus.Registerer, c *prometheus.CounterVec) *prome
 		// any non-nil err is a real registration failure (e.g. name
 		// conflict with a different shape). Surfacing as panic
 		// matches RegisterCollector's behaviour.
-		panic(err)
+		panic("labelguard: metric registration failed")
 	}
 	if cv, ok := got.(*prometheus.CounterVec); ok {
 		return cv

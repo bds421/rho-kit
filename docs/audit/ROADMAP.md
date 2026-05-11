@@ -4,9 +4,8 @@ Phases 0–6 of the original v1→v2 audit are landed. The v2.0.0
 agentic-AI push (Phases 7–9) is also landed — tenant wrappers,
 cost budgets, action audit + approval, MCP helpers, trust signals
 (SBOM + vuln scans + threat model + supply-chain policy), and the
-dashboard expansion. What remains is the explicitly-deferred work
-(SDK-bound spikes plus the GAP-01..10 follow-ups in
-[THREAT_MODEL.md](THREAT_MODEL.md) §8).
+dashboard expansion. What remains is explicitly-deferred, non-gap work
+such as SDK-bound backend spikes and additional benchmarks.
 
 ## v2.0.0 themes — landed
 
@@ -35,9 +34,10 @@ This wave was orchestrated as 5 parallel agents producing 7 themes:
   registration.
 - **Theme 5 — trust signals**: SBOM (CycloneDX via Anchore) on tag
   push; `govulncheck` + `osv-scanner` on PR/push/weekly;
-  [`THREAT_MODEL.md`](THREAT_MODEL.md) (identifies the 10 GAP-01..10
-  follow-ups); [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md) (pinning + signing
-  + vuln SLO).
+  exact direct-dependency source allowlist in CI;
+  [`THREAT_MODEL.md`](THREAT_MODEL.md) (tracks shipped mitigations and
+  currently has no open in-kit mitigation gaps);
+  [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md) (pinning + signing + vuln SLO).
 - **Theme 6 — Builder integrations**: `WithPASETO`, `WithNATS`,
   `WithPgx` + mutex check, `WithLeaderElection` + cron leader gate,
   `WithSignedRequests`, `WriteServiceProblem`. Plus Wave 2 above.
@@ -83,8 +83,8 @@ lives in [CRITICAL.md](CRITICAL.md). Highlights:
   original CRITICAL #3).
 - AMQP publisher mandatory + NotifyReturn; `debughttp` Guard
   middleware.
-- Outbox `next_retry_at` + exponential backoff + `DeleteFailedBefore`;
-  `Writer.WithRequireTransaction()`.
+- Outbox `next_retry_at` + exponential backoff + self-managed
+  published/failed retention cleanup; `Writer.WithRequireTransaction()`.
 - Postgres `sslmode` safer defaults; gormmysql TLS registry refcount.
 - Idempotency `Store` reshape with body-fingerprint plumbing;
   pgstore `owner_token` migration; backends reject non-positive TTL.
@@ -103,10 +103,13 @@ lives in [CRITICAL.md](CRITICAL.md). Highlights:
 - `data/lock/pgadvisory`, `data/ratelimit` (token bucket + GCRA +
   Redis), `infra/leaderelection` (pgadvisory + redislock),
   `infra/messaging/natsbackend`, `infra/sqldb/pgx`.
+- Cross-backend message-size limits via `messaging.MessageSizeLimiter`
+  with Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes`.
 - `core/tenant` + httpx middleware; cache + idempotency tenant
   wrappers; per-tenant rate-limit middleware; `promutil/labelguard`.
 - `httpx/middleware/signedrequest` + `httpx/sign`;
-  `storagehttp/uploadsec` (MIME sniff + image-bomb defence).
+  `storagehttp/uploadsec` (MIME sniff + image-bomb defence + ClamAV
+  scanner adapter).
 - `observability/pprof`, `observability/runtimemetrics`,
   `observability/redmetrics`, `httpx/problemdetails`,
   `observability/dashboards`.
@@ -139,21 +142,21 @@ Each is tracked here until shipped; pickup is opt-in per item.
   dashboards** — only HTTP RED + Go runtime + service overview
   shipped in this wave; remaining dashboards land per-area as the
   metric surface stabilises.
-- 🔴 **`kit-new --modules` / `--tenant` / `--token` flags** — base
-  scaffold ships; Builder-aware module wiring follows the corresponding
-  Builder integration items.
+- 🔴 **`kit-new --modules` / `--token` flags** — base scaffold and
+  `--tenant` wrapper wiring ship; remaining module-token wiring follows
+  the corresponding Builder integration items.
 - 🔴 **Per-package benchmarks for `kit-bench-gate`** — gate ships;
   benchmarks land per-package as audit identifies hot paths.
-- 🔴 **`storagehttp/uploadsec` AV adapters** — interface ships; ClamAV
-  / cloud-native adapter implementations are GAP-08 in
-  [THREAT_MODEL.md](THREAT_MODEL.md).
+### Threat-model gaps
 
-### Threat-model gaps (GAP-01..10)
-
-GAP-01 (cost budgets) and GAP-03 (gRPC default deadline) shipped in
-v2.0.0; the remaining eight live in
-[THREAT_MODEL.md](THREAT_MODEL.md) §8 with severity, owner, and
-proposed next step.
+GAP-01 (cost budgets), GAP-02 (safe redirects), GAP-03 (gRPC
+default deadline), GAP-04 (internal gRPC health), GAP-05 (tenant
+scaffold), GAP-06 (JWT revocation), GAP-07 (message-size overrides),
+GAP-08 (ClamAV upload scanning), GAP-09 (outbox retention cleanup),
+and GAP-10 (direct dependency source allowlist plus heavy SDK boundary
+gate) shipped in v2.0.0.
+[THREAT_MODEL.md](THREAT_MODEL.md) §8 currently has no open in-kit
+mitigation gaps.
 
 ## Tracking
 

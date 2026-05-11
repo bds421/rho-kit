@@ -12,6 +12,7 @@ import (
 // and similar helpers. The schema version is read from X-Schema-Version header
 // and propagated to both the Message and Delivery.
 func fromAMQPDelivery(d amqp.Delivery, msg messaging.Message) messaging.Delivery {
+	msg = msg.Clone()
 	msg.Headers = extractStringHeaders(d.Headers)
 	schemaVersion := extractSchemaVersion(d.Headers, msg.SchemaVersion)
 	msg.SchemaVersion = schemaVersion

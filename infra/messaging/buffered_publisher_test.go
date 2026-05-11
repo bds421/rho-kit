@@ -2,11 +2,14 @@ package messaging
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +28,8 @@ type publishCall struct {
 	RoutingKey string
 	MsgID      string
 }
+
+type bufferedContextKey struct{}
 
 func (f *fakePublisher) publish(_ context.Context, exchange, routingKey string, msg Message) error {
 	f.mu.Lock()
@@ -86,6 +91,61 @@ func testBufferedPublisherWithHealthPtr(fp *fakePublisher, healthy *atomic.Bool,
 	return newTestBufferedPublisher(fp.publish, func() bool { return healthy.Load() }, opts...)
 }
 
+func assertNotPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	fn()
+}
+
+func waitForBufferedPublisherRunStarted(t *testing.T, pub *BufferedPublisher) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pub.runMu.Lock()
+		started := pub.started
+		pub.runMu.Unlock()
+		if started {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("BufferedPublisher.Run did not start")
+}
+
+func TestWithBufferedFinalDrainTimeout_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected WithBufferedFinalDrainTimeout to panic")
+				}
+			}()
+			WithBufferedFinalDrainTimeout(d)
+		})
+	}
+}
+
+func TestWithBufferedMaxSize_PanicDoesNotReflectValue(t *testing.T) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			t.Fatal("expected WithBufferedMaxSize to panic")
+		}
+		msg, ok := rec.(string)
+		if !ok {
+			t.Fatalf("panic must be a stable string, got %T", rec)
+		}
+		if strings.Contains(msg, "-1") {
+			t.Fatalf("panic leaked invalid size: %q", msg)
+		}
+	}()
+	WithBufferedMaxSize(-1)
+}
+
 // fakeConnector / fakeMessagePublisher are the minimum implementations needed
 // to exercise NewBufferedPublisher's nil-dependency guards.
 type fakeConnector struct{ healthy bool }
@@ -115,6 +175,15 @@ func TestNewBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
 		}
 	}()
 	NewBufferedPublisher(fakeMessagePublisher{}, nil, slog.Default())
+}
+
+func TestNewBufferedPublisher_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
+	NewBufferedPublisher(fakeMessagePublisher{}, &fakeConnector{healthy: true}, slog.Default(), nil)
 }
 
 func TestNewBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
@@ -163,8 +232,20 @@ func TestNewBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 	}
 
 	defer func() {
-		if r := recover(); r == nil {
+		rec := recover()
+		if rec == nil {
 			t.Fatal("expected panic on corrupt state file, got none")
+		}
+		msg, ok := rec.(string)
+		if !ok {
+			t.Fatalf("panic must be a stable string, got %T", rec)
+		}
+		want := "messaging: BufferedPublisher state load failed — corrupt or unreadable state would silently drop buffered messages; pass WithLossyStateRecovery() to opt in"
+		if msg != want {
+			t.Fatalf("panic = %q, want %q", msg, want)
+		}
+		if strings.Contains(msg, stateFile) {
+			t.Fatalf("panic reflected state file path: %q", msg)
 		}
 	}()
 	NewBufferedPublisher(
@@ -234,6 +315,77 @@ func TestBufferedPublisher_UnhealthyBuffers(t *testing.T) {
 	}
 }
 
+func TestBufferedPublisher_BuffersMessageClone(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false)
+	msg := Message{
+		ID:      "msg-1",
+		Type:    "test.event",
+		Payload: []byte(`{"key":"value"}`),
+		Headers: map[string]string{"X-Trace-Id": "trace-1"},
+	}
+
+	if err := pub.Publish(context.Background(), "exchange", "routing.key", msg); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	msg.Payload[8] = 'X'
+	msg.Headers["X-Trace-Id"] = "mutated"
+
+	pub.mu.Lock()
+	stored := pub.pending[0].Msg
+	pub.mu.Unlock()
+	if string(stored.Payload) != `{"key":"value"}` {
+		t.Fatalf("buffered payload = %s, want original", stored.Payload)
+	}
+	if stored.Headers["X-Trace-Id"] != "trace-1" {
+		t.Fatalf("buffered header = %q, want original", stored.Headers["X-Trace-Id"])
+	}
+}
+
+func TestBufferedPublisher_InvalidHeadersRejectedBeforeDirectOrBuffer(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false)
+	msg := Message{
+		ID:      "msg-1",
+		Type:    "test.event",
+		Payload: []byte(`{}`),
+		Headers: map[string]string{"Bad Header": "value"},
+	}
+
+	err := pub.Publish(context.Background(), "exchange", "routing.key", msg)
+	if !errors.Is(err, ErrInvalidMessageHeader) {
+		t.Fatalf("expected ErrInvalidMessageHeader, got %v", err)
+	}
+	if fp.callCount() != 0 {
+		t.Fatalf("expected no direct publish, got %d calls", fp.callCount())
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected invalid message not to buffer, got %d pending", pub.Pending())
+	}
+}
+
+func TestBufferedPublisher_InvalidMessageRejectedBeforeDirectOrBuffer(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false)
+	msg := Message{
+		ID:      "msg-1",
+		Type:    "bad\nevent",
+		Payload: []byte(`{}`),
+	}
+
+	err := pub.Publish(context.Background(), "exchange", "routing.key", msg)
+	if !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("expected ErrInvalidMessage, got %v", err)
+	}
+	if fp.callCount() != 0 {
+		t.Fatalf("expected no direct publish, got %d calls", fp.callCount())
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected invalid message not to buffer, got %d pending", pub.Pending())
+	}
+}
+
 func TestBufferedPublisher_PublishFailureBuffers(t *testing.T) {
 	fp := &fakePublisher{failUntil: 1}
 	pub := testBufferedPublisher(fp, true)
@@ -267,10 +419,98 @@ func TestBufferedPublisher_BufferFull(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when buffer full")
 	}
+	if strings.Contains(err.Error(), "2 messages") {
+		t.Fatalf("buffer full error leaked configured size: %v", err)
+	}
 
 	if pub.Pending() != 2 {
 		t.Fatalf("expected 2 pending, got %d", pub.Pending())
 	}
+}
+
+func TestBufferedPublisher_MaxMessageBytesRejectsBeforeBuffering(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false,
+		WithBufferedMaxMessageBytes(32),
+	)
+	msg := Message{
+		ID:      "msg-1",
+		Type:    "large.event",
+		Payload: json.RawMessage(`"this payload is intentionally too large"`),
+	}
+
+	err := pub.Publish(context.Background(), "events", "large.event", msg)
+
+	if !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("expected ErrMessageTooLarge, got %v", err)
+	}
+	if pending := pub.Pending(); pending != 0 {
+		t.Fatalf("expected no buffered messages, got %d", pending)
+	}
+}
+
+func TestBufferedPublisher_MetricCallbacksRecoverOutsideLock(t *testing.T) {
+	fp := &fakePublisher{}
+	var healthy atomic.Bool
+	var pub *BufferedPublisher
+	metrics := &BufferedPublisherMetrics{
+		OnDirectPublish: func() { panic("direct metric exploded") },
+		OnBuffer:        func() { panic("buffer metric exploded") },
+		OnDrain:         func(int) { panic("drain metric exploded") },
+		OnDrop:          func() { panic("drop metric exploded") },
+		OnPendingGauge: func(int) {
+			// This would deadlock if the gauge hook were still called
+			// while BufferedPublisher.mu is held.
+			_ = pub.Pending()
+			panic("gauge metric exploded")
+		},
+	}
+	pub = testBufferedPublisherWithHealthPtr(fp, &healthy,
+		WithBufferedMaxSize(1),
+		WithBufferedMetrics(metrics),
+	)
+
+	msg1, _ := NewMessage("test.event", "m1")
+	done := make(chan error, 1)
+	go func() {
+		done <- pub.Publish(context.Background(), "ex", "rk", msg1)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Publish returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Publish deadlocked in metric callback")
+	}
+	if got := pub.Pending(); got != 1 {
+		t.Fatalf("expected 1 pending, got %d", got)
+	}
+
+	healthy.Store(true)
+	assertNotPanics(t, func() { pub.drain(context.Background()) })
+	if got := pub.Pending(); got != 0 {
+		t.Fatalf("expected drain to clear pending messages, got %d", got)
+	}
+
+	msg2, _ := NewMessage("test.event", "m2")
+	assertNotPanics(t, func() {
+		if err := pub.Publish(context.Background(), "ex", "rk", msg2); err != nil {
+			t.Fatalf("direct Publish returned error: %v", err)
+		}
+	})
+
+	healthy.Store(false)
+	msg3, _ := NewMessage("test.event", "m3")
+	msg4, _ := NewMessage("test.event", "m4")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg3); err != nil {
+		t.Fatalf("buffer Publish returned error: %v", err)
+	}
+	assertNotPanics(t, func() {
+		if err := pub.Publish(context.Background(), "ex", "rk", msg4); err == nil {
+			t.Fatal("expected buffer-full error")
+		}
+	})
 }
 
 func TestBufferedPublisherDrain_PublishesBuffered(t *testing.T) {
@@ -379,6 +619,42 @@ func TestBufferedPublisherPersistence_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestBufferedPublisherPersistence_LoadPreservesEmptyRoutingKey(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, false, WithBufferedStateFile(stateFile))
+
+	msg, _ := NewMessage("test.event", "payload")
+	if err := pub.Publish(context.Background(), "fanout-exchange", "", msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 pending, got %d", pub.Pending())
+	}
+
+	fp2 := &fakePublisher{}
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, WithBufferedStateFile(stateFile))
+	if err := pub2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if pub2.Pending() != 1 {
+		t.Fatalf("expected empty-routing-key message to survive load, got %d pending", pub2.Pending())
+	}
+
+	pub2.drain(context.Background())
+	if fp2.callCount() != 1 {
+		t.Fatalf("expected restored message to publish once, got %d calls", fp2.callCount())
+	}
+	fp2.mu.Lock()
+	gotRoutingKey := fp2.calls[0].RoutingKey
+	fp2.mu.Unlock()
+	if gotRoutingKey != "" {
+		t.Fatalf("expected empty routing key after restart, got %q", gotRoutingKey)
+	}
+}
+
 func TestBufferedPublisherPersistence_DrainClearsFile(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
@@ -419,20 +695,94 @@ func TestBufferedPublisherRun_StopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		pub.Run(ctx)
-		close(done)
+		done <- pub.Run(ctx)
 	}()
 
 	time.Sleep(10 * time.Millisecond)
 	cancel()
 
 	select {
-	case <-done:
-		// OK
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop after context cancel")
+	}
+}
+
+func TestBufferedPublisherRun_RejectsNilContext(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, true)
+	var ctx context.Context
+	err := pub.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
+		t.Fatalf("expected nil context error, got %v", err)
+	}
+}
+
+func TestBufferedPublisherRun_RejectsInvalidPublisher(t *testing.T) {
+	var nilPub *BufferedPublisher
+	if err := nilPub.Run(context.Background()); !errors.Is(err, ErrInvalidPublisher) {
+		t.Fatalf("expected ErrInvalidPublisher for nil receiver, got %v", err)
+	}
+
+	if err := (&BufferedPublisher{}).Run(context.Background()); !errors.Is(err, ErrInvalidPublisher) {
+		t.Fatalf("expected ErrInvalidPublisher for uninitialized publisher, got %v", err)
+	}
+}
+
+func TestBufferedPublisherRun_RejectsSecondStart(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- pub.Run(ctx) }()
+	waitForBufferedPublisherRunStarted(t, pub)
+
+	err := pub.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected duplicate start error, got %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first Run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run did not stop")
+	}
+}
+
+func TestBufferedPublisherRun_RejectsRestartAfterCancel(t *testing.T) {
+	fp := &fakePublisher{}
+	pub := testBufferedPublisher(fp, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- pub.Run(ctx) }()
+	waitForBufferedPublisherRunStarted(t, pub)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first Run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Run did not stop")
+	}
+
+	err := pub.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already started") {
+		t.Fatalf("expected restart error, got %v", err)
 	}
 }
 
@@ -441,7 +791,7 @@ func TestBufferedPublisherFinalDrain_NoPending_Noop(t *testing.T) {
 	pub := testBufferedPublisher(fp, true)
 
 	// finalDrain with nothing pending should return immediately without publishing.
-	pub.finalDrain()
+	pub.finalDrain(context.Background())
 	if fp.callCount() != 0 {
 		t.Fatalf("expected 0 publish calls, got %d", fp.callCount())
 	}
@@ -460,13 +810,48 @@ func TestBufferedPublisherFinalDrain_PublishesPending(t *testing.T) {
 
 	// Switch to healthy so finalDrain can publish.
 	pub.healthyFn = func() bool { return true }
-	pub.finalDrain()
+	pub.finalDrain(context.Background())
 
 	if pub.Pending() != 0 {
 		t.Fatalf("expected 0 pending after final drain, got %d", pub.Pending())
 	}
 	if fp.callCount() != 1 {
 		t.Fatalf("expected 1 publish call, got %d", fp.callCount())
+	}
+}
+
+func TestBufferedPublisherFinalDrainPreservesContextValuesAfterCancellation(t *testing.T) {
+	var gotValue any
+	var gotErr error
+	var healthy atomic.Bool
+	pub := newTestBufferedPublisher(
+		func(ctx context.Context, _, _ string, _ Message) error {
+			gotValue = ctx.Value(bufferedContextKey{})
+			gotErr = ctx.Err()
+			return nil
+		},
+		func() bool { return healthy.Load() },
+	)
+
+	msg, _ := NewMessage("test.event", "payload")
+	if err := pub.Publish(context.Background(), "ex", "rk", msg); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	healthy.Store(true)
+
+	parent := context.WithValue(context.Background(), bufferedContextKey{}, "trace-123")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	pub.finalDrain(ctx)
+
+	if pub.Pending() != 0 {
+		t.Fatalf("expected 0 pending after final drain, got %d", pub.Pending())
+	}
+	if gotValue != "trace-123" {
+		t.Fatalf("final-drain context value = %v, want trace-123", gotValue)
+	}
+	if gotErr != nil {
+		t.Fatalf("final-drain context inherited cancellation: %v", gotErr)
 	}
 }
 
@@ -478,7 +863,7 @@ func TestBufferedPublisherFinalDrain_UnhealthyLeavesMessages(t *testing.T) {
 	_ = pub.Publish(context.Background(), "ex", "rk", msg)
 
 	// finalDrain while unhealthy should not publish.
-	pub.finalDrain()
+	pub.finalDrain(context.Background())
 
 	if pub.Pending() != 1 {
 		t.Fatalf("expected 1 pending, got %d", pub.Pending())
@@ -498,7 +883,9 @@ func TestBufferedPublisherRun_FinalDrainOnCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pub.Run(ctx)
+		if err := pub.Run(ctx); err != nil {
+			t.Errorf("Run returned unexpected error: %v", err)
+		}
 		close(done)
 	}()
 
@@ -565,6 +952,42 @@ func TestBufferedPublisherLoad_MissingFile_ReturnsNilPending(t *testing.T) {
 	}
 }
 
+func TestBufferedPublisherLoad_SkipsInvalidMessages(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+	pending := []pendingMessage{
+		{
+			Exchange:   "events",
+			RoutingKey: "ok",
+			Msg:        Message{ID: "msg-1", Type: "ok.event", Payload: json.RawMessage(`{}`)},
+		},
+		{
+			Exchange:   "events",
+			RoutingKey: "bad",
+			Msg:        Message{ID: "msg-2", Type: "bad event", Payload: json.RawMessage(`{}`)},
+		},
+	}
+	data, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(stateFile, data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	pub := newBufferedPublisher(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithBufferedStateFile(stateFile),
+	)
+
+	if err := pub.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	if pub.Pending() != 1 {
+		t.Fatalf("expected 1 valid pending message, got %d", pub.Pending())
+	}
+}
+
 func TestBufferedPublisherLoad_CorruptFile_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
@@ -600,6 +1023,72 @@ func TestBufferedPublisherSaveLocked_InvalidPath_LogsError(t *testing.T) {
 	}
 }
 
+func TestBufferedPublisherLogsRedactRuntimeIdentifiers(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	pub := newTestBufferedPublisher(
+		func(context.Context, string, string, Message) error {
+			return errors.New("broker failed for tenant-secret-route")
+		},
+		func() bool { return true },
+		WithBufferedStateFile(filepath.Join(t.TempDir(), "buffered.json")),
+	)
+	pub.logger = logger
+
+	msg, err := NewMessage("tenant.secret.type", map[string]string{"ok": "true"})
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	msg.ID = "tenant-secret-message-id"
+
+	err = pub.Publish(context.Background(), "tenant-secret-exchange", "tenant-secret-routing", msg)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	rendered := buf.String()
+	for _, forbidden := range []string{
+		"tenant-secret-route",
+		"tenant.secret.type",
+		"tenant-secret-message-id",
+		"tenant-secret-exchange",
+		"tenant-secret-routing",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("log leaked %q in %s", forbidden, rendered)
+		}
+	}
+	for _, expected := range []string{"msg_id=\"<redacted", "exchange=\"<redacted", "routing_key=\"<redacted"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("log missing %q in %s", expected, rendered)
+		}
+	}
+}
+
+func TestBufferedPublisherStateSaveLogRedactsPath(t *testing.T) {
+	var buf strings.Builder
+	stateFile := "/nonexistent-dir/tenant-secret-buffered.json"
+	pub := newBufferedPublisher(
+		slog.New(slog.NewTextHandler(&buf, nil)),
+		WithBufferedStateFile(stateFile),
+	)
+	pub.pending = []pendingMessage{{Exchange: "ex", RoutingKey: "rk"}}
+
+	if err := pub.saveLocked(); err == nil {
+		t.Fatal("expected saveLocked error")
+	}
+
+	rendered := buf.String()
+	for _, forbidden := range []string{stateFile, "tenant-secret-buffered"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("log leaked %q in %s", forbidden, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "file=\"<redacted") {
+		t.Fatalf("log missing redacted file attr: %s", rendered)
+	}
+}
+
 func TestBufferedPublisherRun_DrainOnTick(t *testing.T) {
 	fp := &fakePublisher{}
 	var healthy atomic.Bool
@@ -620,7 +1109,9 @@ func TestBufferedPublisherRun_DrainOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		pub.Run(ctx)
+		if err := pub.Run(ctx); err != nil {
+			t.Errorf("Run returned unexpected error: %v", err)
+		}
 		close(done)
 	}()
 
@@ -656,6 +1147,33 @@ func TestBufferedPublisher_PersistFailureSurfacesError(t *testing.T) {
 	}
 	if pub.Pending() != 0 {
 		t.Fatalf("expected rollback to leave 0 pending, got %d", pub.Pending())
+	}
+}
+
+func TestBufferedPublisher_ContextAndRouteRejectedBeforeBuffer(t *testing.T) {
+	pub := newTestBufferedPublisher(
+		(&fakePublisher{}).publish,
+		func() bool { return false },
+		WithEphemeralBuffer(),
+	)
+	msg, _ := NewMessage("test.event", "payload")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := pub.Publish(ctx, "ex", "rk", msg)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected cancelled publish to leave 0 pending, got %d", pub.Pending())
+	}
+
+	err = pub.Publish(context.Background(), "ex", "bad key", msg)
+	if !errors.Is(err, ErrInvalidRoute) {
+		t.Fatalf("expected ErrInvalidRoute, got %v", err)
+	}
+	if pub.Pending() != 0 {
+		t.Fatalf("expected invalid route to leave 0 pending, got %d", pub.Pending())
 	}
 }
 
@@ -764,4 +1282,3 @@ func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T)
 		t.Error("OnSaveError invoked with nil error")
 	}
 }
-

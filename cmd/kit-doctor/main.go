@@ -73,5 +73,5 @@ func parseSeverity(s string) (rules.Severity, error) {
 	case "info":
 		return rules.Info, nil
 	}
-	return 0, fmt.Errorf("kit-doctor: -strict must be critical|high|warning|info (got %q)", s)
+	return 0, fmt.Errorf("kit-doctor: -strict must be critical|high|warning|info")
 }

@@ -41,6 +41,14 @@ func TestProgressReader_NilFunc(t *testing.T) {
 	assert.Equal(t, data, got)
 }
 
+func TestProgressReader_PanicsOnNilOption(t *testing.T) {
+	t.Parallel()
+
+	assert.Panics(t, func() {
+		NewProgressReader(bytes.NewReader(nil), 0, func(_, _ int64) {}, nil)
+	})
+}
+
 func TestProgressReader_UnknownTotal(t *testing.T) {
 	t.Parallel()
 

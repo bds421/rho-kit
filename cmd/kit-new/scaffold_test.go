@@ -41,6 +41,22 @@ func TestScaffold_GeneratesExpectedTree(t *testing.T) {
 	assert.NotContains(t, string(body), "{{.ModulePath}}", "templates must be fully rendered")
 }
 
+func TestGateActive_PanicsOnUnknownGateWithoutReflectingName(t *testing.T) {
+	assert.PanicsWithValue(t, "kit-new: unknown template gate", func() {
+		gateActive(Params{}, "secret-token")
+	})
+}
+
+func TestSplitLeadingServiceName(t *testing.T) {
+	name, args := splitLeadingServiceName([]string{"demo", "-module-path", "example.com/demo", "-tenant"})
+	assert.Equal(t, "demo", name)
+	assert.Equal(t, []string{"-module-path", "example.com/demo", "-tenant"}, args)
+
+	name, args = splitLeadingServiceName([]string{"-module-path", "example.com/demo", "demo"})
+	assert.Empty(t, name)
+	assert.Equal(t, []string{"-module-path", "example.com/demo", "demo"}, args)
+}
+
 func TestScaffold_GeneratedWireUsesAppBuilder(t *testing.T) {
 	out := t.TempDir()
 	require.NoError(t, scaffold(out, Params{
@@ -110,6 +126,7 @@ func TestScaffold_RhoVersionRejectsInvalidString(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "RhoVersion")
+	assert.NotContains(t, err.Error(), "latest")
 }
 
 func TestScaffold_RejectsEmptyServiceName(t *testing.T) {
@@ -121,6 +138,7 @@ func TestScaffold_RejectsTraversalServiceName(t *testing.T) {
 	err := scaffold(out, Params{ServiceName: "../../outside", ModulePath: "example.com/demo"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ServiceName")
+	assert.NotContains(t, err.Error(), "../../outside")
 
 	siblings, _ := os.ReadDir(filepath.Dir(out))
 	for _, e := range siblings {
@@ -129,7 +147,9 @@ func TestScaffold_RejectsTraversalServiceName(t *testing.T) {
 }
 
 func TestScaffold_RejectsUppercaseServiceName(t *testing.T) {
-	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "MyService", ModulePath: "example.com/demo"}))
+	err := scaffold(t.TempDir(), Params{ServiceName: "MyService", ModulePath: "example.com/demo"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "MyService")
 }
 
 func TestScaffold_AcceptsKebabServiceName(t *testing.T) {
@@ -141,6 +161,69 @@ func TestScaffold_AcceptsKebabServiceName(t *testing.T) {
 
 func TestScaffold_RejectsEmptyModulePath(t *testing.T) {
 	require.Error(t, scaffold(t.TempDir(), Params{ServiceName: "demo"}))
+}
+
+func TestScaffold_RefusesToOverwriteExistingFiles(t *testing.T) {
+	out := t.TempDir()
+	readmePath := filepath.Join(out, "README.md")
+	original := []byte("hand-written service notes\n")
+	require.NoError(t, os.WriteFile(readmePath, original, 0o644))
+
+	err := scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to overwrite")
+	assert.NotContains(t, err.Error(), readmePath)
+
+	got, readErr := os.ReadFile(readmePath)
+	require.NoError(t, readErr)
+	assert.Equal(t, original, got)
+	_, statErr := os.Stat(filepath.Join(out, "cmd/demo/main.go"))
+	assert.True(t, os.IsNotExist(statErr), "scaffold must preflight before writing any new files")
+}
+
+func TestScaffold_RejectsSymlinkParent(t *testing.T) {
+	out := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(out, "cmd")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NotContains(t, err.Error(), link)
+	assert.NotContains(t, err.Error(), outside)
+
+	_, statErr := os.Stat(filepath.Join(outside, "demo", "main.go"))
+	assert.True(t, os.IsNotExist(statErr), "scaffold must not write through symlinked parent")
+}
+
+func TestScaffold_RejectsSymlinkOutputRoot(t *testing.T) {
+	parent := t.TempDir()
+	outside := t.TempDir()
+	out := filepath.Join(parent, "service")
+	if err := os.Symlink(outside, out); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.NotContains(t, err.Error(), out)
+	assert.NotContains(t, err.Error(), outside)
+
+	_, statErr := os.Stat(filepath.Join(outside, "cmd", "demo", "main.go"))
+	assert.True(t, os.IsNotExist(statErr), "scaffold must not write through symlinked root")
 }
 
 func TestScaffold_GeneratedTreeBuildsAndPasses(t *testing.T) {
@@ -165,6 +248,14 @@ func TestScaffold_PostgresAndMCPGeneratedTreeBuildsAndPasses(t *testing.T) {
 	runScaffoldBuildTest(t, Params{Postgres: true, MCP: true})
 }
 
+func TestScaffold_TenantGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, Params{Tenant: true})
+}
+
+func TestScaffold_AllFeaturesGeneratedTreeBuildsAndPasses(t *testing.T) {
+	runScaffoldBuildTest(t, Params{Postgres: true, MCP: true, Tenant: true})
+}
+
 // runScaffoldBuildTest scaffolds a fresh tree, points the kit
 // require at the local checkout (the only practical way to run a
 // downstream-style build before the kit publishes a tag), then runs
@@ -186,6 +277,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		ModulePath:  "example.com/demo",
 		MCP:         opts.MCP,
 		Postgres:    opts.Postgres,
+		Tenant:      opts.Tenant,
 	}))
 
 	repoRoot, err := filepath.Abs("../..")
@@ -207,6 +299,8 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"core",
 		"crypto",
 		"data",
+		"data/cache/rediscache",
+		"data/idempotency/redisstore",
 		"flags",
 		"grpcx",
 		"httpx",
@@ -256,6 +350,13 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 		buf, err := cmd.CombinedOutput()
 		require.NoErrorf(t, err, "go %s failed:\n%s", strings.Join(args, " "), buf)
+	}
+
+	doctorCmd := exec.Command("go", "run", "./cmd/kit-doctor", out)
+	doctorCmd.Dir = repoRoot
+	doctorCmd.Env = append(os.Environ(), "GOWORK="+filepath.Join(repoRoot, "go.work"))
+	if buf, err := doctorCmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated service failed kit-doctor:\n%s", buf)
 	}
 }
 
@@ -320,4 +421,40 @@ func TestScaffold_NoMCP_ProducesPlainSkeleton(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(wireSrc), "httpx/mcp",
 		"plain wire.go must not import the mcp package")
+}
+
+func TestScaffold_TenantFlag_WiresTenantWrappers(t *testing.T) {
+	out := t.TempDir()
+	require.NoError(t, scaffold(out, Params{
+		ServiceName: "demo",
+		ModulePath:  "example.com/demo",
+		Tenant:      true,
+		RhoVersion:  "v2.0.0",
+	}))
+
+	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
+	require.NoError(t, err)
+	wire := string(wireBody)
+	assert.Contains(t, wire, "kitredis.LoadRedisFields()",
+		"tenant scaffold must load Redis settings through the kit")
+	assert.Contains(t, wire, "WithMultiTenant(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"), true)",
+		"tenant scaffold must enable strict tenant extraction")
+	assert.Contains(t, wire, "tenantcache.Wrap(baseCache)",
+		"tenant scaffold must wrap Redis cache with the tenant-scoped cache")
+	assert.Contains(t, wire, "tenantidempotency.Wrap(redisstore.New(",
+		"tenant scaffold must wrap Redis idempotency with the tenant-scoped store")
+	assert.Contains(t, wire, "httpidempotency.Middleware(tenantDeps.Idempotency",
+		"tenant scaffold must route idempotency through the wrapped store")
+	assert.NotContains(t, wire, `mux.HandleFunc("/healthz"`,
+		"tenant scaffold must keep unauthenticated probes on the internal ops listener, not the tenant-scoped public mux")
+	assert.NotContains(t, wire, "tenant:",
+		"tenant scaffold must not hand-roll tenant key prefixes")
+
+	gomod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	require.NoError(t, err)
+	mod := string(gomod)
+	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.0")
+	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/idempotency/redisstore/v2 v2.0.0")
+	assert.Contains(t, mod, "github.com/bds421/rho-kit/data/v2 v2.0.0")
+	assert.Contains(t, mod, "github.com/bds421/rho-kit/infra/redis/v2 v2.0.0")
 }

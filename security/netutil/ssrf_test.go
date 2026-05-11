@@ -1,16 +1,36 @@
 package netutil
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestResolveAndValidate_AllowPrivateWarningRedactsHost(t *testing.T) {
+	prev := slog.Default()
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := ResolveAndValidate(context.Background(), "10.0.0.1", nil, WithAllowPrivateIPs())
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1", got)
+
+	out := buf.String()
+	assert.Contains(t, out, `"host"`)
+	assert.NotContains(t, out, "10.0.0.1")
+	assert.True(t, strings.Contains(out, "<redacted"), "warning should keep redacted host shape: %q", out)
+}
 
 func TestIsPrivateIP(t *testing.T) {
 	tests := []struct {
@@ -52,7 +72,14 @@ func TestIsPrivateIP(t *testing.T) {
 		{"Teredo", "2001:0000:4136:e378:8000:63bf:3fff:fdd2", true},
 		{"6to4", "2002:c0a8:0101::1", true},
 		{"NAT64", "64:ff9b::192.168.1.1", true},
+		{"local-use IPv4/IPv6 translation", "64:ff9b:1::1", true},
 		{"discard-only", "100::1", true},
+		{"dummy IPv6 prefix", "100:0:0:1::1", true},
+		{"IPv6 benchmarking", "2001:2::1", true},
+		{"deprecated ORCHID", "2001:10::1", true},
+		{"documentation 2001:db8", "2001:db8::1", true},
+		{"documentation 3fff", "3fff::1", true},
+		{"SRv6 SIDs", "5f00::1", true},
 		{"public IPv6", "2607:f8b0:4004:800::200e", false},
 	}
 
@@ -65,6 +92,11 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+func TestIsPrivateIP_InvalidIPIsUnsafe(t *testing.T) {
+	assert.True(t, IsPrivateIP(nil))
+	assert.True(t, IsPrivateIP(net.IP{}))
+}
+
 func TestResolveAndValidate_Loopback(t *testing.T) {
 	_, err := ResolveAndValidate(context.Background(), "localhost", nil)
 	assert.Error(t, err)
@@ -75,6 +107,72 @@ func TestResolveAndValidate_NonexistentDomain(t *testing.T) {
 	_, err := ResolveAndValidate(context.Background(), "this-domain-does-not-exist-9999.invalid", nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "dns resolution failed")
+}
+
+func TestResolveAndValidate_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		_, _ = ResolveAndValidate(context.Background(), "example.com", &mockDNSResolver{}, nil)
+	})
+}
+
+func TestResolveAndValidate_RejectsInvalidHostInput(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}
+	for _, host := range []string{
+		"",
+		"example.com:443",
+		" example.com",
+		"example.com\nx",
+		"example.com\x07x",
+		"example.com/path",
+		`example.com\path`,
+		"[::1]",
+		"fe80::1%25lo0",
+		"example.com%2fmetadata",
+	} {
+		t.Run(host, func(t *testing.T) {
+			_, err := ResolveAndValidate(context.Background(), host, resolver)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestResolveAndValidate_ErrorsDoNotEchoHostValues(t *testing.T) {
+	resolver := &mockDNSResolver{err: fmt.Errorf("lookup failed")}
+
+	tests := []struct {
+		name string
+		host string
+	}{
+		{name: "invalid host", host: "secret-token/path"},
+		{name: "dns failure", host: "secret-token.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResolveAndValidate(context.Background(), tt.host, resolver)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "secret-token")
+		})
+	}
+}
+
+func TestResolveAndValidate_IPLiteralDoesNotUseResolver(t *testing.T) {
+	resolver := &recordingResolver{ips: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}
+
+	_, err := ResolveAndValidate(context.Background(), "127.0.0.1", resolver)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "private/reserved")
+
+	ip, err := ResolveAndValidate(context.Background(), "8.8.8.8", resolver)
+	require.NoError(t, err)
+	assert.Equal(t, "8.8.8.8", ip)
+	assert.Zero(t, resolver.calls, "literal IP hosts must be classified without DNS lookup")
+}
+
+func TestWithMinTLSVersion_PanicsBelowTLS12(t *testing.T) {
+	assert.Panics(t, func() {
+		WithMinTLSVersion(0)
+	})
 }
 
 // mockDNSResolver returns predefined IPs for testing SSRF validation.
@@ -224,6 +322,65 @@ func TestSSRFSafeTransport_AllowPrivateIPs(t *testing.T) {
 	assert.NotNil(t, transport)
 }
 
+func TestSSRFSafeTransport_RejectsDifferentDialHost(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}
+	transport, _, err := SSRFSafeTransport(context.Background(), "example.com", resolver)
+	require.NoError(t, err)
+
+	conn, err := transport.DialContext(context.Background(), "tcp", "secret-token.example:80")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "pinned to host")
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestSSRFSafeTransport_InvalidDialAddressDoesNotEchoValue(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}
+	transport, _, err := SSRFSafeTransport(context.Background(), "example.com", resolver)
+	require.NoError(t, err)
+
+	conn, err := transport.DialContext(context.Background(), "tcp", "secret-token")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
+}
+
+func TestSSRFSafeTransport_AllowsCaseVariantDialHost(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	transport, _, err := SSRFSafeTransport(context.Background(), "Example.COM", resolver, WithAllowPrivateIPs())
+	require.NoError(t, err)
+
+	conn, err := transport.DialContext(context.Background(), "tcp", "example.com:9")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	assert.NotContains(t, fmt.Sprint(err), "pinned to host")
+}
+
+func TestWithRequestTimeout_PanicsOnNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			assert.Panics(t, func() {
+				WithRequestTimeout(d)
+			})
+		})
+	}
+}
+
+func TestWithoutRequestTimeout_DisablesWholeRequestTimeout(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	client, _, err := SSRFSafeClient(context.Background(), "localhost", resolver,
+		WithAllowPrivateIPs(),
+		WithoutRequestTimeout(),
+	)
+	require.NoError(t, err)
+	assert.Zero(t, client.Timeout)
+}
+
 // --- SSRFSafeClientFromURL / SSRFSafeTransportFromURL ---
 
 func TestSSRFSafeClientFromURL_Happy(t *testing.T) {
@@ -270,6 +427,51 @@ func TestSSRFSafeClientFromURL_RejectsEmptyHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "empty host")
 }
 
+func TestSSRFSafeClientFromURL_EmptyHostErrorDoesNotEchoQuery(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	_, _, _, err := SSRFSafeClientFromURL(context.Background(), "http://?token=secret-token", resolver, WithAllowPrivateIPs())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty host")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "token=")
+}
+
+func TestSSRFSafeClientFromURL_ParseErrorDoesNotEchoQuery(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	_, _, _, err := SSRFSafeClientFromURL(context.Background(), "http://example.com/%zz?token=secret-token", resolver, WithAllowPrivateIPs())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid URL syntax")
+	assert.NotContains(t, err.Error(), "secret-token")
+	assert.NotContains(t, err.Error(), "token=")
+	assert.NotContains(t, err.Error(), "%zz")
+}
+
+func TestSSRFSafeClientFromURL_RejectsInvalidPorts(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}}
+	for _, raw := range []string{
+		"http://example.com:bad/",
+		"http://example.com:secret-token/",
+		"http://example.com:/",
+		"http://example.com:0/",
+		"http://example.com:65536/",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, _, _, err := SSRFSafeClientFromURL(context.Background(), raw, resolver)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "port")
+			assert.NotContains(t, err.Error(), "secret-token")
+		})
+	}
+}
+
+func TestSSRFSafeClientFromURL_RejectsUserinfo(t *testing.T) {
+	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}}
+	_, _, _, err := SSRFSafeClientFromURL(context.Background(),
+		"https://169.254.169.254@example.com/resource", resolver)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+}
+
 func TestSSRFSafeClientFromURL_RejectsMalformedURL(t *testing.T) {
 	resolver := &mockDNSResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
 	// url.Parse is permissive — passing a control character forces a parse error.
@@ -313,6 +515,53 @@ func TestSSRFSafeClientFollowRedirects_PanicsOnZeroMaxHops(t *testing.T) {
 	_ = SSRFSafeClientFollowRedirects(0, nil)
 }
 
+func TestSSRFSafeValidatingTransport_ZeroValueFailsClosed(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+	require.NoError(t, err)
+
+	resp, err := ssrfValidatingTransport{}.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not initialized")
+}
+
+func TestSSRFSafeClientFollowRedirects_RejectsUnsafeInitialURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{name: "bad scheme", target: "ftp://example.com/resource", want: "scheme"},
+		{name: "userinfo", target: "http://user:pass@example.com/resource", want: "userinfo"},
+		{name: "invalid port", target: "http://example.com:0/resource", want: "port"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := SSRFSafeClientFollowRedirects(5, nil, WithAllowPrivateIPs())
+			resp, err := client.Get(tt.target)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestSSRFSafeClientFollowRedirects_RejectsInitialPrivateHostBeforeDial(t *testing.T) {
+	client := SSRFSafeClientFollowRedirects(5, nil)
+
+	resp, err := client.Get("http://127.0.0.1/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "private/reserved")
+}
+
 func TestSSRFSafeClientFollowRedirects_StopsAfterMaxHops(t *testing.T) {
 	// A test server that infinitely redirects to itself.
 	hops := 0
@@ -331,6 +580,77 @@ func TestSSRFSafeClientFollowRedirects_StopsAfterMaxHops(t *testing.T) {
 	}
 	assert.Error(t, err, "expected redirect-chain-exceeded error")
 	assert.Contains(t, err.Error(), "redirect chain exceeded")
+}
+
+func TestSSRFSafeClientFollowRedirects_AllowsExactlyMaxHops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/ok":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := SSRFSafeClientFollowRedirects(1, nil, WithAllowPrivateIPs())
+	resp, err := client.Get(srv.URL + "/start")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestSSRFSafeClientFollowRedirects_RejectsMoreThanMaxHops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/middle", http.StatusFound)
+		case "/middle":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/ok":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := SSRFSafeClientFollowRedirects(1, nil, WithAllowPrivateIPs())
+	resp, err := client.Get(srv.URL + "/start")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "redirect chain exceeded")
+}
+
+func TestSSRFSafeClientFollowRedirects_RejectsUnsafeRedirectURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{name: "bad scheme", target: "file:///etc/passwd", want: "scheme"},
+		{name: "userinfo", target: "http://user:pass@example.com/", want: "userinfo"},
+		{name: "invalid port", target: "http://example.com:0/", want: "port"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, tt.target, http.StatusFound)
+			}))
+			defer srv.Close()
+
+			client := SSRFSafeClientFollowRedirects(5, nil, WithAllowPrivateIPs())
+			resp, err := client.Get(srv.URL)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
 }
 
 func TestSSRFSafeDynamicTransport_ResolverFiresOnEveryDial(t *testing.T) {

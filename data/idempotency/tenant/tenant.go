@@ -1,6 +1,6 @@
 // Package tenant provides a tenant-scoped wrapper around any
-// [idempotency.Store]. Every idempotency key is prepended with
-// "tenant:<id>:" before reaching the underlying backend, so the same
+// [idempotency.Store]. Every idempotency key is rewritten with
+// [coretenant.Key] before reaching the underlying backend, so the same
 // raw key under two tenants resolves to two independent locks /
 // cached responses.
 //
@@ -28,24 +28,19 @@
 //     consistent across the kit.
 //
 // The wrapper requires a tenant ID on the request context. Absence is
-// a programming error and produces a panic from [tenant.Required] —
-// callers that may legitimately run outside a tenant scope should
-// keep using the bare store.
+// reported as an error from Store operations — callers that may
+// legitimately run outside a tenant scope should keep using the bare
+// store.
 package tenant
 
 import (
 	"context"
-	"strconv"
+	"fmt"
 	"time"
 
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
-
-// keyPrefix is the namespace placed in front of every wrapped
-// idempotency key. Mirrors the cache wrapper's layout for operator
-// recognition.
-const keyPrefix = "tenant:"
 
 // scoped is the concrete wrapper. It rewrites every key on the way in
 // and forwards the call to the underlying store unchanged.
@@ -54,8 +49,8 @@ type scoped struct {
 }
 
 // Wrap returns an [idempotency.Store] that prefixes every key with
-// the caller's tenant ID. The returned store panics on any operation
-// invoked without a tenant ID on ctx — see package doc for rationale.
+// the caller's tenant ID. Operations return an error when invoked
+// without a tenant ID on ctx — see package doc for rationale.
 //
 // Wrap panics on a nil inner store.
 func Wrap(inner idempotency.Store) idempotency.Store {
@@ -65,39 +60,78 @@ func Wrap(inner idempotency.Store) idempotency.Store {
 	return &scoped{inner: inner}
 }
 
-// scopedKey rewrites raw to "tenant:<len(id)>:<id>:<raw>". Panics if
-// ctx carries no tenant ID.
-//
-// The length prefix prevents `tenant:"a:b" + key:"c"` from colliding
-// with `tenant:"a" + key:"b:c"` when an ID happens to contain the ':'
-// separator. [coretenant.NewID] rejects ':' as defence-in-depth, but
-// callers can still construct `coretenant.ID` directly or via
-// [coretenant.NewIDUnchecked]; the length prefix stays sound either way.
-func scopedKey(ctx context.Context, raw string) string {
+// scopedKey rewrites raw with the kit-canonical tenant key format. It validates
+// the caller-provided key before adding the tenant prefix so empty raw
+// keys cannot be hidden by the wrapper.
+func scopedKey(ctx context.Context, raw string) (string, error) {
+	if err := idempotency.ValidateKey(raw); err != nil {
+		return "", err
+	}
 	id, err := coretenant.Required(ctx)
 	if err != nil {
-		panic("idempotency/tenant: " + err.Error())
+		return "", fmt.Errorf("idempotency/tenant: %w", err)
 	}
-	s := string(id)
-	return keyPrefix + strconv.Itoa(len(s)) + ":" + s + ":" + raw
+	scoped, err := coretenant.KeyFor(id, raw)
+	if err != nil {
+		return "", err
+	}
+	if err := idempotency.ValidateKey(scoped); err != nil {
+		return "", err
+	}
+	return scoped, nil
 }
 
 // Get rewrites the key and delegates.
 func (s *scoped) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
-	return s.inner.Get(ctx, scopedKey(ctx, key), fingerprint)
+	if err := s.ready(); err != nil {
+		return nil, false, err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.inner.Get(ctx, scoped, fingerprint)
 }
 
 // TryLock rewrites the key and delegates.
 func (s *scoped) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
-	return s.inner.TryLock(ctx, scopedKey(ctx, key), fingerprint, ttl)
+	if err := s.ready(); err != nil {
+		return "", false, false, err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return "", false, false, err
+	}
+	return s.inner.TryLock(ctx, scoped, fingerprint, ttl)
 }
 
 // Set rewrites the key and delegates.
 func (s *scoped) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
-	return s.inner.Set(ctx, scopedKey(ctx, key), token, resp, ttl)
+	if err := s.ready(); err != nil {
+		return err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	return s.inner.Set(ctx, scoped, token, resp, ttl)
 }
 
 // Unlock rewrites the key and delegates.
 func (s *scoped) Unlock(ctx context.Context, key, token string) error {
-	return s.inner.Unlock(ctx, scopedKey(ctx, key), token)
+	if err := s.ready(); err != nil {
+		return err
+	}
+	scoped, err := scopedKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	return s.inner.Unlock(ctx, scoped, token)
+}
+
+func (s *scoped) ready() error {
+	if s == nil || s.inner == nil {
+		return idempotency.ErrInvalidStore
+	}
+	return nil
 }

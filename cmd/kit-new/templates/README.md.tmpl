@@ -15,10 +15,21 @@ make test
 ```sh
 go run ./cmd/{{.ServiceName}}
 ```
+{{- if .Tenant}}
+
+The `-tenant` scaffold enables strict `X-Tenant-Id` extraction and
+Redis-backed tenant cache/idempotency resources. Set `REDIS_URL` or
+`REDIS_HOST`/`REDIS_PASSWORD` before starting the service.
+{{- end}}
 
 ## Operate
 
+{{if .Tenant -}}
+- Internal readiness endpoint: `GET /ready` on the internal port
+- Public routes require `X-Tenant-Id`
+{{else -}}
 - Health endpoint: `GET /healthz`
+{{end -}}
 - Logs: structured JSON to stdout
 
 ## Architecture

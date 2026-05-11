@@ -38,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
@@ -58,6 +62,8 @@ const (
 // drain. Beyond this we force-close so an unhealthy broker or stuck pending
 // publish cannot stall shutdown indefinitely.
 const closeDrainTimeout = 5 * time.Second
+
+const minimumTLSVersion = tls.VersionTLS12
 
 // Config is the connection-level configuration. Stream/consumer
 // declarations live on [StreamConfig] and [ConsumerConfig] so a single
@@ -126,12 +132,94 @@ type Config struct {
 	ExtraOptions []nats.Option
 }
 
+// Clone returns a detached copy of cfg suitable for storing past the caller's
+// setup phase. TLS config is cloned and raised to the kit's TLS floor; option
+// slices are copied so later caller mutation cannot change runtime wiring.
+func (c Config) Clone() (Config, error) {
+	c.ExtraOptions = append([]nats.Option(nil), c.ExtraOptions...)
+	if c.TLS != nil {
+		tlsConfig, err := cloneTLSConfigWithFloor(c.TLS)
+		if err != nil {
+			return Config{}, err
+		}
+		c.TLS = tlsConfig
+	}
+	return c, nil
+}
+
+// LogValue implements slog.LogValuer to prevent accidental logging of
+// credentials or topology if a caller constructs a Config with URL-embedded
+// userinfo or deployment-specific hosts.
+func (c Config) LogValue() slog.Value {
+	urlValid, urlHostConfigured, urlUserConfigured, urlPasswordConfigured := natsURLLogState(c.URL)
+	return slog.GroupValue(
+		slog.Bool("url_configured", c.URL != ""),
+		slog.Bool("url_valid", urlValid),
+		slog.Bool("host_configured", urlHostConfigured),
+		slog.Bool("name_configured", c.Name != ""),
+		slog.Bool("tls_configured", c.TLS != nil),
+		slog.Bool("username_configured", c.Username != "" || urlUserConfigured),
+		slog.Bool("password_configured", c.Password != "" || urlPasswordConfigured),
+		slog.Bool("token_configured", c.Token != ""),
+		slog.Bool("credentials_file_configured", c.CredentialsFile != ""),
+		slog.Bool("nkey_file_configured", c.NKeyFile != ""),
+		slog.Bool("allow_insecure", c.AllowInsecure),
+	)
+}
+
+func natsURLLogState(rawURL string) (valid, hostConfigured, userConfigured, passwordConfigured bool) {
+	if rawURL == "" {
+		return true, false, false, false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false, false, false, false
+	}
+	if u.User != nil {
+		_, passwordConfigured = u.User.Password()
+	}
+	return true, u.Host != "", u.User != nil && u.User.Username() != "", passwordConfigured
+}
+
+// ValidateURL checks that rawURL is a NATS server URL with an explicit host.
+// Credentials, query parameters, and fragments are rejected; pass auth through
+// Config's typed fields so logs can redact consistently.
+func ValidateURL(rawURL string) error {
+	_, err := parseServerURL(rawURL)
+	return err
+}
+
+func parseServerURL(rawURL string) (*url.URL, error) {
+	if rawURL == "" {
+		return nil, errors.New("natsbackend: URL must not be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("natsbackend: URL is invalid")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "nats", "tls", "ws", "wss":
+	default:
+		return nil, fmt.Errorf("natsbackend: URL scheme must be nats, tls, ws, or wss")
+	}
+	if err := config.ValidateURLHost("natsbackend: URL", u); err != nil {
+		return nil, err
+	}
+	if u.User != nil {
+		return nil, errors.New("natsbackend: URL must not contain credentials; use Config.Username, Token, CredentialsFile, or NKeyFile")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("natsbackend: URL must not contain query or fragment components")
+	}
+	return u, nil
+}
+
 // validateAuth enforces the FR-073 safety contract: a NATS connection
 // must use TLS, some form of authentication, or AllowInsecure. The
 // check runs before any DNS or socket activity so a misconfigured
 // service fails fast at startup rather than silently shipping
 // unauthenticated traffic.
-func (c Config) validateAuth() error {
+func (c Config) validateAuth(serverURL *url.URL) error {
 	if c.AllowInsecure {
 		return nil
 	}
@@ -141,7 +229,13 @@ func (c Config) validateAuth() error {
 	if c.Username != "" || c.Token != "" || c.CredentialsFile != "" || c.NKeyFile != "" {
 		return nil
 	}
-	if strings.HasPrefix(c.URL, "tls://") || strings.HasPrefix(c.URL, "wss://") {
+	if serverURL != nil {
+		switch strings.ToLower(serverURL.Scheme) {
+		case "tls", "wss":
+			return nil
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(c.URL), "tls://") || strings.HasPrefix(strings.ToLower(c.URL), "wss://") {
 		// URL scheme requests TLS even when no *tls.Config is
 		// supplied; nats.go falls back to the system trust store. The
 		// connection is still encrypted, so we accept this as the
@@ -149,6 +243,14 @@ func (c Config) validateAuth() error {
 		return nil
 	}
 	return errors.New("natsbackend: connect requires TLS, authentication (Username/Token/CredentialsFile/NKeyFile), or explicit AllowInsecure (audit FR-073)")
+}
+
+func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
+	if err != nil {
+		return nil, errors.New("natsbackend: TLS MaxVersion must allow TLS 1.2 or newer")
+	}
+	return cloned, nil
 }
 
 // Connection holds an open nats.Conn and its JetStream context. Use
@@ -168,11 +270,29 @@ type Connection struct {
 // Token, CredentialsFile, or NKeyFile — or set AllowInsecure for
 // genuinely trusted single-host setups.
 func Connect(ctx context.Context, cfg Config) (*Connection, error) {
-	if cfg.URL == "" {
-		return nil, errors.New("natsbackend: URL must not be empty")
+	if ctx == nil {
+		return nil, errors.New("natsbackend: Connect requires a non-nil context")
 	}
-	if err := cfg.validateAuth(); err != nil {
+	var err error
+	cfg, err = cfg.Clone()
+	if err != nil {
 		return nil, err
+	}
+	serverURL, err := parseServerURL(cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validateAuth(serverURL); err != nil {
+		return nil, err
+	}
+	if cfg.PublishAckWait < 0 {
+		return nil, errors.New("natsbackend: PublishAckWait must not be negative")
+	}
+	if cfg.MaxReconnects < -1 {
+		return nil, errors.New("natsbackend: MaxReconnects must be >= -1")
+	}
+	if cfg.ReconnectWait < 0 {
+		return nil, errors.New("natsbackend: ReconnectWait must not be negative")
 	}
 	if cfg.Name == "" {
 		cfg.Name = "rho-kit"
@@ -244,6 +364,9 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 // Healthy reports whether the underlying NATS connection is currently
 // connected. Suitable for [messaging.Connector].
 func (c *Connection) Healthy() bool {
+	if c == nil {
+		return false
+	}
 	return c.nc != nil && c.nc.IsConnected()
 }
 
@@ -252,7 +375,7 @@ func (c *Connection) Healthy() bool {
 // finish in time we force-close so an unhealthy broker cannot stall
 // shutdown.
 func (c *Connection) Close() error {
-	if c.nc == nil {
+	if c == nil || c.nc == nil {
 		return nil
 	}
 	return drainWithTimeout(c.nc.Drain, c.nc.Close, closeDrainTimeout)
@@ -275,7 +398,12 @@ func drainWithTimeout(drain func() error, close func(), timeout time.Duration) e
 
 // JetStream returns the raw JetStream context for callers needing
 // features the kit doesn't expose. Use sparingly.
-func (c *Connection) JetStream() jetstream.JetStream { return c.js }
+func (c *Connection) JetStream() jetstream.JetStream {
+	if c == nil {
+		return nil
+	}
+	return c.js
+}
 
 // StreamConfig declares a JetStream stream's persistence policy.
 type StreamConfig struct {
@@ -290,6 +418,9 @@ type StreamConfig struct {
 // EnsureStream creates or updates the stream described by cfg.
 // Idempotent — safe to call on every startup.
 func (c *Connection) EnsureStream(ctx context.Context, cfg StreamConfig) error {
+	if c == nil || c.js == nil {
+		return errors.New("natsbackend: connection is not initialized")
+	}
 	if cfg.Name == "" {
 		return errors.New("natsbackend: StreamConfig.Name required")
 	}
@@ -306,24 +437,63 @@ func (c *Connection) EnsureStream(ctx context.Context, cfg StreamConfig) error {
 	}
 	_, err := c.js.CreateOrUpdateStream(ctx, jcfg)
 	if err != nil {
-		return fmt.Errorf("natsbackend: ensure stream %q: %w", cfg.Name, err)
+		return fmt.Errorf("natsbackend: ensure stream: %w", err)
 	}
 	return nil
 }
 
 // Publisher publishes [messaging.Message]s to JetStream.
 type Publisher struct {
-	conn *Connection
-	wait time.Duration
+	conn        *Connection
+	wait        time.Duration
+	sizeLimiter messaging.MessageSizeLimiter
 }
 
 // PublisherOption configures a Publisher.
 type PublisherOption func(*Publisher)
 
-// WithPublishAckWait overrides the per-publish ack-wait timeout. Pass <= 0
-// to disable the timeout (the call inherits the caller's ctx deadline only).
+// WithPublishAckWait overrides the per-publish ack-wait timeout. The duration
+// must be positive; use [WithoutPublishAckWait] to inherit only the caller's
+// context deadline.
 func WithPublishAckWait(d time.Duration) PublisherOption {
+	if d <= 0 {
+		panic("natsbackend: WithPublishAckWait requires a positive duration")
+	}
 	return func(p *Publisher) { p.wait = d }
+}
+
+// WithoutPublishAckWait disables the publisher-level ack-wait timeout.
+// Use only when callers always provide a bounded context.
+func WithoutPublishAckWait() PublisherOption {
+	return func(p *Publisher) { p.wait = 0 }
+}
+
+// WithMessageSizeLimiter replaces the publisher's message-size policy.
+func WithMessageSizeLimiter(l messaging.MessageSizeLimiter) PublisherOption {
+	return func(p *Publisher) { p.sizeLimiter = l }
+}
+
+// WithMaxMessageBytes sets the default serialized message-size limit.
+func WithMaxMessageBytes(maxBytes int) PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithDefaultMaxBytes(maxBytes)
+	}
+}
+
+// WithoutMaxMessageBytes disables the default size limit. Route-specific
+// limits configured with WithRouteMaxMessageBytes still apply.
+func WithoutMaxMessageBytes() PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithoutDefaultMaxBytes()
+	}
+}
+
+// WithRouteMaxMessageBytes overrides the message-size limit for one exact
+// exchange+routing-key pair. routingKey may be empty for fanout-style routes.
+func WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) PublisherOption {
+	return func(p *Publisher) {
+		p.sizeLimiter = p.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
+	}
 }
 
 // defaultPublishAckWait is used when neither [Config.PublishAckWait] nor
@@ -338,8 +508,15 @@ func NewPublisher(conn *Connection, opts ...PublisherOption) *Publisher {
 	if conn == nil {
 		panic("natsbackend: Publisher requires a Connection")
 	}
-	p := &Publisher{conn: conn, wait: defaultPublishAckWait}
+	p := &Publisher{
+		conn:        conn,
+		wait:        defaultPublishAckWait,
+		sizeLimiter: messaging.DefaultMessageSizeLimiter(),
+	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("natsbackend: Publisher option must not be nil")
+		}
 		opt(p)
 	}
 	return p
@@ -351,12 +528,22 @@ func NewPublisher(conn *Connection, opts ...PublisherOption) *Publisher {
 // you want operator-tuned ack-wait behavior. Additional [PublisherOption]
 // values override the threaded default.
 func (c *Connection) NewPublisher(opts ...PublisherOption) *Publisher {
+	if c == nil {
+		return NewPublisher(nil, opts...)
+	}
 	all := make([]PublisherOption, 0, len(opts)+1)
 	if c.publishAckWait > 0 {
 		all = append(all, WithPublishAckWait(c.publishAckWait))
 	}
 	all = append(all, opts...)
 	return NewPublisher(c, all...)
+}
+
+func (p *Publisher) ready() error {
+	if p == nil || p.conn == nil || p.conn.js == nil {
+		return messaging.ErrInvalidPublisher
+	}
+	return nil
 }
 
 // Publish satisfies [messaging.MessagePublisher].
@@ -370,21 +557,24 @@ func (c *Connection) NewPublisher(opts ...PublisherOption) *Publisher {
 // JetStream broker confirms storage, so a non-nil return guarantees the
 // message will not be lost to a broker crash.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
-	// FR-076 [MED]: reject empty subject components at the kit
-	// boundary. Pre-fix composeSubject("","") returned "" and the
-	// failure surfaced as an opaque "no subject" error from the
-	// JetStream client, far from the misconfiguration.
-	if exchange == "" {
-		return errors.New("natsbackend: exchange must not be empty")
+	if err := p.ready(); err != nil {
+		return err
 	}
+	if err := messaging.ValidatePublishContext(ctx); err != nil {
+		return err
+	}
+	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
+		return err
+	}
+	msg = msg.Clone()
 	subject := composeSubject(exchange, routingKey)
 	if subject == "" {
 		return errors.New("natsbackend: composed subject is empty")
 	}
-	// FR-075 [MED]: validate header names + per-value bounds before
-	// they reach NATS. Invalid names corrupt the wire frame; oversize
-	// values blow past JetStream's per-message header budget.
-	if err := validateMessageHeaders(msg.Headers); err != nil {
+	if err := messaging.ValidateMessage(msg); err != nil {
+		return err
+	}
+	if err := p.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
 		return err
 	}
 	body, err := json.Marshal(msg)
@@ -412,7 +602,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	_, err = p.conn.js.PublishMsg(pubCtx, natsMsg)
 	if err != nil {
-		return fmt.Errorf("natsbackend: publish %q: %w", subject, err)
+		return fmt.Errorf("natsbackend: publish: %w", err)
 	}
 	return nil
 }
@@ -454,6 +644,12 @@ func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger) *Con
 	if cfg.Stream == "" || cfg.Durable == "" {
 		panic("natsbackend: ConsumerConfig requires Stream and Durable")
 	}
+	if cfg.MaxAckPending < 0 {
+		panic("natsbackend: ConsumerConfig.MaxAckPending must be >= 0")
+	}
+	if cfg.AckWait < 0 {
+		panic("natsbackend: ConsumerConfig.AckWait must not be negative")
+	}
 	if cfg.MaxAckPending <= 0 {
 		cfg.MaxAckPending = 256
 	}
@@ -469,10 +665,27 @@ func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger) *Con
 	return &Consumer{conn: conn, cfg: cfg, logger: logger}
 }
 
+func (c *Consumer) ready() error {
+	if c == nil ||
+		c.conn == nil ||
+		c.conn.js == nil ||
+		c.logger == nil ||
+		c.cfg.Stream == "" ||
+		c.cfg.Durable == "" ||
+		c.cfg.MaxAckPending < 0 ||
+		c.cfg.AckWait < 0 {
+		return messaging.ErrInvalidConsumer
+	}
+	return nil
+}
+
 // Consume blocks until ctx cancels, dispatching messages to handler.
 // Returning nil from handler acks; returning an error nacks (the
 // message is redelivered after AckWait).
 func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error {
+	if err := c.ready(); err != nil {
+		return err
+	}
 	if handler == nil {
 		return errors.New("natsbackend: handler must not be nil")
 	}
@@ -523,7 +736,7 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 			// hands it straight to the JetStream DLQ.
 			_ = jm.Term()
 			c.logger.Error("natsbackend: handler panicked — terminating message",
-				slog.Any("panic", r),
+				redact.Panic(r),
 			)
 		}
 	}()
@@ -534,19 +747,16 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	var msg messaging.Message
 	if err := json.Unmarshal(jm.Data(), &msg); err != nil {
 		c.logger.Error("natsbackend: malformed message — discarding",
-			slog.String("subject", subject),
-			slog.Any("error", err),
+			redact.String("subject", subject),
+			redact.Error(err),
 		)
 		_ = jm.Term() // unrecoverable — Term tells JetStream not to redeliver
 		return
 	}
 
-	headers := make(map[string]any, len(jm.Headers()))
-	for k, v := range jm.Headers() {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
+	headers, msgHeaders := deliveryHeaderMaps(jm.Headers())
+	msg = msg.Clone()
+	msg.Headers = msgHeaders
 
 	// Surface JetStream-level redelivery via metadata.
 	redelivered := false
@@ -555,7 +765,7 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	}
 
 	delivery := messaging.Delivery{
-		Message:       msg,
+		Message:       msg.Clone(),
 		Exchange:      exchange,
 		RoutingKey:    routingKey,
 		SchemaVersion: msg.SchemaVersion,
@@ -570,22 +780,43 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 		// permanent failure burns the entire MaxDeliver budget.
 		if apperror.IsPermanent(err) {
 			c.logger.Error("natsbackend: permanent error — terminating message",
-				slog.String("subject", subject),
-				slog.String("msg_id", msg.ID),
-				slog.Any("error", err),
+				redact.String("subject", subject),
+				redact.String("msg_id", msg.ID),
+				redact.Error(err),
 			)
 			_ = jm.Term()
 			return
 		}
 		c.logger.Warn("natsbackend: handler returned error — nacking",
-			slog.String("subject", subject),
-			slog.String("msg_id", msg.ID),
-			slog.Any("error", err),
+			redact.String("subject", subject),
+			redact.String("msg_id", msg.ID),
+			redact.Error(err),
 		)
 		_ = jm.Nak()
 		return
 	}
 	_ = jm.Ack()
+}
+
+func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
+	if len(h) == 0 {
+		return nil, nil
+	}
+	headers := make(map[string]any, len(h))
+	msgHeaders := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			headers[k] = v[0]
+			msgHeaders[k] = v[0]
+		}
+	}
+	if len(headers) == 0 {
+		headers = nil
+	}
+	if len(msgHeaders) == 0 {
+		msgHeaders = nil
+	}
+	return headers, msgHeaders
 }
 
 // composeSubject builds the NATS subject for the (exchange, routingKey)
@@ -595,39 +826,6 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 // `X-Exchange` / `X-Routing-Key` headers — never the subject — so a
 // dotted exchange like `orders.v1` paired with routing-key `created`
 // is preserved exactly even though the subject is `orders.v1.created`.
-// maxHeaderValueLen caps the size of any single header value (audit
-// FR-075). NATS does not enforce a per-header cap explicitly, but the
-// connection's max_payload limit (default 1 MiB) covers the whole
-// frame. Capping a single value prevents one runaway header from
-// monopolising that budget.
-const maxHeaderValueLen = 8 * 1024
-
-// validateMessageHeaders rejects header names that fail HTTP-style
-// validation and values exceeding [maxHeaderValueLen] (audit FR-075).
-func validateMessageHeaders(h map[string]string) error {
-	for k, v := range h {
-		if k == "" {
-			return errors.New("natsbackend: header name must not be empty")
-		}
-		for i := 0; i < len(k); i++ {
-			c := k[i]
-			if c <= 0x20 || c == 0x7f || c == ':' {
-				return fmt.Errorf("natsbackend: header name %q contains invalid character", k)
-			}
-		}
-		if len(v) > maxHeaderValueLen {
-			return fmt.Errorf("natsbackend: header %q value length %d exceeds %d", k, len(v), maxHeaderValueLen)
-		}
-		for i := 0; i < len(v); i++ {
-			c := v[i]
-			if c == 0 || c == '\r' || c == '\n' {
-				return fmt.Errorf("natsbackend: header %q value contains invalid character", k)
-			}
-		}
-	}
-	return nil
-}
-
 // composeSubject builds the NATS subject for a (exchange, routingKey)
 // pair. Exchange and routing-key tokens may not contain wildcards
 // (`*`, `>`), whitespace, or characters NATS reserves; dots are
@@ -652,15 +850,15 @@ func encodeSubjectToken(s string) string {
 	b.Grow(len(s))
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		switch {
-		case c == '.':
+		switch c {
+		case '.':
 			b.WriteString("%2E")
-		case c == '*':
+		case '*':
 			b.WriteString("%2A")
-		case c == '>':
+		case '>':
 			b.WriteString("%3E")
-		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
-			b.WriteString(fmt.Sprintf("%%%02X", c))
+		case ' ', '\t', '\r', '\n':
+			fmt.Fprintf(&b, "%%%02X", c)
 		default:
 			b.WriteByte(c)
 		}

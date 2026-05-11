@@ -8,23 +8,35 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrObjectNotFound is returned when a requested key does not exist in the backend.
 var ErrObjectNotFound = errors.New("storage: object not found")
 
-// ErrValidation is returned when upload validation fails (e.g. disallowed MIME type,
-// file too large). Wrap with fmt.Errorf to add context; unwrap with errors.Is.
+// ErrValidation is returned when storage input validation fails (e.g. invalid
+// keys, disallowed MIME type, file too large). Wrap with fmt.Errorf to add
+// context; unwrap with errors.Is.
 var ErrValidation = errors.New("storage: validation failed")
+
+// ErrBatchTooLarge is returned when a batch storage helper is asked to process
+// too many keys in one call.
+var ErrBatchTooLarge = errors.New("storage: batch operation exceeds maximum item count")
 
 // MaxKeyLen is the maximum allowed length for storage keys.
 const MaxKeyLen = 1024
 
+// MaxBatchKeys caps shared storage batch helpers. The limit matches the
+// portable single-request ceiling of common object stores such as S3
+// DeleteObjects.
+const MaxBatchKeys = 1000
+
 // ValidateKey checks that a storage key is safe for use across all backends.
 // This prevents:
 //   - Empty keys: always a programming error
-//   - Null bytes: can truncate C strings in some backends
-//   - Newlines/carriage returns: can break protocol framing
+//   - Invalid UTF-8: corrupts logs and provider/debug output
+//   - Whitespace/control characters: can break logs, CLIs, and protocol framing
 //   - Path traversal: ".." components could escape the storage root
 //   - Leading slashes: absolute paths are never valid keys
 //   - Excessively long keys: waste memory and may exceed backend limits
@@ -33,23 +45,26 @@ const MaxKeyLen = 1024
 // ensure consistent validation behavior between backends.
 func ValidateKey(key string) error {
 	if key == "" {
-		return fmt.Errorf("storage key must not be empty")
+		return fmt.Errorf("%w: storage key must not be empty", ErrValidation)
 	}
 	if len(key) > MaxKeyLen {
-		return fmt.Errorf("storage key exceeds maximum length of %d bytes", MaxKeyLen)
+		return fmt.Errorf("%w: storage key exceeds maximum length of %d bytes", ErrValidation, MaxKeyLen)
 	}
-	if strings.ContainsAny(key, "\x00\n\r") {
-		return fmt.Errorf("storage key contains invalid characters (null byte, newline, or carriage return)")
+	if containsInvalidKeyRune(key) {
+		return fmt.Errorf("%w: storage key contains invalid characters", ErrValidation)
 	}
 	if strings.HasPrefix(key, "/") {
-		return fmt.Errorf("storage key must not start with a slash")
+		return fmt.Errorf("%w: storage key must not start with a slash", ErrValidation)
 	}
 	if strings.ContainsRune(key, '\\') {
-		return fmt.Errorf("storage key must not contain backslashes")
+		return fmt.Errorf("%w: storage key must not contain backslashes", ErrValidation)
 	}
 	for _, seg := range strings.Split(key, "/") {
+		if seg == "" {
+			return fmt.Errorf("%w: storage key must not contain empty path segments", ErrValidation)
+		}
 		if seg == ".." || seg == "." {
-			return fmt.Errorf("storage key must not contain path traversal components (%q)", seg)
+			return fmt.Errorf("%w: storage key must not contain path traversal components", ErrValidation)
 		}
 	}
 	return nil
@@ -63,23 +78,38 @@ func ValidatePrefix(prefix string) error {
 		return nil
 	}
 	if len(prefix) > MaxKeyLen {
-		return fmt.Errorf("storage prefix exceeds maximum length of %d bytes", MaxKeyLen)
+		return fmt.Errorf("%w: storage prefix exceeds maximum length of %d bytes", ErrValidation, MaxKeyLen)
 	}
-	if strings.ContainsAny(prefix, "\x00\n\r") {
-		return fmt.Errorf("storage prefix contains invalid characters")
+	if containsInvalidKeyRune(prefix) {
+		return fmt.Errorf("%w: storage prefix contains invalid characters", ErrValidation)
 	}
 	if strings.HasPrefix(prefix, "/") {
-		return fmt.Errorf("storage prefix must not start with a slash")
+		return fmt.Errorf("%w: storage prefix must not start with a slash", ErrValidation)
 	}
 	if strings.ContainsRune(prefix, '\\') {
-		return fmt.Errorf("storage prefix must not contain backslashes")
+		return fmt.Errorf("%w: storage prefix must not contain backslashes", ErrValidation)
 	}
 	for _, seg := range strings.Split(strings.TrimSuffix(prefix, "/"), "/") {
+		if seg == "" {
+			return fmt.Errorf("%w: storage prefix must not contain empty path segments", ErrValidation)
+		}
 		if seg == ".." || seg == "." {
-			return fmt.Errorf("storage prefix must not contain path traversal components (%q)", seg)
+			return fmt.Errorf("%w: storage prefix must not contain path traversal components", ErrValidation)
 		}
 	}
 	return nil
+}
+
+func containsInvalidKeyRune(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // ObjectMeta carries metadata associated with a stored object.
@@ -105,8 +135,11 @@ type ObjectMeta struct {
 	LastModified time.Time
 
 	// Custom holds arbitrary key-value metadata.
-	// Keys must be valid HTTP header name suffixes (alphanumeric + hyphen).
-	// S3 stores these as x-amz-meta-<key> headers.
+	// Keys must be valid HTTP header name suffixes: non-empty ASCII
+	// alphanumeric strings with optional internal hyphens. Values must be
+	// printable ASCII. The total metadata size is bounded by ValidateObjectMeta
+	// to keep behavior portable across providers that store these as headers
+	// (for example S3 x-amz-meta-<key>).
 	Custom map[string]string
 }
 
@@ -136,7 +169,7 @@ type Storage interface {
 // PresignedStore is an optional extension implemented by backends that
 // support pre-signed URLs (e.g. S3). Call-site code checks capability:
 //
-//	if ps, ok := backend.(storage.PresignedStore); ok {
+//	if ps, ok := storage.AsPresigned(backend); ok {
 //	    url, err := ps.PresignGetURL(ctx, key, 15*time.Minute)
 //	}
 type PresignedStore interface {

@@ -19,6 +19,7 @@ func TestLookup_KnownID(t *testing.T) {
 func TestLookup_UnknownID(t *testing.T) {
 	_, err := asvs.Lookup("V99.9.9")
 	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "V99.9.9")
 }
 
 func TestIDs_SortedAndComplete(t *testing.T) {
@@ -28,6 +29,19 @@ func TestIDs_SortedAndComplete(t *testing.T) {
 		assert.LessOrEqual(t, string(ids[i-1]), string(ids[i]),
 			"IDs() must return sorted output for stable kit-doctor rendering")
 	}
+}
+
+func TestCatalog_ReturnsDetachedCopy(t *testing.T) {
+	catalog := asvs.Catalog()
+	require.NotEmpty(t, catalog)
+
+	original := catalog[0]
+	catalog[0].ID = "V99.9.9"
+
+	fresh := asvs.Catalog()
+	assert.Equal(t, original, fresh[0])
+	_, err := asvs.Lookup(original.ID)
+	require.NoError(t, err)
 }
 
 func TestParseAnnotation_Basic(t *testing.T) {
@@ -58,7 +72,7 @@ func TestParseAnnotation_TrimsWhitespace(t *testing.T) {
 }
 
 func TestEveryCatalogEntry_LooksUp(t *testing.T) {
-	for _, c := range asvs.Catalog {
+	for _, c := range asvs.Catalog() {
 		_, err := asvs.Lookup(c.ID)
 		require.NoErrorf(t, err, "Lookup(%q) failed", c.ID)
 	}

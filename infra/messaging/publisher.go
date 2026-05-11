@@ -1,6 +1,18 @@
 package messaging
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrInvalidPublisher is returned when a publisher method is invoked on a
+// nil or otherwise uninitialized publisher implementation.
+var ErrInvalidPublisher = errors.New("messaging: publisher is not initialized")
+
+// ErrInvalidPublishContext is returned when a publish call receives a nil
+// context. Canceled or expired contexts are returned as their standard
+// context error so callers can use errors.Is(err, context.Canceled).
+var ErrInvalidPublishContext = errors.New("messaging: publish context is nil")
 
 // MessagePublisher is the transport-agnostic interface for publishing messages.
 // Backend implementations (amqpbackend.Publisher, redisbackend.Publisher) satisfy
@@ -8,4 +20,13 @@ import "context"
 // at-least-once delivery on top of any underlying MessagePublisher.
 type MessagePublisher interface {
 	Publish(ctx context.Context, exchange, routingKey string, msg Message) error
+}
+
+// ValidatePublishContext rejects nil and already-canceled publish contexts
+// before a backend can enqueue, persist, or partially send a message.
+func ValidatePublishContext(ctx context.Context) error {
+	if ctx == nil {
+		return ErrInvalidPublishContext
+	}
+	return ctx.Err()
 }

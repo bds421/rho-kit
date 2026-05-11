@@ -23,14 +23,16 @@ RabbitMQ, and JWT verification.
 
 ```go
 app.Main("backend", handler.Version, func(logger *slog.Logger) error {
-    cfg, err := config.Load()
+    cfg, err := LoadConfig()
     if err != nil {
         return err
     }
 
     return app.New("backend", handler.Version, cfg.BaseConfig).
-        WithMariaDB(cfg.Database, cfg.DatabasePool, &model.User{}).
-        WithRabbitMQ(cfg.RabbitMQ.URL).
+        WithPostgres(cfg.Postgres).
+        WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
+        WithRabbitMQ(cfg.AMQPURL).
+        WithJWTAudience("backend").
         WithJWT(cfg.JWKSURL).
         WithIPRateLimit(100, time.Minute).
         Router(func(infra app.Infrastructure) http.Handler {
@@ -40,32 +42,37 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
 })
 ```
 
-For PostgreSQL, swap `WithMariaDB` with `WithPostgres` and use
-`sqldb.PostgresConfig` / `sqldb.PoolConfig` (or `sqldb.LoadPostgresFields`).
-See `examples/app` for a full example.
+Use `app.LoadBaseConfig`, `sqldb.LoadFields`, and package-specific loaders for
+env-backed settings. Pass a hardened `pgxbackend.Config` to `WithPostgres`.
+See `examples/agentic-service` for a full example.
 
 ## HTTP stack (recommended)
 
 ```go
+csrfMW := csrf.New(
+    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithAllowedOrigins(cfg.PublicOrigin),
+)
 handler := stack.Default(router, logger,
-    stack.WithOuter(csrf.RequireJSONContentType, csrf.RequireCSRF),
+    stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
 )
 ```
 
 ## Redis (example)
 
 ```go
-conn, err := redis.Connect(&goredis.Options{Addr: "localhost:6379"}, redis.WithInstance("cache"))
+conn, err := kitredis.Connect(&goredis.Options{Addr: "localhost:6379"}, kitredis.WithInstance("cache"))
 if err != nil {
     log.Fatal(err)
 }
 
-c, err := cache.NewRedisCache(conn.Client(), "api-cache")
+c, err := rediscache.NewRedisCache(conn.Client(), "api-cache")
 if err != nil {
     log.Fatal(err)
 }
 
-_ = c.Set(ctx, "user:123", []byte("..."), time.Minute)
+tenantCache := tenantcache.Wrap(c)
+_ = tenantCache.Set(ctx, "profile:123", []byte("..."), time.Minute)
 ```
 
 ## Usage
@@ -78,29 +85,20 @@ go get github.com/bds421/rho-kit/httpx/v2
 
 ## Package map
 
-- `app` – service bootstrap, infrastructure wiring, graceful shutdown.
-- `core/config` / `security/netutil` – configuration, env parsing, mTLS helpers.
-- `observability/logging` / `observability/tracing` – structured logging and OpenTelemetry setup.
-- `observability/health` – readiness/liveness types and dependency checks.
-- `httpx` – HTTP server, JSON helpers, traced HTTP clients.
-- `httpx/middleware/*` – request ID, auth, CSRF, metrics, rate limit, timeout, client IP, tracing.
-- `httpx/middleware/stack` – canonical middleware ordering helper.
-- `httpx/healthhttp` – readiness/liveness/metrics HTTP handler.
-- `httpx/authz` – route-level authorization.
-- `httpx/pagination` – cursor-based pagination.
-- `infra/sqldb` / `infra/sqldb/gormdb` – DB config, DSN helpers, GORM setup.
-- `infra/redis` + subpackages – resilient Redis connection, cache, stream, queue, locks.
-- `infra/messaging` – message types, buffered publisher, consumer framework.
-- `messaging/amqpbackend` – RabbitMQ connections, topology, consumers, publishers.
-- `messaging/redisbackend` – Redis Streams messaging backend.
-- `infra/storage` + backends – file storage with S3, Azure, GCS, SFTP, local backends.
-- `core/cache` – backend‑agnostic cache interface + memory cache.
-- `resilience/retry` / `resilience/circuitbreaker` – resilience patterns for transient failures.
-- `crypto/encrypt` / `crypto/signing` / `crypto/masking` – crypto helpers and safe masking.
-- `security/jwtutil` – JWKS-based JWT verification.
-- `core/idempotency` – idempotent request store interface.
-- `security/netutil` / `io/atomicfile` / `core/validate` – focused utilities.
-- `testutil/*` – testcontainers helpers for storage backends.
+- `app` – service bootstrap, infrastructure wiring, lifecycle, and graceful shutdown.
+- `core/config`, `core/apperror`, `core/validate`, `core/secret`, `core/tenant` – configuration, typed errors, validation, and focused primitives.
+- `httpx`, `httpx/middleware/*`, `httpx/healthhttp`, `httpx/pagination`, `httpx/mcp` – hardened HTTP servers, JSON helpers, middleware, health endpoints, pagination, and MCP handlers.
+- `authz`, `authz/openfga`, `httpx/authz` – authorization interfaces, OpenFGA adapter, and HTTP bridge.
+- `security/jwtutil`, `security/netutil`, `security/csrf`, `security/asvs` – JWT verification, mTLS/SSRF-safe networking, CSRF helpers, and ASVS scanning metadata.
+- `crypto/encrypt`, `crypto/envelope`, `crypto/paseto`, `crypto/passhash`, `crypto/signing` – encryption, token, password, and request-signing primitives.
+- `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/dbtest` – SQL contracts, pgx backend, migrations, and Docker-backed DB test helper module.
+- `infra/redis`, `infra/redis/redistest` – resilient Redis connection management plus the split Docker-backed Redis test helper module.
+- `data/cache`, `data/cache/rediscache`, `data/idempotency`, `data/lock`, `data/queue`, `data/stream`, `data/ratelimit` – data interfaces, memory implementations, and optional Redis/Postgres adapters.
+- `infra/messaging`, `infra/messaging/amqpbackend`, `infra/messaging/redisbackend`, `infra/messaging/natsbackend` – message contracts, buffered delivery, RabbitMQ, Redis Streams, and NATS JetStream adapters.
+- `infra/storage` plus `s3backend`, `azurebackend`, `gcsbackend`, `sftpbackend`, `storagehttp/uploadsec`, `storagehttp/uploadsec/clamav`, `storagetest` – storage interfaces, cloud/SFTP/local backends, upload validation/scanning, and backend compliance tests.
+- `observability/health`, `observability/logging`, `observability/logattr`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing` – health, logs, metrics, profiling, SLOs, and tracing.
+- `runtime/lifecycle`, `runtime/concurrency`, `runtime/eventbus`, `runtime/cron`, `runtime/batchworker`, `runtime/temporal` – lifecycle orchestration, worker patterns, eventing, scheduling, and Temporal helpers.
+- `resilience/retry`, `resilience/circuitbreaker`, `io/atomicfile`, `io/progress`, `flags` – retries, circuit breakers, safe file writes, progress tracking, and feature flags.
 
 ## Conventions and notes
 

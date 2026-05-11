@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -69,27 +71,27 @@ type Option func(*RedisStore)
 // WithKeyPrefix sets the key prefix for all stored entries.
 // Default: "idempotency:".
 //
-// Panics on empty or >maxKeyPrefixLen prefixes (audit FR-031) so a
-// misconfiguration cannot inflate every Redis key.
+// Panics on empty, invalid, or >maxKeyPrefixLen prefixes (audit FR-031) so a
+// misconfiguration cannot inflate or corrupt every Redis key.
 func WithKeyPrefix(prefix string) Option {
 	if prefix == "" {
 		panic("redisstore: WithKeyPrefix requires a non-empty prefix")
 	}
 	if len(prefix) > maxKeyPrefixLen {
-		panic(fmt.Sprintf("redisstore: WithKeyPrefix prefix length %d exceeds %d", len(prefix), maxKeyPrefixLen))
+		panic("redisstore: WithKeyPrefix prefix exceeds maximum length")
+	}
+	if containsInvalidStringBytes(prefix) {
+		panic("redisstore: WithKeyPrefix prefix contains invalid characters")
 	}
 	return func(s *RedisStore) { s.prefix = prefix }
 }
 
-// maxKeyPrefixLen / maxRawKeyLen cap Redis key components so direct
+// maxKeyPrefixLen caps Redis key prefixes so direct
 // callers and middleware-bypassing harnesses cannot create
 // pathologically long keys (audit FR-031). The middleware itself
 // hashes idempotency keys to a fixed-length hex string, so production
 // traffic stays well below these limits.
-const (
-	maxKeyPrefixLen = 128
-	maxRawKeyLen    = 256
-)
+const maxKeyPrefixLen = 128
 
 // RedisStore implements idempotency.Store using Redis. Safe for concurrent
 // use across processes.
@@ -110,6 +112,9 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 		prefix: "idempotency:",
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("redisstore: New option must not be nil")
+		}
 		o(s)
 	}
 	return s
@@ -117,19 +122,10 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 
 func (s *RedisStore) k(key string) string { return s.prefix + key }
 
-// validateKey enforces a length cap on raw idempotency keys (audit
-// FR-031). The HTTP middleware hashes its keys to fixed-length hex,
-// but direct store callers (test harnesses, custom signers) might
-// pass a raw value; capping here prevents pathological Redis-side
-// storage costs.
+// validateKey preserves the local helper name used throughout this backend
+// while delegating to the Store-wide key contract.
 func validateKey(key string) error {
-	if key == "" {
-		return errors.New("redisstore: key must not be empty")
-	}
-	if len(key) > maxRawKeyLen {
-		return fmt.Errorf("redisstore: key length %d exceeds %d", len(key), maxRawKeyLen)
-	}
-	return nil
+	return idempotency.ValidateKey(key)
 }
 
 // ttlMillisRoundUp converts a duration to milliseconds, rounding sub-ms
@@ -194,6 +190,9 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 // Get returns a cached response and applies fingerprint comparison if a
 // non-nil fingerprint is supplied.
 func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	if err := s.ready(); err != nil {
+		return nil, false, err
+	}
 	if err := validateKey(key); err != nil {
 		return nil, false, err
 	}
@@ -202,7 +201,7 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 		if errors.Is(err, goredis.Nil) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("idempotencystore: get %q: %w", key, err)
+		return nil, false, fmt.Errorf("idempotencystore: get: %w", err)
 	}
 	// Distinguish between a lock value (in-flight) and a response envelope.
 	if strings.HasPrefix(string(data), lockMarker) {
@@ -217,7 +216,7 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, false, fmt.Errorf("idempotencystore: unmarshal %q: %w", key, err)
+		return nil, false, fmt.Errorf("idempotencystore: unmarshal cached response: %w", err)
 	}
 	if env.Marker != respMarker {
 		// Unrecognised payload — treat as miss to avoid silently replaying
@@ -228,6 +227,9 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 		return nil, true, nil
 	}
 	resp := env.Response
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		return nil, false, fmt.Errorf("idempotencystore: invalid cached response: %w", err)
+	}
 	return &resp, false, nil
 }
 
@@ -235,18 +237,24 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 // [idempotency.ErrInvalidTTL] when ttl <= 0 — Redis SET NX with EX 0 would
 // otherwise create a permanent lock.
 func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if err := s.ready(); err != nil {
+		return "", false, false, err
+	}
 	if err := validateKey(key); err != nil {
 		return "", false, false, err
 	}
 	if ttl <= 0 {
 		return "", false, false, idempotency.ErrInvalidTTL
 	}
-	token := idempotency.GenerateToken()
+	token, err := idempotency.GenerateToken()
+	if err != nil {
+		return "", false, false, err
+	}
 	value := encodeLockValue(token, fingerprint)
 
 	ok, err := s.client.SetNX(ctx, s.k(key), value, ttlRoundUp(ttl)).Result()
 	if err != nil {
-		return "", false, false, fmt.Errorf("idempotencystore: lock %q: %w", key, err)
+		return "", false, false, fmt.Errorf("idempotencystore: lock: %w", err)
 	}
 	if ok {
 		return token, false, true, nil
@@ -260,7 +268,7 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 			// Race: TTL expired between SETNX and GET. Caller will retry.
 			return "", false, false, nil
 		}
-		return "", false, false, fmt.Errorf("idempotencystore: inspect %q: %w", key, err)
+		return "", false, false, fmt.Errorf("idempotencystore: inspect: %w", err)
 	}
 
 	// Existing slot is a lock — compare fingerprints from the lock value.
@@ -291,11 +299,17 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 // requiring that the caller still holds the lock. Returns
 // [idempotency.ErrInvalidTTL] when ttl <= 0.
 func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	if err := validateKey(key); err != nil {
 		return err
 	}
 	if ttl <= 0 {
 		return idempotency.ErrInvalidTTL
+	}
+	if err := idempotency.ValidateCachedResponse(resp); err != nil {
+		return err
 	}
 	// We need the same fingerprint that was passed at TryLock time so the
 	// envelope embeds it. Recover it by reading the lock value back.
@@ -304,7 +318,7 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 		if errors.Is(err, goredis.Nil) {
 			return idempotency.ErrLockLost
 		}
-		return fmt.Errorf("idempotencystore: read lock %q: %w", key, err)
+		return fmt.Errorf("idempotencystore: read lock: %w", err)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
 	if !ok || curToken != token {
@@ -318,7 +332,7 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("idempotencystore: marshal %q: %w", key, err)
+		return fmt.Errorf("idempotencystore: marshal cached response: %w", err)
 	}
 	expectedLockValue := encodeLockValue(token, fp)
 	result, err := setIfLockedScript.Run(ctx, s.client,
@@ -328,7 +342,7 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 		ttlMillisRoundUp(ttl),
 	).Text()
 	if err != nil {
-		return fmt.Errorf("idempotencystore: set %q: %w", key, err)
+		return fmt.Errorf("idempotencystore: set: %w", err)
 	}
 	if result != "OK" {
 		return idempotency.ErrLockLost
@@ -339,6 +353,9 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 // Unlock releases the processing lock under the caller's token. Token
 // mismatch is silently ignored (best-effort cleanup, e.g. on handler panic).
 func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -349,7 +366,7 @@ func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
 		if errors.Is(err, goredis.Nil) {
 			return nil
 		}
-		return fmt.Errorf("idempotencystore: read lock %q: %w", key, err)
+		return fmt.Errorf("idempotencystore: read lock: %w", err)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
 	if !ok || curToken != token {
@@ -359,7 +376,26 @@ func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
 	}
 	expectedLockValue := encodeLockValue(token, fp)
 	if _, err := unlockIfOwnerScript.Run(ctx, s.client, []string{s.k(key)}, expectedLockValue).Result(); err != nil && !errors.Is(err, goredis.Nil) {
-		return fmt.Errorf("idempotencystore: unlock %q: %w", key, err)
+		return fmt.Errorf("idempotencystore: unlock: %w", err)
 	}
 	return nil
+}
+
+func (s *RedisStore) ready() error {
+	if s == nil || s.client == nil || s.prefix == "" || len(s.prefix) > maxKeyPrefixLen || containsInvalidStringBytes(s.prefix) {
+		return idempotency.ErrInvalidStore
+	}
+	return nil
+}
+
+func containsInvalidStringBytes(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }

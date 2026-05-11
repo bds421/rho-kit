@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,7 +11,10 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/tlsclone"
 )
+
+const minimumTLSVersion = tls.VersionTLS12
 
 // RedisConfig holds Redis connection settings.
 //
@@ -63,25 +67,54 @@ func (c RedisConfig) Options() (*goredis.Options, error) {
 	if resolved == "" {
 		return nil, fmt.Errorf("redis: neither URL nor Host is configured")
 	}
+	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {
+		return nil, err
+	}
 	opts, err := goredis.ParseURL(resolved)
 	if err != nil {
-		return nil, fmt.Errorf("redis: parse URL: %w", err)
+		return nil, fmt.Errorf("redis: URL is invalid")
+	}
+	if opts.TLSConfig != nil {
+		opts.TLSConfig, err = cloneTLSConfigWithFloor(opts.TLSConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return opts, nil
 }
 
-// LogValue implements slog.LogValuer to prevent accidental logging of credentials
-// embedded in the Redis URL.
-func (c RedisConfig) LogValue() slog.Value {
-	resolved := c.RedisURL()
-	if resolved == "" {
-		return slog.StringValue("[NOT CONFIGURED]")
-	}
-	u, err := url.Parse(resolved)
+func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
-		return slog.StringValue("[INVALID URL]")
+		return nil, fmt.Errorf("redis: TLS MaxVersion must allow TLS 1.2 or newer")
 	}
-	return slog.StringValue(u.Redacted())
+	return cloned, nil
+}
+
+// LogValue implements slog.LogValuer to prevent accidental logging of credentials
+// or topology embedded in the Redis URL.
+func (c RedisConfig) LogValue() slog.Value {
+	urlValid, urlHostConfigured, urlUserinfoConfigured := redisURLLogState(c.URL)
+	return slog.GroupValue(
+		slog.Bool("url_configured", c.URL != ""),
+		slog.Bool("url_valid", urlValid),
+		slog.Bool("host_configured", c.Host != "" || urlHostConfigured),
+		slog.Int("port", c.Port),
+		slog.Bool("password_configured", c.Password != "" || urlUserinfoConfigured),
+		slog.Int("db", c.DB),
+		slog.Bool("allow_plaintext", c.AllowPlaintext),
+	)
+}
+
+func redisURLLogState(rawURL string) (valid, hostConfigured, userinfoConfigured bool) {
+	if rawURL == "" {
+		return true, false, false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false, false, false
+	}
+	return true, u.Host != "", u.User != nil
 }
 
 // RedisFields holds Redis connection configuration.
@@ -99,10 +132,15 @@ type RedisFields struct {
 //   - REDIS_PASSWORD (secret, default: empty)
 //   - REDIS_DB (default: 0)
 func LoadRedisFields() (RedisFields, error) {
+	allowPlaintext, err := config.GetBool("REDIS_ALLOW_PLAINTEXT", false)
+	if err != nil {
+		return RedisFields{}, err
+	}
+
 	// REDIS_URL takes precedence.
 	if rawURL := config.MustGetSecret("REDIS_URL", ""); rawURL != "" {
 		return RedisFields{
-			Redis: RedisConfig{URL: rawURL},
+			Redis: RedisConfig{URL: rawURL, AllowPlaintext: allowPlaintext},
 		}, nil
 	}
 
@@ -116,10 +154,11 @@ func LoadRedisFields() (RedisFields, error) {
 
 	return RedisFields{
 		Redis: RedisConfig{
-			Host:     config.Get("REDIS_HOST", ""),
-			Port:     port,
-			Password: config.MustGetSecret("REDIS_PASSWORD", ""),
-			DB:       db,
+			Host:           config.Get("REDIS_HOST", ""),
+			Port:           port,
+			Password:       config.MustGetSecret("REDIS_PASSWORD", ""),
+			DB:             db,
+			AllowPlaintext: allowPlaintext,
 		},
 	}, nil
 }
@@ -148,10 +187,8 @@ func (f RedisFields) ValidateRedis(environment string) error {
 			if u.Scheme == "redis" {
 				return fmt.Errorf("REDIS_URL uses plaintext scheme \"redis://\"; set REDIS_ALLOW_PLAINTEXT=true to permit (FR-077)")
 			}
-			if u.User == nil || u.User.Username() == "" {
-				if pw, _ := u.User.Password(); pw == "" && f.Redis.Password == "" {
-					return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
-				}
+			if !redisURLHasCredentials(u) && f.Redis.Password == "" {
+				return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
 			}
 		}
 	}
@@ -159,6 +196,17 @@ func (f RedisFields) ValidateRedis(environment string) error {
 		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")
 	}
 	return nil
+}
+
+func redisURLHasCredentials(u *url.URL) bool {
+	if u == nil || u.User == nil {
+		return false
+	}
+	if u.User.Username() != "" {
+		return true
+	}
+	pw, hasPassword := u.User.Password()
+	return hasPassword && pw != ""
 }
 
 // ValidateRedisURL checks that rawURL is a non-empty, parseable URL with a
@@ -169,10 +217,16 @@ func ValidateRedisURL(name, rawURL string) error {
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid %s: %w", name, err)
+		return fmt.Errorf("%s is invalid", name)
 	}
 	if u.Scheme != "redis" && u.Scheme != "rediss" {
-		return fmt.Errorf("%s scheme must be redis or rediss, got %q", name, u.Scheme)
+		return fmt.Errorf("%s scheme must be redis or rediss", name)
+	}
+	if err := config.ValidateURLHost(name, u); err != nil {
+		return err
+	}
+	if _, ok := u.Query()["skip_verify"]; ok {
+		return fmt.Errorf("%s must not set skip_verify; Redis TLS verification cannot be disabled", name)
 	}
 	return nil
 }

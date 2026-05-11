@@ -3,12 +3,14 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
-	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is open and the call is
@@ -109,7 +111,7 @@ func WithReadyToTrip(fn func(Counts) bool) Option {
 // trip on the very first failure.
 func WithErrorRateThreshold(rate float64, minRequests uint32) Option {
 	if rate <= 0 || rate > 1 {
-		panic(fmt.Sprintf("circuitbreaker: WithErrorRateThreshold requires 0 < rate <= 1 (got %v)", rate))
+		panic("circuitbreaker: WithErrorRateThreshold requires 0 < rate <= 1")
 	}
 	if minRequests == 0 {
 		panic("circuitbreaker: WithErrorRateThreshold requires minRequests >= 1")
@@ -140,9 +142,24 @@ func WithOnStateChange(fn func(name string, from, to State)) Option {
 	}
 	return func(s *gobreaker.Settings) {
 		s.OnStateChange = func(name string, from gobreaker.State, to gobreaker.State) {
-			fn(name, mapState(from), mapState(to))
+			callOnStateChange(fn, name, mapState(from), mapState(to))
 		}
 	}
+}
+
+func callOnStateChange(fn func(name string, from, to State), name string, from, to State) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("circuitbreaker: OnStateChange callback panicked",
+				"name", name,
+				"from", from,
+				"to", to,
+				redact.Panic(rec),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	fn(name, from, to)
 }
 
 // CircuitBreaker wraps a gobreaker instance with defaults.
@@ -171,6 +188,9 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 		IsSuccessful: defaultIsSuccessful,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("circuitbreaker: option must not be nil")
+		}
 		opt(&settings)
 	}
 

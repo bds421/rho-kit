@@ -3,23 +3,23 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
 // grpcModule implements the Module interface for gRPC server lifecycle.
 // It creates a grpc.Server with the provided options, calls the registrar
-// to register service implementations, registers the gRPC health service,
-// and manages graceful shutdown.
+// to register service implementations, and manages graceful shutdown.
 type grpcModule struct {
 	BaseModule
 
@@ -64,7 +64,7 @@ func newGRPCModule(registrar func(*grpc.Server), addr string, opts []grpcx.Serve
 		BaseModule: NewBaseModule("grpc"),
 		registrar:  registrar,
 		addr:       addr,
-		opts:       opts,
+		opts:       append([]grpcx.ServerOption(nil), opts...),
 	}
 }
 
@@ -83,13 +83,14 @@ func (m *grpcModule) Init(_ context.Context, mc ModuleContext) error {
 	m.server = grpcx.NewServer(opts...)
 	m.registrar(m.server)
 
-	mc.Logger.Info("gRPC server configured", "addr", m.addr)
+	mc.Logger.Info("gRPC server configured", redact.String("addr", m.addr))
 	return nil
 }
 
-// RegisterHealth registers the gRPC health service on the server using the
-// provided health checker. This is called after all modules are initialized
-// so the checker includes all dependency checks.
+// RegisterHealth registers the gRPC health service on the public gRPC server
+// using the provided health checker. Builder calls this only when
+// WithPublicGRPCHealth is set; by default, gRPC health is served from the
+// internal ops listener instead.
 func (m *grpcModule) RegisterHealth(checker *health.Checker) {
 	if m.server == nil || checker == nil {
 		return
@@ -113,12 +114,30 @@ func (m *grpcModule) Close(_ context.Context) error {
 	return nil
 }
 
-// gracefulStop attempts a graceful shutdown of the gRPC server with a timeout.
-// If the graceful stop does not complete within the timeout, it falls back to
-// a hard stop.
-func (m *grpcModule) gracefulStop() error {
-	if m.server == nil {
+// Start implements lifecycle.Component for the gRPC server.
+func (m *grpcModule) Start(_ context.Context) error {
+	return m.serve()
+}
+
+// Stop implements lifecycle.Component for the gRPC server. It attempts a
+// graceful shutdown until ctx expires, then falls back to a hard stop.
+func (m *grpcModule) Stop(ctx context.Context) error {
+	return m.gracefulStop(ctx)
+}
+
+// gracefulStop attempts a graceful shutdown of the gRPC server. If ctx expires
+// before the graceful stop completes, it falls back to a hard stop and returns
+// ctx.Err().
+func (m *grpcModule) gracefulStop(ctx context.Context) error {
+	if m == nil || m.server == nil {
 		return nil
+	}
+	if ctx == nil {
+		return errors.New("app: gRPC graceful stop requires a non-nil context")
+	}
+	logger := m.logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	done := make(chan struct{})
@@ -127,34 +146,33 @@ func (m *grpcModule) gracefulStop() error {
 		close(done)
 	}()
 
-	const shutdownTimeout = 10 * time.Second
 	select {
 	case <-done:
-		m.logger.Info("gRPC server stopped gracefully")
-	case <-time.After(shutdownTimeout):
-		m.logger.Warn("gRPC graceful stop timed out, forcing stop")
+		logger.Info("gRPC server stopped gracefully")
+		return nil
+	case <-ctx.Done():
+		logger.Warn("gRPC graceful stop context expired, forcing stop", redact.Error(ctx.Err()))
 		m.server.Stop()
+		<-done
+		return ctx.Err()
 	}
-	return nil
 }
 
-// serve starts the gRPC server on the configured address. When the context
-// is cancelled (shutdown signal), it triggers a graceful stop with a timeout
-// fallback to a hard stop.
-func (m *grpcModule) serve(ctx context.Context) error {
+// serve starts the gRPC server on the configured address.
+func (m *grpcModule) serve() error {
+	if m == nil || m.server == nil {
+		return errors.New("app: gRPC module is not initialized")
+	}
 	lis, err := net.Listen("tcp", m.addr)
 	if err != nil {
-		return fmt.Errorf("gRPC listen on %s: %w", m.addr, err)
+		return fmt.Errorf("gRPC listen failed")
 	}
 
-	// When the runner cancels the context, trigger graceful stop.
-	go func() {
-		<-ctx.Done()
-		_ = m.gracefulStop()
-	}()
-
-	m.logger.Info("gRPC server listening", "addr", m.addr)
+	m.logger.Info("gRPC server listening", redact.String("addr", m.addr))
 	if err := m.server.Serve(lis); err != nil {
+		if errors.Is(err, grpc.ErrServerStopped) {
+			return nil
+		}
 		return fmt.Errorf("gRPC server error: %w", err)
 	}
 	return nil

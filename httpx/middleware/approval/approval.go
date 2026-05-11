@@ -4,14 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/google/uuid"
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/bds421/rho-kit/data/v2/approval"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
 )
 
 // DefaultMaxBodyBytes is the default cap on the size of a request body
@@ -38,7 +45,7 @@ type config struct {
 	actorExtractor    func(*http.Request) (string, bool)
 	actionExtractor   func(*http.Request) string
 	resourceExtractor func(*http.Request) string
-	idFunc            func() string
+	idFunc            func() (string, error)
 	logger            *slog.Logger
 }
 
@@ -75,6 +82,13 @@ func WithTenantSource(fn func(*http.Request) (string, bool)) Option {
 	return func(c *config) { c.tenantSource = fn }
 }
 
+// WithTenantHeader sets the tenant source to a request header. The header must
+// be a singleton token: duplicate lines, comma-combined values, whitespace, and
+// control characters are rejected before the value is validated as a tenant ID.
+func WithTenantHeader(header string) Option {
+	return WithTenantSource(tenantSourceFromHeader(header))
+}
+
 // WithActorExtractor sets a function that resolves the principal id
 // for a request. REQUIRED — [Middleware] panics at construction if no
 // extractor is configured. Returning ok=false (or an empty actor)
@@ -91,11 +105,30 @@ func WithActorExtractor(fn func(*http.Request) (string, bool)) Option {
 	return func(c *config) { c.actorExtractor = fn }
 }
 
+// WithActorFromHeader sets the actor extractor to a request header.
+//
+// SECURITY WARNING: any caller able to reach this service can set the header to
+// an arbitrary value. Use this only when the service is exclusively reachable
+// through a trusted proxy or middleware that strips inbound values and re-stamps
+// the header from a verified identity. In normal services prefer extracting the
+// actor from authenticated context populated by auth middleware.
+//
+// The header must be a singleton identity token: duplicate lines,
+// comma-combined values, whitespace, and control characters are rejected.
+func WithActorFromHeader(header string) Option {
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("approval: WithActorFromHeader requires a valid non-empty header name")
+	}
+	return WithActorExtractor(func(r *http.Request) (string, bool) {
+		return headerutil.SingletonIdentity(r.Header, header)
+	})
+}
+
 // WithActionExtractor sets a function that returns the action verb for
-// a request. Default: METHOD + " " + URL.Path, which is fine for
-// administrative routes but coarse — services with verb-named routes
-// (POST /v1/users/{id}/disable) should override to record "user.disable".
-// Panics on a nil fn.
+// a request. Default: METHOD + " " + URL.EscapedPath(), which keeps
+// encoded path delimiters distinguishable but is coarse for administrative
+// routes — services with verb-named routes (POST /v1/users/{id}/disable)
+// should override to record "user.disable". Panics on a nil fn.
 func WithActionExtractor(fn func(*http.Request) string) Option {
 	if fn == nil {
 		panic("approval: WithActionExtractor requires a non-nil function")
@@ -103,10 +136,9 @@ func WithActionExtractor(fn func(*http.Request) string) Option {
 	return func(c *config) { c.actionExtractor = fn }
 }
 
-// WithResourceExtractor sets a function that returns the resource id
-// for a request. Default: URL.Path. Override when the resource is a
-// path parameter that needs lifting out (e.g. {id}). Panics on a nil
-// fn.
+// WithResourceExtractor sets a function that returns the resource id for a
+// request. Default: URL.EscapedPath(). Override when the resource is a path
+// parameter that needs lifting out (e.g. {id}). Panics on a nil fn.
 func WithResourceExtractor(fn func(*http.Request) string) Option {
 	if fn == nil {
 		panic("approval: WithResourceExtractor requires a non-nil function")
@@ -119,6 +151,19 @@ func WithResourceExtractor(fn func(*http.Request) string) Option {
 func WithIDFunc(fn func() string) Option {
 	if fn == nil {
 		panic("approval: WithIDFunc requires a non-nil function")
+	}
+	return func(c *config) {
+		c.idFunc = func() (string, error) {
+			return fn(), nil
+		}
+	}
+}
+
+// WithIDFuncE overrides the approval id generator with an error-returning
+// function. Default: UUIDv7 string. Panics on a nil fn.
+func WithIDFuncE(fn func() (string, error)) Option {
+	if fn == nil {
+		panic("approval: WithIDFuncE requires a non-nil function")
 	}
 	return func(c *config) { c.idFunc = fn }
 }
@@ -138,16 +183,36 @@ func WithLogger(l *slog.Logger) Option {
 
 func defaultConfig() config {
 	return config{
-		maxBodyBytes: DefaultMaxBodyBytes,
-		expiry:       DefaultExpiry,
-		tenantSource: func(r *http.Request) (string, bool) {
-			v := r.Header.Get(DefaultTenantHeader)
-			return v, v != ""
+		maxBodyBytes:      DefaultMaxBodyBytes,
+		expiry:            DefaultExpiry,
+		tenantSource:      tenantSourceFromHeader(DefaultTenantHeader),
+		actionExtractor:   func(r *http.Request) string { return r.Method + " " + httpx.RequestPath(r) },
+		resourceExtractor: httpx.RequestPath,
+		idFunc: func() (string, error) {
+			id, err := uuid.NewV7()
+			if err != nil {
+				return "", fmt.Errorf("approval: generate approval id: %w", err)
+			}
+			return id.String(), nil
 		},
-		actionExtractor:   func(r *http.Request) string { return r.Method + " " + r.URL.Path },
-		resourceExtractor: func(r *http.Request) string { return r.URL.Path },
-		idFunc:            func() string { return uuid.Must(uuid.NewV7()).String() },
-		logger:            slog.Default(),
+		logger: slog.Default(),
+	}
+}
+
+func tenantSourceFromHeader(header string) func(*http.Request) (string, bool) {
+	if !httpguts.ValidHeaderFieldName(header) {
+		panic("approval: WithTenantHeader requires a valid non-empty header name")
+	}
+	return func(r *http.Request) (string, bool) {
+		value, present, ok := headerutil.SingletonToken(r.Header, header)
+		if !present || !ok {
+			return "", false
+		}
+		id, err := coretenant.NewID(value)
+		if err != nil {
+			return "", false
+		}
+		return id.String(), true
 	}
 }
 
@@ -169,6 +234,9 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 	}
 	cfg := defaultConfig()
 	for _, o := range opts {
+		if o == nil {
+			panic("approval: Middleware option must not be nil")
+		}
 		o(&cfg)
 	}
 	if cfg.actorExtractor == nil {
@@ -177,13 +245,13 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tenantID, ok := cfg.tenantSource(r)
+			tenantID, ok := safeTenantSource(cfg.logger, cfg.tenantSource, r)
 			if !ok || tenantID == "" {
 				writeError(w, http.StatusBadRequest, "tenant id missing")
 				return
 			}
 
-			actor, ok := cfg.actorExtractor(r)
+			actor, ok := safeActorExtractor(cfg.logger, cfg.actorExtractor, r)
 			if !ok || actor == "" {
 				writeError(w, http.StatusUnauthorized, "actor not resolved")
 				return
@@ -195,18 +263,34 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 				return
 			}
 			if err != nil {
-				cfg.logger.Error("approval: read body", "error", err)
+				cfg.logger.Error("approval: read body", redact.Error(err))
 				writeError(w, http.StatusBadRequest, "could not read request body")
+				return
+			}
+
+			id, ok := safeIDFunc(cfg.logger, cfg.idFunc)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "could not record approval")
+				return
+			}
+			action, ok := safeStringExtractor(cfg.logger, "action extractor", cfg.actionExtractor, r)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "could not record approval")
+				return
+			}
+			resource, ok := safeStringExtractor(cfg.logger, "resource extractor", cfg.resourceExtractor, r)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
 
 			now := time.Now().UTC()
 			req := approval.Request{
-				ID:        cfg.idFunc(),
+				ID:        id,
 				TenantID:  tenantID,
 				Actor:     actor,
-				Action:    cfg.actionExtractor(r),
-				Resource:  cfg.resourceExtractor(r),
+				Action:    action,
+				Resource:  resource,
 				Payload:   body,
 				CreatedAt: now,
 				ExpiresAt: now.Add(cfg.expiry),
@@ -214,7 +298,7 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 
 			created, err := store.Create(r.Context(), req)
 			if err != nil {
-				cfg.logger.Error("approval: create", "error", err, "approval_id", req.ID)
+				cfg.logger.Error("approval: create", redact.Error(err), redact.String("approval_id", req.ID))
 				writeError(w, http.StatusInternalServerError, "could not record approval")
 				return
 			}
@@ -235,6 +319,65 @@ func Middleware(store approval.Store, opts ...Option) func(http.Handler) http.Ha
 			})
 		})
 	}
+}
+
+func safeTenantSource(logger *slog.Logger, fn func(*http.Request) (string, bool), r *http.Request) (tenantID string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logCallbackPanic(logger, "tenant source", rec)
+			tenantID, ok = "", false
+		}
+	}()
+	return fn(r)
+}
+
+func safeActorExtractor(logger *slog.Logger, fn func(*http.Request) (string, bool), r *http.Request) (actor string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logCallbackPanic(logger, "actor extractor", rec)
+			actor, ok = "", false
+		}
+	}()
+	return fn(r)
+}
+
+func safeStringExtractor(logger *slog.Logger, callback string, fn func(*http.Request) string, r *http.Request) (value string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logCallbackPanic(logger, callback, rec)
+			value, ok = "", false
+		}
+	}()
+	return fn(r), true
+}
+
+func safeIDFunc(logger *slog.Logger, fn func() (string, error)) (id string, ok bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logCallbackPanic(logger, "id function", rec)
+			id, ok = "", false
+		}
+	}()
+	id, err := fn()
+	if err != nil {
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error("approval: id function failed", redact.Error(err))
+		return "", false
+	}
+	return id, true
+}
+
+func logCallbackPanic(logger *slog.Logger, callback string, rec any) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("approval: callback panicked",
+		"callback", callback,
+		redact.Panic(rec),
+		"stack", string(debug.Stack()),
+	)
 }
 
 // errBodyTooLarge is returned by readBody when the request body exceeds
@@ -275,11 +418,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // EnsureBodyBuffered returns an http.Request whose body is a re-readable
-// bytes.Reader over body. Useful for executors that replay a stored
-// payload through the original handler.
+// bytes.Reader over a detached copy of body. Useful for executors that replay
+// a stored payload through the original handler.
 func EnsureBodyBuffered(r *http.Request, body []byte) *http.Request {
 	r2 := r.Clone(r.Context())
-	r2.Body = io.NopCloser(bytes.NewReader(body))
-	r2.ContentLength = int64(len(body))
+	owned := append([]byte(nil), body...)
+	r2.Body = io.NopCloser(bytes.NewReader(owned))
+	r2.ContentLength = int64(len(owned))
 	return r2
 }

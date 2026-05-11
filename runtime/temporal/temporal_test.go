@@ -2,7 +2,9 @@ package temporal_test
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,10 +33,34 @@ func TestConnect_RejectsEmptyHostPort(t *testing.T) {
 	assert.Contains(t, err.Error(), "HostPort")
 }
 
+func TestConnect_RejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	_, err := temporal.Connect(ctx, client.Options{
+		HostPort:  "temporal:7233",
+		Namespace: "default",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
 func TestConnect_RejectsEmptyNamespace(t *testing.T) {
 	_, err := temporal.Connect(context.Background(), client.Options{HostPort: "x:1234"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Namespace")
+}
+
+func TestConnect_DialErrorDoesNotReflectHostPort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	_, err := temporal.Connect(ctx, client.Options{
+		HostPort:  "secret-token.invalid:7233",
+		Namespace: "default",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dial failed")
+	assert.False(t, strings.Contains(err.Error(), "secret-token"), "dial error leaked HostPort: %v", err)
 }
 
 func TestNewWorker_PanicsOnNilClient(t *testing.T) {

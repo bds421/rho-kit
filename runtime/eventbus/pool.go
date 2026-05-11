@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/logattr"
 )
 
@@ -161,15 +162,21 @@ func releaseTask(task *asyncTask) {
 	taskPool.Put(task)
 }
 
-// start launches worker goroutines and blocks until ctx is cancelled.
-// After ctx cancellation, the channel is closed so workers can drain remaining
-// tasks before exiting.
-func (p *workerPool) start(ctx context.Context) {
-	p.started.Store(true)
+func (p *workerPool) startWorkers() {
+	if p.started.Swap(true) {
+		return
+	}
 	for i := range p.workers {
 		p.wg.Add(1)
 		go p.worker(i)
 	}
+}
+
+// start launches worker goroutines and blocks until ctx is cancelled.
+// After ctx cancellation, callers close the channel through stop so
+// workers can drain remaining tasks before exiting.
+func (p *workerPool) start(ctx context.Context) {
+	p.startWorkers()
 	<-ctx.Done()
 }
 
@@ -219,16 +226,14 @@ func (p *workerPool) worker(id int) {
 func (p *workerPool) executeTask(task *asyncTask) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err := fmt.Errorf("panic: %v", rec)
+			err := fmt.Errorf("panic: %s", redact.PanicValue(rec))
 			p.logger.Error("async event handler panicked",
 				slog.String("event", task.eventName),
 				slog.String("handler", task.handler.name),
-				slog.Any("panic", rec),
+				redact.Panic(rec),
 				slog.String("stack", string(debug.Stack())),
 			)
-			if p.onError != nil {
-				p.onError(task.ctx, task.eventName, task.handler.name, err)
-			}
+			callOnError(p.logger, p.onError, task.ctx, task.eventName, task.handler.name, err)
 		}
 	}()
 
@@ -238,8 +243,6 @@ func (p *workerPool) executeTask(task *asyncTask) {
 			slog.String("handler", task.handler.name),
 			logattr.Error(err),
 		)
-		if p.onError != nil {
-			p.onError(task.ctx, task.eventName, task.handler.name, err)
-		}
+		callOnError(p.logger, p.onError, task.ctx, task.eventName, task.handler.name, err)
 	}
 }

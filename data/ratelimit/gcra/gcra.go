@@ -61,10 +61,19 @@ func WithClock(now func() time.Time) Option {
 
 // WithSweeper overrides the interval at which the background sweeper
 // removes cold keys whose TAT lies in the past (which means another
-// admit there would not be rate-limited anyway). interval <= 0
-// disables the sweeper.
+// admit there would not be rate-limited anyway). The interval must be
+// positive; use [WithoutSweeper] to opt out.
 func WithSweeper(interval time.Duration) Option {
+	if interval <= 0 {
+		panic("gcra: WithSweeper requires a positive interval")
+	}
 	return func(l *Limiter) { l.sweepInterval = interval }
+}
+
+// WithoutSweeper disables the background sweeper. Use only when the
+// caller bounds key cardinality externally.
+func WithoutSweeper() Option {
+	return func(l *Limiter) { l.sweepInterval = 0 }
 }
 
 // New constructs a Limiter that allows up to `burst` events within any
@@ -98,6 +107,9 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 		doneCh:        make(chan struct{}),
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("gcra: option must not be nil")
+		}
 		o(l)
 	}
 	if l.sweepInterval > 0 {
@@ -108,9 +120,19 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 	return l
 }
 
+func (l *Limiter) ready() error {
+	if l == nil || l.rate <= 0 || l.burst < 1 || l.now == nil || l.tats == nil {
+		return ratelimit.ErrInvalidLimiter
+	}
+	return nil
+}
+
 // Stop terminates the background sweeper. Safe to call multiple
 // times.
 func (l *Limiter) Stop() {
+	if l == nil || l.stopCh == nil || l.doneCh == nil {
+		return
+	}
 	l.stopOnce.Do(func() {
 		close(l.stopCh)
 		<-l.doneCh
@@ -134,6 +156,9 @@ func (l *Limiter) sweepLoop() {
 // sweep drops keys whose TAT is in the past — those have no live
 // rate-limit state (the next Allow would treat them as fresh).
 func (l *Limiter) sweep() {
+	if l.ready() != nil {
+		return
+	}
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -147,8 +172,11 @@ func (l *Limiter) sweep() {
 // Allow reports whether key's next event is permitted. retryAfter is
 // the time-until-next-allowed when denied.
 func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, error) {
-	if key == "" {
-		return false, 0, ratelimit.ErrInvalidKey
+	if err := l.ready(); err != nil {
+		return false, 0, err
+	}
+	if err := ratelimit.ValidateKey(key); err != nil {
+		return false, 0, err
 	}
 	now := l.now()
 
@@ -169,6 +197,9 @@ func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, err
 
 // Len returns the number of tracked keys. Useful in tests.
 func (l *Limiter) Len() int {
+	if l == nil {
+		return 0
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.tats)

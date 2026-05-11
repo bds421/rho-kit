@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -75,8 +76,8 @@ func TestPublish_SyncErrorCollection(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "first")
 	assert.Contains(t, err.Error(), "second")
-	assert.Contains(t, err.Error(), `handler "h1"`)
-	assert.Contains(t, err.Error(), `handler "h2"`)
+	assert.NotContains(t, err.Error(), `h1`)
+	assert.NotContains(t, err.Error(), `h2`)
 }
 
 func TestPublish_AsyncHandler(t *testing.T) {
@@ -126,6 +127,36 @@ func TestPublish_AsyncErrorCallsOnError(t *testing.T) {
 	assert.Contains(t, gotErr.Error(), "async failure")
 }
 
+func TestPublish_UnboundedAsyncOnErrorPanicDoesNotCrash(t *testing.T) {
+	var (
+		onErrorCalled atomic.Bool
+		afterCalled   atomic.Bool
+	)
+
+	bus := New(
+		WithUnboundedAsync(),
+		WithOnError(func(context.Context, string, string, error) {
+			onErrorCalled.Store(true)
+			panic("error hook exploded")
+		}),
+	)
+
+	Subscribe(bus, func(context.Context, testEvent) error {
+		return errors.New("async failure")
+	}, WithAsync(), WithName("failing"))
+
+	Subscribe(bus, func(context.Context, otherEvent) error {
+		afterCalled.Store(true)
+		return nil
+	}, WithAsync(), WithName("after"))
+
+	require.NoError(t, Publish(bus, context.Background(), testEvent{}))
+	assert.Eventually(t, onErrorCalled.Load, time.Second, 5*time.Millisecond)
+
+	require.NoError(t, Publish(bus, context.Background(), otherEvent{}))
+	assert.Eventually(t, afterCalled.Load, time.Second, 5*time.Millisecond)
+}
+
 func TestPublish_AsyncPanicRecovery(t *testing.T) {
 	var (
 		gotErr error
@@ -150,7 +181,8 @@ func TestPublish_AsyncPanicRecovery(t *testing.T) {
 		t.Fatal("OnError not called after panic")
 	}
 
-	assert.Contains(t, gotErr.Error(), "boom")
+	assert.Contains(t, gotErr.Error(), "<redacted panic value: string>")
+	assert.NotContains(t, gotErr.Error(), "boom")
 }
 
 func TestPublish_MixedSyncAsync(t *testing.T) {
@@ -217,6 +249,19 @@ func TestSubscribe_PanicsOnNilHandler(t *testing.T) {
 	})
 }
 
+func TestNew_PanicsOnNilOption(t *testing.T) {
+	assert.Panics(t, func() {
+		New(nil)
+	})
+}
+
+func TestSubscribe_PanicsOnNilOption(t *testing.T) {
+	bus := New()
+	assert.Panics(t, func() {
+		Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil }, nil)
+	})
+}
+
 // pointerEvent's EventName reads the receiver — this would panic on a
 // typed-nil pointer. Subscribe[*pointerEvent] must instantiate a fresh
 // value via reflect rather than calling EventName on the zero pointer.
@@ -254,6 +299,32 @@ func TestWithOnFull_PanicsOnUnknownPolicy(t *testing.T) {
 	})
 }
 
+func TestBus_StartRejectsNilContext(t *testing.T) {
+	bus := New(WithUnboundedAsync())
+	var ctx context.Context
+	err := bus.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestBus_StopRejectsNilContext(t *testing.T) {
+	bus := New(WithUnboundedAsync())
+	var ctx context.Context
+	err := bus.Stop(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-nil context")
+}
+
+func TestBus_StartRejectsAfterStopBeforeStart(t *testing.T) {
+	bus := New(WithUnboundedAsync())
+
+	require.NoError(t, bus.Stop(context.Background()))
+
+	err := bus.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already stopped")
+}
+
 func TestSubscribe_WithName(t *testing.T) {
 	bus := New()
 	Subscribe(bus, func(_ context.Context, _ testEvent) error {
@@ -262,7 +333,46 @@ func TestSubscribe_WithName(t *testing.T) {
 
 	err := Publish(bus, context.Background(), testEvent{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `handler "my-handler"`)
+	assert.Contains(t, err.Error(), "handler failed")
+	assert.NotContains(t, err.Error(), `my-handler`)
+}
+
+func TestSubscribe_PanicsOnUnsafeHandlerName(t *testing.T) {
+	bus := New()
+	assert.Panics(t, func() {
+		Subscribe(bus, func(_ context.Context, _ testEvent) error { return nil }, WithName("bad\nhandler"))
+	})
+}
+
+type unsafeNameEvent struct{}
+
+func (unsafeNameEvent) EventName() string { return "bad\nevent" }
+
+func TestSubscribe_PanicsOnUnsafeEventName(t *testing.T) {
+	bus := New()
+	assert.Panics(t, func() {
+		Subscribe(bus, func(_ context.Context, _ unsafeNameEvent) error { return nil })
+	})
+}
+
+func TestPublish_ReturnsErrorOnUnsafeEventName(t *testing.T) {
+	bus := New()
+	err := Publish(bus, context.Background(), unsafeNameEvent{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "eventbus: invalid event name")
+}
+
+type longNameEvent struct{}
+
+func (longNameEvent) EventName() string {
+	return strings.Repeat("a", 257)
+}
+
+func TestSubscribe_PanicsOnTooLongEventName(t *testing.T) {
+	bus := New()
+	assert.Panics(t, func() {
+		Subscribe(bus, func(_ context.Context, _ longNameEvent) error { return nil })
+	})
 }
 
 func TestPublish_ContextPropagation(t *testing.T) {

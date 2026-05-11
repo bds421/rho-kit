@@ -2,14 +2,20 @@ package interceptor
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/mtlsidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -51,8 +57,9 @@ type authConfig struct {
 // WithSkipMethods specifies gRPC methods that should bypass authentication.
 // Method names should be fully qualified (e.g., "/grpc.health.v1.Health/Check").
 func WithSkipMethods(methods ...string) AuthOption {
+	copied := append([]string(nil), methods...)
 	return func(c *authConfig) {
-		for _, m := range methods {
+		for _, m := range copied {
 			c.skipMethods[m] = struct{}{}
 		}
 	}
@@ -117,6 +124,9 @@ func buildAuthConfig(opts []AuthOption) authConfig {
 		skipMethods: make(map[string]struct{}),
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			panic("interceptor: auth option must not be nil")
+		}
 		opt(&cfg)
 	}
 	return cfg
@@ -125,12 +135,21 @@ func buildAuthConfig(opts []AuthOption) authConfig {
 // authenticate extracts the JWT from metadata, validates it, and injects
 // claims into the context.
 func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Context, error) {
-	token := extractBearerToken(ctx)
-	if token == "" {
+	token, tokenStatus := parseBearerToken(ctx)
+	switch tokenStatus {
+	case bearerTokenAbsent:
 		return ctx, status.Error(codes.Unauthenticated, "missing authorization token")
+	case bearerTokenInvalid:
+		return ctx, status.Error(codes.Unauthenticated, "invalid authorization token")
+	case bearerTokenPresent:
+	default:
+		return ctx, status.Error(codes.Unauthenticated, "invalid authorization token")
 	}
+	return authenticateBearer(ctx, provider, token)
+}
 
-	claims, err := provider.Verify(token, time.Now())
+func authenticateBearer(ctx context.Context, provider *jwtutil.Provider, token string) (context.Context, error) {
+	claims, err := provider.VerifyContext(ctx, token, time.Now())
 	if err != nil {
 		// ErrKeySetUnavailable is the JWKS-not-loaded / stale case; emit a
 		// warning so it is distinguishable in logs from a malformed token.
@@ -147,28 +166,65 @@ func authenticate(ctx context.Context, provider *jwtutil.Provider) (context.Cont
 		return ctx, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
+	perms := slices.Clone(claims.Permissions)
 	ctx = userIDKey.Set(ctx, grpcUserID(claims.Subject))
-	ctx = permissionsKey.Set(ctx, grpcPermissions(claims.Permissions))
+	ctx = permissionsKey.Set(ctx, grpcPermissions(perms))
 	ctx = scopesKey.Set(ctx, grpcScopes(claims.Scopes))
 	return ctx, nil
 }
 
-// extractBearerToken reads the "authorization" metadata value and strips the
-// "Bearer " prefix.
-func extractBearerToken(ctx context.Context) string {
+type bearerTokenStatus int
+
+const (
+	bearerTokenAbsent bearerTokenStatus = iota
+	bearerTokenInvalid
+	bearerTokenPresent
+)
+
+const maxBearerTokenLen = 8 * 1024
+
+// parseBearerToken reads a singleton "authorization" metadata value and
+// strips the "Bearer " prefix. Multiple metadata values are rejected because
+// proxies and frameworks can disagree about which value is authoritative.
+func parseBearerToken(ctx context.Context) (string, bearerTokenStatus) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return ""
+		return "", bearerTokenAbsent
 	}
 	vals := md.Get("authorization")
-	if len(vals) == 0 {
-		return ""
+	switch len(vals) {
+	case 0:
+		return "", bearerTokenAbsent
+	case 1:
+	default:
+		return "", bearerTokenInvalid
 	}
+
 	auth := vals[0]
-	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
-		return strings.TrimSpace(auth[7:])
+	if auth == "" || strings.TrimSpace(auth) != auth || !utf8.ValidString(auth) {
+		return "", bearerTokenInvalid
 	}
-	return ""
+	const bearerPrefix = "Bearer "
+	if len(auth) <= len(bearerPrefix) || !strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
+		return "", bearerTokenInvalid
+	}
+	token := auth[len(bearerPrefix):]
+	if !validBearerToken(token) {
+		return "", bearerTokenInvalid
+	}
+	return token, bearerTokenPresent
+}
+
+func validBearerToken(token string) bool {
+	if token == "" || len(token) > maxBearerTokenLen || strings.TrimSpace(token) != token || strings.Contains(token, ",") {
+		return false
+	}
+	for _, r := range token {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // UserID extracts the user ID from the gRPC request context.
@@ -180,7 +236,7 @@ func UserID(ctx context.Context) string {
 // UserPermissions extracts the permissions list from the gRPC request context.
 func UserPermissions(ctx context.Context) []string {
 	v, _ := permissionsKey.Get(ctx)
-	return []string(v)
+	return slices.Clone([]string(v))
 }
 
 // UserScopes extracts the scopes string from the gRPC request context.
@@ -305,21 +361,18 @@ func RequireScopeStream(scope string) grpc.StreamServerInterceptor {
 	}
 }
 
-// MTLSIdentityOption configures the mTLS identity allowlist for
-// [MTLSAuthUnary] / [MTLSAuthStream]. At least one of [WithAllowedSANs]
-// or [WithAllowedCNs] must be supplied.
+// MTLSIdentityOption configures the mTLS identity allowlist and impersonation
+// policy for [MTLSAuthUnary] / [MTLSAuthStream]. At least one of
+// [WithAllowedSANs] or [WithAllowedCNs] must be supplied.
 type MTLSIdentityOption func(*mtlsIdentityConfig)
 
 type mtlsIdentityConfig struct {
 	allowedCNs     map[string]struct{}
 	allowedSANDNS  map[string]struct{}
 	allowedSANURIs map[string]struct{}
-	// impersonationGuard, when set, is consulted before stamping
-	// the trusted-S2S marker (audit FR-065). Returning an error
-	// rejects the impersonation attempt; returning nil accepts it.
-	// Without this hook, any allow-listed service identity could
-	// impersonate any UUID — a too-broad default for a kit-level
-	// "trusted" guarantee.
+	// impersonationGuard is consulted before stamping the trusted-S2S
+	// marker. Returning an error rejects the impersonation attempt;
+	// returning nil accepts it.
 	impersonationGuard func(ctx context.Context, identity, userID string) error
 	// skipMethods bypasses both JWT and mTLS authentication for the
 	// listed gRPC method names (audit FR-066). Use for unauthenticated
@@ -333,11 +386,12 @@ type mtlsIdentityConfig struct {
 // the combined JWT + mTLS auth can still expose unauthenticated
 // health endpoints.
 func WithMTLSSkipMethods(methods ...string) MTLSIdentityOption {
+	copied := append([]string(nil), methods...)
 	return func(c *mtlsIdentityConfig) {
 		if c.skipMethods == nil {
 			c.skipMethods = make(map[string]struct{})
 		}
-		for _, m := range methods {
+		for _, m := range copied {
 			c.skipMethods[m] = struct{}{}
 		}
 	}
@@ -348,14 +402,10 @@ func WithMTLSSkipMethods(methods ...string) MTLSIdentityOption {
 // allowed to impersonate `userID`. Return an error to reject the
 // impersonation; the interceptor returns codes.PermissionDenied to
 // the caller.
-//
-// Audit FR-065: without this guard the kit's mTLS auth treats every
-// allow-listed service identity as omnipotent — any service can
-// impersonate any user. Wire a per-service authorization callback
-// here (e.g. "svc-billing may impersonate any user-of-tenant whose
-// purchase it is reconciling") so the trust scope matches the kit
-// contract.
 func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID string) error) MTLSIdentityOption {
+	if fn == nil {
+		panic("interceptor: WithS2SImpersonationGuard requires a non-nil callback")
+	}
 	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
 
@@ -368,23 +418,42 @@ func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID str
 // URI values (e.g. "spiffe://example.org/svc-a") are matched against
 // [x509.Certificate.URIs] using exact string equality after URL parsing.
 func WithAllowedSANs(sans []string) MTLSIdentityOption {
+	dnsSANs := make([]string, 0, len(sans))
+	uriSANs := make([]string, 0, len(sans))
+	for _, s := range sans {
+		san, ok, err := mtlsidentity.NormalizeSAN(s)
+		if err != nil {
+			switch {
+			case errors.Is(err, mtlsidentity.ErrInvalidURISAN):
+				panic("interceptor: WithAllowedSANs invalid URI SAN")
+			case errors.Is(err, mtlsidentity.ErrInvalidDNSSAN):
+				panic("interceptor: WithAllowedSANs invalid DNS SAN")
+			default:
+				panic("interceptor: WithAllowedSANs invalid SAN")
+			}
+		}
+		if !ok {
+			continue
+		}
+		switch san.Kind {
+		case mtlsidentity.SANURI:
+			uriSANs = append(uriSANs, san.Value)
+		case mtlsidentity.SANDNS:
+			dnsSANs = append(dnsSANs, san.Value)
+		}
+	}
 	return func(c *mtlsIdentityConfig) {
-		for _, s := range sans {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
+		for _, uri := range uriSANs {
+			if c.allowedSANURIs == nil {
+				c.allowedSANURIs = map[string]struct{}{}
 			}
-			if strings.Contains(s, "://") {
-				if c.allowedSANURIs == nil {
-					c.allowedSANURIs = map[string]struct{}{}
-				}
-				c.allowedSANURIs[s] = struct{}{}
-			} else {
-				if c.allowedSANDNS == nil {
-					c.allowedSANDNS = map[string]struct{}{}
-				}
-				c.allowedSANDNS[s] = struct{}{}
+			c.allowedSANURIs[uri] = struct{}{}
+		}
+		for _, dns := range dnsSANs {
+			if c.allowedSANDNS == nil {
+				c.allowedSANDNS = map[string]struct{}{}
 			}
+			c.allowedSANDNS[dns] = struct{}{}
 		}
 	}
 }
@@ -399,12 +468,18 @@ func WithAllowedSANs(sans []string) MTLSIdentityOption {
 // migrate to SANs entirely — a runtime warning is logged at startup when CN
 // is the sole identity source.
 func WithAllowedCNs(cns []string) MTLSIdentityOption {
+	canonical := make([]string, 0, len(cns))
+	for _, input := range cns {
+		cn, ok, err := mtlsidentity.NormalizeCN(input)
+		if err != nil {
+			panic("interceptor: WithAllowedCNs invalid CN")
+		}
+		if ok {
+			canonical = append(canonical, cn)
+		}
+	}
 	return func(c *mtlsIdentityConfig) {
-		for _, cn := range cns {
-			cn = strings.TrimSpace(cn)
-			if cn == "" {
-				continue
-			}
+		for _, cn := range canonical {
 			if c.allowedCNs == nil {
 				c.allowedCNs = map[string]struct{}{}
 			}
@@ -416,6 +491,9 @@ func WithAllowedCNs(cns []string) MTLSIdentityOption {
 func buildMTLSIdentityConfig(opts []MTLSIdentityOption) mtlsIdentityConfig {
 	cfg := mtlsIdentityConfig{}
 	for _, o := range opts {
+		if o == nil {
+			panic("interceptor: mTLS identity option must not be nil")
+		}
 		o(&cfg)
 	}
 	return cfg
@@ -435,8 +513,8 @@ func buildMTLSIdentityConfig(opts []MTLSIdentityOption) mtlsIdentityConfig {
 // RequirePermissionUnary / RequireScopeUnary interceptors permit the call
 // without a permissions claim.
 //
-// Both provider and at least one identity option are required — the function
-// panics at startup if either is missing, matching the HTTP RequireS2SAuth.
+// Provider, at least one identity option, and WithS2SImpersonationGuard are
+// required; the function panics at startup if any are missing.
 //
 // An auditor can grep for "MTLSAuthUnary" to find all S2S entry points.
 func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.UnaryServerInterceptor {
@@ -446,6 +524,9 @@ func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.
 	cfg := buildMTLSIdentityConfig(opts)
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
 		panic("interceptor: MTLSAuthUnary requires at least one allowed SAN or CN")
+	}
+	if cfg.impersonationGuard == nil {
+		panic("interceptor: MTLSAuthUnary requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	warnIfCNOnly("MTLSAuthUnary", cfg)
 	return func(
@@ -474,6 +555,9 @@ func MTLSAuthStream(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc
 	cfg := buildMTLSIdentityConfig(opts)
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
 		panic("interceptor: MTLSAuthStream requires at least one allowed SAN or CN")
+	}
+	if cfg.impersonationGuard == nil {
+		panic("interceptor: MTLSAuthStream requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	warnIfCNOnly("MTLSAuthStream", cfg)
 	return func(
@@ -512,9 +596,16 @@ func authenticateMTLSOrJWT(
 	provider *jwtutil.Provider,
 	cfg mtlsIdentityConfig,
 ) (context.Context, error) {
-	// Try JWT first.
-	if extractBearerToken(ctx) != "" {
-		return authenticate(ctx, provider)
+	// Try JWT first. Malformed or duplicated authorization metadata is
+	// rejected before mTLS fallback so callers cannot smuggle a bad bearer
+	// value while relying on a client certificate for admission.
+	token, tokenStatus := parseBearerToken(ctx)
+	switch tokenStatus {
+	case bearerTokenPresent:
+		return authenticateBearer(ctx, provider, token)
+	case bearerTokenInvalid:
+		return ctx, status.Error(codes.Unauthenticated, "invalid authorization token")
+	case bearerTokenAbsent:
 	}
 
 	// mTLS branch: require a verified client cert with an allow-listed identity.
@@ -523,15 +614,13 @@ func authenticateMTLSOrJWT(
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
-	userID := extractXUserID(ctx)
-	if userID == "" || !jwtutil.IsUUID(userID) {
+	userID, ok := extractXUserID(ctx)
+	if !ok || !jwtutil.IsUUID(userID) {
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 
-	// FR-065 [MED]: consult the impersonation guard so a service
-	// identity cannot impersonate arbitrary users by default.
 	if cfg.impersonationGuard != nil {
-		if err := cfg.impersonationGuard(ctx, identity, userID); err != nil {
+		if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID); err != nil {
 			slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
 				slog.String("user_id", userID),
 				slog.String("client_identity", identity),
@@ -549,6 +638,23 @@ func authenticateMTLSOrJWT(
 	ctx = userIDKey.Set(ctx, grpcUserID(userID))
 	ctx = trustedS2SKey.Set(ctx, grpcTrustedS2SMarker{})
 	return ctx, nil
+}
+
+var errImpersonationGuardPanicked = errors.New("impersonation guard panicked")
+
+func callImpersonationGuard(ctx context.Context, guard func(context.Context, string, string) error, identity, userID string) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.ErrorContext(ctx, "grpc s2s impersonation guard panicked",
+				slog.String("user_id", userID),
+				slog.String("client_identity", identity),
+				redact.Panic(rec),
+				slog.String("stack", string(debug.Stack())),
+			)
+			err = errImpersonationGuardPanicked
+		}
+	}()
+	return guard(ctx, identity, userID)
 }
 
 // verifyClientCertGRPC checks that the gRPC peer presented a fully verified
@@ -577,6 +683,19 @@ func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, st
 		return false, ""
 	}
 	cert := tlsInfo.State.PeerCertificates[0]
+	if cert.IsCA {
+		return false, ""
+	}
+	hasClientAuth := false
+	for _, eku := range cert.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+			hasClientAuth = true
+			break
+		}
+	}
+	if !hasClientAuth {
+		return false, ""
+	}
 
 	for _, u := range cert.URIs {
 		if u == nil {
@@ -588,7 +707,7 @@ func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, st
 		}
 	}
 	for _, dns := range cert.DNSNames {
-		if _, ok := cfg.allowedSANDNS[dns]; ok {
+		if _, ok := cfg.allowedSANDNS[strings.ToLower(dns)]; ok {
 			return true, "dns:" + dns
 		}
 	}
@@ -600,18 +719,34 @@ func verifyClientCertGRPC(ctx context.Context, cfg mtlsIdentityConfig) (bool, st
 	return false, ""
 }
 
-// extractXUserID reads the x-user-id metadata value from the incoming
-// context. Returns "" if absent.
-func extractXUserID(ctx context.Context) string {
+// extractXUserID reads a singleton x-user-id metadata value from the incoming
+// context. Returns ok=false when absent, duplicated, blank, or ambiguous.
+func extractXUserID(ctx context.Context) (value string, ok bool) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return ""
+		return "", false
 	}
-	vals := md.Get(xUserIDMetadataKey)
-	if len(vals) == 0 {
-		return ""
+	return singletonMetadataIdentity(md, xUserIDMetadataKey)
+}
+
+func singletonMetadataIdentity(md metadata.MD, key string) (string, bool) {
+	vals := md.Get(key)
+	if len(vals) != 1 {
+		return "", false
 	}
-	return strings.TrimSpace(vals[0])
+	value := vals[0]
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", false
+	}
+	if !utf8.ValidString(value) || strings.Contains(value, ",") {
+		return "", false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 // checkPermission applies the fail-closed RBAC predicate: trusted-S2S

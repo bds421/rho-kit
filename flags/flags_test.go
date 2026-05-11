@@ -2,8 +2,10 @@ package flags_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/open-feature/go-sdk/openfeature"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -67,6 +69,56 @@ func TestClient_BoolDefault(t *testing.T) {
 	assert.False(t, c.Bool(context.Background(), "missing", false))
 }
 
+func TestClient_InvalidReceiverReturnsFallbackAndError(t *testing.T) {
+	var c *flags.Client
+
+	got, err := c.BoolE(context.Background(), "enabled", true)
+	require.ErrorIs(t, err, flags.ErrInvalidClient)
+	assert.True(t, got)
+	assert.True(t, c.Bool(context.Background(), "enabled", true))
+}
+
+func TestClient_NilContextReturnsFallbackAndError(t *testing.T) {
+	p := flags.NewMemoryProvider()
+	p.SetBool("enabled", true)
+	c, err := flags.New(uniqueName(t), p)
+	require.NoError(t, err)
+
+	got, err := c.BoolE(nil, "enabled", false) //nolint:staticcheck // Test nil-context hardening.
+	require.ErrorIs(t, err, flags.ErrInvalidContext)
+	assert.False(t, got)
+	assert.False(t, c.Bool(nil, "enabled", false)) //nolint:staticcheck // Test nil-context hardening.
+}
+
+func TestClient_RejectsInvalidFlagKey(t *testing.T) {
+	p := flags.NewMemoryProvider()
+	p.SetBool("enabled", false)
+	c, err := flags.New(uniqueName(t), p)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "empty", key: ""},
+		{name: "space", key: "bad key"},
+		{name: "newline", key: "bad\nkey"},
+		{name: "invalid-utf8", key: string([]byte{0xff})},
+		{name: "too-long", key: strings.Repeat("a", flags.MaxKeyLen+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.BoolE(context.Background(), tc.key, true)
+			require.ErrorIs(t, err, flags.ErrInvalidKey)
+			if tc.name == "too-long" {
+				assert.NotContains(t, err.Error(), "128")
+				assert.NotContains(t, err.Error(), "129")
+			}
+			assert.True(t, got)
+			assert.True(t, c.Bool(context.Background(), tc.key, true))
+		})
+	}
+}
+
 func TestClient_BoolFromProvider(t *testing.T) {
 	p := flags.NewMemoryProvider()
 	p.SetBool("kill_switch", true)
@@ -114,8 +166,87 @@ func TestWithUserKey_AppearsInEvalCtx(t *testing.T) {
 	require.Equal(t, "hello", c.String(ctx, "greeting", ""))
 }
 
+func TestWithUserKey_InvalidSurfacesOnEvaluation(t *testing.T) {
+	p := flags.NewMemoryProvider()
+	p.SetBool("enabled", true)
+	c, err := flags.New(uniqueName(t), p)
+	require.NoError(t, err)
+
+	ctx := flags.WithUserKey(context.Background(), "bad\nuser")
+	got, err := c.BoolE(ctx, "enabled", false)
+	require.ErrorIs(t, err, flags.ErrInvalidUserKey)
+	assert.False(t, got)
+	assert.False(t, c.Bool(ctx, "enabled", false))
+
+	ctx = flags.WithUserKey(context.Background(), strings.Repeat("u", flags.MaxUserKeyLen+1))
+	got, err = c.BoolE(ctx, "enabled", false)
+	require.ErrorIs(t, err, flags.ErrInvalidUserKey)
+	assert.NotContains(t, err.Error(), "256")
+	assert.NotContains(t, err.Error(), "257")
+	assert.False(t, got)
+}
+
+func TestWithUserKey_NilContextDoesNotPanic(t *testing.T) {
+	p := flags.NewMemoryProvider()
+	p.SetString("greeting", "hello")
+	c, err := flags.New(uniqueName(t), p)
+	require.NoError(t, err)
+
+	ctx := flags.WithUserKey(nil, "user-7") //nolint:staticcheck // Test nil-context hardening.
+	require.Equal(t, "hello", c.String(ctx, "greeting", ""))
+}
+
 func TestWithUserKey_EmptyIsNoop(t *testing.T) {
 	ctx := context.Background()
 	got := flags.WithUserKey(ctx, "")
 	assert.Equal(t, ctx, got)
+}
+
+func TestMemoryProvider_PanicsOnInvalidKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fn   func(*flags.MemoryProvider)
+	}{
+		{name: "bool", fn: func(p *flags.MemoryProvider) { p.SetBool("bad key", true) }},
+		{name: "string", fn: func(p *flags.MemoryProvider) { p.SetString("bad key", "v") }},
+		{name: "int", fn: func(p *flags.MemoryProvider) { p.SetInt("bad key", 1) }},
+		{name: "float", fn: func(p *flags.MemoryProvider) { p.SetFloat("bad key", 1) }},
+		{name: "object", fn: func(p *flags.MemoryProvider) { p.SetObject("bad key", map[string]any{"ok": true}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Panics(t, func() { tc.fn(flags.NewMemoryProvider()) })
+		})
+	}
+}
+
+func TestMemoryProvider_PanicDoesNotReflectInvalidKey(t *testing.T) {
+	require.PanicsWithValue(t, "flags/memory: invalid key", func() {
+		flags.NewMemoryProvider().SetBool("bad secret-token key", true)
+	})
+}
+
+func TestMemoryProvider_SetObjectPanicDoesNotReflectKey(t *testing.T) {
+	defer func() {
+		rec := recover()
+		require.NotNil(t, rec)
+		msg, ok := rec.(string)
+		require.True(t, ok, "panic must be a stable string, got %T", rec)
+		assert.Equal(t, "flags/memory: SetObject value must be JSON-marshallable", msg)
+		assert.NotContains(t, msg, "secret-token")
+	}()
+
+	flags.NewMemoryProvider().SetObject("feature-secret-token", map[string]any{
+		"bad": make(chan int),
+	})
+}
+
+func TestMemoryProvider_InvalidDirectEvaluationReturnsFallback(t *testing.T) {
+	p := flags.NewMemoryProvider()
+
+	detail := p.BooleanEvaluation(context.Background(), "bad key", true, openfeature.FlattenedContext{})
+	assert.True(t, detail.Value)
+	assert.Equal(t, openfeature.ErrorReason, detail.Reason)
+	assert.Equal(t, openfeature.ParseErrorCode, detail.ResolutionDetail().ErrorCode)
+	require.Error(t, detail.Error())
+	assert.Contains(t, detail.Error().Error(), string(openfeature.ParseErrorCode))
 }

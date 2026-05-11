@@ -9,8 +9,8 @@ import (
 )
 
 // runASVS scans path for ASVS evidence and prints a coverage report.
-// FR-007 [HIGH]: the report distinguishes import-derived claims (the
-// trustworthy view) from comment annotations (kit-internal
+// FR-007 [HIGH]: the report distinguishes import-derived package
+// capability evidence from comment annotations (kit-internal
 // documentation only).
 //
 // Returns the desired exit code:
@@ -54,11 +54,11 @@ func runASVS(path, format string) int {
 	return 0
 }
 
-// printImportReport renders the trustworthy view of the service's
-// ASVS posture: which kit packages it imports, and what controls
-// those imports satisfy.
+// printImportReport renders the package-capability view of the
+// service's ASVS posture: which kit packages it imports, and what
+// controls those imports make available.
 func printImportReport(r asvs.ImportReport) {
-	fmt.Printf("ASVS coverage from imports (trustworthy): %d kit-namespace imports across %d unique controls\n",
+	fmt.Printf("ASVS coverage from non-blank imports (package capability): %d kit-namespace imports across %d unique controls\n",
 		len(r.Imports), len(r.Claimed))
 
 	if len(r.Claimed) > 0 {

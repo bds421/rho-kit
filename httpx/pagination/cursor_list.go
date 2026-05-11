@@ -2,9 +2,11 @@ package pagination
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -42,7 +44,25 @@ func HandleCursorList[T any](w http.ResponseWriter, r *http.Request, opts Cursor
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	cp := ParseCursorParams(r, opts.DefaultLimit, opts.MaxLimit)
+	if opts.Signer != nil && !opts.Signer.ready() {
+		opts.Logger.Error("pagination cursor signer invalid")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	cp, err := ParseCursorParams(r, opts.DefaultLimit, opts.MaxLimit)
+	if err != nil {
+		if errors.Is(err, ErrCursorTooLong) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		if errors.Is(err, ErrAmbiguousQueryParam) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid pagination query")
+			return
+		}
+		opts.Logger.Error("pagination cursor parameters invalid", redact.Error(err))
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
 	rawCursor := cp.Cursor
 	if opts.Signer != nil {
@@ -58,7 +78,7 @@ func HandleCursorList[T any](w http.ResponseWriter, r *http.Request, opts Cursor
 			validator = ValidateCursorUUID
 		}
 		if err := validator(cp.Cursor); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, err.Error())
+			httpx.WriteError(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
 	}

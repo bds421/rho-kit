@@ -40,3 +40,21 @@ func TestRegisterCollector_PanicsOnConflict(t *testing.T) {
 		RegisterCollector(reg, c2)
 	})
 }
+
+func TestMustRegisterOrGet_ReturnsExistingCollector(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	first := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "shared_counter",
+		Help: "A shared counter.",
+	}, []string{"name"})
+	second := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "shared_counter",
+		Help: "A shared counter.",
+	}, []string{"name"})
+
+	registered := MustRegisterOrGet(reg, first)
+	reused := MustRegisterOrGet(reg, second)
+
+	assert.Same(t, registered, reused)
+	assert.NotSame(t, second, reused)
+}

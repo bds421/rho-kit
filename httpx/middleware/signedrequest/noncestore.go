@@ -1,9 +1,16 @@
 package signedrequest
 
 import (
+	"errors"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+// ErrInvalidNonceStore is returned when a MemoryNonceStore method is invoked
+// on a nil or otherwise uninitialized store.
+var ErrInvalidNonceStore = errors.New("signedrequest: nonce store is not initialized")
 
 // MemoryNonceStore is an in-process [NonceStore] backed by a sync.Map.
 // Entries expire after TTL on the next SeenOrStore call that probes
@@ -72,6 +79,9 @@ func NewMemoryNonceStore(ttl time.Duration, opts ...MemoryOption) *MemoryNonceSt
 		now:        time.Now,
 	}
 	for _, o := range opts {
+		if o == nil {
+			panic("signedrequest: memory nonce store option must not be nil")
+		}
 		o(m)
 	}
 	return m
@@ -79,6 +89,12 @@ func NewMemoryNonceStore(ttl time.Duration, opts ...MemoryOption) *MemoryNonceSt
 
 // SeenOrStore reports whether nonce was first seen by this store.
 func (m *MemoryNonceStore) SeenOrStore(nonce string) (bool, error) {
+	if err := m.ready(); err != nil {
+		return false, err
+	}
+	if invalidStoreNonce(nonce) {
+		return false, ErrNonceInvalid
+	}
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,6 +111,29 @@ func (m *MemoryNonceStore) SeenOrStore(nonce string) (bool, error) {
 	return true, nil
 }
 
+func (m *MemoryNonceStore) ready() error {
+	if m == nil ||
+		m.ttl <= 0 ||
+		m.seen == nil ||
+		m.sweepEvery <= 0 ||
+		m.now == nil {
+		return ErrInvalidNonceStore
+	}
+	return nil
+}
+
+func invalidStoreNonce(nonce string) bool {
+	if nonce == "" || len(nonce) > nonceMaxLen || !utf8.ValidString(nonce) {
+		return true
+	}
+	for _, r := range nonce {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *MemoryNonceStore) sweepLocked(now time.Time) {
 	for k, at := range m.seen {
 		if now.Sub(at) >= m.ttl {
@@ -105,6 +144,9 @@ func (m *MemoryNonceStore) sweepLocked(now time.Time) {
 
 // Len returns the count of entries currently held. Useful in tests.
 func (m *MemoryNonceStore) Len() int {
+	if m == nil || m.seen == nil {
+		return 0
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.seen)

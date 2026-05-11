@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,26 +71,58 @@ func TestWrap_IsolatesTenants_Get(t *testing.T) {
 	assert.Equal(t, []byte("acme-response"), resp.Body)
 }
 
-func TestWrap_PanicsOnMissingTenant(t *testing.T) {
+func TestWrap_MissingTenantReturnsError(t *testing.T) {
 	w := Wrap(idempotency.NewMemoryStore())
 
-	assertPanics := func(t *testing.T, name string, f func()) {
-		t.Helper()
-		defer func() {
-			r := recover()
-			assert.NotNilf(t, r, "%s did not panic", name)
-		}()
-		f()
-	}
+	resp, mismatch, err := w.Get(context.Background(), "k", nil)
+	assert.Nil(t, resp)
+	assert.False(t, mismatch)
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
 
-	assertPanics(t, "Get", func() { _, _, _ = w.Get(context.Background(), "k", nil) })
-	assertPanics(t, "TryLock", func() {
-		_, _, _, _ = w.TryLock(context.Background(), "k", nil, time.Minute)
-	})
-	assertPanics(t, "Set", func() {
-		_ = w.Set(context.Background(), "k", "t", idempotency.CachedResponse{}, time.Minute)
-	})
-	assertPanics(t, "Unlock", func() { _ = w.Unlock(context.Background(), "k", "t") })
+	token, mismatch, ok, err := w.TryLock(context.Background(), "k", nil, time.Minute)
+	assert.Empty(t, token)
+	assert.False(t, mismatch)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+
+	err = w.Set(context.Background(), "k", "t", idempotency.CachedResponse{}, time.Minute)
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+
+	err = w.Unlock(context.Background(), "k", "t")
+	assert.ErrorIs(t, err, coretenant.ErrMissing)
+}
+
+func TestWrap_RejectsEmptyRawKey(t *testing.T) {
+	w := Wrap(idempotency.NewMemoryStore())
+	ctx := ctxWith("acme")
+
+	resp, mismatch, err := w.Get(ctx, "", nil)
+	assert.Nil(t, resp)
+	assert.False(t, mismatch)
+	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty)
+
+	token, mismatch, ok, err := w.TryLock(ctx, "", nil, time.Minute)
+	assert.Empty(t, token)
+	assert.False(t, mismatch)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty)
+
+	err = w.Set(ctx, "", "t", idempotency.CachedResponse{}, time.Minute)
+	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty)
+
+	err = w.Unlock(ctx, "", "t")
+	assert.ErrorIs(t, err, idempotency.ErrKeyEmpty)
+}
+
+func TestWrap_RejectsScopedKeyTooLong(t *testing.T) {
+	w := Wrap(idempotency.NewMemoryStore())
+	ctx := coretenant.WithID(context.Background(), coretenant.NewIDUnchecked(strings.Repeat("t", coretenant.MaxIDLen)))
+
+	token, mismatch, ok, err := w.TryLock(ctx, strings.Repeat("k", idempotency.MaxKeyLen), nil, time.Minute)
+	assert.Empty(t, token)
+	assert.False(t, mismatch)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, idempotency.ErrKeyTooLong)
 }
 
 func TestWrap_NilInnerPanics(t *testing.T) {
@@ -99,6 +132,34 @@ func TestWrap_NilInnerPanics(t *testing.T) {
 		}
 	}()
 	Wrap(nil)
+}
+
+func TestScoped_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := ctxWith("acme")
+
+	for name, store := range map[string]*scoped{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, mismatch, err := store.Get(ctx, "k", nil)
+			assert.Nil(t, resp)
+			assert.False(t, mismatch)
+			assert.ErrorIs(t, err, idempotency.ErrInvalidStore)
+
+			token, mismatch, ok, err := store.TryLock(ctx, "k", nil, time.Minute)
+			assert.Empty(t, token)
+			assert.False(t, mismatch)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, idempotency.ErrInvalidStore)
+
+			err = store.Set(ctx, "k", "t", idempotency.CachedResponse{}, time.Minute)
+			assert.ErrorIs(t, err, idempotency.ErrInvalidStore)
+
+			err = store.Unlock(ctx, "k", "t")
+			assert.ErrorIs(t, err, idempotency.ErrInvalidStore)
+		})
+	}
 }
 
 // TestScopedKey_ColonInTenantIDNoCollision is the audit's exact test

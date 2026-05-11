@@ -1,175 +1,210 @@
-# Database — MySQL & PostgreSQL
+# Database - PostgreSQL (pgx)
 
-Packages: `infra/sqldb`, `infra/sqldb/gormdb`
+Packages: `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/migrate`, `infra/sqldb/dbtest/v2`, `data/idempotency/pgstore`
 
 ## When to Use
 
-Every service that needs a relational database uses the `infra/sqldb` package for config loading and `infra/sqldb/gormdb` for GORM setup. The `app.Builder` handles this automatically via `WithMySQL` or `WithPostgres`. Migrations are NOT auto-run by the Builder — call `gormdb.AutoMigrate` (dev) or wire `WithMigrations(dir)` (prod) to execute schema changes.
+Use `infra/sqldb` for PostgreSQL configuration and small stdlib helpers. Use `infra/sqldb/pgx` for the runtime pool. v2 does not ship MySQL, MariaDB, or GORM as the service database path.
 
-## Decision: MySQL vs PostgreSQL
+`app.Builder.WithPostgres` takes `pgxbackend.Config`, not `sqldb.Config`. Services that load field-based config should convert it to a pgx DSN at the service boundary.
 
-| Factor | MySQL | PostgreSQL |
-|---|---|---|
-| Default port | 3306 | 5432 |
-| SSL mode config | Via TLS env vars | `DB_SSL_MODE` env var |
-| JSON support | Basic | Native JSONB |
-| Full-text search | Built-in | Built-in + advanced |
-| Use when | Existing MySQL infra | New projects (preferred) |
+Postgres-backed data adapters live in split modules so services only import what they use: `data/idempotency/pgstore`, `data/actionlog/postgres`, `data/approval/postgres`, `data/lock/pgadvisory`, and `data/queue/riverqueue`.
 
-**Rule: `WithMySQL` and `WithPostgres` are mutually exclusive.** Calling both panics at validation.
+`data/queue/riverqueue` is the durable-job adapter for services that already
+run Postgres. It validates queue names with `queue.ValidateName` and enforces a
+1 MiB payload cap by default before inserting a River job; use
+`riverqueue.WithMaxPayloadBytes` to tune the cap, or
+`riverqueue.WithoutMaxPayloadBytes` only when another boundary already applies
+a stricter limit. `riverqueue.NewEnvelopeWorker` validates stored envelopes
+again before dispatch; use `riverqueue.WithWorkerMaxPayloadBytes` only when the
+worker-side cap must differ from the publisher cap.
 
 ## Quick Start
 
 ```go
 type Config struct {
     app.BaseConfig
-    sqldb.Fields // shared MySQL/Postgres field set
+    sqldb.Fields
+    Postgres pgxbackend.Config
 }
 
 func LoadConfig() (Config, error) {
     base, err := app.LoadBaseConfig(8080)
     if err != nil { return Config{}, err }
 
-    db, err := sqldb.LoadFields("MYAPP", "postgres", 10, 100) // prefix, driver, maxIdle, maxOpen
+    fields, err := sqldb.LoadFields("MYAPP", 10, 100)
     if err != nil { return Config{}, err }
 
-    cfg := Config{BaseConfig: base, Fields: db}
+    cfg := Config{
+        BaseConfig: base,
+        Fields:     fields,
+        Postgres:   pgxConfig(fields.Database, fields.DatabasePool),
+    }
     if err := cfg.ValidateBase(); err != nil { return Config{}, err }
-    if err := cfg.Validate("postgres", cfg.Environment); err != nil { return Config{}, err }
+    if err := cfg.Fields.Validate("MYAPP"); err != nil { return Config{}, err }
     return cfg, nil
 }
 
-// In main:
-app.New(...).
-    WithPostgres(cfg.Database, cfg.DatabasePool).
-    WithDBMetrics(). // optional: Prometheus pool metrics every 15s
-    Router(func(infra app.Infrastructure) http.Handler {
-        // infra.DB is *gorm.DB, ready to use
-        if err := gormdb.AutoMigrate(infra.DB, &User{}, &Order{}); err != nil { panic(err) }
-    })
-```
+func pgxConfig(db sqldb.Config, pool sqldb.PoolConfig) pgxbackend.Config {
+    return pgxbackend.Config{
+        DSN:             postgresURL(db),
+        MaxConns:        int32(pool.MaxOpenConns),
+        MinConns:        int32(pool.MaxIdleConns),
+        MaxConnLifetime: pool.ConnMaxLifetime,
+        MaxConnIdleTime: pool.ConnMaxIdleTime,
+    }
+}
 
-## Model Definition
-
-```go
-type User struct {
-    ID        string    `gorm:"type:char(36);primaryKey"`
-    Email     string    `gorm:"type:varchar(255);uniqueIndex;not null"`
-    Name      string    `gorm:"type:varchar(100);not null"`
-    CreatedAt time.Time `gorm:"autoCreateTime"`
-    UpdatedAt time.Time `gorm:"autoUpdateTime"`
+func postgresURL(c sqldb.Config) string {
+    q := make(url.Values, len(c.Options))
+    for k, v := range c.Options {
+        q.Set(k, v)
+    }
+    return (&url.URL{
+        Scheme:   "postgres",
+        User:     url.UserPassword(c.User, c.Password),
+        Host:     net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+        Path:     "/" + c.Name,
+        RawQuery: q.Encode(),
+    }).String()
 }
 ```
 
-Auto-migration is no longer wired into `WithPostgres`/`WithMySQL`. Call `gormdb.AutoMigrate(infra.DB, &User{}, &Order{})` explicitly inside `Router` for dev, or use `WithMigrations(dir)` to run goose-style SQL migrations on startup.
+```go
+app.New("my-service", version, cfg.BaseConfig).
+    WithPostgres(cfg.Postgres).
+    WithMigrations(migrationsFS).
+    Router(func(infra app.Infrastructure) http.Handler {
+        repo := NewUserRepository(infra.DB.Pool())
+        return buildRouter(repo)
+    }).
+    Run()
+```
 
 ## Repository Pattern
 
+Prefer `*pgxpool.Pool` or a small query interface generated by sqlc. Keep SQL parameterized and pass `context.Context` on every call.
+
 ```go
 type UserRepository struct {
-    db *gorm.DB
+    db *pgxpool.Pool
 }
 
-func NewUserRepository(db *gorm.DB) *UserRepository {
+func NewUserRepository(db *pgxpool.Pool) *UserRepository {
     return &UserRepository{db: db}
 }
 
-func (r *UserRepository) FindByID(ctx context.Context, id string) (*User, error) {
-    var user User
-    if err := r.db.WithContext(ctx).First(&user, "id = ?", id).Error; err != nil {
-        if errors.Is(err, gorm.ErrRecordNotFound) {
-            return nil, apperror.NewNotFound("user", id)
+func (r *UserRepository) FindByID(ctx context.Context, id string) (User, error) {
+    const q = `SELECT id, email, name FROM users WHERE id = $1`
+
+    var u User
+    if err := r.db.QueryRow(ctx, q, id).Scan(&u.ID, &u.Email, &u.Name); err != nil {
+        if errors.Is(err, pgx.ErrNoRows) {
+            return User{}, apperror.NewNotFound("user", id)
         }
-        return nil, err
+        return User{}, err
     }
-    return &user, nil
-}
-
-func (r *UserRepository) Create(ctx context.Context, user *User) error {
-    return r.db.WithContext(ctx).Create(user).Error
-}
-
-func (r *UserRepository) Update(ctx context.Context, id string, updates map[string]any) error {
-    result := r.db.WithContext(ctx).Model(&User{}).Where("id = ?", id).Updates(updates)
-    if result.RowsAffected == 0 {
-        return apperror.NewNotFound("user", id)
-    }
-    return result.Error
+    return u, nil
 }
 ```
+
+## Migrations
+
+`WithMigrations(dir)` runs goose migrations through the pgx pool during startup. Migrations run in every environment so development, staging, and production use the same schema path.
+
+```go
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+app.New("my-service", version, cfg.BaseConfig).
+    WithPostgres(cfg.Postgres).
+    WithMigrations(migrationsFS).
+    Router(routerFn).
+    Run()
+```
+
+For manual wiring, convert the pgx pool to `*sql.DB`:
+
+```go
+pool, err := pgxbackend.Connect(ctx, cfg.Postgres)
+if err != nil { return err }
+defer pool.Close()
+
+sqlDB := stdlib.OpenDBFromPool(pool.Pool())
+defer sqlDB.Close()
+
+_, err = migrate.Up(ctx, sqlDB, migrate.Config{Dir: migrationsFS})
+```
+
+## LISTEN/NOTIFY
+
+`pgxbackend.Pool.Listen(ctx, channels...)` pins one pgx connection until `ctx`
+is cancelled or the connection drops. The listener runs `UNLISTEN *` before
+returning the connection to the pool, using a short detached cleanup context that
+preserves parent context values for pgx hooks and observability wrappers.
+
+## Bulk COPY
+
+`pgxbackend.Pool.Copy(ctx, table, columns, rows)` validates table and column
+identifiers as portable PostgreSQL identifiers before calling `COPY FROM`.
+Table names may be bare or schema-qualified; column names must be bare column
+identifiers. One call is capped at `pgxbackend.MaxCopyRows` rows and
+`pgxbackend.MaxCopyColumns` columns; chunk larger imports.
 
 ## Environment Variables
 
-### PostgreSQL
 | Variable | Default | Required | Notes |
 |---|---|---|---|
-| `DB_HOST` | `localhost` | Yes | |
+| `DATABASE_URL` | - | No | `postgres://...` or `postgresql://...`; takes precedence over field vars |
+| `DB_HOST` | `localhost` | Yes when no URL | |
 | `DB_PORT` | `5432` | No | |
-| `{PREFIX}_DB_USER` | — | Yes | |
-| `{PREFIX}_DB_PASSWORD` | — | Yes | Min 12 chars in prod |
-| `{PREFIX}_DB_NAME` | — | Yes | |
-| `DB_SSL_MODE` | disabled | No | `disable`, `require`, `verify-ca`, `verify-full` |
-| `DB_LOG_LEVEL` | `warn` | No | `info` = verbose SQL |
-
-### MariaDB
-| Variable | Default | Required | Notes |
-|---|---|---|---|
-| `DB_HOST` | `localhost` | Yes | |
-| `DB_PORT` | `3306` | No | |
-| `{PREFIX}_DB_USER` | — | Yes | |
-| `{PREFIX}_DB_PASSWORD` | — | Yes | Min 12 chars in prod |
-| `{PREFIX}_DB_NAME` | — | Yes | |
+| `{PREFIX}_DB_USER` | - | Yes when no URL | |
+| `{PREFIX}_DB_PASSWORD` | - | Yes when no URL | Supports `_FILE` via `config.MustGetSecret` |
+| `{PREFIX}_DB_NAME` | - | Yes when no URL | |
+| `DB_SSL_MODE` | - | Yes outside test opt-outs | Use `verify-full` or `verify-ca` by default |
 | `DB_LOG_LEVEL` | `warn` | No | |
+| `DB_POOL_MAX_IDLE_CONNS` | service default | No | |
+| `DB_POOL_MAX_OPEN_CONNS` | service default | No | |
+| `DB_POOL_CONN_MAX_LIFETIME_MIN` | `60` | No | |
+| `DB_POOL_CONN_MAX_IDLE_TIME_MIN` | `5` | No | |
 
-### Connection Pool (shared)
-| Variable | Default | Notes |
-|---|---|---|
-| `DB_POOL_MAX_IDLE_CONNS` | service-specific | |
-| `DB_POOL_MAX_OPEN_CONNS` | service-specific | |
-| `DB_POOL_CONN_MAX_LIFETIME_MIN` | `60` | Minutes |
-| `DB_POOL_CONN_MAX_IDLE_TIME_MIN` | `5` | Minutes |
-
-## Password Validation
-
-In non-development environments:
-- Minimum 12 characters
-- Must not contain "changeme"
-- Must not contain special chars that break DSN parsing (`@`, `/`, `'`, `"`, `\`)
-
-## Seeding
-
-```go
-app.New(...).
-    WithPostgres(cfg.Database, cfg.DatabasePool).
-    WithSeed(func(db *gorm.DB, path string, log *slog.Logger) error {
-        var users []User
-        if err := app.LoadSeedJSON(path, &users); err != nil { return err }
-        return db.Create(&users).Error
-    }).
-    Run()
-// Run: ./service --seed ./seeds/data.json
-```
-
-## Anti-Patterns
-
-- **Never** call `WithMySQL` and `WithPostgres` together.
-- **Never** hardcode DB credentials — always use env vars with `{PREFIX}_` naming.
-- **Never** use `DB_LOG_LEVEL=info` in production — it logs every SQL query.
-- **Never** skip `WithContext(ctx)` on GORM queries — breaks tracing and cancellation.
-- **Never** use `db.Exec` with string concatenation — use parameterized queries.
+`pgxbackend.Connect` rejects plaintext and fallback TLS modes. It accepts `verify-ca` and `verify-full` by default. `sslmode=require` needs the explicit `AllowSSLModeRequire` opt-out and a documented reason.
 
 ## Testing
+
+Use the split Docker-backed helper only in integration tests:
 
 ```go
 //go:build integration
 
 func TestUserRepository(t *testing.T) {
-    cfg := dbtest.StartPostgres(t, "testdb") // testcontainers, auto-cleanup
-    db, err := gormdb.NewPostgres(cfg, sqldb.PoolConfig{MaxIdleConns: 2, MaxOpenConns: 5})
-    require.NoError(t, err)
+    cfg := dbtest.StartPostgres(t, "users_test")
+    dsn := (&url.URL{
+        Scheme: "postgres",
+        User:   url.UserPassword(cfg.User, cfg.Password),
+        Host:   net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+        Path:   "/" + cfg.Name,
+        RawQuery: url.Values{
+            "sslmode": []string{"disable"},
+        }.Encode(),
+    }).String()
 
-    gormdb.AutoMigrate(db, &User{})
-    repo := NewUserRepository(db)
+    pool, err := pgxbackend.Connect(context.Background(), pgxbackend.Config{
+        DSN:                            dsn,
+        AllowPlaintextLoopbackForTests: true,
+    })
+    require.NoError(t, err)
+    t.Cleanup(func() { _ = pool.Close() })
+
+    repo := NewUserRepository(pool.Pool())
     // ... test CRUD operations
 }
 ```
+
+## Anti-Patterns
+
+- Never use `sslmode=disable`, `prefer`, or `allow` outside loopback-only tests.
+- Never put user IDs, tenant IDs, or request IDs in database metric names.
+- Never build SQL with string concatenation; use parameters or `pgx.Identifier` for identifiers.
+- Never hide Testcontainers imports in base modules; keep Docker-backed helpers in split modules.
+- Never rely on automatic schema generation. Write and review SQL migrations.

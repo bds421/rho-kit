@@ -247,3 +247,37 @@ func TestWriteLinkHeader_negativeOffsetTreatedAsZero(t *testing.T) {
 		t.Errorf("next = %q", links["next"])
 	}
 }
+
+func TestWriteLinkHeader_unknownTotalOffsetOverflowOmitsNext(t *testing.T) {
+	w := httptest.NewRecorder()
+	u, _ := url.Parse("https://example.com/items")
+	maxInt := int(^uint(0) >> 1)
+
+	WriteLinkHeader(w, u, -1, maxInt, 10)
+
+	if got := w.Header().Get("Link"); got != "" {
+		t.Errorf("expected no Link header on offset overflow, got %q", got)
+	}
+}
+
+func TestWriteLinkHeader_knownTotalOffsetOverflowOmitsNextAndLast(t *testing.T) {
+	w := httptest.NewRecorder()
+	u, _ := url.Parse("https://example.com/items")
+	maxInt := int(^uint(0) >> 1)
+
+	WriteLinkHeader(w, u, maxInt, maxInt-5, 10)
+
+	links := parseLinkHeader(t, w.Header().Get("Link"))
+	if _, ok := links["next"]; ok {
+		t.Error("next should be omitted when offset+limit overflows")
+	}
+	if _, ok := links["last"]; ok {
+		t.Error("last should be omitted when offset+limit overflows")
+	}
+	if _, ok := links["first"]; !ok {
+		t.Error("first should still be emitted")
+	}
+	if _, ok := links["prev"]; !ok {
+		t.Error("prev should still be emitted")
+	}
+}

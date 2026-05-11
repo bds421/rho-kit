@@ -26,7 +26,7 @@ func newSLOModule(slos ...slo.SLO) *sloModule {
 	}
 	return &sloModule{
 		BaseModule: NewBaseModule("slo"),
-		slos:       slos,
+		slos:       append([]slo.SLO(nil), slos...),
 	}
 }
 

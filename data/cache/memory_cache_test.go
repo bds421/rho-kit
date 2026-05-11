@@ -14,6 +14,105 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewMemoryCache_RejectsNilOption(t *testing.T) {
+	_, err := NewMemoryCache(nil)
+	assert.Error(t, err)
+}
+
+func TestCacheHelpers_NilCacheReturnsInvalidCache(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := MGet(ctx, nil, []string{"key"})
+	assert.ErrorIs(t, err, ErrInvalidCache)
+
+	err = MSet(ctx, nil, map[string][]byte{"key": []byte("value")}, time.Minute)
+	assert.ErrorIs(t, err, ErrInvalidCache)
+
+	ok, err := SetNX(ctx, nil, "key", []byte("value"), time.Minute)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, ErrInvalidCache)
+}
+
+func oversizedKeysForTest() []string {
+	keys := make([]string, MaxBulkKeys+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("key-%d", i)
+	}
+	return keys
+}
+
+func oversizedItemsForTest() map[string][]byte {
+	items := make(map[string][]byte, MaxBulkKeys+1)
+	for i := 0; i <= MaxBulkKeys; i++ {
+		items[fmt.Sprintf("key-%d", i)] = []byte("value")
+	}
+	return items
+}
+
+func TestCacheBulkValidationRejectsOversizedBatches(t *testing.T) {
+	keys := oversizedKeysForTest()
+	items := oversizedItemsForTest()
+
+	assert.ErrorIs(t, ValidateBulkKeys(keys), ErrBulkTooLarge)
+	assert.ErrorIs(t, ValidateBulkItems(items), ErrBulkTooLarge)
+
+	mc := MustNewMemoryCache()
+	defer func() { _ = mc.Close() }()
+	ctx := context.Background()
+
+	_, err := MGet(ctx, mc, keys)
+	assert.ErrorIs(t, err, ErrBulkTooLarge)
+
+	err = MSet(ctx, mc, items, time.Minute)
+	assert.ErrorIs(t, err, ErrBulkTooLarge)
+
+	_, err = mc.MGet(ctx, keys)
+	assert.ErrorIs(t, err, ErrBulkTooLarge)
+
+	err = mc.MSet(ctx, items, time.Minute)
+	assert.ErrorIs(t, err, ErrBulkTooLarge)
+}
+
+func TestMemoryCache_InvalidReceiverReturnsError(t *testing.T) {
+	ctx := context.Background()
+
+	for name, mc := range map[string]*MemoryCache{
+		"nil":  nil,
+		"zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := mc.Get(ctx, "key")
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = mc.Set(ctx, "key", []byte("value"), time.Minute)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			_, err = mc.MGet(ctx, []string{"key"})
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = mc.MSet(ctx, map[string][]byte{"key": []byte("value")}, time.Minute)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			ok, err := mc.SetNX(ctx, "key", []byte("value"), time.Minute)
+			assert.False(t, ok)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = mc.Delete(ctx, "key")
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			exists, err := mc.Exists(ctx, "key")
+			assert.False(t, exists)
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			err = mc.Close()
+			assert.ErrorIs(t, err, ErrInvalidCache)
+
+			assert.NotPanics(t, func() { mc.Sync() })
+			assert.NotPanics(t, func() { mc.stopBackgroundSweeper() })
+		})
+	}
+}
+
 func TestMemoryCache_MGet_MSet_SetNX(t *testing.T) {
 	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
@@ -317,17 +416,31 @@ func TestMemoryCache_Set_NegativeTTL(t *testing.T) {
 	err := mc.Set(context.Background(), "key", []byte("v"), -time.Second)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "TTL must not be negative")
+	assert.NotContains(t, err.Error(), "-1s")
 }
 
-func TestWithMaxSize_IgnoresNonPositive(t *testing.T) {
-	mc := MustNewMemoryCache(WithMaxSize(0))
-	assert.Equal(t, 0, mc.maxSize)
+func TestMemoryCacheOptions_PanicOnInvalidValues(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"WithMaxSize zero":         func() { WithMaxSize(0) },
+		"WithMaxSize negative":     func() { WithMaxSize(-1) },
+		"WithMaxCost zero":         func() { WithMaxCost(0) },
+		"WithMaxCost negative":     func() { WithMaxCost(-1) },
+		"WithNumCounters zero":     func() { WithNumCounters(0) },
+		"WithNumCounters negative": func() { WithNumCounters(-1) },
+		"WithBufferItems zero":     func() { WithBufferItems(0) },
+		"WithBufferItems negative": func() { WithBufferItems(-1) },
+		"WithCleanupInterval zero": func() { WithCleanupInterval(0) },
+		"WithCleanupInterval negative": func() {
+			WithCleanupInterval(-time.Second)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Panics(t, fn)
+		})
+	}
 
-	mc2 := MustNewMemoryCache(WithMaxSize(-1))
-	assert.Equal(t, 0, mc2.maxSize) // default 0 (unlimited)
-
-	mc3 := MustNewMemoryCache(WithMaxSize(5))
-	assert.Equal(t, 5, mc3.maxSize)
+	mc := MustNewMemoryCache(WithMaxSize(5))
+	assert.Equal(t, 5, mc.maxSize)
 }
 
 func TestMemoryCache_Exists_LazyEvictsExpired(t *testing.T) {
@@ -396,6 +509,9 @@ func TestValidateKey(t *testing.T) {
 		{"null byte", "bad\x00key", ErrKeyInvalidChars, false},
 		{"newline", "bad\nkey", ErrKeyInvalidChars, false},
 		{"carriage return", "bad\rkey", ErrKeyInvalidChars, false},
+		{"space", "bad key", ErrKeyInvalidChars, false},
+		{"tab", "bad\tkey", ErrKeyInvalidChars, false},
+		{"invalid utf8", string([]byte{0xff, 0xfe}), ErrKeyInvalidChars, false},
 	}
 
 	for _, tt := range tests {
@@ -414,6 +530,31 @@ func TestValidateKey_TooLong(t *testing.T) {
 	longKey := strings.Repeat("x", MaxKeyLen+1)
 	err := ValidateKey(longKey)
 	assert.ErrorIs(t, err, ErrKeyTooLong)
+	assert.NotContains(t, err.Error(), "1024")
+	assert.NotContains(t, err.Error(), "1025")
+}
+
+func TestValidateKeyPrefix(t *testing.T) {
+	assert.NoError(t, ValidateKeyPrefix(""))
+	assert.NoError(t, ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen)))
+
+	err := ValidateKeyPrefix(strings.Repeat("x", MaxKeyPrefixLen+1))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum")
+	assert.NotContains(t, err.Error(), "512")
+	assert.NotContains(t, err.Error(), "513")
+
+	err = ValidateKeyPrefix("bad\nprefix")
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+
+	err = ValidateKeyPrefix("bad prefix")
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+
+	err = ValidateKeyPrefix("bad\tprefix")
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
+
+	err = ValidateKeyPrefix(string([]byte{0xff, 0xfe}))
+	assert.ErrorIs(t, err, ErrKeyInvalidChars)
 }
 
 // TestMemoryCache_DefaultByteCost verifies the default cache caps total
