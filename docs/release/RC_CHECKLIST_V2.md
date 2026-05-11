@@ -27,7 +27,7 @@ repository root unless a block says to `cd` into a module first.
 | Workspace dependency release invariant | `EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable` | Every internal `github.com/bds421/rho-kit/.../v2` require points at the version that will be tagged for every workspace module. Local `replace` directives do not count because downstream consumers ignore them. | Added 2026-05-11 as the repo-native lockstep release gate. |
 | Dependency-aware release levels | `make release-plan`, `tools/plan-module-release.sh` | Internal `go.mod` requires are converted to dependency levels so modules that can be tagged together are explicit. Changed-mode reports modules changed since a base ref plus impacted dependents. | Added 2026-05-11: full v2 plan has 65 modules across five dependency levels. |
 | Release-branch internal replace removal | `tools/drop-internal-replaces.sh`, `FORBID_INTERNAL_REPLACES=1 make check-publishable` | Final release branch drops local internal replaces before level tidies so `GOWORK=off go mod tidy` can write real internal checksums. | Future release-phase step documented; not run during preparation. |
-| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Passed 2026-05-11: [rehearsal log](rehearsals/20260511T100205Z-v2-release-rehearsal.log). |
+| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Passed 2026-05-11 on current HEAD: [rehearsal log](rehearsals/20260511T134951Z-v2-release-rehearsal.log). |
 | Downstream checksum proof is post-tag | Clean temporary consumer from [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Repository `go.sum` files for dependent levels are produced only after dependency levels are tagged; after all tags are pushed, a clean consumer must resolve selected modules and verify sums. | Updated 2026-05-11 after reviewing Go module checksum mechanics. |
 | Future multi-module tag plan exists | [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Exact dependency-ordered tag strategy, commands, expected level count, and rollback are documented without creating tags now. | Prepared 2026-05-11: plan creates 65 module-prefixed tags across five dependency levels plus `release/v2.0.0` coordination tag later. |
 | Future final release runbook exists | [FINAL_RELEASE_RUNBOOK_V2.md](FINAL_RELEASE_RUNBOOK_V2.md) | Exact future commands, expected outputs, stop conditions, release notes source, and rollback are documented. | Prepared 2026-05-11. |
@@ -195,7 +195,7 @@ runbook still requires a clean downstream consumer check after all tags are
 pushed and before publishing the GitHub release.
 
 The local rehearsal log at
-`docs/release/rehearsals/20260511T100205Z-v2-release-rehearsal.log` shows 65
+`docs/release/rehearsals/20260511T134951Z-v2-release-rehearsal.log` shows 65
 module tags created and pushed to a temporary bare origin across five levels,
 selected v2 modules resolved by a clean consumer with real `go.sum` hashes, and
 `cmd/kit-new`, `cmd/kit-migrate`, and `cmd/kit-doctor` installed from the
