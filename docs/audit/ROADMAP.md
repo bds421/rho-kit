@@ -39,7 +39,7 @@ This wave was orchestrated as 5 parallel agents producing 7 themes:
   currently has no open in-kit mitigation gaps);
   [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md) (pinning + signing + vuln SLO).
 - **Theme 6 — Builder integrations**: `WithPASETO`, `WithNATS`,
-  `WithPgx` + mutex check, `WithLeaderElection` + cron leader gate,
+  `WithPostgres` pgx readiness, `WithLeaderElection` + cron leader gate,
   `WithSignedRequests`, `WriteServiceProblem`. Plus Wave 2 above.
 - **Theme 7 — dashboards expansion + runbooks**: gRPC RED, DB pool,
   Redis, Outbox, Storage Grafana dashboards; per-area recording

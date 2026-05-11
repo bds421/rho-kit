@@ -38,7 +38,7 @@ app.Main("my-service", version, func(logger *slog.Logger) error {
     cfg, err := LoadConfig()
     if err != nil { return err }
     return app.New("my-service", version, cfg.BaseConfig).
-        WithPostgres(cfg.Database, cfg.DatabasePool).
+        WithPostgres(cfg.Postgres).
         WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
         WithRabbitMQ(cfg.AMQPURL).
         WithJWTAudience("my-service").

@@ -35,6 +35,9 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 
 			_, err = tc.store.ListByTenantSeq(ctx, "t")
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			err = tc.store.RangeByTenantSeq(ctx, "t", func(actionlog.Entry) error { return nil })
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 		})
 	}
 }
@@ -53,6 +56,9 @@ func TestStore_ValidatesBeforeQueryingPool(t *testing.T) {
 	assert.ErrorIs(t, err, actionlog.ErrQueryScopeConflict)
 
 	_, err = store.ListByTenantSeq(ctx, "")
+	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+
+	err = store.RangeByTenantSeq(ctx, "", func(actionlog.Entry) error { return nil })
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 
 	_, err = store.AppendChained(ctx, "", func(_ actionlog.Entry, _ int64) (actionlog.Entry, error) {

@@ -274,7 +274,7 @@ type Logger interface {
 	// [ErrSignatureInvalid] / [ErrUnknownKeyID] otherwise.
 	Verify(e Entry) error
 
-	// VerifyChain walks every entry for tenantID in chronological
+	// VerifyChain streams every entry for tenantID in chronological
 	// order (Seq ascending) and verifies that:
 	//   - each entry's Signature is valid (catches per-row tampering),
 	//   - each entry's PrevHash equals the previous entry's hash
@@ -309,10 +309,13 @@ type Store interface {
 	// timestamps tie.
 	List(ctx context.Context, q Query) ([]Entry, error)
 
-	// ListByTenantSeq returns every entry for tenantID in Seq ASC
-	// order. Used by [Logger.VerifyChain]; not subject to the default
-	// limit because the verification needs to walk the full chain.
-	ListByTenantSeq(ctx context.Context, tenantID string) ([]Entry, error)
+	// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC
+	// order. Used by [Logger.VerifyChain]. Implementations should stream
+	// entries where the backend supports it so long tenant chains do not
+	// have to be materialized as []Entry before verification can start.
+	//
+	// If fn returns an error, iteration must stop and return that error.
+	RangeByTenantSeq(ctx context.Context, tenantID string, fn func(Entry) error) error
 }
 
 // SecretSource resolves HMAC secrets by key id. Implementations
@@ -603,8 +606,8 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, error) {
 	return out, nil
 }
 
-// VerifyChain walks the entire per-tenant chain and reports any
-// deletion, reordering, truncation, or row tampering.
+// VerifyChain streams the per-tenant chain and reports any deletion,
+// reordering, truncation, or row tampering.
 func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	if err := l.ready(); err != nil {
 		return err
@@ -612,19 +615,16 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
 		return ErrQueryTenantRequired
 	}
-	entries, err := l.store.ListByTenantSeq(ctx, tenantID)
-	if err != nil {
-		return err
-	}
 	var prev Entry
-	for i, e := range entries {
+	var wantSeq int64 = 1
+	return l.store.RangeByTenantSeq(ctx, tenantID, func(e Entry) error {
 		if err := l.Verify(e); err != nil {
 			return fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
-		if e.Seq != int64(i+1) {
-			return fmt.Errorf("%w: expected seq %d, got %d", ErrChainBroken, i+1, e.Seq)
+		if e.Seq != wantSeq {
+			return fmt.Errorf("%w: expected seq %d, got %d", ErrChainBroken, wantSeq, e.Seq)
 		}
-		if i == 0 {
+		if wantSeq == 1 {
 			if e.PrevHash != zeroPrevHash {
 				return fmt.Errorf("%w: first entry must have zero prev_hash", ErrChainBroken)
 			}
@@ -638,8 +638,9 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 			}
 		}
 		prev = e
-	}
-	return nil
+		wantSeq++
+		return nil
+	})
 }
 
 // Sign computes and returns the canonical signature for an entry

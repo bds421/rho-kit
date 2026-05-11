@@ -31,8 +31,9 @@
 //
 // # Bounded Worker Pool
 //
-// By default, async handlers launch one goroutine per event (unbounded). For
-// production use with high-throughput events, enable the bounded worker pool:
+// By default, async handlers use a bounded worker pool and return
+// [ErrQueueFull] when the queue is saturated. Override the pool shape when a
+// service has known throughput or latency requirements:
 //
 //	bus := eventbus.New(
 //	    eventbus.WithWorkerPool(4),          // 4 worker goroutines
@@ -48,8 +49,9 @@
 //	defer cancel()
 //	bus.Stop(shutdownCtx)
 //
-// When the queue is full, new async events are dropped and logged. Use
-// [WithOnError] to hook into drop/error notifications.
+// When the queue is full, the default [OnFullError] policy returns
+// [ErrQueueFull] from [Publish]. Use [WithOnFull] to opt into drop or blocking
+// semantics for routes that can tolerate them.
 //
 // # When to Use
 //

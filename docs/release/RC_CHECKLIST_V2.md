@@ -132,8 +132,8 @@ were fixed before recording pass status:
   `:8080`, but tests now call an unexported address-injected runner so the
   shutdown smoke can bind `127.0.0.1:0`.
 - Release-facing docs and app diagnostics now consistently name
-  `WithPostgres`; release-prep API validation caught stale `WithPgx`
-  references before publishing.
+  `WithPostgres`; release-prep API validation caught stale removed Builder
+  aliases before publishing.
 
 Post release-prep validation after adding the tagging/runbook artifacts and the
 `WithPostgres` diagnostic fix:

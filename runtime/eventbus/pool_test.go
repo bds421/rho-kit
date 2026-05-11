@@ -17,18 +17,15 @@ import (
 // waitForWorkers publishes a canary event on the bus and blocks until a worker
 // processes it, proving the pool is fully running. This replaces fragile
 // time.Sleep-based worker startup waits.
-func waitForWorkers(t *testing.T, bus *Bus) {
-	t.Helper()
+func waitForWorkers(tb testing.TB, bus *Bus) {
+	tb.Helper()
 	done := make(chan struct{})
 	Subscribe(bus, func(_ context.Context, _ otherEvent) error {
 		close(done)
 		return nil
 	}, WithAsync(), WithName("warmup-canary"))
-	// FR-090 [MED]: submit-before-Start now returns ErrQueueFull
-	// rather than buffering. Retry the canary publish until Start
-	// has begun running workers — this loop replaces the previous
-	// "publish-then-wait" pattern that relied on buffered events
-	// surviving past Start.
+	// Retry the canary publish until Start has begun running workers. Explicit
+	// pools reject submit-before-start with ErrQueueFull.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		err := Publish(bus, context.Background(), otherEvent{Value: 0})
@@ -40,7 +37,7 @@ func waitForWorkers(t *testing.T, bus *Bus) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("waitForWorkers: canary event was not processed within 2s")
+		tb.Fatal("waitForWorkers: canary event was not processed within 2s")
 	}
 }
 
@@ -412,9 +409,11 @@ func TestWithWorkerPoolBuffer_PanicsOnZeroSize(t *testing.T) {
 	})
 }
 
-func TestWithWorkerPoolBuffer_WithoutWorkerPool_NoPool(t *testing.T) {
+func TestWithWorkerPoolBuffer_WithoutWorkerPool_ConfiguresDefaultPool(t *testing.T) {
 	bus := New(WithWorkerPoolBuffer(50))
-	assert.Nil(t, bus.pool, "pool should be nil when WithWorkerPool is not used")
+	require.NotNil(t, bus.pool)
+	assert.Equal(t, 50, cap(bus.pool.queue))
+	assert.True(t, bus.autoStartedPool)
 }
 
 func TestWorkerPool_AsyncErrorCallsOnError(t *testing.T) {

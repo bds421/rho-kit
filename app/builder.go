@@ -810,10 +810,9 @@ func (b *Builder) WithLeaderElection(e leaderelection.Elector) *Builder {
 	return b
 }
 
-// WithEventBusPool configures a bounded worker pool for the in-process event
-// bus. Without this, async event handlers launch unbounded goroutines.
-// The pool is registered on the lifecycle runner so it starts and stops
-// with the service.
+// WithEventBusPool overrides the default bounded worker pool size for the
+// in-process event bus. The pool is registered on the lifecycle runner so it
+// starts before handlers can publish async events and drains during shutdown.
 //
 // Panics if size is not positive.
 func (b *Builder) WithEventBusPool(size int) *Builder {

@@ -48,14 +48,7 @@ jobs:
         run: tools/rehearse-v2-release.sh
 
       - name: Run release-candidate gates
-        run: |
-          set -euo pipefail
-          make check-dependency-boundaries
-          make check-dependency-allowlist
-          make test
-          make lint
-          make test-race
-          make build
+        run: make release-candidate
 
       - name: Verify no v2 tags exist yet
         run: |

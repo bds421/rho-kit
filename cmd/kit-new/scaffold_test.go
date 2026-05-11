@@ -311,7 +311,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"runtime",
 		"security",
 		// Adapter modules pulled transitively by app's WithRabbitMQ /
-		// WithNATS / WithRedis / WithPgx wirings. They're optional at
+		// WithNATS / WithRedis / WithPostgres wirings. They're optional at
 		// runtime but the import graph reaches them at build time.
 		"infra/messaging/amqpbackend",
 		"infra/messaging/natsbackend",

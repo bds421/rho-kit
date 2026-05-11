@@ -439,8 +439,7 @@ hint.
 The kit panics at startup (NOT at first request) when any of the
 following hold:
 
-- `WithMariaDB` and `WithPostgres` together — mutually exclusive.
-- `WithPgx` and `WithPostgres` together — both target Postgres.
+- `WithPostgres` without a non-empty pgx DSN.
 - `WithJWT` without `WithJWTIssuer` (or the explicit `WithoutJWTIssuer` opt-out). Audience has the same shape.
 - Postgres `sslmode=disable` outside development.
 - AMQP scheme `amqp://` (cleartext) outside development.
@@ -550,7 +549,7 @@ The canonical "user submits a payment" flow. Wired via:
 
 ```go
 app.New("payments", version, cfg.BaseConfig).
-    WithPostgres(cfg.DB, cfg.DBPool).
+    WithPostgres(cfg.Postgres).
     WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
 	    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
 	    WithIPRateLimit(100, time.Minute).

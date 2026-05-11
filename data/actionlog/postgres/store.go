@@ -191,37 +191,57 @@ FROM action_log_entries`
 	return out, nil
 }
 
-// ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
-// No limit is applied — VerifyChain needs the full chain.
-func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
+// RangeByTenantSeq calls fn for every entry for tenantID ordered by Seq ASC.
+// Rows are scanned and verified one at a time by the caller, so long tenant
+// chains do not need to be materialized as []Entry.
+func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(actionlog.Entry) error) error {
 	if err := s.ready(); err != nil {
-		return nil, err
+		return err
 	}
 	if tenantID == "" {
-		return nil, actionlog.ErrQueryTenantRequired
+		return actionlog.ErrQueryTenantRequired
+	}
+	if fn == nil {
+		return actionlog.ErrInvalidEntry
 	}
 	const q = `
-SELECT id, tenant_id, actor, action, resource, outcome, reason,
+	SELECT id, tenant_id, actor, action, resource, outcome, reason,
        metadata, occurred_at, signature_key_id, seq, prev_hash, signature
 FROM action_log_entries
 WHERE tenant_id = $1
 ORDER BY seq ASC`
 	rows, err := s.pool.Query(ctx, q, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("actionlog/postgres: list by tenant seq: %w", err)
+		return fmt.Errorf("actionlog/postgres: range by tenant seq: %w", err)
 	}
 	defer rows.Close()
 
-	var out []actionlog.Entry
 	for rows.Next() {
 		entry, scanErr := scanEntry(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("actionlog/postgres: list by tenant seq scan: %w", scanErr)
+			return fmt.Errorf("actionlog/postgres: range by tenant seq scan: %w", scanErr)
 		}
-		out = append(out, entry)
+		if err := fn(entry); err != nil {
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("actionlog/postgres: list by tenant seq iterate: %w", err)
+		return fmt.Errorf("actionlog/postgres: range by tenant seq iterate: %w", err)
+	}
+	return nil
+}
+
+// ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
+// Deprecated: use RangeByTenantSeq for verification paths so Postgres rows can
+// be scanned without materializing the full tenant chain.
+func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
+	var out []actionlog.Entry
+	err := s.RangeByTenantSeq(ctx, tenantID, func(e actionlog.Entry) error {
+		out = append(out, e)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

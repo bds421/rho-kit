@@ -86,7 +86,7 @@ Illustrative shape:
 
 ```go
 return app.New("billing-api", version, cfg.BaseConfig).
-    WithPostgres(cfg.Database, cfg.DatabasePool).
+    WithPostgres(cfg.Postgres).
     WithRedis(cfg.Redis).
     WithJWT(cfg.JWKSURL).
     WithJWTAudience("billing-api").

@@ -18,7 +18,7 @@ import (
 )
 
 // OnFullPolicy controls what async dispatch does when the worker pool queue
-// is full. Default is [OnFullDrop].
+// is full. Default is [OnFullError].
 type OnFullPolicy int
 
 const (
@@ -66,10 +66,10 @@ func WithOnError(fn func(ctx context.Context, eventName string, handlerName stri
 	}
 }
 
-// WithWorkerPool enables bounded async dispatch with the given number of
-// workers. Without this option, async handlers launch unbounded goroutines
-// (legacy behavior). The pool must be started via [Bus.Start] before
-// publishing events.
+// WithWorkerPool overrides the default bounded async-dispatch worker count.
+// Explicitly configured pools must be started via [Bus.Start] before publishing
+// events; submit-before-start returns [ErrQueueFull] so wiring bugs surface
+// instead of silently buffering events that may never run.
 func WithWorkerPool(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
@@ -83,7 +83,8 @@ func WithWorkerPool(size int) Option {
 }
 
 // WithWorkerPoolBuffer sets the channel buffer size for the worker pool.
-// Default: workers * 10. Has no effect without [WithWorkerPool].
+// Default: workers * 10. When called without [WithWorkerPool], it applies to
+// the default bounded worker pool.
 func WithWorkerPoolBuffer(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
@@ -97,7 +98,7 @@ func WithWorkerPoolBuffer(size int) Option {
 }
 
 // WithRegisterer sets the Prometheus registerer for eventbus metrics.
-// Default: [prometheus.DefaultRegisterer]. Has no effect without [WithWorkerPool].
+// Default: [prometheus.DefaultRegisterer].
 func WithRegisterer(reg prometheus.Registerer) Option {
 	return func(b *Bus) {
 		if b.poolCfg == nil {
@@ -108,8 +109,7 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 }
 
 // WithOnFull sets the policy applied when async dispatch finds the worker
-// pool queue full. Default: [OnFullDrop]. Has no effect without
-// [WithWorkerPool] (legacy unbounded goroutines never block).
+// pool queue full. Default: [OnFullError].
 //
 // Panics if p is not one of [OnFullDrop], [OnFullBlock], or [OnFullError].
 // Silently treating unknown values as drop would mask configuration bugs.
@@ -185,7 +185,7 @@ type Bus struct {
 	logger          *slog.Logger
 	onError         func(ctx context.Context, eventName string, handlerName string, err error)
 	pool            *workerPool
-	poolCfg         *poolConfig // nil = no pool (backward compat)
+	poolCfg         *poolConfig
 	onFull          OnFullPolicy
 	policySet       bool // FR-091: distinguishes "default" from "explicitly set to OnFullDrop"
 	unboundedAsync  bool // FR-089: opts out of the default bounded worker pool
@@ -199,16 +199,14 @@ type Bus struct {
 // New creates a [Bus]. The zero value is not usable; always use New.
 //
 // When [WithWorkerPool] is used, the pool is constructed eagerly but workers
-// are not started until [Bus.Start] is called.
+// are not started until [Bus.Start] is called. Without [WithWorkerPool], New
+// installs and starts a default bounded worker pool for async handlers.
 //
-// FR-089/FR-091 [MED]: when no [WithWorkerPool] is supplied, New now
-// installs [defaultEventBusWorkers] workers and the [OnFullError]
-// saturation policy. Pre-fix the default was unbounded goroutine
-// per async dispatch (memory exhaustion risk on event spikes) AND
-// silent drop on saturation (lost domain events). Opt out via the
-// new [WithUnboundedAsync] for "every async dispatch spawns a
-// goroutine" semantics, or pick [WithFullPolicy] explicitly to
-// keep the OnFullDrop default.
+// When no [WithWorkerPool] is supplied, New installs
+// [defaultEventBusWorkers] workers and the [OnFullError] saturation policy.
+// Opt out via [WithUnboundedAsync] for "every async dispatch spawns a
+// goroutine" semantics, or pick [WithOnFull](OnFullDrop) explicitly to keep
+// drop-on-full semantics.
 func New(opts ...Option) *Bus {
 	b := &Bus{
 		handlers: make(map[string][]registeredHandler),
@@ -221,9 +219,14 @@ func New(opts ...Option) *Bus {
 		opt(b)
 	}
 	defaultPool := false
-	if !b.unboundedAsync && b.poolCfg == nil {
-		b.poolCfg = &poolConfig{workers: defaultEventBusWorkers}
-		defaultPool = true
+	if !b.unboundedAsync {
+		if b.poolCfg == nil {
+			b.poolCfg = &poolConfig{}
+		}
+		if b.poolCfg.workers == 0 {
+			b.poolCfg.workers = defaultEventBusWorkers
+			defaultPool = true
+		}
 	}
 	if !b.policySet {
 		b.onFull = OnFullError
@@ -397,11 +400,11 @@ func (b *Bus) maybeCompactLocked(eventName string) {
 // Returns nil if no handlers are registered for the event.
 //
 // Async dispatch behavior under saturation depends on [WithOnFull]:
-//   - [OnFullDrop] (default): events are dropped silently and counted via
+//   - [OnFullError] (default): Publish returns [ErrQueueFull] without enqueuing.
+//   - [OnFullDrop]: events are dropped silently and counted via
 //     eventbus_events_dropped_total.
 //   - [OnFullBlock]: Publish blocks until queue space is available or ctx
 //     is cancelled (returns ctx.Err()).
-//   - [OnFullError]: Publish returns [ErrQueueFull] without enqueuing.
 //
 // Security-critical events should use synchronous handlers (without
 // [WithAsync]) to guarantee delivery.
@@ -474,8 +477,9 @@ func (b *Bus) HasHandlers(eventName string) bool {
 	return false
 }
 
-// dispatchAsync routes an async handler invocation to either the bounded
-// worker pool (if configured) or an unbounded goroutine (legacy behavior).
+// dispatchAsync routes an async handler invocation to the bounded worker pool,
+// or to an unbounded goroutine only when callers explicitly opt into
+// [WithUnboundedAsync].
 //
 // The returned error is non-nil only when the worker pool queue is full and
 // the configured [OnFullPolicy] surfaces it: [OnFullError] returns

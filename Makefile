@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci release-plan check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
+.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
@@ -99,6 +99,13 @@ clean:
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
 ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable lint test-race build
+
+## kit-doctor: Run strict critical kit-doctor checks against this repository
+kit-doctor:
+	@go run ./cmd/kit-doctor -format=json -strict=critical .
+
+## release-candidate: Run the full pre-release quality gate
+release-candidate: ci vulncheck test-integration test-cover bench kit-doctor
 
 ## release-plan: Compute dependency-aware module release levels
 release-plan:

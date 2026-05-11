@@ -250,6 +250,29 @@ func TestStore_ListByTenantSeqRejectsEmptyTenant(t *testing.T) {
 	store := New()
 	_, err := store.ListByTenantSeq(context.Background(), "")
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+
+	err = store.RangeByTenantSeq(context.Background(), "", func(actionlog.Entry) error { return nil })
+	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
+}
+
+func TestStore_RangeByTenantSeqStreamsInOrder(t *testing.T) {
+	store := New()
+	logger := actionlog.New(store, newTestSecrets(t))
+
+	for i := 0; i < 3; i++ {
+		_, err := logger.Append(context.Background(), actionlog.Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	var got []int64
+	err := store.RangeByTenantSeq(context.Background(), "t", func(e actionlog.Entry) error {
+		got = append(got, e.Seq)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{1, 2, 3}, got)
 }
 
 func TestList_DefaultLimitApplied(t *testing.T) {
@@ -292,6 +315,9 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
 			_, err = tc.store.ListByTenantSeq(ctx, "t")
+			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
+
+			err = tc.store.RangeByTenantSeq(ctx, "t", func(actionlog.Entry) error { return nil })
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
 			assert.NotPanics(t, func() { tc.store.PruneTenants() })

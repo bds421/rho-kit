@@ -363,7 +363,7 @@ eventbus.Subscribe(infra.EventBus, func(ctx context.Context, e OrderPlaced) erro
 **Key rules:**
 - `Subscribe` and `Publish` are package-level functions (Go methods can't have type params)
 - Sync handlers: errors collected via `errors.Join` and returned from `Publish`
-- Async handlers: errors logged and sent to `WithOnError` callback; panics recovered
+- Async handlers: run through the default bounded worker pool; saturation returns `eventbus.ErrQueueFull` unless you explicitly choose drop or block behavior with `WithOnFull`
 - Always available on `infra.EventBus` (no `WithEventBus()` needed)
 - NOT for cross-service communication (use `infra/messaging` instead)
 

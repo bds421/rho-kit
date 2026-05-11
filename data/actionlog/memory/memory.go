@@ -191,24 +191,49 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, e
 	return matched, nil
 }
 
-// ListByTenantSeq returns every entry for tenantID in Seq ASC order.
-// No limit is applied — VerifyChain needs the full chain.
-func (s *Store) ListByTenantSeq(_ context.Context, tenantID string) ([]actionlog.Entry, error) {
+// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC order.
+func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(actionlog.Entry) error) error {
 	if err := s.ready(); err != nil {
-		return nil, err
+		return err
 	}
 	if tenantID == "" {
-		return nil, actionlog.ErrQueryTenantRequired
+		return actionlog.ErrQueryTenantRequired
+	}
+	if fn == nil {
+		return actionlog.ErrInvalidEntry
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	out := make([]actionlog.Entry, 0)
 	for _, e := range s.entries {
 		if e.TenantID == tenantID {
 			out = append(out, e.Clone())
 		}
 	}
+	s.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	for _, e := range out {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListByTenantSeq returns every entry for tenantID in Seq ASC order.
+// Deprecated: use RangeByTenantSeq for verification paths so backend stores can
+// stream long tenant chains without materializing them.
+func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
+	out := make([]actionlog.Entry, 0)
+	err := s.RangeByTenantSeq(ctx, tenantID, func(e actionlog.Entry) error {
+		out = append(out, e)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

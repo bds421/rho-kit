@@ -253,7 +253,20 @@ go get \
   github.com/bds421/rho-kit/httpx/v2@${VERSION} \
   github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2@${VERSION}
 
+cat > main.go <<'EOF'
+package main
+
+import (
+	_ "github.com/bds421/rho-kit/app/v2"
+	_ "github.com/bds421/rho-kit/httpx/v2"
+	_ "github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
+)
+
+func main() {}
+EOF
+
 go mod tidy
+go list -deps ./... >/dev/null
 go list -m all | rg 'github.com/bds421/rho-kit/.+/v2 v2\.0\.0'
 rg 'github.com/bds421/rho-kit/.+ v2\.0\.0' go.sum
 ```

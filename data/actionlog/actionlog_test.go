@@ -89,6 +89,25 @@ func (s *memStore) ListByTenantSeq(_ context.Context, tenantID string) ([]Entry,
 	return out, nil
 }
 
+func (s *memStore) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(Entry) error) error {
+	if fn == nil {
+		return ErrInvalidEntry
+	}
+	entries, err := s.ListByTenantSeq(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func newTestSecrets(t *testing.T) *StaticSecrets {
 	t.Helper()
 	key := []byte("0123456789abcdef0123456789abcdef")
