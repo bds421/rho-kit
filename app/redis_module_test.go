@@ -64,7 +64,7 @@ func TestRedisModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestRedisModule_CloseBeforeInit(t *testing.T) {
 	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
-	err := m.Close(context.TODO())
+	err := m.Close(context.Background())
 	require.NoError(t, err, "Close before Init should not error")
 }
 

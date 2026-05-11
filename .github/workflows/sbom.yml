@@ -10,8 +10,8 @@
 #     is the format the Go security team's `govulncheck` toolchain
 #     ingests for offline vuln matching.
 #   - CycloneDX 1.5 has first-class support for VEX (vulnerability
-#     exploitability exchange) statements, which we plan to attach to
-#     releases in Theme 5.1 once the signing pipeline is in place.
+#     exploitability exchange) statements, which a post-v2 follow-up can
+#     attach once VEX publication and artifact attestations are in place.
 # We may dual-emit SPDX in the future; CycloneDX is the canonical
 # artifact for now.
 

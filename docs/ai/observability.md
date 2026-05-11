@@ -19,6 +19,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | Add consistent log attributes | `observability/logattr` |
 | Register Prometheus collectors safely | `observability/promutil` |
 | Persist structured audit events | `observability/auditlog` |
+| Start from production dashboard/runbook templates | `observability/dashboards`, `docs/ai/runbooks` |
 
 ## Tracing
 
@@ -90,6 +91,20 @@ dimension low-cardinality anyway.
 `redmetrics.HTTPLatencyBuckets()` and `redmetrics.BatchDurationBuckets()`
 return detached default bucket slices; custom bucket options clone their input
 so caller-side slice mutation cannot alter registered histograms.
+
+## Dashboards And Runbooks
+
+The v2 dashboard bundle lives under `observability/dashboards/` and is
+validated by `.github/workflows/dashboards.yml`. Grafana JSON dashboards cover
+HTTP RED, gRPC RED, DB pool, Redis, Outbox, Storage, Go runtime, and service
+overview. Prometheus rules cover latency, availability, saturation, messaging,
+recording rules, and SLO templates. Alert `runbook_url` annotations point to
+the matching pages under `docs/ai/runbooks/`.
+
+Keep dashboard changes paired with the metric contract they depend on. A new
+collector or label dimension should update the dashboard, runbook, and alert
+rules in the same change so operators do not receive panels or alerts that
+cannot be explained from the docs.
 
 ## Audit Events
 

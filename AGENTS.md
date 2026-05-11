@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, ~50 Go modules at `/v2` path suffix)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 65 Go modules at `/v2` path suffix)
 **Go:** 1.26+ | **License:** Proprietary
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -19,6 +19,9 @@ make test-cover    # coverage report
 make lint          # golangci-lint v2
 make vulncheck     # govulncheck
 make check-dependency-allowlist # direct external Go dependency policy
+make check-dependency-boundaries # keep heavy SDKs behind adapters/test helpers
+make check-publishable # pre-tag Go module release invariants
+make release-candidate # full local pre-release quality gate
 make bench         # benchmarks
 make fmt           # goimports + gofumpt
 make tidy          # go mod tidy

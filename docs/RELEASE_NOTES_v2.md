@@ -1084,7 +1084,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `docs/audit/dependency-allowlist.txt` + `make check-dependency-allowlist` — exact source ledger for direct external Go dependencies
 - `make check-dependency-boundaries` — keeps Redis, pgx, cloud, messaging, KMS, OpenFGA, Temporal, River, and Testcontainers deps behind adapter/test boundaries
 - `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations; no open in-kit mitigation gaps at this revision
-- `docs/audit/SUPPLY_CHAIN.md` — pinning policy, direct dependency allowlist, heavy SDK boundary guard, signing keys, vuln SLO
+- `docs/audit/SUPPLY_CHAIN.md` — pinning policy, direct dependency allowlist, heavy SDK boundary guard, release provenance, key rotation, vuln SLO
 - `security/asvs.Lookup` uses stable unknown-control errors instead of echoing
   the rejected control ID.
 

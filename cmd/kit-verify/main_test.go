@@ -346,7 +346,7 @@ func TestCSRFProbe_401IsFailure(t *testing.T) {
 }
 
 func TestProbeFailureDetailsDoNotReflectURLOrHeaderValues(t *testing.T) {
-	status, detail := expectHeader(http.DefaultClient, "http://127.0.0.1:1/?token=secret-token", "X-Secret-Header", "secret-value")
+	status, detail := expectHeader(&http.Client{Timeout: 2 * time.Second}, "http://127.0.0.1:1/?token=secret-token", "X-Secret-Header", "secret-value")
 
 	require.Equal(t, StatusFail, status)
 	assert.NotContains(t, detail, "127.0.0.1")

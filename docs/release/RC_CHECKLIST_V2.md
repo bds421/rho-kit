@@ -22,12 +22,13 @@ repository root unless a block says to `cd` into a module first.
 | Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, kit-doctor, diff check. | Passed 2026-05-11: all required RC commands completed successfully on the current tree. |
 | Docker-backed integration tests pass where available | `go test -tags integration ./...` in split integration modules | Docker available: pass. Docker unavailable: record skip reason. | Passed 2026-05-11 with Docker 29.4.1: `make test-integration` completed successfully across workspace modules. |
 | No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-11: boundary check reviewed 336 direct module edges; allowlist check reviewed 56 direct external deps. |
+| Security-sensitive files have review ownership | [.github/CODEOWNERS](../../.github/CODEOWNERS), [../audit/SUPPLY_CHAIN.md](../audit/SUPPLY_CHAIN.md) | Supply-chain policy, threat model, dependency allowlist, release docs, workflows, and release gate scripts route to the security owner. | Added 2026-05-11 during release-excellence sweep. |
 | No product-specific abstractions enter core | API freeze review, package decision tree in `AGENTS.md` and docs | New abstractions are generic platform primitives or isolated examples. | Passed 2026-05-11: API freeze keeps product-specific code isolated to the example surface; core modules remain reusable platform primitives. |
 | Pre-tag publishability | `make check-publishable` | No internal modules are pinned at `v0.0.0`; internal replaces point at workspace modules; Go directives match `go.work`. | Passed 2026-05-11. |
 | Workspace dependency release invariant | `EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable` | Every internal `github.com/bds421/rho-kit/.../v2` require points at the version that will be tagged for every workspace module. Local `replace` directives do not count because downstream consumers ignore them. | Added 2026-05-11 as the repo-native lockstep release gate. |
 | Dependency-aware release levels | `make release-plan`, `tools/plan-module-release.sh` | Internal `go.mod` requires are converted to dependency levels so modules that can be tagged together are explicit. Changed-mode reports modules changed since a base ref plus impacted dependents. | Added 2026-05-11: full v2 plan has 65 modules across five dependency levels. |
 | Release-branch internal replace removal | `tools/drop-internal-replaces.sh`, `FORBID_INTERNAL_REPLACES=1 make check-publishable` | Final release branch drops local internal replaces before level tidies so `GOWORK=off go mod tidy` can write real internal checksums. | Future release-phase step documented; not run during preparation. |
-| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Passed 2026-05-11 on current HEAD: [rehearsal log](rehearsals/20260511T134951Z-v2-release-rehearsal.log). |
+| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Passed 2026-05-11 on the release-excellence tree: [rehearsal log](rehearsals/20260511T180559Z-v2-release-rehearsal.log). |
 | Downstream checksum proof is post-tag | Clean temporary consumer from [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Repository `go.sum` files for dependent levels are produced only after dependency levels are tagged; after all tags are pushed, a clean consumer must resolve selected modules and verify sums. | Updated 2026-05-11 after reviewing Go module checksum mechanics. |
 | Future multi-module tag plan exists | [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Exact dependency-ordered tag strategy, commands, expected level count, and rollback are documented without creating tags now. | Prepared 2026-05-11: plan creates 65 module-prefixed tags across five dependency levels plus `release/v2.0.0` coordination tag later. |
 | Future final release runbook exists | [FINAL_RELEASE_RUNBOOK_V2.md](FINAL_RELEASE_RUNBOOK_V2.md) | Exact future commands, expected outputs, stop conditions, release notes source, and rollback are documented. | Prepared 2026-05-11. |
@@ -200,3 +201,41 @@ module tags created and pushed to a temporary bare origin across five levels,
 selected v2 modules resolved by a clean consumer with real `go.sum` hashes, and
 `cmd/kit-new`, `cmd/kit-migrate`, and `cmd/kit-doctor` installed from the
 temporary `v2.0.0` tags.
+
+Post release-excellence validation after removing placeholder cryptographic
+material, adding CODEOWNERS, refreshing dashboard/release docs, and cleaning
+minor test anti-patterns:
+
+```bash
+git diff --check
+ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f) }' .github/workflows/*.yml
+go test ./app ./cmd/kit-verify/...
+make check-no-binaries
+make check-dependency-boundaries
+make check-dependency-allowlist
+make check-publishable
+EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
+make release-plan
+GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
+make test
+make lint
+make build
+make test-race
+make test-integration
+make vulncheck
+make test-cover
+make bench
+RELEASE_MODE=all make release-plan
+tools/rehearse-v2-release.sh
+git tag --list '*v2.0.0'
+git ls-remote --tags origin '*v2.0.0'
+```
+
+All commands passed on 2026-05-11. The first `make vulncheck` attempt hit a
+transient `vuln.go.dev` connection reset while fetching advisory metadata; the
+immediate retry completed for every module with `No vulnerabilities found.` The
+fresh rehearsal log at
+`docs/release/rehearsals/20260511T180559Z-v2-release-rehearsal.log` again shows
+65 module tags across five levels, clean downstream module resolution with real
+`go.sum` hashes, and command installs from temporary `v2.0.0` tags. No local or
+remote `*v2.0.0` tags existed after the rehearsal.

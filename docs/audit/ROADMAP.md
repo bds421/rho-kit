@@ -136,17 +136,21 @@ Each is tracked here until shipped; pickup is opt-in per item.
 - 🔴 **`infra/messaging/kafkabackend`** — explicit "don't do kafka"
   directive this wave; revisit when there's a concrete consumer ask.
 
-### Dashboards + scaffolding follow-ups
+### Scaffolding and benchmark follow-ups
 
-- 🔴 **gRPC, DB, Redis, messaging, storage, outbox, ratelimit
-  dashboards** — only HTTP RED + Go runtime + service overview
-  shipped in this wave; remaining dashboards land per-area as the
-  metric surface stabilises.
 - 🔴 **`kit-new --modules` / `--token` flags** — base scaffold and
   `--tenant` wrapper wiring ship; remaining module-token wiring follows
   the corresponding Builder integration items.
 - 🔴 **Per-package benchmarks for `kit-bench-gate`** — gate ships;
   benchmarks land per-package as audit identifies hot paths.
+
+### Dashboard follow-ups
+
+- 🟡 **AMQP and rate-limit dashboard panels** — the shipped v2.0.0
+  dashboard set covers HTTP RED, gRPC RED, DB pool, Redis, Outbox,
+  Storage, Go runtime, and service overview. AMQP publisher panels and
+  rate-limit-specific panels follow once their Prometheus metric
+  contracts are stable enough to freeze.
 ### Threat-model gaps
 
 GAP-01 (cost budgets), GAP-02 (safe redirects), GAP-03 (gRPC

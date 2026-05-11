@@ -25,10 +25,10 @@ how to verify each promise.
 3. [Update cadence (Dependabot)](#3-update-cadence-dependabot)
 4. [Reproducible builds](#4-reproducible-builds)
 5. [SBOMs (CycloneDX)](#5-sboms-cyclonedx)
-6. [Signing keys and rotation](#6-signing-keys-and-rotation)
+6. [Release provenance and key rotation](#6-release-provenance-and-key-rotation)
 7. [Vulnerability response SLO](#7-vulnerability-response-slo)
 8. [Allowed licenses + CI verification](#8-allowed-licenses--ci-verification)
-9. [Security contact and encrypted reports](#9-security-contact-and-encrypted-reports)
+9. [Security contact and private reports](#9-security-contact-and-private-reports)
 10. [Audit trail of policy changes](#10-audit-trail-of-policy-changes)
 
 ---
@@ -221,8 +221,10 @@ following reasons:
 
 3. **Tagged releases on `main` are the trust anchor.** Branch
    protection on `main` requires PR review and successful CI; CI
-   includes the SBOM build and the vuln scan. The signing keys
-   (§6) attest the tag itself, not the working tree.
+   includes the SBOM build and the vuln scan. For v2.0.0, provenance
+   is the reviewed tag commit, the GitHub release metadata, the SBOM
+   workflow run, and the release-owner audit trail (§6), not a
+   long-lived project signing key.
 
 In other words: `replace` is a developer-ergonomics convenience that
 lets the kit's CI run with the same code paths as a downstream
@@ -357,8 +359,9 @@ sha256sum dist/kit-doctor-linux-amd64
 ```
 
 The kit has not yet automated this verification (no Reproducible
-Builds Project membership). The intent is to do so in Theme 5.1
-alongside Sigstore signing.
+Builds Project membership). The intent is to add automated binary
+reproducibility checks alongside future keyless artifact
+attestations.
 
 ### 4.4 Module-zip reproducibility
 
@@ -396,7 +399,7 @@ Documented in the workflow file's header, repeated here:
 - CycloneDX is OWASP's reference format
   (https://cyclonedx.org).
 - CycloneDX 1.5 has first-class VEX (Vulnerability Exploitability
-  Exchange) support, which we will use in Theme 5.1 to publish
+  Exchange) support, which a post-v2 follow-up can use to publish
   "we've reviewed CVE-X and it does not apply to the kit's call
   paths" attestations alongside the SBOM.
 
@@ -426,20 +429,23 @@ without re-fetching the source tree.
 
 ### 5.4 Future: signed SBOMs
 
-Theme 5.1 will sign the SBOM with the kit's release-signing key
-(§6) so the consumer can verify the artefact's provenance. Until
-that lands, integrity verification relies on GitHub's release
-HTTPS + the workflow's commit attestation.
+Signed SBOMs are a post-v2 follow-up. The preferred shape is keyless
+Sigstore signing or GitHub artifact attestations tied to
+`.github/workflows/sbom.yml`, so consumers can verify the SBOM against
+the repository, workflow path, ref, and commit. Until that lands,
+integrity verification relies on GitHub release HTTPS, the release
+asset metadata, the workflow run, and the tagged commit.
 
 ---
 
-## 6. Signing keys and rotation
+## 6. Release provenance and key rotation
 
-### 6.1 What signs what
+### 6.1 What authenticates what
 
-| Key | Purpose | Where it lives | Rotation |
+| Identity or key | Purpose | Where it lives | Rotation |
 |---|---|---|---|
-| `release-signing` (Sigstore-issued, ephemeral) | Signs git tags during the future release runbook | GitHub OIDC -> Sigstore Fulcio (no long-term key material) | per-release (ephemeral) |
+| `release-owner` GitHub identity | Creates module tags and the coordination release from the approved release branch | GitHub account + repository audit log | rotate by changing release-owner authorization |
+| `sbom-workflow` GitHub identity | Generates and uploads `rho-kit.cdx.json` for tagged releases | `.github/workflows/sbom.yml` + `GITHUB_TOKEN` scoped to the workflow run | per workflow run |
 | `audit-log-hmac` | HMAC chain for `observability/auditlog` records — service-deployed, not kit-shipped | Per-deployment Vault / KMS | annually or on suspicion |
 | `csrf-hmac` | Session-bound CSRF token signing | Per-deployment env var (`_FILE` mounted from secret store) | quarterly |
 | `signedrequest-hmac` | Inter-service signed-request HMAC | Per-deployment KMS | quarterly |
@@ -447,23 +453,27 @@ HTTPS + the workflow's commit attestation.
 | `envelope-kek` | Envelope-encryption key-encrypting keys | Per-deployment KMS (AWS KMS / GCP KMS / Azure Key Vault) | every 90d (KMS-mediated) |
 
 The kit ships the *primitives* for every key listed above. The kit
-itself only needs the Sigstore release-signing key.
+itself does not ship or require a long-lived release-signing key for
+v2.0.0.
 
-### 6.2 Who can use the release key
+### 6.2 Release identity for v2.0.0
 
-The release signing flow runs entirely inside the
-[`release.yml`](../../.github/workflows/release.yml) workflow on
-GitHub-hosted runners. The flow uses GitHub's OIDC token to obtain
-a short-lived Sigstore certificate; no long-term private key is
-ever stored. As a consequence:
+The v2.0.0 release runbook intentionally separates readiness checks
+from tagging and publishing:
 
-- A user with write access to `main` can trigger a release
-  (workflow_dispatch).
-- The CI runner produces signatures that include the GitHub
-  identity in the certificate; downstream verification can pin to
-  this identity (`bds421/rho-kit / .github/workflows/release.yml`).
-- There is nothing to rotate in the conventional sense — every
-  release uses a fresh ephemeral certificate.
+- [`release.yml`](../../.github/workflows/release.yml) validates the
+  release-candidate state but does not create tags or GitHub releases.
+- [`FINAL_RELEASE_RUNBOOK_V2.md`](../release/FINAL_RELEASE_RUNBOOK_V2.md)
+  is the authoritative tagging and publishing procedure.
+- Module tags are created by the release owner only after the RC gates
+  pass and the release owner explicitly starts the tagging phase.
+- The SBOM is generated by
+  [`sbom.yml`](../../.github/workflows/sbom.yml) for tag pushes and is
+  attached to the matching GitHub release.
+
+Future keyless signing or GitHub artifact attestations must update this
+section, [`sbom.yml`](../../.github/workflows/sbom.yml), and the final
+release runbook in the same change.
 
 ### 6.3 Rotation procedures (per-deployment keys)
 
@@ -490,12 +500,12 @@ to make rotation cheap. The expected pattern:
 
 If a key listed in §6.1 is suspected compromised:
 
-1. **Stop using the key for new signatures immediately.** For
+1. **Stop using the affected identity or key immediately.** For
    per-deployment keys this is a redeploy with the new secret. For
-   the release key it's a `gh release delete` + re-cut from a
-   different runner — though since the release key is ephemeral
-   per-build, "compromise" here means the runner itself is
-   compromised, in which case we follow §7.5.
+   release provenance, "compromise" means the release owner account,
+   workflow token, runner, or tag-producing environment is suspect; in
+   that case follow §7.5 and the rollback rules in the final release
+   runbook.
 2. **Mark the affected window in the audit log.** All audit-log
    entries written under the suspect key must be flagged; the HMAC
    chain catches tampering but not "the chain itself is now
@@ -519,7 +529,8 @@ If a key listed in §6.1 is suspected compromised:
 The clock starts at the *earliest* of:
 
 - A CVE / GHSA being filed against a dep that the kit imports.
-- A private report to security@bds421.example (see §9).
+- A GitHub Security Advisory report or private report to
+  security@bds421.example (see §9).
 - A `govulncheck` finding hitting the kit's `main` branch.
 
 ### 7.2 Process
@@ -527,7 +538,8 @@ The clock starts at the *earliest* of:
 1. **Triage.** Reproduce the issue against `main`. If it does not
    apply (e.g., the vulnerable dep function is not in any kit call
    path — `govulncheck` returns "not called"), the triage team
-   files a VEX statement instead of a patch (Theme 5.1).
+   records that exception and, once VEX publication lands, files a
+   VEX statement instead of a patch.
 2. **Fix.** Patch the dep version (or the kit's own code if the
    bug is ours). Add a regression test referencing the GHSA ID.
 3. **Release.** Bump and tag the affected modules through the release
@@ -566,11 +578,12 @@ passed without the exception being renewed or cleared.
 ### 7.5 CI runner compromise
 
 If the CI runner itself is suspected compromised (signs of build
-tampering, unexpected Sigstore certificates, leaked secrets):
+tampering, unexpected artifact provenance, leaked secrets):
 
 1. Disable the workflow that runs on the affected runner type.
 2. Revoke any short-lived credentials issued to the runner.
-3. Audit the last 30 days of releases for unexpected signatures.
+3. Audit the last 30 days of releases for unexpected workflow runs,
+   release assets, tags, attestations if enabled, and checksums.
 4. Re-cut affected releases from a clean runner pool.
 5. Public advisory if any release artefact's provenance cannot be
    re-verified.
@@ -602,7 +615,7 @@ and transitive deps:
 
 Today, license verification is a manual review step on Dependabot
 PRs (the PR body shows the dep's license). The intent is to land a
-CI rule (Theme 5.1) that:
+CI rule that:
 
 - Walks the workspace's transitive dep graph (`go list -m
   -mod=mod -json all`).
@@ -624,7 +637,7 @@ of the corresponding component.
 
 ---
 
-## 9. Security contact and encrypted reports
+## 9. Security contact and private reports
 
 ### 9.1 Reporting channels
 
@@ -632,29 +645,24 @@ of the corresponding component.
   report) on `bds421/rho-kit`. Web flow:
   https://github.com/bds421/rho-kit/security/advisories/new
 - **Email:** security@bds421.example (responses within 1 business
-  day; reports require GPG encryption — see §9.2).
+  day). Use email for coordination and low-sensitivity intake; do not
+  send exploit details, credentials, or customer data over email until
+  the triage team opens a private GitHub Security Advisory or another
+  encrypted channel.
 - **Bug bounty:** none at present; this may change post-v2.0.0.
 
 We commit to acknowledging receipt within 24 hours and providing a
 triage decision within the SLO window in §7.
 
-### 9.2 GPG key for encrypted reports
+### 9.2 Encrypted-report policy
 
-```
-Key ID:       0xDEADBEEFCAFEBABE                  (placeholder —
-                                                   the real key is
-                                                   published to the
-                                                   org's keys.openpgp.org
-                                                   profile)
-Fingerprint:  ABCD EF12 3456 7890 ABCD  EF12 3456 7890 DEAD BEEF
-Algorithm:    RSA 4096
-Expiry:       2027-05
-```
-
-The fingerprint above is a placeholder pending the security-team
-key generation ceremony scheduled for the v2.0.0 release. The
-authoritative fingerprint will be published in the GitHub Security
-tab and on the project README before v2.0.0 ships.
+The kit does not publish a long-lived project GPG key for v2.0.0, and
+this document must never contain placeholder cryptographic material.
+The private GitHub Security Advisory flow is the encrypted path for
+initial sensitive reports. If the project later supports encrypted
+email intake, the real key ID, fingerprint, algorithm, expiry, and
+publication location must be added here in the same PR that publishes
+the key.
 
 ### 9.3 Disclosure policy
 
@@ -683,9 +691,10 @@ they can downgrade a dep version. Mitigation:
 
 | Date | Author | Change |
 |---|---|---|
+| 2026-05 | Release-excellence review | Removed placeholder GPG material, clarified v2.0.0 release provenance, and aligned the policy with the actual release/SBOM workflows. |
 | 2026-05 | Theme-6+ hardening | Added heavy optional SDK boundary enforcement through `make check-dependency-boundaries`. |
 | 2026-05 | Theme-6+ hardening | Added exact direct Go dependency source allowlist and CI enforcement through `make check-dependency-allowlist`. |
-| 2026-05 | Theme-5 author | Initial supply-chain policy document. Pinning policy, replace-directive rationale, dependabot cadence, build flags, CycloneDX SBOM, key inventory, vuln-response SLO, license allowlist, security contact. Forward-references to Theme 5.1 (Sigstore signing, license-allowlist CI rule). |
+| 2026-05 | Theme-5 author | Initial supply-chain policy document. Pinning policy, replace-directive rationale, dependabot cadence, build flags, CycloneDX SBOM, key inventory, vuln-response SLO, license allowlist, security contact. Forward-references to future signed SBOMs and license-allowlist CI. |
 
 ---
 

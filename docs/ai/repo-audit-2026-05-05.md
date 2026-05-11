@@ -1,6 +1,7 @@
 # Repository audit — 2026-05-05 (snapshot)
 
-Independent audit of `github.com/bds421/rho-kit` (50+ Go modules) focused on
+Independent audit of `github.com/bds421/rho-kit` (65 Go modules as of the
+v2.0.0 release-candidate tree) focused on
 security defaults, correctness under concurrency, and operational reliability.
 
 ## Verification run (snapshot)
@@ -31,8 +32,8 @@ landed-with-commit-hash, or open) is tracked there:
 All findings from this audit (P0 / P1 / P2 / P3) closed in Wave 1+2+3+4+5
 plus the v2.0.0 push. Remaining work is the explicitly-deferred set in
 [`ROADMAP.md`](../audit/ROADMAP.md) (cloud KMS, k8slease/etcd, Kafka,
-dashboards subset, kit-new flags, per-package benchmarks) and the
-GAP-01..10 follow-ups in [`THREAT_MODEL.md`](../audit/THREAT_MODEL.md) §8.
+AMQP/rate-limit dashboard panels, kit-new flags, per-package benchmarks).
+GAP-01..10 are closed in [`THREAT_MODEL.md`](../audit/THREAT_MODEL.md) §8.
 
 If you re-run this audit, write the new snapshot under a different filename
 (e.g. `repo-audit-YYYY-MM-DD.md`) and reconcile findings into the structured

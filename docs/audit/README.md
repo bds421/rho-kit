@@ -19,7 +19,8 @@ security/audit history that explains why the release surface exists.
 | [THREAT_MODEL.md](THREAT_MODEL.md) | STRIDE-style threat surface; assets, adversaries, mitigations, shipped gap closures, and remaining follow-up list. Updated whenever a new threat ID lands. |
 | [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) | Pinning policy, direct dependency source allowlist, heavy SDK boundary guard, dependabot cadence, build flags, CycloneDX SBOM, vulnerability response SLO, license allowlist. |
 | [dependency-allowlist.txt](dependency-allowlist.txt) | Exact review ledger for direct external Go module dependencies; enforced by `make check-dependency-allowlist`. |
-| [ROADMAP.md](ROADMAP.md) | What shipped per phase + what's deferred to v2.1+ (cloud KMS, k8slease/etcd, Kafka, dashboards subset, kit-new flags, per-package benchmarks). |
+| [ROADMAP.md](ROADMAP.md) | What shipped per phase + what's deferred to v2.1+ (cloud KMS, k8slease/etcd, Kafka, AMQP/rate-limit dashboard panels, kit-new flags, per-package benchmarks). |
+| [release-excellence-2026-05-11.md](release-excellence-2026-05-11.md) | Current v2.0.0 release-excellence sweep, finding classification, and verification plan. |
 | [CRITICAL.md](CRITICAL.md) | Historical per-finding ledger of the 12 CRITICAL items + closely-related HIGH cluster from the v1→v2 audit. All closed; kept for the audit trail. |
 
 ## How findings flow now

@@ -31,7 +31,7 @@ func TestMessagingModule_HealthChecksBeforeInit(t *testing.T) {
 
 func TestMessagingModule_CloseBeforeInit(t *testing.T) {
 	m := newMessagingModule("amqp://localhost")
-	err := m.Close(context.TODO())
+	err := m.Close(context.Background())
 	require.NoError(t, err, "Close before Init should not error")
 }
 
