@@ -51,9 +51,10 @@ Every `go.mod` in the workspace MUST satisfy all of:
 - Every entry in `go.sum` is preserved; deletions only happen via
   `go mod tidy` after a deliberate version change.
 
-The CI pipeline (`.github/workflows/ci.yml`) runs `npx nx affected
--t build` which transitively executes `go build` per module; a
-missing checksum or floating version surfaces as a build failure.
+The CI pipeline (`.github/workflows/ci.yml`) runs the root Makefile
+gates, including dependency policy checks and workspace builds. A
+missing checksum or floating version surfaces as a build or policy
+failure.
 
 ### 1.2 Why exact tags
 
@@ -67,22 +68,31 @@ Pseudo-versions (`v0.0.0-20260101...-abc123def`) are tempting for
 - They make SBOM diffs noisy — every CI run produces a slightly
   different `purl` if the pseudo-version updates.
 
-Exception: the kit's *own* CI pre-tagging step inside the release
-workflow temporarily produces pseudo-versions while NX Release
-computes the next tag. Those versions never reach `main`.
+Exception: a release-owner scratch branch may briefly contain
+pseudo-versions while preparing a local experiment. Those versions
+must never reach `main` and must not appear in the release commit.
 
 ### 1.3 Module-graph constraint
 
-The kit ships ~80 Go modules sharing a single `go.work`. Every
-module that depends on `crypto/passhash` (for example) MUST
-reference the same version of it. This is enforced by NX Release's
-`updateDependents` mechanism (see `nx.json`); when one module's
-public API changes, NX bumps the version of every dependent and
-regenerates `go.sum` files in the same release commit.
+The kit ships many Go modules sharing a single `go.work`. For a release such
+as v2.0.0, every module that depends on `crypto/passhash` (for example) MUST
+reference a version that is already tagged before the dependent module is
+tagged. The release owner computes that order with:
 
-A divergent version pin (e.g. `app` pins `crypto/envelope v1.2.0`
-while `crypto/paseto` pins `crypto/envelope v1.1.0` transitively)
-produces an NX-Release validation error and blocks the release.
+```bash
+RELEASE_MODE=all make release-plan
+```
+
+The final release branch also enforces the version and local-replace
+invariants with:
+
+```bash
+FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
+```
+
+A divergent version pin (e.g. `app` pins `crypto/envelope/v2 v2.0.0`
+while `crypto/paseto/v2` pins `crypto/envelope/v2 v1.9.0` transitively)
+fails the pre-tag gate and blocks the release.
 
 ### 1.4 Direct dependency source allowlist
 
@@ -201,10 +211,12 @@ following reasons:
    to downstream consumers — Go's module resolution intentionally
    ignores `replace` lines from indirect modules.
 
-2. **All intra-repo modules ship via tagged releases on merge to
-   main.** NX Release bumps versions, regenerates `go.sum`, and
-   pushes one tag per module per release commit. Once a downstream
-   service pulls `httpx/v2@v2.0.0`, the only `core/v2` it can
+2. **All intra-repo modules ship via dependency-ordered tagged
+   releases.** The release runbook creates one tag per `go.work` module
+   in dependency levels. Dependency modules are tagged first; dependent
+   modules are tidied with `GOWORK=off` and then tagged from later commits
+   so their `go.sum` files can contain real internal checksums. Once a
+   downstream service pulls `httpx/v2@v2.0.0`, the only `core/v2` it can
    resolve is the tagged version that `httpx/v2@v2.0.0` declared.
 
 3. **Tagged releases on `main` are the trust anchor.** Branch
@@ -239,13 +251,12 @@ the artefact a consumer receives.
 
 The kit ships a Dependabot config (`.github/dependabot.yml`,
 landed alongside this document or as the next supply-chain
-follow-up) with four ecosystems:
+follow-up) with three ecosystems:
 
 | Ecosystem | Schedule | Auto-merge | Reviewers |
 |---|---|---|---|
 | `gomod` (per module — Dependabot enumerates each `go.mod`) | weekly | NO — every Go dep change requires human approval | `@bds421/security` |
 | `github-actions` | weekly | YES for patch and minor; manual for major | `@bds421/platform` |
-| `npm` (NX toolchain at repo root) | weekly | YES for patch; manual for minor / major | `@bds421/platform` |
 | `docker` (test fixtures only — local-dev compose files) | monthly | manual | `@bds421/platform` |
 
 For Go modules, Dependabot opens one PR per module per dep update.
@@ -275,8 +286,9 @@ Every Dependabot PR must pass before merge:
       boundary), the diff is reviewed by `@bds421/security` even if
       Dependabot tagged it as a patch.
 - [ ] The PR's CHANGELOG entry is correctly typed (`fix:` for CVE
-      patches, `chore:` for non-security bumps) — NX Release
-      derives the next version bump from this prefix.
+      patches, `chore:` for non-security bumps), so the release owner
+      can make the intended version impact explicit in the release notes
+      and tag plan.
 
 ### 3.3 Out-of-band updates
 
@@ -306,7 +318,7 @@ Every binary in `cmd/kit-*` is built with:
 go build \
   -trimpath \                              # strip filesystem paths
   -ldflags="-s -w -buildid= \              # strip symtab, debug, build-id
-            -X main.Version=$VERSION \     # injected by NX Release
+            -X main.Version=$VERSION \     # injected by release build
             -X main.Commit=$GITHUB_SHA \   # injected by CI
             -X main.BuildDate=$SOURCE_DATE_EPOCH"
 ```
@@ -427,7 +439,7 @@ HTTPS + the workflow's commit attestation.
 
 | Key | Purpose | Where it lives | Rotation |
 |---|---|---|---|
-| `release-signing` (Sigstore-issued, ephemeral) | Signs git tags during `nx release publish` | GitHub OIDC → Sigstore Fulcio (no long-term key material) | per-release (ephemeral) |
+| `release-signing` (Sigstore-issued, ephemeral) | Signs git tags during the future release runbook | GitHub OIDC -> Sigstore Fulcio (no long-term key material) | per-release (ephemeral) |
 | `audit-log-hmac` | HMAC chain for `observability/auditlog` records — service-deployed, not kit-shipped | Per-deployment Vault / KMS | annually or on suspicion |
 | `csrf-hmac` | Session-bound CSRF token signing | Per-deployment env var (`_FILE` mounted from secret store) | quarterly |
 | `signedrequest-hmac` | Inter-service signed-request HMAC | Per-deployment KMS | quarterly |
@@ -518,9 +530,9 @@ The clock starts at the *earliest* of:
    files a VEX statement instead of a patch (Theme 5.1).
 2. **Fix.** Patch the dep version (or the kit's own code if the
    bug is ours). Add a regression test referencing the GHSA ID.
-3. **Release.** Bump the affected modules via NX Release. The
-   release notes include the GHSA ID and a short attack-vector
-   summary.
+3. **Release.** Bump and tag the affected modules through the release
+   runbook. The release notes include the GHSA ID and a short
+   attack-vector summary.
 4. **Notify.** GitHub Security Advisory + email to security@
    subscribers.
 5. **Post-mortem** for any CRITICAL: filed under
@@ -533,7 +545,7 @@ The clock starts at the *earliest* of:
 - `sbom.yml` produces a per-release SBOM that can be re-scanned by
   consumers at any time.
 - `govulncheck` reachability mode is the canonical detector for Go
-  vulns; `osv-scanner` for non-Go ecosystems (npm, GitHub Actions).
+  vulns; `osv-scanner` covers manifests and GitHub Actions metadata.
 
 ### 7.4 Documented exceptions
 

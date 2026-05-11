@@ -42,7 +42,7 @@ fix below, explicit CORS origins, lifecycle HTTP server fail-fast checks,
 one-shot background component starts, and the removal of development mode
 (next section). Everything else in v2.0.0 is additive over v1.x; new
 `app.Builder` methods
-(`WithPASETO`, `WithNATS`, `WithPgx`, `WithLeaderElection`,
+(`WithPASETO`, `WithNATS`, `WithPostgres`, `WithLeaderElection`,
 `WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
 `WithActionLogger`, `WithApprovalStore`) don't change existing signatures.
 
@@ -895,7 +895,7 @@ b := app.New("my-service", "v2.0.0", cfg).
     WithProductionInternalExposed().
     WithJWTAllowAnyIssuer().
     WithJWTAllowAnyAudience().
-    Run(ctx)
+    Run()
 
 // After
 b := app.New("my-service", "v2.0.0", cfg).
@@ -904,7 +904,7 @@ b := app.New("my-service", "v2.0.0", cfg).
     WithInternalNonLoopback().     // was WithProductionInternalExposed
     WithoutJWTIssuer().            // was WithJWTAllowAnyIssuer
     WithoutJWTAudience().          // was WithJWTAllowAnyAudience
-    Run(ctx)
+    Run()
 ```
 
 Most services don't pass any opt-outs; the migration in that case is
@@ -1017,8 +1017,8 @@ b := app.New("my-service", "v2.0.0", cfg).
     // Approval workflow for destructive routes
     WithApprovalStore(approvalpg.New(db)).
 
-    // pgx-native pool for LISTEN/NOTIFY + COPY (mutex with WithPostgres)
-    WithPgx(pgxbackend.Config{DSN: cfg.PgxDSN}).
+    // pgx-native Postgres pool for queries, LISTEN/NOTIFY, and COPY
+    WithPostgres(pgxbackend.Config{DSN: cfg.PgxDSN}).
 
     // Leader election for cron jobs
     WithLeaderElection(leaderpg.New(db, "my-service")).
@@ -1029,7 +1029,7 @@ b := app.New("my-service", "v2.0.0", cfg).
     // NATS JetStream (independent of WithRabbitMQ; both can coexist)
     WithNATS(natsbackend.Config{URL: cfg.NATSURL}).
 
-    Run(ctx)
+    RunContext(ctx)
 ```
 
 ## What composes with what (middleware chain order)

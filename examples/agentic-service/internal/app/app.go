@@ -69,6 +69,10 @@ const (
 // uses a hand-composed mux to keep it dependency-light (no DB, no
 // Redis) while still exercising every primitive.
 func Run(ctx context.Context) error {
+	return run(ctx, ":8080")
+}
+
+func run(ctx context.Context, addr string) error {
 	demoToken, err := demoBearerTokenFromEnv()
 	if err != nil {
 		return err
@@ -115,7 +119,7 @@ func Run(ctx context.Context) error {
 	// the same helper internally; the example calls it directly so it
 	// stays dependency-light without forking those defaults by hand.
 	// kit-doctor:allow http-server-error-log reason="default slog ErrorLog is sufficient for the example"
-	srv := httpx.NewServer(":8080", mux)
+	srv := httpx.NewServer(addr, mux)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -11,9 +11,11 @@ import (
 
 func TestNewPgxModule_PanicsOnEmptyDSN(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
+		r := recover()
+		if r == nil {
 			t.Fatal("expected panic on empty DSN")
 		}
+		assert.Contains(t, r, "WithPostgres")
 	}()
 	newPgxModule(pgxbackend.Config{}, nil)
 }

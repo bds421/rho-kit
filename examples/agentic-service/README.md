@@ -94,4 +94,5 @@ curl -i -X POST http://localhost:8080/admin/dangerous-action \
 
 `internal/app/app_test.go` exercises the MCP echo tool round trip
 and the `-32602 Invalid params` validation-failure path. CI runs
-this on every PR via `npx nx affected -t test`.
+this on every PR through the root Makefile gates; locally, use
+`go test ./examples/agentic-service/...`.

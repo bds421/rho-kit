@@ -1,0 +1,595 @@
+rho-kit v2 release rehearsal
+version: v2.0.0
+source: /Users/markusnissl/Developer/private/rho-kit
+temp: /var/folders/gq/r_pxwc6j53vf36s085hdj7740000gn/T/tmp.5tkvdB0Hnz
+log: /Users/markusnissl/Developer/private/rho-kit/docs/release/rehearsals/20260511T100205Z-v2-release-rehearsal.log
+
+==> Copy current working tree
+
+==> Drop local internal replaces in rehearsal repo
+Dropped internal replace directives from workspace go.mod files.
+OK: no internal rho-kit modules pinned at v0.0.0.
+OK: all internal replace directives point at workspace modules.
+OK: all internal rho-kit requires match v2.0.0.
+OK: all module Go directives match go.work (1.26.2).
+
+==> Compute release plan
+level 0=7
+level 1=6
+level 2=6
+level 3=25
+level 4=21
+modules=65
+
+==> Prepare level 0
+tidy: cmd/kit-bench-gate
+go: downloading github.com/stretchr/testify v1.11.1
+go: downloading github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
+go: downloading github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
+go: downloading gopkg.in/yaml.v3 v3.0.1
+go: downloading gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
+go: downloading github.com/kr/pretty v0.3.1
+go: downloading github.com/rogpeppe/go-internal v1.14.1
+go: downloading github.com/kr/text v0.2.0
+tidy: cmd/kit-new
+tidy: core
+go: downloading github.com/google/uuid v1.6.0
+go: downloading github.com/go-playground/validator/v10 v10.30.1
+go: downloading github.com/fsnotify/fsnotify v1.10.1
+go: downloading golang.org/x/sys v0.43.0
+go: downloading github.com/gabriel-vasile/mimetype v1.4.12
+go: downloading github.com/leodido/go-urn v1.4.0
+go: downloading golang.org/x/crypto v0.50.0
+go: downloading github.com/go-playground/assert/v2 v2.2.0
+go: downloading golang.org/x/text v0.36.0
+go: downloading github.com/go-playground/universal-translator v0.18.1
+go: downloading github.com/go-playground/locales v0.14.1
+tidy: crypto
+go: downloading github.com/tink-crypto/tink-go/v2 v2.6.0
+go: downloading aidanwoods.dev/go-paseto v1.6.0
+go: downloading aidanwoods.dev/go-result v0.3.1
+go: downloading google.golang.org/protobuf v1.36.11
+go: downloading github.com/google/go-cmp v0.7.0
+tidy: infra/sqldb/pgx
+go: downloading github.com/jackc/pgx/v5 v5.9.2
+go: downloading github.com/jackc/puddle/v2 v2.2.2
+go: downloading github.com/jackc/pgpassfile v1.0.0
+go: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
+go: downloading golang.org/x/sync v0.20.0
+tidy: io
+tidy: runtime/temporal
+go: downloading go.temporal.io/sdk v1.38.0
+go: downloading github.com/nexus-rpc/sdk-go v0.5.1
+go: downloading github.com/stretchr/objx v0.5.3
+go: downloading go.temporal.io/api v1.54.0
+go: downloading google.golang.org/grpc v1.80.0
+go: downloading github.com/gogo/protobuf v1.3.2
+go: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a
+go: downloading github.com/golang/mock v1.7.0-rc.1
+go: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2
+go: downloading github.com/robfig/cron v1.2.0
+go: downloading golang.org/x/time v0.14.0
+go: downloading github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0
+go: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478
+go: downloading google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478
+go: downloading golang.org/x/net v0.53.0
+go: downloading go.opentelemetry.io/otel v1.42.0
+go: downloading go.opentelemetry.io/otel/sdk/metric v1.42.0
+go: downloading github.com/golang/protobuf v1.5.4
+go: downloading gonum.org/v1/gonum v0.17.0
+go: downloading go.opentelemetry.io/otel/metric v1.42.0
+go: downloading github.com/cespare/xxhash/v2 v2.3.0
+go: downloading go.opentelemetry.io/otel/sdk v1.42.0
+go: downloading github.com/go-logr/logr v1.4.3
+go: downloading github.com/go-logr/stdr v1.2.2
+go: downloading go.opentelemetry.io/auto/sdk v1.2.1
+go: downloading go.opentelemetry.io/otel/trace v1.42.0
+tag: cmd/kit-bench-gate/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: cmd/kit-new/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: core/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: crypto/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: infra/sqldb/pgx/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: io/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+tag: runtime/temporal/v2.0.0 -> a5db6f1259667e50e7a38871b332cda5488022d9
+
+==> Prepare level 1
+tidy: authz
+go: downloading github.com/bds421/rho-kit/core/v2 v2.0.0
+tidy: crypto/envelope/awskms
+go: downloading github.com/aws/aws-sdk-go-v2/service/kms v1.45.6
+go: downloading github.com/bds421/rho-kit/crypto/v2 v2.0.0
+go: downloading github.com/aws/aws-sdk-go-v2 v1.41.2
+go: downloading github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.18
+go: downloading github.com/aws/smithy-go v1.24.1
+go: downloading github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.18
+tidy: crypto/envelope/gcpkms
+go: downloading cloud.google.com/go/kms v1.25.0
+go: downloading cloud.google.com/go v0.123.0
+go: downloading github.com/googleapis/gax-go/v2 v2.17.0
+go: downloading cloud.google.com/go/longrunning v0.8.0
+go: downloading cloud.google.com/go/iam v1.5.3
+go: downloading google.golang.org/genproto v0.0.0-20260128011058-8636f8732409
+go: downloading google.golang.org/api v0.265.0
+go: downloading golang.org/x/oauth2 v0.36.0
+go: downloading cloud.google.com/go/compute/metadata v0.9.0
+go: downloading cloud.google.com/go/auth v0.18.1
+go: downloading cloud.google.com/go/auth/oauth2adapt v0.2.8
+go: downloading github.com/google/s2a-go v0.1.9
+go: downloading github.com/envoyproxy/go-control-plane/envoy v1.36.0
+go: downloading go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
+go: downloading github.com/googleapis/enterprise-certificate-proxy v0.3.11
+go: downloading go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
+go: downloading github.com/felixge/httpsnoop v1.0.4
+go: downloading github.com/envoyproxy/go-control-plane v0.14.0
+go: downloading github.com/envoyproxy/protoc-gen-validate v1.3.0
+go: downloading github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10
+go: downloading github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5
+tidy: flags
+go: downloading github.com/open-feature/go-sdk v1.16.0
+go: downloading go.uber.org/mock v0.6.0
+tidy: observability
+go: downloading go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0
+go: downloading github.com/prometheus/client_golang v1.23.2
+go: downloading github.com/prometheus/client_model v0.6.2
+go: downloading go.uber.org/goleak v1.3.0
+go: downloading go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.42.0
+go: downloading go.opentelemetry.io/proto/otlp v1.9.0
+go: downloading github.com/cenkalti/backoff/v5 v5.0.3
+go: downloading github.com/kylelemons/godebug v1.1.0
+go: downloading github.com/prometheus/common v0.66.1
+go: downloading github.com/prometheus/procfs v0.19.2
+go: downloading github.com/beorn7/perks v1.0.1
+go: downloading go.yaml.in/yaml/v2 v2.4.2
+go: downloading github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
+tidy: resilience
+go: downloading github.com/sony/gobreaker/v2 v2.4.0
+tag: authz/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+tag: crypto/envelope/awskms/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+tag: crypto/envelope/gcpkms/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+tag: flags/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+tag: observability/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+tag: resilience/v2.0.0 -> 26799f14a9ab92c72ab30ef4e79ce194aece39a8
+
+==> Prepare level 2
+tidy: authz/openfga
+go: downloading github.com/openfga/go-sdk v0.7.4
+go: downloading github.com/bds421/rho-kit/authz/v2 v2.0.0
+go: downloading github.com/sourcegraph/conc v0.3.0
+go: downloading go.uber.org/multierr v1.11.0
+go: downloading github.com/jarcoal/httpmock v1.4.1
+tidy: data
+go: downloading github.com/bds421/rho-kit/observability/v2 v2.0.0
+go: downloading github.com/dgraph-io/ristretto/v2 v2.4.0
+go: downloading github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da
+go: downloading github.com/dustin/go-humanize v1.0.1
+tidy: infra
+go: downloading github.com/pressly/goose/v3 v3.27.0
+go: downloading github.com/bds421/rho-kit/io/v2 v2.0.0
+go: downloading github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+go: downloading github.com/bds421/rho-kit/resilience/v2 v2.0.0
+go: downloading github.com/dlclark/regexp2 v1.11.0
+go: downloading modernc.org/sqlite v1.46.1
+go: downloading github.com/sethvargo/go-retry v0.3.0
+go: downloading github.com/mfridman/interpolate v0.0.2
+go: downloading modernc.org/libc v1.68.0
+go: downloading golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa
+go: downloading github.com/mattn/go-isatty v0.0.20
+go: downloading github.com/ncruces/go-strftime v1.0.0
+go: downloading modernc.org/mathutil v1.7.1
+go: downloading modernc.org/memory v1.11.0
+go: downloading github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec
+tidy: infra/redis
+go: downloading github.com/redis/go-redis/v9 v9.18.0
+go: downloading github.com/alicebob/miniredis/v2 v2.37.0
+go: downloading github.com/yuin/gopher-lua v1.1.1
+go: downloading go.uber.org/atomic v1.11.0
+go: downloading github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
+go: downloading github.com/bsm/ginkgo/v2 v2.12.0
+go: downloading github.com/bsm/gomega v1.27.10
+go: downloading github.com/zeebo/xxh3 v1.0.2
+go: downloading github.com/klauspost/cpuid/v2 v2.2.5
+tidy: runtime
+go: downloading github.com/robfig/cron/v3 v3.0.1
+tidy: security
+go: downloading github.com/lestrrat-go/jwx/v3 v3.0.13
+go: downloading github.com/lestrrat-go/option/v2 v2.0.0
+go: downloading github.com/lestrrat-go/blackmagic v1.0.4
+go: downloading github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+go: downloading github.com/lestrrat-go/httprc/v3 v3.0.2
+go: downloading github.com/lestrrat-go/dsig v1.0.0
+go: downloading github.com/goccy/go-json v0.10.3
+go: downloading github.com/lestrrat-go/dsig-secp256k1 v1.0.0
+go: downloading github.com/valyala/fastjson v1.6.7
+go: downloading github.com/segmentio/asm v1.2.1
+go: downloading github.com/lestrrat-go/httpcc v1.0.1
+tag: authz/openfga/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+tag: data/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+tag: infra/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+tag: infra/redis/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+tag: runtime/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+tag: security/v2.0.0 -> 06a068387d3c4f03ef16766bdfc642bbdda063e3
+
+==> Prepare level 3
+tidy: cmd/kit-doctor
+go: downloading github.com/bds421/rho-kit/security/v2 v2.0.0
+tidy: cmd/kit-verify
+tidy: data/actionlog/postgres
+go: downloading github.com/bds421/rho-kit/data/v2 v2.0.0
+tidy: data/approval/postgres
+tidy: data/budget/redis
+tidy: data/cache/rediscache
+go: downloading github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+tidy: data/idempotency/pgstore
+tidy: data/idempotency/redisstore
+tidy: data/lock/pgadvisory
+tidy: data/lock/redislock
+tidy: data/queue/redisqueue
+tidy: data/queue/riverqueue
+go: downloading github.com/riverqueue/river v0.30.0
+go: downloading github.com/riverqueue/river/riverdriver/riverpgxv5 v0.30.0
+go: downloading github.com/riverqueue/river/rivertype v0.30.0
+go: downloading github.com/riverqueue/river/riverdriver v0.30.0
+go: downloading github.com/riverqueue/river/rivershared v0.30.0
+go: downloading github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
+go: downloading github.com/tidwall/gjson v1.18.0
+go: downloading github.com/tidwall/sjson v1.2.5
+go: downloading github.com/tidwall/pretty v1.2.1
+go: downloading github.com/tidwall/match v1.2.0
+tidy: data/ratelimit/redis
+tidy: data/stream/redisstream
+tidy: grpcx
+tidy: httpx
+go: downloading github.com/jub0bs/cors v0.13.4
+go: downloading github.com/hashicorp/golang-lru/v2 v2.0.7
+go: downloading github.com/klauspost/compress v1.18.5
+tidy: infra/messaging/amqpbackend
+go: downloading github.com/bds421/rho-kit/infra/v2 v2.0.0
+go: downloading github.com/rabbitmq/amqp091-go v1.10.0
+tidy: infra/messaging/natsbackend
+go: downloading github.com/nats-io/nats.go v1.51.0
+go: downloading github.com/nats-io/nuid v1.0.1
+go: downloading github.com/nats-io/nkeys v0.4.15
+tidy: infra/redis/redistest
+go: downloading github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
+go: downloading github.com/testcontainers/testcontainers-go v0.42.0
+go: downloading github.com/containerd/platforms v0.2.1
+go: downloading dario.cat/mergo v1.0.2
+go: downloading github.com/moby/moby/api v1.54.1
+go: downloading github.com/moby/moby/client v0.4.0
+go: downloading github.com/cpuguy83/dockercfg v0.3.2
+go: downloading github.com/mdelapenya/tlscert v0.2.0
+go: downloading github.com/cenkalti/backoff/v4 v4.3.0
+go: downloading github.com/containerd/errdefs v1.0.0
+go: downloading github.com/moby/go-archive v0.2.0
+go: downloading github.com/moby/patternmatcher v0.6.1
+go: downloading github.com/opencontainers/image-spec v1.1.1
+go: downloading github.com/containerd/log v0.1.0
+go: downloading github.com/magiconair/properties v1.8.10
+go: downloading github.com/shirou/gopsutil/v4 v4.26.3
+go: downloading github.com/moby/sys/sequential v0.6.0
+go: downloading github.com/moby/sys/user v0.4.0
+go: downloading github.com/moby/sys/userns v0.1.0
+go: downloading github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6
+go: downloading gotest.tools/v3 v3.5.2
+go: downloading golang.org/x/term v0.42.0
+go: downloading github.com/docker/go-units v0.5.0
+go: downloading github.com/moby/term v0.5.2
+go: downloading github.com/Microsoft/go-winio v0.6.2
+go: downloading github.com/containerd/errdefs/pkg v0.3.0
+go: downloading github.com/distribution/reference v0.6.0
+go: downloading github.com/docker/go-connections v0.6.0
+go: downloading github.com/opencontainers/go-digest v1.0.0
+go: downloading github.com/sirupsen/logrus v1.9.4
+go: downloading github.com/creack/pty v1.1.24
+go: downloading github.com/moby/docker-image-spec v1.3.1
+go: downloading github.com/tklauser/go-sysconf v0.3.16
+go: downloading pgregory.net/rapid v1.2.0
+go: downloading github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c
+go: downloading github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0
+go: downloading github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55
+go: downloading github.com/ebitengine/purego v0.10.0
+go: downloading github.com/yusufpapurcu/wmi v1.2.4
+go: downloading github.com/tklauser/numcpus v0.11.0
+go: downloading github.com/go-ole/go-ole v1.2.6
+tidy: infra/sqldb/dbtest
+go: downloading github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
+go: downloading github.com/lib/pq v1.12.3
+tidy: infra/storage/azurebackend
+go: downloading github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
+go: downloading github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2
+go: downloading github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+go: downloading github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage v1.8.1
+go: downloading github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+go: downloading github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0
+go: downloading github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
+go: downloading github.com/golang-jwt/jwt/v5 v5.3.0
+tidy: infra/storage/gcsbackend
+go: downloading cloud.google.com/go/storage v1.60.0
+go: downloading github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0
+go: downloading go.opentelemetry.io/contrib/detectors/gcp v1.39.0
+go: downloading go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.39.0
+go: downloading github.com/google/martian/v3 v3.3.3
+go: downloading github.com/spiffe/go-spiffe/v2 v2.6.0
+go: downloading cel.dev/expr v0.25.1
+go: downloading github.com/envoyproxy/go-control-plane/ratelimit v0.1.0
+go: downloading github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0
+go: downloading github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/cloudmock v0.55.0
+go: downloading cloud.google.com/go/monitoring v1.24.3
+go: downloading github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0
+go: downloading github.com/go-jose/go-jose/v4 v4.1.3
+go: downloading cloud.google.com/go/trace v1.11.7
+go: downloading cloud.google.com/go/logging v1.13.1
+tidy: infra/storage/s3backend
+go: downloading github.com/aws/aws-sdk-go-v2/config v1.32.10
+go: downloading github.com/aws/aws-sdk-go-v2/service/s3 v1.96.2
+go: downloading github.com/aws/aws-sdk-go-v2/credentials v1.19.10
+go: downloading github.com/aws/aws-sdk-go-v2/service/sts v1.41.7
+go: downloading github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4
+go: downloading github.com/aws/aws-sdk-go-v2/service/signin v1.0.6
+go: downloading github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.15
+go: downloading github.com/aws/aws-sdk-go-v2/service/sso v1.30.11
+go: downloading github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.18
+go: downloading github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.5
+go: downloading github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.18
+go: downloading github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.5
+go: downloading github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.18
+go: downloading github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.10
+go: downloading github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.18
+tidy: infra/storage/sftpbackend
+go: downloading github.com/pkg/sftp v1.13.10
+go: downloading github.com/kr/fs v0.1.0
+tidy: infra/storage/storagehttp/uploadsec/clamav
+tag: cmd/kit-doctor/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: cmd/kit-verify/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/actionlog/postgres/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/approval/postgres/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/budget/redis/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/cache/rediscache/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/idempotency/pgstore/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/idempotency/redisstore/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/lock/pgadvisory/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/lock/redislock/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/queue/redisqueue/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/queue/riverqueue/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/ratelimit/redis/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: data/stream/redisstream/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: grpcx/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: httpx/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/messaging/amqpbackend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/messaging/natsbackend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/redis/redistest/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/sqldb/dbtest/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/storage/azurebackend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/storage/gcsbackend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/storage/s3backend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/storage/sftpbackend/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+tag: infra/storage/storagehttp/uploadsec/clamav/v2.0.0 -> 21d8bdccf6f79a5a4bf8a0eca99b92f050fef66b
+
+==> Prepare level 4
+tidy: app
+go: downloading github.com/bds421/rho-kit/httpx/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/grpcx/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/flags/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/runtime/v2 v2.0.0
+tidy: cmd/kit-migrate
+go: downloading github.com/bds421/rho-kit/data/approval/postgres/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.0.0
+tidy: crypto/encrypt/integrationtest
+go: downloading github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.0.0
+tidy: data/actionlog/postgres/integrationtest
+tidy: data/approval/postgres/integrationtest
+tidy: data/cache/rediscache/integrationtest
+go: downloading github.com/bds421/rho-kit/data/cache/rediscache/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.0.0
+tidy: data/idempotency/pgstore/integrationtest
+tidy: data/lock/pgadvisory/integrationtest
+go: downloading github.com/bds421/rho-kit/data/lock/pgadvisory/v2 v2.0.0
+go: downloading github.com/jackc/puddle/v2 v2.2.1
+go: downloading github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a
+tidy: data/queue/redisqueue/integrationtest
+go: downloading github.com/bds421/rho-kit/data/queue/redisqueue/v2 v2.0.0
+tidy: data/queue/riverqueue/integrationtest
+go: downloading github.com/bds421/rho-kit/data/queue/riverqueue/v2 v2.0.0
+tidy: data/stream/redisstream/integrationtest
+go: downloading github.com/bds421/rho-kit/data/stream/redisstream/v2 v2.0.0
+tidy: examples/agentic-service
+tidy: httpx/middleware/signedrequest/redis
+tidy: infra/leaderelection/pgadvisory
+tidy: infra/leaderelection/redislock
+go: downloading github.com/bds421/rho-kit/data/lock/redislock/v2 v2.0.0
+tidy: infra/messaging/amqpbackend/debughttp
+tidy: infra/messaging/amqpbackend/integrationtest
+go: downloading github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
+tidy: infra/messaging/natsbackend/integrationtest
+go: downloading github.com/testcontainers/testcontainers-go/modules/nats v0.42.0
+tidy: infra/messaging/redisbackend
+tidy: infra/sqldb/pgx/integrationtest
+tidy: infra/storage/storagetest
+go: downloading github.com/bds421/rho-kit/infra/storage/s3backend/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/infra/storage/sftpbackend/v2 v2.0.0
+tag: app/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: cmd/kit-migrate/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: crypto/encrypt/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/actionlog/postgres/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/approval/postgres/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/cache/rediscache/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/idempotency/pgstore/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/lock/pgadvisory/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/queue/redisqueue/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/queue/riverqueue/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: data/stream/redisstream/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: examples/agentic-service/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: httpx/middleware/signedrequest/redis/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/leaderelection/pgadvisory/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/leaderelection/redislock/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/messaging/amqpbackend/debughttp/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/messaging/amqpbackend/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/messaging/natsbackend/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/messaging/redisbackend/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/sqldb/pgx/integrationtest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+tag: infra/storage/storagetest/v2.0.0 -> 1603689fa706153992cfb634d622bde2c76223df
+
+==> Push coordination tag
+
+==> Verify clean downstream consumer
+go: creating new go.mod: module rho-kit-v2-verify
+go: downloading github.com/bds421/rho-kit/app/v2 v2.0.0
+go: added aidanwoods.dev/go-paseto v1.6.0
+go: added aidanwoods.dev/go-result v0.3.1
+go: added github.com/bds421/rho-kit/app/v2 v2.0.0
+go: added github.com/bds421/rho-kit/authz/v2 v2.0.0
+go: added github.com/bds421/rho-kit/core/v2 v2.0.0
+go: added github.com/bds421/rho-kit/crypto/v2 v2.0.0
+go: added github.com/bds421/rho-kit/data/v2 v2.0.0
+go: added github.com/bds421/rho-kit/flags/v2 v2.0.0
+go: added github.com/bds421/rho-kit/grpcx/v2 v2.0.0
+go: added github.com/bds421/rho-kit/httpx/v2 v2.0.0
+go: added github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0
+go: added github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0
+go: added github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+go: added github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0
+go: added github.com/bds421/rho-kit/infra/v2 v2.0.0
+go: added github.com/bds421/rho-kit/io/v2 v2.0.0
+go: added github.com/bds421/rho-kit/observability/v2 v2.0.0
+go: added github.com/bds421/rho-kit/resilience/v2 v2.0.0
+go: added github.com/bds421/rho-kit/runtime/v2 v2.0.0
+go: added github.com/bds421/rho-kit/security/v2 v2.0.0
+go: added github.com/beorn7/perks v1.0.1
+go: added github.com/cenkalti/backoff/v5 v5.0.3
+go: added github.com/cespare/xxhash/v2 v2.3.0
+go: added github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+go: added github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
+go: added github.com/felixge/httpsnoop v1.0.4
+go: added github.com/fsnotify/fsnotify v1.10.1
+go: added github.com/gabriel-vasile/mimetype v1.4.12
+go: added github.com/go-logr/logr v1.4.3
+go: added github.com/go-logr/stdr v1.2.2
+go: added github.com/go-playground/locales v0.14.1
+go: added github.com/go-playground/universal-translator v0.18.1
+go: added github.com/go-playground/validator/v10 v10.30.1
+go: added github.com/goccy/go-json v0.10.3
+go: added github.com/google/uuid v1.6.0
+go: added github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0
+go: added github.com/hashicorp/golang-lru/v2 v2.0.7
+go: added github.com/jackc/pgpassfile v1.0.0
+go: added github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
+go: added github.com/jackc/pgx/v5 v5.9.2
+go: added github.com/jackc/puddle/v2 v2.2.2
+go: added github.com/klauspost/compress v1.18.5
+go: added github.com/leodido/go-urn v1.4.0
+go: added github.com/lestrrat-go/blackmagic v1.0.4
+go: added github.com/lestrrat-go/dsig v1.0.0
+go: added github.com/lestrrat-go/dsig-secp256k1 v1.0.0
+go: added github.com/lestrrat-go/httpcc v1.0.1
+go: added github.com/lestrrat-go/httprc/v3 v3.0.2
+go: added github.com/lestrrat-go/jwx/v3 v3.0.13
+go: added github.com/lestrrat-go/option/v2 v2.0.0
+go: added github.com/mfridman/interpolate v0.0.2
+go: added github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
+go: added github.com/nats-io/nats.go v1.51.0
+go: added github.com/nats-io/nkeys v0.4.15
+go: added github.com/nats-io/nuid v1.0.1
+go: added github.com/open-feature/go-sdk v1.16.0
+go: added github.com/pressly/goose/v3 v3.27.0
+go: added github.com/prometheus/client_golang v1.23.2
+go: added github.com/prometheus/client_model v0.6.2
+go: added github.com/prometheus/common v0.66.1
+go: added github.com/prometheus/procfs v0.19.2
+go: added github.com/rabbitmq/amqp091-go v1.10.0
+go: added github.com/redis/go-redis/v9 v9.18.0
+go: added github.com/robfig/cron/v3 v3.0.1
+go: added github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+go: added github.com/segmentio/asm v1.2.1
+go: added github.com/sethvargo/go-retry v0.3.0
+go: added github.com/sony/gobreaker/v2 v2.4.0
+go: added github.com/valyala/fastjson v1.6.7
+go: added go.opentelemetry.io/auto/sdk v1.2.1
+go: added go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
+go: added go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
+go: added go.opentelemetry.io/otel v1.42.0
+go: added go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.42.0
+go: added go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0
+go: added go.opentelemetry.io/otel/metric v1.42.0
+go: added go.opentelemetry.io/otel/sdk v1.42.0
+go: added go.opentelemetry.io/otel/trace v1.42.0
+go: added go.opentelemetry.io/proto/otlp v1.9.0
+go: added go.uber.org/atomic v1.11.0
+go: added go.uber.org/mock v0.6.0
+go: added go.uber.org/multierr v1.11.0
+go: added go.yaml.in/yaml/v2 v2.4.2
+go: added golang.org/x/crypto v0.50.0
+go: added golang.org/x/net v0.53.0
+go: added golang.org/x/sync v0.20.0
+go: added golang.org/x/sys v0.43.0
+go: added golang.org/x/text v0.36.0
+go: added google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478
+go: added google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478
+go: added google.golang.org/grpc v1.80.0
+go: added google.golang.org/protobuf v1.36.11
+?   	rho-kit-v2-verify	[no test files]
+github.com/bds421/rho-kit/app/v2 v2.0.0
+github.com/bds421/rho-kit/authz/v2 v2.0.0
+github.com/bds421/rho-kit/core/v2 v2.0.0
+github.com/bds421/rho-kit/crypto/v2 v2.0.0
+github.com/bds421/rho-kit/data/v2 v2.0.0
+github.com/bds421/rho-kit/flags/v2 v2.0.0
+github.com/bds421/rho-kit/grpcx/v2 v2.0.0
+github.com/bds421/rho-kit/httpx/v2 v2.0.0
+github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0
+github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0
+github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0
+github.com/bds421/rho-kit/infra/v2 v2.0.0
+github.com/bds421/rho-kit/io/v2 v2.0.0
+github.com/bds421/rho-kit/observability/v2 v2.0.0
+github.com/bds421/rho-kit/resilience/v2 v2.0.0
+github.com/bds421/rho-kit/runtime/v2 v2.0.0
+github.com/bds421/rho-kit/security/v2 v2.0.0
+github.com/bds421/rho-kit/app/v2 v2.0.0 h1:t/UrIXHMx9eI+PG+vJkSH9FEB0NEh1cRl92q4txSyuY=
+github.com/bds421/rho-kit/app/v2 v2.0.0/go.mod h1:rVx6WDdF9VqE0GtKXd3VJKaFnxoj4ZXQdhEljxhiYq8=
+github.com/bds421/rho-kit/authz/v2 v2.0.0 h1:YM6Qjsol0YT4u/0CXfKPB1tpNvHVOs/QUnVlD7yfhfk=
+github.com/bds421/rho-kit/authz/v2 v2.0.0/go.mod h1:zCeD3XXBw42/sM34EvilGBQCQqTYPsCeVVGjt95Ws38=
+github.com/bds421/rho-kit/core/v2 v2.0.0 h1:0tmCkG5OkOVu/6cA3iEyvwSVpON0YyZMizEEUJnPgLQ=
+github.com/bds421/rho-kit/core/v2 v2.0.0/go.mod h1:HrvPANxxbrxQnAivIWPoKdPeb281y0GtKazwmXl6Ya8=
+github.com/bds421/rho-kit/crypto/v2 v2.0.0 h1:TAl4m8sgjrklINpGGHCKh+72ZqckOhxfIrF20/rL46E=
+github.com/bds421/rho-kit/crypto/v2 v2.0.0/go.mod h1:HYZIzCsYcmPlotFTiSAhBIO4WY5y30G3kCgte2ME65k=
+github.com/bds421/rho-kit/data/v2 v2.0.0 h1:HCTGA1xTkS/+/h1KdJK8X/LJuwx6G7kxpaMZzv1zmdA=
+github.com/bds421/rho-kit/data/v2 v2.0.0/go.mod h1:NqnEJsWr3Ok9abiDK5R2sdgg9PfpM4XuynV1BsVgvJw=
+github.com/bds421/rho-kit/flags/v2 v2.0.0 h1:HRcibX/jUF5TiSd5XM4aqCtKP3/bLB5mvph1ft1wbb0=
+github.com/bds421/rho-kit/flags/v2 v2.0.0/go.mod h1:EeCcAMmhJ8Y6wcq0kin2f/jGfLgn8KfXWhZG5166HfI=
+github.com/bds421/rho-kit/grpcx/v2 v2.0.0 h1:oYpWhdZ/m8TtVXbxBIyervEhHpRvc8/2oY+pzuAoEBk=
+github.com/bds421/rho-kit/grpcx/v2 v2.0.0/go.mod h1:/BYm5piH0yI+ftZsf77VPyAtcQrSd/TqspBsFVzQq2Y=
+github.com/bds421/rho-kit/httpx/v2 v2.0.0 h1:102mQLnsr09zirrqzdgIyGXhmgJ3qPdSgaNgJYsC2dY=
+github.com/bds421/rho-kit/httpx/v2 v2.0.0/go.mod h1:zKsL5ESyBvdJx84uMCxurtxnzZrUG+rx5iGLIbZtMHg=
+github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0 h1:XT5rRCsqjmxfgOMwh/3rPoyt854BrLy9vevYjoYYC4A=
+github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 v2.0.0/go.mod h1:0q8RX415E7bv8O/V5wr5etgoZClVCEZ3cgCo9n9TR3A=
+github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0 h1:QIG4cqgz8dQ6IyOLj3AEAUrODPkNOE87VbYGq/RoIkE=
+github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 v2.0.0/go.mod h1:ukdwTyvWyf4AdOg41Q6l61JfWMCbJVJ15xh4jSM/k24=
+github.com/bds421/rho-kit/infra/redis/v2 v2.0.0 h1:4RHE1ZuCMu02r+YydzNxCICyc3KSX56zHN4HIPZavu4=
+github.com/bds421/rho-kit/infra/redis/v2 v2.0.0/go.mod h1:HYkhsOnRRKrVOsQeIvhm3HBAo8k/SIb1LzE30qW/i9E=
+github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0 h1:9Ii338TyH7EUyXDl6IAoEFIkIqhESh1OG49U6FUioag=
+github.com/bds421/rho-kit/infra/sqldb/pgx/v2 v2.0.0/go.mod h1:Ko43GqWsHFHK0zHhk35VXFNVryTuKQS00ZgTJIUPdV0=
+github.com/bds421/rho-kit/infra/v2 v2.0.0 h1:ddg6+dmds59byVsDpzp9GvxcuBXPGFL3C7YNRuURutM=
+github.com/bds421/rho-kit/infra/v2 v2.0.0/go.mod h1:Q/uLEFgHqZ2Xqrb8jjzkmuN6+OUKDkTyNILF9amPYTc=
+github.com/bds421/rho-kit/io/v2 v2.0.0 h1:Ocx8D+JJEwpP9Lv5W5raw/xLcRVzw87lwpBmPurGMq4=
+github.com/bds421/rho-kit/io/v2 v2.0.0/go.mod h1:G6XAGL5qRN5dMXpgppT8zNumcb45v3H+WzN9T2VaMcQ=
+github.com/bds421/rho-kit/observability/v2 v2.0.0 h1:Ds37PXOrekp8ph94LhSGy5rrmMzR8qeuQ8zCLf8FrMg=
+github.com/bds421/rho-kit/observability/v2 v2.0.0/go.mod h1:cSRr6at32JvZoJ5xnfzu+W0bxWf3gMme5lIVhVBJu3w=
+github.com/bds421/rho-kit/resilience/v2 v2.0.0 h1:k4yhdBybeoEMkllx7lbMOkyWMCglU7W+BHgREtcuj20=
+github.com/bds421/rho-kit/resilience/v2 v2.0.0/go.mod h1:RgfZ5vwn/hBIJ2fJWm/qKUWRlbqLgGjeKf0UumfgVds=
+github.com/bds421/rho-kit/runtime/v2 v2.0.0 h1:Nfcl2D2PgDAbJRZRszQdcUqr6TfiSIcGh6t238uzcSY=
+github.com/bds421/rho-kit/runtime/v2 v2.0.0/go.mod h1:zsakMfvJHbny9EFgYQxOqjCI1DSAug+o3PZBrmw+uGE=
+github.com/bds421/rho-kit/security/v2 v2.0.0 h1:U4Oamvt1AMFSAafBZbVZTj6N0+CnB1Y7mYKgIxFyQ0k=
+github.com/bds421/rho-kit/security/v2 v2.0.0/go.mod h1:Ek9YzQhhPhvLFpNRhak/c+z8a8J5L6ghaoXDMD/oMvc=
+
+==> Verify command installs
+go: downloading github.com/bds421/rho-kit/cmd/kit-new/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/cmd/kit-migrate/v2 v2.0.0
+go: downloading github.com/bds421/rho-kit/cmd/kit-doctor/v2 v2.0.0
+
+Rehearsal passed.
+log: /Users/markusnissl/Developer/private/rho-kit/docs/release/rehearsals/20260511T100205Z-v2-release-rehearsal.log

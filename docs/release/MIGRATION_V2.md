@@ -112,17 +112,30 @@ go run github.com/bds421/rho-kit/cmd/kit-new/v2@v2.0.0 billing-api \
 
 The scaffold variants are compile-tested by `cmd/kit-new` tests.
 
+Validation evidence for the current release-prep tree:
+
+- The Builder methods named in this guide are present in `app/builder.go`.
+- `examples/agentic-service` builds, passes tests, and has a live smoke path
+  through `tools/list`, `echo`, and `/admin/budget`.
+- `cmd/kit-new` scaffold variants pass their compile-oriented test suite.
+
 ## 5. Migrate Database Schemas
 
 Use `cmd/kit-migrate` to publish/check kit-owned migrations for packages that
 ship schemas, then apply service-owned SQL migrations with the service's normal
-release process.
+release process. In this release-prep tree, `cmd/kit-migrate` still has local
+workspace replaces, so run it from a rho-kit checkout at the release tag rather
+than through `go run module@version`.
 
 ```bash
-go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@v2.0.0 list
-go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@v2.0.0 check idempotency postgres
-go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@v2.0.0 check actionlog postgres
-go run github.com/bds421/rho-kit/cmd/kit-migrate/v2@v2.0.0 check approval postgres
+git clone https://github.com/bds421/rho-kit
+cd rho-kit
+git checkout cmd/kit-migrate/v2.0.0
+
+go run ./cmd/kit-migrate list
+go run ./cmd/kit-migrate check idempotency postgres
+go run ./cmd/kit-migrate check actionlog postgres
+go run ./cmd/kit-migrate check approval postgres
 ```
 
 Service-owned migrations remain explicit SQL. Do not rely on automatic schema
@@ -144,6 +157,18 @@ Known source changes that downstream code may need to adjust:
 | Storage batch/migration helpers | Chunk batch operations above `storage.MaxBatchKeys`; check `MigrateResult.ErrorsTruncated`. |
 | Redis queue/stream batch helpers | Chunk above `queue.MaxBatchMessages` or `redisstream.MaxBatchMessages`. |
 | `infra/redis.HealthCheck` | Treats Redis as a critical dependency by default. Use `NonCriticalHealthCheck` for cache-only or degraded-mode services. |
+
+Validation evidence for the current release-prep tree:
+
+- Accessors for `security/asvs`, `observability/redmetrics`, and
+  `resilience/retry` exist as functions in their owning modules.
+- `security/jwtutil.Provider.Run`,
+  `httpx/middleware/ratelimit.RateLimiter.Run`,
+  `httpx/middleware/ratelimit.KeyedRateLimiter.Run`, and
+  `infra/messaging.BufferedPublisher.Run` all return `error`.
+- `infra/redis.HealthCheck` and `infra/redis.NonCriticalHealthCheck` both
+  exist, and integration evidence is recorded in
+  [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md).
 
 ## 7. Re-run The Release Gates In The Service
 

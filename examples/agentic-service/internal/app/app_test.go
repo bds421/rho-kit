@@ -52,7 +52,7 @@ func TestRun_StartsAndShutsDown(t *testing.T) {
 	// shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := Run(ctx)
+	err := run(ctx, "127.0.0.1:0")
 	require.NoError(t, err)
 }
 

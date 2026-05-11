@@ -25,7 +25,7 @@ type pgxModule struct {
 
 func newPgxModule(cfg pgxbackend.Config, migrationsDir fs.FS) *pgxModule {
 	if cfg.DSN == "" {
-		panic("app: WithPgx requires a non-empty DSN")
+		panic("app: WithPostgres requires a non-empty DSN")
 	}
 	return &pgxModule{
 		BaseModule:    NewBaseModule("pgx"),

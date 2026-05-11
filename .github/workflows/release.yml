@@ -1,55 +1,73 @@
-name: Release
+name: Release Readiness
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   GOTOOLCHAIN: local
+  GOWORK: ${{ github.workspace }}/go.work
   GOPRIVATE: github.com/bds421/*
-  GONOSUMCHECK: github.com/bds421/*
   GONOSUMDB: github.com/bds421/*
 
 jobs:
-  release:
+  readiness:
+    name: Validate v2 readiness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.2"
           cache-dependency-path: "**/go.sum"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
+
       - name: Configure git for private modules
         env:
-          TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          TOKEN: ${{ github.token }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Configure git user
+      - name: Verify working tree
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
+          git status --short
+          test -z "$(git status --short)"
+          git diff --check
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Check v2 workspace dependency invariants
+        run: EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 
-      # NX determines versions, updates go.mod deps, generates changelogs.
-      # Git operations are disabled — we handle commit/tag/push per level.
-      - name: Compute versions and update files
-        run: npx nx release --skip-publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          GOWORK: ${{ github.workspace }}/go.work
+      - name: Compute dependency-ordered release plan
+        run: RELEASE_MODE=all make release-plan
 
-      # Release in dependency order: leaf modules first, then dependents.
-      # Each level gets go mod tidy (deps already tagged), commit, tag, push.
-      - name: Hierarchical release
-        run: bash tools/nx-release/hierarchical-release.sh
+      - name: Rehearse dependency-ordered release locally
+        run: tools/rehearse-v2-release.sh
+
+      - name: Run release-candidate gates
+        run: |
+          set -euo pipefail
+          make check-dependency-boundaries
+          make check-dependency-allowlist
+          make test
+          make lint
+          make test-race
+          make build
+
+      - name: Verify no v2 tags exist yet
+        run: |
+          set -euo pipefail
+          test -z "$(git tag --list '*v2.0.0')"
+          test -z "$(git ls-remote --tags origin '*v2.0.0')"
+
+      - name: Summarize next manual steps
+        run: |
+          {
+            echo "Release readiness passed."
+            echo
+            echo "This workflow does not create tags or GitHub releases."
+            echo "When the release owner is ready, follow docs/release/FINAL_RELEASE_RUNBOOK_V2.md."
+          } >> "$GITHUB_STEP_SUMMARY"

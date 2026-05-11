@@ -1,7 +1,12 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
+.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci release-plan check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
+RELEASE_VERSION      ?= v2.0.0
+RELEASE_BASE_REF     ?= HEAD~1
+RELEASE_MODE         ?= changed
+RELEASE_FORMAT       ?= text
+RELEASE_GLOBAL_CHANGES ?= none
 
 # Extract workspace submodules from go.work, excluding the root module (".").
 WORKSPACE_MODULES := $(shell sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work | grep -v '^\.')
@@ -93,11 +98,15 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable lint test-race build
 
-## check-publishable: Static pre-tag gate — fail if any go.mod still pins internal modules at v0.0.0
+## release-plan: Compute dependency-aware module release levels
+release-plan:
+	@RELEASE_VERSION=$(RELEASE_VERSION) RELEASE_BASE_REF=$(RELEASE_BASE_REF) RELEASE_MODE=$(RELEASE_MODE) RELEASE_FORMAT=$(RELEASE_FORMAT) RELEASE_GLOBAL_CHANGES=$(RELEASE_GLOBAL_CHANGES) bash tools/plan-module-release.sh
+
+## check-publishable: Static pre-tag gate for internal module pins, replaces, and Go directives
 check-publishable:
-	@bash tools/nx-release/check-no-internal-v0.sh
+	@bash tools/check-publishable.sh
 
 ## check-no-binaries: Reject tracked binary artifacts outside fixture dirs.
 # Audit FR-001: prevents Mach-O / ELF / Windows PE executables and >1MB binary

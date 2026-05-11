@@ -19,7 +19,7 @@ name: SBOM
 
 on:
   push:
-    # Any module-tagged release. NX Release tags modules as
+    # Any module-tagged release. The release runbook tags modules as
     # `<module>/v<version>`; we match the trailing `vN.N.N` segment.
     tags:
       - "**/v[0-9]+.[0-9]+.[0-9]+"
@@ -53,7 +53,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.2"
           cache-dependency-path: "**/go.sum"
 
       # Download all module deps so syft sees the full transitive
@@ -68,7 +68,7 @@ jobs:
             echo "::group::go mod download (${module_dir})"
             (cd "$module_dir" && go mod download all)
             echo "::endgroup::"
-          done < <(find . -name go.mod -not -path "./node_modules/*" -not -path "./dist/*" -not -path "./.git/*")
+          done < <(find . -name go.mod -not -path "./dist/*" -not -path "./.git/*")
 
       - name: Generate SBOM (CycloneDX JSON)
         id: sbom
@@ -103,8 +103,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # The release for the tag must already exist (created by NX
-          # Release in the release workflow). We attach the SBOM as a
+          # The release for the tag must already exist. We attach the SBOM as a
           # named asset; `--clobber` lets us re-run the workflow
           # idempotently if it had to be retried.
           gh release upload "$TAG" rho-kit.cdx.json --clobber

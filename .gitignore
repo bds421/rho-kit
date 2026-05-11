@@ -15,10 +15,6 @@ go.work.backup
 go.work.local
 V2_REVIEW_FINDINGS.md
 
-# NX
-node_modules/
-.nx/
-
 # Claude
 .claude/
 dist/
