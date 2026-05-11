@@ -3,6 +3,9 @@
 Covers `RhoKitDBPoolWaiting` (waits/s > 1 for 10m, warn) and
 `RhoKitDBPoolNearExhaustion` (>90% in-use for 5m, page).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The database connection pool is full or close to full. New queries

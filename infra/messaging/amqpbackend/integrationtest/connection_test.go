@@ -17,7 +17,7 @@ func TestDial_Success(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Dial(url, logger)
+	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 
@@ -27,7 +27,7 @@ func TestDial_Success(t *testing.T) {
 func TestDial_InvalidURL(t *testing.T) {
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Dial("amqp://invalid:5672/", logger)
+	conn, err := amqpbackend.Dial("amqp://invalid:5672/", logger, amqpbackend.WithAllowPlaintext())
 	assert.Error(t, err)
 	assert.Nil(t, conn)
 }
@@ -36,7 +36,7 @@ func TestConnection_Channel(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Dial(url, logger)
+	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -50,7 +50,7 @@ func TestConnection_CloseIdempotent(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Dial(url, logger)
+	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
 
 	assert.NoError(t, conn.Close())

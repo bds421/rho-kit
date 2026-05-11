@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
+.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
@@ -38,6 +38,14 @@ test-race:
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Testing $$dir (race)"; \
 		(cd $$dir && go test -race ./...) || exit 1; \
+	done
+
+## test-integration: Run Docker-backed integration tests (all workspace modules)
+test-integration:
+	@docker info >/dev/null 2>&1 || { echo "Docker is required for integration tests"; exit 1; }
+	@for dir in $(WORKSPACE_MODULES); do \
+		echo "==> Integration testing $$dir"; \
+		(cd $$dir && go test -tags integration ./...) || exit 1; \
 	done
 
 ## test-cover: Run tests with coverage report (all workspace modules)

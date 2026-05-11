@@ -3,6 +3,9 @@
 Covers `RhoKitSLOFastBurn` (1h@14.4× burn, page) and
 `RhoKitSLOSlowBurn` (6h@6× burn, warn).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The service is burning its error budget faster than the SLO permits.

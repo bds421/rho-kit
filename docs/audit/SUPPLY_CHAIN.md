@@ -7,6 +7,10 @@
 > running service — dependencies, signing, build reproducibility,
 > CVE response, and provenance.
 
+Snippet status: shell blocks in this policy are executable from the repository
+root unless the surrounding section names a different working directory. Go
+blocks are illustrative module-layout fragments.
+
 A "trusted library" claim has to mean something verifiable.
 Trusted-by-marketing is the same as untrusted in any audit. The
 policies below state, in concrete terms, what the kit promises and

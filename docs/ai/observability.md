@@ -2,6 +2,10 @@
 
 Packages: `observability/health`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing`, `observability/logattr`, `observability/promutil`, `observability/auditlog`
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 | I need to... | Use |

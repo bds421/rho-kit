@@ -6,6 +6,9 @@
 > provenance threats; this file covers the kit's runtime attack
 > surface.
 
+Snippet status: code blocks in this threat model are illustrative attack or
+mitigation fragments unless a section explicitly labels a command as runnable.
+
 This document is the canonical answer to the question "what attacks
 does rho-kit defend against, and how?" It is intended for two
 audiences:

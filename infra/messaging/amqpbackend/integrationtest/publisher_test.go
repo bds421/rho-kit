@@ -22,7 +22,7 @@ func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connecti
 	url := rabbitmqtest.Start(t)
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Dial(url, logger)
+	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

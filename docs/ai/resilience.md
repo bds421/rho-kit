@@ -2,6 +2,10 @@
 
 Packages: `resilience/retry`, `resilience/circuitbreaker`
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 | Scenario | Use |

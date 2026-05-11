@@ -19,7 +19,7 @@ import (
 
 func TestDeclareTopology_Direct(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -34,7 +34,7 @@ func TestDeclareTopology_Direct(t *testing.T) {
 
 func TestDeclareTopology_Fanout(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -49,7 +49,7 @@ func TestDeclareTopology_Fanout(t *testing.T) {
 
 func TestDeclareTopology_Topic(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -64,7 +64,7 @@ func TestDeclareTopology_Topic(t *testing.T) {
 
 func TestDeclareTopology_Headers(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -79,7 +79,7 @@ func TestDeclareTopology_Headers(t *testing.T) {
 
 func TestDeclareTopology_Idempotent(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -98,7 +98,7 @@ func TestDeclareTopology_Idempotent(t *testing.T) {
 
 func TestDeclareAll_RetryTopology(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -186,7 +186,7 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 
 func TestDeclareAll_NoRetry_EmptyDeclaredFields(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -209,7 +209,7 @@ func TestDeclareAll_NoRetry_EmptyDeclaredFields(t *testing.T) {
 
 func TestDeclareAll_ValidationErrors(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

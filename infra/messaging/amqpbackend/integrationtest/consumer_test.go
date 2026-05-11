@@ -34,7 +34,7 @@ func setupConsumerTest(t *testing.T) (*amqpbackend.Connection, *amqpbackend.Publ
 
 	url := rabbitmqtest.Start(t)
 
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -143,7 +143,7 @@ func TestConsumeOnce_AckOnSuccess(t *testing.T) {
 
 func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -195,7 +195,7 @@ func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
 
 func TestConsumeOnce_MaxRetriesExceeded_GoesToDeadQueue(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -397,7 +397,7 @@ func TestConsumeOnce_DeliveryMetadata(t *testing.T) {
 
 func TestConsumeOnce_RequiresPublisher(t *testing.T) {
 	url := rabbitmqtest.Start(t)
-	conn, err := amqpbackend.Dial(url, slog.Default())
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

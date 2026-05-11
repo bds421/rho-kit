@@ -2,6 +2,10 @@
 
 Packages: `infra/storage`, `storage/s3backend`, `storage/azurebackend`, `storage/gcsbackend`, `storage/sftpbackend`, `storage/localbackend`, `storage/membackend`, `storage/encryption`, `storage/retry`, `storage/circuitbreaker`, `storage/storagehttp`, `storage/storagehttp/uploadsec`, `storage/storagehttp/uploadsec/clamav`
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 Use the `infra/storage` package whenever a service needs to store, retrieve, or serve files. Choose the backend based on your infrastructure. Use `Manager` for multi-disk setups. Compose wrappers (encryption, retry, circuit breaker) for production resilience.

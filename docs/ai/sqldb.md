@@ -2,6 +2,10 @@
 
 Packages: `infra/sqldb`, `infra/sqldb/pgx`, `infra/sqldb/migrate`, `infra/sqldb/dbtest/v2`, `data/idempotency/pgstore`
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 Use `infra/sqldb` for PostgreSQL configuration and small stdlib helpers. Use `infra/sqldb/pgx` for the runtime pool. v2 does not ship MySQL, MariaDB, or GORM as the service database path.

@@ -2,6 +2,10 @@
 
 Packages: `infra/sqldb/dbtest/v2`, `infra/redis/redistest/v2`, `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest`, `infra/storage/storagetest/v2`
 
+Snippet status: shell blocks are executable from the documented module root.
+Go blocks are illustrative fragments unless explicitly introduced as generated
+or executable code.
+
 ## When to Use
 
 Use integration helpers for tests that need real infrastructure. They use Testcontainers and require Docker. Keep these helpers behind the `integration` build tag and import them only from test files.

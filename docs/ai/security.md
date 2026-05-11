@@ -2,6 +2,11 @@
 
 Packages: `crypto/encrypt`, `crypto/signing`, `security/jwtutil`, `security/jwtutil/revocation`, `crypto/masking`, `security/netutil`, `security/mtlsidentity`, `security/asvs`
 
+Snippet status: Go and JavaScript blocks in this recipe are illustrative
+fragments unless explicitly introduced as generated or executable code.
+Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
+`examples/agentic-service`.
+
 ## When to Use
 
 | Need | Package |

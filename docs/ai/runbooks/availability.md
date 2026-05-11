@@ -3,6 +3,9 @@
 Covers `RhoKitHighErrorRate` (5xx ratio > 5% for 10m) and
 `RhoKitElevated4xxRate` (4xx ratio > 20% for 30m).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The HTTP server is returning a high proportion of error responses.

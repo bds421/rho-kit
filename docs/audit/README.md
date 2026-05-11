@@ -8,6 +8,10 @@ been removed now that the implementation has shipped. Per-finding
 status is preserved in [CRITICAL.md](CRITICAL.md) and in `git log`;
 deferred follow-ups carry forward in [ROADMAP.md](ROADMAP.md).
 
+Release-candidate artifacts live in [../release](../release/). Use those files
+for API-freeze, migration, and final tag evidence; use this directory for the
+security/audit history that explains why the release surface exists.
+
 ## Documents
 
 | File | Purpose |

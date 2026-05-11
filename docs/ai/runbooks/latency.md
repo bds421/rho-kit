@@ -3,6 +3,9 @@
 Covers `RhoKitLatencyP99High` (p99 > 1s for 15m, warn) and
 `RhoKitLatencyP99Critical` (p99 > 5s for 5m, page).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The slowest 1% of requests are taking longer than the SLO permits.

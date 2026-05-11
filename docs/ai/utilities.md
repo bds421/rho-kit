@@ -2,6 +2,11 @@
 
 Packages: `core/apperror`, `core/validate`, `httpx/pagination`, `data/cache`, `runtime/lifecycle`, `runtime/concurrency`, `core/contextutil`, `core/tenant`, `core/config`, `observability/logattr`, `io/atomicfile`, `io/progress`, `runtime/eventbus`
 
+Snippet status: Go and JSON blocks in this recipe are illustrative fragments
+unless explicitly introduced as generated or executable code. Buildable
+golden-path evidence lives in `cmd/kit-new` scaffold tests and
+`examples/agentic-service`.
+
 ## apperror — Sum-Type Application Errors
 
 Nine concrete error types, each carrying only their relevant fields. All implement the `apperror.AppError` interface (sealed — do not implement externally). Constructors return `error`, so consumer code doesn't need to know the concrete types:

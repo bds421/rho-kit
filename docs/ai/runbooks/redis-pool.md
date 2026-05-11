@@ -3,6 +3,9 @@
 Covers `RhoKitRedisPoolTimeouts` (pool-timeout increase > 5/5m for
 10m, warn).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The application's Redis client tried to acquire a connection from

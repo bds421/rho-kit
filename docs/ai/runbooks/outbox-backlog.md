@@ -4,6 +4,9 @@ Covers `RhoKitOutboxBacklogGrowing` (pending growing & > 100 for
 30m, warn) and `RhoKitOutboxBacklogCritical` (pending > 10k for
 10m, page).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The outbox table has more pending entries than the relay can

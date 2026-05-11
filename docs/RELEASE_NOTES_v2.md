@@ -6,6 +6,10 @@ shipped the security and operational guardrails that any production
 service needs; v2.0.0 adds the agentic-specific primitives that every
 agentic service was hand-rolling and getting wrong.
 
+Snippet status: code blocks in these release notes are illustrative migration
+fragments unless explicitly introduced as commands. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## TL;DR
 
 | Theme | What landed | Why |
@@ -26,6 +30,10 @@ with route overrides (closes GAP-07), direct dependency source
 allowlist CI (closes GAP-10), heavy optional SDK boundary CI, and the
 `examples/agentic-service` reference binary that wires the entire v2
 stack in one file.
+
+Release-candidate artifacts are maintained under `docs/release/`: the
+module-level public API freeze, the operational migration guide, and the
+RC evidence checklist.
 
 ## Breaking changes
 
@@ -63,6 +71,13 @@ has an empty `Addr`, nil `Handler`, or zero `ReadHeaderTimeout`. Manual wiring
 must use the same explicit-address, explicit-handler, slowloris-resistant
 posture as `httpx.NewServer`; a zero-value server would otherwise bind with
 surprising defaults or expose the process-global default mux.
+
+### Redis health checks are critical by default
+
+`infra/redis.HealthCheck` returns a critical dependency check. Services that can
+operate in degraded mode without Redis, such as cache-only users, should wire
+`infra/redis.NonCriticalHealthCheck` instead. `CriticalHealthCheck` remains an
+explicit alias for the default critical behavior.
 
 ### ASVS registries are accessors
 
@@ -1150,7 +1165,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 | Kafka backend | Explicit "don't do kafka" directive this wave |
 | AMQP messaging dashboard | Backend uses callback hooks (`BufferedPublisherMetrics`) rather than Prometheus collectors; needs the metrics surface first |
 | Per-package benchmarks for `kit-bench-gate` | Gate ships; baselines land per-area as benchmarks are written |
-| Recipe entries in `docs/ai/*.md` | Separate docs sweep; the v2 primitives' package docs and `examples/agentic-service` cover the canonical wiring |
+| Additional provider-specific production dashboards | The metrics surfaces and runbooks ship in v2.0.0; provider-specific dashboard JSON can follow once real service SLOs settle |
 
 ## Stats
 

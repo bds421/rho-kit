@@ -2,6 +2,10 @@
 
 Packages: `httpx`, `httpx/middleware/stack`, `httpx/middleware/auth`, `httpx/middleware/csrf`, `httpx/middleware/cors`, `httpx/middleware/ratelimit`, `httpx/middleware/budget`, `httpx/budget`, `httpx/middleware/logging`, `httpx/middleware/metrics`, `httpx/middleware/requestid`, `httpx/middleware/timeout`, `httpx/middleware/clientip`, `httpx/middleware/maxbody`, `httpx/middleware/idempotency`
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 Every HTTP service uses `stack.Default()` for the canonical middleware chain. Use `httpx` for server creation, JSON encoding/decoding, and error responses. Use individual middleware packages for specific concerns.

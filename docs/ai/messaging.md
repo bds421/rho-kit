@@ -2,6 +2,10 @@
 
 Packages: `infra/messaging` (interfaces), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
 
+Snippet status: Go blocks in this recipe are illustrative fragments unless
+explicitly introduced as generated or executable code. Buildable golden-path
+evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
+
 ## When to Use
 
 Use `infra/messaging` for **cross-service durable messaging**. The root package defines transport-agnostic interfaces (`MessagePublisher`, `MessageConsumer`, `Handler`, `Connector`). Backend implementations live in sub-packages.

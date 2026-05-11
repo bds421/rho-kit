@@ -4,6 +4,13 @@
 infrastructure patterns every service needs so teams can focus on domain logic
 while staying consistent, secure, and observable.
 
+Release-candidate artifacts for v2.0.0 live under [docs/release](docs/release/):
+the public API freeze, migration guide, and RC evidence checklist.
+
+Snippet status: Go blocks in this README are illustrative fragments. The shell
+commands are executable from a downstream module. Golden-path evidence lives in
+`examples/agentic-service` and the `cmd/kit-new` scaffold tests.
+
 **Why it exists**
 - Provide a single, opinionated "golden path" for service startup.
 - Eliminate repeated boilerplate around logging, tracing, health, and config.

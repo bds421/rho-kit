@@ -51,7 +51,7 @@ func TestConnection_Reconnect_OnReconnectCallbackFires(t *testing.T) {
 	container, url := startDedicatedRabbitMQ(t)
 
 	var reconnected atomic.Bool
-	conn, err := amqpbackend.Dial(url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
 		reconnected.Store(true)
 		return nil
 	}))
@@ -73,7 +73,7 @@ func TestConnection_Reconnect_ChannelWorksAfterReconnect(t *testing.T) {
 	container, url := startDedicatedRabbitMQ(t)
 
 	reconnected := make(chan struct{}, 1)
-	conn, err := amqpbackend.Dial(url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
 		select {
 		case reconnected <- struct{}{}:
 		default:
@@ -106,7 +106,7 @@ func TestConnection_MaxReconnectAttempts_FiresDead(t *testing.T) {
 	url, err := container.AmqpURL(ctx)
 	require.NoError(t, err)
 
-	conn, err := amqpbackend.Dial(url, slog.Default(), amqpbackend.WithMaxReconnectAttempts(2))
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.WithMaxReconnectAttempts(2))
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 
@@ -127,7 +127,7 @@ func TestConnection_Reconnect_CallbackError_RetriesUntilCallbackSucceeds(t *test
 	container, url := startDedicatedRabbitMQ(t)
 
 	var callbackCalls atomic.Int32
-	conn, err := amqpbackend.Dial(url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
 		if callbackCalls.Add(1) == 1 {
 			return errors.New("transient callback error")
 		}
@@ -149,7 +149,7 @@ func TestConnection_Reconnect_HealthTransitions(t *testing.T) {
 	container, url := startDedicatedRabbitMQ(t)
 
 	reconnected := make(chan struct{}, 1)
-	conn, err := amqpbackend.Dial(url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
+	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.OnReconnect(func(_ amqpbackend.Connector) error {
 		select {
 		case reconnected <- struct{}{}:
 		default:

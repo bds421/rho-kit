@@ -5,11 +5,16 @@
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
 
+Snippet status: command blocks are executable from the repository root unless
+noted otherwise. The Go block below is an illustrative golden-path shape; the
+buildable paths are `cmd/kit-new` scaffolds and `examples/agentic-service`.
+
 ## Commands
 
 ```bash
 make test          # unit tests
 make test-race     # race detector
+make test-integration # Docker-backed integration tests
 make test-cover    # coverage report
 make lint          # golangci-lint v2
 make vulncheck     # govulncheck

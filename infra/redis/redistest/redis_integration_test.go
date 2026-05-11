@@ -98,6 +98,18 @@ func TestHealthCheck_Healthy(t *testing.T) {
 	check := kitredis.HealthCheck(conn)
 	status := check.Check(context.Background())
 	assert.Equal(t, "healthy", status)
+	assert.True(t, check.Critical)
+}
+
+func TestNonCriticalHealthCheck_Healthy(t *testing.T) {
+	opts := redisOpts(t)
+	conn, err := kitredis.Connect(opts)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	check := kitredis.NonCriticalHealthCheck(conn)
+	status := check.Check(context.Background())
+	assert.Equal(t, "healthy", status)
 	assert.False(t, check.Critical)
 }
 

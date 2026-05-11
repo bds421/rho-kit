@@ -4,6 +4,9 @@ Covers `RhoKitOutboxErrorRateHigh` (error ratio > 5% for 15m, warn),
 `RhoKitOutboxNoProgress` (no publishes in 10m with backlog > 0,
 page), and `RhoKitOutboxRelayLatencyHigh` (p99 > 5s for 15m, warn).
 
+Snippet status: PromQL blocks in this runbook are illustrative query fragments
+to adapt to the service's Prometheus labels and SLO windows.
+
 ## What this alert says
 
 The outbox relay is failing to publish messages — either errors are
