@@ -1,15 +1,18 @@
 # v2.0.0 benchmark baselines
 
-Generated: `2026-05-12T14:24:46Z`
+Generated: `2026-05-12T14:32:57Z`
 
-- Git revision: `4f2c48f771ac0cf6b33f6eaf3bf16762aafec92d`
-- Working tree: `clean`
+- Source Git revision: `5fb930d7ac5b206b6174be535fc4751a6c33d6b2`
+- Source working tree: `clean`
 - Go: `go version go1.26.3 darwin/arm64`
 - GOOS/GOARCH: `darwin/arm64`
 - Command shape: `go test -run=^$ -bench=. -benchmem -count=5 ./...`
 
 These files are intended as `kit-bench-gate -baseline` inputs. Refresh
 them on release-candidate hardware before tagging if the machine changes.
+
+Source metadata is captured before benchmark output files are rewritten;
+the benchmark output directory is ignored when computing source-tree cleanliness.
 
 ## Captured Modules
 

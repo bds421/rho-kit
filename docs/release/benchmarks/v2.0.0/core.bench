@@ -1,49 +1,49 @@
 # module: core
 # command: go test -run=^$ -bench=. -benchmem -count=5 ./...
-# generated: 2026-05-12T14:24:46Z
+# generated: 2026-05-12T14:32:57Z
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/apperror	0.331s
+ok  	github.com/bds421/rho-kit/core/v2/apperror	0.345s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/clock	0.254s
+ok  	github.com/bds421/rho-kit/core/v2/clock	0.249s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/config	0.380s
+ok  	github.com/bds421/rho-kit/core/v2/config	0.269s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/contextutil	0.273s
+ok  	github.com/bds421/rho-kit/core/v2/contextutil	0.261s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/randstr	0.253s
+ok  	github.com/bds421/rho-kit/core/v2/randstr	0.264s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/redact	0.257s
+ok  	github.com/bds421/rho-kit/core/v2/redact	0.254s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/safecast	0.258s
+ok  	github.com/bds421/rho-kit/core/v2/safecast	0.253s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/secret	0.272s
+ok  	github.com/bds421/rho-kit/core/v2/secret	0.273s
 goos: darwin
 goarch: arm64
 pkg: github.com/bds421/rho-kit/core/v2/tenant
 cpu: Apple M4 Max
-BenchmarkValidateID-16       	18630718	        54.59 ns/op	       0 B/op	       0 allocs/op
-BenchmarkValidateID-16       	21305100	        54.83 ns/op	       0 B/op	       0 allocs/op
-BenchmarkValidateID-16       	21806138	        53.70 ns/op	       0 B/op	       0 allocs/op
-BenchmarkValidateID-16       	21654346	        54.64 ns/op	       0 B/op	       0 allocs/op
-BenchmarkValidateID-16       	20754781	        53.17 ns/op	       0 B/op	       0 allocs/op
-BenchmarkWithIDChecked-16    	39281958	        29.43 ns/op	      64 B/op	       2 allocs/op
-BenchmarkWithIDChecked-16    	41487021	        29.42 ns/op	      64 B/op	       2 allocs/op
-BenchmarkWithIDChecked-16    	41323024	        29.40 ns/op	      64 B/op	       2 allocs/op
-BenchmarkWithIDChecked-16    	40933045	        29.80 ns/op	      64 B/op	       2 allocs/op
-BenchmarkWithIDChecked-16    	40821012	        29.67 ns/op	      64 B/op	       2 allocs/op
-BenchmarkFromContext-16      	374469159	         3.187 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFromContext-16      	376334565	         3.176 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFromContext-16      	378628521	         3.180 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFromContext-16      	379437241	         3.171 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFromContext-16      	380303551	         3.184 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRequired-16         	379599279	         3.181 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRequired-16         	373724470	         3.186 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRequired-16         	372910728	         3.178 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRequired-16         	373887150	         3.170 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRequired-16         	376698084	         3.194 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22055935	        54.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22521130	        53.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22319905	        53.07 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	20742867	        53.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22085956	        54.19 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWithIDChecked-16    	40626493	        29.17 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	40244204	        29.56 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	41059154	        29.13 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	41450716	        29.40 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	40204371	        29.26 ns/op	      64 B/op	       2 allocs/op
+BenchmarkFromContext-16      	375874984	         3.201 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	373360857	         3.174 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	375489505	         3.190 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	371735791	         3.198 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	371572820	         3.192 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	374987157	         3.191 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	369487326	         3.202 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	370131135	         3.194 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	372521856	         3.181 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	371512810	         3.183 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/tenant	27.596s
+ok  	github.com/bds421/rho-kit/core/v2/tenant	28.747s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/tlsclone	0.271s
+ok  	github.com/bds421/rho-kit/core/v2/tlsclone	0.289s
 PASS
-ok  	github.com/bds421/rho-kit/core/v2/validate	0.305s
+ok  	github.com/bds421/rho-kit/core/v2/validate	0.324s

@@ -1,101 +1,101 @@
 # module: data
 # command: go test -run=^$ -bench=. -benchmem -count=5 ./...
-# generated: 2026-05-12T14:26:35Z
+# generated: 2026-05-12T14:34:45Z
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/actionlog	0.370s
+ok  	github.com/bds421/rho-kit/data/v2/actionlog	0.294s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/actionlog/memory	0.274s
+ok  	github.com/bds421/rho-kit/data/v2/actionlog/memory	0.269s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/approval	0.272s
+ok  	github.com/bds421/rho-kit/data/v2/approval	0.271s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/approval/memory	0.361s
+ok  	github.com/bds421/rho-kit/data/v2/approval/memory	0.266s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/budget	0.265s
+ok  	github.com/bds421/rho-kit/data/v2/budget	0.263s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/budget/memory	0.269s
+ok  	github.com/bds421/rho-kit/data/v2/budget/memory	0.266s
 goos: darwin
 goarch: arm64
 pkg: github.com/bds421/rho-kit/data/v2/cache
 cpu: Apple M4 Max
-BenchmarkGetOrCompute_Hit-16            	 1799688	       669.9 ns/op	     504 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Hit-16            	 1792639	       667.1 ns/op	     504 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Hit-16            	 1817258	       661.2 ns/op	     504 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Hit-16            	 1804701	       662.9 ns/op	     504 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Hit-16            	 1826558	       658.0 ns/op	     504 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Miss-16           	  433183	      2710 ns/op	    1755 B/op	      25 allocs/op
-BenchmarkGetOrCompute_Miss-16           	  453121	      2746 ns/op	    1813 B/op	      25 allocs/op
-BenchmarkGetOrCompute_Miss-16           	  444670	      2722 ns/op	    1773 B/op	      25 allocs/op
-BenchmarkGetOrCompute_Miss-16           	  449835	      2755 ns/op	    1799 B/op	      25 allocs/op
-BenchmarkGetOrCompute_Miss-16           	  438489	      2763 ns/op	    1762 B/op	      25 allocs/op
-BenchmarkGetOrCompute_Stale-16          	 1667552	       726.2 ns/op	     527 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Stale-16          	 1633747	       731.8 ns/op	     527 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Stale-16          	 1647579	       728.9 ns/op	     527 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Stale-16          	 1640294	       733.0 ns/op	     527 B/op	      11 allocs/op
-BenchmarkGetOrCompute_Stale-16          	 1652706	       730.2 ns/op	     527 B/op	      11 allocs/op
-BenchmarkMemoryCache_Get-16             	12753085	        92.47 ns/op	      23 B/op	       1 allocs/op
-BenchmarkMemoryCache_Get-16             	12636577	        92.33 ns/op	      23 B/op	       1 allocs/op
-BenchmarkMemoryCache_Get-16             	13014049	        92.60 ns/op	      23 B/op	       1 allocs/op
-BenchmarkMemoryCache_Get-16             	13631277	        89.70 ns/op	      23 B/op	       1 allocs/op
-BenchmarkMemoryCache_Get-16             	12829284	        92.73 ns/op	      23 B/op	       1 allocs/op
-BenchmarkMemoryCache_Set-16             	 3935122	       322.1 ns/op	     279 B/op	       4 allocs/op
-BenchmarkMemoryCache_Set-16             	 4131631	       320.8 ns/op	     276 B/op	       4 allocs/op
-BenchmarkMemoryCache_Set-16             	 3995704	       330.0 ns/op	     280 B/op	       4 allocs/op
-BenchmarkMemoryCache_Set-16             	 4042522	       328.2 ns/op	     278 B/op	       4 allocs/op
-BenchmarkMemoryCache_Set-16             	 3955507	       327.7 ns/op	     279 B/op	       4 allocs/op
-BenchmarkMemoryCache_GetMiss-16         	24323769	        48.44 ns/op	       6 B/op	       0 allocs/op
-BenchmarkMemoryCache_GetMiss-16         	24109839	        48.66 ns/op	       6 B/op	       0 allocs/op
-BenchmarkMemoryCache_GetMiss-16         	25262824	        48.80 ns/op	       6 B/op	       0 allocs/op
-BenchmarkMemoryCache_GetMiss-16         	24888346	        48.31 ns/op	       6 B/op	       0 allocs/op
-BenchmarkMemoryCache_GetMiss-16         	24448942	        47.77 ns/op	       6 B/op	       0 allocs/op
-BenchmarkMemoryCache_SetOverwrite-16    	 4504416	       270.7 ns/op	     112 B/op	       2 allocs/op
-BenchmarkMemoryCache_SetOverwrite-16    	 4464471	       267.2 ns/op	     112 B/op	       2 allocs/op
-BenchmarkMemoryCache_SetOverwrite-16    	 4496703	       272.7 ns/op	     112 B/op	       2 allocs/op
-BenchmarkMemoryCache_SetOverwrite-16    	 4364322	       270.6 ns/op	     112 B/op	       2 allocs/op
-BenchmarkMemoryCache_SetOverwrite-16    	 4373194	       269.4 ns/op	     112 B/op	       2 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1786382	       672.9 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1811646	       663.6 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1789623	       666.6 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1783263	       671.7 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1784272	       669.6 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  441432	      2772 ns/op	    1763 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  448308	      2739 ns/op	    1791 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  445063	      2756 ns/op	    1773 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  436350	      2764 ns/op	    1749 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  438754	      2736 ns/op	    1753 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1618440	       737.2 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1613146	       737.5 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1620769	       734.1 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1612728	       739.7 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1615873	       737.9 ns/op	     528 B/op	      11 allocs/op
+BenchmarkMemoryCache_Get-16             	12845942	        93.30 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	12978128	        91.93 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	12930249	        91.70 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	12687481	        93.54 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	12887433	        92.16 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Set-16             	 3714495	       336.9 ns/op	     286 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 4040731	       329.1 ns/op	     277 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 3925741	       334.7 ns/op	     281 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 3930596	       332.6 ns/op	     281 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 4038380	       327.3 ns/op	     278 B/op	       4 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23953808	        50.71 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	24077529	        50.37 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23519630	        49.25 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23774007	        49.46 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	24010023	        49.75 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4528170	       269.1 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4459243	       266.8 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4502162	       271.8 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4477396	       269.3 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4429900	       268.0 ns/op	     112 B/op	       2 allocs/op
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/cache	43.921s
+ok  	github.com/bds421/rho-kit/data/v2/cache	43.861s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/cache/tenant	0.406s
+ok  	github.com/bds421/rho-kit/data/v2/cache/tenant	0.359s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/idempotency	0.332s
+ok  	github.com/bds421/rho-kit/data/v2/idempotency	0.249s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/idempotency/tenant	0.262s
+ok  	github.com/bds421/rho-kit/data/v2/idempotency/tenant	0.265s
 ?   	github.com/bds421/rho-kit/data/v2/lock	[no test files]
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/queue	0.277s
+ok  	github.com/bds421/rho-kit/data/v2/queue	0.260s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/ratelimit	0.271s
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit	0.273s
 goos: darwin
 goarch: arm64
 pkg: github.com/bds421/rho-kit/data/v2/ratelimit/gcra
 cpu: Apple M4 Max
-BenchmarkAllowAllowed-16    	26088916	        44.53 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	27095247	        44.74 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	26916314	        44.74 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	27325876	        44.34 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	27452440	        44.90 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	31519502	        38.82 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	30572988	        39.16 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	30737572	        38.57 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	29838066	        39.39 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	30650720	        38.86 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	27273856	        44.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	26751577	        44.22 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	27780429	        44.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	27332491	        44.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	28558281	        44.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	30111757	        39.51 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	28842686	        38.94 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31189522	        39.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	29920802	        38.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	30185198	        38.85 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/ratelimit/gcra	12.698s
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit/gcra	13.607s
 goos: darwin
 goarch: arm64
 pkg: github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket
 cpu: Apple M4 Max
-BenchmarkAllowAllowed-16    	27480548	        37.58 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	33222897	        37.01 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	31065982	        37.27 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	30513224	        37.45 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowAllowed-16    	31713799	        37.33 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	34007338	        35.21 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	34843669	        34.95 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	35832794	        34.70 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	33743527	        34.98 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAllowDenied-16     	35265118	        34.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	25853223	        38.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	28996538	        38.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	32044612	        37.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	33375747	        38.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	32207919	        38.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	32520178	        35.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31761680	        35.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	34241322	        34.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	33216115	        36.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	33639592	        35.51 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket	12.473s
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket	12.366s
 PASS
-ok  	github.com/bds421/rho-kit/data/v2/stream	0.300s
+ok  	github.com/bds421/rho-kit/data/v2/stream	0.288s
