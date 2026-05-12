@@ -26,6 +26,14 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
+git_revision="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+source_status="$(git status --porcelain -- . ":(exclude)$outdir" 2>/dev/null || true)"
+if [[ -n "$source_status" ]]; then
+    tree_state="dirty"
+else
+    tree_state="clean"
+fi
+
 modules_file="$tmpdir/modules"
 sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work |
     grep -v '^\.' > "$modules_file"
@@ -36,12 +44,8 @@ manifest="$outdir/MANIFEST.md"
 {
     printf '# %s benchmark baselines\n\n' "$version"
     printf 'Generated: `%s`\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf -- '- Git revision: `%s`\n' "$(git rev-parse HEAD 2>/dev/null || printf unknown)"
-    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
-        printf -- '- Working tree: `dirty`\n'
-    else
-        printf -- '- Working tree: `clean`\n'
-    fi
+    printf -- '- Git revision: `%s`\n' "$git_revision"
+    printf -- '- Working tree: `%s`\n' "$tree_state"
     printf -- '- Go: `%s`\n' "$(go version)"
     printf -- '- GOOS/GOARCH: `%s/%s`\n' "$(go env GOOS)" "$(go env GOARCH)"
     printf -- '- Command shape: `go test -run=^$ -bench=. -benchmem -count=%s ./...`\n\n' "$count"
