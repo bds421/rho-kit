@@ -14,6 +14,7 @@ cmd/kit-verify/kit-verify
 go.work.backup
 go.work.local
 V2_REVIEW_FINDINGS.md
+docs/release/rehearsals/*.log
 
 # Claude
 .claude/

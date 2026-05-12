@@ -549,7 +549,7 @@ The clock starts at the *earliest* of:
    subscribers.
 5. **Post-mortem** for any CRITICAL: filed under
    [`THREAT_MODEL.md`](THREAT_MODEL.md) §4 (the affected area) and
-   linked from [`CRITICAL.md`](CRITICAL.md).
+   referenced by commit or advisory ID.
 
 ### 7.3 Detection
 
@@ -698,6 +698,5 @@ they can downgrade a dep version. Mitigation:
 
 ---
 
-*Companion: [THREAT_MODEL.md](THREAT_MODEL.md). Per-finding ledger:
-[CRITICAL.md](CRITICAL.md). Roadmap of remaining audit items:
-[ROADMAP.md](ROADMAP.md).*
+*Companion: [THREAT_MODEL.md](THREAT_MODEL.md). Completed audit artifacts live
+in git history, not in package documentation.*

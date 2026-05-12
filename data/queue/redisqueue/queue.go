@@ -256,8 +256,7 @@ func queueMetricLabel(queue string) string {
 // messages from a permanently-dead consumer (e.g. a pod that OOM'd and
 // will not return). Operators with that requirement should run a periodic
 // reaper that inspects abandoned per-consumer lists and re-enqueues their
-// contents to the main queue. A built-in reaper based on heartbeat keys
-// is tracked as a v2.1+ follow-up in docs/audit/ROADMAP.md.
+// contents to the main queue.
 //
 // Only one Process goroutine per queue name is allowed. Calling Process
 // concurrently on the same queue will panic — this prevents duplication

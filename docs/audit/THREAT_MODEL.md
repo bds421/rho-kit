@@ -452,7 +452,7 @@ following hold:
 - `BufferedPublisher` configured with a state file path that
   escapes the configured directory.
 - Nil dependency to any constructor (the kit's "fail-fast nil-deps"
-  cluster — see [docs/audit/CRITICAL.md](CRITICAL.md)).
+  cluster).
 - `MemoryCache` configured with both an explicit cap of 0 and
   `WithUnbounded(false)`.
 - Negative or zero values to `NewRateLimiter`, `NewKeyedRateLimiter`,
@@ -515,8 +515,7 @@ appends HMAC-chained audit records. Each record carries:
 - Tamper-evident HMAC — each record's HMAC includes the previous
   record's HMAC, forming an append-only chain.
 
-Cursors for paginated reads are HMAC-signed
-([`98f05e4`](../audit/CRITICAL.md)) so an attacker cannot guess /
+Cursors for paginated reads are HMAC-signed so an attacker cannot guess /
 forge cursors to skip records.
 
 ### 5.5 Outbound HTTP discipline
@@ -839,12 +838,11 @@ considered through every STRIDE lens.
 
 | Date | Theme | Change |
 |---|---|---|
-| 2026-04 | (pre-Theme-5 audit) | Original audit landed in `CRITICAL.md` plus per-package implementation-plan files (since retired, see [README.md](README.md)); threat surface implicit, no consolidated doc. |
+| 2026-04 | (pre-Theme-5 audit) | Original audit landed as per-package implementation notes; threat surface implicit, no consolidated doc. |
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
 | 2026-05 | Theme 6+ hardening | GAP-01, GAP-02, GAP-03, GAP-04, GAP-05, GAP-06, GAP-07, GAP-08, GAP-09, and GAP-10 closed by cost-budget primitives, `httpx.SafeRedirect`, `grpcx` default deadlines, internal-only gRPC health, `cmd/kit-new -tenant`, `jwtutil` revocation checks, cross-backend message-size limits, `uploadsec/clamav`, outbox self-managed retention cleanup, direct dependency allowlist CI, and heavy optional SDK boundary CI. |
 
 Future updates: amend this table whenever §4 acquires a new threat
 ID, §6 acquires a new walk-through, or §8 closes a gap. The
-revision history is intentionally brief — detailed commit history
-lives in `docs/audit/CRITICAL.md` per-finding ledger and in `git
-log`.
+revision history is intentionally brief; detailed implementation history lives
+in `git log`.

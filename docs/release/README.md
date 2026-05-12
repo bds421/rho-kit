@@ -1,8 +1,8 @@
 # rho-kit v2 Release Artifacts
 
 This directory contains the release-candidate artifacts that are meant to be
-read immediately before tagging v2.0.0. Historical audits and threat models
-remain under `docs/audit/`; this directory is the operational release view.
+read immediately before tagging v2.0.0. Security policy documents remain under
+`docs/audit/`; this directory is the operational release view.
 
 | File | Purpose |
 |---|---|
@@ -29,5 +29,6 @@ The final runbook also verifies resolution from a clean temporary downstream
 module before publishing the GitHub release.
 
 Run `tools/rehearse-v2-release.sh` before touching the real remote. It executes
-the dependency-ordered release against a temporary bare repository and records
-the local-only proof under `docs/release/rehearsals/`.
+the dependency-ordered release against a temporary bare repository and writes a
+local-only log under `docs/release/rehearsals/`; those logs are evidence
+artifacts and are not tracked.

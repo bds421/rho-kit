@@ -7,7 +7,7 @@
   and SBOM workflow model.
 - Add CODEOWNERS coverage for security-sensitive audit, release, workflow, and
   release-gate files.
-- Refresh v2 audit docs for the current 65-module workspace and shipped
-  dashboard set.
+- Trim completed audit/review artifacts from package documentation; keep only
+  security policy, threat model, and dependency allowlist docs.
 - Clean up accidental test-only `context.TODO()` and `http.DefaultClient` uses
   outside the intentionally insecure kit-doctor fixtures.

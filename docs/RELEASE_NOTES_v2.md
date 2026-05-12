@@ -1071,7 +1071,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `core/tenant` — type-distinct `tenant.ID`, ctx helpers, `Required`, and length-prefixed `Key(ctx, parts...)`
 - `data/cache/tenant.Wrap(c)` — namespaces every key with the shared tenant key encoder; cache bulk helpers and memory/Redis/tenant bulk paths reject batches above `cache.MaxBulkKeys` before allocating maps or sending backend command batches
 - Redis queue and stream batch publish/enqueue helpers reject oversized batches before building command pipelines; Redis stream consumer batch size is capped by the same `redisstream.MaxBatchMessages` limit
-- `data/idempotency/tenant.Wrap(s)` — namespaces idempotency keys (not the body fingerprint — see audit doc for rationale)
+- `data/idempotency/tenant.Wrap(s)` — namespaces idempotency keys, not the body fingerprint
 - `cmd/kit-new -tenant` — scaffolds strict `X-Tenant-Id`, Redis, tenant cache, and tenant idempotency wiring
 - `httpx/middleware/ratelimit/tenant` — per-tenant limit on top of IP limit (both must pass)
 - `observability/promutil/labelguard` — drops + counts disallowed label values to prevent cardinality explosion
@@ -1201,7 +1201,8 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - **116 commits** ahead of v1.x baseline at release.
 - **5 parallel agents** + me orchestrating, plus 1 sequential agent (MCP).
 - **10 new packages** under `data/`, `httpx/`, `observability/`, plus the example.
-- **~6500 lines** of new docs across `THREAT_MODEL`, `SUPPLY_CHAIN`, audit `26-29`, ROADMAP, runbooks, README, this file.
+- **Package-relevant docs** for threat modeling, supply-chain policy, release
+  notes, migration, benchmarks, dashboards, and runbooks.
 
 ## Upgrading from v1.x
 

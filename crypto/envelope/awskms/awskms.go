@@ -13,7 +13,7 @@
 //
 // Encryption context (AAD) support is intentionally omitted from this
 // scaffold — adding it requires aligning the kit's envelope format
-// with KMS's encryption_context map. Track in v2.x roadmap.
+// with KMS's encryption_context map in a future minor release.
 //
 // asvs: V6.2.1, V6.4.1
 package awskms
