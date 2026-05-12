@@ -237,9 +237,9 @@ git ls-remote --tags origin '*v2.0.0'
 All commands passed on 2026-05-11. The first `make vulncheck` attempt hit a
 transient `vuln.go.dev` connection reset while fetching advisory metadata; the
 immediate retry completed for every module with `No vulnerabilities found.`
-The rehearsal evidence from that date predates the 66th
-`crypto/envelope/vaulttransit` module and the 67th
-`crypto/envelope/azurekeyvault` module and must be refreshed before tagging. No
+The rehearsal evidence from that date predates the
+`crypto/envelope/vaulttransit` and `crypto/envelope/azurekeyvault` modules and
+must be refreshed before tagging. No
 local or remote `*v2.0.0` tags existed after the rehearsal.
 
 2026-05-12 follow-up for Vault Transit, Azure Key Vault, benchmark baselines,
@@ -261,7 +261,7 @@ make build
 make check-no-binaries
 make bench-baseline
 cd crypto/envelope/azurekeyvault && go test -race ./...
-cd crypto/envelope/azurekeyvault && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+cd crypto/envelope/azurekeyvault && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 cd crypto/envelope/azurekeyvault && go mod verify
 ```
 

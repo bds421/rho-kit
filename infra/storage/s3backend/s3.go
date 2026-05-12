@@ -304,9 +304,12 @@ func (b *S3Backend) Delete(ctx context.Context, key string) error {
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(key),
 	})
-	b.metrics.observeOp(b.instance, "delete", start, err)
+	b.metrics.observeOp(b.instance, "delete", start, s3MetricErr(err))
 
 	if err != nil {
+		if isS3NotFound(err) {
+			return nil
+		}
 		opErr := storage.WrapSafe("s3backend: delete failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
@@ -332,11 +335,10 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(key),
 	})
-	b.metrics.observeOp(b.instance, "exists", start, err)
+	b.metrics.observeOp(b.instance, "exists", start, s3MetricErr(err))
 
 	if err != nil {
-		var notFound *types.NotFound
-		if errors.As(err, &notFound) {
+		if isS3NotFound(err) {
 			return false, nil
 		}
 		opErr := storage.WrapSafe("s3backend: exists failed", err)
@@ -344,6 +346,22 @@ func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, opErr
 	}
 	return true, nil
+}
+
+func s3MetricErr(err error) error {
+	if isS3NotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func isS3NotFound(err error) bool {
+	var notFound *types.NotFound
+	if errors.As(err, &notFound) {
+		return true
+	}
+	var noSuchKey *types.NoSuchKey
+	return errors.As(err, &noSuchKey)
 }
 
 // applySSE sets the ServerSideEncryption (and SSEKMSKeyId when applicable)

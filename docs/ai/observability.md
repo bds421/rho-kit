@@ -103,6 +103,11 @@ saturation, messaging, rate limiting, recording rules, and SLO templates. Alert
 `runbook_url` annotations point to the matching pages under
 `docs/ai/runbooks/`.
 
+The v2.0.0 Prometheus contract freeze does not include provider-specific NATS
+JetStream or Redis-stream direct messaging metrics. Those packages remain
+stable Go APIs, but their metric names, labels, dashboards, and alerts must be
+introduced and frozen together in a later release.
+
 Keep dashboard changes paired with the metric contract they depend on. A new
 collector or label dimension should update the dashboard, runbook, and alert
 rules in the same change so operators do not receive panels or alerts that

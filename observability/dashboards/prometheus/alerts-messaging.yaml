@@ -1,6 +1,6 @@
 # Messaging alerts for outbox relay and direct AMQP publishing/consuming.
-# NATS and Redis-stream direct backend dashboards can be added when their
-# Prometheus contracts are frozen.
+# NATS and Redis-stream direct backend metrics/dashboards are explicitly
+# deferred from the v2.0.0 Prometheus contract freeze.
 groups:
   - name: rho-kit-messaging
     rules:

@@ -39,10 +39,12 @@ RC evidence checklist.
 
 ## Breaking changes
 
-Runtime behaviour changes include the `httpx/middleware/auth` fail-closed
-fix below, explicit CORS origins, lifecycle HTTP server fail-fast checks,
-one-shot background component starts, and the removal of development mode
-(next section). Everything else in v2.0.0 is additive over v1.x; new
+Runtime and API behaviour changes include the `httpx/middleware/auth`
+fail-closed fix below, authtest-only auth context injection helpers, typed
+`crypto/signing.Secret` parameters, strict leader-election callback draining,
+explicit CORS origins, lifecycle HTTP server fail-fast checks, one-shot
+background component starts, and the removal of development mode (next
+section). Most remaining v2.0.0 surface is additive over v1.x; new
 `app.Builder` methods
 (`WithPASETO`, `WithNATS`, `WithPostgres`, `WithLeaderElection`,
 `WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
@@ -131,6 +133,14 @@ used as request-signature header values, so malformed IDs now fail during
 store construction instead of producing requests the verifier later rejects.
 Validation errors no longer echo the configured key ID.
 
+### HMAC signing secrets are typed
+
+`crypto/signing.Sign`, `Verify`, `SignContext`, and `VerifyContext` now take a
+named `signing.Secret` for the HMAC key argument. Use `signing.NewSecret` or an
+explicit `signing.Secret(...)` conversion at the boundary where bytes become a
+webhook secret. This keeps the v2 `(secret, body)` order while making accidental
+body/secret swaps a compile-time error.
+
 ### Key-management errors avoid reflecting key IDs
 
 Action-log signing and envelope-encryption failures no longer echo secret-store
@@ -141,6 +151,9 @@ also uses a stable short-secret panic that does not echo the configured key ID.
 AWS, GCP, and Vault Transit KMS config `LogValue` renderers now report only
 whether a key is configured instead of logging full key IDs, aliases, resource
 paths, Vault mount paths, or Transit key names.
+AWS KMS unwrap validates envelope key identifiers before the SDK call and, for
+alias-configured KEKs, decrypts through the configured alias instead of passing
+an attacker-controlled envelope key ARN to `Decrypt`.
 GCP KMS CRC32C mismatch errors no longer print observed/expected checksum
 values for ciphertext or decrypted plaintext responses.
 
@@ -204,6 +217,9 @@ direct get, copy, symlink, and filesystem-operation failures.
 Encrypted-storage copy wrappers and S3 direct operation, list, copy, and
 presign failures also avoid adding object keys to their own error context.
 Azure and GCS direct operation wrappers follow the same rule.
+S3 and SFTP operation error metrics now treat expected missing-object outcomes
+from `Delete` and `Exists` as successful control flow, matching Azure/GCS, so
+cleanup and existence probes do not increment provider error counters.
 SFTP operation, list, remote-path containment, and symlink-safety errors no
 longer add object keys or derived remote object paths to their own messages.
 Checksum mismatch and endpoint scheme validation errors now keep provided
@@ -1139,6 +1155,10 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - New Prometheus rules (recording, storage-provider latency, saturation, messaging, rate-limit)
 - 9 runbooks under `docs/ai/runbooks/` matching every alert's `runbook_url`
 - `promtool check rules` in CI
+- The v2.0.0 Prometheus contract freeze covers the dashboarded families above.
+  Provider-specific NATS JetStream and Redis-stream direct messaging metrics
+  remain deferred until their names, labels, dashboards, alerts, and runbooks
+  can be introduced together.
 
 ### Benchmark baselines
 - `make bench-baseline` captures raw `go test -run=^$ -bench=. -benchmem -count=5 ./...` outputs for every current benchmarked workspace module.
@@ -1175,6 +1195,10 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `infra/messaging.BufferedPublisher` final drain and Redis/Postgres
   leader-election lock release paths follow the same bounded-detach pattern, so
   shutdown cleanup can finish without losing parent context values.
+- Redis/Postgres leader-election `OnAcquired` callbacks now drain strictly after
+  lost leadership or parent cancellation. The previous callback drain timeout
+  option was removed so a callback that ignores its context stalls the elector
+  instead of allowing same-process leader work to overlap on retry.
 - Builder module cleanup, tracing shutdown, internal-server shutdown, MCP async
   audit appends, and pgx LISTEN cleanup also use bounded detached contexts for
   after-cancellation cleanup without losing tenant, trace, logger, or other

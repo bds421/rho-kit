@@ -37,12 +37,11 @@
 //
 // # Test helpers
 //
-//   - WithUserID, WithPermissions: simulate the JWT path.
+//   - WithUserID, WithPermissions: simulate the JWT path. Available only
+//     under the `authtest` build tag.
 //   - WithTrustedS2S: simulate the mTLS path's marker. Available only
-//     under the `authtest` build tag; in default builds it panics so an
-//     accidental production import fails loudly instead of silently
-//     bypassing RBAC.
+//     under the `authtest` build tag.
 //
-// All three are clearly labelled "tests only" — using them in production
-// code defeats the auth middleware.
+// Default builds do not expose direct auth-context injection helpers; using
+// them requires opting into `-tags authtest`.
 package auth

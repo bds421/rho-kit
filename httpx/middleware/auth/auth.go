@@ -582,27 +582,3 @@ func hasPermissionFast(ctx context.Context, required string) bool {
 	_, found := ps[required]
 	return found
 }
-
-// WithUserID returns a new context with the given user ID.
-//
-// This is intended for use in tests only. Production code should rely on the
-// JWT or mTLS middleware to set the user ID. Using this in production bypasses
-// authentication and allows identity spoofing.
-func WithUserID(ctx context.Context, id string) context.Context {
-	return userIDKey.Set(ctx, authUserID(id))
-}
-
-// WithPermissions returns a new context with the given permissions.
-//
-// This is intended for use in tests only. Production code should rely on the
-// JWT middleware to set permissions. Using this in production bypasses
-// authorization checks.
-func WithPermissions(ctx context.Context, perms []string) context.Context {
-	perms = slices.Clone(perms)
-	ctx = permissionsKey.Set(ctx, perms)
-	ps := make(permissionSet, len(perms))
-	for _, p := range perms {
-		ps[p] = struct{}{}
-	}
-	return permSetKey.Set(ctx, ps)
-}

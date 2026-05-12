@@ -13,6 +13,20 @@ No module is approved for removal or rename before v2.0.0. New modules are not
 allowed unless the dependency-boundary and allowlist checks are updated in the
 same change.
 
+## Prometheus Contract Scope
+
+The v2.0.0 Prometheus contract freeze covers the dashboarded metric families
+listed in `observability/dashboards/README.md`: HTTP RED, gRPC RED, Go runtime,
+database pools, Redis client health, storage S3/GCS/Azure/SFTP, outbox, direct
+AMQP messaging, and HTTP rate limiting.
+
+NATS JetStream (`infra/messaging/natsbackend`) and Redis Streams direct
+messaging (`infra/messaging/redisbackend` / `data/stream/redisstream`) remain
+API-frozen as Go packages, but their provider-specific Prometheus metric
+contracts and dashboards are explicitly not part of the v2.0.0 metrics freeze.
+Adding or freezing those metric names later requires a dashboard, alert/runbook,
+and migration note in the same change.
+
 ## Core Service Surface
 
 | Module | Decision | Rename/remove decision | Freeze notes |

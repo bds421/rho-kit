@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -116,12 +117,13 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if keyID == "" {
 		return nil, errors.New("awskms: keyID must not be empty")
 	}
-	if !k.allowsKeyID(keyID) {
-		return nil, errors.New("awskms: keyID does not match this KEK")
+	decryptKeyID, err := k.decryptKeyIDFor(keyID)
+	if err != nil {
+		return nil, err
 	}
 	out, err := k.c.Decrypt(ctx, &kms.DecryptInput{
 		CiphertextBlob:    wrapped,
-		KeyId:             aws.String(keyID),
+		KeyId:             aws.String(decryptKeyID),
 		EncryptionContext: k.context,
 	})
 	if err != nil {
@@ -143,24 +145,34 @@ func (k *KEK) validate(ctx context.Context) error {
 	return nil
 }
 
-// allowsKeyID reports whether keyID is an acceptable Unwrap target.
-// AWS KMS returns the version-qualified key ARN from Encrypt, so
-// blobs Wrap-ped with an alias or bare key ID will carry the ARN.
-// We accept either the configured KeyID verbatim (covers ARN==ARN
-// and alias==alias replays) or any keyID that contains the
-// configured value as a substring after the last "/" segment match
-// — practical compromise: an alias configured locally matches the
-// alias-arn that KMS returns. The substring check is bounded to
-// the configured value so an unrelated key ID cannot match.
-func (k *KEK) allowsKeyID(keyID string) bool {
+// decryptKeyIDFor validates the envelope key ID and returns the KeyId to send
+// to AWS KMS Decrypt. The envelope header is attacker-controlled once stored
+// bytes can be modified, so alias-configured KEKs intentionally decrypt through
+// the configured alias rather than forwarding an arbitrary key ARN from the
+// envelope.
+func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 	if keyID == k.keyID {
-		return true
+		return keyID, nil
 	}
-	// Strict suffix match for "alias/<name>" or "key/<id>" segments.
+
+	if isKMSAliasID(k.keyID) {
+		if (isKMSKeyARN(keyID) || isKMSAliasARN(keyID)) && !isKMSAliasARN(k.keyID) {
+			return k.keyID, nil
+		}
+		if (isKMSKeyARN(keyID) || isKMSAliasARN(keyID)) && sameKMSARNScope(k.keyID, keyID) {
+			return k.keyID, nil
+		}
+		return "", errors.New("awskms: keyID does not match this KEK")
+	}
+
 	if len(keyID) > len(k.keyID) && hasSuffixSegment(keyID, k.keyID) {
-		return true
+		if !isKMSKeyARN(keyID) {
+			return "", errors.New("awskms: keyID does not match this KEK")
+		}
+		return keyID, nil
 	}
-	return false
+
+	return "", errors.New("awskms: keyID does not match this KEK")
 }
 
 // hasSuffixSegment reports whether s ends with seg AND seg is
@@ -179,6 +191,45 @@ func hasSuffixSegment(s, seg string) bool {
 	}
 	prev := s[len(s)-len(seg)-1]
 	return prev == '/' || prev == ':'
+}
+
+func isKMSAliasID(s string) bool {
+	return strings.HasPrefix(s, "alias/") || isKMSAliasARN(s)
+}
+
+func isKMSAliasARN(s string) bool {
+	resource, ok := kmsARNResource(s)
+	return ok && strings.HasPrefix(resource, "alias/")
+}
+
+func isKMSKeyARN(s string) bool {
+	resource, ok := kmsARNResource(s)
+	return ok && strings.HasPrefix(resource, "key/")
+}
+
+func sameKMSARNScope(a, b string) bool {
+	aParts := strings.SplitN(a, ":", 6)
+	bParts := strings.SplitN(b, ":", 6)
+	if len(aParts) != 6 || len(bParts) != 6 {
+		return false
+	}
+	for i := 0; i < 5; i++ {
+		if aParts[i] != bParts[i] {
+			return false
+		}
+	}
+	return aParts[2] == "kms" && bParts[2] == "kms"
+}
+
+func kmsARNResource(s string) (string, bool) {
+	parts := strings.SplitN(s, ":", 6)
+	if len(parts) != 6 {
+		return "", false
+	}
+	if parts[0] != "arn" || parts[2] != "kms" || parts[3] == "" || parts[4] == "" {
+		return "", false
+	}
+	return parts[5], true
 }
 
 func cloneContext(in map[string]string) map[string]string {

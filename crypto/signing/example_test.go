@@ -11,7 +11,7 @@ func ExampleSign() {
 	fixed := time.Unix(1700000000, 0)
 	signer := signing.NewSigner(signing.WithClock(func() time.Time { return fixed }))
 
-	secret := []byte("0123456789abcdef0123456789abcdef")
+	secret := signing.Secret("0123456789abcdef0123456789abcdef")
 	body := []byte(`{"event":"ping"}`)
 
 	sig, ts, err := signer.Sign(secret, body)

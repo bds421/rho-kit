@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,20 @@ import (
 )
 
 const testUUID = "550e8400-e29b-41d4-a716-446655440000"
+
+func withUserIDForTest(ctx context.Context, id string) context.Context {
+	return userIDKey.Set(ctx, authUserID(id))
+}
+
+func withPermissionsForTest(ctx context.Context, perms []string) context.Context {
+	perms = slices.Clone(perms)
+	ctx = permissionsKey.Set(ctx, perms)
+	ps := make(permissionSet, len(perms))
+	for _, p := range perms {
+		ps[p] = struct{}{}
+	}
+	return permSetKey.Set(ctx, ps)
+}
 
 // headerOnlyMiddleware is a test helper that enforces the X-User-Id header
 // without JWT verification.
@@ -689,7 +705,7 @@ func TestRequireS2SAuth_ValidMTLS(t *testing.T) {
 		t.Errorf("UserID = %q, want %q", capturedUserID, testUUID)
 	}
 
-	perms := Permissions(WithUserID(req.Context(), testUUID))
+	perms := Permissions(withUserIDForTest(req.Context(), testUUID))
 	if perms != nil {
 		t.Errorf("S2S should have nil permissions, got %v", perms)
 	}
@@ -998,8 +1014,8 @@ func TestRequirePermission_Allowed(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithPermissions(ctx, []string{"general:view", "general:manage"})
+	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx = withPermissionsForTest(ctx, []string{"general:view", "general:manage"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1019,8 +1035,8 @@ func TestRequirePermission_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithPermissions(ctx, []string{"general:view"})
+	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx = withPermissionsForTest(ctx, []string{"general:view"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1045,7 +1061,7 @@ func TestRequirePermission_NilPermissions_NoMarker_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	req = req.WithContext(withUserIDForTest(req.Context(), testUUID))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -1085,8 +1101,8 @@ func TestRequirePermission_EmptyPermissions(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithPermissions(ctx, []string{})
+	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx = withPermissionsForTest(ctx, []string{})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1111,8 +1127,8 @@ func TestPermissionByMethod_ReadAllowed(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
 		called = false
 		req := httptest.NewRequest(method, "/", nil)
-		ctx := WithUserID(req.Context(), testUUID)
-		ctx = WithPermissions(ctx, []string{"general:view"})
+		ctx := withUserIDForTest(req.Context(), testUUID)
+		ctx = withPermissionsForTest(ctx, []string{"general:view"})
 		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -1136,8 +1152,8 @@ func TestPermissionByMethod_WriteAllowed(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		called = false
 		req := httptest.NewRequest(method, "/", nil)
-		ctx := WithUserID(req.Context(), testUUID)
-		ctx = WithPermissions(ctx, []string{"general:manage"})
+		ctx := withUserIDForTest(req.Context(), testUUID)
+		ctx = withPermissionsForTest(ctx, []string{"general:manage"})
 		req = req.WithContext(ctx)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -1157,8 +1173,8 @@ func TestPermissionByMethod_WriteDenied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithPermissions(ctx, []string{"general:view"})
+	ctx := withUserIDForTest(req.Context(), testUUID)
+	ctx = withPermissionsForTest(ctx, []string{"general:view"})
 	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1177,7 +1193,7 @@ func TestPermissionByMethod_NilPermissions_NoMarker_Denied(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req = req.WithContext(WithUserID(req.Context(), testUUID))
+	req = req.WithContext(withUserIDForTest(req.Context(), testUUID))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -1189,32 +1205,32 @@ func TestPermissionByMethod_NilPermissions_NoMarker_Denied(t *testing.T) {
 	}
 }
 
-// --- WithUserID / WithPermissions tests ---
+// --- auth context helper tests ---
 
-func TestWithUserID(t *testing.T) {
+func TestUserIDContextHelper(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
+	ctx := withUserIDForTest(req.Context(), testUUID)
 
 	if got := UserID(ctx); got != testUUID {
-		t.Errorf("WithUserID: UserID() = %q, want %q", got, testUUID)
+		t.Errorf("UserID() = %q, want %q", got, testUUID)
 	}
 }
 
-func TestWithPermissions(t *testing.T) {
+func TestPermissionsContextHelper(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	perms := []string{"general:view", "users:manage"}
-	ctx := WithPermissions(req.Context(), perms)
+	ctx := withPermissionsForTest(req.Context(), perms)
 
 	got := Permissions(ctx)
 	if len(got) != 2 || got[0] != "general:view" || got[1] != "users:manage" {
-		t.Errorf("WithPermissions: Permissions() = %v, want %v", got, perms)
+		t.Errorf("Permissions() = %v, want %v", got, perms)
 	}
 }
 
 func TestWithPermissions_ClonesInputAndOutput(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	perms := []string{"general:view", "users:manage"}
-	ctx := WithPermissions(req.Context(), perms)
+	ctx := withPermissionsForTest(req.Context(), perms)
 
 	perms[0] = "admin:all"
 	got := Permissions(ctx)

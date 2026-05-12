@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,6 +120,58 @@ func TestHoldLeadership_LossCancelsAndWaitsForCallback(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "handle reports lost")
 	require.True(t, callbackExited.Load(), "leader work must drain before retry")
+}
+
+func TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains(t *testing.T) {
+	e := &Elector{
+		healthCheck: 10 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(released) })
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- e.holdLeadership(context.Background(), handle, leaderelection.Callbacks{
+			OnAcquired: func(ctx context.Context) {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				<-released
+			},
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("OnAcquired did not start")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("OnAcquired was not cancelled after lock loss")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("holdLeadership returned before callback drained: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(released) })
+	select {
+	case err := <-result:
+		require.ErrorContains(t, err, "handle reports lost")
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("holdLeadership did not return after callback drained")
+	}
 }
 
 func TestLeaderReleaseContextPreservesValuesAfterCancellation(t *testing.T) {

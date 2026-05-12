@@ -604,7 +604,7 @@ func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 
 	start := now()
 	err = client.Remove(remotePath)
-	b.metrics.observeOp(b.instance, "delete", start, err)
+	b.metrics.observeOp(b.instance, "delete", start, sftpMetricErr(err))
 
 	if err != nil {
 		if isNotExist(err) {
@@ -645,7 +645,7 @@ func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 
 	start := now()
 	_, err = client.Stat(remotePath)
-	b.metrics.observeOp(b.instance, "exists", start, err)
+	b.metrics.observeOp(b.instance, "exists", start, sftpMetricErr(err))
 
 	if err != nil {
 		if isNotExist(err) {
@@ -748,6 +748,13 @@ func isNotExist(err error) bool {
 		return statusErr.Code == ssh_FX_NO_SUCH_FILE
 	}
 	return false
+}
+
+func sftpMetricErr(err error) error {
+	if isNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // ssh_FX_NO_SUCH_FILE is the SSH FXP status code for "no such file".

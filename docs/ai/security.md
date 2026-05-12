@@ -101,14 +101,14 @@ Stripe-model webhook signatures:
 
 ```go
 // Sender:
-secret := []byte("your-webhook-secret")
+secret := signing.NewSecret([]byte("0123456789abcdef0123456789abcdef"))
 sig, ts, err := signing.Sign(secret, body)
 // sig = "sha256=<hex>", ts = unix timestamp
 req.Header.Set("X-Signature", sig)
 req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
 
 // Receiver:
-secret := []byte("your-webhook-secret")
+secret := signing.NewSecret([]byte("0123456789abcdef0123456789abcdef"))
 tsHeaders := r.Header.Values("X-Timestamp")
 sigHeaders := r.Header.Values("X-Signature")
 if len(tsHeaders) != 1 || len(sigHeaders) != 1 {

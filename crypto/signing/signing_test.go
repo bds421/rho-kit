@@ -13,7 +13,17 @@ import (
 )
 
 // testSecret is a 32-byte key for test use (matches minSecretLen).
-var testSecret = []byte("test-webhook-secret-32bytes!!!!!")
+var testSecret = Secret("test-webhook-secret-32bytes!!!!!")
+
+func TestNewSecretCopiesInput(t *testing.T) {
+	raw := []byte("test-webhook-secret-32bytes!!!!!")
+	secret := NewSecret(raw)
+	raw[0] = 'X'
+
+	if string(secret) != "test-webhook-secret-32bytes!!!!!" {
+		t.Fatalf("NewSecret retained caller-owned bytes: %q", string(secret))
+	}
+}
 
 func TestSign(t *testing.T) {
 	body := []byte(`{"title":"test","message":"hello"}`)
@@ -32,7 +42,7 @@ func TestSign(t *testing.T) {
 	}
 
 	// Different secret produces different signature.
-	sig3, _, err := Sign([]byte("other-webhook-secret-32bytes!!!!"), body)
+	sig3, _, err := Sign(Secret("other-webhook-secret-32bytes!!!!"), body)
 	require.NoError(t, err)
 	assert.NotEqual(t, sig, sig3)
 
@@ -46,7 +56,7 @@ func TestSign_EmptySecret(t *testing.T) {
 	_, _, err := Sign(nil, []byte("body"))
 	assert.ErrorIs(t, err, ErrEmptySecret)
 
-	_, _, err = Sign([]byte{}, []byte("body"))
+	_, _, err = Sign(Secret{}, []byte("body"))
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
@@ -79,7 +89,7 @@ func TestVerify_WrongSecret(t *testing.T) {
 
 	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify([]byte("wrong-webhook-secret-32bytes!!!!"), body, ts, sig, DefaultSignatureMaxAge)
+	ok, err := Verify(Secret("wrong-webhook-secret-32bytes!!!!"), body, ts, sig, DefaultSignatureMaxAge)
 	require.NoError(t, err)
 	assert.False(t, ok, "wrong secret should fail verification")
 }
@@ -132,7 +142,7 @@ func TestVerify_EmptySecret(t *testing.T) {
 	_, err := Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrEmptySecret)
 
-	_, err = Verify([]byte{}, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	_, err = Verify(Secret{}, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
@@ -212,7 +222,7 @@ func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
 		WithFutureSkew(1*time.Minute),
 	)
 
-	secret := []byte("secret-secret-secret-secret-32by")
+	secret := Secret("secret-secret-secret-secret-32by")
 	sig, ts, err := signer.Sign(secret, []byte("body"))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -232,7 +242,7 @@ func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
 		WithFutureSkew(1*time.Minute),
 	)
 
-	secret := []byte("secret-secret-secret-secret-32by")
+	secret := Secret("secret-secret-secret-secret-32by")
 	sig, ts, err := signer.Sign(secret, []byte("body"))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -326,10 +336,10 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 }
 
 // signWithTimestamp is a test helper that signs with an explicit timestamp.
-func signWithTimestamp(body []byte, secret []byte, timestamp int64) (string, int64) {
+func signWithTimestamp(body []byte, secret Secret, timestamp int64) (string, int64) {
 	payload := fmt.Appendf(nil, "%d.", timestamp)
 	payload = append(payload, body...)
-	mac := hmac.New(sha256.New, secret)
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil)), timestamp
 }

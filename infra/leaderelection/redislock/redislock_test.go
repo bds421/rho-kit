@@ -3,6 +3,7 @@ package redislock
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -175,35 +176,56 @@ func TestHoldLeadership_LossCancelsAndWaitsForCallback(t *testing.T) {
 	require.True(t, callbackExited.Load(), "leader work must drain before retry")
 }
 
-func TestHoldLeadership_CallbackDrainTimeoutReturnsDetached(t *testing.T) {
+func TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains(t *testing.T) {
 	e := &Elector{
-		renewInterval:        10 * time.Millisecond,
-		callbackDrainTimeout: 20 * time.Millisecond,
-		logger:               slog.Default(),
-		key:                  "leader",
+		renewInterval: 10 * time.Millisecond,
 	}
 	handle := &fakeLockHandle{}
-	handle.extendOK.Store(false) // force renewal failure → cancel + await
+	handle.extendOK.Store(false)
 	stub := &stubAcquirer{handle: handle}
 
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
 	released := make(chan struct{})
-	err := runWithStub(t, e, stub, leaderelection.Callbacks{
-		OnAcquired: func(_ context.Context) {
-			// Intentionally ignore ctx to simulate buggy user code.
-			<-released
-		},
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(released) })
 	})
-	require.Error(t, err)
-	// Free the orphaned goroutine so the test doesn't leak.
-	close(released)
-}
 
-func TestWithCallbackDrainTimeout_PanicsOnNonPositive(t *testing.T) {
-	for name, fn := range map[string]func(){
-		"zero":     func() { WithCallbackDrainTimeout(0) },
-		"negative": func() { WithCallbackDrainTimeout(-time.Second) },
-	} {
-		t.Run(name, func(t *testing.T) { require.Panics(t, fn) })
+	result := make(chan error, 1)
+	go func() {
+		result <- runWithStub(t, e, stub, leaderelection.Callbacks{
+			OnAcquired: func(ctx context.Context) {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				<-released
+			},
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("OnAcquired did not start")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("OnAcquired was not cancelled after lock loss")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("holdLeadership returned before callback drained: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(released) })
+	select {
+	case err := <-result:
+		require.ErrorContains(t, err, "handle reports lost")
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("holdLeadership did not return after callback drained")
 	}
 }
 
@@ -238,7 +260,10 @@ func TestNewWithLocker_PanicsOnEmptyKey(t *testing.T) {
 }
 
 func TestNewWithLocker_PanicsOnNilOption(t *testing.T) {
-	require.Panics(t, func() {
-		NewWithLocker(new(rlock.Locker), "key", nil)
-	})
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	NewWithLocker(rlock.NewLocker(nil), "key", nil)
 }

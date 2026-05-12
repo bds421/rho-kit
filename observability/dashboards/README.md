@@ -7,6 +7,11 @@ the metric names emitted by the rho-kit's various packages
 `infra/outbox`, `infra/messaging/amqpbackend`,
 `httpx/middleware/ratelimit`).
 
+NATS JetStream and Redis-stream direct messaging packages are not part of the
+v2.0.0 Prometheus contract freeze. Their Go APIs are release candidates, but
+provider-specific metric names, labels, dashboards, and alerts remain deferred
+until they can be introduced as a complete contract.
+
 The dashboards parameterize on `{service, namespace}` Grafana
 variables so a single JSON file serves every consuming service. The
 Prometheus rules group recording rules and alerts by category so an

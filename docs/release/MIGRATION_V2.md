@@ -173,7 +173,7 @@ by package.
 
 | Area | Migration |
 |---|---|
-| `signing.Sign` | Argument order is now `Sign(secret, body)` (was `Sign(body, secret)`). All call sites must swap arguments. |
+| `signing.Sign` / `signing.Verify` | Argument order is now `Sign(secret, body)` / `Verify(secret, body, ...)` (was `Sign(body, secret)`). The secret parameter is the named type `signing.Secret`; use `signing.NewSecret(secretBytes)` or an explicit `signing.Secret(...)` conversion so body/secret swaps fail at compile time. |
 | `signing.NewStaticKeyStore` | Now returns `(*StaticKeyStore, error)`. The old panic-on-error form is `signing.MustNewStaticKeyStore`. |
 
 ### `crypto/passhash`
@@ -224,7 +224,7 @@ by package.
 | Area | Migration |
 |---|---|
 | `auth.RequireUserWithJWT` | Renamed to `auth.JWT`. |
-| `auth.WithTrustedS2S` | Now lives behind `//go:build authtest`. Production builds get a panicking stub; integration tests must add the `authtest` build tag to use it. |
+| `auth.WithUserID`, `auth.WithPermissions`, `auth.WithTrustedS2S`, `grpcx/interceptor.WithTrustedS2S` | Now live behind `//go:build authtest` with no default-build stubs. Production builds cannot compile direct auth-context injection; integration tests must add the `authtest` build tag to use the helpers. |
 
 ### `httpx/middleware/ratelimit`
 

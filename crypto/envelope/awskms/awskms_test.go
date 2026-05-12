@@ -108,4 +108,72 @@ func TestUnwrapRejectsMismatchedKeyID(t *testing.T) {
 	}
 }
 
+func TestDecryptKeyIDForConstrainsAliasBackedEnvelopeARN(t *testing.T) {
+	envelopeKeyARN := "arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc"
+
+	tests := []struct {
+		name       string
+		configured string
+		envelope   string
+		want       string
+		wantErr    bool
+	}{
+		{
+			name:       "bare alias decrypts through configured alias",
+			configured: "alias/configured",
+			envelope:   envelopeKeyARN,
+			want:       "alias/configured",
+		},
+		{
+			name:       "bare alias ignores caller supplied alias ARN",
+			configured: "alias/configured",
+			envelope:   "arn:aws:kms:us-east-1:999900001111:alias/configured",
+			want:       "alias/configured",
+		},
+		{
+			name:       "alias ARN decrypts through configured alias ARN in same account",
+			configured: "arn:aws:kms:us-east-1:111122223333:alias/configured",
+			envelope:   envelopeKeyARN,
+			want:       "arn:aws:kms:us-east-1:111122223333:alias/configured",
+		},
+		{
+			name:       "alias ARN rejects different account",
+			configured: "arn:aws:kms:us-east-1:111122223333:alias/configured",
+			envelope:   "arn:aws:kms:us-east-1:999900001111:key/12345678-1234-1234-1234-123456789abc",
+			wantErr:    true,
+		},
+		{
+			name:       "bare key ID accepts matching key ARN suffix",
+			configured: "12345678-1234-1234-1234-123456789abc",
+			envelope:   envelopeKeyARN,
+			want:       envelopeKeyARN,
+		},
+		{
+			name:       "non-alias key rejects unrelated key ARN",
+			configured: "87654321-4321-4321-4321-cba987654321",
+			envelope:   envelopeKeyARN,
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			k := &KEK{keyID: tc.configured}
+			got, err := k.decryptKeyIDFor(tc.envelope)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("decryptKeyIDFor expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decryptKeyIDFor: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("decryptKeyIDFor = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func nilContextForTest() context.Context { return nil }
