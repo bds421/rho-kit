@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	gcsstorage "cloud.google.com/go/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -38,6 +39,22 @@ func TestGCSMetricsContract(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("avatars", "put")); got != 0 {
 		t.Fatalf("put errors = %v, want 0", got)
+	}
+}
+
+func TestGCSMetricsNormalizeExpectedNotFound(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewGCSMetrics(reg)
+	start := time.Now().Add(-10 * time.Millisecond)
+
+	metrics.observeOp("avatars", "delete", start, gcsMetricErr(gcsstorage.ErrObjectNotExist))
+	metrics.observeOp("avatars", "exists", start, gcsMetricErr(gcsstorage.ErrObjectNotExist))
+
+	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("avatars", "delete")); got != 0 {
+		t.Fatalf("delete errors = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("avatars", "exists")); got != 0 {
+		t.Fatalf("exists errors = %v, want 0", got)
 	}
 }
 

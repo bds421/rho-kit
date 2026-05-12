@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -39,6 +41,26 @@ func TestAzureMetricsContract(t *testing.T) {
 	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "put")); got != 0 {
 		t.Fatalf("put errors = %v, want 0", got)
 	}
+}
+
+func TestAzureMetricsNormalizeExpectedNotFound(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewAzureMetrics(reg)
+	start := time.Now().Add(-10 * time.Millisecond)
+
+	metrics.observeOp("documents", "delete", start, azureMetricErr(azureBlobNotFoundErr()))
+	metrics.observeOp("documents", "exists", start, azureMetricErr(azureBlobNotFoundErr()))
+
+	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "delete")); got != 0 {
+		t.Fatalf("delete errors = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "exists")); got != 0 {
+		t.Fatalf("exists errors = %v, want 0", got)
+	}
+}
+
+func azureBlobNotFoundErr() error {
+	return &azcore.ResponseError{ErrorCode: string(bloberror.BlobNotFound)}
 }
 
 func assertMetricLabels(t *testing.T, reg *prometheus.Registry, family string, want []string) {

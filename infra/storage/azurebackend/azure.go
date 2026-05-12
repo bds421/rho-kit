@@ -247,7 +247,7 @@ func (b *AzureBackend) Delete(ctx context.Context, key string) error {
 
 	start := now()
 	_, err := b.client.DeleteBlob(ctx, key, nil)
-	b.metrics.observeOp(b.instance, "delete", start, err)
+	b.metrics.observeOp(b.instance, "delete", start, azureMetricErr(err))
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return nil
@@ -276,7 +276,7 @@ func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
 	resp, err := b.client.DownloadStream(ctx, key, &azblob.DownloadStreamOptions{
 		Range: blob.HTTPRange{Offset: 0, Count: 1},
 	})
-	b.metrics.observeOp(b.instance, "exists", start, err)
+	b.metrics.observeOp(b.instance, "exists", start, azureMetricErr(err))
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return false, nil
@@ -287,6 +287,13 @@ func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	_ = resp.Body.Close()
 	return true, nil
+}
+
+func azureMetricErr(err error) error {
+	if bloberror.HasCode(err, bloberror.BlobNotFound) {
+		return nil
+	}
+	return err
 }
 
 // azureBlobClient wraps the real Azure SDK client to implement BlobClient.

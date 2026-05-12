@@ -48,6 +48,7 @@ google.golang.org/protobuf
 # Cloud/storage SDKs, kept in backend-specific modules.
 cloud.google.com/go/kms
 cloud.google.com/go/storage
+github.com/Azure/azure-sdk-for-go/sdk/azcore
 github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob
 github.com/aws/aws-sdk-go-v2

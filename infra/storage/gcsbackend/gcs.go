@@ -257,7 +257,7 @@ func (b *GCSBackend) Delete(ctx context.Context, key string) error {
 
 	start := now()
 	err := b.bucket.Object(key).Delete(ctx)
-	b.metrics.observeOp(b.instance, "delete", start, err)
+	b.metrics.observeOp(b.instance, "delete", start, gcsMetricErr(err))
 	if err != nil {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil
@@ -284,7 +284,7 @@ func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
 
 	start := now()
 	_, err := b.bucket.Object(key).Attrs(ctx)
-	b.metrics.observeOp(b.instance, "exists", start, err)
+	b.metrics.observeOp(b.instance, "exists", start, gcsMetricErr(err))
 	if err != nil {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return false, nil
@@ -294,6 +294,13 @@ func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, opErr
 	}
 	return true, nil
+}
+
+func gcsMetricErr(err error) error {
+	if errors.Is(err, gcsstorage.ErrObjectNotExist) {
+		return nil
+	}
+	return err
 }
 
 // Close closes the underlying GCS client.
