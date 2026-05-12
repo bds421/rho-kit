@@ -44,13 +44,15 @@ manifest="$outdir/MANIFEST.md"
 {
     printf '# %s benchmark baselines\n\n' "$version"
     printf 'Generated: `%s`\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf -- '- Git revision: `%s`\n' "$git_revision"
-    printf -- '- Working tree: `%s`\n' "$tree_state"
+    printf -- '- Source Git revision: `%s`\n' "$git_revision"
+    printf -- '- Source working tree: `%s`\n' "$tree_state"
     printf -- '- Go: `%s`\n' "$(go version)"
     printf -- '- GOOS/GOARCH: `%s/%s`\n' "$(go env GOOS)" "$(go env GOARCH)"
     printf -- '- Command shape: `go test -run=^$ -bench=. -benchmem -count=%s ./...`\n\n' "$count"
     printf 'These files are intended as `kit-bench-gate -baseline` inputs. Refresh\n'
     printf 'them on release-candidate hardware before tagging if the machine changes.\n\n'
+    printf 'Source metadata is captured before benchmark output files are rewritten;\n'
+    printf 'the benchmark output directory is ignored when computing source-tree cleanliness.\n\n'
     printf '## Captured Modules\n\n'
 } > "$manifest"
 
