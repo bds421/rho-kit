@@ -1,26 +1,26 @@
 # module: resilience
 # command: go test -run=^$ -bench=. -benchmem -count=5 ./...
-# generated: 2026-05-12T11:48:41Z
+# generated: 2026-05-12T14:28:33Z
 goos: darwin
 goarch: arm64
 pkg: github.com/bds421/rho-kit/resilience/v2/circuitbreaker
 cpu: Apple M4 Max
-BenchmarkExecute_Closed-16    	13055232	        82.72 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Closed-16    	14514057	        82.57 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Closed-16    	14464758	        82.94 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Closed-16    	14219413	        83.53 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Closed-16    	14185660	        82.89 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Open-16      	28295018	        41.96 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Open-16      	27886790	        42.41 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Open-16      	27920882	        42.25 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Open-16      	28917142	        42.10 ns/op	       0 B/op	       0 allocs/op
-BenchmarkExecute_Open-16      	28397241	        41.88 ns/op	       0 B/op	       0 allocs/op
-BenchmarkState-16             	33436389	        36.44 ns/op	       0 B/op	       0 allocs/op
-BenchmarkState-16             	33304576	        36.43 ns/op	       0 B/op	       0 allocs/op
-BenchmarkState-16             	32995398	        36.78 ns/op	       0 B/op	       0 allocs/op
-BenchmarkState-16             	34200741	        36.28 ns/op	       0 B/op	       0 allocs/op
-BenchmarkState-16             	32678625	        36.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	13061378	        83.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14147362	        83.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14787696	        83.24 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14717274	        83.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14160948	        83.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28992976	        42.51 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28756720	        42.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	26328876	        42.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28876059	        42.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	27809427	        42.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	32166622	        37.24 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	31648837	        36.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	32932389	        36.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	31790289	        36.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	30400686	        37.05 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/bds421/rho-kit/resilience/v2/circuitbreaker	18.183s
+ok  	github.com/bds421/rho-kit/resilience/v2/circuitbreaker	18.078s
 PASS
-ok  	github.com/bds421/rho-kit/resilience/v2/retry	0.291s
+ok  	github.com/bds421/rho-kit/resilience/v2/retry	0.354s

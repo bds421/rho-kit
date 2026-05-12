@@ -1,9 +1,9 @@
 # v2.0.0 benchmark baselines
 
-Generated: `2026-05-12T11:26:38Z`
+Generated: `2026-05-12T14:24:46Z`
 
-- Git revision: `611edddbbd72e4f36f7c7e610865686da39818a2`
-- Working tree: `dirty`
+- Git revision: `4f2c48f771ac0cf6b33f6eaf3bf16762aafec92d`
+- Working tree: `clean`
 - Go: `go version go1.26.3 darwin/arm64`
 - GOOS/GOARCH: `darwin/arm64`
 - Command shape: `go test -run=^$ -bench=. -benchmem -count=5 ./...`
