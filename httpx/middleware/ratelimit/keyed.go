@@ -225,9 +225,14 @@ func (rl *KeyedRateLimiter) cleanup() {
 	now := rl.now()
 	for i := range rl.shards {
 		s := &rl.shards[i]
+		// Match the IP limiter's two-phase cleanup: Keys allocates a
+		// snapshot, so do it outside the shard lock that protects AllowKey.
 		s.mu.Lock()
 		keys := s.entries.Keys()
+		s.mu.Unlock()
+
 		limit := min(len(keys), maxCleanupPerShard)
+		s.mu.Lock()
 		for _, key := range keys[:limit] {
 			entry, ok := s.entries.Peek(key)
 			if ok && now.After(entry.windowEnd) {
