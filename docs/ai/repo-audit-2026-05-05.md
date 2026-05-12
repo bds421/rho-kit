@@ -31,8 +31,8 @@ landed-with-commit-hash, or open) is tracked there:
 
 All findings from this audit (P0 / P1 / P2 / P3) closed in Wave 1+2+3+4+5
 plus the v2.0.0 push. Remaining work is the explicitly-deferred set in
-[`ROADMAP.md`](../audit/ROADMAP.md) (cloud KMS, k8slease/etcd, Kafka,
-AMQP/rate-limit dashboard panels, kit-new flags, per-package benchmarks).
+[`ROADMAP.md`](../audit/ROADMAP.md) (other KMS adapters beyond the frozen
+AWS/GCP/Azure/Vault modules, k8slease/etcd, Kafka, kit-new flags).
 GAP-01..10 are closed in [`THREAT_MODEL.md`](../audit/THREAT_MODEL.md) §8.
 
 If you re-run this audit, write the new snapshot under a different filename

@@ -246,6 +246,37 @@ consumer.Consume(ctx, binding, func(ctx context.Context, d messaging.Delivery) e
 4. MaxRetries exceeded → publish to dead exchange → ACK
 5. Safety limit (MaxRetries × 3) → force ACK
 
+## AMQP Prometheus Metrics
+
+Builder-created RabbitMQ publishers and consumers are wired with these metrics
+automatically. Manual AMQP publishers and consumers expose the same stable
+Prometheus collectors:
+
+```go
+metrics := amqpbackend.NewMetrics(prometheus.DefaultRegisterer)
+
+pub := amqpbackend.NewPublisher(conn, logger,
+    amqpbackend.WithPublisherMetrics(metrics),
+)
+consumer := amqpbackend.NewConsumer(conn, pub, logger,
+    amqpbackend.WithConsumerMetrics(metrics),
+)
+```
+
+Metric contract:
+
+- `amqp_published_total{exchange,routing_key,outcome}`
+- `amqp_publish_duration_seconds{exchange,routing_key,outcome}`
+- `amqp_consumed_total{queue,outcome}`
+- `amqp_handler_duration_seconds{queue,outcome}`
+
+Publish outcomes are `success`, `failed`, `invalid_message`, `too_large`, and
+`unroutable`. Consume outcomes are `acked`, `ack_failed`, `decode_error`,
+`retry`, `dead_lettered`, `discarded`, `force_discarded`, and
+`dlq_publish_failed`. Keep AMQP topology names static and low-cardinality;
+never encode tenants, users, request IDs, or payload values into exchange,
+routing-key, or queue names.
+
 ## StartConsumers (Convenience)
 
 ```go

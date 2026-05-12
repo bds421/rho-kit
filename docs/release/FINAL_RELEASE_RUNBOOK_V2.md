@@ -17,6 +17,7 @@ run during preparation.
 - Public API freeze: [API_FREEZE_V2.md](API_FREEZE_V2.md)
 - Migration guide: [MIGRATION_V2.md](MIGRATION_V2.md)
 - RC evidence checklist: [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md)
+- Benchmark baselines: [benchmarks/v2.0.0/MANIFEST.md](benchmarks/v2.0.0/MANIFEST.md)
 - Tagging plan: [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md)
 - GitHub release notes body: [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md)
 
@@ -128,7 +129,7 @@ RELEASE_MODE=all make release-plan
 RELEASE_MODE=all RELEASE_FORMAT=tsv make release-plan > /tmp/rho-kit-v2-plan.tsv
 ```
 
-Expected output: all 65 modules are assigned to dependency levels. Modules in
+Expected output: all 67 modules are assigned to dependency levels. Modules in
 the same level can be prepared and tagged together.
 
 ## 4. Run RC Gates
@@ -143,6 +144,8 @@ FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishab
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
 make vulncheck
 make test-race
+make bench
+make bench-baseline
 make test-integration
 RELEASE_MODE=all make release-plan
 ```
@@ -150,17 +153,19 @@ RELEASE_MODE=all make release-plan
 Expected output summary:
 
 - `git diff --check`: no output.
-- `make check-dependency-boundaries`: OK; current evidence is `336 direct
+- `make check-dependency-boundaries`: OK; current evidence is `345 direct
   module edges checked`.
-- `make check-dependency-allowlist`: OK; current evidence is `56 direct
+- `make check-dependency-allowlist`: OK; current evidence is `58 direct
   external deps approved`.
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable`: OK for internal pins, internal require versions, no
   local internal replaces, and Go directives.
 - `cmd/kit-doctor -strict=critical`: `null`.
 - `make vulncheck`: `No vulnerabilities found.` for every module.
-- `make test`, `make lint`, `make test-race`, and `make test-integration`: no
-  `FAIL`; integration tests require Docker.
+- `make test`, `make lint`, `make test-race`, `make bench`, and
+  `make test-integration`: no `FAIL`; integration tests require Docker.
+- `make bench-baseline`: refreshes `docs/release/benchmarks/v2.0.0/` on the
+  release-candidate machine.
 - `RELEASE_MODE=all make release-plan`: prints the dependency levels used for
   the release loop.
 
@@ -223,7 +228,7 @@ Stop the local service before tagging.
 ## 6. Tag
 
 Run the dependency-ordered level loop from
-[TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md). The future release must create 65
+[TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md). The future release must create 66
 module-prefixed tags plus the coordination tag `release/v2.0.0`.
 
 Do not tag all modules at one commit. Dependency modules must be tagged first;

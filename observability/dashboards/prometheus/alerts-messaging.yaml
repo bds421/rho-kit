@@ -1,9 +1,6 @@
-# Messaging alerts — currently scoped to the outbox relay since the
-# AMQP, NATS, and Redis-stream messaging backends do not yet emit
-# Prometheus metrics directly (they use callback hooks via
-# infra/messaging.BufferedPublisherMetrics). When those backends gain
-# Prometheus collectors, add redelivery / DLQ / consumer-lag alerts
-# here.
+# Messaging alerts for outbox relay and direct AMQP publishing/consuming.
+# NATS and Redis-stream direct backend dashboards can be added when their
+# Prometheus contracts are frozen.
 groups:
   - name: rho-kit-messaging
     rules:
@@ -70,3 +67,64 @@ groups:
             minutes. The broker is slow or the network has degraded.
             Backlog growth is probably imminent.
           runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/outbox-errors.md"
+
+      - alert: RhoKitAMQPPublishFailuresHigh
+        # Includes broker/channel failures, unroutable mandatory publishes,
+        # invalid messages, and message-size rejections.
+        expr: |
+          sum by (namespace, service, exchange, routing_key)
+            (rate(amqp_published_total{outcome!="success"}[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, exchange, routing_key)
+              (rate(amqp_published_total[5m])),
+            0.0001
+          )
+            > 0.05
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "AMQP publish failures > 5% for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Direct AMQP publish attempts are failing for exchange
+            {{ $labels.exchange }} / routing key {{ $labels.routing_key }}.
+            Check broker connectivity, topology bindings, mandatory-return
+            errors, and message-size route overrides.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/amqp-messaging.md"
+
+      - alert: RhoKitAMQPDLQPublishFailures
+        expr: |
+          sum by (namespace, service, queue)
+            (rate(amqp_consumed_total{outcome="dlq_publish_failed"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "AMQP dead-letter publish failures for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            A consumer tried to move exhausted messages from
+            {{ $labels.queue }} to its dead exchange, but the publish failed.
+            Messages are being nacked into the retry path and may loop until
+            the dead-letter topology is fixed.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/amqp-messaging.md"
+
+      - alert: RhoKitAMQPForceDiscard
+        expr: |
+          sum by (namespace, service, queue)
+            (rate(amqp_consumed_total{outcome="force_discarded"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "AMQP force discards for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            The consumer force-discarded messages from {{ $labels.queue }}
+            after exceeding retry or dead-letter failure safety limits.
+            Inspect the DLQ, consumer logs, and dead-letter exchange bindings.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/amqp-messaging.md"

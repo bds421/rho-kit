@@ -21,6 +21,12 @@ Use the `infra/storage` package whenever a service needs to store, retrieve, or 
 | Local development only | `localbackend` |
 | Unit tests | `membackend` |
 
+S3, GCS, Azure Blob Storage, and SFTP backends expose matching Prometheus
+operation-duration and operation-error metrics with `instance` and `operation`
+labels. Use `WithRegisterer(reg)` for test isolation or custom registries; the
+production dashboards live under `observability/dashboards/grafana/` as the
+storage overview plus one provider dashboard per backend.
+
 ## Quick Start (S3)
 
 ```go
@@ -240,7 +246,12 @@ a shared user-writable tree.
 - `encryption.StaticKey(key)` — 32-byte AES-256-GCM key. Each object gets a unique nonce.
 - **256 MiB max** per object (AES-GCM requires full buffer).
 - For larger files, use S3 SSE instead.
-- `KeyProvider` interface supports AWS KMS or Vault integration.
+- Object-storage encryption `KeyProvider` implementations are app-supplied.
+  Envelope encryption ships AWS KMS, Azure Key Vault, Google Cloud KMS, and
+  HashiCorp Vault Transit KEK adapters under `crypto/envelope/awskms`,
+  `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`, and
+  `crypto/envelope/vaulttransit`; other provider adapters remain v2.x
+  follow-ups.
 
 ## Retry Notes
 

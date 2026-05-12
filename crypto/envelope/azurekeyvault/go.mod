@@ -1,0 +1,29 @@
+// Package azurekeyvault implements [crypto/envelope.KEK] against Azure Key
+// Vault / Managed HSM keys. v2 includes this adapter so Azure deployments can
+// keep envelope KEKs in a managed service with audit and rotation.
+//
+// Heavy: pulls the official Azure Key Vault keys SDK. Stays in its own module
+// so consumers using AWS KMS, GCP KMS, Vault Transit, or static test KEKs do
+// not pull Azure deps.
+module github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2
+
+go 1.26.2
+
+require (
+	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.4.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
+)
+
+require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
+	github.com/tink-crypto/tink-go/v2 v2.6.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
+)
+
+replace github.com/bds421/rho-kit/crypto/v2 => ../../

@@ -5,5 +5,6 @@
 // handled via Application Default Credentials (ADC) or a service account
 // JSON key file.
 //
-// All operations are instrumented with OpenTelemetry traces.
+// All operations are instrumented with Prometheus metrics and OpenTelemetry
+// traces.
 package gcsbackend

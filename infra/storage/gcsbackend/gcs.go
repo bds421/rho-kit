@@ -7,6 +7,7 @@ import (
 	"io"
 
 	gcsstorage "cloud.google.com/go/storage"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -27,6 +28,7 @@ type GCSBackend struct {
 	cfg        GCSConfig
 	instance   string
 	validators []storage.Validator
+	metrics    *GCSMetrics
 }
 
 // Option configures a GCSBackend.
@@ -47,6 +49,14 @@ func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
 	return func(b *GCSBackend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
+	}
+}
+
+// WithRegisterer sets the Prometheus registerer for GCS metrics.
+// If not set, prometheus.DefaultRegisterer is used.
+func WithRegisterer(reg prometheus.Registerer) Option {
+	return func(b *GCSBackend) {
+		b.metrics = NewGCSMetrics(reg)
 	}
 }
 
@@ -77,6 +87,7 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
+		metrics:  defaultGCSMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -100,6 +111,7 @@ func NewWithClient(client *gcsstorage.Client, cfg GCSConfig, opts ...Option) *GC
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
+		metrics:  defaultGCSMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -153,11 +165,13 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 	w.ContentType = contentType
 	w.Metadata = storage.CloneCustomMeta(meta.Custom)
 
+	start := now()
 	if _, err := io.Copy(w, validated); err != nil {
 		cancelWriter()
 		// Close after cancel reaps any goroutine the SDK started; we
 		// ignore its error because the upload is intentionally aborted.
 		_ = w.Close()
+		b.metrics.observeOp(b.instance, "put", start, err)
 		opErr := storage.WrapSafe("gcsbackend: put write failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
@@ -165,11 +179,13 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 
 	if err := w.Close(); err != nil {
 		cancelWriter()
+		b.metrics.observeOp(b.instance, "put", start, err)
 		opErr := storage.WrapSafe("gcsbackend: put close failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
 	}
 	cancelWriter()
+	b.metrics.observeOp(b.instance, "put", start, nil)
 
 	return nil
 }
@@ -191,8 +207,10 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 
 	// Fetch attrs first (single API call) for full metadata including
 	// ETag, LastModified, and custom metadata.
+	start := now()
 	attrs, err := obj.Attrs(ctx)
 	if err != nil {
+		b.metrics.observeOp(b.instance, "get", start, err)
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get: %w", storage.ErrObjectNotFound)
 		}
@@ -206,10 +224,12 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 	// the Attrs and NewReader calls.
 	rc, err := obj.Generation(attrs.Generation).NewReader(ctx)
 	if err != nil {
+		b.metrics.observeOp(b.instance, "get", start, err)
 		opErr := storage.WrapSafe("gcsbackend: get failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return nil, storage.ObjectMeta{}, opErr
 	}
+	b.metrics.observeOp(b.instance, "get", start, nil)
 
 	meta := storage.ObjectMeta{
 		ContentType:  attrs.ContentType,
@@ -235,7 +255,9 @@ func (b *GCSBackend) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
+	start := now()
 	err := b.bucket.Object(key).Delete(ctx)
+	b.metrics.observeOp(b.instance, "delete", start, err)
 	if err != nil {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil
@@ -260,7 +282,9 @@ func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, err
 	}
 
+	start := now()
 	_, err := b.bucket.Object(key).Attrs(ctx)
+	b.metrics.observeOp(b.instance, "exists", start, err)
 	if err != nil {
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return false, nil

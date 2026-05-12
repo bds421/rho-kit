@@ -84,6 +84,14 @@ func WithHooks(h ConsumerHooks) ConsumerOption {
 	return func(c *Consumer) { c.hooks = h }
 }
 
+// WithConsumerMetrics attaches Prometheus metrics to the consumer.
+func WithConsumerMetrics(m *Metrics) ConsumerOption {
+	if m == nil {
+		panic("amqpbackend: WithConsumerMetrics requires non-nil metrics")
+	}
+	return func(c *Consumer) { c.metrics = m }
+}
+
 // Consumer reads messages from an AMQP queue and dispatches them to a Handler.
 type Consumer struct {
 	conn                  Connector
@@ -91,6 +99,7 @@ type Consumer struct {
 	logger                *slog.Logger
 	prefetch              int
 	hooks                 ConsumerHooks
+	metrics               *Metrics
 	maxDLQConsecutiveFail int
 	dlqConsecutiveFail    atomic.Uint64
 }
@@ -295,12 +304,19 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, h
 			c.logger.Error("ack failed after unmarshal error", redact.Error(ackErr))
 		}
 		c.onDiscard("", "", b.Queue)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeDecodeError)
 		return
 	}
 
 	d := fromAMQPDelivery(delivery, msg)
 
+	handlerStarted := time.Now()
 	handlerErr := c.invokeHandler(ctx, handler, d, msg, b.Queue)
+	if handlerErr != nil {
+		c.metrics.observeHandler(b.Queue, amqpHandlerOutcomeError, handlerStarted)
+	} else {
+		c.metrics.observeHandler(b.Queue, amqpHandlerOutcomeSuccess, handlerStarted)
+	}
 	if handlerErr != nil {
 		c.handleFailure(ctx, delivery, msg, b, handlerErr)
 		return
@@ -308,7 +324,10 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, h
 
 	if ackErr := delivery.Ack(false); ackErr != nil {
 		c.logger.Error("ack failed", redact.Error(ackErr), redact.String("id", msg.ID))
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeAckFailed)
+		return
 	}
+	c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeAcked)
 }
 
 // invokeHandler runs the user handler with panic recovery. A panic is
@@ -357,7 +376,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 				redact.String("id", msg.ID),
 				redact.String("type", msg.Type),
 			)
-			c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, 0)
+			c.metrics.observeConsumed(b.Queue, c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, 0))
 			return
 		}
 		c.logger.Warn("permanent handler error, discarding message (no dead exchange configured)",
@@ -369,6 +388,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 			c.logger.Error("ack failed", redact.Error(ackErr))
 		}
 		c.onDiscard(msg.ID, msg.Type, b.Queue)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeDiscarded)
 		return
 	}
 
@@ -389,6 +409,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 			c.logger.Error("ack failed", redact.Error(ackErr))
 		}
 		c.onDiscard(msg.ID, msg.Type, b.Queue)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeForceDiscarded)
 
 	case actionDeadLetter:
 		c.logger.Error("max retries exceeded, moving to dead queue",
@@ -397,7 +418,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 			redact.String("type", msg.Type),
 			"retries", retryCount,
 		)
-		c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, retryCount)
+		c.metrics.observeConsumed(b.Queue, c.routeToDeadExchange(ctx, delivery, msg, b, handlerErr, retryCount))
 
 	case actionRetry:
 		c.logger.Warn("handler failed, nacking for DLX retry",
@@ -410,6 +431,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 			c.logger.Error("nack failed", redact.Error(nackErr))
 		}
 		c.onRetry(msg.ID, msg.Type, b.Queue, retryCount)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeRetry)
 
 	case actionDiscard:
 		c.logger.Warn("handler failed, discarding message (no retry configured)",
@@ -423,6 +445,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 			c.logger.Error("ack failed", redact.Error(ackErr))
 		}
 		c.onDiscard(msg.ID, msg.Type, b.Queue)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeDiscarded)
 	}
 }
 
@@ -442,7 +465,7 @@ func (c *Consumer) handleFailure(ctx context.Context, delivery amqp.Delivery, ms
 // retryCount is reported through OnDeadLetter for observability;
 // pass 0 for permanent-error routings (audit FR-071) where the
 // message never made it to a retry attempt.
-func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) {
+func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delivery, msg messaging.Message, b messaging.Binding, handlerErr error, retryCount int) string {
 	// FR-072 [MED]: derive from the caller's ctx so trace values
 	// and shutdown deadlines propagate to the DLE publish, while
 	// still capping per-publish runtime via deadLetterPublishTimeout.
@@ -467,7 +490,7 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 				c.logger.Error("ack failed during DLE-force-discard", redact.Error(ackErr))
 			}
 			c.onDiscard(msg.ID, msg.Type, b.Queue)
-			return
+			return amqpConsumeOutcomeForceDiscarded
 		}
 		c.logger.Error("dead-letter publish failed, nacking to retry",
 			redact.Error(pubErr),
@@ -477,13 +500,14 @@ func (c *Consumer) routeToDeadExchange(ctx context.Context, delivery amqp.Delive
 		if nackErr := delivery.Nack(false, false); nackErr != nil {
 			c.logger.Error("nack failed after dead-letter publish failure", redact.Error(nackErr))
 		}
-		return
+		return amqpConsumeOutcomeDLQPublishFailed
 	}
 	c.dlqConsecutiveFail.Store(0)
 	if ackErr := delivery.Ack(false); ackErr != nil {
 		c.logger.Error("ack failed after dead-letter publish", redact.Error(ackErr), redact.String("id", msg.ID))
 	}
 	c.onDeadLetter(msg.ID, msg.Type, b.Queue, retryCount)
+	return amqpConsumeOutcomeDeadLettered
 }
 
 func (c *Consumer) publishRawDeadLetter(ctx context.Context, exchange, routingKey string, body []byte, msgID string) (err error) {

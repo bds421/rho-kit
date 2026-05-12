@@ -13,24 +13,26 @@ repository root unless a block says to `cd` into a module first.
 
 | Requirement | Artifact or command | Evidence standard | Current status |
 |---|---|---|---|
-| Current RC changes are isolated | `git status --short`, `git diff --stat` | Release-prep work is one coherent diff and not a mixed feature/hardening sweep. | Prepared 2026-05-11: diff is limited to release docs, repo-native release/CI tooling, `examples/agentic-service` test-harness address injection, and the `WithPostgres` diagnostic fix found by release-doc validation. |
+| Current RC changes are isolated | `git status --short`, `git diff --stat` | Release-prep work is one coherent diff and not a mixed feature/hardening sweep. | Prepared 2026-05-11: diff is release-candidate hardening across release docs/tooling, observability contract freeze, semantic default fixes, and their focused tests. |
 | Public API review per module | [API_FREEZE_V2.md](API_FREEZE_V2.md), `go.work` | Every `go.work` module has a keep/remove/rename decision. | Passed 2026-05-11: `go list -m` coverage check produced no missing modules. |
 | Golden-path sample apps compile and run | `examples/agentic-service`, `cmd/kit-new` scaffold tests | Example builds/tests; generated scaffold variants build in tests; local smoke run succeeds. | Passed 2026-05-11: example `go test`, example `go build`, `cmd/kit-new` tests, and local MCP `tools/list`/`echo`/budget smoke all succeeded. |
 | Migration guide complete and validated | [MIGRATION_V2.md](MIGRATION_V2.md), [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md), API grep checks | Breaking changes and adoption sequence are documented in one operational guide and named APIs exist in the current tree. | Passed 2026-05-11: import, safety opt-out, authz, Builder, DB migration, API-reshape, Redis health-check, and deferred-item migration paths are documented; API presence evidence is recorded in `MIGRATION_V2.md`. |
 | Release notes complete | [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md) | Notes include breaking changes, new primitives, deferred items, links to release artifacts, and are ready to paste into a future GitHub release. | Passed 2026-05-11: release notes link to release artifacts and cover breaking changes, shipped primitives, verification, and deferred work. |
+| Semantic security/default review complete | [../audit/semantic-invariant-review-2026-05-11.md](../audit/semantic-invariant-review-2026-05-11.md) | Fail-open defaults, audit metadata idempotency, auth bypass semantics, and misleading legacy APIs are reviewed before the API freeze. | Passed 2026-05-11: S2S auth checked fail-closed for missing permissions/scopes, approval idempotency now preserves audit metadata, Redis per-feature health policy is explicit, MCP audited calls require actor attribution, and legacy request signing is documented. |
+| Benchmark baselines captured | [benchmarks/v2.0.0/MANIFEST.md](benchmarks/v2.0.0/MANIFEST.md), `make bench-baseline` | Current benchmark suites have raw `go test -bench` outputs that can be used as `kit-bench-gate -baseline` inputs. | Captured 2026-05-12: `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime` baseline files exist with `-count=5`, including the added tenant, envelope, rate-limit, and middleware-chain hot-path benchmarks. |
 | Docs snippets executable or illustrative | This checklist plus per-doc notes | Executable snippets are tied to tests or commands; recipe snippets are explicitly illustrative. | Passed 2026-05-11: markdown snippet sweep found every fenced-block document covered by a snippet-status note or explicit executable evidence. |
-| Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, kit-doctor, diff check. | Passed 2026-05-11: all required RC commands completed successfully on the current tree. |
-| Docker-backed integration tests pass where available | `go test -tags integration ./...` in split integration modules | Docker available: pass. Docker unavailable: record skip reason. | Passed 2026-05-11 with Docker 29.4.1: `make test-integration` completed successfully across workspace modules. |
-| No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-11: boundary check reviewed 336 direct module edges; allowlist check reviewed 56 direct external deps. |
+| Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, dashboard/rule validation, benchmark baseline capture, coverage, benchmarks, kit-doctor, diff check. | Partial refresh 2026-05-12: diff, test, lint, build, dependency, dashboard, publishability, release-plan, kit-doctor, benchmark-baseline, and Azure Key Vault module race/vulncheck gates passed on the 67-module tree. Full workspace race, coverage, benchmark, Docker integration, and release rehearsal remain to rerun before tagging. |
+| Docker-backed integration tests pass where available | `go test -tags integration ./...` in split integration modules | Docker available: pass. Docker unavailable: record skip reason. | Blocked 2026-05-12: `docker info` hung before the first module; the stuck process was terminated. Last successful full Docker run remains 2026-05-11 with Docker 29.4.1. |
+| No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-12: boundary check reviewed 345 direct module edges; allowlist check reviewed 58 direct external deps including Vault API and Azure Key Vault keys. |
 | Security-sensitive files have review ownership | [.github/CODEOWNERS](../../.github/CODEOWNERS), [../audit/SUPPLY_CHAIN.md](../audit/SUPPLY_CHAIN.md) | Supply-chain policy, threat model, dependency allowlist, release docs, workflows, and release gate scripts route to the security owner. | Added 2026-05-11 during release-excellence sweep. |
 | No product-specific abstractions enter core | API freeze review, package decision tree in `AGENTS.md` and docs | New abstractions are generic platform primitives or isolated examples. | Passed 2026-05-11: API freeze keeps product-specific code isolated to the example surface; core modules remain reusable platform primitives. |
 | Pre-tag publishability | `make check-publishable` | No internal modules are pinned at `v0.0.0`; internal replaces point at workspace modules; Go directives match `go.work`. | Passed 2026-05-11. |
 | Workspace dependency release invariant | `EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable` | Every internal `github.com/bds421/rho-kit/.../v2` require points at the version that will be tagged for every workspace module. Local `replace` directives do not count because downstream consumers ignore them. | Added 2026-05-11 as the repo-native lockstep release gate. |
-| Dependency-aware release levels | `make release-plan`, `tools/plan-module-release.sh` | Internal `go.mod` requires are converted to dependency levels so modules that can be tagged together are explicit. Changed-mode reports modules changed since a base ref plus impacted dependents. | Added 2026-05-11: full v2 plan has 65 modules across five dependency levels. |
+| Dependency-aware release levels | `make release-plan`, `tools/plan-module-release.sh` | Internal `go.mod` requires are converted to dependency levels so modules that can be tagged together are explicit. Changed-mode reports modules changed since a base ref plus impacted dependents. | Passed 2026-05-12: `RELEASE_MODE=all make release-plan` reports 67 modules across five dependency levels including `crypto/envelope/vaulttransit` and `crypto/envelope/azurekeyvault`. |
 | Release-branch internal replace removal | `tools/drop-internal-replaces.sh`, `FORBID_INTERNAL_REPLACES=1 make check-publishable` | Final release branch drops local internal replaces before level tidies so `GOWORK=off go mod tidy` can write real internal checksums. | Future release-phase step documented; not run during preparation. |
-| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Passed 2026-05-11 on the release-excellence tree: [rehearsal log](rehearsals/20260511T180559Z-v2-release-rehearsal.log). |
+| Local release rehearsal | `tools/rehearse-v2-release.sh` | Temporary clone and bare origin prove dependency-ordered tags, level tidies, downstream `go get`, `go.sum`, and command installs without touching real origin. | Needs refresh on the 67-module tree. Last passed 2026-05-11 on the previous 65-module release-excellence tree: [rehearsal log](rehearsals/20260511T180559Z-v2-release-rehearsal.log). |
 | Downstream checksum proof is post-tag | Clean temporary consumer from [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Repository `go.sum` files for dependent levels are produced only after dependency levels are tagged; after all tags are pushed, a clean consumer must resolve selected modules and verify sums. | Updated 2026-05-11 after reviewing Go module checksum mechanics. |
-| Future multi-module tag plan exists | [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Exact dependency-ordered tag strategy, commands, expected level count, and rollback are documented without creating tags now. | Prepared 2026-05-11: plan creates 65 module-prefixed tags across five dependency levels plus `release/v2.0.0` coordination tag later. |
+| Future multi-module tag plan exists | [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Exact dependency-ordered tag strategy, commands, expected level count, and rollback are documented without creating tags now. | Updated 2026-05-12: plan creates 67 module-prefixed tags across five dependency levels plus `release/v2.0.0` coordination tag later. |
 | Future final release runbook exists | [FINAL_RELEASE_RUNBOOK_V2.md](FINAL_RELEASE_RUNBOOK_V2.md) | Exact future commands, expected outputs, stop conditions, release notes source, and rollback are documented. | Prepared 2026-05-11. |
 | No tag or GitHub release created during preparation | `git tag --list '*v2.0.0'`, `git ls-remote --tags origin '*v2.0.0'`, `gh release view release/v2.0.0` | Preparation phase must not tag or publish. | Verified 2026-05-11 before final audit: no local or remote `*v2.0.0` tags existed, `gh` reported `release not found`, and no tag/push/GitHub-release creation commands were run. |
 
@@ -45,6 +47,7 @@ make lint
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-publishable
+make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 make release-plan
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
@@ -101,6 +104,7 @@ make lint
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-publishable
+make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 make release-plan
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
@@ -149,6 +153,7 @@ go build ./examples/agentic-service/...
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-publishable
+make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
 ```
@@ -169,6 +174,7 @@ make check-no-binaries
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-publishable
+make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 go test ./app ./examples/agentic-service/... ./cmd/kit-new/...
 go build ./examples/agentic-service/...
@@ -214,6 +220,7 @@ make check-no-binaries
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-publishable
+make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 make release-plan
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
@@ -225,6 +232,7 @@ make test-integration
 make vulncheck
 make test-cover
 make bench
+make bench-baseline
 RELEASE_MODE=all make release-plan
 tools/rehearse-v2-release.sh
 git tag --list '*v2.0.0'
@@ -237,5 +245,40 @@ immediate retry completed for every module with `No vulnerabilities found.` The
 fresh rehearsal log at
 `docs/release/rehearsals/20260511T180559Z-v2-release-rehearsal.log` again shows
 65 module tags across five levels, clean downstream module resolution with real
-`go.sum` hashes, and command installs from temporary `v2.0.0` tags. No local or
-remote `*v2.0.0` tags existed after the rehearsal.
+`go.sum` hashes, and command installs from temporary `v2.0.0` tags. That
+rehearsal predates the 66th `crypto/envelope/vaulttransit` module and the 67th
+`crypto/envelope/azurekeyvault` module and must be
+refreshed before tagging. No local or remote `*v2.0.0` tags existed after the
+rehearsal.
+
+2026-05-12 follow-up for Vault Transit, Azure Key Vault, benchmark baselines,
+and provider dashboards refreshed the following non-Docker gates on the
+67-module tree:
+
+```bash
+git diff --check
+make check-dependency-allowlist
+make check-dependency-boundaries
+make check-dashboards
+make check-publishable
+EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
+RELEASE_MODE=all make release-plan
+GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
+make test
+make lint
+make build
+make check-no-binaries
+make bench-baseline
+cd crypto/envelope/azurekeyvault && go test -race ./...
+cd crypto/envelope/azurekeyvault && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+cd crypto/envelope/azurekeyvault && go mod verify
+```
+
+All commands above passed. API freeze coverage was also rechecked with `go
+list -m` against `API_FREEZE_V2.md` and produced no missing or extra modules.
+The earlier full `make test-race`, `make test-cover`, and `make bench` evidence
+predates the 67th Azure Key Vault module; rerun those full gates before
+tagging if this remains the final candidate. `make test-integration` did not
+reach tests because `docker info` hung before the first module; the stuck
+Docker check was terminated and must be rerun on a responsive Docker daemon
+before tagging.

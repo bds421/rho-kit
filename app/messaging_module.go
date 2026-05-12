@@ -57,9 +57,13 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	m.conn = conn
 
-	pub := amqpbackend.NewPublisher(conn, mc.Logger, amqpbackend.WithMessageSizeLimiter(m.messageSizeLimiter))
+	metrics := amqpbackend.NewMetrics(nil)
+	pub := amqpbackend.NewPublisher(conn, mc.Logger,
+		amqpbackend.WithMessageSizeLimiter(m.messageSizeLimiter),
+		amqpbackend.WithPublisherMetrics(metrics),
+	)
 	m.publisher = pub
-	m.consumer = amqpbackend.NewConsumer(conn, pub, mc.Logger)
+	m.consumer = amqpbackend.NewConsumer(conn, pub, mc.Logger, amqpbackend.WithConsumerMetrics(metrics))
 
 	mc.Logger.Info("rabbitmq connection configured")
 	return nil

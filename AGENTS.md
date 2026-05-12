@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 65 Go modules at `/v2` path suffix)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 67 Go modules at `/v2` path suffix)
 **Go:** 1.26+ | **License:** Proprietary
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -21,8 +21,10 @@ make vulncheck     # govulncheck
 make check-dependency-allowlist # direct external Go dependency policy
 make check-dependency-boundaries # keep heavy SDKs behind adapters/test helpers
 make check-publishable # pre-tag Go module release invariants
+make check-dashboards # Grafana JSON + Prometheus rule validation
 make release-candidate # full local pre-release quality gate
 make bench         # benchmarks
+make bench-baseline # capture v2 benchmark baselines for kit-bench-gate
 make fmt           # goimports + gofumpt
 make tidy          # go mod tidy
 ```
@@ -137,6 +139,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | PASETO v4 token issuance / verification | `crypto/paseto` | [security](docs/ai/security.md) |
 | Argon2id password hashing | `crypto/passhash` | [security](docs/ai/security.md) |
 | Envelope encryption (DEK + KEK) | `crypto/envelope`, `crypto/envelope/kekstatic` | [security](docs/ai/security.md) |
+| Wrap envelope DEKs with managed KMS / Vault | `crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`, `crypto/envelope/vaulttransit` | [security](docs/ai/security.md) |
 | RED metrics for HTTP/gRPC handlers | `observability/redmetrics` | [observability](docs/ai/observability.md) |
 | Go runtime metrics | `observability/runtimemetrics` | [observability](docs/ai/observability.md) |
 | SLO checker (latency, error/success rate) | `observability/slo` | [observability](docs/ai/observability.md) |
@@ -162,6 +165,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Scaffolds**: Use `kit-new -tenant` for new multi-tenant services so Redis cache and idempotency start behind the tenant wrappers.
 - **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
 - **Messaging size**: Builder-created RabbitMQ and NATS publishers enforce `messaging.DefaultMaxMessageBytes`; use `WithRouteMaxMessageBytes` for explicitly large routes instead of disabling the cap globally.
+- **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; these are the canonical `kit-bench-gate -baseline` inputs for the release branch.
 
 ## Anti-Patterns
 

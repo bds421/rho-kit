@@ -201,7 +201,10 @@ func echo(_ context.Context, in EchoIn) (EchoOut, error) {
 // the Builder. Use a real action-log Logger (postgres backend) so
 // calls land in a query-able audit trail.
 func newMCPServer(alog actionlog.Logger) *mcp.Server {
-	srv := mcp.NewServer(mcp.WithActionLogger(alog))
+	srv := mcp.NewServer(
+		mcp.WithActionLogger(alog),
+		mcp.WithActorExtractor(func(*http.Request) string { return "demo-operator" }),
+	)
 	if err := mcp.Register[EchoIn, EchoOut](srv, "echo", echo,
 		mcp.WithToolDescription("Echo the input message back to the caller."),
 	); err != nil {

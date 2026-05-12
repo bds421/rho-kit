@@ -1,8 +1,10 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
+.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
 COVERAGE_FILE        := coverage.out
 RELEASE_VERSION      ?= v2.0.0
+BENCH_VERSION        ?= $(RELEASE_VERSION)
+BENCH_COUNT          ?= 5
 RELEASE_BASE_REF     ?= HEAD~1
 RELEASE_MODE         ?= changed
 RELEASE_FORMAT       ?= text
@@ -67,6 +69,10 @@ bench:
 		(cd $$dir && go test -bench=. -benchmem ./...) || exit 1; \
 	done
 
+## bench-baseline: Capture release benchmark baselines for kit-bench-gate
+bench-baseline:
+	@BENCH_VERSION=$(BENCH_VERSION) BENCH_COUNT=$(BENCH_COUNT) bash tools/capture-benchmark-baselines.sh
+
 ## build: Build all packages (all workspace modules)
 build:
 	@for dir in $(WORKSPACE_MODULES); do \
@@ -98,7 +104,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-dashboards lint test-race build
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -110,6 +116,14 @@ release-candidate: ci vulncheck test-integration test-cover bench kit-doctor
 ## release-plan: Compute dependency-aware module release levels
 release-plan:
 	@RELEASE_VERSION=$(RELEASE_VERSION) RELEASE_BASE_REF=$(RELEASE_BASE_REF) RELEASE_MODE=$(RELEASE_MODE) RELEASE_FORMAT=$(RELEASE_FORMAT) RELEASE_GLOBAL_CHANGES=$(RELEASE_GLOBAL_CHANGES) bash tools/plan-module-release.sh
+
+## check-dashboards: Validate Grafana dashboard JSON and Prometheus rule YAML.
+check-dashboards:
+	@command -v promtool >/dev/null 2>&1 || { echo "promtool is required; install Prometheus first"; exit 1; }
+	@for f in observability/dashboards/grafana/*.json; do \
+		python3 -m json.tool "$$f" >/dev/null || exit 1; \
+	done
+	@promtool check rules observability/dashboards/prometheus/*.yaml
 
 ## check-publishable: Static pre-tag gate for internal module pins, replaces, and Go directives
 check-publishable:

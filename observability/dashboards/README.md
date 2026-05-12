@@ -4,7 +4,8 @@ Grafana dashboards and Prometheus rules / alert templates that consume
 the metric names emitted by the rho-kit's various packages
 (`observability/redmetrics`, `observability/runtimemetrics`,
 `grpcx`, `infra/sqldb`, `infra/redis`, `infra/storage`,
-`infra/outbox`).
+`infra/outbox`, `infra/messaging/amqpbackend`,
+`httpx/middleware/ratelimit`).
 
 The dashboards parameterize on `{service, namespace}` Grafana
 variables so a single JSON file serves every consuming service. The
@@ -26,35 +27,32 @@ grafana/
                          #   <service>_db_open_connections etc.)
   redis.json             # Redis: command rate / errors / p50/p95/p99,
                          #   pool stats, reconnects, healthy gauge
-  storage.json           # S3 + SFTP: rate / errors / p50/p95/p99 per
-                         #   operation, sftp connection-healthy gauge
+  storage.json           # Storage provider overview: S3/GCS/Azure/SFTP
+  storage-s3.json        # S3: rate / errors / ratios / p50/p95/p99
+  storage-gcs.json       # GCS: rate / errors / ratios / p50/p95/p99
+  storage-azure.json     # Azure Blob: rate / errors / ratios / p50/p95/p99
+  storage-sftp.json      # SFTP: rate / errors / p50/p95/p99 plus
+                         #   connection-healthy gauge
   outbox.json            # Outbox relay: pending depth, publish rate,
                          #   error ratio, p50/p95/p99 relay latency
+  amqp.json              # Direct AMQP: publish/consume outcomes,
+                         #   latency, retry/DLQ/discard rates
+  ratelimit.json         # HTTP rate limits: decisions, limited ratio,
+                         #   Retry-After distribution, degradation
 
 prometheus/
   recording-rules.yaml      # pre-aggregated p50/p95/p99 for HTTP, gRPC,
-                            #   Redis, storage, outbox histograms
+                            #   Redis, storage, outbox, AMQP histograms
+                            #   plus rate-limit ratios
   alerts-availability.yaml  # 5xx ratio, 4xx ratio
   alerts-latency.yaml       # HTTP p99 thresholds
   alerts-saturation.yaml    # DB pool waits/near-exhaustion, outbox
                             #   backlog growth, Redis pool timeouts
-  alerts-messaging.yaml     # outbox error rate, no-progress, relay p99
+  alerts-messaging.yaml     # outbox error rate, no-progress, relay p99,
+                            #   AMQP publish/DLQ/force-discard alerts
+  alerts-ratelimit.yaml     # rate-limit spikes, degradation, unavailable
   slo-templates.yaml        # multi-window multi-burn-rate SLO rules
 ```
-
-### Skipped dashboards
-
-Some kit areas don't yet emit Prometheus metrics, so a dashboard
-would be empty. They're tracked here for when the metrics arrive:
-
-- **AMQP messaging** (`infra/messaging/amqpbackend`,
-  `infra/messaging/buffered_publisher.go`) — currently uses a
-  callback hook (`BufferedPublisherMetrics`) rather than Prometheus
-  collectors. Add an `amqp.json` dashboard once those callbacks are
-  wired through to a Prometheus collector.
-- **Ratelimit** (`httpx/middleware/ratelimit`) — no Prometheus
-  metrics emitted today. Add a `ratelimit.json` dashboard once
-  hit/throttle/degradation counters are added.
 
 ## Coupling to metric names
 
@@ -76,13 +74,23 @@ Dashboards depend on the stable metric names emitted by:
 - `infra/redis`: `redis_command_duration_seconds`,
   `redis_command_errors_total`, `redis_pool_*`,
   `redis_reconnect_*`, `redis_connection_healthy`.
-- `infra/storage/{s3backend,sftpbackend}`:
+- `infra/storage/{s3backend,gcsbackend,azurebackend,sftpbackend}`:
   `storage_s3_operation_duration_seconds`,
+  `storage_gcs_operation_duration_seconds`,
+  `storage_azure_operation_duration_seconds`,
   `storage_sftp_operation_duration_seconds`, plus matching
   `*_errors_total` and the SFTP `connection_healthy` gauge.
 - `infra/outbox`: `outbox_pending_count`,
   `outbox_relay_latency_seconds`, `outbox_published_total`,
   `outbox_errors_total`.
+- `infra/messaging/amqpbackend`: `amqp_published_total`,
+  `amqp_publish_duration_seconds`, `amqp_consumed_total`,
+  `amqp_handler_duration_seconds`. Labels are limited to
+  `exchange`, `routing_key`, `queue`, and `outcome`.
+- `httpx/middleware/ratelimit`: `http_ratelimit_decisions_total`
+  and `http_ratelimit_retry_after_seconds`. Labels are `limiter`,
+  `kind`, and `outcome`; raw keys, IPs, tenants, users, and paths are
+  not labels.
 
 If a service overrides `WithHTTPNamespace` / `WithHTTPSubsystem`,
 dashboards must be templated against the new namespace at install
@@ -139,6 +147,10 @@ travel with the alerts:
 - `outbox-errors.md` — `RhoKitOutboxErrorRateHigh`,
   `RhoKitOutboxNoProgress`, `RhoKitOutboxRelayLatencyHigh`
 - `redis-pool.md` — `RhoKitRedisPoolTimeouts`
+- `amqp-messaging.md` — `RhoKitAMQPPublishFailuresHigh`,
+  `RhoKitAMQPDLQPublishFailures`, `RhoKitAMQPForceDiscard`
+- `ratelimit.md` — `RhoKitRateLimitSpike`,
+  `RhoKitRateLimitDegraded`, `RhoKitRateLimitUnavailable`
 
 ## Local validation
 
@@ -165,8 +177,8 @@ canonical validator and will run on PRs.
 ## Definition of done
 
 This pack covers HTTP RED, gRPC RED, Go runtime, service overview,
-DB pool, Redis, Storage (S3 + SFTP), and Outbox dashboards plus the
-matching alerts (availability, latency, saturation, messaging, SLO
-multi-burn-rate). AMQP-direct messaging and ratelimit dashboards
-remain deferred until those areas expose Prometheus collectors —
-see "Skipped dashboards" above.
+DB pool, Redis, Storage (S3/GCS/Azure/SFTP overview and provider
+dashboards), Outbox, direct AMQP messaging, and HTTP rate-limit dashboards plus
+the matching alerts
+(availability, latency, saturation, messaging, rate-limit, SLO
+multi-burn-rate).

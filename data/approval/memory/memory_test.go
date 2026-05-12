@@ -204,9 +204,10 @@ func TestDecide_IdempotentApproveApprove(t *testing.T) {
 	r2, err := store.Decide(context.Background(), "r1", "approver-2", "still ok", true)
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateApproved, r2.State)
-	// Latest decider wins (the contract: the *decision* is idempotent,
-	// not the metadata).
-	assert.Equal(t, "approver-2", r2.DecidedBy)
+	// The whole decision record is idempotent; a replay must not rewrite
+	// the original audit metadata.
+	assert.Equal(t, "approver-1", r2.DecidedBy)
+	assert.Equal(t, "ok", r2.Reason)
 	assert.Equal(t, r1.DecidedAt, r2.DecidedAt) // unchanged on idempotent re-decide
 }
 

@@ -1,0 +1,114 @@
+# module: httpx
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:30:50Z
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2	0.882s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/authz	0.293s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/budget	0.317s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/healthhttp	0.326s
+?   	github.com/bds421/rho-kit/httpx/v2/httpxtest	[no test files]
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/internal/headerutil	0.291s
+?   	github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults	[no test files]
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/mcp	0.426s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware	0.805s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/approval	0.336s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/auditlog	0.341s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/auth	0.343s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/budget	0.338s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/clientip	0.306s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/correlationid	0.315s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/cors	0.322s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/cspnonce	0.314s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/csrf	0.299s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/idempotency	0.351s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/internal/idutil	0.283s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/logging	0.296s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/maxbody	0.372s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/metrics	0.344s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit	0.341s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit/tenant	0.313s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/recover	0.337s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/requestid	0.301s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/secheaders	0.317s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest	0.330s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/httpx/v2/middleware/stack
+cpu: Apple M4 Max
+BenchmarkChainThen-16         	20985517	        49.41 ns/op	     192 B/op	       3 allocs/op
+BenchmarkChainThen-16         	24164864	        49.64 ns/op	     192 B/op	       3 allocs/op
+BenchmarkChainThen-16         	23618559	        51.83 ns/op	     192 B/op	       3 allocs/op
+BenchmarkChainThen-16         	24155460	        48.85 ns/op	     192 B/op	       3 allocs/op
+BenchmarkChainThen-16         	24756900	        48.50 ns/op	     192 B/op	       3 allocs/op
+BenchmarkChainServeHTTP-16    	13411885	        92.41 ns/op	      48 B/op	       3 allocs/op
+BenchmarkChainServeHTTP-16    	12815418	        91.70 ns/op	      48 B/op	       3 allocs/op
+BenchmarkChainServeHTTP-16    	12725575	        96.86 ns/op	      48 B/op	       3 allocs/op
+BenchmarkChainServeHTTP-16    	13236559	        92.16 ns/op	      48 B/op	       3 allocs/op
+BenchmarkChainServeHTTP-16    	12969864	       108.6 ns/op	      48 B/op	       3 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/stack	13.190s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/tenant	0.310s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/timeout	0.306s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/middleware/tracing	0.331s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/openapi	0.345s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/pagination	0.300s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/problemdetails	0.358s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/httpx/v2/reqsign
+cpu: Apple M4 Max
+BenchmarkSignRequest-16       	  580592	      1994 ns/op	    6802 B/op	      36 allocs/op
+BenchmarkSignRequest-16       	  605208	      1963 ns/op	    6802 B/op	      36 allocs/op
+BenchmarkSignRequest-16       	  627099	      1942 ns/op	    6802 B/op	      36 allocs/op
+BenchmarkSignRequest-16       	  615868	      1922 ns/op	    6802 B/op	      36 allocs/op
+BenchmarkSignRequest-16       	  645883	      1957 ns/op	    6802 B/op	      36 allocs/op
+BenchmarkVerifyRequest-16     	 1000000	      1080 ns/op	    1457 B/op	      20 allocs/op
+BenchmarkVerifyRequest-16     	 1000000	      1093 ns/op	    1457 B/op	      20 allocs/op
+BenchmarkVerifyRequest-16     	 1000000	      1100 ns/op	    1457 B/op	      20 allocs/op
+BenchmarkVerifyRequest-16     	 1000000	      1103 ns/op	    1457 B/op	      20 allocs/op
+BenchmarkVerifyRequest-16     	 1000000	      1091 ns/op	    1457 B/op	      20 allocs/op
+BenchmarkCanonicalBytes-16    	12821396	        91.86 ns/op	     160 B/op	       1 allocs/op
+BenchmarkCanonicalBytes-16    	13306239	        91.80 ns/op	     160 B/op	       1 allocs/op
+BenchmarkCanonicalBytes-16    	12892579	        92.52 ns/op	     160 B/op	       1 allocs/op
+BenchmarkCanonicalBytes-16    	12686341	        93.11 ns/op	     160 B/op	       1 allocs/op
+BenchmarkCanonicalBytes-16    	13732738	        92.46 ns/op	     160 B/op	       1 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/reqsign	17.842s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/sign	0.335s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/slohttp	0.331s
+PASS
+ok  	github.com/bds421/rho-kit/httpx/v2/urlutil	0.288s

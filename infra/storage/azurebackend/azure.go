@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -43,6 +44,7 @@ type AzureBackend struct {
 	cfg        AzureConfig
 	instance   string
 	validators []storage.Validator
+	metrics    *AzureMetrics
 }
 
 // Option configures an AzureBackend.
@@ -63,6 +65,14 @@ func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
 	return func(b *AzureBackend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
+	}
+}
+
+// WithRegisterer sets the Prometheus registerer for Azure Blob Storage metrics.
+// If not set, prometheus.DefaultRegisterer is used.
+func WithRegisterer(reg prometheus.Registerer) Option {
+	return func(b *AzureBackend) {
+		b.metrics = NewAzureMetrics(reg)
 	}
 }
 
@@ -95,6 +105,7 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 		container: cfg.ContainerName,
 		cfg:       cfg,
 		instance:  "default",
+		metrics:   defaultAzureMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -117,6 +128,7 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Azu
 		client:    client,
 		container: containerName,
 		instance:  "default",
+		metrics:   defaultAzureMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -165,7 +177,9 @@ func (b *AzureBackend) Put(ctx context.Context, key string, r io.Reader, meta st
 		Metadata: toAzureMetadata(meta.Custom),
 	}
 
+	start := now()
 	_, err = b.client.UploadStream(ctx, key, validated, opts)
+	b.metrics.observeOp(b.instance, "put", start, err)
 	if err != nil {
 		opErr := storage.WrapSafe("azurebackend: put failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -187,7 +201,9 @@ func (b *AzureBackend) Get(ctx context.Context, key string) (io.ReadCloser, stor
 		return nil, storage.ObjectMeta{}, err
 	}
 
+	start := now()
 	resp, err := b.client.DownloadStream(ctx, key, nil)
+	b.metrics.observeOp(b.instance, "get", start, err)
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return nil, storage.ObjectMeta{}, fmt.Errorf("azurebackend: get: %w", storage.ErrObjectNotFound)
@@ -229,7 +245,9 @@ func (b *AzureBackend) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
+	start := now()
 	_, err := b.client.DeleteBlob(ctx, key, nil)
+	b.metrics.observeOp(b.instance, "delete", start, err)
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return nil
@@ -254,9 +272,11 @@ func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, err
 	}
 
+	start := now()
 	resp, err := b.client.DownloadStream(ctx, key, &azblob.DownloadStreamOptions{
 		Range: blob.HTTPRange{Offset: 0, Count: 1},
 	})
+	b.metrics.observeOp(b.instance, "exists", start, err)
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return false, nil

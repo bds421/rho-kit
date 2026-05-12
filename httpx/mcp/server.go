@@ -267,7 +267,7 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 	// tool when no tenant is on context. Without this check the
 	// tool would execute and the audit entry would silently be
 	// skipped — fail-open audit gap (security review H-2).
-	if !s.auditPrecheck(ctx, name) {
+	if !s.auditPrecheck(ctx, r, name) {
 		writeJSONRPCError(w, http.StatusOK, req.ID,
 			rpcErrInternalError, "internal error")
 		return

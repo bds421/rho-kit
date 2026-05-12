@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"runtime/debug"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 )
+
+var errAuditActorMissing = errors.New("mcp: action log actor not resolved")
 
 // defaultTenantExtractor reads the tenant id from context using the
 // kit's canonical [tenant] package. Returning ok=false leaves the
@@ -44,23 +47,37 @@ func defaultTenantExtractor(ctx context.Context) (string, bool) {
 // When no action logger is configured this is a no-op (returns
 // ok=true) — auditing is opt-in so the strict/loose distinction is
 // meaningless.
-func (s *Server) auditPrecheck(ctx context.Context, tool string) (ok bool) {
+func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string) (ok bool) {
 	if s.cfg.actionLogger == nil {
 		return true
 	}
 	tenantID, present := s.extractTenant(ctx)
-	if present && tenantID != "" {
-		return true
-	}
-	if s.cfg.strictAudit {
-		s.cfg.logger.Error("mcp: refusing tool dispatch; no tenant on context (strict audit mode)",
+	if !present || tenantID == "" {
+		if s.cfg.strictAudit {
+			s.cfg.logger.Error("mcp: refusing tool dispatch; no tenant on context (strict audit mode)",
+				redact.String("tool", tool),
+			)
+			return false
+		}
+		s.cfg.logger.Warn("mcp: skipping action log entry; no tenant on context (loose audit mode)",
 			redact.String("tool", tool),
 		)
-		return false
+		return true
 	}
-	s.cfg.logger.Warn("mcp: skipping action log entry; no tenant on context (loose audit mode)",
-		redact.String("tool", tool),
-	)
+
+	if _, actorOK := s.extractActor(r); !actorOK {
+		if s.cfg.strictAudit {
+			s.cfg.logger.Error("mcp: refusing tool dispatch; no actor resolved (strict audit mode)",
+				redact.String("tool", tool),
+				redact.String("tenant_id", tenantID),
+			)
+			return false
+		}
+		s.cfg.logger.Warn("mcp: action log actor unresolved; recording anonymous actor (loose audit mode)",
+			redact.String("tool", tool),
+			redact.String("tenant_id", tenantID),
+		)
+	}
 	return true
 }
 
@@ -101,7 +118,13 @@ func (s *Server) recordActionLog(ctx context.Context, r *http.Request, tool stri
 		return nil
 	}
 
-	actor := s.extractActor(r)
+	actor, actorOK := s.extractActor(r)
+	if !actorOK {
+		if s.cfg.strictAudit {
+			return errAuditActorMissing
+		}
+		actor = AnonymousActor
+	}
 
 	outcome := actionlog.OutcomeSuccess
 	reason := ""
@@ -153,14 +176,14 @@ func (s *Server) extractTenant(ctx context.Context) (tenantID string, ok bool) {
 	return s.cfg.tenantExtractor(ctx)
 }
 
-func (s *Server) extractActor(r *http.Request) (actor string) {
+func (s *Server) extractActor(r *http.Request) (actor string, ok bool) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.cfg.logger.Error("mcp: actor extractor panicked",
 				redact.Panic(rec),
 				"stack", string(debug.Stack()),
 			)
-			actor = AnonymousActor
+			actor, ok = AnonymousActor, false
 		}
 	}()
 	actor = s.cfg.actorExtractor(r)
@@ -170,9 +193,13 @@ func (s *Server) extractActor(r *http.Request) (actor string) {
 				"actor_len", len(actor),
 			)
 		}
-		return AnonymousActor
+		return AnonymousActor, false
 	}
-	return actor
+	if actor == AnonymousActor && !s.cfg.allowAnonymousActor {
+		s.cfg.logger.Warn("mcp: anonymous actor requires explicit opt-in")
+		return AnonymousActor, false
+	}
+	return actor, true
 }
 
 // enqueueAuditJob hands an audit append to the worker pool. If the

@@ -1,0 +1,101 @@
+# module: data
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:28:28Z
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/actionlog	0.338s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/actionlog/memory	0.329s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/approval	0.360s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/approval/memory	0.661s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/budget	1.389s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/budget/memory	0.367s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/data/v2/cache
+cpu: Apple M4 Max
+BenchmarkGetOrCompute_Hit-16            	 1787234	       672.2 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1797038	       663.2 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1821076	       660.9 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1806348	       664.3 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Hit-16            	 1815626	       662.1 ns/op	     504 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  431715	      2751 ns/op	    1745 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  445963	      2705 ns/op	    1782 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  448558	      2750 ns/op	    1799 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  439129	      2758 ns/op	    1756 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Miss-16           	  444651	      2718 ns/op	    1773 B/op	      25 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1634827	       731.4 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1611759	       732.3 ns/op	     528 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1619568	       738.1 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1611868	       739.9 ns/op	     527 B/op	      11 allocs/op
+BenchmarkGetOrCompute_Stale-16          	 1632866	       735.1 ns/op	     527 B/op	      11 allocs/op
+BenchmarkMemoryCache_Get-16             	13058398	        91.87 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	12932509	        91.55 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	13088320	        92.62 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	13036834	        92.19 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Get-16             	13168224	        91.31 ns/op	      23 B/op	       1 allocs/op
+BenchmarkMemoryCache_Set-16             	 4032422	       333.3 ns/op	     277 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 4098924	       323.9 ns/op	     275 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 4006096	       338.6 ns/op	     279 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 3884426	       335.0 ns/op	     282 B/op	       4 allocs/op
+BenchmarkMemoryCache_Set-16             	 4020294	       323.3 ns/op	     276 B/op	       4 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23644659	        50.11 ns/op	       7 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	24053337	        50.37 ns/op	       7 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23726355	        50.20 ns/op	       7 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	23603055	        49.91 ns/op	       7 B/op	       0 allocs/op
+BenchmarkMemoryCache_GetMiss-16         	24467263	        50.50 ns/op	       7 B/op	       0 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4989636	       237.8 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4952131	       261.0 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4375743	       271.3 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4604358	       265.9 ns/op	     112 B/op	       2 allocs/op
+BenchmarkMemoryCache_SetOverwrite-16    	 4731682	       255.4 ns/op	     112 B/op	       2 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/cache	44.157s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/cache/tenant	5.762s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/idempotency	0.121s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/idempotency/tenant	0.130s
+?   	github.com/bds421/rho-kit/data/v2/lock	[no test files]
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/queue	0.132s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit	0.137s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/data/v2/ratelimit/gcra
+cpu: Apple M4 Max
+BenchmarkAllowAllowed-16    	23223690	        44.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	26253609	        44.29 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	27568090	        43.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	27785173	        43.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	26210220	        44.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	30316905	        38.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	32269124	        38.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31207198	        38.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31580020	        38.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31663974	        38.76 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit/gcra	12.411s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket
+cpu: Apple M4 Max
+BenchmarkAllowAllowed-16    	30149995	        39.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	29944851	        40.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	28771832	        38.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	30727767	        39.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowAllowed-16    	30613644	        39.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	32188192	        36.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	30458527	        48.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	32240982	        36.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	31862424	        42.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAllowDenied-16     	33325772	        36.22 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket	12.968s
+PASS
+ok  	github.com/bds421/rho-kit/data/v2/stream	0.407s

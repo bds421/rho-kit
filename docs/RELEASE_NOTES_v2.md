@@ -20,7 +20,8 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 4 | MCP helpers — typed handlers as JSON-RPC tools, schema auto-generation | Expose any kit handler as an MCP tool with the kit's full middleware stack reused |
 | 5 | SBOM (CycloneDX), `govulncheck` + `osv-scanner` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md`, `SUPPLY_CHAIN.md` | "Trusted library" claim is auditable, not marketing |
 | 6 | Builder integrations for every new primitive + the deferred Phase A items | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
-| 7 | gRPC RED, DB pool, Redis, Outbox, Storage Grafana dashboards + 7 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
+| 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 9 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
+| 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters + v2 benchmark baselines | Production encryption and performance gates are concrete before the API freeze |
 
 Plus: `WithDefaultDeadline` for gRPC (closes threat-model GAP-03),
 `httpx.SafeRedirect` (closes GAP-02), JWT revocation checks (closes
@@ -29,7 +30,8 @@ retention cleanup (closes GAP-09), cross-backend message-size limits
 with route overrides (closes GAP-07), direct dependency source
 allowlist CI (closes GAP-10), heavy optional SDK boundary CI, and the
 `examples/agentic-service` reference binary that wires the entire v2
-stack in one file.
+stack in one file. The release branch also ships raw benchmark baselines
+under `docs/release/benchmarks/v2.0.0/` for `kit-bench-gate`.
 
 Release-candidate artifacts are maintained under `docs/release/`: the
 module-level public API freeze, the operational migration guide, and the
@@ -78,6 +80,9 @@ surprising defaults or expose the process-global default mux.
 operate in degraded mode without Redis, such as cache-only users, should wire
 `infra/redis.NonCriticalHealthCheck` instead. `CriticalHealthCheck` remains an
 explicit alias for the default critical behavior.
+Per-feature Redis health checks also require an explicit degradation policy;
+omitting it now panics at construction instead of silently reporting the feature
+as non-critical degraded work.
 
 ### ASVS registries are accessors
 
@@ -133,8 +138,9 @@ key IDs when the active key is missing, too short, duplicated, or unknown.
 Callers still receive typed/sentinel errors where available, but logs do not
 copy key handles from config or ciphertext. `data/actionlog.NewStaticSecrets`
 also uses a stable short-secret panic that does not echo the configured key ID.
-AWS and GCP KMS config `LogValue` renderers now report only whether a key is
-configured instead of logging full key IDs, aliases, or resource paths.
+AWS, GCP, and Vault Transit KMS config `LogValue` renderers now report only
+whether a key is configured instead of logging full key IDs, aliases, resource
+paths, Vault mount paths, or Transit key names.
 GCP KMS CRC32C mismatch errors no longer print observed/expected checksum
 values for ciphertext or decrypted plaintext responses.
 
@@ -642,6 +648,10 @@ required header names.
 Signed-request body-buffer read, close, and size errors now use stable text
 instead of echoing caller reader diagnostics or configured/request byte counts,
 while preserving wrapped causes and body-size sentinels for callers.
+`httpx/reqsign` is now documented as the legacy self-contained request-signing
+wire format. New services should use `httpx/sign` with
+`httpx/middleware/signedrequest`; the two formats intentionally freeze separate
+canonical strings and key-ID header spellings.
 Signed-request verifier header-length errors and Redis nonce-store length
 checks follow the same stable-diagnostic pattern.
 
@@ -713,6 +723,13 @@ deterministic tests, and `WithIDFuncE` supports error-returning ID sources.
 generation fails instead of relying on UUID panics and recovery on the request
 path. `WithIDFunc` remains source-compatible, and `WithIDFuncE` supports
 error-returning ID sources.
+
+### Approval idempotency preserves audit metadata
+
+`data/approval.Store.Decide` treats a repeated same-direction decision as a
+pure no-op. The original `DecidedBy`, `Reason`, and `DecidedAt` are preserved
+so a replay or second operator cannot rewrite who approved or rejected the
+request.
 
 ### Redis queue consumer ID generation can return errors
 
@@ -1076,6 +1093,9 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 ### MCP
 - `httpx/mcp` — typed `Handler[In, Out]`; auto-generates JSON-Schema from struct tags
 - Reuses kit's middleware stack (auth, tenant, ratelimit, budget, approval, action log)
+- Strict MCP audit now requires actor attribution when an action logger is
+  configured. The default no longer records `anonymous` unless the service
+  explicitly opts in with `WithAllowAnonymousActor()`.
 - `cmd/kit-new --mcp` flag scaffolds a sample tool registration
 
 ### Trust signals
@@ -1118,10 +1138,15 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
   scanner, threat, size, or image dimension details.
 
 ### Dashboards & runbooks
-- 5 new Grafana dashboards (gRPC RED, DB pool, Redis, Outbox, Storage)
-- New Prometheus rules (recording, saturation, messaging)
-- 7 runbooks under `docs/ai/runbooks/` matching every alert's `runbook_url`
+- 11 new Grafana dashboards (gRPC RED, DB pool, Redis, Outbox, AMQP, Rate-limit, Storage overview, S3, GCS, Azure, SFTP)
+- New Prometheus rules (recording, storage-provider latency, saturation, messaging, rate-limit)
+- 9 runbooks under `docs/ai/runbooks/` matching every alert's `runbook_url`
 - `promtool check rules` in CI
+
+### Benchmark baselines
+- `make bench-baseline` captures raw `go test -run=^$ -bench=. -benchmem -count=5 ./...` outputs for every current benchmarked workspace module.
+- v2.0.0 baselines live under `docs/release/benchmarks/v2.0.0/` and can be used directly with `kit-bench-gate -baseline`.
+- The current baseline set covers `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime`, including tenant-context, envelope-encryption, in-memory rate-limit, and middleware-chain hot paths added before the API freeze.
 
 ### gRPC hardening
 - `grpcx.WithDefaultDeadline(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)
@@ -1130,6 +1155,10 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 ### HTTP hardening
 - `httpx.SafeRedirect(target, allowedHosts...)` — validates untrusted `next` / return-url parameters before `http.Redirect`; closes threat-model GAP-02 (open redirect)
 - `httpx/middleware/tenant` returns a stable invalid-tenant error without reflecting tenant validator details or tenant IDs.
+- `httpx/middleware/ratelimit.NewMetrics` plus `WithMetrics` /
+  `WithKeyedMetrics` freeze rate-limit Prometheus contracts for allowed,
+  limited, invalid-key/client-IP, unavailable, and degradation outcomes without
+  exposing raw keys, IPs, tenants, users, or paths as labels.
 
 ### JWT hardening
 - `security/jwtutil/revocation` — cache-backed `jti` revocation checker wired into `jwtutil.Provider`; closes threat-model GAP-06
@@ -1139,6 +1168,9 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 
 ### Messaging hardening
 - `messaging.MessageSizeLimiter` — shared 1 MiB default with exact route overrides, wired into AMQP, NATS, Redis Streams, `membroker`, `BufferedPublisher`, and Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes`; closes threat-model GAP-07
+- `infra/messaging/amqpbackend.NewMetrics` plus `WithPublisherMetrics` and
+  `WithConsumerMetrics` freeze direct AMQP Prometheus contracts for publish
+  outcomes, consume outcomes, publish duration, and handler duration.
 - Redis queue and Redis Stream handler grace windows, ACKs, retries, and
   dead-letter cleanup now use bounded detached contexts. Cleanup survives
   shutdown/caller cancellation without dropping tenant, trace, logger, or other
@@ -1160,12 +1192,9 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 
 | Item | Why deferred |
 |---|---|
-| Cloud KMS subpackages (`kekaws`, `kekgcp`, `kekvault`) | Each needs a separate provider SDK; would bloat the dep tree of consumers who only use `kekstatic` |
+| Additional KMS adapters beyond `crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit` | AWS, Azure Key Vault, Google KMS, and HashiCorp Vault Transit ship as frozen modules; remaining provider SDKs wait for concrete consumer demand |
 | `k8slease` and `etcd` leader-election backends | Need k8s.io / etcd client libraries |
 | Kafka backend | Explicit "don't do kafka" directive this wave |
-| AMQP messaging dashboard | Backend uses callback hooks (`BufferedPublisherMetrics`) rather than Prometheus collectors; needs the metrics surface first |
-| Per-package benchmarks for `kit-bench-gate` | Gate ships; baselines land per-area as benchmarks are written |
-| Additional provider-specific production dashboards | The metrics surfaces and runbooks ship in v2.0.0; provider-specific dashboard JSON can follow once real service SLOs settle |
 
 ## Stats
 

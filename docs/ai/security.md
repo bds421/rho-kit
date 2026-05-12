@@ -1,6 +1,10 @@
 # Security — Encryption, Signing, JWT, TLS, SSRF, ASVS
 
-Packages: `crypto/encrypt`, `crypto/signing`, `security/jwtutil`, `security/jwtutil/revocation`, `crypto/masking`, `security/netutil`, `security/mtlsidentity`, `security/asvs`
+Packages: `crypto/encrypt`, `crypto/envelope`, `crypto/envelope/awskms`,
+`crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`,
+`crypto/envelope/vaulttransit`, `crypto/signing`,
+`security/jwtutil`, `security/jwtutil/revocation`, `crypto/masking`,
+`security/netutil`, `security/mtlsidentity`, `security/asvs`
 
 Snippet status: Go and JavaScript blocks in this recipe are illustrative
 fragments unless explicitly introduced as generated or executable code.
@@ -12,6 +16,7 @@ Buildable golden-path evidence lives in `cmd/kit-new` scaffold tests and
 | Need | Package |
 |---|---|
 | Encrypt DB columns (PII, secrets) | `crypto/encrypt` (FieldEncryptor) |
+| Envelope-encrypt records with rotatable KEKs | `crypto/envelope` + `awskms` / `azurekeyvault` / `gcpkms` / `vaulttransit` |
 | Encrypt files at rest | `storage/encryption` (see [storage.md](storage.md)) |
 | Sign/verify webhooks | `crypto/signing` (HMAC-SHA256) |
 | Sign service-to-service HTTP requests with replay protection | `httpx/sign` + `httpx/middleware/signedrequest` |
@@ -58,6 +63,28 @@ gcm, err := encrypt.NewGCM(key32) // cipher.AEAD
 sealed, err := encrypt.SealBytes(gcm, plaintext)   // nonce || ciphertext
 opened, err := encrypt.OpenBytes(gcm, sealed)
 ```
+
+## Envelope Encryption
+
+Use `crypto/envelope` when records need per-write DEKs and online KEK rotation.
+Production KEKs live in split modules so services only pull the SDK they use:
+`crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`,
+`crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit`. Use
+`crypto/envelope/kekstatic` only for tests and local development.
+
+Azure support uses Azure Key Vault or Managed HSM `WrapKey`/`UnwrapKey`.
+Configure the Azure `azkeys.Client` with the deployment's credential, vault
+URL, retry policy, and transport, then construct
+`azurekeyvault.New(client, azurekeyvault.Config{KeyName: "orders-dek"})`.
+Leave `KeyVersion` empty to wrap with the current primary key version; the
+envelope records Azure's version-qualified KID so old records unwrap with the
+exact version that produced them.
+
+Vault support is specifically HashiCorp Vault Transit. Configure the Vault
+client with address, token, namespace/TLS/retry policy, then construct
+`vaulttransit.New(client, vaulttransit.Config{KeyName: "orders-dek"})`.
+Optional `Config.Context` maps to Vault Transit `context`, so the Transit key
+must be `derived=true` when that field is set.
 
 ## HMAC Webhook Signing
 
@@ -124,6 +151,10 @@ Key IDs used by `crypto/signing.StaticKeyStore`, `httpx/sign`, and
 `httpx/reqsign` must be non-empty bounded header-safe tokens; rotate by adding
 a new safe ID and making it current, not by changing the bytes under an unsafe
 or ambiguous ID.
+Use `httpx/sign` with `httpx/middleware/signedrequest` for new service-to-service
+HTTP signing. `httpx/reqsign` is a legacy self-contained format and is not
+wire-compatible with the newer signedrequest canonical string or key-ID header
+spelling.
 
 ## JWT Verification (JWKS)
 

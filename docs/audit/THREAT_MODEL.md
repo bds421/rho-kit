@@ -323,7 +323,7 @@ patterns.
 | D-02 | SQL injection via string concatenation | A1, A2 | Kit uses GORM (parameterised) and pgx (parameterised); no string-concat helper in the kit's surface area |
 | D-03 | DB credential leakage via process logs | A6 | `sqldb.Config.Password` is a `*core/secret.String` — refuses to render via slog/JSON | [core/secret/secret.go](../../core/secret/secret.go), [infra/sqldb/config.go](../../infra/sqldb/config.go) |
 | D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpen` is required (no zero default); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
-| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS-rotatable KEKs; field-level helpers in `crypto/encrypt` | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/encrypt](../../crypto/encrypt/) |
+| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
 | D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | [docs/ai/sqldb.md](../ai/sqldb.md) |
 
 ### 4.5 Redis (`infra/redis`, `data/*`)

@@ -80,6 +80,13 @@ func TestPostgres_Live_Lifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateApproved, approved.State)
 
+	again, err := store.Decide(context.Background(), "r1", "approver-2", "still ok", true)
+	require.NoError(t, err)
+	assert.Equal(t, approval.StateApproved, again.State)
+	assert.Equal(t, "approver-1", again.DecidedBy)
+	assert.Equal(t, "ok", again.Reason)
+	assert.Equal(t, approved.DecidedAt, again.DecidedAt)
+
 	executed, err := store.MarkExecuted(context.Background(), "r1")
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateExecuted, executed.State)

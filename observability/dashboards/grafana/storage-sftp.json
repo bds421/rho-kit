@@ -1,0 +1,95 @@
+{
+  "title": "rho-kit / Storage / SFTP",
+  "uid": "rhokit-storage-sftp",
+  "tags": ["rho-kit", "storage", "sftp"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(storage_sftp_operation_duration_seconds_count, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(storage_sftp_operation_duration_seconds_count{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "storage_instance",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(storage_sftp_operation_duration_seconds_count{namespace=\"$namespace\", service=\"$service\"}, instance)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Operation rate (op/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(storage_sftp_operation_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m]))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Error rate (err/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(storage_sftp_operation_errors_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m]))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Connection healthy (1=ok)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "storage_sftp_connection_healthy{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Latency p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (operation, le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m])))",
+          "legendFormat": "{{operation}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m])))",
+          "legendFormat": "{{operation}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (operation, le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m])))",
+          "legendFormat": "{{operation}} p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

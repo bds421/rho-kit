@@ -4,5 +4,6 @@
 // It uses the official Azure SDK for Go (azblob) and supports Azure
 // Storage accounts, Azure Government, and Azurite for local development.
 //
-// All operations are instrumented with OpenTelemetry traces.
+// All operations are instrumented with Prometheus metrics and OpenTelemetry
+// traces.
 package azurebackend

@@ -3,8 +3,8 @@
 #
 # The direct dependency allowlist approves who may enter the trust set. This
 # guard approves where heavier optional SDKs may live, so generic modules do
-# not quietly start pulling Redis, pgx, cloud, messaging, or testcontainer
-# dependency clusters.
+# not quietly start pulling Redis, pgx, cloud, KMS/Vault, messaging, or
+# testcontainer dependency clusters.
 set -euo pipefail
 
 tmpdir=$(mktemp -d)
@@ -178,6 +178,24 @@ allowed_for_boundary_dep() {
         cloud.google.com/go/kms|github.com/bds421/rho-kit/crypto/envelope/gcpkms/v2)
             case "$gomod" in
                 crypto/envelope/gcpkms/go.mod|*/integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
+        github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys|github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2)
+            case "$gomod" in
+                crypto/envelope/azurekeyvault/go.mod|*/integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
+        github.com/hashicorp/vault/api|github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2)
+            case "$gomod" in
+                crypto/envelope/vaulttransit/go.mod|*/integrationtest/go.mod)
                     return 0
                     ;;
             esac

@@ -92,9 +92,9 @@ perms := auth.Permissions(r.Context()) // nil for mTLS S2S
 Identity-bearing headers such as `X-User-Id`, tenant headers, MCP `X-Actor-Id`,
 and approval actor headers are treated as singleton tokens: duplicate lines,
 comma-combined values, whitespace, and control characters are rejected or
-downgraded to anonymous depending on the middleware. Do not parse identity
-headers with `Header.Get`; use verified context values where possible, or the
-kit's explicit trusted-header helpers.
+rejected before audited work runs unless a middleware documents an explicit
+opt-out. Do not parse identity headers with `Header.Get`; use verified context
+values where possible, or the kit's explicit trusted-header helpers.
 `X-Request-Id` and `X-Correlation-Id` are also singleton safe tokens. Values
 outside the kit correlation-token alphabet are replaced instead of echoed into
 response headers or propagated to downstream calls.
@@ -130,6 +130,34 @@ go func() {
 ```
 
 `Run` rejects nil contexts, uninitialized limiters, and duplicate starts.
+
+Builder-created IP and keyed rate limiters are wired with these metrics
+automatically. Manual rate limiters expose the same stable Prometheus counters
+and retry-after histograms:
+
+```go
+metrics := ratelimit.NewMetrics(prometheus.DefaultRegisterer)
+
+limiter := ratelimit.NewRateLimiter(100, time.Minute,
+    ratelimit.WithMetrics(metrics),
+    ratelimit.WithLimiterName("public_api"),
+)
+
+keyed := ratelimit.NewKeyedRateLimiter(10, time.Second,
+    ratelimit.WithKeyedMetrics(metrics),
+    ratelimit.WithKeyedLimiterName("api_key"),
+)
+```
+
+Metric contract:
+
+- `http_ratelimit_decisions_total{limiter,kind,outcome}`
+- `http_ratelimit_retry_after_seconds{limiter,kind}`
+
+`kind` is `ip` or `keyed`. Outcomes are `allowed`, `limited`,
+`invalid_client_ip`, `invalid_key`, `unavailable`, `degraded_passthrough`, and
+`degraded_rejected`. `limiter` must be a static low-cardinality name; never
+use a raw IP, API key, tenant ID, user ID, or route parameter.
 
 ## Budget Recipes
 

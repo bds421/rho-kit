@@ -20,7 +20,8 @@ agentic-AI stack composed in one binary:
 - **Per-tenant cost budgets** — `data/budget/memory` enforces a
   1000-unit/minute cap per tenant.
 - **Append-only signed action log** — `data/actionlog/memory` with
-  HMAC signing; every MCP tool call writes an attributed entry.
+  HMAC signing; every MCP tool call writes an attributed entry using
+  the demo's fixed `demo-operator` actor.
 - **Approval workflow** — `data/approval/memory` records destructive
   operations as `pending` → operator decides → executed.
 - **MCP server** — `httpx/mcp` exposes a typed `echo` tool over
@@ -76,7 +77,8 @@ curl -i -X POST http://localhost:8080/admin/dangerous-action \
 
 - **Production auth**: the example bearer token is a local demo
   credential. Production wraps the mux in JWT/PASETO/signedrequest
-  middleware and derives actor/tenant from verified claims.
+  middleware and derives actor/tenant from verified claims instead of
+  the demo's fixed actor.
 - **Persistence**: in-memory backends are sufficient to demo the API
   shape but evaporate on restart. Production swaps in
   `data/budget/redis`, `data/actionlog/postgres`,

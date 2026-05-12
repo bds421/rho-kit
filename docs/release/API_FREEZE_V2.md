@@ -70,7 +70,9 @@ same change.
 | `github.com/bds421/rho-kit/infra/storage/storagetest/v2` | Integration test helper | No rename/remove | Storage compliance suites and Docker-backed local helpers. |
 | `github.com/bds421/rho-kit/authz/openfga/v2` | Adapter | No rename/remove | OpenFGA adapter, dependency isolated here. |
 | `github.com/bds421/rho-kit/crypto/envelope/awskms/v2` | Adapter | No rename/remove | AWS KMS envelope KEK adapter. |
+| `github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2` | Adapter | No rename/remove | Azure Key Vault / Managed HSM envelope KEK adapter. |
 | `github.com/bds421/rho-kit/crypto/envelope/gcpkms/v2` | Adapter | No rename/remove | Google Cloud KMS envelope KEK adapter. |
+| `github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2` | Adapter | No rename/remove | HashiCorp Vault Transit envelope KEK adapter. |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | No rename/remove | Temporal helpers, dependency isolated here. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | No rename/remove | Redis nonce store for signed-request middleware. |
 

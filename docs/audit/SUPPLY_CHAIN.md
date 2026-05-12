@@ -123,7 +123,7 @@ SBOM, `govulncheck`, `osv-scanner`, and license policy (§5, §7, §8).
 ### 1.5 Heavy dependency boundary guard
 
 Some dependencies are approved sources but still must remain isolated to
-adapter-specific modules. Redis, pgx, cloud-storage SDKs, cloud-KMS SDKs,
+adapter-specific modules. Redis, pgx, cloud-storage SDKs, KMS/Vault SDKs,
 messaging SDKs, OpenFGA, Temporal, River, and Testcontainers must not
 quietly move into generic modules such as `core`, `data`, `infra`, or
 `httpx`.
@@ -275,7 +275,7 @@ Every Dependabot PR must pass before merge:
 - [ ] If the PR introduces a new direct Go dependency, the same PR
       updates `docs/audit/dependency-allowlist.txt`; CI enforces this
       via `make check-dependency-allowlist`.
-- [ ] If the PR moves Redis, pgx, cloud, messaging, KMS, OpenFGA,
+- [ ] If the PR moves Redis, pgx, cloud, messaging, KMS/Vault, OpenFGA,
       Temporal, River, or Testcontainers deps into a new module, the
       module boundary is reviewed and `make check-dependency-boundaries`
       still passes.
@@ -450,7 +450,7 @@ asset metadata, the workflow run, and the tagged commit.
 | `csrf-hmac` | Session-bound CSRF token signing | Per-deployment env var (`_FILE` mounted from secret store) | quarterly |
 | `signedrequest-hmac` | Inter-service signed-request HMAC | Per-deployment KMS | quarterly |
 | `paseto-keys` | PASETO local/public keypairs | Per-deployment KMS, `core/secret`-wrapped at rest in process | annually or on suspicion |
-| `envelope-kek` | Envelope-encryption key-encrypting keys | Per-deployment KMS (AWS KMS / GCP KMS / Azure Key Vault) | every 90d (KMS-mediated) |
+| `envelope-kek` | Envelope-encryption key-encrypting keys | Per-deployment KMS or Vault (AWS KMS / Azure Key Vault / GCP KMS / Vault Transit) | every 90d (KMS-mediated) |
 
 The kit ships the *primitives* for every key listed above. The kit
 itself does not ship or require a long-lived release-signing key for

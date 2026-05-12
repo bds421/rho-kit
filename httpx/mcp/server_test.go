@@ -47,6 +47,10 @@ func newTestServer(t *testing.T, opts ...mcp.ServerOption) *mcp.Server {
 	return s
 }
 
+func withTestActor(actor string) mcp.ServerOption {
+	return mcp.WithActorExtractor(func(*http.Request) string { return actor })
+}
+
 func TestNewServer_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
 		mcp.NewServer(nil)
@@ -708,6 +712,7 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 
 	s := mcp.NewServer(
 		mcp.WithActionLogger(blocking),
+		withTestActor("agent-async"),
 		mcp.WithAsyncAudit(true),
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
@@ -746,6 +751,7 @@ func TestServer_ActionLog_AsyncMode_PreservesContextValuesAfterCancellation(t *t
 	logger := &contextRecordingLogger{inner: innerLogger}
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
+		withTestActor("agent-async-context"),
 		mcp.WithAsyncAudit(true),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
@@ -775,7 +781,7 @@ func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
 	// JSON-RPC response — the entry is visible the moment
 	// ServeHTTP returns.
 	logger, _ := newTestActionLogger(t)
-	s := newTestServer(t, mcp.WithActionLogger(logger))
+	s := newTestServer(t, mcp.WithActionLogger(logger), withTestActor("agent-sync"))
 
 	h := withTenantHandler(s.HTTP(), "tenant-sync")
 	r := httptest.NewRequest(http.MethodPost, "/mcp",
@@ -830,11 +836,11 @@ func TestServer_DisallowUnknownFields_ReturnsGenericMessage(t *testing.T) {
 		"server-side log must not retain the decoder's raw error text")
 }
 
-func TestDefaultActorExtractor_NoLongerTrustsHeader(t *testing.T) {
-	// H-7 fix: the default actor extractor must NOT read X-Actor-Id —
-	// any caller can set the header and forge the audit trail. The
-	// recorded actor must be AnonymousActor regardless of what the
-	// caller sends.
+func TestDefaultActorExtractor_StrictAuditRefusesAnonymousDespiteHeader(t *testing.T) {
+	// The default actor extractor must NOT read X-Actor-Id: any
+	// caller can set the header and forge the audit trail. With an
+	// action logger configured, strict audit now refuses to dispatch
+	// unless a verified actor extractor is wired explicitly.
 	logger, _ := newTestActionLogger(t)
 	s := newTestServer(t, mcp.WithActionLogger(logger))
 
@@ -846,12 +852,37 @@ func TestDefaultActorExtractor_NoLongerTrustsHeader(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.NotNil(t, resp["error"], "strict audit must reject missing actor attribution")
+	rpcErr := resp["error"].(map[string]any)
+	assert.EqualValues(t, -32603, rpcErr["code"])
+
 	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7"})
 	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestWithAllowAnonymousActor_RecordsAnonymous(t *testing.T) {
+	logger, _ := newTestActionLogger(t)
+	s := newTestServer(t,
+		mcp.WithActionLogger(logger),
+		mcp.WithAllowAnonymousActor(),
+	)
+
+	h := withTenantHandler(s.HTTP(), "tenant-anon")
+	r := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	r.Header.Set("X-Actor-Id", "spoofed")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-anon"})
+	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor,
-		"default extractor must not trust X-Actor-Id; recorded actor must be the anonymous sentinel")
-	assert.NotEqual(t, "alice", entries[0].Actor)
+	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+	assert.NotEqual(t, "spoofed", entries[0].Actor)
 }
 
 func TestWithActorFromContext_ReadsAuthContext(t *testing.T) {
@@ -908,7 +939,7 @@ func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {
 	assert.Equal(t, "fixed-actor", entries[0].Actor)
 }
 
-func TestServer_ActorExtractorPanicFallsBackToAnonymous(t *testing.T) {
+func TestServer_ActorExtractorPanicRefusesStrictAuditDispatch(t *testing.T) {
 	logger, _ := newTestActionLogger(t)
 	s := newTestServer(t,
 		mcp.WithActionLogger(logger),
@@ -923,13 +954,16 @@ func TestServer_ActorExtractorPanicFallsBackToAnonymous(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.NotNil(t, resp["error"])
+
 	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-panic"})
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+	assert.Empty(t, entries)
 }
 
-func TestServer_ActorExtractorInvalidFallsBackToAnonymous(t *testing.T) {
+func TestServer_ActorExtractorInvalidRefusesStrictAuditDispatch(t *testing.T) {
 	tests := []struct {
 		name  string
 		actor string
@@ -953,15 +987,18 @@ func TestServer_ActorExtractorInvalidFallsBackToAnonymous(t *testing.T) {
 			h.ServeHTTP(w, r)
 			require.Equal(t, http.StatusOK, w.Code)
 
+			var resp map[string]any
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+			require.NotNil(t, resp["error"])
+
 			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-invalid"})
 			require.NoError(t, err)
-			require.Len(t, entries, 1)
-			assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+			assert.Empty(t, entries)
 		})
 	}
 }
 
-func TestWithActorFromHeader_AmbiguousHeaderFallsBackToAnonymous(t *testing.T) {
+func TestWithActorFromHeader_AmbiguousHeaderRefusesStrictAuditDispatch(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(*http.Request)
@@ -1013,10 +1050,13 @@ func TestWithActorFromHeader_AmbiguousHeaderFallsBackToAnonymous(t *testing.T) {
 			h.ServeHTTP(w, r)
 			require.Equal(t, http.StatusOK, w.Code)
 
+			var resp map[string]any
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+			require.NotNil(t, resp["error"])
+
 			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-header"})
 			require.NoError(t, err)
-			require.Len(t, entries, 1)
-			assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
+			assert.Empty(t, entries)
 		})
 	}
 }
@@ -1058,7 +1098,7 @@ func TestServer_ActionLog_StrictMode_AppendFailure_FailsResponse(t *testing.T) {
 	// "success" without a durable signed entry.
 	inner, _ := newTestActionLogger(t)
 	logger := &failingLogger{inner: inner}
-	s := mcp.NewServer(mcp.WithActionLogger(logger))
+	s := mcp.NewServer(mcp.WithActionLogger(logger), withTestActor("agent-fail"))
 
 	calls := 0
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", invokeCounterHandler(&calls)))
@@ -1092,6 +1132,7 @@ func TestServer_ActionLog_LooseMode_AppendFailure_StillReturnsResult(t *testing.
 	s := mcp.NewServer(
 		mcp.WithLogger(slogger),
 		mcp.WithActionLogger(logger),
+		withTestActor("agent-loose-fail"),
 		mcp.WithStrictAudit(false),
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
@@ -1162,6 +1203,7 @@ func TestServer_AsyncAudit_QueueSaturation_DropsRatherThanLeaks(t *testing.T) {
 	}
 	s := mcp.NewServer(
 		mcp.WithActionLogger(blocking),
+		withTestActor("agent-sat"),
 		mcp.WithAsyncAudit(true),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
@@ -1194,6 +1236,7 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	logger, _ := newTestActionLogger(t)
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
+		withTestActor("agent-drain"),
 		mcp.WithAsyncAudit(true),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(8),
@@ -1222,6 +1265,7 @@ func TestServer_StopRejectsNilContext(t *testing.T) {
 	logger, _ := newTestActionLogger(t)
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
+		withTestActor("agent-stop"),
 		mcp.WithAsyncAudit(true),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
@@ -1248,6 +1292,7 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 	logger, store := newTestActionLogger(t)
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
+		withTestActor("agent-race"),
 		mcp.WithAsyncAudit(true),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(N),
@@ -1324,7 +1369,7 @@ func TestTruncateReason_PreservesUTF8Boundaries(t *testing.T) {
 	// would land mid-rune. The recorded Reason must remain valid
 	// UTF-8 (no unicode replacement glyph, decodable round-trip).
 	logger, _ := newTestActionLogger(t)
-	s := mcp.NewServer(mcp.WithActionLogger(logger))
+	s := mcp.NewServer(mcp.WithActionLogger(logger), withTestActor("agent-utf8"))
 
 	// Each '★' is 3 bytes; 400 of them = 1200 bytes > 1024.
 	long := strings.Repeat("★", 400)

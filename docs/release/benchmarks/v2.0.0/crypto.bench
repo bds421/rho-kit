@@ -1,0 +1,88 @@
+# module: crypto
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:27:10Z
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/crypto/v2/encrypt
+cpu: Apple M4 Max
+BenchmarkEncrypt-16                     	 3131322	       382.7 ns/op	     416 B/op	       6 allocs/op
+BenchmarkEncrypt-16                     	 3125804	       384.2 ns/op	     416 B/op	       6 allocs/op
+BenchmarkEncrypt-16                     	 3181250	       380.3 ns/op	     416 B/op	       6 allocs/op
+BenchmarkEncrypt-16                     	 3170926	       381.8 ns/op	     416 B/op	       6 allocs/op
+BenchmarkEncrypt-16                     	 3131120	       383.7 ns/op	     416 B/op	       6 allocs/op
+BenchmarkDecrypt-16                     	10294747	       114.0 ns/op	     160 B/op	       3 allocs/op
+BenchmarkDecrypt-16                     	10473255	       114.4 ns/op	     160 B/op	       3 allocs/op
+BenchmarkDecrypt-16                     	10550196	       114.4 ns/op	     160 B/op	       3 allocs/op
+BenchmarkDecrypt-16                     	10242680	       114.6 ns/op	     160 B/op	       3 allocs/op
+BenchmarkDecrypt-16                     	10487362	       114.4 ns/op	     160 B/op	       3 allocs/op
+BenchmarkEncryptDecrypt_RoundTrip-16    	 2353110	       505.8 ns/op	     576 B/op	       9 allocs/op
+BenchmarkEncryptDecrypt_RoundTrip-16    	 2356863	       508.4 ns/op	     576 B/op	       9 allocs/op
+BenchmarkEncryptDecrypt_RoundTrip-16    	 2351990	       506.3 ns/op	     576 B/op	       9 allocs/op
+BenchmarkEncryptDecrypt_RoundTrip-16    	 2355618	       507.3 ns/op	     576 B/op	       9 allocs/op
+BenchmarkEncryptDecrypt_RoundTrip-16    	 2356890	       510.6 ns/op	     576 B/op	       9 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/encrypt	18.270s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/crypto/v2/envelope
+cpu: Apple M4 Max
+BenchmarkEncrypt-16    	  662336	      1797 ns/op	 569.79 MB/s	    5408 B/op	      20 allocs/op
+BenchmarkEncrypt-16    	  680125	      1802 ns/op	 568.21 MB/s	    5408 B/op	      20 allocs/op
+BenchmarkEncrypt-16    	  677786	      1811 ns/op	 565.44 MB/s	    5408 B/op	      20 allocs/op
+BenchmarkEncrypt-16    	  637071	      1802 ns/op	 568.32 MB/s	    5408 B/op	      20 allocs/op
+BenchmarkEncrypt-16    	  693098	      1794 ns/op	 570.93 MB/s	    5408 B/op	      20 allocs/op
+BenchmarkDecrypt-16    	 1222898	       977.1 ns/op	1048.04 MB/s	    3920 B/op	      15 allocs/op
+BenchmarkDecrypt-16    	 1203262	       964.0 ns/op	1062.28 MB/s	    3920 B/op	      15 allocs/op
+BenchmarkDecrypt-16    	 1264980	       948.0 ns/op	1080.17 MB/s	    3920 B/op	      15 allocs/op
+BenchmarkDecrypt-16    	 1285762	       937.8 ns/op	1091.92 MB/s	    3920 B/op	      15 allocs/op
+BenchmarkDecrypt-16    	 1285724	       943.3 ns/op	1085.53 MB/s	    3920 B/op	      15 allocs/op
+BenchmarkRewrap-16     	 1000000	      1067 ns/op	 960.06 MB/s	    4000 B/op	      13 allocs/op
+BenchmarkRewrap-16     	 1000000	      1061 ns/op	 964.88 MB/s	    4000 B/op	      13 allocs/op
+BenchmarkRewrap-16     	 1000000	      1064 ns/op	 962.22 MB/s	    4000 B/op	      13 allocs/op
+BenchmarkRewrap-16     	 1000000	      1067 ns/op	 959.34 MB/s	    4000 B/op	      13 allocs/op
+BenchmarkRewrap-16     	 1000000	      1058 ns/op	 967.60 MB/s	    4000 B/op	      13 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/envelope	22.588s
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/envelope/kekstatic	0.697s
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/masking	1.237s
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/paseto	0.367s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/crypto/v2/passhash
+cpu: Apple M4 Max
+BenchmarkHash_FastParams-16      	     337	   3538462 ns/op	 8392121 B/op	      25 allocs/op
+BenchmarkHash_FastParams-16      	     338	   3550929 ns/op	 8392094 B/op	      25 allocs/op
+BenchmarkHash_FastParams-16      	     338	   3528683 ns/op	 8392074 B/op	      24 allocs/op
+BenchmarkHash_FastParams-16      	     342	   3571798 ns/op	 8392073 B/op	      24 allocs/op
+BenchmarkHash_FastParams-16      	     328	   3536381 ns/op	 8392089 B/op	      24 allocs/op
+BenchmarkVerify_FastParams-16    	     339	   3527529 ns/op	 8392043 B/op	      28 allocs/op
+BenchmarkVerify_FastParams-16    	     340	   3524153 ns/op	 8392040 B/op	      28 allocs/op
+BenchmarkVerify_FastParams-16    	     336	   3550768 ns/op	 8392051 B/op	      28 allocs/op
+BenchmarkVerify_FastParams-16    	     339	   3597783 ns/op	 8392065 B/op	      28 allocs/op
+BenchmarkVerify_FastParams-16    	     331	   3577197 ns/op	 8392088 B/op	      28 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/passhash	15.953s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/crypto/v2/signing
+cpu: Apple M4 Max
+BenchmarkSign-16                       	 2817678	       425.4 ns/op	     824 B/op	      12 allocs/op
+BenchmarkSign-16                       	 2896458	       418.9 ns/op	     824 B/op	      12 allocs/op
+BenchmarkSign-16                       	 2716516	       425.9 ns/op	     824 B/op	      12 allocs/op
+BenchmarkSign-16                       	 2861762	       421.4 ns/op	     824 B/op	      12 allocs/op
+BenchmarkSign-16                       	 2686076	       430.4 ns/op	     824 B/op	      12 allocs/op
+BenchmarkVerify-16                     	 2985310	       404.3 ns/op	     648 B/op	      10 allocs/op
+BenchmarkVerify-16                     	 3003684	       400.3 ns/op	     648 B/op	      10 allocs/op
+BenchmarkVerify-16                     	 2733328	       421.9 ns/op	     648 B/op	      10 allocs/op
+BenchmarkVerify-16                     	 2927241	       415.4 ns/op	     648 B/op	      10 allocs/op
+BenchmarkVerify-16                     	 2900397	       414.3 ns/op	     648 B/op	      10 allocs/op
+BenchmarkSignAndVerify_RoundTrip-16    	 1421758	       843.8 ns/op	    1473 B/op	      22 allocs/op
+BenchmarkSignAndVerify_RoundTrip-16    	 1421989	       841.7 ns/op	    1473 B/op	      22 allocs/op
+BenchmarkSignAndVerify_RoundTrip-16    	 1428428	       840.7 ns/op	    1473 B/op	      22 allocs/op
+BenchmarkSignAndVerify_RoundTrip-16    	 1439218	       835.8 ns/op	    1473 B/op	      22 allocs/op
+BenchmarkSignAndVerify_RoundTrip-16    	 1425056	       839.2 ns/op	    1473 B/op	      22 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/crypto/v2/signing	18.064s

@@ -15,7 +15,9 @@ use (
 	./crypto
 	./crypto/encrypt/integrationtest
 	./crypto/envelope/awskms
+	./crypto/envelope/azurekeyvault
 	./crypto/envelope/gcpkms
+	./crypto/envelope/vaulttransit
 	./data
 	./data/actionlog/postgres
 	./data/actionlog/postgres/integrationtest

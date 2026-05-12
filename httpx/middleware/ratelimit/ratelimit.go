@@ -48,6 +48,8 @@ type RateLimiter struct {
 	maxPerShard    int
 	health         HealthIndicator
 	degradation    DegradationHandler
+	metrics        *Metrics
+	name           string
 	runMu          sync.Mutex
 	started        bool
 }
@@ -80,6 +82,21 @@ func WithTrustedProxies(cidrs []string) RateLimiterOption {
 	}
 }
 
+// WithMetrics attaches Prometheus metrics to the IP rate limiter.
+func WithMetrics(m *Metrics) RateLimiterOption {
+	if m == nil {
+		panic("ratelimit: WithMetrics requires non-nil metrics")
+	}
+	return func(rl *RateLimiter) { rl.metrics = m }
+}
+
+// WithLimiterName sets the low-cardinality limiter label used by Prometheus
+// metrics. Use static names such as "public_api" or "login".
+func WithLimiterName(name string) RateLimiterOption {
+	name = normalizeLimiterName(name)
+	return func(rl *RateLimiter) { rl.name = name }
+}
+
 // NewRateLimiter creates a rate limiter that allows limit requests per window per IP.
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) *RateLimiter {
@@ -94,6 +111,7 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 		window:      window,
 		now:         time.Now,
 		maxPerShard: defaultMaxPerShard,
+		name:        defaultLimiterName,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -151,7 +169,12 @@ func (rl *RateLimiter) getShard(ip string) *shard {
 // allow checks if the IP is within the rate limit. Returns (allowed, windowRemaining).
 // windowRemaining is only meaningful when allowed is false.
 func (rl *RateLimiter) allow(ip string) (bool, time.Duration) {
-	if rl.ready() != nil || ip == "" {
+	if rl.ready() != nil {
+		rl.observeDecision(rateLimitOutcomeUnavailable)
+		return false, 0
+	}
+	if ip == "" {
+		rl.observeDecision(rateLimitOutcomeInvalidClientIP)
 		return false, 0
 	}
 	s := rl.getShard(ip)
@@ -168,20 +191,24 @@ func (rl *RateLimiter) allow(ip string) (bool, time.Duration) {
 		if elapsed >= rl.window {
 			v.count = 1
 			v.windowAt = now
+			rl.observeDecision(rateLimitOutcomeAllowed)
 			return true, 0
 		}
 		v.count++
 		if v.count <= rl.limit {
+			rl.observeDecision(rateLimitOutcomeAllowed)
 			return true, 0
 		}
 		remaining := rl.window - elapsed
 		if remaining < 0 {
 			remaining = 0
 		}
+		rl.observeDecision(rateLimitOutcomeLimited)
 		return false, remaining
 	}
 
 	s.visitors.Add(ip, &visitor{count: 1, windowAt: now})
+	rl.observeDecision(rateLimitOutcomeAllowed)
 	return true, 0
 }
 
@@ -295,7 +322,10 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 		panic("ratelimit: Middleware requires a non-nil next handler")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
+		skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
+		if outcome != "" {
+			rl.observeDecision(outcome)
+		}
 		if handled {
 			return
 		}
@@ -306,6 +336,7 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 		ip := rl.clientIP(r)
 		if ip == "" {
+			rl.observeDecision(rateLimitOutcomeInvalidClientIP)
 			httpx.WriteError(w, http.StatusBadRequest, "client IP could not be determined")
 			return
 		}
@@ -315,6 +346,7 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 			if retryAfter < 1 {
 				retryAfter = 1
 			}
+			rl.observeRetryAfter(float64(retryAfter))
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 			httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
@@ -322,4 +354,18 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (rl *RateLimiter) observeDecision(outcome string) {
+	if rl == nil {
+		return
+	}
+	rl.metrics.observeDecision(rl.name, rateLimitKindIP, outcome)
+}
+
+func (rl *RateLimiter) observeRetryAfter(seconds float64) {
+	if rl == nil {
+		return
+	}
+	rl.metrics.observeRetryAfter(rl.name, rateLimitKindIP, seconds)
 }

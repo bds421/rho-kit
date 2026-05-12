@@ -66,39 +66,40 @@ func WithKeyedDegradation(health HealthIndicator, handler DegradationHandler) Ke
 }
 
 // handleDegradation checks health and applies degradation policy.
-// Returns (shouldSkipRateLimit, handled). If handled is true, the response
-// has already been written and the caller should return immediately.
+// Returns (shouldSkipRateLimit, handled, metricOutcome). If handled is true,
+// the response has already been written and the caller should return
+// immediately.
 func handleDegradation(
 	w http.ResponseWriter,
 	r *http.Request,
 	health HealthIndicator,
 	handler DegradationHandler,
-) (skip bool, handled bool) {
+) (skip bool, handled bool, metricOutcome string) {
 	if health == nil {
-		return false, false
+		return false, false, ""
 	}
 	healthy, ok := safeHealthy(health)
 	if !ok {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
-		return false, true
+		return false, true, rateLimitOutcomeDegradedRejected
 	}
 	if healthy {
-		return false, false
+		return false, false, ""
 	}
 
 	err, ok := safeOnUnavailable(handler, r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
-		return false, true
+		return false, true, rateLimitOutcomeDegradedRejected
 	}
 	if err == nil {
 		// Passthrough: skip rate limiting, allow request through.
-		return true, false
+		return true, false, rateLimitOutcomeDegradedPassthrough
 	}
 
 	// Fail-fast: return 503.
 	httpx.WriteError(w, http.StatusServiceUnavailable, "service unavailable")
-	return false, true
+	return false, true, rateLimitOutcomeDegradedRejected
 }
 
 func safeHealthy(health HealthIndicator) (healthy bool, ok bool) {

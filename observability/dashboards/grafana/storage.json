@@ -1,5 +1,5 @@
 {
-  "title": "rho-kit / Storage (S3 + SFTP)",
+  "title": "rho-kit / Storage providers overview",
   "uid": "rhokit-storage",
   "tags": ["rho-kit", "storage"],
   "schemaVersion": 38,
@@ -12,21 +12,21 @@
         "name": "namespace",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values({__name__=~\"storage_(s3|sftp)_operation_duration_seconds_count\"}, namespace)",
+        "query": "label_values({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_count\"}, namespace)",
         "refresh": 2
       },
       {
         "name": "service",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values({__name__=~\"storage_(s3|sftp)_operation_duration_seconds_count\", namespace=\"$namespace\"}, service)",
+        "query": "label_values({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_count\", namespace=\"$namespace\"}, service)",
         "refresh": 2
       },
       {
-        "name": "instance",
+        "name": "storage_instance",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values({__name__=~\"storage_(s3|sftp)_operation_duration_seconds_count\", namespace=\"$namespace\", service=\"$service\"}, instance)",
+        "query": "label_values({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_count\", namespace=\"$namespace\", service=\"$service\"}, instance)",
         "includeAll": true,
         "multi": true,
         "refresh": 2
@@ -35,106 +35,75 @@
   },
   "panels": [
     {
-      "title": "S3 — operation rate (op/s) by operation",
+      "title": "Operation rate (op/s) by provider and operation",
       "type": "timeseries",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (operation) (rate(storage_s3_operation_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{operation}}"
+          "expr": "sum by (__name__, operation) (rate({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_count\", namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m]))",
+          "legendFormat": "{{__name__}} {{operation}}"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
     },
     {
-      "title": "S3 — error rate (err/s) by operation",
+      "title": "Error rate (err/s) by provider and operation",
       "type": "timeseries",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (operation) (rate(storage_s3_operation_errors_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{operation}}"
+          "expr": "sum by (__name__, operation) (rate({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_errors_total\", namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m]))",
+          "legendFormat": "{{__name__}} {{operation}}"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
     },
     {
-      "title": "S3 — latency p50 / p95 / p99 (s)",
+      "title": "Latency p95 (s) by provider and operation",
       "type": "timeseries",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(storage_s3_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p50"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(storage_s3_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p95"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(storage_s3_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p99"
+          "expr": "histogram_quantile(0.95, sum by (__name__, operation, le) (rate({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_bucket\", namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m])))",
+          "legendFormat": "{{__name__}} {{operation}} p95"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" } },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
     },
     {
-      "title": "SFTP — operation rate (op/s) by operation",
+      "title": "Latency p99 (s) by provider and operation",
       "type": "timeseries",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (operation) (rate(storage_sftp_operation_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{operation}}"
+          "expr": "histogram_quantile(0.99, sum by (__name__, operation, le) (rate({__name__=~\"storage_(s3|gcs|azure|sftp)_operation_duration_seconds_bucket\", namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}[5m])))",
+          "legendFormat": "{{__name__}} {{operation}} p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "SFTP connection healthy (1=ok)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "storage_sftp_connection_healthy{namespace=\"$namespace\", service=\"$service\", instance=~\"$storage_instance\"}",
+          "legendFormat": "{{instance}}"
         }
       ],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
     },
     {
-      "title": "SFTP — error rate (err/s) by operation",
-      "type": "timeseries",
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "sum by (operation) (rate(storage_sftp_operation_errors_total{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{operation}}"
-        }
-      ],
+      "title": "Provider dashboards",
+      "type": "text",
+      "options": {
+        "mode": "markdown",
+        "content": "- [S3](/d/rhokit-storage-s3)\n- [GCS](/d/rhokit-storage-gcs)\n- [Azure Blob Storage](/d/rhokit-storage-azure)\n- [SFTP](/d/rhokit-storage-sftp)"
+      },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
-    },
-    {
-      "title": "SFTP — latency p50 / p95 / p99 (s)",
-      "type": "timeseries",
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p50"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p95"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(storage_sftp_operation_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}[5m])))",
-          "legendFormat": "p99"
-        }
-      ],
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 }
-    },
-    {
-      "title": "SFTP — connection healthy (1=ok)",
-      "type": "timeseries",
-      "datasource": "Prometheus",
-      "targets": [
-        {
-          "expr": "storage_sftp_connection_healthy{namespace=\"$namespace\", service=\"$service\", instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}"
-        }
-      ],
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 }
     }
   ]
 }

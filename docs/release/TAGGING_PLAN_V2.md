@@ -59,7 +59,7 @@ Machine-readable tag plan:
 RELEASE_MODE=all RELEASE_FORMAT=tags make release-plan | tee /tmp/rho-kit-v2-tags-by-level.txt
 ```
 
-As of this release-prep package, the full plan contains 65 module tags across
+As of this release-prep package, the full plan contains 67 module tags across
 five dependency levels. Modules in the same level do not depend on each other
 and can be tagged together after that level's `go.mod`/`go.sum` files are
 tidied and committed.

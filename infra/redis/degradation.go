@@ -75,6 +75,8 @@ type FeatureCheck struct {
 	Feature string
 
 	// Policy is the degradation policy applied when Redis is unavailable.
+	// It is required; choose PassthroughPolicy or FailFastPolicy explicitly
+	// so missing wiring cannot silently become non-critical.
 	Policy DegradationPolicy
 }
 
@@ -84,7 +86,7 @@ type FeatureCheck struct {
 // "unhealthy" and are marked critical; all other policies (including CustomPolicy)
 // report "degraded" and are non-critical.
 //
-// Panics if conn is nil or any feature name is invalid.
+// Panics if conn is nil, any feature name is invalid, or any feature policy is nil.
 func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.DependencyCheck {
 	if conn == nil {
 		panic("redis: connection must not be nil")
@@ -99,6 +101,9 @@ func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.
 func newFeatureHealthCheck(conn *Connection, fc FeatureCheck) health.DependencyCheck {
 	if err := health.ValidateCheckName(fc.Feature); err != nil {
 		panic("redis: invalid feature name")
+	}
+	if fc.Policy == nil {
+		panic("redis: degradation policy must not be nil")
 	}
 	checkName := fmt.Sprintf("redis-%s", fc.Feature)
 	_, isFailFast := fc.Policy.(FailFastPolicy)

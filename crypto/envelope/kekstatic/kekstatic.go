@@ -1,8 +1,8 @@
 // Package kekstatic provides an in-memory [envelope.KEK] implementation
 // suitable for tests and development. Each named key wraps DEKs with
-// AES-256-GCM. Production deployments must implement a thin KEK adapter
-// against their cloud provider's KMS SDK; this kit deliberately ships
-// only the static reference implementation.
+// AES-256-GCM. Production deployments should use a managed KEK adapter such as
+// awskms, azurekeyvault, gcpkms, or vaulttransit, or implement the
+// envelope.KEK interface against their provider's KMS SDK.
 //
 // Static KEKs are NOT a substitute for a KMS:
 //
@@ -11,9 +11,8 @@
 //   - There is no audit trail.
 //   - There is no enforced rotation cadence.
 //
-// Use kekstatic for unit tests, integration tests with deterministic
-// fixtures, and local-dev workflows. For production envelopes, write a
-// thin KEK adapter against your provider's SDK.
+// Use kekstatic for unit tests, integration tests with deterministic fixtures,
+// and local-dev workflows.
 package kekstatic
 
 import (

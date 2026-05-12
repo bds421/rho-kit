@@ -24,8 +24,10 @@ import (
 
 // AnonymousActor is the actor id recorded when no authenticated identity
 // is available for a tool call (no auth middleware ran, or it ran but did
-// not surface a user id). The signed action-log store rejects empty actor
-// values, so the Server substitutes this sentinel.
+// not surface a user id) and the service explicitly opts into anonymous
+// audit entries. Strict audit rejects this sentinel by default when an
+// action logger is configured; use [WithAllowAnonymousActor] only for
+// local demos or deliberate shared-identity transports.
 const AnonymousActor = "anonymous"
 
 // DefaultActorHeader is the conventional header name used by the
@@ -129,17 +131,18 @@ func WithDestructive(b bool) ToolOption {
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	logger             *slog.Logger
-	actionLogger       actionlog.Logger
-	actorExtractor     func(*http.Request) string
-	tenantExtractor    func(ctx context.Context) (string, bool)
-	maxRequestBytes    int64
-	strictAudit        bool
-	strictAuditTimeout time.Duration
-	asyncAudit         bool
-	asyncAuditWorkers  int
-	asyncAuditQueue    int
-	asyncAuditTimeout  time.Duration
+	logger              *slog.Logger
+	actionLogger        actionlog.Logger
+	actorExtractor      func(*http.Request) string
+	allowAnonymousActor bool
+	tenantExtractor     func(ctx context.Context) (string, bool)
+	maxRequestBytes     int64
+	strictAudit         bool
+	strictAuditTimeout  time.Duration
+	asyncAudit          bool
+	asyncAuditWorkers   int
+	asyncAuditQueue     int
+	asyncAuditTimeout   time.Duration
 }
 
 // WithLogger sets the [slog.Logger] used for server-side errors.
@@ -168,19 +171,20 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 }
 
 // WithActorExtractor sets the function that resolves an actor id
-// from a request. The default returns [AnonymousActor] — the Server
-// does NOT trust any header by default, since headers can be spoofed
-// by any caller able to reach the JSON-RPC endpoint.
+// from a request. The default returns [AnonymousActor], but strict
+// audit mode rejects that default when an action logger is configured
+// unless [WithAllowAnonymousActor] is also supplied. The Server does
+// NOT trust any header by default, since headers can be spoofed by
+// any caller able to reach the JSON-RPC endpoint.
 //
 // Services that put actor on context via auth middleware should pass
 // [WithActorFromContext]. Services that genuinely want to trust a
 // header (and have a reverse proxy stamping it) can pass
 // [WithActorFromHeader] — read its doc first.
 //
-// An empty or action-log-invalid return value is recorded as
-// [AnonymousActor] — same convention as [httpx/middleware/approval]
-// — so the action log never carries an Actor field that the store
-// would reject after the tool has already run.
+// An empty or action-log-invalid return value is rejected in strict
+// audit mode before dispatch, preserving the invariant that every
+// executed audited tool call is attributable.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorExtractor: function must not be nil")
@@ -196,6 +200,16 @@ func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	}
 }
 
+// WithAllowAnonymousActor permits the default [AnonymousActor] value
+// when an action logger is configured. This is an explicit opt-out
+// from actor attribution, intended for local demos or transport
+// layers that authenticate a single shared machine identity outside
+// the request context. Production services should prefer
+// [WithActorFromContext].
+func WithAllowAnonymousActor() ServerOption {
+	return func(c *serverConfig) { c.allowAnonymousActor = true }
+}
+
 // WithActorFromContext returns a ServerOption that reads the actor id
 // from the request context using fn — typically a wrapper around
 // [auth.UserID] from httpx/middleware/auth. This is the recommended
@@ -204,7 +218,7 @@ func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 // forged by a remote client.
 //
 // fn must not be nil. An empty or action-log-invalid return is
-// recorded as [AnonymousActor].
+// rejected in strict audit mode when an action logger is configured.
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorFromContext: function must not be nil")
@@ -230,8 +244,8 @@ func WithActorFromContext(fn func(context.Context) string) ServerOption {
 //     authenticated (mTLS, sidecar-only network).
 //
 // In every other case prefer [WithActorFromContext]. An empty, blank,
-// duplicated, or action-log-invalid header is recorded as
-// [AnonymousActor].
+// duplicated, or action-log-invalid header is rejected in strict
+// audit mode when an action logger is configured.
 func WithActorFromHeader(header string) ServerOption {
 	if !httpguts.ValidHeaderFieldName(header) {
 		panic("mcp: WithActorFromHeader: header must be a valid non-empty header name")
@@ -429,8 +443,10 @@ func defaultServerConfig() serverConfig {
 	return serverConfig{
 		logger: slog.Default(),
 		// Default actor extractor must NOT trust any header — any
-		// caller can set X-Actor-Id and forge the audit trail. Wire
-		// WithActorFromContext (or WithActorFromHeader for
+		// caller can set X-Actor-Id and forge the audit trail. Strict
+		// audited calls reject this anonymous default unless the
+		// caller explicitly opts in with WithAllowAnonymousActor.
+		// Wire WithActorFromContext (or WithActorFromHeader for
 		// reverse-proxy-stamped headers) to record real actor ids.
 		actorExtractor: func(_ *http.Request) string {
 			return AnonymousActor

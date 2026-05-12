@@ -172,12 +172,9 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 		target = approval.StateRejected
 	}
 
-	// Idempotency: same decision is a no-op (but DecidedBy / Reason
-	// take the latest values).
+	// Idempotency: same decision is a pure no-op. Preserve the original
+	// decider metadata so a replay cannot rewrite the audit trail.
 	if r.State == target {
-		r.DecidedBy = decidedBy
-		r.Reason = reason
-		s.requests[id] = r
 		return cloneRequest(r), nil
 	}
 

@@ -1,0 +1,101 @@
+# module: runtime
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:48:59Z
+PASS
+ok  	github.com/bds421/rho-kit/runtime/v2/batchworker	0.344s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/runtime/v2/concurrency
+cpu: Apple M4 Max
+BenchmarkFanOut-16                   	  345115	      3344 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut-16                   	  369825	      3297 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut-16                   	  369896	      3439 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut-16                   	  361754	      3331 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut-16                   	  372580	      3327 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOutSettled-16            	  391015	      3220 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled-16            	  383493	      3187 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled-16            	  324831	      3261 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled-16            	  367155	      3161 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled-16            	  417314	      3183 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOut_Bounded-16           	  335737	      3627 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut_Bounded-16           	  337996	      3492 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut_Bounded-16           	  334359	      3585 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut_Bounded-16           	  337670	      3515 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOut_Bounded-16           	  345966	      3581 ns/op	    1408 B/op	      26 allocs/op
+BenchmarkFanOutSettled_Bounded-16    	  335826	      3559 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled_Bounded-16    	  309045	      3461 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled_Bounded-16    	  340128	      3574 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled_Bounded-16    	  332893	      3501 ns/op	    1352 B/op	      15 allocs/op
+BenchmarkFanOutSettled_Bounded-16    	  349508	      3514 ns/op	    1352 B/op	      15 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/runtime/v2/concurrency	25.027s
+PASS
+ok  	github.com/bds421/rho-kit/runtime/v2/cron	0.354s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/runtime/v2/eventbus
+cpu: Apple M4 Max
+BenchmarkPublish_Sync-16              	18624960	        60.87 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Sync-16              	20594361	        61.42 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Sync-16              	19836882	        61.64 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Sync-16              	19506405	        61.32 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Sync-16              	19358442	        62.11 ns/op	      80 B/op	       2 allocs/op
+2026/05/12 13:49:32 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:32 INFO eventbus worker pool stopped
+BenchmarkPublish_Async_WithPool-16    	2026/05/12 13:49:32 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:32 INFO eventbus worker pool stopped
+2026/05/12 13:49:32 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:32 INFO eventbus worker pool stopped
+2026/05/12 13:49:32 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:33 INFO eventbus worker pool stopped
+2026/05/12 13:49:33 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:34 INFO eventbus worker pool stopped
+ 3027944	       397.8 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Async_WithPool-16    	2026/05/12 13:49:34 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:34 INFO eventbus worker pool stopped
+2026/05/12 13:49:34 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:34 INFO eventbus worker pool stopped
+2026/05/12 13:49:34 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:34 INFO eventbus worker pool stopped
+2026/05/12 13:49:34 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:34 INFO eventbus worker pool stopped
+2026/05/12 13:49:34 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:36 INFO eventbus worker pool stopped
+ 3064903	       427.7 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Async_WithPool-16    	2026/05/12 13:49:36 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:36 INFO eventbus worker pool stopped
+2026/05/12 13:49:36 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:36 INFO eventbus worker pool stopped
+2026/05/12 13:49:36 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:36 INFO eventbus worker pool stopped
+2026/05/12 13:49:36 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:36 INFO eventbus worker pool stopped
+2026/05/12 13:49:36 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:37 INFO eventbus worker pool stopped
+ 2813679	       428.6 ns/op	      80 B/op	       2 allocs/op
+BenchmarkPublish_Async_WithPool-16    	2026/05/12 13:49:37 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:37 INFO eventbus worker pool stopped
+2026/05/12 13:49:37 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:37 INFO eventbus worker pool stopped
+2026/05/12 13:49:37 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:37 INFO eventbus worker pool stopped
+2026/05/12 13:49:37 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:38 INFO eventbus worker pool stopped
+2026/05/12 13:49:38 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:39 INFO eventbus worker pool stopped
+ 3092694	       397.3 ns/op	      81 B/op	       2 allocs/op
+BenchmarkPublish_Async_WithPool-16    	2026/05/12 13:49:39 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:39 INFO eventbus worker pool stopped
+2026/05/12 13:49:39 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:39 INFO eventbus worker pool stopped
+2026/05/12 13:49:39 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:39 INFO eventbus worker pool stopped
+2026/05/12 13:49:39 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:39 INFO eventbus worker pool stopped
+2026/05/12 13:49:39 INFO eventbus worker pool started workers=4 buffer_size=1024
+2026/05/12 13:49:41 INFO eventbus worker pool stopped
+ 3070419	       406.0 ns/op	      80 B/op	       2 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/runtime/v2/eventbus	15.038s
+PASS
+ok  	github.com/bds421/rho-kit/runtime/v2/lifecycle	0.306s

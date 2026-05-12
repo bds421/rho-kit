@@ -35,6 +35,7 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"github.com/bds421/rho-kit/observability/v2/slo"
 	"github.com/bds421/rho-kit/observability/v2/tracing"
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
@@ -699,6 +700,9 @@ func (b *Builder) WithKeyedRateLimit(name string, requests int, window time.Dura
 	if name == "" {
 		panic("app: WithKeyedRateLimit requires a non-empty name")
 	}
+	if err := promutil.ValidateStaticLabelValue("keyed rate limiter name", name); err != nil {
+		panic("app: WithKeyedRateLimit requires a metric-safe static name")
+	}
 	if requests <= 0 {
 		panic("app: WithKeyedRateLimit requires a positive request limit")
 	}
@@ -1086,9 +1090,16 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	runner.Add("eventbus", eventBus)
 
 	// 3. Rate limiters
+	var rateLimitMetrics *mwrl.Metrics
+	if b.ipRateRequests > 0 || len(b.keyedLimiters) > 0 {
+		rateLimitMetrics = mwrl.NewMetrics(nil)
+	}
 	var rl *mwrl.RateLimiter
 	if b.ipRateRequests > 0 {
-		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow)
+		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow,
+			mwrl.WithMetrics(rateLimitMetrics),
+			mwrl.WithLimiterName("ip"),
+		)
 		runner.AddFunc("rate-limiter-cleanup", func(ctx context.Context) error {
 			return rl.Run(ctx)
 		})
@@ -1096,7 +1107,10 @@ func (b *Builder) RunContext(ctx context.Context) error {
 
 	keyedLimiters := make(map[string]*mwrl.KeyedRateLimiter, len(b.keyedLimiters))
 	for _, spec := range b.keyedLimiters {
-		kl := mwrl.NewKeyedRateLimiter(spec.requests, spec.window)
+		kl := mwrl.NewKeyedRateLimiter(spec.requests, spec.window,
+			mwrl.WithKeyedMetrics(rateLimitMetrics),
+			mwrl.WithKeyedLimiterName(spec.name),
+		)
 		keyedLimiters[spec.name] = kl
 		name := "keyed-limiter-" + spec.name
 		runner.AddFunc(name, func(ctx context.Context) error {

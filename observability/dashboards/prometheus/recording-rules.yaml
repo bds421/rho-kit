@@ -120,6 +120,30 @@ groups:
             sum by (namespace, service, instance, operation, le)
               (rate(storage_s3_operation_duration_seconds_bucket[5m]))
           )
+      - record: storage_gcs_operation_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_gcs_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_gcs_operation_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_gcs_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_azure_operation_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_azure_operation_duration_seconds_bucket[5m]))
+          )
+      - record: storage_azure_operation_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, instance, operation, le)
+              (rate(storage_azure_operation_duration_seconds_bucket[5m]))
+          )
       - record: storage_sftp_operation_duration_seconds:p95:5m
         expr: |
           histogram_quantile(0.95,
@@ -157,3 +181,59 @@ groups:
               + rate(outbox_errors_total[5m]),
             0.0001
           )
+
+  - name: rho-kit-amqp-latency
+    interval: 30s
+    rules:
+      - record: amqp_publish_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, exchange, routing_key, le)
+              (rate(amqp_publish_duration_seconds_bucket[5m]))
+          )
+      - record: amqp_publish_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, exchange, routing_key, le)
+              (rate(amqp_publish_duration_seconds_bucket[5m]))
+          )
+      - record: amqp_handler_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, queue, le)
+              (rate(amqp_handler_duration_seconds_bucket[5m]))
+          )
+      - record: amqp_handler_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, queue, le)
+              (rate(amqp_handler_duration_seconds_bucket[5m]))
+          )
+      - record: amqp_publish_error_ratio:5m
+        expr: |
+          sum by (namespace, service, exchange, routing_key)
+            (rate(amqp_published_total{outcome!="success"}[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, exchange, routing_key)
+              (rate(amqp_published_total[5m])),
+            0.0001
+          )
+
+  - name: rho-kit-ratelimit-rates
+    interval: 30s
+    rules:
+      - record: http_ratelimit_limited_ratio:5m
+        expr: |
+          sum by (namespace, service, limiter, kind)
+            (rate(http_ratelimit_decisions_total{outcome="limited"}[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, limiter, kind)
+              (rate(http_ratelimit_decisions_total{outcome=~"allowed|limited"}[5m])),
+            0.0001
+          )
+      - record: http_ratelimit_unavailable:rate:5m
+        expr: |
+          sum by (namespace, service, limiter, kind, outcome)
+            (rate(http_ratelimit_decisions_total{outcome=~"unavailable|degraded_rejected|degraded_passthrough"}[5m]))

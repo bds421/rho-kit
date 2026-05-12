@@ -1,0 +1,142 @@
+{
+  "title": "rho-kit / HTTP rate limits",
+  "uid": "rhokit-ratelimit",
+  "tags": ["rho-kit", "http", "ratelimit"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_ratelimit_decisions_total, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_ratelimit_decisions_total{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "limiter",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\"}, limiter)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Decisions by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (limiter, kind, outcome) (rate(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\"}[5m]))",
+          "legendFormat": "{{limiter}} / {{kind}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Limited ratio",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (limiter, kind) (rate(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=\"limited\"}[5m])) / clamp_min(sum by (limiter, kind) (rate(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=~\"allowed|limited\"}[5m])), 0.0001)",
+          "legendFormat": "{{limiter}} / {{kind}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Retry-After p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (limiter, kind, le) (rate(http_ratelimit_retry_after_seconds_bucket{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\"}[5m])))",
+          "legendFormat": "{{limiter}} / {{kind}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (limiter, kind, le) (rate(http_ratelimit_retry_after_seconds_bucket{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\"}[5m])))",
+          "legendFormat": "{{limiter}} / {{kind}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (limiter, kind, le) (rate(http_ratelimit_retry_after_seconds_bucket{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\"}[5m])))",
+          "legendFormat": "{{limiter}} / {{kind}} p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Degradation decisions",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (limiter, kind, outcome) (rate(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=~\"degraded_passthrough|degraded_rejected|unavailable\"}[5m]))",
+          "legendFormat": "{{limiter}} / {{kind}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Limited requests (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=\"limited\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 }
+    },
+    {
+      "title": "Invalid keys / client IPs (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=~\"invalid_key|invalid_client_ip\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 }
+    },
+    {
+      "title": "Degraded passthrough (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=\"degraded_passthrough\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 }
+    },
+    {
+      "title": "Unavailable / rejected (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(http_ratelimit_decisions_total{namespace=\"$namespace\", service=\"$service\", limiter=~\"$limiter\", outcome=~\"unavailable|degraded_rejected\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 16 }
+    }
+  ]
+}

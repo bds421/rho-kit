@@ -1,0 +1,26 @@
+# module: resilience
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:48:41Z
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/resilience/v2/circuitbreaker
+cpu: Apple M4 Max
+BenchmarkExecute_Closed-16    	13055232	        82.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14514057	        82.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14464758	        82.94 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14219413	        83.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Closed-16    	14185660	        82.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28295018	        41.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	27886790	        42.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	27920882	        42.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28917142	        42.10 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecute_Open-16      	28397241	        41.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	33436389	        36.44 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	33304576	        36.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	32995398	        36.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	34200741	        36.28 ns/op	       0 B/op	       0 allocs/op
+BenchmarkState-16             	32678625	        36.46 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/resilience/v2/circuitbreaker	18.183s
+PASS
+ok  	github.com/bds421/rho-kit/resilience/v2/retry	0.291s

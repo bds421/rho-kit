@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -24,6 +25,7 @@ type Publisher struct {
 	conn        Connector
 	logger      *slog.Logger
 	sizeLimiter messaging.MessageSizeLimiter
+	metrics     *Metrics
 }
 
 // PublisherOption configures a Publisher.
@@ -55,6 +57,14 @@ func WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) Publish
 	return func(p *Publisher) {
 		p.sizeLimiter = p.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
 	}
+}
+
+// WithPublisherMetrics attaches Prometheus metrics to the publisher.
+func WithPublisherMetrics(m *Metrics) PublisherOption {
+	if m == nil {
+		panic("amqpbackend: WithPublisherMetrics requires non-nil metrics")
+	}
+	return func(p *Publisher) { p.metrics = m }
 }
 
 // NewPublisher creates a Publisher bound to the given connection. Panics
@@ -101,10 +111,17 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
 		return err
 	}
+	started := time.Now()
+	outcome := amqpPublishOutcomeFailed
+	defer func() {
+		p.metrics.observePublish(exchange, routingKey, outcome, started)
+	}()
 	if err := messaging.ValidateMessage(msg); err != nil {
+		outcome = amqpPublishOutcomeInvalidMessage
 		return err
 	}
 	if err := p.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
+		outcome = publishOutcomeForError(err)
 		return err
 	}
 	body, err := json.Marshal(msg)
@@ -139,8 +156,10 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 
 	if err := p.publishConfirmed(ctx, exchange, routingKey, pub); err != nil {
+		outcome = publishOutcomeForError(err)
 		return err
 	}
+	outcome = amqpPublishOutcomeSuccess
 
 	p.logger.Debug("message published",
 		redact.String("id", msg.ID),
@@ -164,7 +183,13 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
 		return err
 	}
+	started := time.Now()
+	outcome := amqpPublishOutcomeFailed
+	defer func() {
+		p.metrics.observePublish(exchange, routingKey, outcome, started)
+	}()
 	if maxBytes := p.sizeLimiter.LimitFor(exchange, routingKey); maxBytes > 0 && len(body) > maxBytes {
+		outcome = amqpPublishOutcomeTooLarge
 		return &messaging.MessageTooLargeError{
 			Exchange:   exchange,
 			RoutingKey: routingKey,
@@ -178,8 +203,10 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 		MessageId:    msgID,
 		Body:         body,
 	}); err != nil {
+		outcome = publishOutcomeForError(err)
 		return err
 	}
+	outcome = amqpPublishOutcomeSuccess
 
 	p.logger.Debug("raw message published",
 		redact.String("id", msgID),
@@ -194,6 +221,19 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 // as a publish failure so the message is retried after topology is fixed,
 // rather than silently lost.
 var ErrUnroutable = errors.New("amqp: message returned by broker (no route to any queue)")
+
+func publishOutcomeForError(err error) string {
+	switch {
+	case err == nil:
+		return amqpPublishOutcomeSuccess
+	case errors.Is(err, messaging.ErrMessageTooLarge):
+		return amqpPublishOutcomeTooLarge
+	case errors.Is(err, ErrUnroutable):
+		return amqpPublishOutcomeUnroutable
+	default:
+		return amqpPublishOutcomeFailed
+	}
+}
 
 // publishConfirmed opens a dedicated channel, publishes, waits for the
 // broker confirmation, and closes the channel. Each call is independent —

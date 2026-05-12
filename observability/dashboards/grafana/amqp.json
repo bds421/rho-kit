@@ -1,0 +1,185 @@
+{
+  "title": "rho-kit / AMQP direct messaging",
+  "uid": "rhokit-amqp",
+  "tags": ["rho-kit", "amqp", "messaging"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"amqp_(published|consumed)_total\"}, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"amqp_(published|consumed)_total\", namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "exchange",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(amqp_published_total{namespace=\"$namespace\", service=\"$service\"}, exchange)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "queue",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\"}, queue)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Publish rate by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (exchange, routing_key, outcome) (rate(amqp_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m]))",
+          "legendFormat": "{{exchange}} / {{routing_key}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Publish failure ratio",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(amqp_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\", outcome!=\"success\"}[5m])) / clamp_min(sum(rate(amqp_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])), 0.0001)",
+          "legendFormat": "failures / attempts"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Publish p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(amqp_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(amqp_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(amqp_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Consume rate by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (queue, outcome) (rate(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\"}[5m]))",
+          "legendFormat": "{{queue}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "title": "Handler p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(amqp_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(amqp_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(amqp_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "title": "Retry / dead-letter / discard rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (queue, outcome) (rate(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\", outcome=~\"retry|dead_lettered|discarded|force_discarded|dlq_publish_failed\"}[5m]))",
+          "legendFormat": "{{queue}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+    },
+    {
+      "title": "Unroutable publishes (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(amqp_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\", outcome=\"unroutable\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 }
+    },
+    {
+      "title": "DLQ publish failures (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\", outcome=\"dlq_publish_failed\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 }
+    },
+    {
+      "title": "Force discards (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\", outcome=\"force_discarded\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 }
+    },
+    {
+      "title": "Ack failures (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(amqp_consumed_total{namespace=\"$namespace\", service=\"$service\", queue=~\"$queue\", outcome=\"ack_failed\"}[5m]))"
+        }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 24 }
+    }
+  ]
+}

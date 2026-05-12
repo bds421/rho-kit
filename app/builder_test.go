@@ -221,6 +221,9 @@ func TestBuilder_WithKeyedRateLimitPanicsOnInvalidInput(t *testing.T) {
 		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("", 1, time.Minute)
 	})
 	assert.Panics(t, func() {
+		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("api key", 1, time.Minute)
+	})
+	assert.Panics(t, func() {
 		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("api", 0, time.Minute)
 	})
 	assert.Panics(t, func() {

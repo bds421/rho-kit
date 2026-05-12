@@ -1,0 +1,52 @@
+groups:
+  - name: rho-kit-ratelimit
+    rules:
+      - alert: RhoKitRateLimitSpike
+        expr: |
+          http_ratelimit_limited_ratio:5m > 0.25
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Rate-limit ratio > 25% for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            More than 25% of enforced rate-limit decisions for limiter
+            {{ $labels.limiter }} / {{ $labels.kind }} are rejecting requests.
+            This can be expected during abuse, but it can also indicate that
+            a limit was set too low or callers share an unexpected key.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/ratelimit.md"
+
+      - alert: RhoKitRateLimitDegraded
+        expr: |
+          sum by (namespace, service, limiter, kind, outcome)
+            (rate(http_ratelimit_decisions_total{outcome=~"degraded_passthrough|degraded_rejected"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Rate limiter degraded for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            The limiter {{ $labels.limiter }} / {{ $labels.kind }} is using
+            its degradation policy. Passthrough means requests are not being
+            limited; rejected means dependency failure is now user-visible.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/ratelimit.md"
+
+      - alert: RhoKitRateLimitUnavailable
+        expr: |
+          sum by (namespace, service, limiter, kind)
+            (rate(http_ratelimit_decisions_total{outcome="unavailable"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Rate limiter unavailable for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            The limiter {{ $labels.limiter }} / {{ $labels.kind }} failed
+            closed because it was uninitialized or its key extractor panicked.
+            Requests may be receiving 503 responses.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/ratelimit.md"

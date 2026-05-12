@@ -41,6 +41,8 @@ type KeyedRateLimiter struct {
 	now         func() time.Time
 	health      HealthIndicator
 	degradation DegradationHandler
+	metrics     *Metrics
+	name        string
 	runMu       sync.Mutex
 	started     bool
 }
@@ -59,6 +61,21 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 	return func(rl *KeyedRateLimiter) { rl.now = fn }
 }
 
+// WithKeyedMetrics attaches Prometheus metrics to the keyed rate limiter.
+func WithKeyedMetrics(m *Metrics) KeyedOption {
+	if m == nil {
+		panic("ratelimit: WithKeyedMetrics requires non-nil metrics")
+	}
+	return func(rl *KeyedRateLimiter) { rl.metrics = m }
+}
+
+// WithKeyedLimiterName sets the low-cardinality limiter label used by
+// Prometheus metrics. Use static names such as "api_key" or "login".
+func WithKeyedLimiterName(name string) KeyedOption {
+	name = normalizeLimiterName(name)
+	return func(rl *KeyedRateLimiter) { rl.name = name }
+}
+
 // NewKeyedRateLimiter creates a rate limiter allowing limit requests per window per key.
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedRateLimiter {
@@ -72,6 +89,7 @@ func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *
 		limit:  limit,
 		window: window,
 		now:    time.Now,
+		name:   defaultLimiterName,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -120,9 +138,11 @@ func (rl *KeyedRateLimiter) Allow(key string) (allowed bool, retryAfter int) {
 // an error for invalid keys or uninitialized limiters.
 func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
 	if err := rl.ready(); err != nil {
+		rl.observeDecision(rateLimitOutcomeUnavailable)
 		return false, 0, err
 	}
 	if err := ValidateKey(key); err != nil {
+		rl.observeDecision(rateLimitOutcomeInvalidKey)
 		return false, 0, err
 	}
 	now := rl.now()
@@ -137,20 +157,25 @@ func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, 
 		if now.After(entry.windowEnd) {
 			entry.count = 1
 			entry.windowEnd = now.Add(rl.window)
+			rl.observeDecision(rateLimitOutcomeAllowed)
 			return true, 0, nil
 		}
 		entry.count++
 		if entry.count <= rl.limit {
+			rl.observeDecision(rateLimitOutcomeAllowed)
 			return true, 0, nil
 		}
 		seconds := int(math.Ceil(entry.windowEnd.Sub(now).Seconds()))
 		if seconds < 1 {
 			seconds = 1
 		}
+		rl.observeDecision(rateLimitOutcomeLimited)
+		rl.observeRetryAfter(float64(seconds))
 		return false, seconds, nil
 	}
 
 	s.entries.Add(key, &keyedRateLimitEntry{count: 1, windowEnd: now.Add(rl.window)})
+	rl.observeDecision(rateLimitOutcomeAllowed)
 	return true, 0, nil
 }
 
@@ -227,7 +252,10 @@ func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			skip, handled := handleDegradation(w, r, rl.health, rl.degradation)
+			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
+			if outcome != "" {
+				rl.observeDecision(outcome)
+			}
 			if handled {
 				return
 			}
@@ -238,6 +266,7 @@ func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request
 
 			key, ok := safeRateLimitKey(keyFunc, r)
 			if !ok {
+				rl.observeDecision(rateLimitOutcomeUnavailable)
 				httpx.WriteError(w, http.StatusServiceUnavailable, "rate limit unavailable")
 				return
 			}
@@ -258,6 +287,20 @@ func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (rl *KeyedRateLimiter) observeDecision(outcome string) {
+	if rl == nil {
+		return
+	}
+	rl.metrics.observeDecision(rl.name, rateLimitKindKeyed, outcome)
+}
+
+func (rl *KeyedRateLimiter) observeRetryAfter(seconds float64) {
+	if rl == nil {
+		return
+	}
+	rl.metrics.observeRetryAfter(rl.name, rateLimitKindKeyed, seconds)
 }
 
 func safeRateLimitKey(fn func(*http.Request) string, r *http.Request) (key string, ok bool) {

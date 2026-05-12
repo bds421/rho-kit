@@ -1,0 +1,49 @@
+# module: core
+# command: go test -run=^$ -bench=. -benchmem -count=5 ./...
+# generated: 2026-05-12T11:26:38Z
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/apperror	0.387s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/clock	0.354s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/config	0.770s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/contextutil	0.506s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/randstr	0.290s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/redact	0.541s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/safecast	0.310s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/secret	0.316s
+goos: darwin
+goarch: arm64
+pkg: github.com/bds421/rho-kit/core/v2/tenant
+cpu: Apple M4 Max
+BenchmarkValidateID-16       	22225822	        53.24 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22304002	        53.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22950108	        53.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	22992028	        52.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateID-16       	21539360	        53.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWithIDChecked-16    	39288978	        29.32 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	41098587	        29.19 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	41130576	        29.55 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	42046128	        29.29 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWithIDChecked-16    	41803350	        29.02 ns/op	      64 B/op	       2 allocs/op
+BenchmarkFromContext-16      	379272543	         3.170 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	375129048	         3.188 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	372804577	         3.188 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	375744982	         3.180 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFromContext-16      	377521082	         3.176 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	377923692	         3.193 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	374134909	         3.152 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	388215660	         3.091 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	389282880	         3.127 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRequired-16         	383147368	         3.171 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/tenant	27.820s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/tlsclone	0.293s
+PASS
+ok  	github.com/bds421/rho-kit/core/v2/validate	0.303s

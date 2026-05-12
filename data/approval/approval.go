@@ -197,10 +197,10 @@ type Store interface {
 	// Decide records an approver's decision.
 	//
 	// Idempotency: calling Decide twice with the same approve value on
-	// the same id is a no-op (returns the unchanged request). The
-	// caller's DecidedBy/Reason replace the stored values, since the
-	// "same decision" is semantically the same regardless of who
-	// repeated the call.
+	// the same id is a no-op and returns the unchanged request. The
+	// original DecidedBy, Reason, and DecidedAt are preserved so a
+	// replay or second operator cannot rewrite the audit metadata
+	// attached to the first decision.
 	//
 	// Expiry: if the request is in StatePending and CreatedAt + ttl
 	// has passed, Decide first transitions it to StateExpired, then

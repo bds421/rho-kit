@@ -177,7 +177,7 @@ FROM approval_requests`
 
 // Decide records an approver's decision atomically.
 //
-// Mirrors data/approval/memory: idempotent for the same decision,
+// Mirrors data/approval/memory: idempotent no-op for the same decision,
 // refuses to flip a recorded decision, refuses to move out of a
 // terminal state, auto-expires past-deadline pending requests.
 func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
@@ -233,13 +233,6 @@ FOR UPDATE`
 	}
 
 	if r.State == target {
-		// Idempotent: refresh decider/reason metadata.
-		const refreshSQL = `UPDATE approval_requests SET decided_by = $1, reason = $2 WHERE id = $3`
-		if _, err := tx.Exec(ctx, refreshSQL, decidedBy, reason, r.ID); err != nil {
-			return approval.Request{}, fmt.Errorf("approval/postgres: refresh: %w", err)
-		}
-		r.DecidedBy = decidedBy
-		r.Reason = reason
 		if err := tx.Commit(ctx); err != nil {
 			return approval.Request{}, fmt.Errorf("approval/postgres: commit: %w", err)
 		}

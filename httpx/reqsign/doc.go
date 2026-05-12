@@ -3,6 +3,12 @@
 // the [github.com/bds421/rho-kit/crypto/v2/signing] package, adding an
 // HTTP-aware layer on top.
 //
+// Deprecated: new services should use [github.com/bds421/rho-kit/httpx/v2/sign]
+// for outbound signing and [github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest]
+// for inbound verification. This package remains for existing callers that use
+// its self-contained legacy wire format; it is not wire-compatible with the
+// newer signedrequest format.
+//
 // # Canonical String
 //
 // Each request is reduced to a canonical byte sequence before signing:
@@ -21,7 +27,8 @@
 // Four headers carry the signature:
 //   - X-Signature: the HMAC-SHA256 signature (sha256=hex)
 //   - X-Signature-Timestamp: Unix timestamp (decimal string)
-//   - X-Signature-KeyID: which key was used (supports rotation)
+//   - X-Signature-KeyID: which key was used (supports rotation; legacy
+//     spelling differs from signedrequest's X-Signature-Key-Id)
 //   - X-Signature-Nonce: per-request random token used for replay
 //     protection (audit FR-025); see [WithNonceStore]
 //

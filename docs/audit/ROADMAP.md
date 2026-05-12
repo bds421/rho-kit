@@ -5,7 +5,7 @@ agentic-AI push (Phases 7–9) is also landed — tenant wrappers,
 cost budgets, action audit + approval, MCP helpers, trust signals
 (SBOM + vuln scans + threat model + supply-chain policy), and the
 dashboard expansion. What remains is explicitly-deferred, non-gap work
-such as SDK-bound backend spikes and additional benchmarks.
+such as Kubernetes/etcd/Kafka backend spikes and optional scaffold variants.
 
 ## v2.0.0 themes — landed
 
@@ -42,8 +42,8 @@ This wave was orchestrated as 5 parallel agents producing 7 themes:
   `WithPostgres` pgx readiness, `WithLeaderElection` + cron leader gate,
   `WithSignedRequests`, `WriteServiceProblem`. Plus Wave 2 above.
 - **Theme 7 — dashboards expansion + runbooks**: gRPC RED, DB pool,
-  Redis, Outbox, Storage Grafana dashboards; per-area recording
-  rules; saturation + messaging alerts; 7 runbooks under
+  Redis, Outbox, Storage provider Grafana dashboards; per-area recording
+  rules; saturation + messaging alerts; 9 runbooks under
   `docs/ai/runbooks/`; `promtool` validation in CI.
 
 ### v2.0.0 design choices worth knowing
@@ -127,10 +127,12 @@ Each is tracked here until shipped; pickup is opt-in per item.
 
 ### Cloud / SDK-bound spikes
 
-- 🔴 **`crypto/envelope` cloud KMS subpackages** (`kekaws`, `kekgcp`,
-  `kekvault`) — only `kekstatic` ships; cloud variants need the
-  respective provider SDKs and would bloat the dep tree of consumers
-  who don't use them.
+- ✅ **AWS/GCP/Azure/Vault KMS envelope KEK adapters** —
+  `crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`,
+  `crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit` are frozen
+  v2.0.0 modules.
+- 🔴 **Additional KMS adapters** (other provider SDKs) — defer until a concrete
+  service needs them; each adds SDK weight and public API surface.
 - 🔴 **`infra/leaderelection/k8slease` and `.../etcd` backends** —
   need `k8s.io/client-go` / `etcd` client SDKs respectively.
 - 🔴 **`infra/messaging/kafkabackend`** — explicit "don't do kafka"
@@ -141,16 +143,18 @@ Each is tracked here until shipped; pickup is opt-in per item.
 - 🔴 **`kit-new --modules` / `--token` flags** — base scaffold and
   `--tenant` wrapper wiring ship; remaining module-token wiring follows
   the corresponding Builder integration items.
-- 🔴 **Per-package benchmarks for `kit-bench-gate`** — gate ships;
-  benchmarks land per-package as audit identifies hot paths.
+- ✅ **Benchmark baselines for `kit-bench-gate`** — `make
+  bench-baseline` captures raw `go test -bench` outputs under
+  `docs/release/benchmarks/v2.0.0/` for every current benchmarked
+  workspace module. The v2.0.0 baseline now covers `core`, `crypto`,
+  `data`, `httpx`, `resilience`, and `runtime`.
 
-### Dashboard follow-ups
+### Dashboard status
 
-- 🟡 **AMQP and rate-limit dashboard panels** — the shipped v2.0.0
-  dashboard set covers HTTP RED, gRPC RED, DB pool, Redis, Outbox,
-  Storage, Go runtime, and service overview. AMQP publisher panels and
-  rate-limit-specific panels follow once their Prometheus metric
-  contracts are stable enough to freeze.
+- ✅ **AMQP, rate-limit, and storage provider dashboards** — direct
+  AMQP, HTTP rate-limit, and S3/GCS/Azure/SFTP storage Prometheus
+  contracts are frozen for v2.0.0 and ship with Grafana dashboards,
+  recording rules, alerts, and runbooks.
 ### Threat-model gaps
 
 GAP-01 (cost budgets), GAP-02 (safe redirects), GAP-03 (gRPC

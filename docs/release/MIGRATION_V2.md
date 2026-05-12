@@ -190,8 +190,5 @@ The following remain out of scope for v2.0.0 and should not block adoption:
 
 - Kubernetes/etcd leader-election adapters.
 - Kafka backend.
-- Additional managed-KMS/Vault adapters beyond the currently frozen AWS and
-  Google KMS adapter modules.
-- Per-package benchmark baselines for every package.
-- Provider-specific production dashboards beyond the documented runbooks and
-  metrics surfaces already shipped.
+- Additional managed-KMS adapters beyond the currently frozen AWS KMS, Azure
+  Key Vault, Google Cloud KMS, and HashiCorp Vault Transit adapter modules.
