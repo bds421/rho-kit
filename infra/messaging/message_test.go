@@ -128,23 +128,31 @@ func TestMessage_WithHeader(t *testing.T) {
 	msg, err := messaging.NewMessage("test.event", "hello")
 	require.NoError(t, err)
 
-	msg2 := msg.WithHeader("X-Correlation-Id", "abc-123")
+	msg2, err := msg.WithHeader("X-Correlation-Id", "abc-123")
+	require.NoError(t, err)
 	assert.Equal(t, "abc-123", msg2.CorrelationID())
 
 	// Original should be unmodified (immutability)
 	assert.Empty(t, msg.CorrelationID())
 }
 
-func TestMessage_WithHeader_PanicsOnInvalidHeader(t *testing.T) {
+func TestMessage_WithHeader_ErrorsOnInvalidHeader(t *testing.T) {
 	msg, err := messaging.NewMessage("test.event", "hello")
 	require.NoError(t, err)
 
-	assert.Panics(t, func() { msg.WithHeader("", "value") })
-	assert.Panics(t, func() { msg.WithHeader("Bad Header", "value") })
-	assert.Panics(t, func() { msg.WithHeader("X-Trace", "bad\nvalue") })
-	assert.Panics(t, func() {
-		msg.WithHeader("X-Trace", strings.Repeat("x", messaging.MaxMessageHeaderValueBytes+1))
-	})
+	cases := map[string]struct{ k, v string }{
+		"empty name":     {"", "value"},
+		"space in name":  {"Bad Header", "value"},
+		"newline value":  {"X-Trace", "bad\nvalue"},
+		"oversize value": {"X-Trace", strings.Repeat("x", messaging.MaxMessageHeaderValueBytes+1)},
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, herr := msg.WithHeader(h.k, h.v)
+			assert.ErrorIs(t, herr, messaging.ErrInvalidMessageHeader)
+			assert.Zero(t, got, "invalid header returns the zero Message")
+		})
+	}
 }
 
 func TestValidateMessageHeaders(t *testing.T) {
@@ -224,8 +232,10 @@ func TestMessage_WithHeader_PreservesExisting(t *testing.T) {
 	msg, err := messaging.NewMessage("test.event", nil)
 	require.NoError(t, err)
 
-	msg = msg.WithHeader("X-Request-Id", "req-1")
-	msg = msg.WithHeader("X-Correlation-Id", "corr-1")
+	msg, err = msg.WithHeader("X-Request-Id", "req-1")
+	require.NoError(t, err)
+	msg, err = msg.WithHeader("X-Correlation-Id", "corr-1")
+	require.NoError(t, err)
 
 	assert.Equal(t, "corr-1", msg.CorrelationID())
 	assert.Equal(t, "req-1", msg.Headers["X-Request-Id"])
@@ -264,7 +274,8 @@ func TestMessage_WithSchemaVersion_PreservesHeaders(t *testing.T) {
 	msg, err := messaging.NewMessage("test.event", nil)
 	require.NoError(t, err)
 
-	msg = msg.WithHeader("X-Request-Id", "req-1")
+	msg, err = msg.WithHeader("X-Request-Id", "req-1")
+	require.NoError(t, err)
 	msg = msg.WithSchemaVersion(3)
 
 	assert.Equal(t, uint(3), msg.SchemaVersion)
@@ -274,7 +285,8 @@ func TestMessage_WithSchemaVersion_PreservesHeaders(t *testing.T) {
 func TestMessage_WithSchemaVersion_HeaderImmutability(t *testing.T) {
 	msg, err := messaging.NewMessage("test.event", nil)
 	require.NoError(t, err)
-	msg = msg.WithHeader("key", "value")
+	msg, err = msg.WithHeader("key", "value")
+	require.NoError(t, err)
 
 	msg2 := msg.WithSchemaVersion(1)
 
@@ -333,7 +345,8 @@ func TestMessage_WithHeader_PreservesSchemaVersion(t *testing.T) {
 	require.NoError(t, err)
 
 	msg = msg.WithSchemaVersion(3)
-	msg = msg.WithHeader("X-Trace-Id", "trace-1")
+	msg, err = msg.WithHeader("X-Trace-Id", "trace-1")
+	require.NoError(t, err)
 
 	assert.Equal(t, uint(3), msg.SchemaVersion)
 	assert.Equal(t, "trace-1", msg.Headers["X-Trace-Id"])

@@ -96,9 +96,9 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithRegistry sets the Prometheus registerer for worker metrics.
+// WithRegisterer sets the Prometheus registerer for worker metrics.
 // Default: prometheus.DefaultRegisterer.
-func WithRegistry(reg prometheus.Registerer) Option {
+func WithRegisterer(reg prometheus.Registerer) Option {
 	return func(c *config) { c.registry = reg }
 }
 
@@ -282,10 +282,13 @@ func (w *Worker) nextDelay() time.Duration {
 	span := int64(maxJitter) * 2
 	offset := time.Duration(rand.Int64N(span)) - maxJitter
 	d := w.interval + offset
-	if d <= 0 {
-		// Pathological case: jitter > 100% can produce a non-positive
-		// interval. Floor to 1ns so the timer fires immediately.
-		return time.Nanosecond
+	const minDelay = 10 * time.Millisecond
+	if d < minDelay {
+		// Pathological case: jitter > 100% combined with a tiny
+		// interval can produce a non-positive value. Floor to 10ms
+		// instead of 1ns to avoid a CPU-pinning hot loop when the
+		// struct is built directly bypassing the New constructor.
+		return minDelay
 	}
 	return d
 }

@@ -630,7 +630,10 @@ const (
 
 func streamDetachedTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
-		ctx = context.Background()
+		// A nil ctx from a producer/consumer call is always a caller
+		// bug; silently substituting Background hides the bug and lets
+		// shutdown signals get dropped. Fail loud.
+		panic("redisstream: nil ctx")
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }

@@ -8,7 +8,6 @@ package validate
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,53 +18,93 @@ import (
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-var (
-	instance *validator.Validate
-	once     sync.Once
-	frozen   atomic.Bool // set after first Struct() call to detect late registrations
-	// regMu serialises RegisterValidation against Struct so the underlying
-	// go-playground validator's tag-function map can never be mutated and
-	// read concurrently. Without this, the frozen-bool TOCTOU window allows
-	// a goroutine that just observed frozen=false to call RegisterValidation
-	// in parallel with a concurrent Struct() that already crossed the
-	// CompareAndSwap line, producing a data race in the validator's cache.
-	regMu sync.Mutex
-)
+// Func is the signature for custom validation tags. Wraps the underlying
+// validator's FieldLevel so callers don't depend on the third-party type
+// in their public API surface.
+type Func = validator.Func
 
-// get returns the singleton validator instance.
-func get() *validator.Validate {
-	once.Do(func() {
-		instance = validator.New()
-		// Use JSON tag names for field names in error messages.
-		instance.RegisterTagNameFunc(func(fld reflect.StructField) string {
-			name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
-			if name == "-" || name == "" {
-				return fld.Name
-			}
-			return name
-		})
-	})
-	return instance
+// Validator wraps go-playground/validator with kit conventions: JSON tag
+// field names, apperror.ValidationError conversion, and concurrency-safe
+// custom-tag registration. Construct via [New] for an isolated instance.
+type Validator struct {
+	v      *validator.Validate
+	mu     sync.Mutex // serialises RegisterValidation against Struct
+	frozen atomic.Bool
 }
 
-// Struct validates a struct using go-playground/validator tags.
-// Returns nil on success or an *apperror.ValidationError with field-level details.
+// New constructs an isolated [Validator]. Tests and callers that need
+// independent validators (e.g. conflicting custom tags) should use this
+// rather than the package-level [Struct] / [RegisterValidation].
+func New() *Validator {
+	inner := validator.New()
+	inner.RegisterTagNameFunc(jsonTagNameFunc)
+	return &Validator{v: inner}
+}
+
+// Struct validates s and returns nil on success or an
+// *apperror.ValidationError on failure.
 //
-// A non-struct or nil-pointer input is a programming bug (the validator
-// would otherwise return InvalidValidationError, which the v1 wrapper
-// surfaced as a 400 ValidationError to the client). v2 returns
-// apperror.NewOperationFailedWithCause for that case so misuse shows up
-// as a server error rather than user input being blamed.
+// A non-struct or nil-pointer input is a programming bug — the underlying
+// validator would return InvalidValidationError, which we wrap as
+// [apperror.NewOperationFailedWithCause] so misuse surfaces as a server
+// error rather than user input being blamed.
+func (V *Validator) Struct(s any) error {
+	V.mu.Lock()
+	V.frozen.CompareAndSwap(false, true)
+	V.mu.Unlock()
+	return wrapValidate(V.v, s)
+}
+
+// RegisterValidation registers a custom tag. Must be called before the
+// first [Validator.Struct] invocation; afterwards it returns an error so
+// concurrent Struct calls cannot race the validator's tag-function map.
+func (V *Validator) RegisterValidation(tag string, fn Func) error {
+	V.mu.Lock()
+	defer V.mu.Unlock()
+	if V.frozen.Load() {
+		return errors.New("validate: RegisterValidation called after Struct(); register custom tags during init")
+	}
+	return V.v.RegisterValidation(tag, fn)
+}
+
+// --- Package-level singleton (legacy / convenience API) ---
+
+var (
+	defaultValidator     *Validator
+	defaultValidatorOnce sync.Once
+)
+
+func singleton() *Validator {
+	defaultValidatorOnce.Do(func() {
+		defaultValidator = New()
+	})
+	return defaultValidator
+}
+
+// Struct validates s using the package-level [Validator]. Equivalent to
+// `New().Struct(s)` for the singleton instance; the first call freezes
+// the singleton's custom-tag registry.
 func Struct(s any) error {
-	// Acquire regMu so a concurrent RegisterValidation cannot mutate the
-	// validator's tag-function map while we're reading it. The mutex is
-	// only contended on the very first Struct call (registrations should
-	// happen during init); after that the atomic frozen flag short-circuits
-	// future RegisterValidation attempts with an explicit error.
-	regMu.Lock()
-	frozen.CompareAndSwap(false, true)
-	v := get()
-	regMu.Unlock()
+	return singleton().Struct(s)
+}
+
+// RegisterValidation registers a custom validation tag on the package-level
+// validator. Call during init only — see [Validator.RegisterValidation].
+func RegisterValidation(tag string, fn Func) error {
+	return singleton().RegisterValidation(tag, fn)
+}
+
+// --- internals ---
+
+func jsonTagNameFunc(fld reflect.StructField) string {
+	name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+	if name == "-" || name == "" {
+		return fld.Name
+	}
+	return name
+}
+
+func wrapValidate(v *validator.Validate, s any) error {
 	err := v.Struct(s)
 	if err == nil {
 		return nil
@@ -89,39 +128,6 @@ func Struct(s any) error {
 		})
 	}
 	return apperror.NewFieldValidation(fields...)
-}
-
-// New constructs an isolated *validator.Validate for callers that need
-// independent instances (e.g. tests with conflicting custom tags). The
-// returned validator does not share the singleton's frozen state, but
-// it also does not get the singleton's pre-registered JSON tag-name
-// hook — wire that up explicitly if needed.
-func New() *validator.Validate {
-	v := validator.New()
-	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
-		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
-		if name == "-" || name == "" {
-			return fld.Name
-		}
-		return name
-	})
-	return v
-}
-
-// RegisterValidation registers a custom validation tag on the shared validator.
-// The tag is globally available to all subsequent Struct() calls.
-//
-// Call this during program init only (e.g. in init() or main before serving).
-// The underlying go-playground/validator is not safe for concurrent
-// registration while Struct() calls are in flight. Returns an error if
-// called after the first Struct() call, indicating a data race risk.
-func RegisterValidation(tag string, fn validator.Func) error {
-	regMu.Lock()
-	defer regMu.Unlock()
-	if frozen.Load() {
-		return fmt.Errorf("validate: RegisterValidation called after Struct(); this is not safe for concurrent use — call during init only")
-	}
-	return get().RegisterValidation(tag, fn)
 }
 
 // fieldPath returns the JSON-tagged field path (e.g. "address.city" for nested structs).
@@ -199,3 +205,4 @@ func message(fe validator.FieldError) string {
 		return "failed validation: " + fe.Tag()
 	}
 }
+

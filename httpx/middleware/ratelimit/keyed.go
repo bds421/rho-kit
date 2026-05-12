@@ -33,7 +33,9 @@ type keyedShard struct {
 
 // KeyedRateLimiter implements a sharded fixed-window rate limiter keyed by an
 // arbitrary string. Sharding reduces mutex contention under high concurrency,
-// matching the approach used by [RateLimiter].
+// matching the approach used by [RateLimiter]. The type satisfies
+// [lifecycle.Component] so callers can register it directly with a
+// lifecycle.Runner.
 type KeyedRateLimiter struct {
 	shards      [numShards]keyedShard
 	limit       int
@@ -43,8 +45,12 @@ type KeyedRateLimiter struct {
 	degradation DegradationHandler
 	metrics     *Metrics
 	name        string
-	runMu       sync.Mutex
-	started     bool
+
+	startMu sync.Mutex
+	started bool
+	stopped bool
+	cancel  context.CancelFunc
+	doneCh  chan struct{}
 }
 
 // KeyedOption configures a KeyedRateLimiter.
@@ -179,40 +185,96 @@ func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, 
 	return true, 0, nil
 }
 
-// Run starts the cleanup goroutine that evicts expired entries. Blocks until ctx is cancelled.
-// Cleanup runs at 2× the rate limit window to allow entries to fully expire
-// before eviction, matching the IP rate limiter's cleanup cadence.
-func (rl *KeyedRateLimiter) Run(ctx context.Context) error {
+// Name returns the limiter's configured name so the type satisfies the
+// [lifecycle.Component]-adjacent naming convention used by the Runner.
+func (rl *KeyedRateLimiter) Name() string {
+	if rl == nil || rl.name == "" {
+		return defaultLimiterName
+	}
+	return rl.name
+}
+
+// Start launches the cleanup goroutine that evicts expired entries and
+// blocks until ctx is cancelled OR [KeyedRateLimiter.Stop] is invoked.
+// Cleanup runs at 2× the rate limit window to allow entries to fully
+// expire before eviction, matching the IP rate limiter's cleanup cadence.
+// Start must only be called once; subsequent calls return an error.
+func (rl *KeyedRateLimiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
 	if ctx == nil {
-		return errors.New("ratelimit: KeyedRateLimiter.Run requires a non-nil context")
+		return errors.New("ratelimit: KeyedRateLimiter.Start requires a non-nil context")
 	}
-	rl.runMu.Lock()
+	rl.startMu.Lock()
 	if rl.started {
-		rl.runMu.Unlock()
-		return errors.New("ratelimit: KeyedRateLimiter.Run already started")
+		rl.startMu.Unlock()
+		return errors.New("ratelimit: KeyedRateLimiter.Start already started")
 	}
 	rl.started = true
-	rl.runMu.Unlock()
+	runCtx, cancel := context.WithCancel(ctx)
+	rl.cancel = cancel
+	done := make(chan struct{})
+	rl.doneCh = done
+	rl.startMu.Unlock()
+
+	defer close(done)
+	defer cancel()
 
 	ticker := time.NewTicker(cleanupInterval(rl.window))
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return nil
 		case <-ticker.C:
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("panic in keyed rate limiter cleanup", redact.Panic(r))
+						slog.Error("panic in keyed rate limiter cleanup",
+							slog.String("limiter", rl.Name()),
+							redact.Panic(r),
+						)
 					}
 				}()
 				rl.cleanup()
 			}()
 		}
+	}
+}
+
+// Stop cancels the cleanup goroutine launched by [KeyedRateLimiter.Start]
+// and waits for it to exit. Stop is idempotent; calls before Start, after
+// the goroutine has already exited, or after a prior Stop are no-ops.
+func (rl *KeyedRateLimiter) Stop(ctx context.Context) error {
+	if rl == nil {
+		return nil
+	}
+	rl.startMu.Lock()
+	if !rl.started || rl.stopped {
+		rl.stopped = true
+		rl.startMu.Unlock()
+		return nil
+	}
+	rl.stopped = true
+	cancel := rl.cancel
+	done := rl.doneCh
+	rl.startMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -243,17 +305,17 @@ func (rl *KeyedRateLimiter) cleanup() {
 	}
 }
 
-// KeyedRateLimitMiddleware returns middleware that rate-limits requests using
-// the provided KeyedRateLimiter. The keyFunc extracts the rate-limit key from
-// each request (e.g., user ID, API key, IP address).
-// When degradation is configured via [WithKeyedDegradation], the middleware
+// KeyedMiddleware returns chain-shape middleware that rate-limits requests
+// using the provided KeyedRateLimiter. The keyFunc extracts the rate-limit
+// key from each request (e.g., user ID, API key, IP address). When
+// degradation is configured via [WithKeyedDegradation], the middleware
 // checks the health indicator before enforcing rate limits.
-func KeyedRateLimitMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
+func KeyedMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
 	if rl == nil {
-		panic("ratelimit: KeyedRateLimitMiddleware requires a non-nil limiter")
+		panic("ratelimit: KeyedMiddleware requires a non-nil limiter")
 	}
 	if keyFunc == nil {
-		panic("ratelimit: KeyedRateLimitMiddleware requires a non-nil key function")
+		panic("ratelimit: KeyedMiddleware requires a non-nil key function")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

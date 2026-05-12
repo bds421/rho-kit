@@ -2,7 +2,7 @@
 //
 // # Authentication
 //
-//   - RequireUserWithJWT: verifies a Bearer JWT issued by the kit's JWKS
+//   - JWT: verifies a Bearer JWT issued by the kit's JWKS
 //     provider. Rejects every other auth mode (X-User-Id headers, mTLS).
 //   - RequireS2SAuth: accepts EITHER a Bearer JWT (same rules) OR a
 //     verified mTLS client cert with an allow-listed CN paired with an
@@ -38,7 +38,10 @@
 // # Test helpers
 //
 //   - WithUserID, WithPermissions: simulate the JWT path.
-//   - WithTrustedS2S: simulate the mTLS path's marker.
+//   - WithTrustedS2S: simulate the mTLS path's marker. Available only
+//     under the `authtest` build tag; in default builds it panics so an
+//     accidental production import fails loudly instead of silently
+//     bypassing RBAC.
 //
 // All three are clearly labelled "tests only" — using them in production
 // code defeats the auth middleware.

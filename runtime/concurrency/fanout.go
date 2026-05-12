@@ -12,12 +12,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var (
-	// ErrNilContext is returned when FanOut or FanOutSettled receives a nil context.
-	ErrNilContext = errors.New("concurrency: context must not be nil")
-	// ErrNilFunction is returned when a submitted function is nil.
-	ErrNilFunction = errors.New("concurrency: function must not be nil")
-)
+// ErrNilContext is returned when FanOut or FanOutSettled receives a nil context.
+var ErrNilContext = errors.New("concurrency: context must not be nil")
 
 // PanicError indicates a goroutine panicked during execution.
 type PanicError struct {
@@ -108,17 +104,14 @@ func buildConfig(opts []FanOutOption) config {
 // immediately to cancellation.
 //
 // A nil or empty fns slice returns an empty (non-nil) slice and no error.
+// Individual nil entries in a non-nil slice are silently skipped — the
+// corresponding result position holds the zero value of T.
 func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, error), opts ...FanOutOption) ([]T, error) {
 	if ctx == nil {
 		return nil, ErrNilContext
 	}
 	if len(fns) == 0 {
 		return []T{}, nil
-	}
-	for i, fn := range fns {
-		if fn == nil {
-			return nil, fmt.Errorf("%w at index %d", ErrNilFunction, i)
-		}
 	}
 
 	cfg := buildConfig(opts)
@@ -131,6 +124,11 @@ func FanOut[T any](ctx context.Context, fns []func(ctx context.Context) (T, erro
 	results := make([]T, len(fns))
 
 	for i, fn := range fns {
+		if fn == nil {
+			// Forgiving policy: a nil entry means "no work for this
+			// slot". The result slot keeps the zero value of T.
+			continue
+		}
 		g.Go(func() (retErr error) {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -190,7 +188,8 @@ func FanOutSettled[T any](ctx context.Context, fns []func(ctx context.Context) (
 
 	for i, fn := range fns {
 		if fn == nil {
-			results[i] = Result[T]{Err: fmt.Errorf("%w at index %d", ErrNilFunction, i)}
+			// Forgiving policy: skip nil entries — the result slot
+			// retains the zero value of T and a nil Err.
 			continue
 		}
 		wg.Add(1)

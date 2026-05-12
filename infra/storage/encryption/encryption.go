@@ -73,7 +73,7 @@ var (
 // Data is encrypted before Put and decrypted after Get. The encryption
 // is transparent to the caller.
 //
-// Internally uses [encrypt.NewGCM], [encrypt.SealBytes], and [encrypt.OpenBytes]
+// Internally uses [encrypt.NewGCM], [encrypt.EncryptBytes], and [encrypt.DecryptBytes]
 // from kit/encrypt for the cryptographic operations.
 type EncryptedStorage struct {
 	backend storage.Storage
@@ -255,7 +255,7 @@ func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, met
 		return fmt.Errorf("encryption: %w", err)
 	}
 
-	ciphertext, err := encrypt.SealBytesAAD(gcm, plaintext, aadForKey(key))
+	ciphertext, err := encrypt.EncryptBytesAAD(gcm, plaintext, aadForKey(key))
 	if err != nil {
 		return fmt.Errorf("encryption: %w", err)
 	}
@@ -307,7 +307,7 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 		return nil, meta, fmt.Errorf("encryption: %w", err)
 	}
 
-	plaintext, err := encrypt.OpenBytesAAD(gcm, ciphertext, aadForKey(key))
+	plaintext, err := encrypt.DecryptBytesAAD(gcm, ciphertext, aadForKey(key))
 	if err != nil {
 		return nil, meta, fmt.Errorf("encryption: %w", err)
 	}

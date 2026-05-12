@@ -207,9 +207,11 @@ func TestFanOut_RejectsNilContext(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNilContext)
 }
 
-func TestFanOut_RejectsNilFunctionBeforeStarting(t *testing.T) {
+func TestFanOut_SkipsNilFunction(t *testing.T) {
+	// Forgiving policy: a nil entry means "no work" — the corresponding
+	// result slot holds the zero value of T. Non-nil entries still run.
 	var called atomic.Bool
-	_, err := FanOut[int](context.Background(), []func(ctx context.Context) (int, error){
+	got, err := FanOut[int](context.Background(), []func(ctx context.Context) (int, error){
 		func(_ context.Context) (int, error) {
 			called.Store(true)
 			return 1, nil
@@ -217,9 +219,11 @@ func TestFanOut_RejectsNilFunctionBeforeStarting(t *testing.T) {
 		nil,
 	})
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNilFunction)
-	assert.False(t, called.Load(), "FanOut should fail validation before starting work")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, 1, got[0])
+	assert.Equal(t, 0, got[1])
+	assert.True(t, called.Load())
 }
 
 func TestFanOut_SingleFunction(t *testing.T) {
@@ -381,7 +385,7 @@ func TestFanOutSettled_ReportsNilContextForEachFunction(t *testing.T) {
 	}
 }
 
-func TestFanOutSettled_ReportsNilFunctionAndRunsOthers(t *testing.T) {
+func TestFanOutSettled_SkipsNilFunctionAndRunsOthers(t *testing.T) {
 	var called atomic.Bool
 	got := FanOutSettled[int](context.Background(), []func(ctx context.Context) (int, error){
 		nil,
@@ -392,7 +396,9 @@ func TestFanOutSettled_ReportsNilFunctionAndRunsOthers(t *testing.T) {
 	})
 
 	require.Len(t, got, 2)
-	assert.ErrorIs(t, got[0].Err, ErrNilFunction)
+	// Forgiving policy: nil entries produce zero-value Result with no error.
+	assert.NoError(t, got[0].Err)
+	assert.Zero(t, got[0].Value)
 	assert.NoError(t, got[1].Err)
 	assert.Equal(t, 2, got[1].Value)
 	assert.True(t, called.Load())

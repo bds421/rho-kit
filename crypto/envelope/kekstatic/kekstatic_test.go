@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewRejectsInvalidMasterKeyLengthWithStableError(t *testing.T) {
-	_, err := New("k1", []byte("short"))
+	_, err := NewKEK("k1", []byte("short"))
 	if err == nil {
 		t.Fatal("expected invalid master key length")
 	}
@@ -17,7 +17,7 @@ func TestNewRejectsInvalidMasterKeyLengthWithStableError(t *testing.T) {
 }
 
 func TestAddKeyRejectsInvalidMasterKeyLengthWithStableError(t *testing.T) {
-	k, err := New("k1", make([]byte, 32))
+	k, err := NewKEK("k1", make([]byte, 32))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestAddKeyRejectsInvalidMasterKeyLengthWithStableError(t *testing.T) {
 }
 
 func TestRemoveKeyZeroesRetiredMasterKey(t *testing.T) {
-	k, err := New("active", bytes.Repeat([]byte{1}, 32))
+	k, err := NewKEK("active", bytes.Repeat([]byte{1}, 32))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -32,7 +32,8 @@ func TestMessage_WithHeader(t *testing.T) {
 	msg, err := NewMessage("test.event", "data")
 	require.NoError(t, err)
 
-	withHeader := msg.WithHeader("X-Trace", "abc123")
+	withHeader, err := msg.WithHeader("X-Trace", "abc123")
+	require.NoError(t, err)
 
 	// Original unchanged (immutability).
 	assert.Nil(t, msg.Headers)
@@ -67,20 +68,29 @@ func TestMessage_WithHeaderDetachesPayload(t *testing.T) {
 		Payload: []byte(`{"ok":true}`),
 	}
 
-	withHeader := msg.WithHeader("X-Trace", "abc123")
+	withHeader, err := msg.WithHeader("X-Trace", "abc123")
+	require.NoError(t, err)
 	withHeader.Payload[1] = 'X'
 
 	assert.Equal(t, `{"ok":true}`, string(msg.Payload))
 }
 
-func TestMessage_WithHeader_PanicsOnInvalid(t *testing.T) {
+func TestMessage_WithHeader_ErrorsOnInvalid(t *testing.T) {
 	msg, _ := NewMessage("test.event", "data")
 
-	assert.Panics(t, func() { msg.WithHeader("", "value") })
-	assert.Panics(t, func() { msg.WithHeader("bad\x00key", "value") })
-	assert.Panics(t, func() { msg.WithHeader("Bad Header", "value") })
-	assert.Panics(t, func() { msg.WithHeader("key", "bad\nvalue") })
-	assert.Panics(t, func() { msg.WithHeader("key", strings.Repeat("x", MaxHeaderValueBytes+1)) })
+	for name, h := range map[string]struct{ k, v string }{
+		"empty name":     {"", "value"},
+		"null byte name": {"bad\x00key", "value"},
+		"space in name":  {"Bad Header", "value"},
+		"newline value":  {"key", "bad\nvalue"},
+		"oversize value": {"key", strings.Repeat("x", MaxHeaderValueBytes+1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := msg.WithHeader(h.k, h.v)
+			assert.ErrorIs(t, err, ErrInvalidHeader)
+			assert.Zero(t, got, "invalid header returns the zero Message")
+		})
+	}
 }
 
 func TestValidateHeaders(t *testing.T) {

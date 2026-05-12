@@ -11,15 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type fakeMessageConsumer struct {
+type fakeConsumer struct {
 	err error
 }
 
-func (f fakeMessageConsumer) Consume(context.Context, Binding, Handler) error {
+func (f fakeConsumer) Consume(context.Context, Binding, Handler) error {
 	return f.err
 }
 
-func (f fakeMessageConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
+func (f fakeConsumer) ConsumeOnce(context.Context, Binding, Handler) error {
 	return f.err
 }
 
@@ -36,7 +36,7 @@ func TestStartConsumers_MissingHandler_ReturnsError(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
+	err := StartConsumers(context.Background(), fakeConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no handlers registered")
@@ -55,7 +55,7 @@ func TestStartConsumers_MultipleMissingHandlers(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
+	err := StartConsumers(context.Background(), fakeConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "count=2")
@@ -72,7 +72,7 @@ func TestStartConsumers_NilHandler_ReturnsError(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
+	err := StartConsumers(context.Background(), fakeConsumer{}, bindings, handlers, &wg, discardLogger(), nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil handlers")
@@ -102,7 +102,7 @@ func TestStartConsumers_NilWaitGroup_ReturnsError(t *testing.T) {
 		"order.created": func(_ context.Context, _ Delivery) error { return nil },
 	}
 
-	err := StartConsumers(context.Background(), fakeMessageConsumer{}, bindings, handlers, nil, discardLogger(), nil)
+	err := StartConsumers(context.Background(), fakeConsumer{}, bindings, handlers, nil, discardLogger(), nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WaitGroup")
@@ -121,7 +121,7 @@ func TestStartConsumers_AllHandlersPresent_NoError(t *testing.T) {
 
 	err := StartConsumers(
 		context.Background(),
-		fakeMessageConsumer{},
+		fakeConsumer{},
 		bindings,
 		handlers,
 		&wg,
@@ -183,7 +183,7 @@ func TestStartConsumers_ConsumeErrorCallsShutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	err := StartConsumers(
 		context.Background(),
-		fakeMessageConsumer{err: errors.New("consumer failed")},
+		fakeConsumer{err: errors.New("consumer failed")},
 		bindings,
 		handlers,
 		&wg,

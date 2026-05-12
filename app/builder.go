@@ -13,7 +13,6 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
@@ -154,6 +153,7 @@ type Builder struct {
 	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
 	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
 	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
+	allowPlaintextRedis      bool // FR-077: lets WithRedis pass plaintext for non-loopback addrs.
 
 	// Rate limiters
 	ipRateRequests int
@@ -339,6 +339,13 @@ func (b *Builder) WithPostgres(cfg pgxbackend.Config) *Builder {
 // Additional ConnOption values are appended after the builder's defaults
 // (WithLogger, WithLazyConnect). Pass WithInstance to label metrics when
 // multiple Redis connections exist.
+//
+// Transport safety (FR-077): non-loopback addresses MUST set
+// [goredis.Options.TLSConfig] and a non-empty Password. Use
+// [Builder.WithoutRedisTLS] to acknowledge plaintext for local-dev fixtures
+// (the check is unconditional otherwise — there is no KIT_ENV escape hatch).
+// The safety check runs at [Builder.Run] time when the redis module is built
+// so that opt-out ordering does not matter.
 func (b *Builder) WithRedis(opts *goredis.Options, connOpts ...kitredis.ConnOption) *Builder {
 	if opts == nil {
 		panic("app: redis options must not be nil")
@@ -350,6 +357,21 @@ func (b *Builder) WithRedis(opts *goredis.Options, connOpts ...kitredis.ConnOpti
 	}
 	b.redisOpts = cloneRedisOptions(opts)
 	b.redisConnOpts = append([]kitredis.ConnOption(nil), connOpts...)
+	return b
+}
+
+// WithoutRedisTLS opts out of the FR-077 transport-safety check that
+// [Builder.WithRedis] applies. Without this opt-in, [Builder.Run] refuses to
+// build a connection to a non-loopback Redis without TLSConfig and a
+// non-empty Password, because plaintext Redis credentials on the wire are a
+// known foot-gun and silent downgrade is unacceptable in v2.
+//
+// Use this only for local-development fixtures where the Redis instance is
+// confirmed to be unreachable from outside the host (Docker host-only
+// network, ephemeral sidecar). The check is unconditional otherwise —
+// there is no KIT_ENV escape hatch.
+func (b *Builder) WithoutRedisTLS() *Builder {
+	b.allowPlaintextRedis = true
 	return b
 }
 
@@ -736,9 +758,9 @@ func (b *Builder) WithStorage(backend storage.Storage, checks ...health.Dependen
 }
 
 // WithNamedStorage registers a named storage backend. All named backends are
-// accessible via infra.StorageManager.Disk(name) in the RouterFunc. The first
-// registered backend becomes the default disk unless [SetDefault] is called on
-// the manager. Health checks are added to the readiness probe.
+// accessible via infra.StorageManager.Backend(name) in the RouterFunc. The
+// first registered backend becomes the default unless [SetDefault] is called
+// on the manager. Health checks are added to the readiness probe.
 //
 // This can be used alongside [WithStorage] — the unnamed backend is independent
 // of the manager.
@@ -1092,7 +1114,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// 3. Rate limiters
 	var rateLimitMetrics *mwrl.Metrics
 	if b.ipRateRequests > 0 || len(b.keyedLimiters) > 0 {
-		rateLimitMetrics = mwrl.NewMetrics(nil)
+		rateLimitMetrics = mwrl.NewMetrics()
 	}
 	var rl *mwrl.RateLimiter
 	if b.ipRateRequests > 0 {
@@ -1100,9 +1122,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			mwrl.WithMetrics(rateLimitMetrics),
 			mwrl.WithLimiterName("ip"),
 		)
-		runner.AddFunc("rate-limiter-cleanup", func(ctx context.Context) error {
-			return rl.Run(ctx)
-		})
+		runner.Add("rate-limiter-cleanup", rl)
 	}
 
 	keyedLimiters := make(map[string]*mwrl.KeyedRateLimiter, len(b.keyedLimiters))
@@ -1112,10 +1132,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			mwrl.WithKeyedLimiterName(spec.name),
 		)
 		keyedLimiters[spec.name] = kl
-		name := "keyed-limiter-" + spec.name
-		runner.AddFunc(name, func(ctx context.Context) error {
-			return kl.Run(ctx)
-		})
+		runner.Add("keyed-limiter-"+spec.name, kl)
 	}
 
 	// 5. Audit log
@@ -1285,7 +1302,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		httpHandler = mw(httpHandler)
 	}
 	if rl != nil {
-		httpHandler = rl.Middleware(httpHandler)
+		httpHandler = mwrl.Middleware(rl)(httpHandler)
 	}
 	if !b.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
@@ -1353,7 +1370,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 		defer cancel()
 		if shutdownErr := internalSrv.Shutdown(shutdownCtx); shutdownErr != nil {
-			logger.Warn("internal server shutdown error", redact.Error(shutdownErr))
+			logger.Warn("internal server shutdown error", slog.Any("error", shutdownErr))
 		}
 	}()
 
@@ -1363,7 +1380,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		return fmt.Errorf("internal server failed to start: %w", srvErr)
 	case <-time.After(50 * time.Millisecond):
 	}
-	logger.Info("internal server started", redact.String("addr", b.cfg.Internal.Addr()))
+	logger.Info("internal server started", slog.String("addr", b.cfg.Internal.Addr()))
 
 	// Monitor internal server for post-startup failures (e.g., accept loop errors).
 	// If the internal server dies, the entire service shuts down — running without

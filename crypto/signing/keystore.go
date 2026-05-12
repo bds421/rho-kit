@@ -48,15 +48,17 @@ type StaticKeyStore struct {
 	currentID string
 }
 
-// NewStaticKeyStoreE creates a StaticKeyStore with the given keys and
+// NewStaticKeyStore creates a StaticKeyStore with the given keys and
 // current key ID, returning a descriptive error on misconfiguration. Use
-// this variant when keys come from runtime sources (env, KMS, config
-// reload) where one bad rotation should not crash the process.
+// this for runtime-sourced keys (env, KMS, config reload) where one
+// bad rotation should not crash the process.
 //
 // Returns errors for: empty keys map, currentID not present, any key
 // shorter than [minKeyLen]. The store keeps a defensive copy of the keys
 // map so callers may mutate or zero their copy after construction.
-func NewStaticKeyStoreE(keys map[string][]byte, currentID string) (*StaticKeyStore, error) {
+//
+// For compile-time-known keys, see [MustNewStaticKeyStore].
+func NewStaticKeyStore(keys map[string][]byte, currentID string) (*StaticKeyStore, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("signing: keys map must not be empty")
 	}
@@ -88,14 +90,16 @@ func NewStaticKeyStoreE(keys map[string][]byte, currentID string) (*StaticKeySto
 	}, nil
 }
 
-// NewStaticKeyStore is the panic-on-error variant of [NewStaticKeyStoreE].
-// Prefer the error-returning version for runtime config; reserve this one
-// for tests and contexts where the keys are compile-time constants.
+// MustNewStaticKeyStore is the panic-on-error variant of
+// [NewStaticKeyStore]. Use it only when keys are compile-time
+// constants — panics force a process crash, which is the right
+// behaviour at startup with hard-coded keys and the wrong behaviour
+// for runtime-loaded config.
 //
-// Panics if currentID is not present in keys, if keys is empty, or if any
-// key is shorter than [minKeyLen].
-func NewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
-	s, err := NewStaticKeyStoreE(keys, currentID)
+// Panics if currentID is not present in keys, if keys is empty, or if
+// any key is shorter than [minKeyLen].
+func MustNewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
+	s, err := NewStaticKeyStore(keys, currentID)
 	if err != nil {
 		panic("signing: static key store configuration is invalid")
 	}

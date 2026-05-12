@@ -640,9 +640,9 @@ func TestConsumer_HandleFailure_NilHooks_DoNotPanic(t *testing.T) {
 
 type noopConnector struct{}
 
-func (noopConnector) Channel() (*amqp.Channel, error) { return nil, errors.New("noop") }
-func (noopConnector) Healthy() bool                   { return true }
-func (noopConnector) Close() error                    { return nil }
+func (noopConnector) Channel() (*amqp.Channel, error)       { return nil, errors.New("noop") }
+func (noopConnector) Healthy() bool                          { return true }
+func (noopConnector) Stop(_ context.Context) error           { return nil }
 
 func TestNewConsumer_PanicsOnNilConnector(t *testing.T) {
 	assert.Panics(t, func() {

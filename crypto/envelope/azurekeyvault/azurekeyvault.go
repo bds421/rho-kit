@@ -91,8 +91,8 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
-// New builds a KEK from cfg using the given Azure Key Vault client.
-func New(c KeyClient, cfg Config) (*KEK, error) {
+// NewKEK builds a KEK from cfg using the given Azure Key Vault client.
+func NewKEK(c KeyClient, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("azurekeyvault: client must not be nil")
 	}

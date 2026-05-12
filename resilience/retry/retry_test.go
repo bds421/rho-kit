@@ -206,6 +206,29 @@ func TestDo_respectsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDo_surfacesFnErrorAlongsideCancelledCtx(t *testing.T) {
+	// fn returns a real business error AND ctx is cancelled in the same
+	// iteration. The business error must not be silently swallowed —
+	// callers need both signals (fn's error wins for inspection;
+	// errors.Is(err, context.Canceled) still works).
+	ctx, cancel := context.WithCancel(context.Background())
+	businessErr := errors.New("downstream rejected payload")
+	err := Do(ctx, func(_ context.Context) error {
+		cancel()
+		return businessErr
+	}, WithMaxRetries(-1), WithBaseDelay(1*time.Millisecond))
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, businessErr) {
+		t.Fatalf("expected wrapped business error, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected wrapped context.Canceled, got %v", err)
+	}
+}
+
 func TestDo_unlimitedRetries(t *testing.T) {
 	var calls int
 	err := Do(context.Background(), func(_ context.Context) error {

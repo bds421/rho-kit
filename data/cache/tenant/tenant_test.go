@@ -50,7 +50,11 @@ func (f *fakeCache) Exists(_ context.Context, key string) (bool, error) {
 }
 
 func ctxWith(tenantID string) context.Context {
-	return coretenant.WithID(context.Background(), coretenant.ID(tenantID))
+	ctx, err := coretenant.WithID(context.Background(), coretenant.ID(tenantID))
+	if err != nil {
+		panic(err)
+	}
+	return ctx
 }
 
 func TestWrap_IsolatesTenants(t *testing.T) {
@@ -133,9 +137,10 @@ func TestWrap_RejectsEmptyRawKey(t *testing.T) {
 func TestWrap_RejectsScopedKeyTooLong(t *testing.T) {
 	inner := newFakeCache()
 	w := Wrap(inner)
-	ctx := coretenant.WithID(context.Background(), coretenant.NewIDUnchecked(strings.Repeat("t", coretenant.MaxIDLen)))
+	ctx, err := coretenant.WithID(context.Background(), coretenant.MustNewID(strings.Repeat("t", coretenant.MaxIDLen)))
+	require.NoError(t, err)
 
-	err := w.Set(ctx, strings.Repeat("k", cache.MaxKeyLen), []byte("v"), time.Minute)
+	err = w.Set(ctx, strings.Repeat("k", cache.MaxKeyLen), []byte("v"), time.Minute)
 	assert.ErrorIs(t, err, cache.ErrKeyTooLong)
 	assert.Empty(t, inner.store, "oversized scoped keys must not reach the inner cache")
 }
@@ -350,18 +355,20 @@ func TestWrap_NonBulkInner_KeepsCacheOnly(t *testing.T) {
 // with key `"c"` collides with tenant `"a"` with key `"b:c"` — both
 // stringify to `tenant:a:b:c` and tenant B can read tenant A's data.
 //
-// We use NewIDUnchecked to simulate the worst case where validation is
+// We use MustNewID to simulate the worst case where validation is
 // bypassed (e.g. legacy data, direct ID conversion). The length prefix
 // in scopedKey must keep the namespaces disjoint regardless.
 func TestScopedKey_ColonInTenantIDNoCollision(t *testing.T) {
 	inner := newFakeCache()
 	w := Wrap(inner)
 
-	idAB := coretenant.NewIDUnchecked("a:b")
-	idA := coretenant.NewIDUnchecked("a")
+	idAB := coretenant.MustNewID("a:b")
+	idA := coretenant.MustNewID("a")
 
-	ctxAB := coretenant.WithID(context.Background(), idAB)
-	ctxA := coretenant.WithID(context.Background(), idA)
+	ctxAB, err := coretenant.WithID(context.Background(), idAB)
+	require.NoError(t, err)
+	ctxA, err := coretenant.WithID(context.Background(), idA)
+	require.NoError(t, err)
 
 	require.NoError(t, w.Set(ctxAB, "c", []byte("ab-tenant"), time.Minute))
 	require.NoError(t, w.Set(ctxA, "b:c", []byte("a-tenant"), time.Minute))

@@ -146,7 +146,7 @@ func TestRedisNonceStore_InvalidReceiverReturnsError(t *testing.T) {
 		"zero": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ok, err := store.SeenOrStore("nonce")
+			ok, err := store.SeenOrStore(context.Background(), "nonce")
 			if ok || !errors.Is(err, signedredis.ErrInvalidStore) {
 				t.Fatalf("SeenOrStore = ok=%v err=%v, want ErrInvalidStore", ok, err)
 			}
@@ -158,7 +158,7 @@ func TestSeenOrStore_FirstTimeThenReplay(t *testing.T) {
 	client := newTestClient(t)
 	store := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix(uniquePrefix(t)))
 
-	first, err := store.SeenOrStore("nonce-A")
+	first, err := store.SeenOrStore(context.Background(), "nonce-A")
 	if err != nil {
 		t.Fatalf("first SeenOrStore: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSeenOrStore_FirstTimeThenReplay(t *testing.T) {
 		t.Fatal("expected first observation to return true")
 	}
 
-	second, err := store.SeenOrStore("nonce-A")
+	second, err := store.SeenOrStore(context.Background(), "nonce-A")
 	if err != nil {
 		t.Fatalf("second SeenOrStore: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSeenOrStore_DistinctNoncesIndependent(t *testing.T) {
 	store := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix(uniquePrefix(t)))
 
 	for i, n := range []string{"a", "b", "c", "d"} {
-		ok, err := store.SeenOrStore(n)
+		ok, err := store.SeenOrStore(context.Background(), n)
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
@@ -196,7 +196,7 @@ func TestSeenOrStore_TTLExpiryAllowsReuse(t *testing.T) {
 	// SET EX accepts.
 	store := signedredis.New(client, time.Second, signedredis.WithKeyPrefix(uniquePrefix(t)))
 
-	first, err := store.SeenOrStore("ttl-nonce")
+	first, err := store.SeenOrStore(context.Background(), "ttl-nonce")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestSeenOrStore_TTLExpiryAllowsReuse(t *testing.T) {
 	}
 
 	// Replay inside TTL window — must reject.
-	second, err := store.SeenOrStore("ttl-nonce")
+	second, err := store.SeenOrStore(context.Background(), "ttl-nonce")
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestSeenOrStore_TTLExpiryAllowsReuse(t *testing.T) {
 	// Wait for expiry. 1.5s is enough margin for Redis's resolution.
 	time.Sleep(1500 * time.Millisecond)
 
-	third, err := store.SeenOrStore("ttl-nonce")
+	third, err := store.SeenOrStore(context.Background(), "ttl-nonce")
 	if err != nil {
 		t.Fatalf("third: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestSeenOrStore_EmptyNonceRejected(t *testing.T) {
 	client := newTestClient(t)
 	store := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix(uniquePrefix(t)))
 
-	ok, err := store.SeenOrStore("")
+	ok, err := store.SeenOrStore(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error on empty nonce")
 	}
@@ -253,7 +253,7 @@ func TestSeenOrStore_InvalidNonceRejectedBeforeRedis(t *testing.T) {
 		strings.Repeat("a", 65),
 	}
 	for _, nonce := range cases {
-		ok, err := store.SeenOrStore(nonce)
+		ok, err := store.SeenOrStore(context.Background(), nonce)
 		if err == nil {
 			t.Fatalf("expected error for nonce %q", nonce)
 		}
@@ -281,7 +281,7 @@ func TestSeenOrStore_ConcurrentSameNonceExactlyOneWins(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			ok, err := store.SeenOrStore("contended-nonce")
+			ok, err := store.SeenOrStore(context.Background(), "contended-nonce")
 			if err != nil {
 				errs.Add(1)
 				return
@@ -313,7 +313,7 @@ func TestSeenOrStore_AcrossClientsSharesState(t *testing.T) {
 	a := signedredis.New(clientA, time.Minute, signedredis.WithKeyPrefix(prefix))
 	b := signedredis.New(clientB, time.Minute, signedredis.WithKeyPrefix(prefix))
 
-	first, err := a.SeenOrStore("shared-nonce")
+	first, err := a.SeenOrStore(context.Background(), "shared-nonce")
 	if err != nil {
 		t.Fatalf("a.SeenOrStore: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestSeenOrStore_AcrossClientsSharesState(t *testing.T) {
 		t.Fatal("first replica must admit fresh nonce")
 	}
 
-	second, err := b.SeenOrStore("shared-nonce")
+	second, err := b.SeenOrStore(context.Background(), "shared-nonce")
 	if err != nil {
 		t.Fatalf("b.SeenOrStore: %v", err)
 	}
@@ -335,11 +335,11 @@ func TestSeenOrStore_KeyPrefixIsolatesAudiences(t *testing.T) {
 	a := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix("audA:"+uniquePrefix(t)))
 	b := signedredis.New(client, time.Minute, signedredis.WithKeyPrefix("audB:"+uniquePrefix(t)))
 
-	okA, err := a.SeenOrStore("nonce-shared-text")
+	okA, err := a.SeenOrStore(context.Background(), "nonce-shared-text")
 	if err != nil {
 		t.Fatalf("a: %v", err)
 	}
-	okB, err := b.SeenOrStore("nonce-shared-text")
+	okB, err := b.SeenOrStore(context.Background(), "nonce-shared-text")
 	if err != nil {
 		t.Fatalf("b: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestWithCallTimeout_Compiles(t *testing.T) {
 		signedredis.WithKeyPrefix(uniquePrefix(t)),
 		signedredis.WithCallTimeout(500*time.Millisecond),
 	)
-	ok, err := store.SeenOrStore("smoke-nonce")
+	ok, err := store.SeenOrStore(context.Background(), "smoke-nonce")
 	if err != nil {
 		t.Fatalf("smoke: %v", err)
 	}

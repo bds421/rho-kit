@@ -16,7 +16,7 @@ import (
 
 func TestScheduler_JobExecution(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	var called atomic.Int32
 	s.Add("test-job", "@every 100ms", func(_ context.Context) error {
@@ -42,7 +42,7 @@ func TestScheduler_JobExecution(t *testing.T) {
 
 func TestScheduler_JobError(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	s.Add("fail-job", "@every 100ms", func(_ context.Context) error {
 		return errors.New("boom")
@@ -62,7 +62,7 @@ func TestScheduler_JobError(t *testing.T) {
 
 func TestScheduler_PanicRecovery(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	s.Add("panic-job", "@every 100ms", func(_ context.Context) error {
 		panic("test panic")
@@ -233,7 +233,7 @@ func TestScheduler_AddPanicsOnUnsafeName(t *testing.T) {
 
 func TestScheduler_DurationMetric(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	s.Add("slow-job", "@every 100ms", func(_ context.Context) error {
 		time.Sleep(10 * time.Millisecond)
@@ -301,7 +301,7 @@ func waitForSchedulerStarted(t *testing.T, s *Scheduler) {
 
 func TestScheduler_SetJobTimeout_AppliesPerRunDeadline(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	// We bypass the cron schedule here — SetJobTimeout configures a value
 	// the wrapJob closure later observes. To test it directly, drive the
@@ -335,7 +335,7 @@ func TestScheduler_SetJobTimeout_PanicsOnNonPositive(t *testing.T) {
 	// non-positive durations, leaving the job unbounded. It now
 	// panics so the wiring bug surfaces.
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 	assert.PanicsWithValue(t, "cron: SetJobTimeout requires d > 0", func() { s.SetJobTimeout("zero", 0) })
 	assert.PanicsWithValue(t, "cron: SetJobTimeout requires d > 0", func() { s.SetJobTimeout("neg", -1*time.Second) })
 

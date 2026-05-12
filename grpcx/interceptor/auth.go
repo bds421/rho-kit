@@ -257,16 +257,6 @@ func IsTrustedS2S(ctx context.Context) bool {
 	return ok
 }
 
-// WithTrustedS2S returns ctx marked as a trusted service-to-service caller.
-//
-// This is intended for use in tests only. Production code must rely on
-// MTLSAuthUnary/MTLSAuthStream's mTLS branch to set the marker after a
-// verified client certificate. Setting the marker manually in production
-// would let callers bypass RBAC.
-func WithTrustedS2S(ctx context.Context) context.Context {
-	return trustedS2SKey.Set(ctx, grpcTrustedS2SMarker{})
-}
-
 // RequirePermissionUnary returns a unary server interceptor that enforces a
 // permission check using the permissions slot populated by AuthUnary (or
 // MTLSAuthUnary). Fail-closed semantics mirror
@@ -624,7 +614,7 @@ func authenticateMTLSOrJWT(
 			slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
 				slog.String("user_id", userID),
 				slog.String("client_identity", identity),
-				slog.Any("error", err),
+				redact.Error(err),
 			)
 			return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
 		}

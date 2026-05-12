@@ -40,6 +40,11 @@ const (
 // configured and the worker pool queue is full.
 var ErrQueueFull = errors.New("eventbus: worker pool queue full")
 
+// ErrStopped is returned by [Publish] when the bus has been stopped (or is
+// being stopped concurrently). Callers configured with [OnFullError] must
+// observe the shutdown rather than silently dropping the event.
+var ErrStopped = errors.New("eventbus: bus stopped")
+
 // Event is the constraint for publishable domain events.
 // Each concrete event type returns a stable name used as the dispatch key.
 type Event interface {
@@ -499,6 +504,11 @@ func (b *Bus) dispatchAsync(ctx context.Context, eventName string, h registeredH
 
 	ok, err := b.pool.submit(task, b.onFull, ctx)
 	if err != nil {
+		// ErrStopped is only surfaced to OnFullError callers — Drop and
+		// Block policies treat shutdown as another bounded-drop signal.
+		if errors.Is(err, ErrStopped) && b.onFull != OnFullError {
+			return nil
+		}
 		return err
 	}
 	if !ok && b.onFull == OnFullError {

@@ -524,7 +524,7 @@ func TestMessage_coversTags(t *testing.T) {
 	type tagTest struct {
 		Required string `validate:"required"`
 	}
-	err := get().Struct(tagTest{})
+	err := singleton().v.Struct(tagTest{})
 	if err == nil {
 		t.Fatal("expected error")
 	}

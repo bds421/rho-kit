@@ -247,11 +247,21 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 	}
 }
 
-// Close terminates the AMQP connection and stops reconnection attempts.
-// It is safe to call Close multiple times.
-func (c *Connection) Close() error {
+// Stop terminates the AMQP connection and stops reconnection attempts.
+// Safe to call multiple times.
+//
+// The amqp091 driver's close is synchronous and unaware of context, so
+// the only ctx handling we can offer is a fast-path: if ctx is already
+// cancelled at entry, return its error without invoking the broker
+// close. Once the close call starts it runs to completion.
+func (c *Connection) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	var closeErr error
 	c.closeOnce.Do(func() {

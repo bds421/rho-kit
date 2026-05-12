@@ -23,7 +23,7 @@ import (
 // dark on a transient backend blip.
 type PublicKeySource func(ctx context.Context) ([]ed25519.PublicKey, error)
 
-// Provider wraps a [V4Public] verifier and refreshes its trusted-key
+// Provider wraps a [V4PublicVerifier] verifier and refreshes its trusted-key
 // set on a schedule. Use it when keys rotate without a service
 // restart — typical for multi-tenant deployments or KMS-managed
 // signing identities.
@@ -37,7 +37,7 @@ type Provider struct {
 	verifyOpts   []Option
 	onRefreshErr func(error)
 
-	current               atomic.Pointer[V4Public]
+	current               atomic.Pointer[V4PublicVerifier]
 	lastSuccessfulRefresh atomic.Int64
 	stop                  chan struct{}
 	done                  chan struct{}
@@ -99,7 +99,7 @@ func withProviderClock(fn func() time.Time) ProviderOption {
 }
 
 // WithVerifyOptions passes Verify-time options through to each
-// rebuilt [V4Public]. Typical use: pin issuer/audience, set clock
+// rebuilt [V4PublicVerifier]. Typical use: pin issuer/audience, set clock
 // skew tolerance.
 func WithVerifyOptions(opts ...Option) ProviderOption {
 	copied := append([]Option(nil), opts...)
@@ -163,7 +163,7 @@ func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duratio
 	return p, nil
 }
 
-// Verify delegates to the currently-loaded [V4Public]. Returns
+// Verify delegates to the currently-loaded [V4PublicVerifier]. Returns
 // [ErrTokenInvalid] (wrapped by the underlying verifier) when no
 // active key set is available — should only happen if the caller
 // races Verify against Stop.
@@ -259,7 +259,7 @@ func (p *Provider) refresh(ctx context.Context) error {
 	if len(keys) == 0 {
 		return errors.New("paseto: source returned no keys; refusing to swap to empty trust set")
 	}
-	v, err := NewV4Public(keys, p.verifyOpts...)
+	v, err := NewV4PublicVerifier(keys, p.verifyOpts...)
 	if err != nil {
 		return err
 	}

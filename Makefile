@@ -1,6 +1,7 @@
 .PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
 
 GOLANGCI_LINT_VERSION := v2.10.1
+GOVULNCHECK_VERSION  ?= v1.1.4
 COVERAGE_FILE        := coverage.out
 RELEASE_VERSION      ?= v2.0.0
 BENCH_VERSION        ?= $(RELEASE_VERSION)
@@ -30,7 +31,7 @@ lint:
 vulncheck:
 	@for dir in $(WORKSPACE_MODULES); do \
 		echo "==> Vulncheck $$dir"; \
-		(cd $$dir && go run golang.org/x/vuln/cmd/govulncheck@latest ./...) || exit 1; \
+		(cd $$dir && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...) || exit 1; \
 	done
 
 ## test: Run all tests (all workspace modules)

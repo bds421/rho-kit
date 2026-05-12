@@ -27,7 +27,7 @@ import (
 
 // ID identifies a tenant. Construct via [NewID] (validates the input)
 // or, for a value already validated upstream (e.g. read from a trusted
-// DB column), [NewIDUnchecked].
+// DB column), [MustNewID].
 //
 // Allowed characters in a tenant ID: any byte *except* the separators,
 // control codes, and whitespace used by the rest of the kit. Specifically rejected:
@@ -68,7 +68,7 @@ func (id ID) IsZero() bool { return id == "" }
 // tenant ID. Callers may compare with `errors.Is`.
 var ErrMissing = errors.New("tenant: required tenant ID is missing from context")
 
-// ErrAlreadySet is returned by [WithIDChecked] when ctx already carries a
+// ErrAlreadySet is returned by [WithID] when ctx already carries a
 // different tenant ID. A request context must not be re-stamped as another
 // tenant after the trust boundary resolves it.
 var ErrAlreadySet = errors.New("tenant: context already carries a different tenant ID")
@@ -130,15 +130,14 @@ func NewID(s string) (ID, error) {
 	return ID(s), nil
 }
 
-// NewIDUnchecked converts s into an ID without validation. Use only
-// when s has been validated upstream — typical case is reading from a
-// trusted database column populated via [NewID]. The empty string is
-// still allowed; callers that want non-empty must check [ID.IsZero].
+// MustNewID converts s into an ID without validation. Use only when s has
+// been validated upstream — typical case is reading from a trusted database
+// column populated via [NewID]. The empty string is still allowed; callers
+// that want non-empty must check [ID.IsZero].
 //
-// This is the documented escape hatch for backwards compatibility with
-// stored data that pre-dates the [ValidateID] tightening. New code
-// paths should prefer [NewID].
-func NewIDUnchecked(s string) ID { return ID(s) }
+// This is the documented escape hatch for trusted inputs that bypass
+// [ValidateID]. New code paths handling user input should prefer [NewID].
+func MustNewID(s string) ID { return ID(s) }
 
 // ctxKey is unexported so consumers cannot bypass the typed helpers.
 type ctxKey struct{}
@@ -146,21 +145,10 @@ type ctxKey struct{}
 // WithID returns a child context carrying id. Use this in the HTTP/gRPC
 // middleware that resolves the tenant from request metadata.
 //
-// If ctx already carries a different tenant ID, WithID panics. Re-stamping an
-// already-scoped request is a cross-tenant isolation violation; callers that
-// need an error-returning path should use [WithIDChecked].
-func WithID(ctx context.Context, id ID) context.Context {
-	next, err := WithIDChecked(ctx, id)
-	if err != nil {
-		panic("tenant: context already carries a different tenant ID")
-	}
-	return next
-}
-
-// WithIDChecked is the error-returning form of [WithID]. It refuses to
-// overwrite a different tenant ID already present on ctx. Re-applying the same
-// tenant ID is a no-op, as is applying the zero ID.
-func WithIDChecked(ctx context.Context, id ID) (context.Context, error) {
+// It refuses to overwrite a different tenant ID already present on ctx,
+// returning [ErrAlreadySet]. Re-applying the same tenant ID is a no-op,
+// as is applying the zero ID.
+func WithID(ctx context.Context, id ID) (context.Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

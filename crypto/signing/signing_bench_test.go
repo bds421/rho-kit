@@ -10,14 +10,14 @@ func BenchmarkSign(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_, _, _ = Sign(body, secret)
+		_, _, _ = Sign(secret, body)
 	}
 }
 
 func BenchmarkVerify(b *testing.B) {
 	body := []byte(`{"title":"test","message":"hello world","status":"active"}`)
 	secret := testSecret
-	sig, ts, _ := Sign(body, secret)
+	sig, ts, _ := Sign(secret, body)
 
 	b.ResetTimer()
 	for b.Loop() {
@@ -31,7 +31,7 @@ func BenchmarkSignAndVerify_RoundTrip(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		sig, ts, _ := Sign(body, secret)
+		sig, ts, _ := Sign(secret, body)
 		_, _ = Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
 	}
 }

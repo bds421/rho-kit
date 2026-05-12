@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"log/slog"
+	"strings"
 
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/kms/apiv1/kmspb"
@@ -88,9 +89,9 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
-// New builds a KEK from cfg using the given KMS client. Returns an
+// NewKEK builds a KEK from cfg using the given KMS client. Returns an
 // error if KeyResource is empty.
-func New(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
+func NewKEK(c *kms.KeyManagementClient, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("gcpkms: client must not be nil")
 	}
@@ -162,6 +163,9 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if keyID == "" {
 		return nil, errors.New("gcpkms: keyID must not be empty")
 	}
+	if !allowsKeyID(k.key, keyID) {
+		return nil, errors.New("gcpkms: keyID does not match this KEK")
+	}
 	req := &kmspb.DecryptRequest{
 		Name:                              keyID,
 		Ciphertext:                        wrapped,
@@ -207,4 +211,30 @@ func (k *KEK) validate(ctx context.Context) error {
 		return errors.New("gcpkms: context must not be nil")
 	}
 	return nil
+}
+
+// allowsKeyID reports whether keyID matches the configured parent
+// key, either exactly or as a version-qualified suffix of the form
+// "<parent>/cryptoKeyVersions/<N>" where N is a positive integer.
+// Rejects any other shape so a blob written for a different key
+// cannot redirect the decrypt call.
+func allowsKeyID(parent, keyID string) bool {
+	if keyID == parent {
+		return true
+	}
+	const sep = "/cryptoKeyVersions/"
+	prefix := parent + sep
+	if !strings.HasPrefix(keyID, prefix) {
+		return false
+	}
+	version := keyID[len(prefix):]
+	if version == "" {
+		return false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return version[0] != '0' || version == "0"
 }

@@ -120,11 +120,15 @@ func (s *sessionLock) Release(ctx context.Context) error {
 	return nil
 }
 
-// Extend is a no-op for session-scoped advisory locks — Postgres holds
-// the lock for the session's lifetime, no TTL is involved. Returns
-// (true, nil) so callers driving a lock.Lock interface generically see
-// a "still mine" signal.
-func (s *sessionLock) Extend(_ context.Context) (bool, error) {
+// Extend round-trips the dedicated session connection so callers can
+// detect lost-leader scenarios (network drop, server failover). Postgres
+// holds the lock for the session's lifetime; what Extend verifies is
+// that the session itself is still alive. A failed ping returns
+// (false, err) so the [leaderelection.Elector] can step down.
+func (s *sessionLock) Extend(ctx context.Context) (bool, error) {
+	if _, err := s.conn.ExecContext(ctx, "SELECT 1"); err != nil {
+		return false, fmt.Errorf("pgadvisory: extend ping: %w", err)
+	}
 	return true, nil
 }
 

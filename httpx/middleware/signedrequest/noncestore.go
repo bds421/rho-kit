@@ -1,6 +1,7 @@
 package signedrequest
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -87,10 +88,17 @@ func NewMemoryNonceStore(ttl time.Duration, opts ...MemoryOption) *MemoryNonceSt
 	return m
 }
 
-// SeenOrStore reports whether nonce was first seen by this store.
-func (m *MemoryNonceStore) SeenOrStore(nonce string) (bool, error) {
+// SeenOrStore reports whether nonce was first seen by this store. The
+// ctx is honored only as a cancellation check at entry — the in-memory
+// path holds no external resources, so there is nothing to release.
+func (m *MemoryNonceStore) SeenOrStore(ctx context.Context, nonce string) (bool, error) {
 	if err := m.ready(); err != nil {
 		return false, err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 	}
 	if invalidStoreNonce(nonce) {
 		return false, ErrNonceInvalid

@@ -310,8 +310,8 @@ func TestBroker_Reset(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestBroker_ImplementsMessagePublisher(t *testing.T) {
-	var _ messaging.MessagePublisher = (*Broker)(nil)
+func TestBroker_ImplementsPublisher(t *testing.T) {
+	var _ messaging.Publisher = (*Broker)(nil)
 }
 
 func TestBroker_InvalidReceiverAndHandlerValidation(t *testing.T) {

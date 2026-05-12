@@ -239,7 +239,9 @@ func TestTenantKeyFunc_ReadsCtx(t *testing.T) {
 	h := mw.Middleware(b)(okHandler())
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req = req.WithContext(tenant.WithID(req.Context(), tenant.ID("acme")))
+	ctx, err := tenant.WithID(req.Context(), tenant.ID("acme"))
+	require.NoError(t, err)
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

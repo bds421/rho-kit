@@ -230,7 +230,7 @@ func mcpHTTPHandler(srv *mcp.Server) http.Handler {
 // request rather than executing immediately.
 //
 // SECURITY: in production, wrap this in:
-//   - auth middleware (RequireUserWithJWT or RequireS2SAuth) so the
+//   - auth middleware (auth.JWT or RequireS2SAuth) so the
 //     caller is authenticated; the actor field is derived from the
 //     verified JWT subject (auth.UserID), NOT from a client header.
 //   - the httpx/middleware/approval middleware which creates the

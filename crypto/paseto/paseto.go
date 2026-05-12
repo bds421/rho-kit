@@ -9,17 +9,39 @@
 // ecosystem compatibility is not a constraint. Use security/jwtutil when
 // services must verify tokens from an existing JWKS/JWT issuer.
 //
+// # Choosing a purpose
+//
 // Two purposes are exposed:
 //
-//   - V4Public: Ed25519-signed, publicly verifiable. Use when many
-//     services should be able to verify but only one issues.
-//   - V4Local: XChaCha20-Poly1305-encrypted, symmetric. Use when the
-//     issuer and the verifier are the same trust boundary (server-side
-//     session tokens, opaque cookies).
+//   - V4Public (signing): Ed25519-signed, publicly verifiable. Use when
+//     many services should be able to verify but only one issues. The
+//     producer holds the private key (see [V4PublicSigner]); every
+//     verifier needs only the public key (see [V4PublicVerifier]).
+//     Pick this for cross-service auth tokens, session cookies that
+//     downstream services validate, or any case where the trust
+//     boundary between issuer and verifier crosses a process.
+//
+//   - V4Local (encryption): XChaCha20-Poly1305-encrypted, symmetric.
+//     Use when the issuer and the verifier are inside the same trust
+//     boundary (server-side session tokens that never leave a single
+//     fleet, opaque cookies that the same service mints and reads).
+//     Local tokens are confidential — the contents cannot be read
+//     without the key — while public tokens carry their claims in the
+//     clear. If you need confidentiality OR you control both sides,
+//     V4Local is the right choice; otherwise pick V4Public.
+//
+// # Signer / verifier split
+//
+// V4Public is split into two types so that holding the private key is
+// a deliberate choice: a service that only verifies tokens never
+// constructs a [V4PublicSigner] and so cannot accidentally sign
+// anything. Wire [V4PublicVerifier] into your authentication
+// middleware, and [V4PublicSigner] only in the one process that mints
+// tokens. The [Provider] type extends [V4PublicVerifier] with periodic
+// JWKS-style key rotation.
 package paseto
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -38,11 +60,10 @@ var (
 	ErrTokenNoExp         = errors.New("paseto: token missing required exp claim")
 	ErrIssuerMismatch     = errors.New("paseto: issuer mismatch")
 	ErrAudienceUnknown    = errors.New("paseto: audience mismatch")
-	ErrReservedClaim      = errors.New("paseto: reserved claim name in Custom")
-	ErrNoExpiration       = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
-	ErrMultiAudience      = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
-	ErrInvalidVerifier    = errors.New("paseto: verifier is not initialized")
-	ErrSigningKeyMismatch = errors.New("paseto: signing key does not match configured public keys")
+	ErrReservedClaim   = errors.New("paseto: reserved claim name in Custom")
+	ErrNoExpiration    = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
+	ErrMultiAudience   = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
+	ErrInvalidVerifier = errors.New("paseto: verifier is not initialized")
 )
 
 // reservedClaims are the names of standard registered claims that
@@ -162,19 +183,19 @@ func buildConfig(opts []Option) (config, error) {
 	return cfg, nil
 }
 
-// V4Public verifies and signs v4.public tokens (Ed25519).
-type V4Public struct {
+// V4PublicVerifier verifies v4.public tokens (Ed25519). Construct via
+// [NewV4PublicVerifier] with the trusted public keys.
+type V4PublicVerifier struct {
 	cfg         config
 	parser      paseto.Parser
 	pubKeys     []paseto.V4AsymmetricPublicKey
-	rawPubKeys  []ed25519.PublicKey
 	initialized bool
 }
 
-// NewV4Public constructs a verifier for v4.public tokens with the given
-// trusted Ed25519 public keys. Provide at least one key; the parser
-// tries each in order during Verify.
-func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error) {
+// NewV4PublicVerifier constructs a verifier for v4.public tokens with
+// the given trusted Ed25519 public keys. Provide at least one key;
+// the parser tries each in order during Verify.
+func NewV4PublicVerifier(pubKeys []ed25519.PublicKey, opts ...Option) (*V4PublicVerifier, error) {
 	if len(pubKeys) == 0 {
 		return nil, errors.New("paseto: at least one Ed25519 public key required")
 	}
@@ -184,7 +205,6 @@ func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error)
 	}
 
 	wrapped := make([]paseto.V4AsymmetricPublicKey, 0, len(pubKeys))
-	rawPubKeys := make([]ed25519.PublicKey, 0, len(pubKeys))
 	for i, k := range pubKeys {
 		keyCopy := append(ed25519.PublicKey(nil), k...)
 		w, kerr := paseto.NewV4AsymmetricPublicKeyFromBytes(keyCopy)
@@ -192,21 +212,19 @@ func NewV4Public(pubKeys []ed25519.PublicKey, opts ...Option) (*V4Public, error)
 			return nil, fmt.Errorf("paseto: invalid Ed25519 public key %d: %w", i, kerr)
 		}
 		wrapped = append(wrapped, w)
-		rawPubKeys = append(rawPubKeys, keyCopy)
 	}
 
-	return &V4Public{
+	return &V4PublicVerifier{
 		cfg:         cfg,
 		parser:      paseto.Parser{},
 		pubKeys:     wrapped,
-		rawPubKeys:  rawPubKeys,
 		initialized: true,
 	}, nil
 }
 
 // Verify parses, authenticates, and validates token's reserved claims
 // against the configured issuer/audience and the supplied now.
-func (v *V4Public) Verify(token string, now time.Time) (*Claims, error) {
+func (v *V4PublicVerifier) Verify(token string, now time.Time) (*Claims, error) {
 	if err := v.validateReady(); err != nil {
 		return nil, err
 	}
@@ -224,40 +242,42 @@ func (v *V4Public) Verify(token string, now time.Time) (*Claims, error) {
 	return v.validate(parsed, now)
 }
 
-// Sign issues a v4.public token. The privateKey must match one of the
-// public keys configured on the verifier; the issuer and audience
-// claims are populated from the configured defaults if omitted in
-// claims.
-func (v *V4Public) Sign(claims Claims, privateKey ed25519.PrivateKey) (string, error) {
-	if err := v.validateReady(); err != nil {
-		return "", err
+// V4PublicSigner issues v4.public tokens. Construct via
+// [NewV4PublicSigner] with the Ed25519 private key. Issuance and
+// verification are split into distinct types so a service that only
+// verifies tokens cannot accidentally come to hold the private key.
+type V4PublicSigner struct {
+	cfg         config
+	priv        paseto.V4AsymmetricSecretKey
+	initialized bool
+}
+
+// NewV4PublicSigner constructs a signer for v4.public tokens. The
+// privateKey is copied so the caller may zero its slice afterwards.
+func NewV4PublicSigner(privateKey ed25519.PrivateKey, opts ...Option) (*V4PublicSigner, error) {
+	cfg, err := buildConfig(opts)
+	if err != nil {
+		return nil, err
 	}
 	keyCopy := append(ed25519.PrivateKey(nil), privateKey...)
 	priv, err := paseto.NewV4AsymmetricSecretKeyFromBytes(keyCopy)
 	if err != nil {
-		return "", fmt.Errorf("paseto: invalid Ed25519 private key: %w", err)
+		return nil, fmt.Errorf("paseto: invalid Ed25519 private key: %w", err)
 	}
-	if !v.hasSigningPublicKey(keyCopy) {
-		return "", ErrSigningKeyMismatch
+	return &V4PublicSigner{cfg: cfg, priv: priv, initialized: true}, nil
+}
+
+// Sign issues a v4.public token. The issuer and audience claims are
+// populated from the configured defaults if omitted in claims.
+func (s *V4PublicSigner) Sign(claims Claims) (string, error) {
+	if s == nil || !s.initialized {
+		return "", ErrInvalidVerifier
 	}
-	tok, err := buildToken(claims, v.cfg)
+	tok, err := buildToken(claims, s.cfg)
 	if err != nil {
 		return "", err
 	}
-	return tok.V4Sign(priv, nil), nil
-}
-
-func (v *V4Public) hasSigningPublicKey(privateKey ed25519.PrivateKey) bool {
-	pub, ok := privateKey.Public().(ed25519.PublicKey)
-	if !ok {
-		return false
-	}
-	for _, configured := range v.rawPubKeys {
-		if bytes.Equal(pub, configured) {
-			return true
-		}
-	}
-	return false
+	return tok.V4Sign(s.priv, nil), nil
 }
 
 // V4Local verifies and seals v4.local tokens (XChaCha20-Poly1305).
@@ -369,7 +389,7 @@ func buildToken(c Claims, cfg config) (paseto.Token, error) {
 	return t, nil
 }
 
-func (v *V4Public) validate(t *paseto.Token, now time.Time) (*Claims, error) {
+func (v *V4PublicVerifier) validate(t *paseto.Token, now time.Time) (*Claims, error) {
 	return validate(t, v.cfg, now)
 }
 
@@ -377,7 +397,7 @@ func (v *V4Local) validate(t *paseto.Token, now time.Time) (*Claims, error) {
 	return validate(t, v.cfg, now)
 }
 
-func (v *V4Public) validateReady() error {
+func (v *V4PublicVerifier) validateReady() error {
 	if v == nil || !v.initialized || len(v.pubKeys) == 0 {
 		return ErrInvalidVerifier
 	}
@@ -444,12 +464,30 @@ func validate(t *paseto.Token, cfg config, now time.Time) (*Claims, error) {
 
 	for name, val := range t.Claims() {
 		if _, reserved := reservedClaims[name]; reserved {
-			continue
+			if _, knownTop := knownTopLevelClaims[name]; knownTop {
+				continue
+			}
+			return nil, ErrReservedClaim
 		}
 		c.Custom[name] = val
 	}
 
 	return c, nil
+}
+
+// knownTopLevelClaims is the subset of reservedClaims that the
+// verifier itself consumes via the typed Claims fields. Anything else
+// in reservedClaims (e.g. kid, aud_alt) appearing as a custom claim
+// on the wire indicates the token was minted by a producer that
+// bypassed the buildToken check — reject rather than silently drop.
+var knownTopLevelClaims = map[string]struct{}{
+	"iss": {},
+	"aud": {},
+	"exp": {},
+	"nbf": {},
+	"iat": {},
+	"sub": {},
+	"jti": {},
 }
 
 func verificationTime(now time.Time) time.Time {

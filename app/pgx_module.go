@@ -88,9 +88,11 @@ func (m *pgxModule) Populate(infra *Infrastructure) {
 	infra.DB = m.pool
 }
 
-func (m *pgxModule) Close(_ context.Context) error {
-	if m.pool == nil {
+func (m *pgxModule) Stop(_ context.Context) error {
+	if m == nil || m.pool == nil {
 		return nil
 	}
-	return m.pool.Close()
+	pool := m.pool
+	m.pool = nil
+	return pool.Close()
 }

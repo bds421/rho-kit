@@ -565,7 +565,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		var moduleCloseValue any
 		var moduleCloseErr error
 		module := newStubModule("ctx-value-module")
-		module.closeFn = func(closeCtx context.Context) error {
+		module.stopFn = func(closeCtx context.Context) error {
 			moduleCloseValue = closeCtx.Value(runContextValueKey{})
 			moduleCloseErr = closeCtx.Err()
 			return nil

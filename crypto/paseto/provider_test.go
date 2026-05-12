@@ -90,14 +90,13 @@ func TestProvider_VerifiesAgainstActiveKey(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Stop()
 
-	signer, err := NewV4Public([]ed25519.PublicKey{pub},
-		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	signer, err := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	require.NoError(t, err)
 	tok, err := signer.Sign(Claims{
 		Subject:   "alice",
 		Issuer:    "svc",
 		ExpiresAt: time.Now().Add(time.Hour),
-	}, priv)
+	})
 	require.NoError(t, err)
 
 	claims, err := p.Verify(tok, time.Now())
@@ -123,22 +122,20 @@ func TestProvider_RotatesAcceptedKey(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Stop()
 
-	signOld, err := NewV4Public([]ed25519.PublicKey{pubOld},
-		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	signOld, err := NewV4PublicSigner(privOld, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	require.NoError(t, err)
-	signNew, err := NewV4Public([]ed25519.PublicKey{pubNew},
-		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	signNew, err := NewV4PublicSigner(privNew, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	require.NoError(t, err)
 
 	tokOld, err := signOld.Sign(Claims{
 		Subject: "alice", Issuer: "svc",
 		ExpiresAt: time.Now().Add(time.Hour),
-	}, privOld)
+	})
 	require.NoError(t, err)
 	tokNew, err := signNew.Sign(Claims{
 		Subject: "bob", Issuer: "svc",
 		ExpiresAt: time.Now().Add(time.Hour),
-	}, privNew)
+	})
 	require.NoError(t, err)
 
 	// Initially only the old key is trusted.
@@ -182,12 +179,11 @@ func TestProvider_KeepsOldKeysOnRefreshFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Stop()
 
-	signer, _ := NewV4Public([]ed25519.PublicKey{pub},
-		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	signer, _ := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	tok, _ := signer.Sign(Claims{
 		Subject: "alice", Issuer: "svc",
 		ExpiresAt: time.Now().Add(time.Hour),
-	}, priv)
+	})
 
 	failNext.Store(true)
 	// Wait until at least one refresh tick has fired.
@@ -218,12 +214,11 @@ func TestProvider_FailsClosedWhenKeySetStale(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Stop()
 
-	signer, _ := NewV4Public([]ed25519.PublicKey{pub},
-		WithExpectedIssuer("svc"), WithAllowAnyAudience())
+	signer, _ := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	tok, _ := signer.Sign(Claims{
 		Subject: "alice", Issuer: "svc",
 		ExpiresAt: now.Add(time.Hour),
-	}, priv)
+	})
 
 	_, err = p.Verify(tok, now)
 	require.NoError(t, err)

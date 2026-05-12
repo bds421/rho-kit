@@ -157,9 +157,9 @@ func (b *Budget) sweepLoop() {
 }
 
 // sweep removes buckets whose period id is older than the current
-// period. A bucket newly created in the current period and observed
-// by a concurrent Consume is preserved because its periodN is the
-// current period id by construction.
+// period. Consume verifies the bucket is still the live map entry
+// before mutating it, so a concurrent sweep cannot orphan an in-flight
+// increment.
 func (b *Budget) sweep() {
 	currentPeriod, _ := b.periodOf(b.now())
 	b.buckets.Range(func(k, v any) bool {
@@ -202,9 +202,20 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 	}
 	now := b.now()
 	periodID, nextStart := b.periodOf(now)
-	bk := b.loadOrInitBucket(key, periodID)
 
-	bk.mu.Lock()
+	// Loop to retry against a sweep that evicted our bucket between the
+	// load and the lock acquisition. Without this, Consume could
+	// increment `used` on an orphaned bucket that the next caller can
+	// no longer see, granting them a fresh full cap.
+	var bk *bucket
+	for {
+		bk = b.loadOrInitBucket(key, periodID)
+		bk.mu.Lock()
+		if current, ok := b.buckets.Load(key); ok && current.(*bucket) == bk {
+			break
+		}
+		bk.mu.Unlock()
+	}
 	defer bk.mu.Unlock()
 
 	if bk.periodN.Load() != periodID {

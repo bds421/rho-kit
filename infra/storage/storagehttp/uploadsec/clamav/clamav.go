@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
@@ -332,8 +333,13 @@ func copyBounded(dst io.Writer, src io.Reader, maxBytes int64) error {
 
 type removeOnEOF struct {
 	*os.File
-	path    string
-	removed bool
+	path string
+	// once guards the Close + os.Remove pair so the EOF-on-Read,
+	// explicit Close, and finalizer paths never race. sync.Once is
+	// enough here — we only need at-most-once cleanup, and the
+	// underlying file's Close is itself idempotent enough that a
+	// concurrent Read+Close pair won't double-free.
+	once sync.Once
 }
 
 func (r *removeOnEOF) Read(p []byte) (int, error) {
@@ -345,26 +351,22 @@ func (r *removeOnEOF) Read(p []byte) (int, error) {
 }
 
 func (r *removeOnEOF) Close() error {
-	if r.removed {
-		return nil
-	}
-	err := r.File.Close()
+	closeErr := r.File.Close()
 	r.cleanupAfterClose()
-	return err
+	return closeErr
 }
 
 func (r *removeOnEOF) cleanup() {
-	if err := r.File.Close(); err != nil {
-		return
-	}
-	r.cleanupAfterClose()
+	r.once.Do(func() {
+		_ = r.File.Close()
+		runtime.SetFinalizer(r, nil)
+		_ = os.Remove(r.path)
+	})
 }
 
 func (r *removeOnEOF) cleanupAfterClose() {
-	if r.removed {
-		return
-	}
-	r.removed = true
-	runtime.SetFinalizer(r, nil)
-	_ = os.Remove(r.path)
+	r.once.Do(func() {
+		runtime.SetFinalizer(r, nil)
+		_ = os.Remove(r.path)
+	})
 }

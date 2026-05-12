@@ -36,7 +36,7 @@ func TestConfigLogValueRedactsEncryptionContextValues(t *testing.T) {
 
 func TestNewCopiesEncryptionContext(t *testing.T) {
 	ctx := map[string]string{"tenant": "acme"}
-	k, err := New(kms.New(kms.Options{}), Config{
+	k, err := NewKEK(kms.New(kms.Options{}), Config{
 		KeyID:             "alias/test",
 		EncryptionContext: ctx,
 	})
@@ -77,7 +77,7 @@ func TestKEKInvalidStateReturnsErrors(t *testing.T) {
 }
 
 func TestKEKRejectsNilContextAndEmptyUnwrapKey(t *testing.T) {
-	k, err := New(kms.New(kms.Options{}), Config{KeyID: "alias/test"})
+	k, err := NewKEK(kms.New(kms.Options{}), Config{KeyID: "alias/test"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -91,6 +91,20 @@ func TestKEKRejectsNilContextAndEmptyUnwrapKey(t *testing.T) {
 	}
 	if _, err := k.Unwrap(context.Background(), "", []byte("wrapped")); err == nil {
 		t.Fatal("Unwrap empty keyID expected error")
+	}
+}
+
+func TestUnwrapRejectsMismatchedKeyID(t *testing.T) {
+	k, err := NewKEK(kms.New(kms.Options{}), Config{KeyID: "alias/configured"})
+	if err != nil {
+		t.Fatalf("NewKEK: %v", err)
+	}
+	_, err = k.Unwrap(context.Background(), "alias/some-other-key", []byte("wrapped"))
+	if err == nil {
+		t.Fatal("Unwrap with mismatched keyID expected error")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("Unwrap error = %v, want match-failure message", err)
 	}
 }
 

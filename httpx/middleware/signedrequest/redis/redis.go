@@ -33,10 +33,10 @@ const defaultKeyPrefix = "signedrequest:nonce:"
 //
 // Construct with [New]; the store is safe for concurrent use.
 type RedisNonceStore struct {
-	client goredis.UniversalClient
-	ttl    time.Duration
-	prefix string
-	ctx    func() (context.Context, context.CancelFunc)
+	client      goredis.UniversalClient
+	ttl         time.Duration
+	prefix      string
+	callTimeout time.Duration
 }
 
 // Option configures a [RedisNonceStore].
@@ -70,22 +70,29 @@ func WithKeyPrefix(p string) Option {
 const maxKeyPrefixLen = 128
 
 // WithCallTimeout bounds the per-call context used for the Redis
-// round trip. Default: 2 seconds. Set tighter for latency-sensitive
-// services; set looser only if your Redis is reliably slow (you
-// almost certainly have a different problem in that case).
+// round trip. The store derives its per-call context from the caller
+// (the inbound HTTP request) and caps the wait by this duration —
+// cancelling the request releases the pinned Redis connection
+// promptly. Default: 2 seconds. Set tighter for latency-sensitive
+// services; set looser only if your Redis is reliably slow.
 //
 // Panics if d <= 0 — a zero or negative timeout would create an
 // immediately expired context and fail every nonce SET NX call closed,
 // silently turning the verifier into a denial-of-service.
+//
+// Alias of [WithNonceTimeout]; both options exist for callers that
+// prefer one name over the other.
 func WithCallTimeout(d time.Duration) Option {
+	return WithNonceTimeout(d)
+}
+
+// WithNonceTimeout is the canonical name for [WithCallTimeout]. See
+// that option for full semantics.
+func WithNonceTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("signedrequest/redis: WithCallTimeout requires a positive duration")
+		panic("signedrequest/redis: WithNonceTimeout requires a positive duration")
 	}
-	return func(s *RedisNonceStore) {
-		s.ctx = func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), d)
-		}
-	}
+	return func(s *RedisNonceStore) { s.callTimeout = d }
 }
 
 // New constructs a RedisNonceStore.
@@ -106,12 +113,10 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 		panic("signedrequest/redis: ttl must be > 0")
 	}
 	s := &RedisNonceStore{
-		client: client,
-		ttl:    ttl,
-		prefix: defaultKeyPrefix,
-		ctx: func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), 2*time.Second)
-		},
+		client:      client,
+		ttl:         ttl,
+		prefix:      defaultKeyPrefix,
+		callTimeout: 2 * time.Second,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -133,7 +138,7 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 // FR-027 [LOW]: rejects nonces longer than the verifier's wire
 // limit and non-portable bytes so a caller bypassing the middleware
 // (e.g. test harness) cannot construct unbounded or corrupt Redis keys.
-func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
+func (s *RedisNonceStore) SeenOrStore(ctx context.Context, nonce string) (bool, error) {
 	if err := s.ready(); err != nil {
 		return false, err
 	}
@@ -146,10 +151,13 @@ func (s *RedisNonceStore) SeenOrStore(nonce string) (bool, error) {
 	if containsInvalidStringBytes(nonce) {
 		return false, errors.New("signedrequest/redis: nonce contains invalid characters")
 	}
-	ctx, cancel := s.ctx()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.callTimeout)
 	defer cancel()
 
-	ok, err := s.client.SetNX(ctx, s.key(nonce), 1, s.ttl).Result()
+	ok, err := s.client.SetNX(callCtx, s.key(nonce), 1, s.ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("signedrequest/redis: SET NX EX: %w", err)
 	}
@@ -163,7 +171,7 @@ func (s *RedisNonceStore) ready() error {
 		s.prefix == "" ||
 		len(s.prefix) > maxKeyPrefixLen ||
 		containsInvalidStringBytes(s.prefix) ||
-		s.ctx == nil {
+		s.callTimeout <= 0 {
 		return ErrInvalidStore
 	}
 	return nil

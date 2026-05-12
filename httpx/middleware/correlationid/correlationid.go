@@ -25,7 +25,7 @@ func WithCorrelationID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := singletonHeaderValue(r.Header, Header)
 		if !isValidCorrelationID(id) {
-			id = contextutil.NewID()
+			id = contextutil.GenerateID()
 		}
 		w.Header().Set(Header, id)
 		ctx := contextutil.SetCorrelationID(r.Context(), id)

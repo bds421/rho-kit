@@ -13,8 +13,8 @@ import (
 
 func TestRateLimitMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewMetrics(reg)
-	m2 := NewMetrics(reg)
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
 
 	if m1.decisions != m2.decisions {
 		t.Fatal("NewMetrics should reuse decisions collector on duplicate registration")
@@ -26,7 +26,7 @@ func TestRateLimitMetrics_ReusesCollectors(t *testing.T) {
 
 func TestRateLimitMetrics_Contract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 
 	metrics.observeDecision("public_api", rateLimitKindIP, rateLimitOutcomeAllowed)
 	metrics.observeRetryAfter("public_api", rateLimitKindIP, 1)
@@ -37,7 +37,7 @@ func TestRateLimitMetrics_Contract(t *testing.T) {
 
 func TestRateLimiterMetrics_RecordIPDecisions(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	rl := NewRateLimiter(1, time.Minute,
 		WithMetrics(metrics),
 		WithLimiterName("public_api"),
@@ -58,7 +58,7 @@ func TestRateLimiterMetrics_RecordIPDecisions(t *testing.T) {
 
 func TestKeyedRateLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	rl := NewKeyedRateLimiter(1, time.Minute,
 		WithKeyedMetrics(metrics),
 		WithKeyedLimiterName("api_key"),
@@ -80,13 +80,13 @@ func TestKeyedRateLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 func TestRateLimiterMetrics_RecordDegradationOutcomes(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 	rl := NewRateLimiter(1, time.Minute,
 		WithMetrics(metrics),
 		WithLimiterName("login"),
 		WithDegradation(health, passthroughHandler{}),
 	)
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

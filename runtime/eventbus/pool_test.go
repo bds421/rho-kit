@@ -532,7 +532,9 @@ func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
 	err := bus.Stop(context.Background())
 	require.NoError(t, err)
 
-	// Submit after stop must not panic; it should return false (drop).
+	// Submit after stop must not panic; it returns ErrStopped so
+	// OnFullError publishers observe shutdown — non-OnFullError
+	// dispatchers (Drop / Block) suppress the error in dispatchAsync.
 	assert.NotPanics(t, func() {
 		ok, err := bus.pool.submit(&asyncTask{
 			ctx:       context.Background(),
@@ -541,7 +543,7 @@ func TestWorkerPool_SubmitAfterStopDoesNotPanic(t *testing.T) {
 			event:     testEvent{ID: "late"},
 		}, OnFullDrop, context.Background())
 		assert.False(t, ok)
-		assert.NoError(t, err)
+		assert.ErrorIs(t, err, ErrStopped)
 	})
 }
 
@@ -689,6 +691,58 @@ func TestPublish_OnFullError_ReturnsErrQueueFull(t *testing.T) {
 	}
 	require.Error(t, sawErr)
 	assert.ErrorIs(t, sawErr, ErrQueueFull)
+}
+
+func TestPublish_OnFullError_AfterStopSurfacesErrStopped(t *testing.T) {
+	// OnFullError callers MUST observe shutdown — the previous behaviour
+	// recovered from the closed-channel panic and returned nil, so the
+	// publisher saw success while the event was silently dropped.
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(2),
+		WithRegisterer(reg),
+		WithOnFull(OnFullError),
+	)
+
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithAsync())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+	cancel()
+	require.NoError(t, bus.Stop(context.Background()))
+
+	err := Publish(bus, context.Background(), testEvent{ID: "post-stop"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStopped)
+}
+
+func TestPublish_OnFullDrop_AfterStopSuppressesErrStopped(t *testing.T) {
+	// OnFullDrop publishers do not care about shutdown — dispatchAsync
+	// converts ErrStopped to nil so the existing drop semantics hold.
+	reg := prometheus.NewRegistry()
+	bus := New(
+		WithWorkerPool(2),
+		WithWorkerPoolBuffer(2),
+		WithRegisterer(reg),
+		WithOnFull(OnFullDrop),
+	)
+
+	Subscribe(bus, func(_ context.Context, _ testEvent) error {
+		return nil
+	}, WithAsync())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = bus.Start(ctx) }()
+	waitForWorkers(t, bus)
+	cancel()
+	require.NoError(t, bus.Stop(context.Background()))
+
+	err := Publish(bus, context.Background(), testEvent{ID: "post-stop"})
+	require.NoError(t, err)
 }
 
 func TestPublish_OnFullBlock_RespectsCancellation(t *testing.T) {

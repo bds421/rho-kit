@@ -61,9 +61,9 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
-// New builds a KEK from cfg using the given KMS client. Returns an
+// NewKEK builds a KEK from cfg using the given KMS client. Returns an
 // error if KeyID is empty.
-func New(c *kms.Client, cfg Config) (*KEK, error) {
+func NewKEK(c *kms.Client, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("awskms: client must not be nil")
 	}
@@ -105,13 +105,19 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 
 // Unwrap implements [envelope.KEK]. Calls KMS Decrypt with KeyId
 // pinned to the keyID returned at Wrap time so a misconfigured
-// alias cannot silently retarget decryption.
+// alias cannot silently retarget decryption. Rejects keyIDs that
+// do not match this adapter's configured KEK before any KMS call
+// so an attacker-controlled blob cannot redirect the decrypt
+// request at a different AWS key.
 func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte, error) {
 	if err := k.validate(ctx); err != nil {
 		return nil, err
 	}
 	if keyID == "" {
 		return nil, errors.New("awskms: keyID must not be empty")
+	}
+	if !k.allowsKeyID(keyID) {
+		return nil, errors.New("awskms: keyID does not match this KEK")
 	}
 	out, err := k.c.Decrypt(ctx, &kms.DecryptInput{
 		CiphertextBlob:    wrapped,
@@ -135,6 +141,44 @@ func (k *KEK) validate(ctx context.Context) error {
 		return errors.New("awskms: context must not be nil")
 	}
 	return nil
+}
+
+// allowsKeyID reports whether keyID is an acceptable Unwrap target.
+// AWS KMS returns the version-qualified key ARN from Encrypt, so
+// blobs Wrap-ped with an alias or bare key ID will carry the ARN.
+// We accept either the configured KeyID verbatim (covers ARN==ARN
+// and alias==alias replays) or any keyID that contains the
+// configured value as a substring after the last "/" segment match
+// — practical compromise: an alias configured locally matches the
+// alias-arn that KMS returns. The substring check is bounded to
+// the configured value so an unrelated key ID cannot match.
+func (k *KEK) allowsKeyID(keyID string) bool {
+	if keyID == k.keyID {
+		return true
+	}
+	// Strict suffix match for "alias/<name>" or "key/<id>" segments.
+	if len(keyID) > len(k.keyID) && hasSuffixSegment(keyID, k.keyID) {
+		return true
+	}
+	return false
+}
+
+// hasSuffixSegment reports whether s ends with seg AND seg is
+// preceded by a path separator (":", "/") or a digit/letter
+// boundary that anchors the match at a segment edge — preventing
+// "alias/badkey" from matching when seg is "key".
+func hasSuffixSegment(s, seg string) bool {
+	if len(s) < len(seg) {
+		return false
+	}
+	if s[len(s)-len(seg):] != seg {
+		return false
+	}
+	if len(s) == len(seg) {
+		return true
+	}
+	prev := s[len(s)-len(seg)-1]
+	return prev == '/' || prev == ':'
 }
 
 func cloneContext(in map[string]string) map[string]string {

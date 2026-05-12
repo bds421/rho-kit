@@ -13,7 +13,7 @@ func okHandler() http.Handler {
 }
 
 // withScopes returns a request whose context carries the given scopes string,
-// mimicking what RequireUserWithJWT sets after JWT verification.
+// mimicking what JWT sets after JWT verification.
 func withScopes(r *http.Request, scopes string) *http.Request {
 	return r.WithContext(scopesKey.Set(r.Context(), authScopes(scopes)))
 }
@@ -30,21 +30,6 @@ func TestRequireScope_NoScopes_NoMarker_Denied(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for no scopes without trusted-S2S marker, got %d", rec.Code)
-	}
-}
-
-// TestRequireScope_TrustedS2S_PassesThrough confirms the trusted-S2S
-// marker bypasses the scope check, mirroring RequirePermission.
-func TestRequireScope_TrustedS2S_PassesThrough(t *testing.T) {
-	handler := RequireScope("admin")(okHandler())
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithTrustedS2S(req.Context()))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
 	}
 }
 

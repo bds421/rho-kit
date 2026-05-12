@@ -21,8 +21,10 @@ import (
 //     the RouterFunc can access them. Populate is called in registration order,
 //     so later modules may observe fields set by earlier modules.
 //  3. HealthChecks — return dependency checks for the readiness probe.
-//  4. Close — release resources (connections, goroutines). Called in reverse
-//     registration order during shutdown.
+//  4. Stop — release resources (connections, goroutines). Called in reverse
+//     registration order during shutdown. Stop's signature matches
+//     [lifecycle.Component.Stop] so modules can also be registered with the
+//     Runner directly.
 type Module interface {
 	// Name returns a unique identifier for this module (e.g., "postgres", "redis").
 	// Names must be unique across all registered modules; duplicate names panic
@@ -41,9 +43,11 @@ type Module interface {
 	// set fields on infra that the RouterFunc needs.
 	Populate(infra *Infrastructure)
 
-	// Close releases resources held by this module. It is called in reverse
+	// Stop releases resources held by this module. It is called in reverse
 	// registration order during shutdown. The context carries a deadline.
-	Close(ctx context.Context) error
+	// Stop must be idempotent — modules also registered as
+	// [lifecycle.Component] may have Stop invoked by the Runner first.
+	Stop(ctx context.Context) error
 
 	// HealthChecks returns dependency checks to add to the readiness probe.
 	// Return nil or an empty slice if the module has no health checks.
@@ -63,9 +67,9 @@ type Module interface {
 //	}
 //
 //	func (m *MyModule) Init(ctx context.Context, mc app.ModuleContext) error { ... }
-//	func (m *MyModule) Close(ctx context.Context) error { return m.conn.Close() }
+//	func (m *MyModule) Stop(ctx context.Context) error { return m.conn.Close() }
 //
-// Only Name is required at construction; Init, Populate, Close, and HealthChecks
+// Only Name is required at construction; Init, Populate, Stop, and HealthChecks
 // all have safe no-op defaults.
 type BaseModule struct {
 	name string
@@ -83,7 +87,7 @@ func NewBaseModule(name string) BaseModule {
 func (b BaseModule) Name() string                                  { return b.name }
 func (b BaseModule) Init(_ context.Context, _ ModuleContext) error { return nil }
 func (b BaseModule) Populate(_ *Infrastructure)                    {}
-func (b BaseModule) Close(_ context.Context) error                 { return nil }
+func (b BaseModule) Stop(_ context.Context) error                  { return nil }
 func (b BaseModule) HealthChecks() []health.DependencyCheck        { return nil }
 
 // ModuleContext provides the shared context available to modules during Init.
@@ -147,7 +151,7 @@ func initModules(
 	}
 
 	for _, m := range modules {
-		logger.Info("initializing module", redact.String("module", m.Name()))
+		logger.Info("initializing module", slog.String("module", m.Name()))
 		if err := initOneModule(ctx, m, mc); err != nil {
 			// Close already-initialized modules in reverse order.
 			closeModules(ctx, initialized, logger)
@@ -185,17 +189,17 @@ func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logger.Error("module close panicked",
-						redact.String("module", m.Name()),
+					logger.Error("module stop panicked",
+						slog.String("module", m.Name()),
 						redact.Panic(r),
 					)
 				}
 			}()
-			logger.Info("closing module", redact.String("module", m.Name()))
-			if err := m.Close(ctx); err != nil {
-				logger.Warn("module close error",
-					redact.String("module", m.Name()),
-					redact.Error(err),
+			logger.Info("stopping module", slog.String("module", m.Name()))
+			if err := m.Stop(ctx); err != nil {
+				logger.Warn("module stop error",
+					slog.String("module", m.Name()),
+					slog.Any("error", err),
 				)
 			}
 		}()

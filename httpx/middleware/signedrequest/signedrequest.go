@@ -23,6 +23,7 @@ package signedrequest
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -142,7 +143,12 @@ type KeyResolver func(keyID string) ([]byte, error)
 //   - Use a constant-time backend appropriate for the deployment shape
 //     (in-process for single instance, Redis for multi-instance).
 type NonceStore interface {
-	SeenOrStore(nonce string) (firstTime bool, err error)
+	// SeenOrStore observes a nonce within the caller's context. The ctx
+	// is the inbound HTTP request context (with the store's own per-call
+	// timeout applied by the implementation), so a cancelled request
+	// releases the backend connection promptly instead of pinning it
+	// against a detached background ctx.
+	SeenOrStore(ctx context.Context, nonce string) (firstTime bool, err error)
 }
 
 // Option configures the [Middleware].
@@ -303,11 +309,10 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrSignatureInvalid
 	}
 
-	body, err := readBody(r, cfg.bodyMaxSize)
-	if err != nil {
-		return err
-	}
-
+	// Resolve the secret BEFORE buffering the body. Without this, an
+	// unauthenticated caller can force the server to buffer up to
+	// bodyMaxSize bytes per request — a memory-amplification primitive
+	// against any endpoint that mounts this middleware.
 	secret, err := cfg.resolver(keyID)
 	if err != nil || len(secret) == 0 {
 		return ErrSignatureInvalid
@@ -316,13 +321,24 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrSecretTooShort
 	}
 
-	canonical := buildCanonical(r, ts, nonce, body, cfg.requiredHeaders)
+	// Stream the body through a SHA-256 hasher so we have the body hash
+	// for the canonical string without buffering. Bound by bodyMaxSize.
+	body, bodyHash, err := streamBody(r, cfg.bodyMaxSize)
+	if err != nil {
+		return err
+	}
+
+	canonical := buildCanonicalFromHash(r, ts, nonce, bodyHash, cfg.requiredHeaders)
 	expected := hmacSHA256(secret, canonical)
 	if !hmac.Equal(gotMAC, expected) {
 		return ErrSignatureInvalid
 	}
 
-	first, err := cfg.nonceStore.SeenOrStore(nonce)
+	// Only after the MAC verifies do we expose the buffered body to the
+	// downstream handler.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	first, err := cfg.nonceStore.SeenOrStore(r.Context(), nonce)
 	if err != nil {
 		return fmt.Errorf("signedrequest: nonce store: %w", err)
 	}
@@ -372,34 +388,61 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 }
 
-// readBody reads the request body up to max bytes and rewinds it so
-// the downstream handler still sees the data. Returns ErrBodyTooLarge
-// when the limit is exceeded.
-func readBody(r *http.Request, max int64) ([]byte, error) {
+// streamBody reads the request body up to max bytes through a SHA-256
+// hasher and returns both the buffered body (for downstream handlers
+// after MAC verifies) and the body hash (for the canonical string).
+// Returns ErrBodyTooLarge when the limit is exceeded.
+//
+// We still buffer the body because verify() must be able to defer the
+// body to the downstream handler. The body is NOT placed back on
+// r.Body here — verify() does that only after the MAC succeeds.
+func streamBody(r *http.Request, max int64) ([]byte, [32]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
+		return nil, sha256.Sum256(nil), nil
 	}
 	originalBody := r.Body
 	limited := io.LimitReader(originalBody, max+1)
-	buf, err := io.ReadAll(limited)
+	hasher := sha256.New()
+	var buf bytes.Buffer
+	tee := io.TeeReader(limited, hasher)
+	_, err := io.Copy(&buf, tee)
 	closeErr := originalBody.Close()
 	if err != nil {
-		return nil, safeWrap("signedrequest: read body failed", err)
+		return nil, [32]byte{}, safeWrap("signedrequest: read body failed", err)
 	}
 	if closeErr != nil {
-		return nil, safeWrap("signedrequest: close body failed", closeErr)
+		return nil, [32]byte{}, safeWrap("signedrequest: close body failed", closeErr)
 	}
-	if int64(len(buf)) > max {
-		return nil, ErrBodyTooLarge
+	if int64(buf.Len()) > max {
+		return nil, [32]byte{}, ErrBodyTooLarge
 	}
-	r.Body = io.NopCloser(bytes.NewReader(buf))
-	return buf, nil
+	var sum [32]byte
+	copy(sum[:], hasher.Sum(nil))
+	return buf.Bytes(), sum, nil
+}
+
+// readBody buffers the body and rewinds r.Body for callers that need
+// the bytes without a streaming hash. Kept for the offline Sign helper
+// that produces canonical strings outside the verify path.
+func readBody(r *http.Request, max int64) ([]byte, error) {
+	body, _, err := streamBody(r, max)
+	if err != nil {
+		return nil, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 // buildCanonical returns the deterministic string MAC'd by both
 // signer and verifier. Format documented at the package level.
 func buildCanonical(r *http.Request, ts, nonce string, body []byte, requiredHeaders []string) []byte {
 	bodyHash := sha256.Sum256(body)
+	return buildCanonicalFromHash(r, ts, nonce, bodyHash, requiredHeaders)
+}
+
+// buildCanonicalFromHash is the streaming-friendly variant used by
+// verify() where bodyHash has already been computed while reading.
+func buildCanonicalFromHash(r *http.Request, ts, nonce string, bodyHash [32]byte, requiredHeaders []string) []byte {
 	host, _ := canonicalRequestHost(r)
 	contentType, _ := optionalSingletonHeader(r, canonicalContentTypeHeader)
 	parts := []string{

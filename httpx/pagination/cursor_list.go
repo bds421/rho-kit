@@ -93,5 +93,5 @@ func HandleCursorList[T any](w http.ResponseWriter, r *http.Request, opts Cursor
 	if opts.Signer != nil && result.NextCursor != "" {
 		result.NextCursor = opts.Signer.Encode(result.NextCursor)
 	}
-	httpx.WriteJSON(w, http.StatusOK, result)
+	_ = httpx.WriteJSON(w, r, http.StatusOK, result)
 }

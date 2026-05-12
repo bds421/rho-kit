@@ -148,11 +148,11 @@ func TestNewID_RejectsOverlongIDs(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalid)
 }
 
-func TestNewIDUnchecked_BypassesValidation(t *testing.T) {
+func TestMustNewID_BypassesValidation(t *testing.T) {
 	// The escape hatch must accept inputs NewID rejects — that's its
 	// whole purpose. Documented use case: reading from a trusted DB
 	// column populated before C-3 was fixed.
-	id := NewIDUnchecked("a:b")
+	id := MustNewID("a:b")
 	assert.Equal(t, ID("a:b"), id)
 	assert.Equal(t, "a:b", id.String())
 }
@@ -169,7 +169,8 @@ func TestFromContext_NilContextSafe(t *testing.T) {
 
 func TestWithID_RoundTrip(t *testing.T) {
 	id := ID("acme")
-	ctx := WithID(context.Background(), id)
+	ctx, err := WithID(context.Background(), id)
+	require.NoError(t, err)
 	got, ok := FromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, id, got)
@@ -177,7 +178,8 @@ func TestWithID_RoundTrip(t *testing.T) {
 
 func TestWithID_NilContextUsesBackground(t *testing.T) {
 	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
-	ctx := WithID(nil, ID("acme"))
+	ctx, err := WithID(nil, ID("acme"))
+	require.NoError(t, err)
 	require.NotNil(t, ctx)
 
 	got, ok := FromContext(ctx)
@@ -189,14 +191,16 @@ func TestWithID_ZeroIDNotPropagated(t *testing.T) {
 	// Storing the zero value should not appear as "present" — it would
 	// flip into an empty-string scope on the consumer side, which is a
 	// silent multi-tenant collision.
-	ctx := WithID(context.Background(), ID(""))
+	ctx, err := WithID(context.Background(), ID(""))
+	require.NoError(t, err)
 	_, ok := FromContext(ctx)
 	assert.False(t, ok)
 }
 
 func TestWithID_ZeroIDNilContextReturnsBackground(t *testing.T) {
 	//nolint:staticcheck // Deliberately verifies normalization of nil context inputs.
-	ctx := WithID(nil, ID(""))
+	ctx, err := WithID(nil, ID(""))
+	require.NoError(t, err)
 	require.NotNil(t, ctx)
 
 	_, ok := FromContext(ctx)
@@ -204,11 +208,14 @@ func TestWithID_ZeroIDNilContextReturnsBackground(t *testing.T) {
 }
 
 func TestWithID_RefusesDifferentExistingTenant(t *testing.T) {
-	ctx := WithID(context.Background(), ID("acme"))
+	ctx, err := WithID(context.Background(), ID("acme"))
+	require.NoError(t, err)
 
-	require.Panics(t, func() {
-		_ = WithID(ctx, ID("widgets"))
-	})
+	next, err := WithID(ctx, ID("widgets"))
+	assert.True(t, ctx == next)
+	assert.ErrorIs(t, err, ErrAlreadySet)
+	assert.NotContains(t, err.Error(), "acme")
+	assert.NotContains(t, err.Error(), "widgets")
 
 	got, err := Required(ctx)
 	require.NoError(t, err)
@@ -216,20 +223,12 @@ func TestWithID_RefusesDifferentExistingTenant(t *testing.T) {
 }
 
 func TestWithID_AllowsSameExistingTenant(t *testing.T) {
-	ctx := WithID(context.Background(), ID("acme"))
-	next := WithID(ctx, ID("acme"))
+	ctx, err := WithID(context.Background(), ID("acme"))
+	require.NoError(t, err)
+	next, err := WithID(ctx, ID("acme"))
+	require.NoError(t, err)
 
 	assert.True(t, ctx == next)
-}
-
-func TestWithIDChecked_ReturnsErrAlreadySet(t *testing.T) {
-	ctx := WithID(context.Background(), ID("acme"))
-
-	next, err := WithIDChecked(ctx, ID("widgets"))
-	assert.True(t, ctx == next)
-	assert.ErrorIs(t, err, ErrAlreadySet)
-	assert.NotContains(t, err.Error(), "acme")
-	assert.NotContains(t, err.Error(), "widgets")
 }
 
 func TestRequired_AbsentReturnsErrMissing(t *testing.T) {
@@ -238,14 +237,16 @@ func TestRequired_AbsentReturnsErrMissing(t *testing.T) {
 }
 
 func TestRequired_PresentReturnsID(t *testing.T) {
-	ctx := WithID(context.Background(), ID("acme"))
+	ctx, err := WithID(context.Background(), ID("acme"))
+	require.NoError(t, err)
 	got, err := Required(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, ID("acme"), got)
 }
 
 func TestKey_BuildsLengthPrefixedTenantKey(t *testing.T) {
-	ctx := WithID(context.Background(), ID("acme"))
+	ctx, err := WithID(context.Background(), ID("acme"))
+	require.NoError(t, err)
 
 	key, err := Key(ctx, "profile", "user:123")
 	require.NoError(t, err)
@@ -284,12 +285,12 @@ func TestKeyFor_RejectsInvalidParts(t *testing.T) {
 
 func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {
 	cases := []ID{
-		NewIDUnchecked("tenant\nid"),
-		NewIDUnchecked("tenant id"),
-		NewIDUnchecked("tenant\tid"),
-		NewIDUnchecked("tenant\x00id"),
-		NewIDUnchecked(string([]byte{'t', 0xff})),
-		NewIDUnchecked(strings.Repeat("a", MaxKeyPartLen+1)),
+		MustNewID("tenant\nid"),
+		MustNewID("tenant id"),
+		MustNewID("tenant\tid"),
+		MustNewID("tenant\x00id"),
+		MustNewID(string([]byte{'t', 0xff})),
+		MustNewID(strings.Repeat("a", MaxKeyPartLen+1)),
 	}
 	for _, id := range cases {
 		key, err := KeyFor(id, "profile")
@@ -299,10 +300,10 @@ func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {
 }
 
 func TestKeyFor_ColonInputsDoNotCollide(t *testing.T) {
-	ab, err := KeyFor(NewIDUnchecked("a:b"), "c")
+	ab, err := KeyFor(MustNewID("a:b"), "c")
 	require.NoError(t, err)
 
-	a, err := KeyFor(NewIDUnchecked("a"), "b:c")
+	a, err := KeyFor(MustNewID("a"), "b:c")
 	require.NoError(t, err)
 
 	assert.NotEqual(t, ab, a)

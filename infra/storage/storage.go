@@ -3,26 +3,31 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-// ErrObjectNotFound is returned when a requested key does not exist in the backend.
-var ErrObjectNotFound = errors.New("storage: object not found")
+// ErrObjectNotFound is returned when a requested key does not exist in
+// the backend. It is an [apperror.NotFoundError] so HTTP and gRPC
+// adapters map it to 404/NotFound automatically. Backends wrap with
+// fmt.Errorf("%w"); call sites compare with errors.Is.
+var ErrObjectNotFound = apperror.NewNotFound("object", "")
 
-// ErrValidation is returned when storage input validation fails (e.g. invalid
-// keys, disallowed MIME type, file too large). Wrap with fmt.Errorf to add
-// context; unwrap with errors.Is.
-var ErrValidation = errors.New("storage: validation failed")
+// ErrValidation is returned when storage input validation fails (e.g.
+// invalid keys, disallowed MIME type, file too large). Surfaced as an
+// [apperror.ValidationError] so transports map it to 400/InvalidArgument.
+var ErrValidation = apperror.NewValidation("storage: validation failed")
 
-// ErrBatchTooLarge is returned when a batch storage helper is asked to process
-// too many keys in one call.
-var ErrBatchTooLarge = errors.New("storage: batch operation exceeds maximum item count")
+// ErrBatchTooLarge is returned when a batch storage helper is asked to
+// process too many keys in one call. It is an [apperror.ValidationError]
+// — the input cannot succeed without caller changes.
+var ErrBatchTooLarge = apperror.NewValidation("storage: batch operation exceeds maximum item count")
 
 // MaxKeyLen is the maximum allowed length for storage keys.
 const MaxKeyLen = 1024

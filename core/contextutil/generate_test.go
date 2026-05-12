@@ -9,23 +9,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewID_ValidUUIDv7(t *testing.T) {
-	id := NewID()
+func TestGenerateID_ValidUUIDv7(t *testing.T) {
+	id := GenerateID()
 
 	parsed, err := uuid.Parse(id)
 	require.NoError(t, err)
 	assert.Equal(t, uuid.Version(7), parsed.Version())
 }
 
-func TestNewID_Unique(t *testing.T) {
-	id1 := NewID()
-	id2 := NewID()
+func TestGenerateID_Unique(t *testing.T) {
+	id1 := GenerateID()
+	id2 := GenerateID()
 
 	assert.NotEqual(t, id1, id2)
 }
 
-func TestNewID_Format(t *testing.T) {
-	id := NewID()
+func TestGenerateID_Format(t *testing.T) {
+	id := GenerateID()
 	assert.Len(t, id, 36)
 }
 

@@ -47,7 +47,7 @@ func TestRateLimiter_Degradation_Passthrough(t *testing.T) {
 		WithDegradation(health, passthroughHandler{}),
 	)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -71,7 +71,7 @@ func TestRateLimiter_Degradation_FailFast(t *testing.T) {
 		WithDegradation(health, failFastHandler{}),
 	)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -90,7 +90,7 @@ func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
 		rl := NewRateLimiter(1, time.Minute,
 			WithDegradation(panicHealth{}, passthroughHandler{}),
 		)
-		handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 
@@ -106,7 +106,7 @@ func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
 		rl := NewRateLimiter(1, time.Minute,
 			WithDegradation(health, panicDegradationHandler{}),
 		)
-		handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 
@@ -126,7 +126,7 @@ func TestRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
 		WithDegradation(health, passthroughHandler{}),
 	)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -155,7 +155,7 @@ func TestRateLimiter_Degradation_TransitionFromHealthyToUnhealthy(t *testing.T) 
 		WithDegradation(health, passthroughHandler{}),
 	)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -181,7 +181,7 @@ func TestRateLimiter_Degradation_TransitionFromHealthyToUnhealthy(t *testing.T) 
 func TestRateLimiter_NoDegradation_BackwardCompatible(t *testing.T) {
 	rl := NewRateLimiter(1, time.Minute)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -210,7 +210,7 @@ func TestKeyedRateLimiter_Degradation_Passthrough(t *testing.T) {
 		WithKeyedDegradation(health, passthroughHandler{}),
 	)
 
-	handler := KeyedRateLimitMiddleware(rl, func(r *http.Request) string {
+	handler := KeyedMiddleware(rl, func(r *http.Request) string {
 		return r.Header.Get("X-API-Key")
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -235,7 +235,7 @@ func TestKeyedRateLimiter_Degradation_FailFast(t *testing.T) {
 		WithKeyedDegradation(health, failFastHandler{}),
 	)
 
-	handler := KeyedRateLimitMiddleware(rl, func(r *http.Request) string {
+	handler := KeyedMiddleware(rl, func(r *http.Request) string {
 		return r.Header.Get("X-API-Key")
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -259,7 +259,7 @@ func TestKeyedRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T
 		WithKeyedDegradation(health, passthroughHandler{}),
 	)
 
-	handler := KeyedRateLimitMiddleware(rl, func(r *http.Request) string {
+	handler := KeyedMiddleware(rl, func(r *http.Request) string {
 		return r.Header.Get("X-API-Key")
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

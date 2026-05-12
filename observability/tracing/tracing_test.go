@@ -107,7 +107,7 @@ func TestInit_noopWhenNoEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer func() { _ = p.Shutdown(context.Background()) }()
+	defer func() { _ = p.Stop(context.Background()) }()
 
 	tracer := p.Tracer("test")
 	_, span := tracer.Start(context.Background(), "noop-test")
@@ -383,35 +383,35 @@ func TestInit_DefaultSampleRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer func() { _ = p.Shutdown(context.Background()) }()
+	defer func() { _ = p.Stop(context.Background()) }()
 }
 
-func TestProvider_Shutdown(t *testing.T) {
+func TestProvider_Stop(t *testing.T) {
 	p, err := Init(context.Background(), Config{ServiceName: "test"})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if err := p.Shutdown(context.Background()); err != nil {
-		t.Errorf("Shutdown: %v", err)
+	if err := p.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
 	}
 }
 
-func TestProvider_ShutdownRejectsNilContext(t *testing.T) {
+func TestProvider_StopRejectsNilContext(t *testing.T) {
 	p, err := Init(context.Background(), Config{ServiceName: "test"})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer func() { _ = p.Shutdown(context.Background()) }()
+	defer func() { _ = p.Stop(context.Background()) }()
 
 	var ctx context.Context
-	err = p.Shutdown(ctx)
+	err = p.Stop(ctx)
 	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
 		t.Fatalf("expected nil context error, got %v", err)
 	}
 }
 
-func TestProvider_ShutdownRejectsUninitializedProvider(t *testing.T) {
-	err := (*Provider)(nil).Shutdown(context.Background())
+func TestProvider_StopRejectsUninitializedProvider(t *testing.T) {
+	err := (*Provider)(nil).Stop(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "initialized Provider") {
 		t.Fatalf("expected uninitialized provider error, got %v", err)
 	}
@@ -440,7 +440,7 @@ func TestInit_BoundsExporterDialDuration(t *testing.T) {
 	if p == nil {
 		t.Fatal("Init must return a provider")
 	}
-	defer func() { _ = p.Shutdown(context.Background()) }()
+	defer func() { _ = p.Stop(context.Background()) }()
 
 	if elapsed > 5*time.Second {
 		t.Fatalf("Init blocked beyond reasonable bound (%v); the timeout is not honoured", elapsed)
@@ -461,5 +461,5 @@ func TestInit_NegativeTimeoutDisablesBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	_ = p.Shutdown(context.Background())
+	_ = p.Stop(context.Background())
 }

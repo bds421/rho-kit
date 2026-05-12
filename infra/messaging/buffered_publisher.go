@@ -32,7 +32,7 @@ type pendingMessage struct {
 // with FIFO ordering when the broker is temporarily unreachable. When the
 // broker is reachable AND no buffered messages are pending, messages are
 // published directly. Otherwise they are appended to an in-memory buffer
-// and drained in order by the background loop. With [WithBufferedStateFile],
+// and drained in order by the background loop. With [WithStateFile],
 // the buffer is persisted to disk to survive process restarts.
 //
 // IMPORTANT: This is NOT a transactional outbox. It does not solve the
@@ -128,36 +128,34 @@ type BufferedPublisherMetrics struct {
 // BufferedPublisherOption configures a BufferedPublisher.
 type BufferedPublisherOption func(*BufferedPublisher)
 
-// WithBufferedMaxSize sets the maximum number of buffered messages.
-// When the buffer is full, Publish returns an error (back-pressure).
+// WithMaxSize sets the maximum number of buffered messages. When the
+// buffer is full, Publish returns an error (back-pressure).
 //
-// FR-069 [LOW]: panics on n <= 0 — pre-fix any non-positive value
-// silently disabled the cap and allowed unbounded memory growth
-// during broker outages. Use [WithUnlimitedBufferedBuffer] when an
-// unbounded buffer is genuinely intended.
-func WithBufferedMaxSize(n int) BufferedPublisherOption {
+// Panics on n <= 0 — pre-fix any non-positive value silently disabled
+// the cap and allowed unbounded memory growth during broker outages.
+// Use [WithUnlimitedBuffer] when an unbounded buffer is genuinely intended.
+func WithMaxSize(n int) BufferedPublisherOption {
 	if n <= 0 {
-		panic("messaging: WithBufferedMaxSize requires n > 0; use WithUnlimitedBufferedBuffer to opt out")
+		panic("messaging: WithMaxSize requires n > 0; use WithUnlimitedBuffer to opt out")
 	}
 	return func(o *BufferedPublisher) { o.maxSize = n }
 }
 
-// WithUnlimitedBufferedBuffer opts out of the per-buffer cap. Use
-// only when an external mechanism (disk persistence, downstream rate
-// limit) bounds memory growth — otherwise a long broker outage will
-// OOM the service.
-func WithUnlimitedBufferedBuffer() BufferedPublisherOption {
+// WithUnlimitedBuffer opts out of the per-buffer cap. Use only when an
+// external mechanism (disk persistence, downstream rate limit) bounds
+// memory growth — otherwise a long broker outage will OOM the service.
+func WithUnlimitedBuffer() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.maxSize = -1 }
 }
 
-// WithBufferedStateFile enables persistent storage. Messages are written to
+// WithStateFile enables persistent storage. Messages are written to
 // this file atomically (write-temp + rename) so they survive process crashes.
-func WithBufferedStateFile(path string) BufferedPublisherOption {
+func WithStateFile(path string) BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.stateFile = path }
 }
 
-// WithBufferedMetrics sets the metrics callbacks for the buffered publisher.
-func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
+// WithMetrics sets the metrics callbacks for the buffered publisher.
+func WithMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.metrics = m }
 }
 
@@ -165,7 +163,7 @@ func WithBufferedMetrics(m *BufferedPublisherMetrics) BufferedPublisherOption {
 // even when persistence to the configured state file fails. The default
 // behavior is to surface the persistence error so callers can react
 // before a process crash drops the buffered message. This option only
-// affects publishers configured with [WithBufferedStateFile]; ephemeral
+// affects publishers configured with [WithStateFile]; ephemeral
 // buffers do not persist regardless.
 func WithLossyMode() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.lossyMode = true }
@@ -191,34 +189,34 @@ func WithEphemeralBuffer() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.allowEphemeralBuffer = true }
 }
 
-// WithBufferedFinalDrainTimeout sets how long the buffered publisher waits to
+// WithFinalDrainTimeout sets how long the buffered publisher waits to
 // drain remaining messages during shutdown. Default: 15 seconds.
-func WithBufferedFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
+func WithFinalDrainTimeout(d time.Duration) BufferedPublisherOption {
 	if d <= 0 {
-		panic("messaging: WithBufferedFinalDrainTimeout requires a positive duration")
+		panic("messaging: WithFinalDrainTimeout requires a positive duration")
 	}
 	return func(o *BufferedPublisher) {
 		o.finalDrainTimeout = d
 	}
 }
 
-// WithBufferedMessageSizeLimiter replaces the buffered publisher's
-// message-size policy. The check runs before direct publishing or buffering,
-// so an over-large message is never persisted into the retry buffer.
-func WithBufferedMessageSizeLimiter(l MessageSizeLimiter) BufferedPublisherOption {
+// WithMessageSizeLimiter replaces the buffered publisher's message-size
+// policy. The check runs before direct publishing or buffering, so an
+// over-large message is never persisted into the retry buffer.
+func WithMessageSizeLimiter(l MessageSizeLimiter) BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.sizeLimiter = l }
 }
 
-// WithBufferedMaxMessageBytes sets the default serialized message-size limit.
-func WithBufferedMaxMessageBytes(maxBytes int) BufferedPublisherOption {
+// WithMaxMessageBytes sets the default serialized message-size limit.
+func WithMaxMessageBytes(maxBytes int) BufferedPublisherOption {
 	return func(o *BufferedPublisher) {
 		o.sizeLimiter = o.sizeLimiter.WithDefaultMaxBytes(maxBytes)
 	}
 }
 
-// WithoutBufferedMaxMessageBytes disables the default size limit. Route-specific
+// WithoutMaxMessageBytes disables the default size limit. Route-specific
 // limits configured with WithBufferedRouteMaxMessageBytes still apply.
-func WithoutBufferedMaxMessageBytes() BufferedPublisherOption {
+func WithoutMaxMessageBytes() BufferedPublisherOption {
 	return func(o *BufferedPublisher) {
 		o.sizeLimiter = o.sizeLimiter.WithoutDefaultMaxBytes()
 	}
@@ -226,7 +224,9 @@ func WithoutBufferedMaxMessageBytes() BufferedPublisherOption {
 
 // WithBufferedRouteMaxMessageBytes overrides the message-size limit for one
 // exact exchange+routing-key pair. routingKey may be empty for fanout-style
-// routes.
+// routes. The prefix is retained because callers commonly pair this with
+// the package-level [SizeLimiter] route helpers and the name makes the
+// scope of the override clear.
 func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) BufferedPublisherOption {
 	return func(o *BufferedPublisher) {
 		o.sizeLimiter = o.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
@@ -236,15 +236,15 @@ func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int)
 // NewBufferedPublisher creates a BufferedPublisher that buffers messages when the
 // broker is unreachable. Call Run() in a goroutine to drain the buffer.
 //
-// If a state file is configured via WithBufferedStateFile, pending messages from
+// If a state file is configured via WithStateFile, pending messages from
 // a previous run are loaded on creation.
 //
 // Panics if inner or conn is nil — both are dereferenced immediately to wire
 // up publishFn / healthyFn closures, so passing nil here is a programming
 // error. Logger nil is accepted and defaults to slog.Default().
-func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
+func NewBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
 	if inner == nil {
-		panic("messaging: NewBufferedPublisher requires a non-nil MessagePublisher")
+		panic("messaging: NewBufferedPublisher requires a non-nil Publisher")
 	}
 	if conn == nil {
 		panic("messaging: NewBufferedPublisher requires a non-nil Connector")
@@ -268,7 +268,7 @@ func NewBufferedPublisher(inner MessagePublisher, conn Connector, logger *slog.L
 	}
 
 	if o.stateFile == "" && !o.allowEphemeralBuffer {
-		panic("messaging: BufferedPublisher requires WithBufferedStateFile — without persistence, buffered messages are silently lost on restart (call WithEphemeralBuffer() to opt out explicitly when an upstream outbox provides durability)")
+		panic("messaging: BufferedPublisher requires WithStateFile — without persistence, buffered messages are silently lost on restart (call WithEphemeralBuffer() to opt out explicitly when an upstream outbox provides durability)")
 	}
 
 	if o.stateFile != "" {

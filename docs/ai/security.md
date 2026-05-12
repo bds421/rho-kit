@@ -59,9 +59,10 @@ result, err := encrypt.EncryptOptionalWithContext(enc, value, aad)
 ### Low-Level Byte Encryption
 
 ```go
-gcm, err := encrypt.NewGCM(key32) // cipher.AEAD
-sealed, err := encrypt.SealBytes(gcm, plaintext)   // nonce || ciphertext
-opened, err := encrypt.OpenBytes(gcm, sealed)
+gcm, err := encrypt.NewGCM(key32) // tink.AEAD
+sealed, err := encrypt.EncryptBytes(gcm, plaintext) // nonce || ciphertext
+opened, err := encrypt.DecryptBytes(gcm, sealed)
+// AAD-binding variants: encrypt.EncryptBytesAAD, encrypt.DecryptBytesAAD.
 ```
 
 ## Envelope Encryption
@@ -72,19 +73,27 @@ Production KEKs live in split modules so services only pull the SDK they use:
 `crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit`. Use
 `crypto/envelope/kekstatic` only for tests and local development.
 
+Per-backend constructors are named `NewKEK` (each backend ships its own
+type, so the verb stays explicit at the call site). Wrap an Encryptor
+around any KEK with `envelope.NewEncryptor(kek)`.
+
 Azure support uses Azure Key Vault or Managed HSM `WrapKey`/`UnwrapKey`.
 Configure the Azure `azkeys.Client` with the deployment's credential, vault
 URL, retry policy, and transport, then construct
-`azurekeyvault.New(client, azurekeyvault.Config{KeyName: "orders-dek"})`.
+`azurekeyvault.NewKEK(client, azurekeyvault.Config{KeyName: "orders-dek"})`.
 Leave `KeyVersion` empty to wrap with the current primary key version; the
 envelope records Azure's version-qualified KID so old records unwrap with the
 exact version that produced them.
 
 Vault support is specifically HashiCorp Vault Transit. Configure the Vault
 client with address, token, namespace/TLS/retry policy, then construct
-`vaulttransit.New(client, vaulttransit.Config{KeyName: "orders-dek"})`.
+`vaulttransit.NewKEK(client, vaulttransit.Config{KeyName: "orders-dek"})`.
 Optional `Config.Context` maps to Vault Transit `context`, so the Transit key
 must be `derived=true` when that field is set.
+
+The current blob format is v3: keyID length is uint16 and the body AAD
+is `domainSep || varint(len(callerAAD)) || callerAAD`. v2 blobs continue
+to decrypt unchanged.
 
 ## HMAC Webhook Signing
 
@@ -93,7 +102,7 @@ Stripe-model webhook signatures:
 ```go
 // Sender:
 secret := []byte("your-webhook-secret")
-sig, ts := signing.Sign(body, secret)
+sig, ts, err := signing.Sign(secret, body)
 // sig = "sha256=<hex>", ts = unix timestamp
 req.Header.Set("X-Signature", sig)
 req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
@@ -147,14 +156,11 @@ signature headers, and any headers listed in `WithIncludeHeaders` /
 `WithRequiredHeaders`.
 Nonce generation failures are returned as signing errors so callers can fail the
 request without reusing or downgrading the nonce.
-Key IDs used by `crypto/signing.StaticKeyStore`, `httpx/sign`, and
-`httpx/reqsign` must be non-empty bounded header-safe tokens; rotate by adding
-a new safe ID and making it current, not by changing the bytes under an unsafe
-or ambiguous ID.
-Use `httpx/sign` with `httpx/middleware/signedrequest` for new service-to-service
-HTTP signing. `httpx/reqsign` is a legacy self-contained format and is not
-wire-compatible with the newer signedrequest canonical string or key-ID header
-spelling.
+Key IDs used by `crypto/signing.StaticKeyStore` and `httpx/sign` must be
+non-empty bounded header-safe tokens; rotate by adding a new safe ID and making
+it current, not by changing the bytes under an unsafe or ambiguous ID.
+Use `httpx/sign` with `httpx/middleware/signedrequest` for all service-to-service
+HTTP signing. The legacy `httpx/reqsign` package was removed in v2.0.0.
 
 ## JWT Verification (JWKS)
 

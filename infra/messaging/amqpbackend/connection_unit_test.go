@@ -1,6 +1,7 @@
 package amqpbackend
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"testing"
@@ -201,11 +202,11 @@ func TestClose_NilConnection_NoError(t *testing.T) {
 		connected: make(chan struct{}),
 	}
 
-	err := c.Close()
+	err := c.Stop(context.Background())
 	assert.NoError(t, err)
 
 	// Second close should also be fine.
-	err = c.Close()
+	err = c.Stop(context.Background())
 	assert.NoError(t, err)
 }
 
@@ -260,7 +261,7 @@ func TestConnection_InvalidReceiverSafety(t *testing.T) {
 	assert.False(t, nilConn.Healthy())
 	assert.Nil(t, nilConn.Dead())
 	assert.Nil(t, nilConn.Connected())
-	assert.NoError(t, nilConn.Close())
+	assert.NoError(t, nilConn.Stop(context.Background()))
 
 	_, err := nilConn.Channel()
 	require.Error(t, err)
@@ -274,7 +275,7 @@ func TestConnection_InvalidReceiverSafety(t *testing.T) {
 	assert.False(t, zero.Healthy())
 	assert.Nil(t, zero.Dead())
 	assert.Nil(t, zero.Connected())
-	assert.NoError(t, zero.Close())
+	assert.NoError(t, zero.Stop(context.Background()))
 
 	err = zero.WaitForConnection(t.Context())
 	require.Error(t, err)
@@ -306,7 +307,7 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 		t.Fatal("expected Dead() channel to close after max attempts exhausted")
 	}
 
-	_ = conn.Close()
+	_ = conn.Stop(context.Background())
 }
 
 func TestDial_WithAllOptions(t *testing.T) {
@@ -332,5 +333,5 @@ func TestDial_WithAllOptions(t *testing.T) {
 	}
 
 	assert.False(t, reconnectCalled, "reconnect callback not called when connection never succeeds")
-	_ = conn.Close()
+	_ = conn.Stop(context.Background())
 }

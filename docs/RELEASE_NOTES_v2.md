@@ -632,28 +632,25 @@ failures as errors instead of panicking on the request path.
 
 ### Signed-request nonce generation returns errors
 
-`httpx/sign` and `httpx/reqsign.SignRequest` now return crypto/RNG nonce
-generation failures as ordinary signing errors. The signers still never fall
-back to a predictable nonce, but they no longer crash the process on a request
-path when the OS RNG is unavailable.
+`httpx/sign.SignRequest` now returns crypto/RNG nonce generation failures as
+ordinary signing errors. The signer still never falls back to a predictable
+nonce, but it no longer crashes the process on a request path when the OS RNG
+is unavailable.
 
 ### Signed-request validation errors avoid reflecting request values
 
-`httpx/sign`, `httpx/reqsign`, and `httpx/middleware/signedrequest` now report
-invalid request methods, hosts, and malformed signature timestamps without
-echoing the raw request value. This keeps attacker-controlled request metadata
-out of debug logs and returned signing errors while preserving sentinel errors
-for callers. Signed-request canonical header validation also no longer echoes
-required header names.
-Signed-request body-buffer read, close, and size errors now use stable text
-instead of echoing caller reader diagnostics or configured/request byte counts,
-while preserving wrapped causes and body-size sentinels for callers.
-`httpx/reqsign` is now documented as the legacy self-contained request-signing
-wire format. New services should use `httpx/sign` with
-`httpx/middleware/signedrequest`; the two formats intentionally freeze separate
-canonical strings and key-ID header spellings.
-Signed-request verifier header-length errors and Redis nonce-store length
-checks follow the same stable-diagnostic pattern.
+`httpx/sign` and `httpx/middleware/signedrequest` now report invalid request
+methods, hosts, and malformed signature timestamps without echoing the raw
+request value. This keeps attacker-controlled request metadata out of debug
+logs and returned signing errors while preserving sentinel errors for callers.
+Signed-request canonical header validation also no longer echoes required
+header names. Signed-request body-buffer read, close, and size errors now use
+stable text instead of echoing caller reader diagnostics or configured/request
+byte counts, while preserving wrapped causes and body-size sentinels for
+callers. The legacy `httpx/reqsign` package was removed in v2.0.0 — services
+should use `httpx/sign` with `httpx/middleware/signedrequest`. Signed-request
+verifier header-length errors and Redis nonce-store length checks follow the
+same stable-diagnostic pattern.
 
 ### Header validation errors avoid reflecting metadata
 

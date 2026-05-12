@@ -82,8 +82,8 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
-// New builds a KEK from cfg using the given Vault client.
-func New(c *vaultapi.Client, cfg Config) (*KEK, error) {
+// NewKEK builds a KEK from cfg using the given Vault client.
+func NewKEK(c *vaultapi.Client, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("vaulttransit: client must not be nil")
 	}

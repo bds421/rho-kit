@@ -132,11 +132,12 @@ type ComputeCache[T any] struct {
 	group   singleflight.Group
 	cfg     computeConfig
 
-	bgWg      sync.WaitGroup
-	cancelBg  context.CancelFunc
-	bgCtx     context.Context
-	closeOnce sync.Once
-	closed    atomic.Bool
+	bgWg         sync.WaitGroup
+	foregroundWg sync.WaitGroup
+	cancelBg     context.CancelFunc
+	bgCtx        context.Context
+	closeOnce    sync.Once
+	closed       atomic.Bool
 	// bgMu serialises bgWg.Add against bgWg.Wait. Without it, the closed-load
 	// → Add(1) sequence in triggerBackgroundRefresh can run concurrently
 	// with Close's Wait — sync.WaitGroup explicitly forbids Add called in
@@ -307,26 +308,36 @@ func (cc *ComputeCache[T]) decodeEnvelope(data []byte) (T, int64, error) {
 var envelopeCodec = JSONCodec[envelope]{}
 
 // computeAndStore runs fn through singleflight, stores the result, and returns.
+//
+// The shared compute runs under a context that combines the caller's
+// deadline with cc.bgCtx — so Close cancels in-flight foreground
+// computes (preventing leaked goroutines that keep hitting the backend
+// after shutdown) while a single cancelled follower does not abort work
+// other waiters still need. Each leader goroutine is tracked in
+// foregroundWg so Close can wait for it to drain.
 func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn ComputeFunc[T]) (T, error) {
 	var zero T
 
-	// Detach cancellation so a follower whose context is cancelled does
-	// not abort the shared compute, but keep the original deadline so
-	// long computes still respect the request budget. When the caller
-	// passed a deadline-less ctx (Background()), apply the
-	// computeTimeout cap so a slow fn cannot block followers forever.
-	computeCtx, cancelCompute := detachCancelKeepDeadline(ctx)
-	defer cancelCompute()
-	if _, hasDeadline := computeCtx.Deadline(); !hasDeadline && cc.cfg.computeTimeout > 0 {
-		var capCancel context.CancelFunc
-		computeCtx, capCancel = context.WithTimeout(computeCtx, cc.cfg.computeTimeout)
-		defer capCancel()
+	// Hold bgMu across the closed-load and foregroundWg.Add so a
+	// concurrent Close cannot race the Add against its own Wait.
+	cc.bgMu.Lock()
+	if cc.closed.Load() {
+		cc.bgMu.Unlock()
+		return zero, ErrCacheClosed
 	}
+	cc.foregroundWg.Add(1)
+	cc.bgMu.Unlock()
+	defer cc.foregroundWg.Done()
+
+	// computeCtx for the leader: anchored on bgCtx so Close cancels it,
+	// with the caller's deadline preserved (or computeTimeout when no
+	// deadline was set) so a slow fn cannot block followers forever.
+	computeCtx, cancelCompute := computeContext(cc.bgCtx, ctx, cc.cfg.computeTimeout)
+	defer cancelCompute()
+
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
 	// follower can exit promptly instead of waiting for the leader's
-	// long compute to finish. The leader's compute itself runs under
-	// computeCtx (deadline preserved, cancellation detached) so an
-	// abandoned follower does not abort the shared work.
+	// long compute to finish.
 	resCh := cc.group.DoChan(full, func() (interface{}, error) {
 		val, execErr := cc.executeCompute(computeCtx, full, fn)
 		if execErr != nil {
@@ -346,6 +357,11 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		// cancel reason so the request boundary maps to a 499/context
 		// error rather than a generic "cache compute" error.
 		return zero, ctx.Err()
+	case <-cc.bgCtx.Done():
+		// Cache closed mid-flight. The leader's computeCtx is anchored
+		// on bgCtx so it will also unwind; surface ErrCacheClosed to
+		// the follower so callers stop retrying.
+		return zero, ErrCacheClosed
 	}
 	if err != nil {
 		return zero, err
@@ -468,13 +484,15 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 	}()
 }
 
-// Wait blocks until all background refresh goroutines complete.
-// Primarily useful in tests to ensure deterministic behavior.
+// Wait blocks until all background refresh goroutines and in-flight
+// foreground singleflight leaders complete. Primarily useful in tests
+// to ensure deterministic behavior.
 func (cc *ComputeCache[T]) Wait() {
 	if cc == nil {
 		return
 	}
 	cc.bgWg.Wait()
+	cc.foregroundWg.Wait()
 }
 
 // Close cancels all background refresh operations and waits for them to
@@ -497,6 +515,7 @@ func (cc *ComputeCache[T]) Close() error {
 		cc.cancelBg()
 	})
 	cc.bgWg.Wait()
+	cc.foregroundWg.Wait()
 	return nil
 }
 
@@ -528,15 +547,17 @@ func (cc *ComputeCache[T]) recordError() {
 	}
 }
 
-// detachCancelKeepDeadline returns a context that does not inherit
-// cancellation from parent (so that one cancelled caller cannot abort a
-// shared singleflight compute) but does inherit any deadline so the
-// compute is still bounded by the original request budget. The returned
-// cancel must always be invoked by the caller.
-func detachCancelKeepDeadline(parent context.Context) (context.Context, context.CancelFunc) {
-	detached := context.WithoutCancel(parent)
-	if dl, ok := parent.Deadline(); ok {
-		return context.WithDeadline(detached, dl)
+// computeContext builds the context the leader uses to run fn. It is
+// anchored on bgCtx (so Close cancels in-flight foreground computes)
+// rather than the caller's ctx (so a single follower's cancel cannot
+// abort shared work). The caller's deadline is preserved when set; with
+// no deadline the configured computeTimeout caps the run.
+func computeContext(bgCtx, caller context.Context, computeTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if dl, ok := caller.Deadline(); ok {
+		return context.WithDeadline(bgCtx, dl)
 	}
-	return context.WithCancel(detached)
+	if computeTimeout > 0 {
+		return context.WithTimeout(bgCtx, computeTimeout)
+	}
+	return context.WithCancel(bgCtx)
 }

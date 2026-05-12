@@ -174,11 +174,44 @@ func Chain(validators ...Validator) Validator {
 	})
 }
 
+// SVGSanitizer rewrites or rejects an uploaded SVG body. Implementations
+// MUST drop or neutralise <script>, foreignObject, event handlers, and
+// any other vector for XSS or SSRF. The kit does not ship a sanitiser
+// — services that need to accept SVG must wire in one from an audited
+// library (e.g. bluemonday with an SVG profile, or DOMPurify via wasm).
+type SVGSanitizer interface {
+	// SanitizeSVG reads the candidate SVG from r and either returns a
+	// safe payload or a non-nil error. The returned payload replaces
+	// the upload body for downstream steps.
+	SanitizeSVG(r io.Reader) ([]byte, error)
+}
+
+// imageDeepDecodeMIMEs is the subset of image MIME types where a
+// successful [http.DetectContentType] match still needs an
+// [image.DecodeConfig] round-trip to reject polyglots (a PHP webshell
+// wrapped in a valid PNG header).
+var imageDeepDecodeMIMEs = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/gif":  {},
+	"image/webp": {},
+}
+
 // AllowMIMETypes returns a Validator that sniffs the first 512 bytes
 // of the body and rejects content whose detected MIME type is not in
 // the allowlist. The detected type replaces meta.ContentType so
 // downstream steps and storage backends record the truth, not the
 // caller-supplied lie.
+//
+// For raster image MIME types in [imageDeepDecodeMIMEs], the validator
+// additionally feeds the body to [image.DecodeConfig]. A decoder
+// failure indicates a polyglot or corrupt image and the upload is
+// rejected with [ErrInvalidImage] before any expensive downstream
+// validator (e.g. malware scan) runs.
+//
+// image/svg+xml is rejected unconditionally — SVG is an XML format with
+// scripting and SSRF surface that no sniffer can defang. Services that
+// need to accept SVG must opt in via [AllowSVG] and provide a sanitiser.
 //
 // Sniffing uses [http.DetectContentType] (RFC 2046 + Mozilla heuristics),
 // which is the same logic stdlib uses for static-file serving. It is
@@ -195,6 +228,9 @@ func AllowMIMETypes(allowed ...string) Validator {
 		if err != nil || mediaType == "" || !strings.Contains(mediaType, "/") {
 			panic("uploadsec: invalid MIME type")
 		}
+		if mediaType == "image/svg+xml" {
+			panic("uploadsec: image/svg+xml requires AllowSVG with an SVGSanitizer; the default allowlist refuses unsanitised SVG")
+		}
 		allowSet[mediaType] = struct{}{}
 	}
 	return ValidatorFunc(func(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
@@ -210,7 +246,55 @@ func AllowMIMETypes(allowed ...string) Validator {
 		if _, ok := allowSet[base]; !ok {
 			return meta, ErrMIMETypeNotAllowed
 		}
+		if _, deep := imageDeepDecodeMIMEs[base]; deep {
+			if _, err := body.Seek(0, io.SeekStart); err != nil {
+				return meta, fmt.Errorf("uploadsec: rewind for image decode: %w", err)
+			}
+			header, err := io.ReadAll(io.LimitReader(body, imageHeaderReadLimit))
+			if err != nil {
+				return meta, fmt.Errorf("uploadsec: buffer image header failed")
+			}
+			if _, _, err := image.DecodeConfig(bytes.NewReader(header)); err != nil {
+				return meta, ErrInvalidImage
+			}
+		}
 		meta.ContentType = base
+		return meta, nil
+	})
+}
+
+// AllowSVG returns a Validator that accepts image/svg+xml uploads after
+// running the body through sanitizer. The sanitizer is responsible for
+// stripping or neutralising scripting and external references; an
+// unfiltered SVG is effectively a hostile HTML document.
+//
+// The kit ships no default sanitiser — the surface is large enough that
+// every deployment should make an explicit decision about which
+// SVG-handling library to trust. Compose [AllowSVG] alongside
+// [AllowMIMETypes] when a service must accept SVG.
+func AllowSVG(sanitizer SVGSanitizer) Validator {
+	if sanitizer == nil {
+		panic("uploadsec: AllowSVG requires a non-nil SVGSanitizer")
+	}
+	return ValidatorFunc(func(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
+		buf := make([]byte, 512)
+		n, err := io.ReadFull(body, buf)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return meta, fmt.Errorf("uploadsec: sniff body failed")
+		}
+		sniffed := http.DetectContentType(buf[:n])
+		base, _, _ := strings.Cut(sniffed, ";")
+		base = strings.ToLower(strings.TrimSpace(base))
+		if base != "image/svg+xml" && base != "text/xml" && base != "text/plain" && base != "application/xml" {
+			return meta, ErrMIMETypeNotAllowed
+		}
+		if _, err := body.Seek(0, io.SeekStart); err != nil {
+			return meta, fmt.Errorf("uploadsec: rewind for SVG sanitise: %w", err)
+		}
+		if _, err := sanitizer.SanitizeSVG(body); err != nil {
+			return meta, fmt.Errorf("uploadsec: %w", err)
+		}
+		meta.ContentType = "image/svg+xml"
 		return meta, nil
 	})
 }

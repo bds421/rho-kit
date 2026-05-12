@@ -19,34 +19,34 @@ func TestSign(t *testing.T) {
 	body := []byte(`{"title":"test","message":"hello"}`)
 	secret := testSecret
 
-	sig, ts, err := Sign(body, secret)
+	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	assert.Contains(t, sig, "sha256=")
 	assert.Greater(t, ts, int64(0))
 
 	// Same inputs at the same second produce the same signature.
-	sig2, ts2, err := Sign(body, secret)
+	sig2, ts2, err := Sign(secret, body)
 	require.NoError(t, err)
 	if ts == ts2 {
 		assert.Equal(t, sig, sig2)
 	}
 
 	// Different secret produces different signature.
-	sig3, _, err := Sign(body, []byte("other-webhook-secret-32bytes!!!!"))
+	sig3, _, err := Sign([]byte("other-webhook-secret-32bytes!!!!"), body)
 	require.NoError(t, err)
 	assert.NotEqual(t, sig, sig3)
 
 	// Different body produces different signature.
-	sig4, _, err := Sign([]byte("different"), secret)
+	sig4, _, err := Sign(secret, []byte("different"))
 	require.NoError(t, err)
 	assert.NotEqual(t, sig, sig4)
 }
 
 func TestSign_EmptySecret(t *testing.T) {
-	_, _, err := Sign([]byte("body"), nil)
+	_, _, err := Sign(nil, []byte("body"))
 	assert.ErrorIs(t, err, ErrEmptySecret)
 
-	_, _, err = Sign([]byte("body"), []byte{})
+	_, _, err = Sign([]byte{}, []byte("body"))
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
@@ -54,7 +54,7 @@ func TestVerify_RoundTrip(t *testing.T) {
 	body := []byte(`{"event":"deploy","status":"success"}`)
 	secret := testSecret
 
-	sig, ts, err := Sign(body, secret)
+	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	ok, err := Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestVerify_TamperedBody(t *testing.T) {
 	body := []byte(`{"event":"deploy","status":"success"}`)
 	secret := testSecret
 
-	sig, ts, err := Sign(body, secret)
+	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	tampered := []byte(`{"event":"deploy","status":"failure"}`)
 	ok, err := Verify(secret, tampered, ts, sig, DefaultSignatureMaxAge)
@@ -77,7 +77,7 @@ func TestVerify_WrongSecret(t *testing.T) {
 	body := []byte(`{"event":"deploy"}`)
 	secret := testSecret
 
-	sig, ts, err := Sign(body, secret)
+	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	ok, err := Verify([]byte("wrong-webhook-secret-32bytes!!!!"), body, ts, sig, DefaultSignatureMaxAge)
 	require.NoError(t, err)
@@ -88,7 +88,7 @@ func TestVerify_WrongTimestamp(t *testing.T) {
 	body := []byte(`{"event":"deploy"}`)
 	secret := testSecret
 
-	sig, ts, err := Sign(body, secret)
+	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	ok, err := Verify(secret, body, ts+1, sig, DefaultSignatureMaxAge)
 	require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestVerify_InvalidSignature(t *testing.T) {
 	body := []byte(`{"event":"deploy"}`)
 	secret := testSecret
 
-	_, ts, err := Sign(body, secret)
+	_, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	ok, err := Verify(secret, body, ts, "sha256=invalid", DefaultSignatureMaxAge)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestVerify_MissingPrefix(t *testing.T) {
 	body := []byte(`{"event":"deploy"}`)
 	secret := testSecret
 
-	_, ts, err := Sign(body, secret)
+	_, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	ok, err := Verify(secret, body, ts, "no-prefix", DefaultSignatureMaxAge)
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestSigner_WithClock_SignAndVerify(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	secret := testSecret
 
-	sig, ts, err := s.Sign(body, secret)
+	sig, ts, err := s.Sign(secret, body)
 	require.NoError(t, err)
 	assert.Equal(t, fixedTime.Unix(), ts)
 
@@ -175,7 +175,7 @@ func TestSigner_Verify_ExpiredWithClock(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	secret := testSecret
 
-	sig, ts, err := signSigner.Sign(body, secret)
+	sig, ts, err := signSigner.Sign(secret, body)
 	require.NoError(t, err)
 
 	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
@@ -194,7 +194,7 @@ func TestSigner_Verify_FutureWithClock(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	secret := testSecret
 
-	sig, ts, err := signSigner.Sign(body, secret)
+	sig, ts, err := signSigner.Sign(secret, body)
 	require.NoError(t, err)
 
 	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
@@ -213,7 +213,7 @@ func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
 	)
 
 	secret := []byte("secret-secret-secret-secret-32by")
-	sig, ts, err := signer.Sign([]byte("body"), secret)
+	sig, ts, err := signer.Sign(secret, []byte("body"))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
 	)
 
 	secret := []byte("secret-secret-secret-secret-32by")
-	sig, ts, err := signer.Sign([]byte("body"), secret)
+	sig, ts, err := signer.Sign(secret, []byte("body"))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSignerOptions_PanicOnInvalidInput(t *testing.T) {
 
 func TestSigner_Sign_EmptySecret(t *testing.T) {
 	s := NewSigner()
-	_, _, err := s.Sign([]byte("body"), nil)
+	_, _, err := s.Sign(nil, []byte("body"))
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
@@ -263,7 +263,7 @@ func TestSigner_Verify_EmptySecret(t *testing.T) {
 func TestSigner_ZeroValueReturnsInvalidSigner(t *testing.T) {
 	var s Signer
 
-	_, _, err := s.Sign([]byte("body"), testSecret)
+	_, _, err := s.Sign(testSecret, []byte("body"))
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 
 	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
@@ -273,7 +273,7 @@ func TestSigner_ZeroValueReturnsInvalidSigner(t *testing.T) {
 func TestSigner_NilReceiverReturnsInvalidSigner(t *testing.T) {
 	var s *Signer
 
-	_, _, err := s.Sign([]byte("body"), testSecret)
+	_, _, err := s.Sign(testSecret, []byte("body"))
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 
 	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
@@ -282,7 +282,7 @@ func TestSigner_NilReceiverReturnsInvalidSigner(t *testing.T) {
 
 func TestVerify_RejectsNonPositiveMaxAge(t *testing.T) {
 	s := NewSigner()
-	sig, ts, err := s.Sign([]byte("body"), testSecret)
+	sig, ts, err := s.Sign(testSecret, []byte("body"))
 	require.NoError(t, err)
 
 	_, err = s.Verify(testSecret, []byte("body"), ts, sig, 0)
@@ -301,7 +301,7 @@ func TestSignContext_RejectsAmbiguousContextSeparators(t *testing.T) {
 	}
 
 	for _, ctx := range cases {
-		_, _, err := s.SignContext(ctx, []byte("body"), testSecret)
+		_, _, err := s.SignContext(ctx, testSecret, []byte("body"))
 		assert.ErrorIs(t, err, ErrInvalidContext)
 	}
 }
@@ -309,7 +309,7 @@ func TestSignContext_RejectsAmbiguousContextSeparators(t *testing.T) {
 func TestVerifyContext_RejectsAmbiguousContextSeparators(t *testing.T) {
 	s := NewSigner()
 	ctx := CanonicalContext{Method: "POST", Path: "/hooks", Domain: "webhook"}
-	sig, ts, err := s.SignContext(ctx, []byte("body"), testSecret)
+	sig, ts, err := s.SignContext(ctx, testSecret, []byte("body"))
 	require.NoError(t, err)
 
 	_, err = s.VerifyContext(CanonicalContext{Method: "POST\nGET", Path: "/hooks", Domain: "webhook"}, testSecret, []byte("body"), ts, sig, DefaultSignatureMaxAge)

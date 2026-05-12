@@ -577,46 +577,6 @@ func TestRequirePermissionUnary_HasPermission_Allowed(t *testing.T) {
 	assert.True(t, called)
 }
 
-// TestRequirePermissionUnary_TrustedS2S_BypassesCheck verifies that the
-// trusted-S2S marker bypasses the permission check even when no permissions
-// claim is present. This is the documented S2S composition.
-func TestRequirePermissionUnary_TrustedS2S_BypassesCheck(t *testing.T) {
-	called := false
-	handler := func(ctx context.Context, req any) (any, error) {
-		called = true
-		return "ok", nil
-	}
-
-	// Use the test-only WithTrustedS2S helper to simulate the marker that
-	// MTLSAuthUnary's mTLS branch stamps after a verified client cert.
-	ctx := interceptor.WithTrustedS2S(context.Background())
-
-	ic := interceptor.RequirePermissionUnary("read")
-	resp, err := ic(ctx, nil, noopUnaryInfo, handler)
-
-	require.NoError(t, err)
-	assert.Equal(t, "ok", resp)
-	assert.True(t, called)
-}
-
-// TestRequirePermissionStream_TrustedS2S_BypassesCheck mirrors the unary
-// test for streaming RPCs.
-func TestRequirePermissionStream_TrustedS2S_BypassesCheck(t *testing.T) {
-	called := false
-	handler := func(srv any, stream grpc.ServerStream) error {
-		called = true
-		return nil
-	}
-
-	ctx := interceptor.WithTrustedS2S(context.Background())
-	ss := &fakeStream{ctx: ctx}
-
-	ic := interceptor.RequirePermissionStream("read")
-	err := ic(nil, ss, noopStreamInfo, handler)
-	require.NoError(t, err)
-	assert.True(t, called)
-}
-
 // TestRequirePermissionStream_NoPermsClaim_PermissionDenied verifies the
 // fail-closed semantics for the stream variant.
 func TestRequirePermissionStream_NoPermsClaim_PermissionDenied(t *testing.T) {

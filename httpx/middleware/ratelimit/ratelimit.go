@@ -38,7 +38,9 @@ type shard struct {
 const defaultMaxPerShard = 10_000
 
 // RateLimiter is a sharded fixed-window rate limiter keyed by IP address.
-// Sharding reduces mutex contention under high concurrency.
+// Sharding reduces mutex contention under high concurrency. The type
+// satisfies [lifecycle.Component] so callers can register it directly with
+// a lifecycle.Runner.
 type RateLimiter struct {
 	shards         [numShards]shard
 	limit          int
@@ -50,8 +52,12 @@ type RateLimiter struct {
 	degradation    DegradationHandler
 	metrics        *Metrics
 	name           string
-	runMu          sync.Mutex
-	started        bool
+
+	startMu    sync.Mutex
+	started    bool
+	stopped    bool
+	cancel     context.CancelFunc
+	doneCh     chan struct{}
 }
 
 // RateLimiterOption configures optional RateLimiter behaviour.
@@ -253,40 +259,96 @@ func (rl *RateLimiter) cleanup() {
 	}
 }
 
-// Run starts the periodic cleanup goroutine. Blocks until ctx is cancelled.
-// Cleanup runs at 2× the rate limit window to amortize scan cost while
-// ensuring expired entries don't accumulate beyond one extra window.
-func (rl *RateLimiter) Run(ctx context.Context) error {
+// Name returns the limiter's configured name so the type satisfies the
+// [lifecycle.Component]-adjacent naming convention used by the Runner.
+func (rl *RateLimiter) Name() string {
+	if rl == nil || rl.name == "" {
+		return defaultLimiterName
+	}
+	return rl.name
+}
+
+// Start launches the periodic cleanup goroutine and blocks until ctx is
+// cancelled OR [RateLimiter.Stop] is invoked. Cleanup runs at 2× the rate
+// limit window to amortize scan cost while ensuring expired entries don't
+// accumulate beyond one extra window. Start must only be called once;
+// subsequent calls return an error.
+func (rl *RateLimiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
 	if ctx == nil {
-		return errors.New("ratelimit: RateLimiter.Run requires a non-nil context")
+		return errors.New("ratelimit: RateLimiter.Start requires a non-nil context")
 	}
-	rl.runMu.Lock()
+	rl.startMu.Lock()
 	if rl.started {
-		rl.runMu.Unlock()
-		return errors.New("ratelimit: RateLimiter.Run already started")
+		rl.startMu.Unlock()
+		return errors.New("ratelimit: RateLimiter.Start already started")
 	}
 	rl.started = true
-	rl.runMu.Unlock()
+	runCtx, cancel := context.WithCancel(ctx)
+	rl.cancel = cancel
+	done := make(chan struct{})
+	rl.doneCh = done
+	rl.startMu.Unlock()
+
+	defer close(done)
+	defer cancel()
 
 	ticker := time.NewTicker(cleanupInterval(rl.window))
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return nil
 		case <-ticker.C:
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("panic in rate limiter cleanup", redact.Panic(r))
+						slog.Error("panic in rate limiter cleanup",
+							slog.String("limiter", rl.Name()),
+							redact.Panic(r),
+						)
 					}
 				}()
 				rl.cleanup()
 			}()
 		}
+	}
+}
+
+// Stop cancels the cleanup goroutine launched by [RateLimiter.Start] and
+// waits for it to exit. Stop is idempotent; calls before Start, after the
+// goroutine has already exited, or after a prior Stop are no-ops.
+func (rl *RateLimiter) Stop(ctx context.Context) error {
+	if rl == nil {
+		return nil
+	}
+	rl.startMu.Lock()
+	if !rl.started || rl.stopped {
+		rl.stopped = true
+		rl.startMu.Unlock()
+		return nil
+	}
+	rl.stopped = true
+	cancel := rl.cancel
+	done := rl.doneCh
+	rl.startMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -311,49 +373,55 @@ func (rl *RateLimiter) ClientIP(r *http.Request) string {
 	return rl.clientIP(r)
 }
 
-// Middleware returns an HTTP middleware that rejects requests exceeding the rate limit.
-// When degradation is configured via [WithDegradation], the middleware checks
-// the health indicator before enforcing rate limits.
-func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
+// Middleware returns a chain-shape HTTP middleware that rejects requests
+// exceeding rl's rate limit. When degradation is configured via
+// [WithDegradation], the middleware checks the health indicator before
+// enforcing rate limits.
+func Middleware(rl *RateLimiter) func(http.Handler) http.Handler {
+	if rl == nil {
+		panic("ratelimit: Middleware requires a non-nil RateLimiter")
+	}
 	if err := rl.ready(); err != nil {
 		panic("ratelimit: Middleware requires an initialized limiter")
 	}
-	if next == nil {
-		panic("ratelimit: Middleware requires a non-nil next handler")
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
-		if outcome != "" {
-			rl.observeDecision(outcome)
+	return func(next http.Handler) http.Handler {
+		if next == nil {
+			panic("ratelimit: Middleware requires a non-nil next handler")
 		}
-		if handled {
-			return
-		}
-		if skip {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		ip := rl.clientIP(r)
-		if ip == "" {
-			rl.observeDecision(rateLimitOutcomeInvalidClientIP)
-			httpx.WriteError(w, http.StatusBadRequest, "client IP could not be determined")
-			return
-		}
-		allowed, remaining := rl.allow(ip)
-		if !allowed {
-			retryAfter := int(math.Ceil(remaining.Seconds()))
-			if retryAfter < 1 {
-				retryAfter = 1
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)
+			if outcome != "" {
+				rl.observeDecision(outcome)
 			}
-			rl.observeRetryAfter(float64(retryAfter))
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
-			httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
-			return
-		}
+			if handled {
+				return
+			}
+			if skip {
+				next.ServeHTTP(w, r)
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			ip := rl.clientIP(r)
+			if ip == "" {
+				rl.observeDecision(rateLimitOutcomeInvalidClientIP)
+				httpx.WriteError(w, http.StatusBadRequest, "client IP could not be determined")
+				return
+			}
+			allowed, remaining := rl.allow(ip)
+			if !allowed {
+				retryAfter := int(math.Ceil(remaining.Seconds()))
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				rl.observeRetryAfter(float64(retryAfter))
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (rl *RateLimiter) observeDecision(outcome string) {

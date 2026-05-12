@@ -34,7 +34,7 @@ func TestConfigLogValueRedactsKeyIdentifiers(t *testing.T) {
 }
 
 func TestNewParsesAzureKeyID(t *testing.T) {
-	k, err := New(&fakeKeyClient{}, Config{
+	k, err := NewKEK(&fakeKeyClient{}, Config{
 		KeyID: "https://vault.vault.azure.net/keys/wrap-key/123",
 	})
 	if err != nil {
@@ -52,7 +52,7 @@ func TestNewParsesAzureKeyID(t *testing.T) {
 }
 
 func TestNewBuildsFallbackKeyIDFromName(t *testing.T) {
-	k, err := New(&fakeKeyClient{}, Config{KeyName: "wrap-key", KeyVersion: "123"})
+	k, err := NewKEK(&fakeKeyClient{}, Config{KeyName: "wrap-key", KeyVersion: "123"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -80,13 +80,13 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(&fakeKeyClient{}, tt.cfg); err == nil {
+			if _, err := NewKEK(&fakeKeyClient{}, tt.cfg); err == nil {
 				t.Fatal("New expected error")
 			}
 		})
 	}
 
-	if _, err := New(nil, Config{KeyName: "key"}); err == nil {
+	if _, err := NewKEK(nil, Config{KeyName: "key"}); err == nil {
 		t.Fatal("New nil client expected error")
 	}
 }
@@ -113,7 +113,7 @@ func TestKEKInvalidStateReturnsErrors(t *testing.T) {
 }
 
 func TestKEKRejectsNilContextAndBadUnwrapInputs(t *testing.T) {
-	k, err := New(&fakeKeyClient{}, Config{KeyName: "key"})
+	k, err := NewKEK(&fakeKeyClient{}, Config{KeyName: "key"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestKEKRejectsNilContextAndBadUnwrapInputs(t *testing.T) {
 }
 
 func TestKEKRejectsEnvelopeKeyIDFromUnexpectedVault(t *testing.T) {
-	k, err := New(&fakeKeyClient{}, Config{
+	k, err := NewKEK(&fakeKeyClient{}, Config{
 		KeyID: "https://expected.vault.azure.net/keys/key",
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func TestKEKRejectsEnvelopeKeyIDFromUnexpectedVault(t *testing.T) {
 
 func TestWrapUnwrapRoundTripUsesVersionQualifiedKID(t *testing.T) {
 	fake := &fakeKeyClient{}
-	k, err := New(fake, Config{
+	k, err := NewKEK(fake, Config{
 		KeyName:    "wrap-key",
 		KeyVersion: "primary",
 		Algorithm:  azkeys.EncryptionAlgorithmA256KW,
@@ -199,7 +199,7 @@ func TestWrapUnwrapRoundTripUsesVersionQualifiedKID(t *testing.T) {
 func TestWrapAndUnwrapSurfaceProviderErrors(t *testing.T) {
 	boom := errors.New("provider boom")
 	fake := &fakeKeyClient{err: boom}
-	k, err := New(fake, Config{KeyName: "key"})
+	k, err := NewKEK(fake, Config{KeyName: "key"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestWrapAndUnwrapSurfaceProviderErrors(t *testing.T) {
 }
 
 func TestWrapRejectsIncompleteProviderResponses(t *testing.T) {
-	k, err := New(&fakeKeyClient{missingKID: true}, Config{KeyName: "key"})
+	k, err := NewKEK(&fakeKeyClient{missingKID: true}, Config{KeyName: "key"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestWrapRejectsIncompleteProviderResponses(t *testing.T) {
 		t.Fatal("Wrap missing KID expected error")
 	}
 
-	k, err = New(&fakeKeyClient{missingResult: true}, Config{KeyName: "key"})
+	k, err = NewKEK(&fakeKeyClient{missingResult: true}, Config{KeyName: "key"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

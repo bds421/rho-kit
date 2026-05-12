@@ -20,7 +20,7 @@ func TestHTTPStatus(t *testing.T) {
 		{"Conflict", apperror.NewConflict("dup"), 409},
 		{"Permanent", apperror.NewPermanent("no"), 422},
 		{"AuthRequired", apperror.NewAuthRequired("login"), 401},
-		{"RateLimit", apperror.NewRateLimit("slow", time.Second), 429},
+		{"RateLimit", apperror.NewRateLimitWithRetryAfter("slow", time.Second), 429},
 		{"OperationFailed", apperror.NewOperationFailed("fail"), 500},
 		{"Forbidden", apperror.NewForbidden("denied"), 403},
 		{"Generic", errors.New("generic"), 500},

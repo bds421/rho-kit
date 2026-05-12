@@ -23,7 +23,7 @@ func TestWorker_RunsImmediatelyAndPeriodically(t *testing.T) {
 	w := New("test-run", 50*time.Millisecond, func(ctx context.Context) error {
 		count.Add(1)
 		return nil
-	}, WithRegistry(reg), WithJitter(0))
+	}, WithRegisterer(reg), WithJitter(0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -63,7 +63,7 @@ func TestWorker_ErrorLogged(t *testing.T) {
 	w := New("test-error", 50*time.Millisecond, func(ctx context.Context) error {
 		errCount.Add(1)
 		return errors.New("batch failed")
-	}, WithRegistry(reg), WithJitter(0))
+	}, WithRegisterer(reg), WithJitter(0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -92,7 +92,7 @@ func TestWorker_PanicRecovery(t *testing.T) {
 			panic("boom")
 		}
 		return nil
-	}, WithRegistry(reg), WithJitter(0))
+	}, WithRegisterer(reg), WithJitter(0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

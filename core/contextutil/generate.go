@@ -14,7 +14,7 @@ import (
 // fallbackCounter provides uniqueness when crypto/rand is unavailable.
 var fallbackCounter atomic.Uint64
 
-// NewID produces a UUID v7 string (time-ordered, random).
+// GenerateID produces a UUID v7 string (time-ordered, random).
 //
 // Falls back to a UUID-formatted time+counter string if crypto/rand is
 // unavailable. The fallback is sufficient for request tracing — uniqueness
@@ -22,7 +22,7 @@ var fallbackCounter atomic.Uint64
 // random — but should NOT be relied on for tokens, secrets, or any value
 // where unguessability matters. Use [NewSecureID] when crypto/rand failure
 // must surface as an error rather than silently degrade.
-func NewID() string {
+func GenerateID() string {
 	id, err := uuid.NewV7()
 	if err != nil {
 		slog.Warn("uuid.NewV7 failed, using fallback for ID generation", redact.Error(err))

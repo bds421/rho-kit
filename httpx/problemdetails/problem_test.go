@@ -126,7 +126,7 @@ func TestFromError_NotFound(t *testing.T) {
 }
 
 func TestFromError_RateLimit_AddsRetryAfterExtension(t *testing.T) {
-	p := FromError(apperror.NewRateLimit("slow down", 30*time.Second))
+	p := FromError(apperror.NewRateLimitWithRetryAfter("slow down", 30*time.Second))
 	assert.Equal(t, http.StatusTooManyRequests, p.Status)
 	require.NotNil(t, p.Extensions)
 	assert.Equal(t, 30, p.Extensions["retry_after_seconds"])
@@ -168,7 +168,7 @@ func TestSafeDetail(t *testing.T) {
 	}{
 		{name: "nil", want: "internal error"},
 		{name: "validation", err: apperror.NewValidation("email is required"), want: "email is required"},
-		{name: "rate limit", err: apperror.NewRateLimit("tenant quota exhausted", 0), want: "rate limit exceeded"},
+		{name: "rate limit", err: apperror.NewRateLimit("tenant quota exhausted"), want: "rate limit exceeded"},
 		{name: "not found", err: apperror.NewNotFound("user", 42), want: "resource not found"},
 		{name: "conflict", err: apperror.NewConflict("unique index users_email_key"), want: "resource conflict"},
 		{name: "permanent", err: apperror.NewPermanent("invalid irreversible state: order row 42"), want: "operation cannot be completed"},
@@ -304,7 +304,7 @@ func TestFromError_FieldValidation(t *testing.T) {
 func TestWrite_WithFromError_EndToEnd(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		Write(w, FromError(
-			apperror.NewRateLimit("too fast", 5*time.Second),
+			apperror.NewRateLimitWithRetryAfter("too fast", 5*time.Second),
 			WithBaseURL("https://errors.example.com"),
 			WithInstance(r.URL.EscapedPath()),
 		))

@@ -117,8 +117,9 @@ func WithForceHSTS() Option {
 }
 
 // WithContentSecurityPolicy sets the Content-Security-Policy header.
-// Default: "default-src 'none'" (strictest — blocks all content loading).
-// Override for services that serve HTML or need specific directives.
+// Default: "default-src 'none'; frame-ancestors 'none'" (strictest — blocks
+// all content loading and clickjacking via iframe). Override for services
+// that serve HTML or need specific directives.
 func WithContentSecurityPolicy(policy string) Option {
 	validateHeaderValue("Content-Security-Policy", policy)
 	return func(c *config) { c.csp = policy }
@@ -133,7 +134,7 @@ func WithContentSecurityPolicy(policy string) Option {
 //   - Permissions-Policy: geolocation=(), microphone=(), camera=()
 //   - Strict-Transport-Security: max-age=63072000; includeSubDomains
 //   - Cache-Control: no-store
-//   - Content-Security-Policy: default-src 'none'
+//   - Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
 //
 // HSTS is only sent when the request arrived over TLS (r.TLS != nil),
 // per RFC 6797 §7.2. No configuration needed for mixed environments.
@@ -147,7 +148,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		permissionsPolicy: "geolocation=(), microphone=(), camera=()",
 		hsts:              "max-age=63072000; includeSubDomains",
 		cacheControl:      "no-store",
-		csp:               "default-src 'none'",
+		csp:               "default-src 'none'; frame-ancestors 'none'",
 	}
 	for _, opt := range opts {
 		if opt == nil {

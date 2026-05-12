@@ -257,9 +257,9 @@ func TestHTTPServer_StopRejectsNilContext(t *testing.T) {
 }
 
 func TestFuncComponent_StartRejectsNilContext(t *testing.T) {
-	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+	fc := NewFuncComponent(func(ctx context.Context) error {
 		return nil
-	}}
+	})
 	var ctx context.Context
 	err := fc.Start(ctx)
 	require.Error(t, err)
@@ -267,21 +267,21 @@ func TestFuncComponent_StartRejectsNilContext(t *testing.T) {
 }
 
 func TestFuncComponent_Stop(t *testing.T) {
-	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+	fc := NewFuncComponent(func(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
-	}}
+	})
 	err := fc.Stop(context.Background())
 	assert.NoError(t, err)
 }
 
 func TestFuncComponent_StartRejectsSecondStart(t *testing.T) {
 	started := make(chan struct{})
-	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+	fc := NewFuncComponent(func(ctx context.Context) error {
 		close(started)
 		<-ctx.Done()
 		return nil
-	}}
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -303,9 +303,9 @@ func TestFuncComponent_StartRejectsSecondStart(t *testing.T) {
 }
 
 func TestFuncComponent_StartRejectsAfterStopBeforeStart(t *testing.T) {
-	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+	fc := NewFuncComponent(func(ctx context.Context) error {
 		return nil
-	}}
+	})
 
 	require.NoError(t, fc.Stop(context.Background()))
 
@@ -314,10 +314,16 @@ func TestFuncComponent_StartRejectsAfterStopBeforeStart(t *testing.T) {
 	assert.Contains(t, err.Error(), "already stopped")
 }
 
+func TestNewFuncComponent_PanicsOnNilFn(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = NewFuncComponent(nil)
+	})
+}
+
 func TestFuncComponent_StopRejectsNilContext(t *testing.T) {
-	fc := &FuncComponent{StartFn: func(ctx context.Context) error {
+	fc := NewFuncComponent(func(ctx context.Context) error {
 		return nil
-	}}
+	})
 	var ctx context.Context
 	err := fc.Stop(ctx)
 	require.Error(t, err)
@@ -417,7 +423,7 @@ func TestRunner_AddPanicsOnInvalidArgs(t *testing.T) {
 
 func TestRunner_AddFuncPanicsOnNilFn(t *testing.T) {
 	r := NewRunner(slog.Default())
-	assert.PanicsWithValue(t, "lifecycle: Runner.AddFunc requires a non-nil function", func() {
+	assert.PanicsWithValue(t, "lifecycle: NewFuncComponent requires a non-nil function", func() {
 		r.AddFunc("name", nil)
 	})
 	assert.PanicsWithValue(t, "lifecycle: Runner.Add requires a non-empty name", func() {

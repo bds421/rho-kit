@@ -484,9 +484,12 @@ func (r *Relay) startHeartbeat(ctx context.Context, id string) func() {
 			}
 		}
 	}()
+	var once sync.Once
 	return func() {
-		close(stopCh)
-		<-doneCh
+		once.Do(func() {
+			close(stopCh)
+			<-doneCh
+		})
 	}
 }
 

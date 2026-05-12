@@ -89,7 +89,7 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 
 		if err := handler(r.Context(), d); err != nil {
 			logger.Error("debug consume handler failed", redact.String("type", req.Type), redact.Error(err))
-			httpx.WriteJSON(w, http.StatusInternalServerError, response{
+			_ = httpx.WriteJSON(w, r, http.StatusInternalServerError, response{
 				OK:        false,
 				MessageID: msg.ID,
 				Error:     "handler failed",
@@ -97,7 +97,7 @@ func ConsumeHandler(handlers map[string]messaging.Handler, logger *slog.Logger) 
 			return
 		}
 
-		httpx.WriteJSON(w, http.StatusOK, response{OK: true, MessageID: msg.ID})
+		_ = httpx.WriteJSON(w, r, http.StatusOK, response{OK: true, MessageID: msg.ID})
 	}
 }
 
@@ -124,8 +124,8 @@ func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc
 	}
 	sort.Strings(types)
 
-	return func(w http.ResponseWriter, _ *http.Request) {
-		httpx.WriteJSON(w, http.StatusOK, typesResponse{Types: types})
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = httpx.WriteJSON(w, r, http.StatusOK, typesResponse{Types: types})
 	}
 }
 
@@ -136,7 +136,7 @@ func ConsumeTypesHandler(handlers map[string]messaging.Handler) http.HandlerFunc
 //
 // Request body: { "exchange": "...", "routing_key": "...", "payload": { ... } }
 // Response:     { "ok": true, "message_id": "..." }
-func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
+func PublishHandler(pub messaging.Publisher, allowedExchanges []string, logger *slog.Logger) http.HandlerFunc {
 	if pub == nil {
 		panic("debughttp: PublishHandler requires a non-nil publisher")
 	}
@@ -198,7 +198,7 @@ func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, l
 
 		if err := pub.Publish(r.Context(), req.Exchange, req.RoutingKey, msg); err != nil {
 			logger.Error("debug publish failed", redact.Error(err))
-			httpx.WriteJSON(w, http.StatusInternalServerError, response{
+			_ = httpx.WriteJSON(w, r, http.StatusInternalServerError, response{
 				OK:        false,
 				MessageID: msg.ID,
 				Error:     "publish failed",
@@ -206,6 +206,6 @@ func PublishHandler(pub messaging.MessagePublisher, allowedExchanges []string, l
 			return
 		}
 
-		httpx.WriteJSON(w, http.StatusOK, response{OK: true, MessageID: msg.ID})
+		_ = httpx.WriteJSON(w, r, http.StatusOK, response{OK: true, MessageID: msg.ID})
 	}
 }

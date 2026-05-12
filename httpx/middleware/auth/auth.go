@@ -43,14 +43,15 @@ var (
 	trustedS2SKey  = contextutil.NewKey[trustedS2SMarker]("httpx.auth.trusted_s2s")
 )
 
-// RequireUserWithJWT returns middleware that verifies Bearer JWTs through provider.
-// Only Bearer tokens are accepted; X-User-Id header fallback is rejected.
-// Use RequireS2SAuth for services that also accept internal S2S calls.
+// JWT returns chain-shape middleware that verifies Bearer JWTs through
+// provider. Only Bearer tokens are accepted; X-User-Id header fallback is
+// rejected. Use [RequireS2SAuth] for services that also accept internal
+// service-to-service calls.
 //
 // Panics if provider is nil to fail fast on misconfiguration.
-func RequireUserWithJWT(provider *jwtutil.Provider) func(http.Handler) http.Handler {
+func JWT(provider *jwtutil.Provider) func(http.Handler) http.Handler {
 	if provider == nil {
-		panic("middleware: RequireUserWithJWT requires a non-nil JWT provider")
+		panic("middleware: JWT requires a non-nil JWT provider")
 	}
 	return func(next http.Handler) http.Handler {
 		return jwtOnlyHandler(provider, next)
@@ -58,7 +59,7 @@ func RequireUserWithJWT(provider *jwtutil.Provider) func(http.Handler) http.Hand
 }
 
 // RequireS2SAuth returns middleware that accepts two authentication modes:
-//  1. Bearer JWT (same as RequireUserWithJWT)
+//  1. Bearer JWT (same as [JWT])
 //  2. mTLS client certificate + X-User-Id header (service-to-service)
 //
 // For mode 2, the caller's TLS client certificate must satisfy the CN
@@ -570,16 +571,6 @@ func PermissionByMethod(readPerm, writePerm string) func(http.Handler) http.Hand
 func IsTrustedS2S(ctx context.Context) bool {
 	_, ok := trustedS2SKey.Get(ctx)
 	return ok
-}
-
-// WithTrustedS2S returns ctx marked as a trusted service-to-service caller.
-//
-// This is intended for use in tests only. Production code must rely on
-// RequireS2SAuth's mTLS branch to set the marker after a verified client
-// certificate. Setting the marker manually in production would let callers
-// bypass RBAC.
-func WithTrustedS2S(ctx context.Context) context.Context {
-	return trustedS2SKey.Set(ctx, trustedS2SMarker{})
 }
 
 // hasPermissionFast checks the pre-built map from context for O(1) lookup.

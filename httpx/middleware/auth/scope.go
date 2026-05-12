@@ -9,7 +9,7 @@ import (
 
 // RequireScope returns middleware that enforces API key scope authorization.
 // It checks scopes from the request context (set by JWT verification in
-// RequireUserWithJWT/RequireS2SAuth).
+// JWT/RequireS2SAuth).
 //
 // Fail-closed semantics:
 //   - A request authenticated via the trusted-S2S mTLS branch bypasses the
@@ -72,7 +72,7 @@ func RequireScopeStrict(requiredScope string) func(http.Handler) http.Handler {
 	}
 }
 
-// scopesFromRequest reads scopes from context (set by JWT verification in RequireUserWithJWT).
+// scopesFromRequest reads scopes from context (set by JWT verification in JWT).
 func scopesFromRequest(r *http.Request) string {
 	return Scopes(r.Context())
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
 
-// Consumer wraps a stream.Consumer to satisfy messaging.MessageConsumer.
+// Consumer wraps a stream.Consumer to satisfy messaging.Consumer.
 // Binding.Exchange maps to the Redis stream name.
 //
 // FR-064 [MED]: Binding.Queue is interpreted as the *expected*

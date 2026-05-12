@@ -109,7 +109,7 @@ func TestAuthRequiredError(t *testing.T) {
 }
 
 func TestRateLimitError(t *testing.T) {
-	err := NewRateLimit("quota exceeded", 30*time.Second)
+	err := NewRateLimitWithRetryAfter("quota exceeded", 30*time.Second)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "quota exceeded")
 	assert.True(t, IsRateLimit(err))
@@ -123,7 +123,7 @@ func TestRateLimitError(t *testing.T) {
 }
 
 func TestRateLimitError_ZeroRetryAfter(t *testing.T) {
-	err := NewRateLimit("too many requests", 0)
+	err := NewRateLimit("too many requests")
 	assert.True(t, IsRateLimit(err))
 
 	rl, ok := AsRateLimit(err)
@@ -176,62 +176,6 @@ func TestAsNotFound(t *testing.T) {
 func TestAsNotFound_NotNotFound(t *testing.T) {
 	err := NewConflict("dup")
 	_, ok := AsNotFound(err)
-	assert.False(t, ok)
-}
-
-func TestAsConflict(t *testing.T) {
-	err := NewConflict("name already exists")
-	c, ok := AsConflict(err)
-	assert.True(t, ok)
-	assert.Equal(t, "name already exists", c.Message)
-}
-
-func TestAsConflict_NotConflict(t *testing.T) {
-	err := NewNotFound("user", "1")
-	_, ok := AsConflict(err)
-	assert.False(t, ok)
-}
-
-func TestAsPermanent(t *testing.T) {
-	cause := errors.New("upstream failed")
-	err := NewPermanentWithCause("cannot retry", cause)
-	p, ok := AsPermanent(err)
-	assert.True(t, ok)
-	assert.Equal(t, "cannot retry", p.Message)
-	assert.Equal(t, cause, p.Unwrap())
-}
-
-func TestAsPermanent_NotPermanent(t *testing.T) {
-	err := NewValidation("bad input")
-	_, ok := AsPermanent(err)
-	assert.False(t, ok)
-}
-
-func TestAsAuthRequired(t *testing.T) {
-	err := NewAuthRequired("token expired")
-	a, ok := AsAuthRequired(err)
-	assert.True(t, ok)
-	assert.Equal(t, "token expired", a.Message)
-}
-
-func TestAsAuthRequired_NotAuthRequired(t *testing.T) {
-	err := NewConflict("conflict")
-	_, ok := AsAuthRequired(err)
-	assert.False(t, ok)
-}
-
-func TestAsOperationFailed(t *testing.T) {
-	cause := errors.New("db timeout")
-	err := NewOperationFailedWithCause("operation failed", cause)
-	o, ok := AsOperationFailed(err)
-	assert.True(t, ok)
-	assert.Equal(t, "operation failed", o.Message)
-	assert.Equal(t, cause, o.Unwrap())
-}
-
-func TestAsOperationFailed_NotOperationFailed(t *testing.T) {
-	err := NewNotFound("user", "1")
-	_, ok := AsOperationFailed(err)
 	assert.False(t, ok)
 }
 
@@ -311,11 +255,13 @@ func TestRetryable(t *testing.T) {
 	}{
 		{"NotFound", NewNotFound("x", 1), false},
 		{"Validation", NewValidation("bad"), false},
-		{"Conflict", NewConflict("dup"), true},
+		{"Conflict", NewConflict("dup"), false},
+		{"ConflictRetryable", NewConflictRetryable("optimistic"), true},
 		{"Permanent", NewPermanent("no"), false},
 		{"AuthRequired", NewAuthRequired("login"), false},
 		{"Forbidden", NewForbidden("denied"), false},
-		{"RateLimit", NewRateLimit("slow", time.Second), true},
+		{"RateLimit", NewRateLimit("slow"), true},
+		{"RateLimitWithRetryAfter", NewRateLimitWithRetryAfter("slow", time.Second), true},
 		{"OperationFailed", NewOperationFailed("fail"), false},
 		{"Unavailable", NewUnavailable("down"), true},
 		{"DependencyUnavailable", NewDependencyUnavailable("redis", "down", nil), true},
@@ -331,13 +277,15 @@ func TestRetryable(t *testing.T) {
 
 func TestShouldRetry(t *testing.T) {
 	// Retryable app errors return true.
-	assert.True(t, ShouldRetry(NewConflict("dup")))
-	assert.True(t, ShouldRetry(NewRateLimit("slow", time.Second)))
+	assert.True(t, ShouldRetry(NewConflictRetryable("optimistic")))
+	assert.True(t, ShouldRetry(NewRateLimit("slow")))
+	assert.True(t, ShouldRetry(NewRateLimitWithRetryAfter("slow", time.Second)))
 	assert.True(t, ShouldRetry(NewUnavailable("down")))
 
 	// Non-retryable app errors return false.
 	assert.False(t, ShouldRetry(NewNotFound("x", 1)))
 	assert.False(t, ShouldRetry(NewValidation("bad")))
+	assert.False(t, ShouldRetry(NewConflict("dup")))
 	assert.False(t, ShouldRetry(NewPermanent("no")))
 	assert.False(t, ShouldRetry(NewOperationFailed("fail")))
 

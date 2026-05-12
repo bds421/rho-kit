@@ -15,11 +15,11 @@ func testKey(n int, seed int) []byte {
 	return k
 }
 
-func TestNewStaticKeyStore(t *testing.T) {
+func TestMustNewStaticKeyStore(t *testing.T) {
 	key1 := testKey(32, 1)
 	key2 := testKey(48, 2)
 
-	store := NewStaticKeyStore(map[string][]byte{
+	store := MustNewStaticKeyStore(map[string][]byte{
 		"k1": key1,
 		"k2": key2,
 	}, "k1")
@@ -36,7 +36,7 @@ func TestNewStaticKeyStore(t *testing.T) {
 func TestStaticKeyStore_Key(t *testing.T) {
 	key1 := testKey(32, 1)
 	key2 := testKey(48, 2)
-	store := NewStaticKeyStore(map[string][]byte{
+	store := MustNewStaticKeyStore(map[string][]byte{
 		"k1": key1,
 		"k2": key2,
 	}, "k1")
@@ -60,7 +60,7 @@ func TestStaticKeyStore_Key(t *testing.T) {
 func TestStaticKeyStore_DefensiveCopy(t *testing.T) {
 	original := testKey(32, 1)
 	keys := map[string][]byte{"k1": original}
-	store := NewStaticKeyStore(keys, "k1")
+	store := MustNewStaticKeyStore(keys, "k1")
 
 	// Mutate the original — store should be unaffected.
 	original[0] = 0xFF
@@ -70,56 +70,56 @@ func TestStaticKeyStore_DefensiveCopy(t *testing.T) {
 	}
 }
 
-func TestNewStaticKeyStore_PanicsEmptyKeys(t *testing.T) {
+func TestMustNewStaticKeyStore_PanicsEmptyKeys(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic for empty keys map")
 		}
 	}()
-	NewStaticKeyStore(map[string][]byte{}, "k1")
+	MustNewStaticKeyStore(map[string][]byte{}, "k1")
 }
 
-func TestNewStaticKeyStore_PanicsMissingCurrentID(t *testing.T) {
+func TestMustNewStaticKeyStore_PanicsMissingCurrentID(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic when currentID not in keys")
 		}
 	}()
-	NewStaticKeyStore(map[string][]byte{
+	MustNewStaticKeyStore(map[string][]byte{
 		"k1": testKey(32, 1),
 	}, "k2")
 }
 
-func TestNewStaticKeyStore_PanicsShortKey(t *testing.T) {
+func TestMustNewStaticKeyStore_PanicsShortKey(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic for key shorter than 32 bytes")
 		}
 	}()
-	NewStaticKeyStore(map[string][]byte{
+	MustNewStaticKeyStore(map[string][]byte{
 		"k1": testKey(16, 1),
 	}, "k1")
 }
 
-func TestNewStaticKeyStoreE_HappyPath(t *testing.T) {
-	s, err := NewStaticKeyStoreE(map[string][]byte{"k1": testKey(32, 1)}, "k1")
+func TestNewStaticKeyStore_HappyPath(t *testing.T) {
+	s, err := NewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 	if err != nil {
-		t.Fatalf("NewStaticKeyStoreE: %v", err)
+		t.Fatalf("NewStaticKeyStore: %v", err)
 	}
 	if id, _ := s.CurrentKeyID(); id != "k1" {
 		t.Errorf("currentID = %q, want k1", id)
 	}
 }
 
-func TestNewStaticKeyStoreE_ErrorOnEmptyKeys(t *testing.T) {
-	_, err := NewStaticKeyStoreE(map[string][]byte{}, "k1")
+func TestNewStaticKeyStore_ErrorOnEmptyKeys(t *testing.T) {
+	_, err := NewStaticKeyStore(map[string][]byte{}, "k1")
 	if err == nil {
 		t.Fatal("expected error for empty keys map")
 	}
 }
 
-func TestNewStaticKeyStoreE_ErrorOnMissingCurrentID(t *testing.T) {
-	_, err := NewStaticKeyStoreE(map[string][]byte{"k1": testKey(32, 1)}, "secret-token")
+func TestNewStaticKeyStore_ErrorOnMissingCurrentID(t *testing.T) {
+	_, err := NewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "secret-token")
 	if err == nil {
 		t.Fatal("expected error for missing currentID")
 	}
@@ -128,8 +128,8 @@ func TestNewStaticKeyStoreE_ErrorOnMissingCurrentID(t *testing.T) {
 	}
 }
 
-func TestNewStaticKeyStoreE_ErrorOnShortKey(t *testing.T) {
-	_, err := NewStaticKeyStoreE(map[string][]byte{"secret-token": testKey(16, 1)}, "secret-token")
+func TestNewStaticKeyStore_ErrorOnShortKey(t *testing.T) {
+	_, err := NewStaticKeyStore(map[string][]byte{"secret-token": testKey(16, 1)}, "secret-token")
 	if err == nil {
 		t.Fatal("expected error for short key")
 	}
@@ -141,7 +141,7 @@ func TestNewStaticKeyStoreE_ErrorOnShortKey(t *testing.T) {
 	}
 }
 
-func TestNewStaticKeyStoreE_ErrorOnInvalidKeyID(t *testing.T) {
+func TestNewStaticKeyStore_ErrorOnInvalidKeyID(t *testing.T) {
 	tests := []struct {
 		name      string
 		keys      map[string][]byte
@@ -158,7 +158,7 @@ func TestNewStaticKeyStoreE_ErrorOnInvalidKeyID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewStaticKeyStoreE(tt.keys, tt.currentID)
+			_, err := NewStaticKeyStore(tt.keys, tt.currentID)
 			if err == nil {
 				t.Fatal("expected error for invalid key ID")
 			}
@@ -172,8 +172,8 @@ func TestNewStaticKeyStoreE_ErrorOnInvalidKeyID(t *testing.T) {
 	}
 }
 
-func TestNewStaticKeyStoreE_ErrorOnInvalidNonCurrentKeyID(t *testing.T) {
-	_, err := NewStaticKeyStoreE(map[string][]byte{
+func TestNewStaticKeyStore_ErrorOnInvalidNonCurrentKeyID(t *testing.T) {
+	_, err := NewStaticKeyStore(map[string][]byte{
 		"k1":       testKey(32, 1),
 		"k2,other": testKey(32, 2),
 	}, "k1")
@@ -218,7 +218,7 @@ func TestStaticKeyStore_NilReceiverMethodsFailClosed(t *testing.T) {
 }
 
 func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
-	store := NewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
+	store := MustNewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)

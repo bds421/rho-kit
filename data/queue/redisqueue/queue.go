@@ -716,22 +716,32 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	defer bgCancel()
 
-	bgWG := q.startBackgroundLoops(bgCtx, queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
+	// processCtx is what the main Process loop and recovery operations run
+	// under. A permanent heartbeat failure cancels it so the local consumer
+	// stops pulling new work the moment a peer reaper is poised to reclaim
+	// our processing list — preventing duplicate dispatch.
+	processCtx, processCancel := context.WithCancel(ctx)
+	defer processCancel()
+
+	bgWG := q.startBackgroundLoops(bgCtx, processCancel, queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
 	defer bgWG.Wait()
 
-	redis.RunWithBackoff(ctx, q.logger, "queue processor", func(ctx context.Context) error {
+	redis.RunWithBackoff(processCtx, q.logger, "queue processor", func(ctx context.Context) error {
 		return q.processOnce(ctx, queue, processingQ, deadQ, handler)
 	})
 }
 
 // startBackgroundLoops launches the heartbeat refresh goroutine and (when
 // recovery is enabled) the dead-consumer reaper goroutine. Both stop when
-// ctx is cancelled. Returns a WaitGroup so Process can wait for them on
-// shutdown — the heartbeat key is intentionally NOT deleted at shutdown so
-// that any in-flight reclaim by a peer fails closed (peer sees the key still
-// alive, defers deletion of the processing list to the next reaper pass).
+// ctx is cancelled. The cancelProcess callback is invoked when the
+// heartbeat permanently fails — cancelling the local Process loop avoids
+// double-dispatch when a peer reaper is about to reclaim our list.
+// Returns a WaitGroup so Process can wait for them on shutdown — the
+// heartbeat key is intentionally NOT deleted at shutdown so that any
+// in-flight reclaim by a peer fails closed.
 func (q *Queue) startBackgroundLoops(
 	ctx context.Context,
+	cancelProcess context.CancelFunc,
 	queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ string,
 	handler Handler,
 ) *sync.WaitGroup {
@@ -740,7 +750,7 @@ func (q *Queue) startBackgroundLoops(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		q.heartbeatLoop(ctx, heartbeatKey)
+		q.heartbeatLoop(ctx, heartbeatKey, cancelProcess)
 	}()
 
 	if q.recoveryEnabled {

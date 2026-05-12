@@ -96,13 +96,18 @@ func (p *workerPool) submit(task *asyncTask, policy OnFullPolicy, pubCtx context
 			slog.String("event", task.eventName),
 		)
 		releaseTask(task)
-		return false, nil
+		// Surface the shutdown to OnFullError publishers; OnFullDrop /
+		// OnFullBlock policies suppress this in dispatchAsync.
+		return false, ErrStopped
 	}
 
 	// Use recover to handle the tiny race window between stopped check and channel close.
+	// Surface ErrStopped to OnFullError callers so a shutdown-window submit is
+	// not silently swallowed.
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
+			err = ErrStopped
 			if p.metrics != nil {
 				p.metrics.dropped.Inc()
 			}

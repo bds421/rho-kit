@@ -105,19 +105,24 @@ func (m Message) Clone() Message {
 	return m
 }
 
-// WithHeader returns a copy of the message with the header added.
-// The original message is not modified (immutability).
-// Panics if key or value contains null bytes, newlines, or carriage returns.
-func (m Message) WithHeader(key, value string) Message {
-	if err := ValidateHeaders(map[string]string{key: value}); err != nil {
-		panic("redisstream: message header is invalid")
+// WithHeader returns a copy of the message with the header added. The
+// original message is not modified (immutability). Returns
+// ErrInvalidHeader when key or value contains characters that cannot
+// safely round-trip through Redis Streams or transport bridges (null
+// bytes, newlines, carriage returns, non-UTF-8, oversized).
+//
+// Callers forwarding header values from request input must handle the
+// error rather than crash the request goroutine.
+func (m Message) WithHeader(key, value string) (Message, error) {
+	if err := validateHeader(key, value); err != nil {
+		return Message{}, err
 	}
 	clone := m.Clone()
 	if clone.Headers == nil {
 		clone.Headers = make(map[string]string, 1)
 	}
 	clone.Headers[key] = value
-	return clone
+	return clone, nil
 }
 
 // ValidateMessage rejects stream messages that cannot safely round-trip through

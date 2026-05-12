@@ -121,10 +121,10 @@ func TestWithBufferedFinalDrainTimeout_PanicsOnNonPositive(t *testing.T) {
 		t.Run(d.String(), func(t *testing.T) {
 			defer func() {
 				if r := recover(); r == nil {
-					t.Fatal("expected WithBufferedFinalDrainTimeout to panic")
+					t.Fatal("expected WithFinalDrainTimeout to panic")
 				}
 			}()
-			WithBufferedFinalDrainTimeout(d)
+			WithFinalDrainTimeout(d)
 		})
 	}
 }
@@ -133,7 +133,7 @@ func TestWithBufferedMaxSize_PanicDoesNotReflectValue(t *testing.T) {
 	defer func() {
 		rec := recover()
 		if rec == nil {
-			t.Fatal("expected WithBufferedMaxSize to panic")
+			t.Fatal("expected WithMaxSize to panic")
 		}
 		msg, ok := rec.(string)
 		if !ok {
@@ -143,19 +143,19 @@ func TestWithBufferedMaxSize_PanicDoesNotReflectValue(t *testing.T) {
 			t.Fatalf("panic leaked invalid size: %q", msg)
 		}
 	}()
-	WithBufferedMaxSize(-1)
+	WithMaxSize(-1)
 }
 
-// fakeConnector / fakeMessagePublisher are the minimum implementations needed
+// fakeConnector / fakePublisher are the minimum implementations needed
 // to exercise NewBufferedPublisher's nil-dependency guards.
 type fakeConnector struct{ healthy bool }
 
-func (f *fakeConnector) Healthy() bool { return f.healthy }
-func (f *fakeConnector) Close() error  { return nil }
+func (f *fakeConnector) Healthy() bool                 { return f.healthy }
+func (f *fakeConnector) Stop(context.Context) error    { return nil }
 
-type fakeMessagePublisher struct{}
+type noopPublisher struct{}
 
-func (fakeMessagePublisher) Publish(_ context.Context, _, _ string, _ Message) error {
+func (noopPublisher) Publish(_ context.Context, _, _ string, _ Message) error {
 	return nil
 }
 
@@ -174,7 +174,7 @@ func TestNewBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	NewBufferedPublisher(fakeMessagePublisher{}, nil, slog.Default())
+	NewBufferedPublisher(noopPublisher{}, nil, slog.Default())
 }
 
 func TestNewBufferedPublisher_PanicsOnNilOption(t *testing.T) {
@@ -183,7 +183,7 @@ func TestNewBufferedPublisher_PanicsOnNilOption(t *testing.T) {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	NewBufferedPublisher(fakeMessagePublisher{}, &fakeConnector{healthy: true}, slog.Default(), nil)
+	NewBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default(), nil)
 }
 
 func TestNewBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
@@ -193,15 +193,15 @@ func TestNewBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
 			t.Fatal("expected panic when no state file is configured, got none")
 		}
 	}()
-	NewBufferedPublisher(fakeMessagePublisher{}, &fakeConnector{healthy: true}, slog.Default())
+	NewBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default())
 }
 
 func TestNewBufferedPublisher_WithStateFileOK(t *testing.T) {
 	dir := t.TempDir()
 	pub := NewBufferedPublisher(
-		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.Default(),
-		WithBufferedStateFile(dir+"/buf.json"),
+		WithStateFile(dir+"/buf.json"),
 	)
 	if pub == nil {
 		t.Fatal("expected non-nil publisher")
@@ -210,7 +210,7 @@ func TestNewBufferedPublisher_WithStateFileOK(t *testing.T) {
 
 func TestNewBufferedPublisher_EphemeralOptOut(t *testing.T) {
 	pub := NewBufferedPublisher(
-		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.Default(),
 		WithEphemeralBuffer(),
 	)
@@ -249,9 +249,9 @@ func TestNewBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 		}
 	}()
 	NewBufferedPublisher(
-		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile(stateFile),
+		WithStateFile(stateFile),
 	)
 }
 
@@ -266,9 +266,9 @@ func TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption(t *testing.T)
 	}
 
 	pub := NewBufferedPublisher(
-		fakeMessagePublisher{}, &fakeConnector{healthy: true},
+		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile(stateFile),
+		WithStateFile(stateFile),
 		WithLossyStateRecovery(),
 	)
 	if pub == nil {
@@ -406,7 +406,7 @@ func TestBufferedPublisher_PublishFailureBuffers(t *testing.T) {
 
 func TestBufferedPublisher_BufferFull(t *testing.T) {
 	fp := &fakePublisher{}
-	pub := testBufferedPublisher(fp, false, WithBufferedMaxSize(2))
+	pub := testBufferedPublisher(fp, false, WithMaxSize(2))
 
 	msg1, _ := NewMessage("test.event", "m1")
 	msg2, _ := NewMessage("test.event", "m2")
@@ -431,7 +431,7 @@ func TestBufferedPublisher_BufferFull(t *testing.T) {
 func TestBufferedPublisher_MaxMessageBytesRejectsBeforeBuffering(t *testing.T) {
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, false,
-		WithBufferedMaxMessageBytes(32),
+		WithMaxMessageBytes(32),
 	)
 	msg := Message{
 		ID:      "msg-1",
@@ -466,8 +466,8 @@ func TestBufferedPublisher_MetricCallbacksRecoverOutsideLock(t *testing.T) {
 		},
 	}
 	pub = testBufferedPublisherWithHealthPtr(fp, &healthy,
-		WithBufferedMaxSize(1),
-		WithBufferedMetrics(metrics),
+		WithMaxSize(1),
+		WithMetrics(metrics),
 	)
 
 	msg1, _ := NewMessage("test.event", "m1")
@@ -580,7 +580,7 @@ func TestBufferedPublisherPersistence_SaveAndLoad(t *testing.T) {
 	stateFile := filepath.Join(dir, "buffered.json")
 
 	fp := &fakePublisher{}
-	pub := testBufferedPublisher(fp, false, WithBufferedStateFile(stateFile))
+	pub := testBufferedPublisher(fp, false, WithStateFile(stateFile))
 
 	// Buffer 2 messages — they should be persisted.
 	msg1, _ := NewMessage("test.event", "payload1")
@@ -599,7 +599,7 @@ func TestBufferedPublisherPersistence_SaveAndLoad(t *testing.T) {
 
 	// Create a new publisher from the same state file — simulates process restart.
 	fp2 := &fakePublisher{}
-	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, WithBufferedStateFile(stateFile))
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, WithStateFile(stateFile))
 	if err := pub2.load(); err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -624,7 +624,7 @@ func TestBufferedPublisherPersistence_LoadPreservesEmptyRoutingKey(t *testing.T)
 	stateFile := filepath.Join(dir, "buffered.json")
 
 	fp := &fakePublisher{}
-	pub := testBufferedPublisher(fp, false, WithBufferedStateFile(stateFile))
+	pub := testBufferedPublisher(fp, false, WithStateFile(stateFile))
 
 	msg, _ := NewMessage("test.event", "payload")
 	if err := pub.Publish(context.Background(), "fanout-exchange", "", msg); err != nil {
@@ -635,7 +635,7 @@ func TestBufferedPublisherPersistence_LoadPreservesEmptyRoutingKey(t *testing.T)
 	}
 
 	fp2 := &fakePublisher{}
-	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, WithBufferedStateFile(stateFile))
+	pub2 := newTestBufferedPublisher(fp2.publish, func() bool { return true }, WithStateFile(stateFile))
 	if err := pub2.load(); err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestBufferedPublisherPersistence_DrainClearsFile(t *testing.T) {
 
 	fp := &fakePublisher{}
 	var healthy atomic.Bool
-	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, WithBufferedStateFile(stateFile))
+	pub := testBufferedPublisherWithHealthPtr(fp, &healthy, WithStateFile(stateFile))
 
 	msg, _ := NewMessage("test.event", "payload")
 	_ = pub.Publish(context.Background(), "ex", "rk", msg)
@@ -679,7 +679,7 @@ func TestBufferedPublisherPersistence_DrainClearsFile(t *testing.T) {
 	}
 
 	// Reload from file — should be empty.
-	pub3 := newTestBufferedPublisher(fp.publish, func() bool { return true }, WithBufferedStateFile(stateFile))
+	pub3 := newTestBufferedPublisher(fp.publish, func() bool { return true }, WithStateFile(stateFile))
 	if err := pub3.load(); err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestBufferedPublisherLoad_NoStateFile_Noop(t *testing.T) {
 func TestBufferedPublisherLoad_MissingFile_ReturnsNilPending(t *testing.T) {
 	pub := newBufferedPublisher(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile(filepath.Join(t.TempDir(), "nonexistent.json")),
+		WithStateFile(filepath.Join(t.TempDir(), "nonexistent.json")),
 	)
 	err := pub.load()
 	if err != nil {
@@ -976,7 +976,7 @@ func TestBufferedPublisherLoad_SkipsInvalidMessages(t *testing.T) {
 	}
 	pub := newBufferedPublisher(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile(stateFile),
+		WithStateFile(stateFile),
 	)
 
 	if err := pub.load(); err != nil {
@@ -997,7 +997,7 @@ func TestBufferedPublisherLoad_CorruptFile_ReturnsError(t *testing.T) {
 
 	pub := newBufferedPublisher(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile(stateFile),
+		WithStateFile(stateFile),
 	)
 	err := pub.load()
 	if err == nil {
@@ -1015,7 +1015,7 @@ func TestBufferedPublisherSaveLocked_NoStateFile_Noop(t *testing.T) {
 func TestBufferedPublisherSaveLocked_InvalidPath_LogsError(t *testing.T) {
 	pub := newBufferedPublisher(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+		WithStateFile("/nonexistent-dir/subdir/buffered.json"),
 	)
 	pub.pending = []pendingMessage{{Exchange: "ex", RoutingKey: "rk"}}
 	if err := pub.saveLocked(); err == nil {
@@ -1031,7 +1031,7 @@ func TestBufferedPublisherLogsRedactRuntimeIdentifiers(t *testing.T) {
 			return errors.New("broker failed for tenant-secret-route")
 		},
 		func() bool { return true },
-		WithBufferedStateFile(filepath.Join(t.TempDir(), "buffered.json")),
+		WithStateFile(filepath.Join(t.TempDir(), "buffered.json")),
 	)
 	pub.logger = logger
 
@@ -1070,7 +1070,7 @@ func TestBufferedPublisherStateSaveLogRedactsPath(t *testing.T) {
 	stateFile := "/nonexistent-dir/tenant-secret-buffered.json"
 	pub := newBufferedPublisher(
 		slog.New(slog.NewTextHandler(&buf, nil)),
-		WithBufferedStateFile(stateFile),
+		WithStateFile(stateFile),
 	)
 	pub.pending = []pendingMessage{{Exchange: "ex", RoutingKey: "rk"}}
 
@@ -1137,7 +1137,7 @@ func TestBufferedPublisher_PersistFailureSurfacesError(t *testing.T) {
 	pub := newTestBufferedPublisher(
 		(&fakePublisher{}).publish,
 		func() bool { return false },
-		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+		WithStateFile("/nonexistent-dir/subdir/buffered.json"),
 	)
 
 	msg, _ := NewMessage("test.event", "payload")
@@ -1181,7 +1181,7 @@ func TestBufferedPublisher_LossyModeSwallowsPersistFailure(t *testing.T) {
 	pub := newTestBufferedPublisher(
 		(&fakePublisher{}).publish,
 		func() bool { return false },
-		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+		WithStateFile("/nonexistent-dir/subdir/buffered.json"),
 		WithLossyMode(),
 	)
 
@@ -1199,7 +1199,7 @@ func TestBufferedPublisher_PersistFailureAfterDirectPublishFail(t *testing.T) {
 	pub := newTestBufferedPublisher(
 		fp.publish,
 		func() bool { return true },
-		WithBufferedStateFile("/nonexistent-dir/subdir/buffered.json"),
+		WithStateFile("/nonexistent-dir/subdir/buffered.json"),
 	)
 
 	msg, _ := NewMessage("test.event", "payload")
@@ -1239,8 +1239,8 @@ func TestBufferedPublisherDrain_SaveErrorFiresHookAndLastSaveError(t *testing.T)
 	fp := &fakePublisher{}
 	healthy := &atomic.Bool{}
 	pub := testBufferedPublisherWithHealthPtr(fp, healthy,
-		WithBufferedStateFile(stateFile),
-		WithBufferedMetrics(metrics),
+		WithStateFile(stateFile),
+		WithMetrics(metrics),
 	)
 
 	// Buffer two messages while the broker is unhealthy. These calls

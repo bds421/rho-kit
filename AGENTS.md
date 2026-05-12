@@ -1,7 +1,7 @@
 # Kit — Go Service Toolkit
 
 **Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 67 Go modules at `/v2` path suffix)
-**Go:** 1.26+ | **License:** Proprietary
+**Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
 
@@ -67,6 +67,8 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 
 ## Package Decision Tree
 
+> **Import paths.** All packages are at `github.com/bds421/rho-kit/<table-path>/v2` (the `/v2` suffix is mandatory per Go module versioning).
+
 | I need to... | Use | Recipe |
 |---|---|---|
 | Bootstrap a service | `app` (Main, Builder, Infrastructure) | [bootstrap](docs/ai/bootstrap.md) |
@@ -82,14 +84,14 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Struct-tag config loading | `core/config` | [bootstrap](docs/ai/bootstrap.md) |
 | Explicit middleware chains | `httpx/middleware/stack` (Chain) | [http](docs/ai/http.md) |
 | Store/retrieve files | `infra/storage` + backend (s3/azure/gcs/sftp/local) | [storage](docs/ai/storage.md) |
-| Multi-disk file storage | `storage.Manager` | [storage](docs/ai/storage.md) |
-| Encrypt files at rest | `storage/encryption` | [storage](docs/ai/storage.md) |
-| Scan uploaded files for malware | `storagehttp/uploadsec` + `storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
-| Publish/consume AMQP messages | `messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
-| Publish/consume Redis Streams | `messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
+| Multi-disk file storage | `infra/storage` (Manager) | [storage](docs/ai/storage.md) |
+| Encrypt files at rest | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
+| Scan uploaded files for malware | `infra/storage/storagehttp/uploadsec` + `infra/storage/storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
+| Publish/consume AMQP messages | `infra/messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
+| Publish/consume Redis Streams | `infra/messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Buffered message delivery | `messaging.BufferedPublisher` | [messaging](docs/ai/messaging.md) |
 | Bound message size per route | `messaging.MessageSizeLimiter`, Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes` | [messaging](docs/ai/messaging.md) |
-| Cache data (single instance) | `cache.MemoryCache` | [utilities](docs/ai/utilities.md) |
+| Cache data (single instance) | `data/cache` (MemoryCache) | [utilities](docs/ai/utilities.md) |
 | Cache data (shared/distributed) | `data/cache/rediscache` | [redis](docs/ai/redis.md) |
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |
 | Task queue (single consumer) | `data/queue/redisqueue` | [redis](docs/ai/redis.md) |
@@ -108,6 +110,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Typed application errors | `core/apperror` | [utilities](docs/ai/utilities.md) |
 | Authorize requests (RBAC/ABAC) | `authz` | [http](docs/ai/http.md) |
 | Consistent structured logging | `observability/logattr` | [utilities](docs/ai/utilities.md) |
+| Outbound HTTP client (mTLS-aware, no resilience) | `httpx.NewHTTPClient` / `httpx.NewTracingHTTPClient` | [http](docs/ai/http.md) |
 | Resilient outbound HTTP calls | `httpx.NewResilientHTTPClient` | [http](docs/ai/http.md) |
 | Request-scoped logging | `httpx/middleware/logging.WithRequestLogger`, `httpx.Logger` | [http](docs/ai/http.md) |
 | Test HTTP handlers | `httpx/httpxtest` | [testing](docs/ai/testing.md) |
@@ -117,7 +120,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |
 | Test storage backends | `infra/storage/storagetest/v2` | [testing](docs/ai/testing.md) |
-| In-memory broker for unit tests | `messaging/membroker` | [testing](docs/ai/testing.md) |
+| In-memory broker for unit tests | `infra/messaging/membroker` | [testing](docs/ai/testing.md) |
 | Safe integer cast (no silent overflow) | `core/safecast` | [utilities](docs/ai/utilities.md) |
 | Cryptographically random strings (OTPs, tokens) | `core/randstr` | [utilities](docs/ai/utilities.md) |
 | Zeroizable secret type | `core/secret` | [utilities](docs/ai/utilities.md) |
@@ -131,7 +134,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Per-tenant cache scoping | `data/cache/tenant` | [redis](docs/ai/redis.md) |
 | Per-tenant idempotency scoping | `data/idempotency/tenant` | [redis](docs/ai/redis.md) |
 | Postgres advisory lock | `data/lock/pgadvisory` | [database](docs/ai/sqldb.md) |
-| MCP-compatible HTTP handlers | `httpx/mcp` | [http](docs/ai/http.md) |
+| MCP-compatible HTTP handlers | `httpx/mcp` (NewServer, Register[In,Out]) | [http](docs/ai/http.md) |
 | HMAC request signing | `httpx/sign`, `httpx/middleware/signedrequest` | [security](docs/ai/security.md) |
 | Safe URL helpers and redirects | `httpx/urlutil`, `httpx.SafeRedirect` | [http](docs/ai/http.md) |
 | HTTP request budget enforcement | `httpx/budget`, `httpx/middleware/budget` | [http](docs/ai/http.md) |
@@ -144,11 +147,32 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Go runtime metrics | `observability/runtimemetrics` | [observability](docs/ai/observability.md) |
 | SLO checker (latency, error/success rate) | `observability/slo` | [observability](docs/ai/observability.md) |
 | pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
-| Service health check binary | `cmd/kit-doctor`, `observability/health.RunHealthCheck` | [observability](docs/ai/observability.md) |
+| Service health check binary | `app.Main` `--health` flag (invokes `observability/health.RunHealthCheck`) | [observability](docs/ai/observability.md) |
+| Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
+| Tamper-evident audit log | `observability/auditlog` | [observability](docs/ai/observability.md) |
+| Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
+| RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |
+| OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
+| Run a gRPC service | `grpcx` (Server, RegisterServices) | [http](docs/ai/http.md) |
 | Scaffold a new service | `cmd/kit-new` (`-tenant` for tenant-aware Redis/cache/idempotency) | — |
+| Audit a service for security regressions | `cmd/kit-doctor` | [observability](docs/ai/observability.md) |
+| Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
 | Performance regression gate | `cmd/kit-bench-gate` | — |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
+| Transactional outbox (DB + broker) | `infra/outbox` | [messaging](docs/ai/messaging.md) |
+| Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
+| Run scheduled tasks (cron) | `runtime/cron` (Scheduler) | [utilities](docs/ai/utilities.md) |
+| Batched background workers | `runtime/batchworker` (Worker) | [utilities](docs/ai/utilities.md) |
+| In-process event bus (domain events) | `runtime/eventbus` (Bus, Publish, Subscribe) | [utilities](docs/ai/utilities.md) |
+| Temporal workflows | `runtime/temporal` | [utilities](docs/ai/utilities.md) |
+| Feature flags / runtime toggles | `flags` (Builder.WithFeatureFlags) | [utilities](docs/ai/utilities.md) |
+| Atomic file writes | `io/atomicfile` | [utilities](docs/ai/utilities.md) |
+| Progress-reporting readers | `io/progress` | [utilities](docs/ai/utilities.md) |
+| Mask PII for logs/exports (field/value masking) | `crypto/masking` | [security](docs/ai/security.md) |
+| ASVS control catalog | `security/asvs` | [security](docs/ai/security.md) |
+| mTLS identity (peer cert claims) | `security/mtlsidentity` | [security](docs/ai/security.md) |
+| CSRF helpers (token mint/verify) | `security/csrf` | [security](docs/ai/security.md) |
 
 ## Key Conventions
 
@@ -182,7 +206,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Never** hand-roll tenant-scoped Redis/cache/idempotency keys with a literal `tenant:` prefix — use `core/tenant.Key` or the tenant wrappers.
 - **Never** introduce a direct external Go dependency without updating `docs/audit/dependency-allowlist.txt` and passing `make check-dependency-allowlist`.
 - **Never** store `SSRFSafeTransport` long-term — the resolved IP may go stale. Create a new transport per request.
-- **Never** call `Lock.Acquire` twice without `Release` — the second acquire will return an error.
+- Always pair `Locker.Acquire` with `handle.Release` (or use `Locker.WithLock` to defer release). Re-Acquiring the same key returns a fresh handle; failing to release leaks the lock until TTL.
 - **Never** pass zero/negative values to `NewRateLimiter`, `NewKeyedRateLimiter`, `Timeout`, or `MaxBodySize` — they panic on misconfiguration.
 
 ## Keeping Docs in Sync

@@ -58,7 +58,7 @@ func runShutdownHooks(parent context.Context, hooks []func(context.Context), log
 			select {
 			case <-done:
 			case <-hookCtx.Done():
-				logger.Error("shutdown hook timed out", "hook_index", idx, redact.ErrorKey("cause", context.Cause(hookCtx)))
+				logger.Error("shutdown hook timed out", "hook_index", idx, slog.Any("cause", context.Cause(hookCtx)))
 			}
 		}(i, fn)
 	}
@@ -138,7 +138,7 @@ func (b *Builder) buildIntegrationModules() []Module {
 	}
 
 	if b.redisOpts != nil {
-		modules = append(modules, newRedisModule(b.redisOpts, b.redisConnOpts...))
+		modules = append(modules, newRedisModule(b.redisOpts, b.allowPlaintextRedis, b.redisConnOpts...))
 	}
 
 	if b.mqURL != "" {

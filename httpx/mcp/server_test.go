@@ -458,7 +458,11 @@ func newTestActionLogger(t *testing.T) (actionlog.Logger, *actionlogmemory.Store
 
 func withTenantHandler(next http.Handler, tenantID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := tenant.WithID(r.Context(), tenant.ID(tenantID))
+		ctx, err := tenant.WithID(r.Context(), tenant.ID(tenantID))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -153,7 +153,8 @@ func TestClient_TenantTargetingPropagates(t *testing.T) {
 	p.SetBool("rollout", true)
 	c, err := flags.New(uniqueName(t), p)
 	require.NoError(t, err)
-	ctx := tenant.WithID(context.Background(), tenant.ID("tenant-42"))
+	ctx, err := tenant.WithID(context.Background(), tenant.ID("tenant-42"))
+	require.NoError(t, err)
 	assert.True(t, c.Bool(ctx, "rollout", false))
 }
 

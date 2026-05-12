@@ -28,7 +28,6 @@ var kitFactoryExemptions = map[string]map[string]struct{}{
 		"github.com/bds421/rho-kit/httpx/v2/budget":                     {},
 		"github.com/bds421/rho-kit/httpx/v2/healthhttp":                 {},
 		"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults": {},
-		"github.com/bds421/rho-kit/httpx/v2/reqsign":                    {},
 		"github.com/bds421/rho-kit/httpx/v2/sign":                       {},
 		"github.com/bds421/rho-kit/observability/v2/health":             {},
 		"github.com/bds421/rho-kit/security/v2/jwtutil":                 {},

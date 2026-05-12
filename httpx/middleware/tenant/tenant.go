@@ -152,7 +152,12 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 					httpx.WriteError(w, http.StatusBadRequest, "tenant: invalid tenant ID")
 					return
 				}
-				r = r.WithContext(coretenant.WithID(r.Context(), id))
+				ctx, err := coretenant.WithID(r.Context(), id)
+				if err != nil {
+					httpx.WriteError(w, http.StatusConflict, "tenant: context already carries a different tenant ID")
+					return
+				}
+				r = r.WithContext(ctx)
 				next.ServeHTTP(w, r)
 				return
 			}

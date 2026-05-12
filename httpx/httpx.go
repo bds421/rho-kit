@@ -1,7 +1,6 @@
 package httpx
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -136,41 +136,56 @@ func NewHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...ClientO
 	}
 }
 
+// TracingClientOption configures the kit-tracing HTTP client. It accepts
+// either a kit-level [ClientOption] (e.g. [WithIdleConnTimeout]) via
+// [WithKitOption], or an OpenTelemetry transport option via [WithOTel].
+type TracingClientOption func(*tracingClientConfig)
+
+type tracingClientConfig struct {
+	kit  clientConfig
+	otel []otelhttp.Option
+}
+
+// WithKitOption wraps a kit [ClientOption] so it can be passed to
+// [NewTracingHTTPClient].
+func WithKitOption(opt ClientOption) TracingClientOption {
+	if opt == nil {
+		panic("httpx: WithKitOption requires a non-nil ClientOption")
+	}
+	return func(c *tracingClientConfig) { opt(&c.kit) }
+}
+
+// WithOTel wraps an [otelhttp.Option] so it can be passed to
+// [NewTracingHTTPClient].
+func WithOTel(opt otelhttp.Option) TracingClientOption {
+	if opt == nil {
+		panic("httpx: WithOTel requires a non-nil otelhttp.Option")
+	}
+	return func(c *tracingClientConfig) { c.otel = append(c.otel, opt) }
+}
+
 // NewTracingHTTPClient returns an *http.Client instrumented with OpenTelemetry
 // spans for outbound requests. It uses the same TLS setup as NewHTTPClient.
 //
-// Redirects are blocked by default. Use [NewTracingHTTPClientWithOptions]
-// with [WithFollowRedirects] when a bounded redirect chain is intentional.
-// otelhttp.Option values are passed through to the OTel transport wrapper.
-func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...otelhttp.Option) *http.Client {
+// Redirects are blocked by default. Pass [WithKitOption] paired with
+// [WithFollowRedirects] when a bounded redirect chain is intentional. Kit
+// options ([WithIdleConnTimeout], …) are forwarded via [WithKitOption], and
+// OpenTelemetry transport options via [WithOTel].
+func NewTracingHTTPClient(timeout time.Duration, tlsConfig *tls.Config, opts ...TracingClientOption) *http.Client {
 	if timeout <= 0 {
 		panic("httpx: NewTracingHTTPClient requires a positive timeout — pass an explicit upper bound to avoid hung requests")
 	}
-	return &http.Client{
-		Timeout:       timeout,
-		Transport:     otelhttp.NewTransport(newKitTransportWithLabel(tlsConfig, clientConfig{}, "httpx: NewTracingHTTPClient"), opts...),
-		CheckRedirect: redirectPolicyOrDefault(nil),
-	}
-}
-
-// NewTracingHTTPClientWithOptions is the variant of [NewTracingHTTPClient]
-// that accepts kit-level [ClientOption] values (e.g. [WithIdleConnTimeout])
-// alongside the OTel transport options.
-func NewTracingHTTPClientWithOptions(timeout time.Duration, tlsConfig *tls.Config, kitOpts []ClientOption, otelOpts ...otelhttp.Option) *http.Client {
-	if timeout <= 0 {
-		panic("httpx: NewTracingHTTPClientWithOptions requires a positive timeout — pass an explicit upper bound to avoid hung requests")
-	}
-	var cfg clientConfig
-	for _, opt := range kitOpts {
+	var cfg tracingClientConfig
+	for _, opt := range opts {
 		if opt == nil {
-			panic("httpx: NewTracingHTTPClientWithOptions kit option must not be nil")
+			panic("httpx: NewTracingHTTPClient option must not be nil")
 		}
 		opt(&cfg)
 	}
 	return &http.Client{
 		Timeout:       timeout,
-		Transport:     otelhttp.NewTransport(newKitTransportWithLabel(tlsConfig, cfg, "httpx: NewTracingHTTPClientWithOptions"), otelOpts...),
-		CheckRedirect: redirectPolicyOrDefault(cfg.checkRedirect),
+		Transport:     otelhttp.NewTransport(newKitTransportWithLabel(tlsConfig, cfg.kit, "httpx: NewTracingHTTPClient"), cfg.otel...),
+		CheckRedirect: redirectPolicyOrDefault(cfg.kit.checkRedirect),
 	}
 }
 
@@ -259,8 +274,9 @@ type APIError struct {
 	Code  string `json:"code"`
 }
 
-// WriteJSON writes a JSON response with the given status code.
-// If JSON encoding fails, it returns a 500 with a safe error body.
+// WriteJSON writes a JSON response with the given status code, using the
+// request-scoped logger from r.Context for write-failure reporting. If
+// JSON marshalling fails, it returns a 500 with a safe error body.
 //
 // Error responses (4xx/5xx) automatically include Cache-Control: no-store to
 // prevent CDNs or browsers from caching error states. Success responses do not
@@ -270,19 +286,17 @@ type APIError struct {
 // if marshalling fails, a 500 can still be sent since no bytes have been written.
 // For large paginated responses consider a streaming variant.
 //
-// Write failures are logged at Warn level. Use [WriteJSONCtx] when a
-// request context is available for request-scoped logging.
-func WriteJSON(w http.ResponseWriter, status int, v any) {
-	writeJSONInternal(w, status, v, slog.Default())
-}
-
-// WriteJSONCtx is like [WriteJSON] but uses the request-scoped logger from ctx.
-// Prefer this over WriteJSON inside HTTP handlers for proper log correlation.
-func WriteJSONCtx(ctx context.Context, w http.ResponseWriter, status int, v any) {
-	writeJSONInternal(w, status, v, Logger(ctx, slog.Default()))
-}
-
-func writeJSONInternal(w http.ResponseWriter, status int, v any, logger *slog.Logger) {
+// Returns the first error encountered (marshal failure or socket write
+// failure). The error is also logged at Warn level via the request-scoped
+// logger; most handlers can ignore the return value.
+//
+// r may be nil in tests or for handlers that have no request to scope on;
+// in that case [slog.Default] is used for write-failure logging.
+func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) error {
+	logger := slog.Default()
+	if r != nil {
+		logger = Logger(r.Context(), logger)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if status >= 400 {
 		w.Header().Set("Cache-Control", "no-store")
@@ -292,22 +306,26 @@ func writeJSONInternal(w http.ResponseWriter, status int, v any, logger *slog.Lo
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal error","code":"INTERNAL"}` + "\n"))
-		return
+		return err
 	}
 	w.WriteHeader(status)
 	if _, err = w.Write(buf); err != nil {
 		logger.Warn("httpx: response write failed", redact.Error(err))
-		return
+		return err
 	}
 	if _, err = w.Write([]byte("\n")); err != nil {
 		logger.Warn("httpx: response write failed", redact.Error(err))
+		return err
 	}
+	return nil
 }
 
 // WriteError writes a JSON error response with a machine-readable code
-// derived from the HTTP status.
+// derived from the HTTP status. Errors during the underlying write are
+// logged via the request-scoped logger; the result is discarded so handlers
+// that don't care about delivery can call this without ceremony.
 func WriteError(w http.ResponseWriter, status int, msg string) {
-	WriteJSON(w, status, APIError{Error: msg, Code: httpStatusToCode(status)})
+	_ = WriteJSON(w, nil, status, APIError{Error: msg, Code: httpStatusToCode(status)})
 }
 
 // ParseID extracts a uint "id" path parameter from the request.
@@ -391,28 +409,20 @@ func IsJSONContentType(value string) bool {
 	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
-// SetIfNotNil adds the dereferenced value to the map if the pointer is non-nil.
-// Used by Update methods to build partial-update maps from optional request fields.
-func SetIfNotNil[T any](m map[string]any, key string, val *T) {
-	if val != nil {
-		m[key] = *val
-	}
-}
-
 func httpStatusToCode(status int) string {
 	switch status {
 	case http.StatusBadRequest:
-		return "VALIDATION"
+		return string(apperror.CodeValidation)
 	case http.StatusUnauthorized:
-		return "UNAUTHORIZED"
+		return string(apperror.CodeAuthRequired)
 	case http.StatusForbidden:
-		return "FORBIDDEN"
+		return string(apperror.CodeForbidden)
 	case http.StatusNotFound:
-		return "NOT_FOUND"
+		return string(apperror.CodeNotFound)
 	case http.StatusMethodNotAllowed:
 		return "METHOD_NOT_ALLOWED"
 	case http.StatusConflict:
-		return "CONFLICT"
+		return string(apperror.CodeConflict)
 	case http.StatusRequestTimeout:
 		return "REQUEST_TIMEOUT"
 	case http.StatusRequestEntityTooLarge:
@@ -420,13 +430,13 @@ func httpStatusToCode(status int) string {
 	case http.StatusUnsupportedMediaType:
 		return "UNSUPPORTED_MEDIA_TYPE"
 	case http.StatusUnprocessableEntity:
-		return "UNPROCESSABLE_ENTITY"
+		return string(apperror.CodePermanent)
 	case http.StatusTooManyRequests:
-		return "RATE_LIMITED"
+		return string(apperror.CodeRateLimit)
 	case http.StatusBadGateway:
 		return "BAD_GATEWAY"
 	case http.StatusServiceUnavailable:
-		return "SERVICE_UNAVAILABLE"
+		return string(apperror.CodeUnavailable)
 	default:
 		return "INTERNAL"
 	}

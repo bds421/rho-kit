@@ -1,5 +1,5 @@
 // Package membroker provides an in-memory message broker for unit tests.
-// It implements the messaging.MessagePublisher interface and provides
+// It implements the messaging.Publisher interface and provides
 // subscribe/dispatch capabilities without requiring a real RabbitMQ instance.
 package membroker
 
@@ -24,7 +24,7 @@ type subscription struct {
 }
 
 // Broker is an in-memory message broker for testing. It implements
-// messaging.MessagePublisher and provides subscribe/drain capabilities
+// messaging.Publisher and provides subscribe/drain capabilities
 // for synchronous test-driven message processing.
 type Broker struct {
 	mu            sync.Mutex
@@ -93,7 +93,7 @@ func (b *Broker) ready() error {
 }
 
 // Publish stores a message and dispatches it to matching subscribers.
-// Implements messaging.MessagePublisher.
+// Implements messaging.Publisher.
 func (b *Broker) Publish(ctx context.Context, exchange, routingKey string, msg messaging.Message) error {
 	if err := b.ready(); err != nil {
 		return err

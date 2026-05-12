@@ -122,10 +122,10 @@ func WriteValidationError(w http.ResponseWriter, logger *slog.Logger, err error)
 		Fields []apperror.FieldError `json:"fields"`
 	}{
 		Error:  ve.Error(),
-		Code:   "VALIDATION",
+		Code:   string(apperror.CodeValidation),
 		Fields: ve.Fields,
 	}
-	WriteJSON(w, http.StatusBadRequest, resp)
+	_ = WriteJSON(w, nil, http.StatusBadRequest, resp)
 }
 
 // WriteServiceProblem is the RFC 7807 sibling of [WriteServiceError].

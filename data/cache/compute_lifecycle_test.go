@@ -72,6 +72,59 @@ func TestComputeCache_GetOrComputeAfterClose(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCacheClosed)
 }
 
+func TestComputeCache_CloseDrainsForegroundCompute(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "fgclose:")
+	require.NoError(t, err)
+
+	started := make(chan struct{})
+	fnDone := make(chan struct{})
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		close(started)
+		<-ctx.Done()
+		close(fnDone)
+		return "", 0, ctx.Err()
+	}
+
+	// Start a foreground compute on a Background ctx so the caller has
+	// no deadline of its own — only Close can unblock it.
+	callerDone := make(chan error, 1)
+	go func() {
+		_, err := cc.GetOrCompute(context.Background(), "k", fn)
+		callerDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("foreground compute did not start")
+	}
+
+	// Close must cancel the foreground compute and drain the goroutine.
+	closed := make(chan error, 1)
+	go func() { closed <- cc.Close() }()
+
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return; foreground compute was not drained")
+	}
+
+	select {
+	case <-fnDone:
+	case <-time.After(time.Second):
+		t.Fatal("foreground fn did not exit after Close")
+	}
+
+	select {
+	case err := <-callerDone:
+		require.Error(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("foreground caller did not return after Close")
+	}
+}
+
 func TestComputeCache_WithRefreshTimeout(t *testing.T) {
 	backend := newTestBackend(t)
 	cc, err := NewComputeCache[string](backend, "rto:",

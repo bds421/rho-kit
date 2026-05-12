@@ -58,46 +58,46 @@ func zeroBytes(b []byte) {
 	clear(b)
 }
 
-// SealBytes encrypts plaintext using AES-256-GCM and returns
+// EncryptBytes encrypts plaintext using AES-256-GCM and returns
 // "iv ‖ ciphertext ‖ tag". A fresh random IV is generated per call.
-// Equivalent to [SealBytesAAD] with nil AAD.
-func SealBytes(a AEAD, plaintext []byte) ([]byte, error) {
-	return SealBytesAAD(a, plaintext, nil)
+// Equivalent to [EncryptBytesAAD] with nil AAD.
+func EncryptBytes(a AEAD, plaintext []byte) ([]byte, error) {
+	return EncryptBytesAAD(a, plaintext, nil)
 }
 
-// SealBytesAAD encrypts plaintext with associated data (AAD). The
+// EncryptBytesAAD encrypts plaintext with associated data (AAD). The
 // AAD is authenticated but not encrypted — it must be supplied
-// identically at Open time. Use this to bind ciphertext to a stable
+// identically at Decrypt time. Use this to bind ciphertext to a stable
 // out-of-band identifier (row primary key, tenant ID, file path) so
 // a ciphertext copy-pasted into a different row fails authentication.
-func SealBytesAAD(a AEAD, plaintext, aad []byte) ([]byte, error) {
+func EncryptBytesAAD(a AEAD, plaintext, aad []byte) ([]byte, error) {
 	if a == nil {
 		return nil, ErrInvalidAEAD
 	}
 	out, err := a.Encrypt(plaintext, aad)
 	if err != nil {
-		return nil, fmt.Errorf("encrypt: seal: %w", err)
+		return nil, fmt.Errorf("encrypt: encrypt bytes: %w", err)
 	}
 	return out, nil
 }
 
-// OpenBytes decrypts ciphertext produced by [SealBytes].
-// Equivalent to [OpenBytesAAD] with nil AAD.
-func OpenBytes(a AEAD, ciphertext []byte) ([]byte, error) {
-	return OpenBytesAAD(a, ciphertext, nil)
+// DecryptBytes decrypts ciphertext produced by [EncryptBytes].
+// Equivalent to [DecryptBytesAAD] with nil AAD.
+func DecryptBytes(a AEAD, ciphertext []byte) ([]byte, error) {
+	return DecryptBytesAAD(a, ciphertext, nil)
 }
 
-// OpenBytesAAD decrypts ciphertext produced by [SealBytesAAD]. The
-// AAD must match the value supplied at Seal time exactly; mismatch
-// produces an authentication error indistinguishable from a tampered
-// ciphertext.
-func OpenBytesAAD(a AEAD, ciphertext, aad []byte) ([]byte, error) {
+// DecryptBytesAAD decrypts ciphertext produced by [EncryptBytesAAD].
+// The AAD must match the value supplied at Encrypt time exactly;
+// mismatch produces an authentication error indistinguishable from
+// a tampered ciphertext.
+func DecryptBytesAAD(a AEAD, ciphertext, aad []byte) ([]byte, error) {
 	if a == nil {
 		return nil, ErrInvalidAEAD
 	}
 	plaintext, err := a.Decrypt(ciphertext, aad)
 	if err != nil {
-		return nil, fmt.Errorf("encrypt: decrypt: %w", err)
+		return nil, fmt.Errorf("encrypt: decrypt bytes: %w", err)
 	}
 	return plaintext, nil
 }

@@ -175,6 +175,38 @@ func TestHoldLeadership_LossCancelsAndWaitsForCallback(t *testing.T) {
 	require.True(t, callbackExited.Load(), "leader work must drain before retry")
 }
 
+func TestHoldLeadership_CallbackDrainTimeoutReturnsDetached(t *testing.T) {
+	e := &Elector{
+		renewInterval:        10 * time.Millisecond,
+		callbackDrainTimeout: 20 * time.Millisecond,
+		logger:               slog.Default(),
+		key:                  "leader",
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false) // force renewal failure → cancel + await
+	stub := &stubAcquirer{handle: handle}
+
+	released := make(chan struct{})
+	err := runWithStub(t, e, stub, leaderelection.Callbacks{
+		OnAcquired: func(_ context.Context) {
+			// Intentionally ignore ctx to simulate buggy user code.
+			<-released
+		},
+	})
+	require.Error(t, err)
+	// Free the orphaned goroutine so the test doesn't leak.
+	close(released)
+}
+
+func TestWithCallbackDrainTimeout_PanicsOnNonPositive(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"zero":     func() { WithCallbackDrainTimeout(0) },
+		"negative": func() { WithCallbackDrainTimeout(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) { require.Panics(t, fn) })
+	}
+}
+
 func TestLeaderReleaseContextPreservesValuesAfterCancellation(t *testing.T) {
 	parent := context.WithValue(context.Background(), releaseContextKey{}, "trace-123")
 	ctx, cancel := context.WithCancel(parent)

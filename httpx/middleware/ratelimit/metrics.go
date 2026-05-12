@@ -32,12 +32,32 @@ type Metrics struct {
 	retryAfter *prometheus.HistogramVec
 }
 
-// NewMetrics creates and registers rate-limit metrics with the given
-// registerer. If reg is nil, prometheus.DefaultRegisterer is used. Repeated
-// calls reuse already-registered collectors on the same registry.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures rate-limit metrics construction.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for the rate-limit
+// metrics. When unset, [prometheus.DefaultRegisterer] is used.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("ratelimit: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers rate-limit metrics. Pass
+// [WithRegisterer] to use a non-default registry. Repeated calls reuse
+// already-registered collectors on the same registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("ratelimit: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
 	}
 	m := &Metrics{
 		decisions: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -54,8 +74,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Buckets:   []float64{1, 2, 5, 10, 30, 60, 300, 900, 3600},
 		}, []string{"limiter", "kind"}),
 	}
-	m.decisions = promutil.MustRegisterOrGet(reg, m.decisions)
-	m.retryAfter = promutil.MustRegisterOrGet(reg, m.retryAfter)
+	m.decisions = promutil.MustRegisterOrGet(cfg.registerer, m.decisions)
+	m.retryAfter = promutil.MustRegisterOrGet(cfg.registerer, m.retryAfter)
 	return m
 }
 

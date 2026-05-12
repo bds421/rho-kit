@@ -9,6 +9,8 @@ cmd/kit-doctor/kit-doctor
 cmd/kit-migrate/kit-migrate
 cmd/kit-new/kit-new
 cmd/kit-verify/kit-verify
+# build artifacts
+dist/
 
 # Workspace + review scratch state that must never be committed.
 go.work.backup
@@ -18,4 +20,3 @@ docs/release/rehearsals/*.log
 
 # Claude
 .claude/
-dist/

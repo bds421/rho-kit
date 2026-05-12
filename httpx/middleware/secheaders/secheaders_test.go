@@ -42,7 +42,7 @@ func TestDefaults_PlainHTTP(t *testing.T) {
 		{"Referrer-Policy", "strict-origin-when-cross-origin"},
 		{"Permissions-Policy", "geolocation=(), microphone=(), camera=()"},
 		{"Cache-Control", "no-store"},
-		{"Content-Security-Policy", "default-src 'none'"},
+		{"Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"},
 	}
 
 	for _, tt := range tests {

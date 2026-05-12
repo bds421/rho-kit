@@ -19,7 +19,7 @@ import (
 // to trigger a graceful shutdown of the service.
 func StartConsumers(
 	ctx context.Context,
-	c MessageConsumer,
+	c Consumer,
 	declared []Binding,
 	handlers map[string]Handler,
 	wg *sync.WaitGroup,

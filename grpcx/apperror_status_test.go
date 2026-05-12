@@ -22,7 +22,7 @@ func TestGRPCCode_MapsAppErrors(t *testing.T) {
 		{"conflict", apperror.NewConflict("duplicate entry"), codes.AlreadyExists},
 		{"permanent", apperror.NewPermanent("permanent error"), codes.FailedPrecondition},
 		{"auth required", apperror.NewAuthRequired("login required"), codes.Unauthenticated},
-		{"rate limit", apperror.NewRateLimit("too many requests", 0), codes.ResourceExhausted},
+		{"rate limit", apperror.NewRateLimit("too many requests"), codes.ResourceExhausted},
 		{"operation failed", apperror.NewOperationFailed("failed"), codes.Internal},
 		{"forbidden", apperror.NewForbidden("not allowed"), codes.PermissionDenied},
 		{"unavailable", apperror.NewUnavailable("service down"), codes.Unavailable},

@@ -54,7 +54,9 @@ func reqWithTenant(t *testing.T, id string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
 	if id != "" {
-		r = r.WithContext(coretenant.WithID(r.Context(), coretenant.ID(id)))
+		ctx, err := coretenant.WithID(r.Context(), coretenant.ID(id))
+		require.NoError(t, err)
+		r = r.WithContext(ctx)
 	}
 	return r
 }

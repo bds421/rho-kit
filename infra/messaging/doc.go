@@ -2,12 +2,13 @@
 // publishing and consuming. Backend implementations live in sub-packages:
 //
 //   - amqpbackend — RabbitMQ (AMQP 0-9-1) publisher, consumer, and topology
+//   - natsbackend — NATS JetStream publisher and consumer
 //   - redisbackend — Redis Streams publisher and consumer
 //   - membroker — in-memory broker for unit tests
 //
-// The root package defines [MessagePublisher], [MessageConsumer], [Handler],
-// [Message], [Delivery], [Binding], [Connector], and [BufferedPublisher] — the
-// types that application code depends on. Backend selection happens at wiring
+// The root package defines [Publisher], [Consumer], [Handler], [Message],
+// [Delivery], [Binding], [Connector], and [BufferedPublisher] — the types
+// that application code depends on. Backend selection happens at wiring
 // time (app.Builder or manual setup) and is invisible to handlers.
 //
 // Message metadata is a shared transport contract. Use [NewMessage] plus

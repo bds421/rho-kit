@@ -2,6 +2,7 @@ package signedrequest
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -565,7 +566,14 @@ func TestWithBodyMaxSize_PanicsOnNonPositive(t *testing.T) {
 	assert.Panics(t, func() { WithBodyMaxSize(-1) })
 }
 
-func TestVerify_RejectsOversizedBodyBeforeResolver(t *testing.T) {
+func TestVerify_RejectsOversizedBodyAfterResolver(t *testing.T) {
+	// The fix moves secret resolution before body buffering so an
+	// unauthenticated caller cannot force the server to hold up to
+	// bodyMaxSize bytes in memory per request. Body bytes are now
+	// streamed through a SHA-256 hasher (no full buffer until MAC
+	// passes), so the previous "resolver must not be called on
+	// oversize" invariant becomes "resolver is called early, body
+	// size still rejects, nonce store untouched on oversize".
 	store := NewMemoryNonceStore(10 * time.Minute)
 	resolverCalled := false
 	resolver := func(string) ([]byte, error) {
@@ -583,7 +591,7 @@ func TestVerify_RejectsOversizedBodyBeforeResolver(t *testing.T) {
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
 	assertJSONError(t, rr, "request entity too large")
-	assert.False(t, resolverCalled, "oversized unauthenticated bodies must not hit the key resolver")
+	assert.True(t, resolverCalled, "resolver runs before body buffering to bound memory amplification")
 	assert.Zero(t, store.Len(), "oversized bodies must not consume replay nonces")
 }
 
@@ -761,16 +769,16 @@ func TestMemoryNonceStore_Sweep(t *testing.T) {
 	s := NewMemoryNonceStore(time.Second)
 	s.now = func() time.Time { return now }
 
-	first, _ := s.SeenOrStore("a")
+	first, _ := s.SeenOrStore(context.Background(), "a")
 	require.True(t, first)
 
 	// Same instant → replay.
-	second, _ := s.SeenOrStore("a")
+	second, _ := s.SeenOrStore(context.Background(), "a")
 	require.False(t, second)
 
 	// Past TTL → first-time again.
 	now = now.Add(2 * time.Second)
-	third, _ := s.SeenOrStore("a")
+	third, _ := s.SeenOrStore(context.Background(), "a")
 	assert.True(t, third)
 }
 
@@ -780,7 +788,7 @@ func TestMemoryNonceStore_InvalidReceiverReturnsError(t *testing.T) {
 		"zero": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ok, err := store.SeenOrStore("nonce")
+			ok, err := store.SeenOrStore(context.Background(), "nonce")
 			assert.False(t, ok)
 			assert.ErrorIs(t, err, ErrInvalidNonceStore)
 			assert.Zero(t, store.Len())
@@ -799,7 +807,7 @@ func TestMemoryNonceStore_RejectsUnsafeNonce(t *testing.T) {
 		string([]byte{'n', 'o', 0xff}),
 	} {
 		t.Run("invalid", func(t *testing.T) {
-			ok, err := store.SeenOrStore(nonce)
+			ok, err := store.SeenOrStore(context.Background(), nonce)
 			assert.False(t, ok)
 			assert.ErrorIs(t, err, ErrNonceInvalid)
 		})
@@ -814,7 +822,7 @@ func TestMemoryNonceStore_WithSweepEvery_Immediate(t *testing.T) {
 	s := NewMemoryNonceStore(time.Second, WithSweepEvery(1))
 	s.now = func() time.Time { return now }
 
-	first, _ := s.SeenOrStore("a")
+	first, _ := s.SeenOrStore(context.Background(), "a")
 	require.True(t, first)
 	require.Equal(t, 1, s.Len())
 
@@ -822,7 +830,7 @@ func TestMemoryNonceStore_WithSweepEvery_Immediate(t *testing.T) {
 	// the sweep runs on this call and "a" is reclaimed before the
 	// probe of "b" inserts.
 	now = now.Add(2 * time.Second)
-	first, _ = s.SeenOrStore("b")
+	first, _ = s.SeenOrStore(context.Background(), "b")
 	require.True(t, first)
 	assert.Equal(t, 1, s.Len(), "stale 'a' must be swept; only 'b' remains")
 }
@@ -837,7 +845,7 @@ func TestMemoryNonceStore_WithSweepEvery_Deferred(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		nonce := "n-" + string(rune('a'+i))
-		ok, _ := s.SeenOrStore(nonce)
+		ok, _ := s.SeenOrStore(context.Background(), nonce)
 		require.True(t, ok)
 	}
 	require.Equal(t, 10, s.Len())
@@ -845,7 +853,7 @@ func TestMemoryNonceStore_WithSweepEvery_Deferred(t *testing.T) {
 	// Advance past TTL. The sweep cadence is far higher than the
 	// number of calls so far — the map must still hold all entries.
 	now = now.Add(time.Hour)
-	ok, _ := s.SeenOrStore("post-ttl")
+	ok, _ := s.SeenOrStore(context.Background(), "post-ttl")
 	require.True(t, ok)
 	assert.Equal(t, 11, s.Len(),
 		"sweep is deferred; stale entries persist until cadence is reached")

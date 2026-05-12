@@ -49,7 +49,7 @@ func TestNewDefaultsAndCopiesContext(t *testing.T) {
 		t.Fatal("unexpected Vault request")
 	}))
 	aad := []byte("tenant=acme")
-	k, err := New(client, Config{
+	k, err := NewKEK(client, Config{
 		KeyName: "orders-dek",
 		Context: aad,
 	})
@@ -86,8 +86,8 @@ func TestNewRejectsUnsafePaths(t *testing.T) {
 	}
 
 	for _, cfg := range cases {
-		if _, err := New(client, cfg); err == nil {
-			t.Fatalf("New(%+v) expected error", cfg)
+		if _, err := NewKEK(client, cfg); err == nil {
+			t.Fatalf("NewKEK(%+v) expected error", cfg)
 		}
 	}
 }
@@ -114,7 +114,7 @@ func TestKEKInvalidStateReturnsErrors(t *testing.T) {
 }
 
 func TestKEKRejectsNilContextAndUnknownKey(t *testing.T) {
-	k, err := New(newTestClient(t, http.NotFoundHandler()), Config{KeyName: "orders"})
+	k, err := NewKEK(newTestClient(t, http.NotFoundHandler()), Config{KeyName: "orders"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestKEKRejectsNilContextAndUnknownKey(t *testing.T) {
 
 func TestEnvelopeRoundTripThroughVaultTransit(t *testing.T) {
 	client := newTestClient(t, newTransitHandler(t, "tenant=acme"))
-	k, err := New(client, Config{
+	k, err := NewKEK(client, Config{
 		MountPath:  "platform/transit",
 		KeyName:    "orders",
 		Context:    []byte("tenant=acme"),
@@ -149,7 +149,7 @@ func TestEnvelopeRoundTripThroughVaultTransit(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	enc := envelope.New(k)
+	enc := envelope.NewEncryptor(k)
 	blob, err := enc.Encrypt(context.Background(), []byte("secret payload"), []byte("row=42"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)

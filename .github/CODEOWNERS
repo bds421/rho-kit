@@ -14,3 +14,7 @@ tools/check-publishable.sh @bds421/security
 tools/drop-internal-replaces.sh @bds421/security
 tools/plan-module-release.sh @bds421/security
 tools/rehearse-v2-release.sh @bds421/security
+
+# NOTE: This file is non-functional until the @bds421/security team exists in
+# the GitHub org AND branch protection on main requires CODEOWNERS reviews.
+# Verify both before tagging v2.0.0.

@@ -2,6 +2,7 @@ package redisbackend
 
 import (
 	"context"
+	"fmt"
 
 	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
@@ -9,7 +10,7 @@ import (
 
 const headerRoutingKey = "routing_key"
 
-// Publisher wraps a stream.Producer to satisfy messaging.MessagePublisher.
+// Publisher wraps a stream.Producer to satisfy messaging.Publisher.
 // The exchange parameter maps to the Redis stream name; routingKey is stored
 // as a message header but is otherwise unused by Redis Streams.
 type Publisher struct {
@@ -94,7 +95,11 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	sm := toStreamMessage(msg)
 	if routingKey != "" {
-		sm = sm.WithHeader(headerRoutingKey, routingKey)
+		var err error
+		sm, err = sm.WithHeader(headerRoutingKey, routingKey)
+		if err != nil {
+			return fmt.Errorf("redisbackend: attach routing-key header: %w", err)
+		}
 	}
 	_, err := p.producer.Publish(ctx, exchange, sm)
 	return err

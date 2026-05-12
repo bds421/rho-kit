@@ -1,5 +1,5 @@
 // Package natsbackend implements a NATS JetStream-backed
-// [messaging.MessagePublisher] and consumer.
+// [messaging.Publisher] and consumer.
 //
 // JetStream gives the kit:
 //
@@ -370,15 +370,27 @@ func (c *Connection) Healthy() bool {
 	return c.nc != nil && c.nc.IsConnected()
 }
 
-// Close drains pending publishes and closes the connection. Drain is
-// best-effort with a [closeDrainTimeout] deadline — if the drain does not
-// finish in time we force-close so an unhealthy broker cannot stall
-// shutdown.
-func (c *Connection) Close() error {
+// Stop drains pending publishes and closes the connection. Drain is
+// best-effort: the ctx deadline (or [closeDrainTimeout] when ctx has
+// none) bounds the wait — if drain does not finish in time we
+// force-close so an unhealthy broker cannot stall shutdown.
+func (c *Connection) Stop(ctx context.Context) error {
 	if c == nil || c.nc == nil {
 		return nil
 	}
-	return drainWithTimeout(c.nc.Drain, c.nc.Close, closeDrainTimeout)
+	timeout := closeDrainTimeout
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			c.nc.Close()
+			return err
+		}
+		if dl, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(dl); remaining > 0 && remaining < timeout {
+				timeout = remaining
+			}
+		}
+	}
+	return drainWithTimeout(c.nc.Drain, c.nc.Close, timeout)
 }
 
 // drainWithTimeout runs drain in a goroutine and force-closes via close if
@@ -546,7 +558,7 @@ func (p *Publisher) ready() error {
 	return nil
 }
 
-// Publish satisfies [messaging.MessagePublisher].
+// Publish satisfies [messaging.Publisher].
 //
 // The NATS subject is the sanitized form of `exchange + "." + routingKey`
 // (or just the sanitized `exchange` when routingKey is empty). Dots

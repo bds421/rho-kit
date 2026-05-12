@@ -5,6 +5,7 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -167,20 +168,15 @@ func WithDelayOverride(fn func(err error) time.Duration) Option {
 	return func(p *Policy) { p.DelayOverride = fn }
 }
 
-// WithJitter sets the jitter fraction. Clamped to [0, 1]: negative
-// values would produce negative delays (the underlying backoff library
-// silently clamps them to zero) and values >1 amplify the spread without
-// any documented benefit.
+// WithJitter sets the jitter fraction. Must be in [0, 1]; values outside
+// the range are panic-on-construction (matches WithFactor / WithMaxDelay).
+// Silent clamping was inconsistent with [Policy.Validate], which rejects
+// the same input on the struct-literal path.
 func WithJitter(f float64) Option {
-	return func(p *Policy) {
-		if f < 0 {
-			f = 0
-		}
-		if f > 1 {
-			f = 1
-		}
-		p.Jitter = f
+	if f < 0 || f > 1 {
+		panic("retry: WithJitter requires 0 <= f <= 1")
 	}
+	return func(p *Policy) { p.Jitter = f }
 }
 
 // WithStableReset enables stability detection: if the function runs for at
@@ -272,6 +268,15 @@ func Loop(ctx context.Context, logger *slog.Logger, component string, fn func(ct
 		start := time.Now()
 		err := callLoopFunc(fn, ctx)
 
+		// fn's err takes precedence over ctx.Err: if fn failed at the
+		// same instant ctx was cancelled, log the business error before
+		// exiting rather than silently swallowing it.
+		if err != nil && ctx.Err() != nil {
+			logger.Error(component+" stopped during shutdown",
+				"error", err,
+			)
+			return
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -412,10 +417,17 @@ func doWithPolicy(ctx context.Context, p Policy, fn func(ctx context.Context) er
 		start := time.Now()
 		err := fn(ctx)
 		if err == nil {
+			// fn succeeded — only surface a cancelled ctx if it
+			// fired after the successful return. Otherwise nil.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return nil
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		// fn returned a real error: it takes precedence over ctx.Err().
+		// Joining preserves both signals for callers that care to inspect.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(err, ctxErr)
 		}
 		if p.RetryIf != nil && !callRetryIf(slog.Default(), "retry", p.RetryIf, err) {
 			return err

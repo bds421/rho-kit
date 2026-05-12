@@ -32,7 +32,7 @@ func JSON[Req, Resp any](logger *slog.Logger, fn func(ctx context.Context, r *ht
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		WriteJSON(w, http.StatusOK, resp)
+		_ = WriteJSON(w, r, http.StatusOK, resp)
 	})
 }
 
@@ -45,7 +45,7 @@ func JSONNoBody[Resp any](logger *slog.Logger, fn func(ctx context.Context, r *h
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		WriteJSON(w, http.StatusOK, resp)
+		_ = WriteJSON(w, r, http.StatusOK, resp)
 	})
 }
 
@@ -67,7 +67,7 @@ func JSONStatus[Req, Resp any](logger *slog.Logger, fn func(ctx context.Context,
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		WriteJSON(w, status, resp)
+		_ = WriteJSON(w, r, status, resp)
 	})
 }
 
@@ -81,7 +81,7 @@ func JSONNoBodyStatus[Resp any](logger *slog.Logger, fn func(ctx context.Context
 			WriteServiceError(w, r, logger, err)
 			return
 		}
-		WriteJSON(w, status, resp)
+		_ = WriteJSON(w, r, status, resp)
 	})
 }
 

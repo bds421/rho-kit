@@ -36,7 +36,11 @@ app.New(...).
             },
         )
 
-        // Start consumers in background — infra.Consumer is pre-wired
+        // Start consumers in background — infra.Consumer is pre-wired.
+        // wg/shutdown are illustrative: wg coordinates the consumer goroutines
+        // and shutdown signals the runner ctx to cancel.
+        var wg sync.WaitGroup
+        shutdown := func() { /* cancel runner ctx */ }
         messaging.StartConsumers(ctx, infra.Consumer, bindings,
             map[string]messaging.Handler{
                 "order.created": handleOrderCreated,

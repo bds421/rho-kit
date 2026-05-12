@@ -87,17 +87,19 @@ func (e *ValidationError) ErrorCode() Code { return CodeValidation }
 func (e *ValidationError) Retryable() bool { return false }
 
 // ConflictError indicates a resource conflict (duplicate, version mismatch).
-// Retryable: true (assumes optimistic concurrency conflicts where retrying
-// with fresh state may succeed). For true duplicates (e.g., unique constraint
-// violations), consider using a non-retryable error or handling at the
-// application level.
+// Retryable defaults to false: most conflicts (unique-constraint violations,
+// state mismatches) will not succeed on retry without caller-side input
+// changes. Use [NewConflictRetryable] for optimistic-concurrency cases where
+// retrying with fresh state may succeed.
 type ConflictError struct {
 	Message string
+	// retryable carries the retry hint set by the constructor.
+	retryable bool
 }
 
 func (e *ConflictError) Error() string   { return e.Message }
 func (e *ConflictError) ErrorCode() Code { return CodeConflict }
-func (e *ConflictError) Retryable() bool { return true }
+func (e *ConflictError) Retryable() bool { return e.retryable }
 
 // PermanentError indicates a non-retryable failure.
 type PermanentError struct {
@@ -195,9 +197,18 @@ func NewFieldValidation(fields ...FieldError) error {
 	return &ValidationError{Fields: fields}
 }
 
-// NewConflict creates a ConflictError.
+// NewConflict creates a non-retryable ConflictError. Use this for duplicate-key
+// violations, immutable-state conflicts, and other failures where a retry
+// without input changes is guaranteed to fail again.
 func NewConflict(msg string) error {
 	return &ConflictError{Message: msg}
+}
+
+// NewConflictRetryable creates a retryable ConflictError. Use this for
+// optimistic-concurrency conflicts where re-reading state and retrying with
+// the fresh version may succeed (e.g. compare-and-swap on a version column).
+func NewConflictRetryable(msg string) error {
+	return &ConflictError{Message: msg, retryable: true}
 }
 
 // NewPermanent creates a non-retryable PermanentError.
@@ -220,9 +231,16 @@ func NewForbidden(msg string) error {
 	return &ForbiddenError{Message: msg}
 }
 
-// NewRateLimit creates a RateLimitError with the given retry-after duration.
-// Pass 0 for retryAfter if no specific retry window is known.
-func NewRateLimit(msg string, retryAfter time.Duration) error {
+// NewRateLimit creates a RateLimitError without a specific retry-after hint.
+// Use this when the rate limit is known but the cooldown window is not.
+func NewRateLimit(msg string) error {
+	return &RateLimitError{Message: msg}
+}
+
+// NewRateLimitWithRetryAfter creates a RateLimitError that surfaces a
+// retry-after hint to the caller. Transports map this to Retry-After-style
+// headers; the resilience/retry package honors it via WithDelayOverride.
+func NewRateLimitWithRetryAfter(msg string, retryAfter time.Duration) error {
 	return &RateLimitError{Message: msg, RetryAfter: retryAfter}
 }
 
@@ -350,51 +368,6 @@ func AsRateLimit(err error) (*RateLimitError, bool) {
 // AsNotFound extracts the *NotFoundError from the error chain.
 func AsNotFound(err error) (*NotFoundError, bool) {
 	var target *NotFoundError
-	if errors.As(err, &target) {
-		return target, true
-	}
-	return nil, false
-}
-
-// AsConflict extracts the *ConflictError from the error chain.
-func AsConflict(err error) (*ConflictError, bool) {
-	var target *ConflictError
-	if errors.As(err, &target) {
-		return target, true
-	}
-	return nil, false
-}
-
-// AsPermanent extracts the *PermanentError from the error chain.
-func AsPermanent(err error) (*PermanentError, bool) {
-	var target *PermanentError
-	if errors.As(err, &target) {
-		return target, true
-	}
-	return nil, false
-}
-
-// AsAuthRequired extracts the *AuthRequiredError from the error chain.
-func AsAuthRequired(err error) (*AuthRequiredError, bool) {
-	var target *AuthRequiredError
-	if errors.As(err, &target) {
-		return target, true
-	}
-	return nil, false
-}
-
-// AsForbidden extracts the *ForbiddenError from the error chain.
-func AsForbidden(err error) (*ForbiddenError, bool) {
-	var target *ForbiddenError
-	if errors.As(err, &target) {
-		return target, true
-	}
-	return nil, false
-}
-
-// AsOperationFailed extracts the *OperationFailedError from the error chain.
-func AsOperationFailed(err error) (*OperationFailedError, bool) {
-	var target *OperationFailedError
 	if errors.As(err, &target) {
 		return target, true
 	}

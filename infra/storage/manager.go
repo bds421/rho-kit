@@ -6,6 +6,8 @@ import (
 	"io"
 	"sort"
 	"sync"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // Manager holds named Storage backends, similar to Laravel's Storage::disk().
@@ -17,8 +19,10 @@ import (
 //	mgr.Register("local", localBackend)
 //	mgr.Register("s3", s3Backend).SetDefault("s3")
 //
-//	mgr.Disk("s3").Put(ctx, key, r, meta)  // explicit disk
-//	mgr.Default().Put(ctx, key, r, meta)    // default disk
+//	backend, err := mgr.Backend("s3")  // dynamic lookup; not-found is typed
+//	if err != nil { ... }
+//	backend.Put(ctx, key, r, meta)
+//	mgr.Default().Put(ctx, key, r, meta) // default disk (panic if none registered)
 type Manager struct {
 	mu          sync.RWMutex
 	backends    map[string]Storage
@@ -48,7 +52,7 @@ func (m *Manager) Register(name string, backend Storage) *Manager {
 	defer m.mu.Unlock()
 
 	if _, ok := m.backends[name]; ok {
-		panic("storage.Manager: disk already registered")
+		panic("storage.Manager: backend already registered")
 	}
 
 	m.backends[name] = backend
@@ -56,27 +60,45 @@ func (m *Manager) Register(name string, backend Storage) *Manager {
 	return m
 }
 
-// Disk returns the backend registered under name.
-// Panics if name is not registered (fail-fast, consistent with Builder pattern).
-func (m *Manager) Disk(name string) Storage {
+// Backend returns the backend registered under name.
+//
+// Unlike Default(), which is a startup-time wiring guarantee, Backend
+// is a runtime lookup — callers may pass a name resolved from request
+// input (e.g. a tenant-configured bucket). Returns an
+// [apperror.NotFoundError] so HTTP/gRPC adapters map it to 404 rather
+// than crashing the request.
+func (m *Manager) Backend(name string) (Storage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	b, ok := m.backends[name]
 	if !ok {
-		panic("storage.Manager: disk not registered")
+		return nil, apperror.NewNotFound("storage_backend", name)
+	}
+	return b, nil
+}
+
+// MustBackend returns the backend registered under name or panics if
+// the name is not registered. Use this only for callers that genuinely
+// have startup-time wiring (the backend name is a compile-time constant
+// or comes from validated configuration). Prefer [Backend] for any
+// lookup driven by request input.
+func (m *Manager) MustBackend(name string) Storage {
+	b, err := m.Backend(name)
+	if err != nil {
+		panic(fmt.Sprintf("storage.Manager: %s", err))
 	}
 	return b
 }
 
-// SetDefault sets the default disk name. The name must already be registered.
-// Returns the Manager for fluent chaining.
+// SetDefault sets the default backend name. The name must already be
+// registered. Returns the Manager for fluent chaining.
 func (m *Manager) SetDefault(name string) *Manager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, ok := m.backends[name]; !ok {
-		panic("storage.Manager: default disk is not registered")
+		panic("storage.Manager: default backend is not registered")
 	}
 	m.defaultName = name
 	return m
@@ -95,7 +117,7 @@ func (m *Manager) Default() Storage {
 	if m.defaultName != "" {
 		s, ok := m.backends[m.defaultName]
 		if !ok {
-			panic("storage.Manager: default disk has no backend")
+			panic("storage.Manager: default backend missing from registry")
 		}
 		return s
 	}
@@ -114,9 +136,9 @@ func (m *Manager) Default() Storage {
 	return s
 }
 
-// Names returns all registered disk names in alphabetical order.
-// Note: the order differs from [Default], which returns the first-registered disk.
-// Do not assume Names()[0] is the default disk.
+// Names returns all registered backend names in alphabetical order.
+// Note: the order differs from [Default], which returns the first-registered
+// backend. Do not assume Names()[0] is the default.
 func (m *Manager) Names() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -127,7 +149,7 @@ func (m *Manager) Names() []string {
 	return names
 }
 
-// Has reports whether a disk with the given name is registered.
+// Has reports whether a backend with the given name is registered.
 func (m *Manager) Has(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -153,7 +175,7 @@ func (m *Manager) Close() error {
 		backend := m.backends[name]
 		if closer, ok := backend.(io.Closer); ok {
 			if err := closer.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close disk: %w", err))
+				errs = append(errs, fmt.Errorf("close backend: %w", err))
 			}
 		}
 	}

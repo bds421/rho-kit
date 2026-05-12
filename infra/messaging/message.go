@@ -88,16 +88,21 @@ func (m Message) Clone() Message {
 }
 
 // WithHeader returns a copy of the message with the given header set.
-func (m Message) WithHeader(key, value string) Message {
+// Returns ErrInvalidMessageHeader when the key or value contains
+// characters that cannot safely round-trip through transport bridges
+// (null bytes, newlines, oversized). Callers forwarding header values
+// from request input must handle the error rather than crash the
+// request goroutine.
+func (m Message) WithHeader(key, value string) (Message, error) {
 	if err := ValidateMessageHeader(key, value); err != nil {
-		panic("messaging: message header is invalid")
+		return Message{}, err
 	}
 	clone := m.Clone()
 	if clone.Headers == nil {
 		clone.Headers = make(map[string]string, 1)
 	}
 	clone.Headers[key] = value
-	return clone
+	return clone, nil
 }
 
 // WithSchemaVersion returns a copy of the message with the given schema version.

@@ -9,13 +9,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
 func TestManager(t *testing.T) {
 	t.Parallel()
 
-	t.Run("register and retrieve disk", func(t *testing.T) {
+	t.Run("register and retrieve backend", func(t *testing.T) {
 		t.Parallel()
 		b1 := newTestBackend(t)
 		b2 := newTestBackend(t)
@@ -24,8 +25,39 @@ func TestManager(t *testing.T) {
 		mgr.Register("local", b1)
 		mgr.Register("uploads", b2)
 
-		assert.Equal(t, b1, mgr.Disk("local"))
-		assert.Equal(t, b2, mgr.Disk("uploads"))
+		got1, err := mgr.Backend("local")
+		require.NoError(t, err)
+		assert.Equal(t, b1, got1)
+
+		got2, err := mgr.Backend("uploads")
+		require.NoError(t, err)
+		assert.Equal(t, b2, got2)
+	})
+
+	t.Run("Backend returns NotFound for unregistered name", func(t *testing.T) {
+		t.Parallel()
+		mgr := storage.NewManager()
+		mgr.Register("known", newTestBackend(t))
+
+		got, err := mgr.Backend("unknown")
+		require.Error(t, err)
+		assert.Nil(t, got)
+		var nfe *apperror.NotFoundError
+		assert.True(t, errors.As(err, &nfe), "Backend miss should be apperror.NotFoundError")
+	})
+
+	t.Run("MustBackend panics on unregistered name", func(t *testing.T) {
+		t.Parallel()
+		mgr := storage.NewManager()
+		assert.Panics(t, func() { mgr.MustBackend("nonexistent-secret-token") })
+	})
+
+	t.Run("MustBackend returns backend on hit", func(t *testing.T) {
+		t.Parallel()
+		mgr := storage.NewManager()
+		b := newTestBackend(t)
+		mgr.Register("hit", b)
+		assert.Equal(t, b, mgr.MustBackend("hit"))
 	})
 
 	t.Run("default returns first registered", func(t *testing.T) {
@@ -78,10 +110,10 @@ func TestManager(t *testing.T) {
 		assert.NoError(t, mgr.Close())
 	})
 
-	t.Run("Close error does not reflect disk name", func(t *testing.T) {
+	t.Run("Close error does not reflect backend name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		mgr.Register("secret-token-disk", closeFailBackend{})
+		mgr.Register("secret-token-backend", closeFailBackend{})
 
 		err := mgr.Close()
 
@@ -107,23 +139,15 @@ func TestManager(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
 		mgr.Register("dup-secret-token", newTestBackend(t))
-		assert.PanicsWithValue(t, "storage.Manager: disk already registered", func() {
+		assert.PanicsWithValue(t, "storage.Manager: backend already registered", func() {
 			mgr.Register("dup-secret-token", newTestBackend(t))
-		})
-	})
-
-	t.Run("panics on unregistered disk", func(t *testing.T) {
-		t.Parallel()
-		mgr := storage.NewManager()
-		assert.PanicsWithValue(t, "storage.Manager: disk not registered", func() {
-			mgr.Disk("nonexistent-secret-token")
 		})
 	})
 
 	t.Run("panics on SetDefault with unregistered name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.PanicsWithValue(t, "storage.Manager: default disk is not registered", func() {
+		assert.PanicsWithValue(t, "storage.Manager: default backend is not registered", func() {
 			mgr.SetDefault("nonexistent-secret-token")
 		})
 	})
@@ -139,7 +163,7 @@ func TestManager(t *testing.T) {
 		mgr := storage.NewManager()
 		b := newTestBackend(t)
 
-		result := mgr.Register("disk", b).SetDefault("disk")
+		result := mgr.Register("backend", b).SetDefault("backend")
 		require.NotNil(t, result)
 		assert.Equal(t, b, mgr.Default())
 	})

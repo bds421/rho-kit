@@ -107,7 +107,7 @@ func (e *FieldEncryptor) EncryptWithContext(plaintext string, aad []byte) (strin
 	if plaintext == "" {
 		return "", nil
 	}
-	sealed, err := SealBytesAAD(e.aead, []byte(plaintext), aad)
+	sealed, err := EncryptBytesAAD(e.aead, []byte(plaintext), aad)
 	if err != nil {
 		return "", err
 	}
@@ -206,7 +206,7 @@ func (e *FieldEncryptor) DecryptWithContext(ciphertext string, aad []byte) (stri
 		return "", fmt.Errorf("decode base64: %w", err)
 	}
 
-	plaintext, err := OpenBytesAAD(e.aead, data, aad)
+	plaintext, err := DecryptBytesAAD(e.aead, data, aad)
 	if err != nil {
 		return "", err
 	}
@@ -230,7 +230,7 @@ func (e *FieldEncryptor) isAuthenticatedCiphertext(value string, aad []byte) boo
 	if err != nil {
 		return false
 	}
-	_, err = OpenBytesAAD(e.aead, data, aad)
+	_, err = DecryptBytesAAD(e.aead, data, aad)
 	return err == nil
 }
 

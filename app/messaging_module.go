@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -21,7 +20,7 @@ type messagingModule struct {
 	// initialized during Init
 	conn      *amqpbackend.Connection
 	publisher *amqpbackend.Publisher
-	consumer  messaging.MessageConsumer
+	consumer  messaging.Consumer
 	logger    *slog.Logger
 
 	messageSizeLimiter messaging.MessageSizeLimiter
@@ -85,15 +84,21 @@ func (m *messagingModule) Populate(infra *Infrastructure) {
 	infra.Consumer = m.consumer
 }
 
-func (m *messagingModule) Close(_ context.Context) error {
+func (m *messagingModule) Stop(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
 	if m.publisher != nil {
 		m.publisher.Close()
+		m.publisher = nil
 	}
 	if m.conn == nil {
 		return nil
 	}
-	if err := m.conn.Close(); err != nil {
-		m.logger.Warn("error closing rabbitmq", redact.Error(err))
+	conn := m.conn
+	m.conn = nil
+	if err := conn.Stop(ctx); err != nil {
+		m.logger.Warn("error closing rabbitmq", slog.Any("error", err))
 		return err
 	}
 	return nil

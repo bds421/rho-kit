@@ -31,14 +31,20 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
+// defaultCallbackDrainTimeout bounds how long holdLeadership waits for
+// a buggy OnAcquired callback that ignores ctx after a renewal failure
+// before returning and leaving the callback goroutine detached.
+const defaultCallbackDrainTimeout = 30 * time.Second
+
 // Elector is a [leaderelection.Elector] backed by a Postgres advisory
 // lock.
 type Elector struct {
-	locker        *pgalock.Locker
-	key           string
-	retryInterval time.Duration
-	healthCheck   time.Duration
-	logger        *slog.Logger
+	locker               *pgalock.Locker
+	key                  string
+	retryInterval        time.Duration
+	healthCheck          time.Duration
+	callbackDrainTimeout time.Duration
+	logger               *slog.Logger
 
 	leader atomic.Bool
 }
@@ -65,6 +71,17 @@ func WithHealthCheck(d time.Duration) Option {
 	return func(e *Elector) { e.healthCheck = d }
 }
 
+// WithCallbackDrainTimeout bounds how long Elector waits for the
+// OnAcquired callback to honour ctx after a health-check failure or
+// parent cancellation. Once the timeout elapses the elector returns and
+// the goroutine runs detached. Default: 30 seconds.
+func WithCallbackDrainTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("leaderelection/pgadvisory: WithCallbackDrainTimeout requires a positive duration")
+	}
+	return func(e *Elector) { e.callbackDrainTimeout = d }
+}
+
 // WithLogger sets the logger. A nil logger is normalized to [slog.Default]
 // so the elector never holds a nil slog.Logger.
 func WithLogger(l *slog.Logger) Option {
@@ -84,11 +101,12 @@ func New(db *sql.DB, key string, opts ...Option) *Elector {
 		panic("leaderelection/pgadvisory: key must not be empty")
 	}
 	e := &Elector{
-		locker:        pgalock.New(db),
-		key:           key,
-		retryInterval: 5 * time.Second,
-		healthCheck:   time.Second,
-		logger:        slog.Default(),
+		locker:               pgalock.New(db),
+		key:                  key,
+		retryInterval:        5 * time.Second,
+		healthCheck:          time.Second,
+		callbackDrainTimeout: defaultCallbackDrainTimeout,
+		logger:               slog.Default(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -236,11 +254,40 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	healthTicker := time.NewTicker(e.healthCheck)
 	defer healthTicker.Stop()
 
+	awaitCallback := func() (callbackResult, bool) {
+		// A zero timeout disables the bound (block forever). Production
+		// constructors set a sane default; this branch covers tests that
+		// build Elector literals directly.
+		if e.callbackDrainTimeout <= 0 {
+			res := <-cbDone
+			return res, true
+		}
+		t := time.NewTimer(e.callbackDrainTimeout)
+		defer t.Stop()
+		select {
+		case res := <-cbDone:
+			return res, true
+		case <-t.C:
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("leader-election: OnAcquired ignored cancellation; returning while callback runs detached",
+				redact.String("key", e.key),
+				"timeout", e.callbackDrainTimeout,
+			)
+			return callbackResult{}, false
+		}
+	}
+
 	for {
 		select {
 		case <-parent.Done():
 			cancel()
-			result := <-cbDone // wait for caller to release leader work
+			result, drained := awaitCallback()
+			if !drained {
+				return parent.Err()
+			}
 			if result.panicValue != nil {
 				return errors.Join(parent.Err(), onAcquiredPanicError(result.panicValue))
 			}
@@ -254,7 +301,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			if ok, err := handle.Extend(ctx); err != nil {
 				termErr := fmt.Errorf("extend: %w", err)
 				cancel()
-				result := <-cbDone
+				result, drained := awaitCallback()
+				if !drained {
+					return termErr
+				}
 				if result.panicValue != nil {
 					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
 				}
@@ -262,7 +312,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			} else if !ok {
 				termErr := errors.New("leader-election: handle reports lost")
 				cancel()
-				result := <-cbDone
+				result, drained := awaitCallback()
+				if !drained {
+					return termErr
+				}
 				if result.panicValue != nil {
 					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
 				}

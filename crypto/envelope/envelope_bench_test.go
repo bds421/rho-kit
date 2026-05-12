@@ -50,7 +50,7 @@ func BenchmarkDecrypt(b *testing.B) {
 
 func BenchmarkRewrap(b *testing.B) {
 	kek := newBenchmarkKEK(b)
-	enc := New(kek)
+	enc := NewEncryptor(kek)
 	plaintext := bytes.Repeat([]byte("a"), 1024)
 	blob, err := enc.Encrypt(context.Background(), plaintext, []byte("tenant:acme"))
 	if err != nil {
@@ -77,12 +77,12 @@ func BenchmarkRewrap(b *testing.B) {
 
 func newBenchmarkEncryptor(b *testing.B) *Encryptor {
 	b.Helper()
-	return New(newBenchmarkKEK(b))
+	return NewEncryptor(newBenchmarkKEK(b))
 }
 
 func newBenchmarkKEK(b *testing.B) *kekstatic.KEK {
 	b.Helper()
-	kek, err := kekstatic.New("bench-key-v1", bytes.Repeat([]byte{0x42}, 32))
+	kek, err := kekstatic.NewKEK("bench-key-v1", bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		b.Fatal(err)
 	}

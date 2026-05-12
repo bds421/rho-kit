@@ -13,18 +13,18 @@ func TestSealOpenBytes_RoundTrip(t *testing.T) {
 
 	plaintext := []byte("hello world, this is secret data")
 
-	sealed, err := SealBytes(gcm, plaintext)
+	sealed, err := EncryptBytes(gcm, plaintext)
 	if err != nil {
-		t.Fatalf("SealBytes: %v", err)
+		t.Fatalf("EncryptBytes: %v", err)
 	}
 
 	if string(sealed) == string(plaintext) {
 		t.Fatal("sealed should differ from plaintext")
 	}
 
-	opened, err := OpenBytes(gcm, sealed)
+	opened, err := DecryptBytes(gcm, sealed)
 	if err != nil {
-		t.Fatalf("OpenBytes: %v", err)
+		t.Fatalf("DecryptBytes: %v", err)
 	}
 
 	if string(opened) != string(plaintext) {
@@ -39,8 +39,8 @@ func TestSealBytes_UniqueNonces(t *testing.T) {
 	}
 
 	data := []byte("same data")
-	s1, _ := SealBytes(gcm, data)
-	s2, _ := SealBytes(gcm, data)
+	s1, _ := EncryptBytes(gcm, data)
+	s2, _ := EncryptBytes(gcm, data)
 
 	if string(s1) == string(s2) {
 		t.Fatal("two seals of the same data should differ (unique nonces)")
@@ -53,7 +53,7 @@ func TestOpenBytes_TooShort(t *testing.T) {
 		t.Fatalf("NewGCM: %v", err)
 	}
 
-	_, err = OpenBytes(gcm, []byte{1, 2, 3})
+	_, err = DecryptBytes(gcm, []byte{1, 2, 3})
 	if err == nil {
 		t.Fatal("expected error for too-short ciphertext")
 	}
@@ -72,14 +72,14 @@ func TestSealOpenBytes_EmptyPlaintext(t *testing.T) {
 		t.Fatalf("NewGCM: %v", err)
 	}
 
-	sealed, err := SealBytes(gcm, []byte{})
+	sealed, err := EncryptBytes(gcm, []byte{})
 	if err != nil {
-		t.Fatalf("SealBytes empty: %v", err)
+		t.Fatalf("EncryptBytes empty: %v", err)
 	}
 
-	opened, err := OpenBytes(gcm, sealed)
+	opened, err := DecryptBytes(gcm, sealed)
 	if err != nil {
-		t.Fatalf("OpenBytes empty: %v", err)
+		t.Fatalf("DecryptBytes empty: %v", err)
 	}
 
 	if len(opened) != 0 {
@@ -88,10 +88,10 @@ func TestSealOpenBytes_EmptyPlaintext(t *testing.T) {
 }
 
 func TestSealOpenBytes_NilAEADReturnsError(t *testing.T) {
-	if _, err := SealBytes(nil, []byte("secret")); !errors.Is(err, ErrInvalidAEAD) {
-		t.Fatalf("SealBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
+	if _, err := EncryptBytes(nil, []byte("secret")); !errors.Is(err, ErrInvalidAEAD) {
+		t.Fatalf("EncryptBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
 	}
-	if _, err := OpenBytes(nil, []byte("ciphertext")); !errors.Is(err, ErrInvalidAEAD) {
-		t.Fatalf("OpenBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
+	if _, err := DecryptBytes(nil, []byte("ciphertext")); !errors.Is(err, ErrInvalidAEAD) {
+		t.Fatalf("DecryptBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
 	}
 }

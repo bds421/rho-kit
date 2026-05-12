@@ -14,7 +14,11 @@ import (
 )
 
 func ctxWith(tenantID string) context.Context {
-	return coretenant.WithID(context.Background(), coretenant.ID(tenantID))
+	ctx, err := coretenant.WithID(context.Background(), coretenant.ID(tenantID))
+	if err != nil {
+		panic(err)
+	}
+	return ctx
 }
 
 func TestWrap_IsolatesTenants_TryLock(t *testing.T) {
@@ -116,7 +120,8 @@ func TestWrap_RejectsEmptyRawKey(t *testing.T) {
 
 func TestWrap_RejectsScopedKeyTooLong(t *testing.T) {
 	w := Wrap(idempotency.NewMemoryStore())
-	ctx := coretenant.WithID(context.Background(), coretenant.NewIDUnchecked(strings.Repeat("t", coretenant.MaxIDLen)))
+	ctx, ctxErr := coretenant.WithID(context.Background(), coretenant.MustNewID(strings.Repeat("t", coretenant.MaxIDLen)))
+	require.NoError(t, ctxErr)
 
 	token, mismatch, ok, err := w.TryLock(ctx, strings.Repeat("k", idempotency.MaxKeyLen), nil, time.Minute)
 	assert.Empty(t, token)
@@ -167,18 +172,20 @@ func TestScoped_InvalidReceiverReturnsError(t *testing.T) {
 // taking key `"c"` would share a storage slot with tenant `"a"` taking
 // key `"b:c"` — opening the door to cross-tenant idempotency replay.
 //
-// NewIDUnchecked simulates the worst case where validation is bypassed
+// MustNewID simulates the worst case where validation is bypassed
 // (e.g. legacy data). The length prefix in scopedKey must keep the
 // namespaces disjoint regardless.
 func TestScopedKey_ColonInTenantIDNoCollision(t *testing.T) {
 	inner := idempotency.NewMemoryStore()
 	w := Wrap(inner)
 
-	idAB := coretenant.NewIDUnchecked("a:b")
-	idA := coretenant.NewIDUnchecked("a")
+	idAB := coretenant.MustNewID("a:b")
+	idA := coretenant.MustNewID("a")
 
-	ctxAB := coretenant.WithID(context.Background(), idAB)
-	ctxA := coretenant.WithID(context.Background(), idA)
+	ctxAB, err := coretenant.WithID(context.Background(), idAB)
+	require.NoError(t, err)
+	ctxA, err := coretenant.WithID(context.Background(), idA)
+	require.NoError(t, err)
 
 	// Tenant "a:b" locks key "c".
 	tokAB, _, ok, err := w.TryLock(ctxAB, "c", []byte("body"), time.Minute)

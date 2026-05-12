@@ -13,7 +13,7 @@ import (
 func TestWithLeaderGate_SkipsWhenNotLeader(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	var leader atomic.Bool // starts false → not leader
-	s := New(nil, WithRegistry(reg), WithLeaderGate(leader.Load))
+	s := New(nil, WithRegisterer(reg), WithLeaderGate(leader.Load))
 
 	var ran atomic.Int32
 	s.Add("gated-job", "@every 100ms", func(_ context.Context) error {
@@ -44,7 +44,7 @@ func TestWithLeaderGate_SkipsWhenNotLeader(t *testing.T) {
 
 func TestWithLeaderGate_PanicSkipsJob(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg), WithLeaderGate(func() bool {
+	s := New(nil, WithRegisterer(reg), WithLeaderGate(func() bool {
 		panic("leader backend failed")
 	}))
 
@@ -72,7 +72,7 @@ func TestWithLeaderGate_PanicSkipsJob(t *testing.T) {
 func TestWithLeaderGate_NoGateMeansAlwaysRun(t *testing.T) {
 	// Sanity: without WithLeaderGate the scheduler runs unconditionally.
 	reg := prometheus.NewRegistry()
-	s := New(nil, WithRegistry(reg))
+	s := New(nil, WithRegisterer(reg))
 
 	var ran atomic.Int32
 	s.Add("always-job", "@every 50ms", func(_ context.Context) error {

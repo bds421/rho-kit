@@ -15,7 +15,8 @@ import (
 func TestToStreamMessage(t *testing.T) {
 	msg, err := messaging.NewMessage("order.created", map[string]string{"id": "42"})
 	require.NoError(t, err)
-	msg = msg.WithHeader("trace-id", "abc-123")
+	msg, err = msg.WithHeader("trace-id", "abc-123")
+	require.NoError(t, err)
 
 	sm := toStreamMessage(msg)
 

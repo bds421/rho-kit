@@ -409,6 +409,11 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 }
 
 // Delete removes a key.
+//
+// Holds setNXMu around the cache+claim removal so a concurrent SetNX
+// cannot interleave its claim store between this Delete's two clears —
+// otherwise the stale claim would outlive the entry and block legitimate
+// re-claims until the original TTL elapsed.
 func (mc *MemoryCache) Delete(_ context.Context, key string) error {
 	if err := mc.ready(); err != nil {
 		return err
@@ -416,6 +421,8 @@ func (mc *MemoryCache) Delete(_ context.Context, key string) error {
 	if err := ValidateKey(key); err != nil {
 		return err
 	}
+	mc.setNXMu.Lock()
+	defer mc.setNXMu.Unlock()
 	mc.cache.Del(key)
 	mc.nxClaims.Delete(key)
 	return nil

@@ -1,7 +1,7 @@
 // Package redisbackend adapts redis/stream to the messaging interfaces.
 //
-// It provides a Publisher and Consumer that satisfy messaging.MessagePublisher
-// and messaging.MessageConsumer by wrapping redis/stream.Producer and
+// It provides a Publisher and Consumer that satisfy messaging.Publisher
+// and messaging.Consumer by wrapping redis/stream.Producer and
 // redis/stream.Consumer respectively.
 //
 // Conceptual mapping:

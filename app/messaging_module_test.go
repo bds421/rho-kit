@@ -29,10 +29,10 @@ func TestMessagingModule_HealthChecksBeforeInit(t *testing.T) {
 	assert.Nil(t, checks, "should return nil health checks before Init")
 }
 
-func TestMessagingModule_CloseBeforeInit(t *testing.T) {
+func TestMessagingModule_StopBeforeInit(t *testing.T) {
 	m := newMessagingModule("amqp://localhost")
-	err := m.Close(context.Background())
-	require.NoError(t, err, "Close before Init should not error")
+	err := m.Stop(context.Background())
+	require.NoError(t, err, "Stop before Init should not error")
 }
 
 func TestMessagingModule_PopulateBeforeInit(t *testing.T) {

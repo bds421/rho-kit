@@ -39,13 +39,19 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
+// defaultCallbackDrainTimeout bounds how long holdLeadership waits for
+// a buggy OnAcquired callback that ignores ctx after a renewal failure
+// before returning and leaving the callback goroutine detached.
+const defaultCallbackDrainTimeout = 30 * time.Second
+
 // Elector is a [leaderelection.Elector] backed by a Redis SET-NX lock.
 type Elector struct {
-	locker        *rlock.Locker
-	key           string
-	retryInterval time.Duration
-	renewInterval time.Duration
-	logger        *slog.Logger
+	locker               *rlock.Locker
+	key                  string
+	retryInterval        time.Duration
+	renewInterval        time.Duration
+	callbackDrainTimeout time.Duration
+	logger               *slog.Logger
 
 	leader atomic.Bool
 }
@@ -72,6 +78,17 @@ func WithRenewInterval(d time.Duration) Option {
 		panic("leaderelection/redislock: WithRenewInterval requires a positive duration")
 	}
 	return func(e *Elector) { e.renewInterval = d }
+}
+
+// WithCallbackDrainTimeout bounds how long Elector waits for the
+// OnAcquired callback to honour ctx after a renewal failure or parent
+// cancellation. Once the timeout elapses the elector returns and the
+// goroutine runs detached. Default: 30 seconds.
+func WithCallbackDrainTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("leaderelection/redislock: WithCallbackDrainTimeout requires a positive duration")
+	}
+	return func(e *Elector) { e.callbackDrainTimeout = d }
 }
 
 // WithLogger sets the logger. A nil logger is normalized to [slog.Default]
@@ -106,11 +123,12 @@ func NewWithLocker(locker *rlock.Locker, key string, opts ...Option) *Elector {
 		panic("leaderelection/redislock: key must not be empty")
 	}
 	e := &Elector{
-		locker:        locker,
-		key:           key,
-		retryInterval: 5 * time.Second,
-		renewInterval: 5 * time.Second,
-		logger:        slog.Default(),
+		locker:               locker,
+		key:                  key,
+		retryInterval:        5 * time.Second,
+		renewInterval:        5 * time.Second,
+		callbackDrainTimeout: defaultCallbackDrainTimeout,
+		logger:               slog.Default(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -252,11 +270,40 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	renewTicker := time.NewTicker(e.renewInterval)
 	defer renewTicker.Stop()
 
+	awaitCallback := func() (callbackResult, bool) {
+		// A zero timeout disables the bound (block forever). Production
+		// constructors set a sane default; this branch covers tests that
+		// build Elector literals directly.
+		if e.callbackDrainTimeout <= 0 {
+			res := <-cbDone
+			return res, true
+		}
+		t := time.NewTimer(e.callbackDrainTimeout)
+		defer t.Stop()
+		select {
+		case res := <-cbDone:
+			return res, true
+		case <-t.C:
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("leader-election: OnAcquired ignored cancellation; returning while callback runs detached",
+				redact.String("key", e.key),
+				"timeout", e.callbackDrainTimeout,
+			)
+			return callbackResult{}, false
+		}
+	}
+
 	for {
 		select {
 		case <-parent.Done():
 			cancel()
-			result := <-cbDone
+			result, drained := awaitCallback()
+			if !drained {
+				return parent.Err()
+			}
 			if result.panicValue != nil {
 				return errors.Join(parent.Err(), onAcquiredPanicError(result.panicValue))
 			}
@@ -271,7 +318,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			if err != nil {
 				termErr := fmt.Errorf("extend: %w", err)
 				cancel()
-				result := <-cbDone
+				result, drained := awaitCallback()
+				if !drained {
+					return termErr
+				}
 				if result.panicValue != nil {
 					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
 				}
@@ -280,7 +330,10 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 			if !ok {
 				termErr := errors.New("leader-election: handle reports lost")
 				cancel()
-				result := <-cbDone
+				result, drained := awaitCallback()
+				if !drained {
+					return termErr
+				}
 				if result.panicValue != nil {
 					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
 				}

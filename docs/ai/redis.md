@@ -174,6 +174,7 @@ as tenant, trace, and logger data.
 LIST-based FIFO with `BLMOVE` for crash-safe delivery:
 
 ```go
+// imported as: import queue "github.com/bds421/rho-kit/data/queue/redisqueue/v2"
 q := queue.NewQueue(conn.Client(),
     queue.WithMaxRetries(5),
     queue.WithMaxPayloadSize(1<<20),

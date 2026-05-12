@@ -20,14 +20,14 @@ func BenchmarkValidateID(b *testing.B) {
 	benchTenantErr = err
 }
 
-func BenchmarkWithIDChecked(b *testing.B) {
-	id := NewIDUnchecked("tenant-123")
+func BenchmarkWithID(b *testing.B) {
+	id := MustNewID("tenant-123")
 	base := context.Background()
 	var ctx context.Context
 	var err error
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		ctx, err = WithIDChecked(base, id)
+		ctx, err = WithID(base, id)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -36,7 +36,7 @@ func BenchmarkWithIDChecked(b *testing.B) {
 }
 
 func BenchmarkFromContext(b *testing.B) {
-	ctx := WithID(context.Background(), NewIDUnchecked("tenant-123"))
+	ctx, _ := WithID(context.Background(), MustNewID("tenant-123"))
 	var id ID
 	var ok bool
 	b.ReportAllocs()
@@ -48,7 +48,7 @@ func BenchmarkFromContext(b *testing.B) {
 }
 
 func BenchmarkRequired(b *testing.B) {
-	ctx := WithID(context.Background(), NewIDUnchecked("tenant-123"))
+	ctx, _ := WithID(context.Background(), MustNewID("tenant-123"))
 	var id ID
 	var err error
 	b.ReportAllocs()

@@ -1,11 +1,21 @@
 # rho-kit
 
+**License:** Apache 2.0
+
 `rho-kit` is the standard Go service toolkit. It centralizes the
 infrastructure patterns every service needs so teams can focus on domain logic
 while staying consistent, secure, and observable.
 
 Release-candidate artifacts for v2.0.0 live under [docs/release](docs/release/):
 the public API freeze, migration guide, and RC evidence checklist.
+
+## Release & Migration
+
+- [docs/release/MIGRATION_V2.md](docs/release/MIGRATION_V2.md) — operational
+  steps to move a downstream service from v1.x to v2.0.0.
+- [docs/RELEASE_NOTES_v2.md](docs/RELEASE_NOTES_v2.md) — full v2.0.0 release
+  notes, including the enumeration of breaking changes.
+- [CHANGELOG.md](CHANGELOG.md) — per-release summary.
 
 Snippet status: Go blocks in this README are illustrative fragments. The shell
 commands are executable from a downstream module. Golden-path evidence lives in

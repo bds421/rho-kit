@@ -241,14 +241,16 @@ func (p *Provider) Tracer(name string) trace.Tracer {
 	return p.tp.Tracer(name)
 }
 
-// Shutdown flushes pending spans and releases resources.
-// Call this during graceful shutdown (with a deadline context).
-func (p *Provider) Shutdown(ctx context.Context) error {
+// Stop flushes pending spans and releases resources.
+// Call this during graceful shutdown (with a deadline context). The name
+// matches [lifecycle.Component.Stop] so a Provider can be used directly as
+// part of a lifecycle runner.
+func (p *Provider) Stop(ctx context.Context) error {
 	if ctx == nil {
-		return errors.New("tracing: Shutdown requires a non-nil context")
+		return errors.New("tracing: Stop requires a non-nil context")
 	}
 	if p == nil || p.tp == nil {
-		return errors.New("tracing: Shutdown requires an initialized Provider")
+		return errors.New("tracing: Stop requires an initialized Provider")
 	}
 	return p.tp.Shutdown(ctx)
 }

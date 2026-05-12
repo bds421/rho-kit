@@ -56,7 +56,8 @@ func TestMessageSizeLimiter_UnlimitedDefaultKeepsRouteOverrides(t *testing.T) {
 
 func TestEstimateMessageBytes_IncludesHeaders(t *testing.T) {
 	base := messaging.Message{ID: "msg-1", Type: "event", Payload: json.RawMessage(`{}`)}
-	withHeader := base.WithHeader("large-header", strings.Repeat("x", 128))
+	withHeader, err := base.WithHeader("large-header", strings.Repeat("x", 128))
+	require.NoError(t, err)
 
 	baseSize, err := messaging.EstimateMessageBytes(base)
 	require.NoError(t, err)

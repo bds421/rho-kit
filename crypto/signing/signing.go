@@ -80,8 +80,11 @@ func NewSigner(opts ...SignerOption) *Signer {
 }
 
 // Sign computes an HMAC-SHA256 signature using the Signer's clock.
-func (s *Signer) Sign(body []byte, secret []byte) (signature string, timestamp int64, err error) {
-	return s.SignContext(CanonicalContext{}, body, secret)
+//
+// The (secret, body) argument order matches [Signer.Verify] so paired
+// call sites cannot accidentally transpose the two byte slices.
+func (s *Signer) Sign(secret []byte, body []byte) (signature string, timestamp int64, err error) {
+	return s.SignContext(CanonicalContext{}, secret, body)
 }
 
 // CanonicalContext binds additional out-of-band fields into the signed
@@ -115,7 +118,7 @@ type CanonicalContext struct {
 // SignContext is Sign with an explicit canonical-context binding. See
 // [CanonicalContext] for the recommended fields. Passing the zero
 // CanonicalContext is identical to [Signer.Sign].
-func (s *Signer) SignContext(ctx CanonicalContext, body []byte, secret []byte) (signature string, timestamp int64, err error) {
+func (s *Signer) SignContext(ctx CanonicalContext, secret []byte, body []byte) (signature string, timestamp int64, err error) {
 	if len(secret) < minSecretLen {
 		return "", 0, ErrEmptySecret
 	}
@@ -167,8 +170,8 @@ var defaultSigner = NewSigner()
 // be replayed. This follows the same model as Stripe webhook signatures.
 // Callers requiring within-window replay prevention must maintain a
 // seen-timestamp/nonce set externally.
-func Sign(body []byte, secret []byte) (signature string, timestamp int64, err error) {
-	return defaultSigner.Sign(body, secret)
+func Sign(secret []byte, body []byte) (signature string, timestamp int64, err error) {
+	return defaultSigner.Sign(secret, body)
 }
 
 // DefaultSignatureMaxAge is the default maximum age for webhook signatures.
@@ -271,8 +274,8 @@ func Verify(secret []byte, body []byte, timestamp int64, signature string, maxAg
 
 // SignContext is the package-level [Signer.SignContext], using the
 // default signer's time.Now clock.
-func SignContext(ctx CanonicalContext, body []byte, secret []byte) (signature string, timestamp int64, err error) {
-	return defaultSigner.SignContext(ctx, body, secret)
+func SignContext(ctx CanonicalContext, secret []byte, body []byte) (signature string, timestamp int64, err error) {
+	return defaultSigner.SignContext(ctx, secret, body)
 }
 
 // VerifyContext is the package-level [Signer.VerifyContext], using the

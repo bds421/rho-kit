@@ -6,7 +6,9 @@
 //   - [KeyedRateLimiter] — arbitrary-key fixed-window rate limiting, suitable for
 //     API keys, user IDs, or any caller-defined key function.
 //
-// Both types require a cleanup goroutine started via their Run method.
+// Both types satisfy [lifecycle.Component]: call Start(ctx) to launch the
+// cleanup goroutine and Stop(ctx) for bounded shutdown. The previous Run
+// method was renamed to Start in v2.0.0.
 //
 // # Degradation Support
 //

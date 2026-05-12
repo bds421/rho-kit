@@ -1,5 +1,7 @@
 package messaging
 
+import "context"
+
 // Connector represents a connection to a message broker. Backend-specific
 // implementations (amqpbackend.Connection, etc.) satisfy this interface.
 //
@@ -10,6 +12,9 @@ type Connector interface {
 	// Healthy reports whether the broker connection is alive and usable.
 	Healthy() bool
 
-	// Close shuts down the connection and releases resources.
-	Close() error
+	// Stop shuts down the connection and releases resources. The deadline
+	// from ctx bounds any backend-side drain (e.g. waiting for in-flight
+	// publishes to ack). Backends that cannot honour a deadline must close
+	// synchronously and return.
+	Stop(ctx context.Context) error
 }

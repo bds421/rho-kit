@@ -346,13 +346,13 @@ func TestConnection_NewPublisher_ZeroAckWaitFallsBackToDefault(t *testing.T) {
 func TestConnection_InvalidReceiverSafety(t *testing.T) {
 	var nilConn *Connection
 	assert.False(t, nilConn.Healthy())
-	assert.NoError(t, nilConn.Close())
+	assert.NoError(t, nilConn.Stop(context.Background()))
 	assert.Nil(t, nilConn.JetStream())
 	assert.Error(t, nilConn.EnsureStream(t.Context(), StreamConfig{Name: "events", Subjects: []string{"events.>"}}))
 
 	zero := &Connection{}
 	assert.False(t, zero.Healthy())
-	assert.NoError(t, zero.Close())
+	assert.NoError(t, zero.Stop(context.Background()))
 	assert.Nil(t, zero.JetStream())
 	assert.Error(t, zero.EnsureStream(t.Context(), StreamConfig{Name: "events", Subjects: []string{"events.>"}}))
 }

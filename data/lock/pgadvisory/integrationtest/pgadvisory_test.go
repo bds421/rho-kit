@@ -142,18 +142,34 @@ func TestRelease_ReturnsErrLockLostOnDoubleRelease(t *testing.T) {
 	assert.False(t, got, "unlocking a lock you never held returns false")
 }
 
-func TestExtend_NoopReturnsTrue(t *testing.T) {
+func TestExtend_PingsSessionAndReportsHeld(t *testing.T) {
 	db := newTestDB(t)
 	l := pgadvisory.New(db)
 	ctx := context.Background()
-	h, ok, err := l.Acquire(ctx, "TestExtend_NoopReturnsTrue")
+	h, ok, err := l.Acquire(ctx, "TestExtend_PingsSessionAndReportsHeld")
 	require.NoError(t, err)
 	require.True(t, ok)
 	defer func() { _ = h.Release(ctx) }()
 
 	got, err := h.Extend(ctx)
 	require.NoError(t, err)
-	assert.True(t, got, "Extend is a no-op for session locks; reports still-held")
+	assert.True(t, got, "Extend pings the session and reports still-held")
+}
+
+func TestExtend_ReportsLostOnCancelledContext(t *testing.T) {
+	db := newTestDB(t)
+	l := pgadvisory.New(db)
+	ctx := context.Background()
+	h, ok, err := l.Acquire(ctx, "TestExtend_ReportsLostOnCancelledContext")
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer func() { _ = h.Release(context.Background()) }()
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	got, err := h.Extend(cancelCtx)
+	require.Error(t, err, "cancelled context should surface as Extend failure")
+	assert.False(t, got)
 }
 
 func TestImplementsLockerInterface(t *testing.T) {

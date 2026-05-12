@@ -97,7 +97,7 @@ func TestRateLimiterCleanup(t *testing.T) {
 func TestRateLimiterMiddleware(t *testing.T) {
 	rl := NewRateLimiter(2, time.Minute)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -130,7 +130,7 @@ func TestRateLimiterMiddleware(t *testing.T) {
 func TestRateLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testing.T) {
 	rl := NewRateLimiter(2, time.Minute)
 	called := false
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -154,7 +154,7 @@ func TestRateLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testin
 func TestRateLimiterXForwardedFor(t *testing.T) {
 	rl := NewRateLimiter(1, time.Minute)
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -191,7 +191,7 @@ func TestRateLimiterXForwardedFor(t *testing.T) {
 func TestRateLimiterXForwardedForMultipleIPs(t *testing.T) {
 	rl := NewRateLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24", "198.51.100.0/24"}))
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -229,7 +229,7 @@ func TestRateLimiterXForwardedForMultipleIPs(t *testing.T) {
 func TestRateLimiterTrustedProxies(t *testing.T) {
 	rl := NewRateLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24"}))
 
-	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -271,7 +271,7 @@ func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- rl.Run(ctx)
+		done <- rl.Start(ctx)
 	}()
 
 	// Let at least one cleanup tick fire.
@@ -292,7 +292,7 @@ func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
 func TestRateLimiterRun_RejectsNilContext(t *testing.T) {
 	rl := NewRateLimiter(5, 10*time.Millisecond)
 	var ctx context.Context
-	err := rl.Run(ctx)
+	err := rl.Start(ctx)
 	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
 		t.Fatalf("expected non-nil context error, got %v", err)
 	}
@@ -300,7 +300,7 @@ func TestRateLimiterRun_RejectsNilContext(t *testing.T) {
 
 func TestRateLimiterRun_RejectsInvalidLimiter(t *testing.T) {
 	var rl RateLimiter
-	if err := rl.Run(context.Background()); err != ErrInvalidLimiter {
+	if err := rl.Start(context.Background()); err != ErrInvalidLimiter {
 		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
 	}
 }
@@ -310,10 +310,10 @@ func TestRateLimiterRun_RejectsSecondStart(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- rl.Run(ctx) }()
+	go func() { done <- rl.Start(ctx) }()
 	waitForRateLimiterRunStarted(t, rl)
 
-	err := rl.Run(context.Background())
+	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already started") {
 		t.Fatalf("expected already started error, got %v", err)
 	}
@@ -329,7 +329,7 @@ func TestRateLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- rl.Run(ctx) }()
+	go func() { done <- rl.Start(ctx) }()
 	waitForRateLimiterRunStarted(t, rl)
 
 	cancel()
@@ -337,7 +337,7 @@ func TestRateLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
 		t.Fatalf("Run returned %v", err)
 	}
 
-	err := rl.Run(context.Background())
+	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already started") {
 		t.Fatalf("expected already started error, got %v", err)
 	}
@@ -347,15 +347,15 @@ func waitForRateLimiterRunStarted(t *testing.T, rl *RateLimiter) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		rl.runMu.Lock()
+		rl.startMu.Lock()
 		started := rl.started
-		rl.runMu.Unlock()
+		rl.startMu.Unlock()
 		if started {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("RateLimiter.Run did not start")
+	t.Fatal("RateLimiter.Start did not start")
 }
 
 func TestClientIP_DirectConnection(t *testing.T) {
@@ -468,7 +468,15 @@ func TestRateLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
 			}
 		}()
 		var zero RateLimiter
-		_ = zero.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		_ = Middleware(&zero)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	})
+	t.Run("nil limiter", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on nil limiter")
+			}
+		}()
+		_ = Middleware(nil)
 	})
 	t.Run("nil next", func(t *testing.T) {
 		defer func() {
@@ -476,7 +484,7 @@ func TestRateLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
 				t.Fatal("expected panic on nil next handler")
 			}
 		}()
-		_ = NewRateLimiter(1, time.Minute).Middleware(nil)
+		_ = Middleware(NewRateLimiter(1, time.Minute))(nil)
 	})
 }
 

@@ -69,7 +69,7 @@ const maxIDLen = contextutil.MaxCorrelationIDLen
 // extractIDs reads correlation and request IDs from gRPC metadata and stores
 // them in the context. Incoming values are treated as absent unless exactly
 // one safe correlation token is present. When an ID is absent or invalid, a
-// fresh ID is generated via contextutil.NewID so downstream logs always carry
+// fresh ID is generated via contextutil.GenerateID so downstream logs always carry
 // a stable identifier rather than the attacker's payload. Mirrors the HTTP
 // correlationid/requestid middleware behaviour.
 func extractIDs(ctx context.Context) context.Context {
@@ -94,7 +94,7 @@ func adoptOrGenerate(
 		}
 	}
 	if !isValidID(id) {
-		id = contextutil.NewID()
+		id = contextutil.GenerateID()
 	}
 	return setter(ctx, id)
 }

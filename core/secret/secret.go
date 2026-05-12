@@ -38,8 +38,8 @@ const redacted = "<redacted>"
 // represents an empty (already-zeroed) secret.
 //
 // String is safe for concurrent reads via [String.Reveal] / [String.RevealString].
-// Concurrent [String.Close] races with reads as expected — callers should
-// avoid revealing a string they are about to close.
+// Concurrent [String.Zero] races with reads as expected — callers should
+// avoid revealing a string they are about to zero.
 //
 // String is intentionally a thin wrapper around a pointer to internal
 // state. By-value copies of String share the same backing state with the
@@ -87,7 +87,7 @@ func NewFromString(str string) *String {
 // should keep the lifetime of the returned slice short.
 //
 // Returns nil for a nil receiver, an uninitialised String (zero value
-// constructed without going through [New]), or a closed/empty String.
+// constructed without going through [New]), or a zeroed/empty String.
 func (s *String) Reveal() []byte {
 	if s == nil || s.inner == nil {
 		return nil
@@ -105,7 +105,7 @@ func (s *String) Reveal() []byte {
 // RevealString returns the underlying value as a string.
 //
 // Returns "" for a nil receiver, an uninitialised String, or a
-// closed/empty String.
+// zeroed/empty String.
 func (s *String) RevealString() string {
 	if s == nil || s.inner == nil {
 		return ""
@@ -116,7 +116,7 @@ func (s *String) RevealString() string {
 }
 
 // IsEmpty reports whether the String holds no bytes (either it was
-// constructed empty, was never initialised via [New], or [String.Close]
+// constructed empty, was never initialised via [New], or [String.Zero]
 // zeroed it).
 func (s *String) IsEmpty() bool {
 	if s == nil || s.inner == nil {
@@ -127,12 +127,17 @@ func (s *String) IsEmpty() bool {
 	return len(s.inner.buf) == 0
 }
 
-// Close zeroes the internal buffer. Subsequent [String.Reveal] calls
-// return nil. Idempotent. No-op on a nil receiver or uninitialised
-// String.
-func (s *String) Close() error {
+// Zero overwrites the internal buffer with zeroes. Subsequent
+// [String.Reveal] calls return nil. Idempotent. No-op on a nil
+// receiver or uninitialised String.
+//
+// Zero replaced the v1-era Close method: a [String] is not a
+// resource that closes — Zero clears the underlying buffer. The
+// renamed method also drops the (always-nil) error return so call
+// sites stop treating it as an io.Closer.
+func (s *String) Zero() {
 	if s == nil || s.inner == nil {
-		return nil
+		return
 	}
 	s.inner.mu.Lock()
 	defer s.inner.mu.Unlock()
@@ -140,7 +145,6 @@ func (s *String) Close() error {
 		s.inner.buf[i] = 0
 	}
 	s.inner.buf = nil
-	return nil
 }
 
 // Equal reports whether s and other carry equal byte sequences. The

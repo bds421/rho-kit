@@ -18,11 +18,11 @@ func TestNewRedisModule_PanicsOnNilOpts(t *testing.T) {
 		require.NotNil(t, r, "expected panic for nil redis options")
 		assert.Contains(t, r, "must not be nil")
 	}()
-	newRedisModule(nil)
+	newRedisModule(nil, true)
 }
 
 func TestRedisModule_Name(t *testing.T) {
-	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
+	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"}, true)
 	assert.Equal(t, "redis", m.Name())
 }
 
@@ -31,7 +31,7 @@ func TestNewRedisModule_ClonesOptionsAndConnOptions(t *testing.T) {
 	opts := &goredis.Options{Addr: "localhost:6379", TLSConfig: tlsConfig}
 	connOpts := []kitredis.ConnOption{kitredis.WithInstance("primary")}
 
-	m := newRedisModule(opts, connOpts...)
+	m := newRedisModule(opts, true, connOpts...)
 	opts.Addr = "mutated:6379"
 	tlsConfig.ServerName = "after.example"
 	tlsConfig.NextProtos[0] = "http/1.1"
@@ -52,24 +52,61 @@ func TestNewRedisModule_PanicsOnTLSMaxVersionBelowFloor(t *testing.T) {
 		newRedisModule(&goredis.Options{
 			Addr:      "localhost:6379",
 			TLSConfig: &tls.Config{MaxVersion: tls.VersionTLS11},
-		})
+		}, true)
+	})
+}
+
+func TestNewRedisModule_PanicsOnNonLoopbackWithoutTLS(t *testing.T) {
+	assert.Panics(t, func() {
+		newRedisModule(&goredis.Options{Addr: "redis.example.com:6379"}, false)
+	})
+}
+
+func TestNewRedisModule_PanicsOnNonLoopbackWithoutPassword(t *testing.T) {
+	assert.Panics(t, func() {
+		newRedisModule(&goredis.Options{
+			Addr:      "redis.example.com:6379",
+			TLSConfig: &tls.Config{},
+		}, false)
+	})
+}
+
+func TestNewRedisModule_AllowsNonLoopbackWithTLSAndPassword(t *testing.T) {
+	assert.NotPanics(t, func() {
+		newRedisModule(&goredis.Options{
+			Addr:      "redis.example.com:6379",
+			TLSConfig: &tls.Config{},
+			Password:  "secret",
+		}, false)
+	})
+}
+
+func TestNewRedisModule_AllowsLoopbackWithoutTLS(t *testing.T) {
+	assert.NotPanics(t, func() {
+		newRedisModule(&goredis.Options{Addr: "localhost:6379"}, false)
+	})
+}
+
+func TestNewRedisModule_AllowsPlaintextWithOptOut(t *testing.T) {
+	assert.NotPanics(t, func() {
+		newRedisModule(&goredis.Options{Addr: "redis.example.com:6379"}, true)
 	})
 }
 
 func TestRedisModule_HealthChecksBeforeInit(t *testing.T) {
-	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
+	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"}, true)
 	checks := m.HealthChecks()
 	assert.Nil(t, checks, "should return nil health checks before Init")
 }
 
-func TestRedisModule_CloseBeforeInit(t *testing.T) {
-	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
-	err := m.Close(context.Background())
-	require.NoError(t, err, "Close before Init should not error")
+func TestRedisModule_StopBeforeInit(t *testing.T) {
+	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"}, true)
+	err := m.Stop(context.Background())
+	require.NoError(t, err, "Stop before Init should not error")
 }
 
 func TestRedisModule_PopulateBeforeInit(t *testing.T) {
-	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"})
+	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"}, true)
 	infra := &Infrastructure{}
 	m.Populate(infra)
 	assert.Nil(t, infra.Redis, "Redis should be nil before Init")

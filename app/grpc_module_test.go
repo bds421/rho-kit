@@ -178,10 +178,10 @@ func TestGRPCModule_RegisterHealthWiresService(t *testing.T) {
 	}
 }
 
-func TestGRPCModule_CloseBeforeInit(t *testing.T) {
+func TestGRPCModule_StopBeforeInit(t *testing.T) {
 	m := newGRPCModule(func(_ *grpc.Server) {}, ":50051", nil)
-	// Close before Init should not panic or error.
-	assert.NoError(t, m.Close(context.Background()))
+	// Stop before Init should not panic or error.
+	assert.NoError(t, m.Stop(context.Background()))
 }
 
 func TestGRPCModule_StartBeforeInitReturnsError(t *testing.T) {

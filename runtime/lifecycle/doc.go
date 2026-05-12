@@ -1,6 +1,37 @@
-// Package lifecycle provides graceful startup and shutdown helpers.
+// Package lifecycle composes long-running components into a single graceful
+// startup / shutdown story.
 //
-// Run starts the HTTP server, listens for SIGINT/SIGTERM, invokes the shutdown
-// hook, waits for background goroutines, and then drains in-flight requests
-// before exiting.
+// # Model
+//
+// A [Component] has three responsibilities:
+//
+//   - Name() returns a stable identifier used in logs and metrics.
+//   - Start(ctx) blocks until ctx is cancelled or the component fails.
+//   - Stop(ctx) performs graceful shutdown, bounded by the supplied deadline.
+//
+// [Runner] orchestrates a set of components: Start them concurrently, block
+// on OS signals (SIGINT, SIGTERM), then Stop them in reverse registration
+// order. If any component's Start exits early with an error, the runner
+// cancels the shared context so all peers observe the failure and shut down
+// together.
+//
+// # Adapters
+//
+// Two adapters are provided out of the box:
+//
+//   - [HTTPServer] wraps a configured *http.Server so its ListenAndServe /
+//     Shutdown lifecycle plugs straight into a Runner.
+//   - [FuncComponent] / [NewFuncComponent] / [Runner.AddFunc] adapt a single
+//     blocking function (typically a worker loop) into a Component.
+//
+// # Usage outline
+//
+// A typical service constructs a Runner, registers each top-level component
+// (HTTP server, eventbus, cron scheduler, batch workers, leader elector, …),
+// and calls Run. Run returns the first start-side error joined with any
+// errors observed during shutdown so operators see the full picture.
+//
+// A second SIGINT during shutdown cancels the in-flight Stop calls so the
+// process can exit quickly even when a misbehaving component refuses to
+// release its resources.
 package lifecycle

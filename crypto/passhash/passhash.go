@@ -186,10 +186,80 @@ func (a Params) atLeastAsStrongAs(b Params) bool {
 		a.KeyLen >= b.KeyLen
 }
 
+// HashLimits caps the cost parameters [Hash] is willing to feed
+// argon2id. A typo or attacker-influenced Params slice could
+// otherwise allocate multi-GiB memory or pin a CPU on every Hash
+// call. The defaults are intentionally tighter than [VerifyLimits]
+// — verification has to tolerate parameter upgrades from older
+// stored hashes, but Hash is invoked under the caller's control and
+// should fail loudly when a config typo turns it into a DoS knob.
+//
+// Zero fields inherit [DefaultHashLimits]. Apply via [WithHashLimits].
+type HashLimits struct {
+	MaxMemory      uint32 // KiB; default 256 MiB
+	MaxIterations  uint32 // default 100
+	MaxParallelism uint8  // default 16
+	MaxSaltLen     uint32 // bytes; default 64
+	MaxKeyLen      uint32 // bytes; default 64
+}
+
+// DefaultHashLimits returns the bounds Hash uses when no
+// [WithHashLimits] option is supplied.
+func DefaultHashLimits() HashLimits {
+	return HashLimits{
+		MaxMemory:      256 * 1024,
+		MaxIterations:  100,
+		MaxParallelism: 16,
+		MaxSaltLen:     64,
+		MaxKeyLen:      64,
+	}
+}
+
+func (l HashLimits) withDefaults() HashLimits {
+	d := DefaultHashLimits()
+	if l.MaxMemory == 0 {
+		l.MaxMemory = d.MaxMemory
+	}
+	if l.MaxIterations == 0 {
+		l.MaxIterations = d.MaxIterations
+	}
+	if l.MaxParallelism == 0 {
+		l.MaxParallelism = d.MaxParallelism
+	}
+	if l.MaxSaltLen == 0 {
+		l.MaxSaltLen = d.MaxSaltLen
+	}
+	if l.MaxKeyLen == 0 {
+		l.MaxKeyLen = d.MaxKeyLen
+	}
+	return l
+}
+
+// HashOption configures [Hash].
+type HashOption func(*hashConfig)
+
+type hashConfig struct {
+	limits HashLimits
+}
+
+// WithHashLimits overrides the per-dimension caps Hash enforces
+// before calling argon2id. Use this only when the deployment has
+// benchmarked that the higher cost is acceptable on production
+// hardware — the defaults are tuned to keep a single Hash call
+// well under one second on a 2025-era server core.
+func WithHashLimits(l HashLimits) HashOption {
+	return func(c *hashConfig) { c.limits = l }
+}
+
 // Hash returns an argon2id PHC-format encoded string. Empty passwords
 // are rejected to fail loudly on misuse — the common cause is a bug
 // passing an unset field rather than a deliberate empty value.
-func Hash(password string, p Params) (string, error) {
+//
+// Hash enforces [DefaultHashLimits] on the supplied [Params] so a
+// typo cannot quietly turn an end-user login flow into a per-request
+// CPU/memory DoS. Override via [WithHashLimits] when the deployment
+// has benchmarked a higher cost.
+func Hash(password string, p Params, opts ...HashOption) (string, error) {
 	if password == "" {
 		return "", ErrEmptyPassword
 	}
@@ -200,25 +270,27 @@ func Hash(password string, p Params) (string, error) {
 	if err := p.validatePositive(); err != nil {
 		return "", err
 	}
-	// FR-045 [MED]: also cap hashing parameters with the same
-	// VerifyLimits ceiling. A typo or attacker-influenced Params
-	// could otherwise allocate multi-GiB memory or pin a CPU on
-	// every Hash call. Reuse [DefaultVerifyLimits] so a single set
-	// of bounds applies to both Hash and Verify.
-	hashLimits := DefaultVerifyLimits()
-	if p.Memory > hashLimits.MaxMemory {
+	cfg := hashConfig{limits: DefaultHashLimits()}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("passhash: Hash option must not be nil")
+		}
+		opt(&cfg)
+	}
+	cfg.limits = cfg.limits.withDefaults()
+	if p.Memory > cfg.limits.MaxMemory {
 		return "", fmt.Errorf("passhash: Memory exceeds limit")
 	}
-	if p.Iterations > hashLimits.MaxIterations {
+	if p.Iterations > cfg.limits.MaxIterations {
 		return "", fmt.Errorf("passhash: Iterations exceeds limit")
 	}
-	if p.Parallelism > hashLimits.MaxParallelism {
+	if p.Parallelism > cfg.limits.MaxParallelism {
 		return "", fmt.Errorf("passhash: Parallelism exceeds limit")
 	}
-	if p.SaltLen > hashLimits.MaxSaltLen {
+	if p.SaltLen > cfg.limits.MaxSaltLen {
 		return "", fmt.Errorf("passhash: SaltLen exceeds limit")
 	}
-	if p.KeyLen > hashLimits.MaxKeyLen {
+	if p.KeyLen > cfg.limits.MaxKeyLen {
 		return "", fmt.Errorf("passhash: KeyLen exceeds limit")
 	}
 
@@ -241,15 +313,26 @@ func Hash(password string, p Params) (string, error) {
 	return enc, nil
 }
 
-// Verify checks password against the encoded PHC string. Returns:
-//   - matched=true when the password matches.
-//   - needsRehash=true when the stored parameters are weaker than
-//     target along any dimension (caller should re-hash and persist).
-//   - err non-nil for malformed input or when the stored parameters
-//     exceed the verifier's accepted bounds (see [VerifyLimits]).
+// VerifyResult bundles the outcome of [Verify]. Matched is the
+// security-critical bit — callers MUST use it to gate authentication.
+// NeedsRehash is a hint that the stored parameters are weaker than
+// the current target along some dimension; the recommended pattern
+// is to re-hash and persist on the next successful login.
+type VerifyResult struct {
+	Matched     bool
+	NeedsRehash bool
+}
+
+// Verify checks password against the encoded PHC string.
 //
-// matched is computed in constant time against the stored hash.
-// Callers MUST use matched to gate authentication; needsRehash is a
+// Returns [VerifyResult]{Matched: true} when the password matches the
+// stored hash, with NeedsRehash set when the stored parameters are
+// weaker than target along any dimension. Returns an error for
+// malformed input or when the stored parameters exceed the verifier's
+// accepted bounds (see [VerifyLimits]).
+//
+// Matched is computed in constant time against the stored hash.
+// Callers MUST use Matched to gate authentication; NeedsRehash is a
 // hint, not a security boundary.
 //
 // Verify caps the cost parameters it is willing to feed argon2 with
@@ -259,12 +342,12 @@ func Hash(password string, p Params) (string, error) {
 // is rejected with [ErrParamsOutOfBounds] before any argon2 work
 // runs. This prevents a corrupted row or attacker-controlled hash
 // string from pinning login workers or exhausting memory.
-func Verify(password, encoded string, target Params, opts ...VerifyOption) (matched bool, needsRehash bool, err error) {
+func Verify(password, encoded string, target Params, opts ...VerifyOption) (VerifyResult, error) {
 	if password == "" {
-		return false, false, ErrEmptyPassword
+		return VerifyResult{}, ErrEmptyPassword
 	}
 	if len(password) > MaxPasswordLen {
-		return false, false, ErrPasswordTooLong
+		return VerifyResult{}, ErrPasswordTooLong
 	}
 
 	cfg := verifyConfig{limits: DefaultVerifyLimits()}
@@ -279,22 +362,22 @@ func Verify(password, encoded string, target Params, opts ...VerifyOption) (matc
 
 	stored, salt, hash, err := parsePHC(encoded)
 	if err != nil {
-		return false, false, err
+		return VerifyResult{}, err
 	}
 	if err := stored.validatePositive(); err != nil {
-		return false, false, err
+		return VerifyResult{}, err
 	}
 	if !cfg.limits.accepts(stored) {
-		return false, false, ErrParamsOutOfBounds
+		return VerifyResult{}, ErrParamsOutOfBounds
 	}
 
 	candidate := argon2.IDKey([]byte(password), salt, stored.Iterations, stored.Memory, stored.Parallelism, uint32(len(hash)))
-	matched = subtle.ConstantTimeCompare(candidate, hash) == 1
+	matched := subtle.ConstantTimeCompare(candidate, hash) == 1
 
-	if matched && !stored.atLeastAsStrongAs(target) {
-		needsRehash = true
-	}
-	return matched, needsRehash, nil
+	return VerifyResult{
+		Matched:     matched,
+		NeedsRehash: matched && !stored.atLeastAsStrongAs(target),
+	}, nil
 }
 
 // maxEncodedLen caps the size of a PHC string Verify is willing to
@@ -331,6 +414,14 @@ func parsePHC(s string) (Params, []byte, []byte, error) {
 	}
 	var p Params
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &p.Memory, &p.Iterations, &p.Parallelism); err != nil {
+		return Params{}, nil, nil, ErrMalformed
+	}
+	// Sscanf tolerates trailing garbage. Round-trip the parsed values
+	// through the same format string and reject if the re-encoded
+	// form does not exactly match the input — that catches inputs
+	// like "m=64,t=3,p=1junk" or stray whitespace that Sscanf would
+	// otherwise accept.
+	if expected := fmt.Sprintf("m=%d,t=%d,p=%d", p.Memory, p.Iterations, p.Parallelism); expected != parts[3] {
 		return Params{}, nil, nil, ErrMalformed
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])

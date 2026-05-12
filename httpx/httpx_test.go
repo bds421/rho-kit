@@ -23,7 +23,9 @@ import (
 
 func TestWriteJSON_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
-	WriteJSON(rec, http.StatusOK, map[string]string{"key": "value"})
+	if err := WriteJSON(rec, nil, http.StatusOK, map[string]string{"key": "value"}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -42,8 +44,11 @@ func TestWriteJSON_Success(t *testing.T) {
 
 func TestWriteJSON_MarshalError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	// Channels cannot be marshaled to JSON
-	WriteJSON(rec, http.StatusOK, make(chan int))
+	// Channels cannot be marshaled to JSON.
+	err := WriteJSON(rec, nil, http.StatusOK, make(chan int))
+	if err == nil {
+		t.Fatalf("expected marshal error, got nil")
+	}
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
@@ -70,16 +75,16 @@ func TestWriteError(t *testing.T) {
 		status   int
 		wantCode string
 	}{
-		{http.StatusBadRequest, "VALIDATION"},
-		{http.StatusUnauthorized, "UNAUTHORIZED"},
-		{http.StatusNotFound, "NOT_FOUND"},
+		{http.StatusBadRequest, string(apperror.CodeValidation)},
+		{http.StatusUnauthorized, string(apperror.CodeAuthRequired)},
+		{http.StatusNotFound, string(apperror.CodeNotFound)},
 		{http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED"},
-		{http.StatusConflict, "CONFLICT"},
+		{http.StatusConflict, string(apperror.CodeConflict)},
 		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
 		{http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE"},
 		{http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE"},
-		{http.StatusUnprocessableEntity, "UNPROCESSABLE_ENTITY"},
-		{http.StatusTooManyRequests, "RATE_LIMITED"},
+		{http.StatusUnprocessableEntity, string(apperror.CodePermanent)},
+		{http.StatusTooManyRequests, string(apperror.CodeRateLimit)},
 		{http.StatusInternalServerError, "INTERNAL"},
 	}
 
@@ -400,7 +405,7 @@ func TestWriteServiceError_RateLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-	WriteServiceError(rec, req, logger, apperror.NewRateLimit("quota exceeded", 30*time.Second))
+	WriteServiceError(rec, req, logger, apperror.NewRateLimitWithRetryAfter("quota exceeded", 30*time.Second))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
@@ -414,7 +419,7 @@ func TestWriteServiceError_RateLimit_NoRetryAfter(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-	WriteServiceError(rec, req, logger, apperror.NewRateLimit("too fast", 0))
+	WriteServiceError(rec, req, logger, apperror.NewRateLimit("too fast"))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
@@ -705,20 +710,20 @@ func TestHttpStatusToCode(t *testing.T) {
 		status   int
 		wantCode string
 	}{
-		{http.StatusBadRequest, "VALIDATION"},
-		{http.StatusUnauthorized, "UNAUTHORIZED"},
-		{http.StatusNotFound, "NOT_FOUND"},
+		{http.StatusBadRequest, string(apperror.CodeValidation)},
+		{http.StatusUnauthorized, string(apperror.CodeAuthRequired)},
+		{http.StatusNotFound, string(apperror.CodeNotFound)},
 		{http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED"},
-		{http.StatusConflict, "CONFLICT"},
+		{http.StatusConflict, string(apperror.CodeConflict)},
 		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
 		{http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE"},
 		{http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE"},
-		{http.StatusUnprocessableEntity, "UNPROCESSABLE_ENTITY"},
-		{http.StatusTooManyRequests, "RATE_LIMITED"},
+		{http.StatusUnprocessableEntity, string(apperror.CodePermanent)},
+		{http.StatusTooManyRequests, string(apperror.CodeRateLimit)},
 		{http.StatusInternalServerError, "INTERNAL"},
-		{http.StatusForbidden, "FORBIDDEN"},
+		{http.StatusForbidden, string(apperror.CodeForbidden)},
 		{http.StatusBadGateway, "BAD_GATEWAY"},
-		{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
+		{http.StatusServiceUnavailable, string(apperror.CodeUnavailable)},
 		{http.StatusTeapot, "INTERNAL"},
 		{999, "INTERNAL"},
 	}
@@ -1159,18 +1164,9 @@ func TestNewTracingHTTPClient_BlocksRedirectsByDefault(t *testing.T) {
 	}
 }
 
-func TestNewTracingHTTPClientWithOptions_PanicsOnZeroTimeout(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for zero timeout")
-		}
-	}()
-	NewTracingHTTPClientWithOptions(0, nil, nil)
-}
-
-func TestNewTracingHTTPClientWithOptions_WithFollowRedirects(t *testing.T) {
+func TestNewTracingHTTPClient_WithKitFollowRedirects(t *testing.T) {
 	srv := newClientRedirectTestServer(t)
-	client := NewTracingHTTPClientWithOptions(time.Second, nil, []ClientOption{WithFollowRedirects(1)})
+	client := NewTracingHTTPClient(time.Second, nil, WithKitOption(WithFollowRedirects(1)))
 
 	resp, err := client.Get(srv.URL + "/start")
 	if err != nil {
@@ -1182,13 +1178,22 @@ func TestNewTracingHTTPClientWithOptions_WithFollowRedirects(t *testing.T) {
 	}
 }
 
-func TestNewTracingHTTPClientWithOptions_PanicsOnNilKitOption(t *testing.T) {
+func TestNewTracingHTTPClient_PanicsOnNilOption(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil tracing option")
+		}
+	}()
+	NewTracingHTTPClient(time.Second, nil, nil)
+}
+
+func TestWithKitOption_PanicsOnNil(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for nil kit option")
 		}
 	}()
-	NewTracingHTTPClientWithOptions(time.Second, nil, []ClientOption{nil})
+	WithKitOption(nil)
 }
 
 // --- newKitTransport handles replaced http.DefaultTransport ---

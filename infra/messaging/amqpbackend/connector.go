@@ -1,6 +1,10 @@
 package amqpbackend
 
-import amqp "github.com/rabbitmq/amqp091-go"
+import (
+	"context"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
 
 // Connector is the AMQP-specific connection interface. It extends the generic
 // messaging.Connector with channel access needed by publisher, consumer, and
@@ -14,6 +18,7 @@ type Connector interface {
 	// Healthy reports whether the broker connection is alive and usable.
 	Healthy() bool
 
-	// Close shuts down the connection and releases resources.
-	Close() error
+	// Stop shuts down the connection and releases resources. See
+	// [messaging.Connector.Stop] for ctx semantics.
+	Stop(ctx context.Context) error
 }

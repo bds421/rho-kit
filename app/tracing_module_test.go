@@ -31,7 +31,7 @@ func TestTracingModule_InitNoopEndpoint(t *testing.T) {
 	assert.Nil(t, m.HealthChecks(), "no health checks for noop tracing")
 
 	// Close should not error.
-	require.NoError(t, m.Close(context.Background()))
+	require.NoError(t, m.Stop(context.Background()))
 }
 
 func TestTracingModuleEnabledLogDoesNotExposeEndpoint(t *testing.T) {
@@ -49,7 +49,7 @@ func TestTracingModuleEnabledLogDoesNotExposeEndpoint(t *testing.T) {
 
 	err := m.Init(context.Background(), mc)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = m.Close(context.Background()) })
+	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
 	rendered := buf.String()
 	for _, forbidden := range []string{endpoint, "collector-secret.internal"} {
@@ -78,10 +78,10 @@ func TestTracingModule_HealthChecksReturnsDetachedSlice(t *testing.T) {
 	assert.Equal(t, "tracing", fresh[0].Name)
 }
 
-func TestTracingModule_CloseBeforeInit(t *testing.T) {
+func TestTracingModule_StopBeforeInit(t *testing.T) {
 	m := newTracingModule(tracing.Config{})
-	err := m.Close(context.Background())
-	require.NoError(t, err, "Close before Init should not error")
+	err := m.Stop(context.Background())
+	require.NoError(t, err, "Stop before Init should not error")
 }
 
 func TestBuildIntegrationModules_Tracing(t *testing.T) {

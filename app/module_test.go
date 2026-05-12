@@ -23,12 +23,12 @@ type stubModule struct {
 	name         string
 	initFn       func(ctx context.Context, mc ModuleContext) error
 	populateFn   func(infra *Infrastructure)
-	closeFn      func(ctx context.Context) error
+	stopFn       func(ctx context.Context) error
 	healthChecks []health.DependencyCheck
 
 	initCalled     atomic.Bool
 	populateCalled atomic.Bool
-	closeCalled    atomic.Bool
+	stopCalled     atomic.Bool
 }
 
 func newStubModule(name string) *stubModule {
@@ -52,10 +52,10 @@ func (m *stubModule) Populate(infra *Infrastructure) {
 	}
 }
 
-func (m *stubModule) Close(ctx context.Context) error {
-	m.closeCalled.Store(true)
-	if m.closeFn != nil {
-		return m.closeFn(ctx)
+func (m *stubModule) Stop(ctx context.Context) error {
+	m.stopCalled.Store(true)
+	if m.stopFn != nil {
+		return m.stopFn(ctx)
 	}
 	return nil
 }
@@ -137,7 +137,7 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 		order = append(order, "init-first")
 		return nil
 	}
-	m1.closeFn = func(_ context.Context) error {
+	m1.stopFn = func(_ context.Context) error {
 		order = append(order, "close-first")
 		return nil
 	}
@@ -147,7 +147,7 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 		order = append(order, "init-second")
 		return nil
 	}
-	m2.closeFn = func(_ context.Context) error {
+	m2.stopFn = func(_ context.Context) error {
 		order = append(order, "close-second")
 		return nil
 	}
@@ -172,28 +172,29 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 	assert.Equal(t, []string{"init-first", "init-second", "close-second", "close-first"}, order)
 }
 
-func TestCloseModules_LogRedactsModuleNameAndError(t *testing.T) {
+func TestCloseModules_LogsModuleNameAndError(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	m := newStubModule("close-mod-secret-token")
-	m.closeFn = func(context.Context) error {
-		return errors.New("close failed token=tenant-secret")
+	m := newStubModule("close-mod-name")
+	m.stopFn = func(context.Context) error {
+		return errors.New("stop failed")
 	}
 
 	closeModules(context.Background(), []Module{m}, logger)
 
 	got := logs.String()
-	assert.Contains(t, got, "module close error")
-	assert.Contains(t, got, "<redacted")
-	assert.NotContains(t, got, "close-mod-secret-token")
-	assert.NotContains(t, got, "tenant-secret")
+	assert.Contains(t, got, "module stop error")
+	// Operator-facing logs: the module name and stop error are not redacted
+	// so the operator can correlate failures with a specific module.
+	assert.Contains(t, got, "close-mod-name")
+	assert.Contains(t, got, "stop failed")
 }
 
 func TestInitModules_FailureClosesInitialized(t *testing.T) {
 	var closedModules []string
 
 	m1 := newStubModule("ok-mod")
-	m1.closeFn = func(_ context.Context) error {
+	m1.stopFn = func(_ context.Context) error {
 		closedModules = append(closedModules, "ok-mod")
 		return nil
 	}
@@ -202,13 +203,13 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 	m2.initFn = func(_ context.Context, _ ModuleContext) error {
 		return errors.New("init boom")
 	}
-	m2.closeFn = func(_ context.Context) error {
+	m2.stopFn = func(_ context.Context) error {
 		closedModules = append(closedModules, "fail-mod")
 		return nil
 	}
 
 	m3 := newStubModule("never-mod")
-	m3.closeFn = func(_ context.Context) error {
+	m3.stopFn = func(_ context.Context) error {
 		closedModules = append(closedModules, "never-mod")
 		return nil
 	}
@@ -264,7 +265,7 @@ func TestInitModules_DependencyLookup(t *testing.T) {
 
 func TestInitModules_CloseErrorIsLogged(t *testing.T) {
 	m := newStubModule("flaky")
-	m.closeFn = func(_ context.Context) error {
+	m.stopFn = func(_ context.Context) error {
 		return errors.New("close error")
 	}
 
@@ -343,7 +344,7 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 	var closed atomic.Bool
 
 	mod1 := newStubModule("good-mod")
-	mod1.closeFn = func(_ context.Context) error {
+	mod1.stopFn = func(_ context.Context) error {
 		closed.Store(true)
 		return nil
 	}
@@ -424,7 +425,7 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 		}
 		return nil
 	}
-	mod1.closeFn = func(_ context.Context) error {
+	mod1.stopFn = func(_ context.Context) error {
 		closeOrder = append(closeOrder, "first")
 		return nil
 	}
@@ -444,7 +445,7 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 		}
 		return nil
 	}
-	mod2.closeFn = func(_ context.Context) error {
+	mod2.stopFn = func(_ context.Context) error {
 		closeOrder = append(closeOrder, "second")
 		return nil
 	}
@@ -479,12 +480,12 @@ func TestCloseModules_PanicRecovery(t *testing.T) {
 	var closed []string
 
 	m1 := newStubModule("panic-mod")
-	m1.closeFn = func(_ context.Context) error {
+	m1.stopFn = func(_ context.Context) error {
 		panic("close boom")
 	}
 
 	m2 := newStubModule("ok-mod")
-	m2.closeFn = func(_ context.Context) error {
+	m2.stopFn = func(_ context.Context) error {
 		closed = append(closed, "ok-mod")
 		return nil
 	}
@@ -512,7 +513,7 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 	var closed []string
 
 	m1 := newStubModule("ok-mod")
-	m1.closeFn = func(_ context.Context) error {
+	m1.stopFn = func(_ context.Context) error {
 		closed = append(closed, "ok-mod")
 		return nil
 	}
@@ -590,7 +591,7 @@ func TestBaseModule_Defaults(t *testing.T) {
 
 	assert.Equal(t, "test-module", bm.Name())
 	assert.NoError(t, bm.Init(context.Background(), ModuleContext{}))
-	assert.NoError(t, bm.Close(context.Background()))
+	assert.NoError(t, bm.Stop(context.Background()))
 	assert.Nil(t, bm.HealthChecks())
 
 	// Populate is a no-op; should not panic.
@@ -615,8 +616,8 @@ func TestBaseModule_EmbeddingPattern(t *testing.T) {
 
 	m := &customModule{BaseModule: NewBaseModule("custom")}
 	assert.Equal(t, "custom", m.Name())
-	assert.Nil(t, m.HealthChecks())                  // inherited no-op
-	assert.NoError(t, m.Close(context.Background())) // inherited no-op
+	assert.Nil(t, m.HealthChecks())                 // inherited no-op
+	assert.NoError(t, m.Stop(context.Background())) // inherited no-op
 
 	m.initCalled = true // custom logic would go in an overridden Init
 	assert.True(t, m.initCalled)

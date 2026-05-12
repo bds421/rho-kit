@@ -55,9 +55,9 @@ type Infrastructure struct {
 	// GORM; pgx is the only supported driver. Configured via WithPostgres.
 	DB *pgxbackend.Pool
 
-	Broker    messaging.Connector        // nil if no WithRabbitMQ
-	Publisher messaging.MessagePublisher // nil if no WithRabbitMQ
-	Consumer  messaging.MessageConsumer  // nil if no WithRabbitMQ
+	Broker    messaging.Connector // nil if no WithRabbitMQ
+	Publisher messaging.Publisher // nil if no WithRabbitMQ
+	Consumer  messaging.Consumer  // nil if no WithRabbitMQ
 
 	NATS          *natsbackend.Connection // nil if no WithNATS
 	NATSPublisher *natsbackend.Publisher  // nil if no WithNATS

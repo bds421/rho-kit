@@ -158,13 +158,13 @@ func TestRequireHeaderUser_GuardPanicRejects(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_NilProviderPanics(t *testing.T) {
+func TestJWT_NilProviderPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for nil provider")
 		}
 	}()
-	_ = RequireUserWithJWT(nil)
+	_ = JWT(nil)
 }
 
 func TestHeaderMode_WithoutHeader(t *testing.T) {
@@ -357,9 +357,9 @@ func newTestProvider(ks *jwtutil.KeySet) *jwtutil.Provider {
 	)
 }
 
-// --- RequireUserWithJWT tests (JWT-only mode) ---
+// --- JWT tests (JWT-only mode) ---
 
-func TestRequireUserWithJWT_ValidToken(t *testing.T) {
+func TestJWT_ValidToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
@@ -368,7 +368,7 @@ func TestRequireUserWithJWT_ValidToken(t *testing.T) {
 	var capturedPerms []string
 	var capturedScopes string
 
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedUserID = UserID(r.Context())
 		capturedPerms = Permissions(r.Context())
 		capturedScopes = Scopes(r.Context())
@@ -403,12 +403,12 @@ func TestRequireUserWithJWT_ValidToken(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_InvalidToken(t *testing.T) {
+func TestJWT_InvalidToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -422,13 +422,13 @@ func TestRequireUserWithJWT_InvalidToken(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_RejectsDuplicateAuthorization(t *testing.T) {
+func TestJWT_RejectsDuplicateAuthorization(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -453,7 +453,7 @@ func TestRequireUserWithJWT_RejectsDuplicateAuthorization(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_RejectsAmbiguousAuthorization(t *testing.T) {
+func TestJWT_RejectsAmbiguousAuthorization(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
@@ -468,7 +468,7 @@ func TestRequireUserWithJWT_RejectsAmbiguousAuthorization(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			called := false
-			handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusOK)
 			}))
@@ -488,12 +488,12 @@ func TestRequireUserWithJWT_RejectsAmbiguousAuthorization(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_ExpiredToken(t *testing.T) {
+func TestJWT_ExpiredToken(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -512,12 +512,12 @@ func TestRequireUserWithJWT_ExpiredToken(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_NonUUIDSubject(t *testing.T) {
+func TestJWT_NonUUIDSubject(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -536,13 +536,13 @@ func TestRequireUserWithJWT_NonUUIDSubject(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_RejectsHeaderFallback(t *testing.T) {
+func TestJWT_RejectsHeaderFallback(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
@@ -559,13 +559,13 @@ func TestRequireUserWithJWT_RejectsHeaderFallback(t *testing.T) {
 	}
 }
 
-func TestRequireUserWithJWT_RejectsHeaderEvenWithMTLS(t *testing.T) {
+func TestJWT_RejectsHeaderEvenWithMTLS(t *testing.T) {
 	key := testKey(t)
 	ks, _ := jwtutil.ParseKeySet(testJWKS(t, key, "kid-1"))
 	provider := newTestProvider(ks)
 
 	called := false
-	handler := RequireUserWithJWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := JWT(provider)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 
@@ -933,7 +933,7 @@ func TestRequireS2SAuth_MTLS_SetsTrustedMarker(t *testing.T) {
 }
 
 // TestRequireS2SAuth_JWT_DoesNotSetTrustedMarker locks in the converse
-// invariant: the JWT branch (whether reached via RequireUserWithJWT or
+// invariant: the JWT branch (whether reached via JWT or
 // RequireS2SAuth's first-class JWT check) must NOT set the trusted-S2S
 // marker. JWT callers are governed by their permissions claim; treating
 // them as trusted would let a token issued without permissions bypass RBAC.
@@ -1030,32 +1030,6 @@ func TestRequirePermission_Denied(t *testing.T) {
 	}
 	if called {
 		t.Error("next handler should not be called")
-	}
-}
-
-// TestRequirePermission_TrustedS2S_PassesThrough confirms that requests
-// carrying the trusted-S2S marker bypass the permission check. The marker
-// is set only by RequireS2SAuth's mTLS branch; the test sets it via the
-// WithTrustedS2S helper to exercise the same path.
-func TestRequirePermission_TrustedS2S_PassesThrough(t *testing.T) {
-	called := false
-	h := RequirePermission("general:view")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithTrustedS2S(ctx)
-	req = req.WithContext(ctx)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
-	}
-	if !called {
-		t.Error("next handler should be called for trusted-S2S caller")
 	}
 }
 
@@ -1191,30 +1165,6 @@ func TestPermissionByMethod_WriteDenied(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for write without manage perm, got %d", rec.Code)
-	}
-}
-
-// TestPermissionByMethod_TrustedS2S_PassesThrough mirrors
-// TestRequirePermission_TrustedS2S_PassesThrough for the by-method variant.
-func TestPermissionByMethod_TrustedS2S_PassesThrough(t *testing.T) {
-	called := false
-	h := PermissionByMethod("general:view", "general:manage")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := WithUserID(req.Context(), testUUID)
-	ctx = WithTrustedS2S(ctx)
-	req = req.WithContext(ctx)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for trusted-S2S caller, got %d", rec.Code)
-	}
-	if !called {
-		t.Error("next handler should be called for trusted-S2S caller")
 	}
 }
 

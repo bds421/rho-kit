@@ -42,7 +42,7 @@ func TestNilReceiverIsSafe(t *testing.T) {
 	assert.True(t, s.IsEmpty())
 	assert.Nil(t, s.Reveal())
 	assert.Equal(t, "", s.RevealString())
-	assert.NoError(t, s.Close())
+	s.Zero()
 }
 
 func TestRevealReturnsCopy(t *testing.T) {
@@ -125,18 +125,18 @@ func TestSlogLogValue_Redacted(t *testing.T) {
 	assert.NotContains(t, buf.String(), plain)
 }
 
-func TestClose_ZeroesBuffer(t *testing.T) {
+func TestZero_ZeroesBuffer(t *testing.T) {
 	s := NewFromString(plain)
-	require.NoError(t, s.Close())
+	s.Zero()
 	assert.True(t, s.IsEmpty())
 	assert.Empty(t, s.Reveal())
 	assert.Equal(t, "", s.RevealString())
 }
 
-func TestClose_Idempotent(t *testing.T) {
+func TestZero_Idempotent(t *testing.T) {
 	s := NewFromString(plain)
-	require.NoError(t, s.Close())
-	require.NoError(t, s.Close())
+	s.Zero()
+	s.Zero()
 	assert.True(t, s.IsEmpty())
 }
 

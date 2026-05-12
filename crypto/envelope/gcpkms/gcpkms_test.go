@@ -34,7 +34,7 @@ func TestConfigLogValueRedactsAAD(t *testing.T) {
 
 func TestNewCopiesAAD(t *testing.T) {
 	aad := []byte("tenant=acme")
-	k, err := New(&kms.KeyManagementClient{}, Config{
+	k, err := NewKEK(&kms.KeyManagementClient{}, Config{
 		KeyResource:                 "projects/p/locations/l/keyRings/r/cryptoKeys/k",
 		AdditionalAuthenticatedData: aad,
 	})
@@ -71,7 +71,7 @@ func TestKEKInvalidStateReturnsErrors(t *testing.T) {
 }
 
 func TestKEKRejectsNilContextAndEmptyUnwrapKey(t *testing.T) {
-	k, err := New(&kms.KeyManagementClient{}, Config{
+	k, err := NewKEK(&kms.KeyManagementClient{}, Config{
 		KeyResource: "projects/p/locations/l/keyRings/r/cryptoKeys/k",
 	})
 	if err != nil {
@@ -87,6 +87,40 @@ func TestKEKRejectsNilContextAndEmptyUnwrapKey(t *testing.T) {
 	}
 	if _, err := k.Unwrap(context.Background(), "", []byte("wrapped")); err == nil {
 		t.Fatal("Unwrap empty keyID expected error")
+	}
+}
+
+func TestUnwrapRejectsMismatchedKeyID(t *testing.T) {
+	parent := "projects/p/locations/l/keyRings/r/cryptoKeys/k"
+	k, err := NewKEK(&kms.KeyManagementClient{}, Config{KeyResource: parent})
+	if err != nil {
+		t.Fatalf("NewKEK: %v", err)
+	}
+
+	cases := []struct{ name, keyID string }{
+		{"different parent", "projects/p/locations/l/keyRings/r/cryptoKeys/other"},
+		{"non-numeric version", parent + "/cryptoKeyVersions/abc"},
+		{"empty version", parent + "/cryptoKeyVersions/"},
+		{"wrong suffix", parent + "X"},
+	}
+	for _, tc := range cases {
+		_, err := k.Unwrap(context.Background(), tc.keyID, []byte("wrapped"))
+		if err == nil {
+			t.Fatalf("%s: Unwrap expected error", tc.name)
+		}
+		if !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("%s: error = %v, want match-failure message", tc.name, err)
+		}
+	}
+}
+
+func TestAllowsKeyIDAcceptsVersionedSuffix(t *testing.T) {
+	parent := "projects/p/locations/l/keyRings/r/cryptoKeys/k"
+	if !allowsKeyID(parent, parent) {
+		t.Fatal("expected exact match to pass")
+	}
+	if !allowsKeyID(parent, parent+"/cryptoKeyVersions/3") {
+		t.Fatal("expected version-qualified suffix to pass")
 	}
 }
 

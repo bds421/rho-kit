@@ -37,9 +37,9 @@ type KEK struct {
 	current string
 }
 
-// New returns a KEK with the given keyID active and no other keys
+// NewKEK returns a KEK with the given keyID active and no other keys
 // available. masterKey must be 32 bytes (AES-256).
-func New(keyID string, masterKey []byte) (*KEK, error) {
+func NewKEK(keyID string, masterKey []byte) (*KEK, error) {
 	if err := validateKeyID(keyID); err != nil {
 		return nil, err
 	}
@@ -231,8 +231,30 @@ func validateKeyID(keyID string) error {
 		if r == 0 || unicode.IsControl(r) {
 			return errors.New("kekstatic: keyID contains control characters")
 		}
+		if !isAllowedKeyIDRune(r) {
+			return errors.New("kekstatic: keyID must match [A-Za-z0-9._:/-]")
+		}
 	}
 	return nil
+}
+
+// isAllowedKeyIDRune permits the alphabet most KMS providers use for
+// key identifiers: ASCII letters and digits plus '.', '_', ':', '/',
+// and '-'. Anything else (Unicode letters, symbols, spaces) is rejected
+// — both to stop a homoglyph from impersonating a configured key in
+// telemetry and to keep the envelope header parser well-behaved.
+func isAllowedKeyIDRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	case r == '.' || r == '_' || r == ':' || r == '/' || r == '-':
+		return true
+	}
+	return false
 }
 
 func zeroBytes(b []byte) {

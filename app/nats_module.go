@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
@@ -71,12 +70,14 @@ func (m *natsModule) Populate(infra *Infrastructure) {
 	infra.NATSPublisher = m.publisher
 }
 
-func (m *natsModule) Close(_ context.Context) error {
-	if m.conn == nil {
+func (m *natsModule) Stop(ctx context.Context) error {
+	if m == nil || m.conn == nil {
 		return nil
 	}
-	if err := m.conn.Close(); err != nil {
-		m.logger.Warn("error closing nats", redact.Error(err))
+	conn := m.conn
+	m.conn = nil
+	if err := conn.Stop(ctx); err != nil {
+		m.logger.Warn("error closing nats", slog.Any("error", err))
 		return err
 	}
 	return nil

@@ -59,9 +59,9 @@ func WithLocation(loc *time.Location) Option {
 	return func(c *config) { c.location = loc }
 }
 
-// WithRegistry sets the Prometheus registerer for cron metrics.
+// WithRegisterer sets the Prometheus registerer for cron metrics.
 // Default: prometheus.DefaultRegisterer.
-func WithRegistry(reg prometheus.Registerer) Option {
+func WithRegisterer(reg prometheus.Registerer) Option {
 	return func(c *config) { c.registry = reg }
 }
 
@@ -157,6 +157,18 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {
 		panic("cron: invalid schedule for job")
 	}
+	s.mu.RLock()
+	_, hasTimeout := s.jobTimeouts[name]
+	s.mu.RUnlock()
+	if !hasTimeout {
+		// FR-093: callers without an explicit SetJobTimeout silently
+		// inherit defaultJobTimeout. Surface that at registration so
+		// the operator knows long jobs may be killed at 30 minutes.
+		s.logger.Warn("cron job registered without timeout; defaultJobTimeout applies",
+			"name", name,
+			"default_timeout", defaultJobTimeout,
+		)
+	}
 	s.logger.Info("cron job registered", "name", name, "schedule", schedule)
 }
 
@@ -229,6 +241,15 @@ func (s *Scheduler) wrapJob(name string, fn func(ctx context.Context) error) fun
 
 		if baseCtx == nil {
 			baseCtx = context.Background()
+		}
+
+		// Skip the tick entirely when the scheduler is already
+		// stopping. Otherwise we'd derive a child ctx that fires
+		// DeadlineExceeded immediately and pollute the cron error
+		// metrics with shutdown noise.
+		if baseCtx.Err() != nil {
+			s.logger.Debug("cron job skipped (scheduler stopping)", "job", name)
+			return
 		}
 
 		if s.leaderFn != nil && !s.isLeader(name) {

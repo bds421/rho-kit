@@ -268,14 +268,27 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	cfg := config{
 		cookieName: defaultCookieName,
 		headerName: defaultHeaderName,
-		sameSite:   http.SameSiteLaxMode,
 		path:       "/",
 	}
+	sameSiteSet := false
 	for _, o := range opts {
 		if o == nil {
 			panic("csrf: New option must not be nil")
 		}
 		o(&cfg)
+		if cfg.sameSite != 0 {
+			sameSiteSet = true
+		}
+	}
+	if !sameSiteSet {
+		// Session-bound flow defaults to Strict so a token cannot ride
+		// along a cross-origin top-level navigation. Legacy double-submit
+		// stays on Lax to keep forms-that-redirect working unchanged.
+		if cfg.sessionExtractor != nil {
+			cfg.sameSite = http.SameSiteStrictMode
+		} else {
+			cfg.sameSite = http.SameSiteLaxMode
+		}
 	}
 	// FR-020 [HIGH]: default Secure to true. Pre-fix the default was
 	// false, so production users that only configured the secret

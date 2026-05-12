@@ -405,10 +405,15 @@ const maxConsecutiveHeartbeatFailures = 3
 
 // heartbeatLoop refreshes the heartbeat key at heartbeatInterval. Stops on
 // ctx cancellation OR after [maxConsecutiveHeartbeatFailures] consecutive
-// errors — at which point the next reaper pass will treat us as dead. Does
-// NOT delete the key on shutdown — the TTL handles that, and leaving the
-// key alive briefly past shutdown is the correct posture.
-func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string) {
+// errors — at which point the next reaper pass will treat us as dead, so
+// we also invoke cancelProcess to stop the local Process loop. Without
+// the cancel the local consumer would keep pulling new work from the
+// queue while a peer reclaims our processing list, double-dispatching
+// messages.
+//
+// Does NOT delete the heartbeat key on shutdown — the TTL handles that,
+// and leaving the key alive briefly past shutdown is the correct posture.
+func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string, cancelProcess context.CancelFunc) {
 	ticker := time.NewTicker(q.heartbeatInterval)
 	defer ticker.Stop()
 
@@ -421,10 +426,14 @@ func (q *Queue) heartbeatLoop(ctx context.Context, heartbeatKey string) {
 			if err := q.refreshHeartbeat(ctx, heartbeatKey); err != nil {
 				consecutiveFails++
 				if consecutiveFails >= maxConsecutiveHeartbeatFailures {
-					q.logger.Error("heartbeat loop giving up after consecutive failures; peer reaper will reclaim our processing list",
+					q.logger.Error("heartbeat loop giving up; cancelling local processing to avoid double-dispatch",
 						redact.String("consumer_id", q.consumerID),
 						"failures", consecutiveFails,
+						redact.Error(err),
 					)
+					if cancelProcess != nil {
+						cancelProcess()
+					}
 					return
 				}
 				continue

@@ -57,23 +57,31 @@ func (h *httpServerComponent) Stop(ctx context.Context) error {
 // FuncComponent adapts a simple function to the Component interface.
 // The function should block until ctx is cancelled.
 //
-// Stop() cancels the context passed to StartFn and waits for StartFn to
+// Stop() cancels the context passed to the function and waits for it to
 // return (up to the stop context deadline). This ensures the Runner's
 // stopTimeout is enforceable and the function has fully cleaned up before
 // shutdown proceeds.
+//
+// Construct via [NewFuncComponent] — the zero value is not usable.
 type FuncComponent struct {
-	StartFn func(ctx context.Context) error
+	startFn func(ctx context.Context) error
 	mu      sync.Mutex
 	cancel  context.CancelFunc
-	done    chan struct{} // closed when StartFn returns
+	done    chan struct{} // closed when startFn returns
 	started bool          // set under mu; rejects re-entry
 	stopped bool          // set under mu; rejects Start after Stop-before-Start
 }
 
-func (f *FuncComponent) Start(ctx context.Context) error {
-	if f.StartFn == nil {
-		panic("lifecycle: FuncComponent.StartFn must not be nil")
+// NewFuncComponent wraps fn into a Component. Panics if fn is nil so the
+// wiring bug surfaces at construction time, not on the first Start.
+func NewFuncComponent(fn func(ctx context.Context) error) *FuncComponent {
+	if fn == nil {
+		panic("lifecycle: NewFuncComponent requires a non-nil function")
 	}
+	return &FuncComponent{startFn: fn}
+}
+
+func (f *FuncComponent) Start(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("lifecycle: FuncComponent.Start requires a non-nil context")
 	}
@@ -99,7 +107,7 @@ func (f *FuncComponent) Start(ctx context.Context) error {
 		close(f.done)
 		f.mu.Unlock()
 	}()
-	return f.StartFn(ctx)
+	return f.startFn(ctx)
 }
 
 func (f *FuncComponent) Stop(ctx context.Context) error {

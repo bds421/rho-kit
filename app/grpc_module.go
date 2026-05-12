@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -31,6 +31,12 @@ type grpcModule struct {
 	// initialized during Init
 	server *grpc.Server
 	logger *slog.Logger
+
+	// stopOnce makes Stop idempotent so the Runner (when the module is also
+	// registered as a [lifecycle.Component]) and the module cleanup loop can
+	// safely call Stop in either order without a double GracefulStop race.
+	stopOnce sync.Once
+	stopErr  error
 }
 
 // setTLSConfig is called by [Builder.Run] when the kit-level TLS
@@ -83,7 +89,7 @@ func (m *grpcModule) Init(_ context.Context, mc ModuleContext) error {
 	m.server = grpcx.NewServer(opts...)
 	m.registrar(m.server)
 
-	mc.Logger.Info("gRPC server configured", redact.String("addr", m.addr))
+	mc.Logger.Info("gRPC server configured", slog.String("addr", m.addr))
 	return nil
 }
 
@@ -106,23 +112,24 @@ func (m *grpcModule) Populate(infra *Infrastructure) {
 	infra.GRPCServer = m.server
 }
 
-// Close is a no-op because the gRPC server lifecycle is managed by the serve
-// method, which responds to context cancellation by triggering graceful stop.
-// This avoids a double GracefulStop race between the runner stopping the
-// component and module cleanup calling Close.
-func (m *grpcModule) Close(_ context.Context) error {
-	return nil
-}
-
 // Start implements lifecycle.Component for the gRPC server.
 func (m *grpcModule) Start(_ context.Context) error {
 	return m.serve()
 }
 
-// Stop implements lifecycle.Component for the gRPC server. It attempts a
-// graceful shutdown until ctx expires, then falls back to a hard stop.
+// Stop implements both [Module.Stop] and [lifecycle.Component.Stop]. It is
+// idempotent: the first call attempts a graceful shutdown until ctx expires
+// (falling back to a hard stop); subsequent calls return the same result
+// without invoking GracefulStop again. This makes Stop safe to call from the
+// Runner and the module cleanup loop in either order.
 func (m *grpcModule) Stop(ctx context.Context) error {
-	return m.gracefulStop(ctx)
+	if m == nil {
+		return nil
+	}
+	m.stopOnce.Do(func() {
+		m.stopErr = m.gracefulStop(ctx)
+	})
+	return m.stopErr
 }
 
 // gracefulStop attempts a graceful shutdown of the gRPC server. If ctx expires
@@ -151,7 +158,7 @@ func (m *grpcModule) gracefulStop(ctx context.Context) error {
 		logger.Info("gRPC server stopped gracefully")
 		return nil
 	case <-ctx.Done():
-		logger.Warn("gRPC graceful stop context expired, forcing stop", redact.Error(ctx.Err()))
+		logger.Warn("gRPC graceful stop context expired, forcing stop", slog.Any("error", ctx.Err()))
 		m.server.Stop()
 		<-done
 		return ctx.Err()
@@ -168,7 +175,7 @@ func (m *grpcModule) serve() error {
 		return fmt.Errorf("gRPC listen failed")
 	}
 
-	m.logger.Info("gRPC server listening", redact.String("addr", m.addr))
+	m.logger.Info("gRPC server listening", slog.String("addr", m.addr))
 	if err := m.server.Serve(lis); err != nil {
 		if errors.Is(err, grpc.ErrServerStopped) {
 			return nil
