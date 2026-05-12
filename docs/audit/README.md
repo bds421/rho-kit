@@ -22,6 +22,7 @@ security/audit history that explains why the release surface exists.
 | [ROADMAP.md](ROADMAP.md) | What shipped per phase + what's deferred to v2.1+ (other KMS adapters, k8slease/etcd, Kafka, kit-new flags). |
 | [release-excellence-2026-05-11.md](release-excellence-2026-05-11.md) | Current v2.0.0 release-excellence sweep, finding classification, and verification plan. |
 | [semantic-invariant-review-2026-05-11.md](semantic-invariant-review-2026-05-11.md) | v2.0.0 semantic security/defaults review for fail-open behavior, audit metadata invariants, and misleading legacy APIs. |
+| [deep-library-review-2026-05-12.md](deep-library-review-2026-05-12.md) | Top-tier-library review pass over leader election, KMS adapters, auth/authz defaults, observability contracts, approval stores, and high-contention helpers. |
 | [CRITICAL.md](CRITICAL.md) | Historical per-finding ledger of the 12 CRITICAL items + closely-related HIGH cluster from the v1→v2 audit. All closed; kept for the audit trail. |
 
 ## How findings flow now
