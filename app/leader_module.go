@@ -31,8 +31,9 @@ func (m *leaderModule) Init(_ context.Context, mc ModuleContext) error {
 	m.log = mc.Logger
 	mc.Runner.AddFunc("leader-election", func(ctx context.Context) error {
 		return m.elector.Run(ctx, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) {
+			OnAcquired: func(ctx context.Context) {
 				mc.Logger.Info("leader-election: acquired leadership")
+				<-ctx.Done()
 			},
 			OnLost: func() {
 				mc.Logger.Info("leader-election: lost leadership")

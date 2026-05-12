@@ -11,24 +11,27 @@
 //   - infra/leaderelection/k8slease (planned) — coordination.k8s.io
 //     Lease object for k8s-native deployments. Track via the v2 backlog.
 //
-// The contract is: exactly one Run goroutine across all replicas
-// observes its OnAcquired callback at any time. When ctx cancels or
-// the underlying lease is lost, OnLost fires and Run returns; another
-// replica becomes leader.
+// The contract is: one leadership term calls OnAcquired at a time for
+// backends that provide strong exclusion. When ctx cancels, the
+// OnAcquired context is cancelled, OnAcquired must return, then OnLost
+// runs synchronously before the implementation releases or retries the
+// term. Backend packages document any weaker guarantees such as Redis
+// TTL overlap windows.
 package leaderelection
 
 import "context"
 
 // Callbacks bundle leader-state transitions. Both callbacks may be nil.
 //
-// OnAcquired is invoked once per leadership term, in the goroutine that
-// called Run. The callback's ctx is cancelled when leadership is lost
-// (renewal failure, ctx cancellation by the caller). Long-running
-// leader work should observe ctx and exit promptly.
+// OnAcquired is invoked once per leadership term. The callback's ctx is
+// cancelled when leadership is lost (renewal failure, ctx cancellation
+// by the caller). Long-running leader work must observe ctx and exit
+// promptly; implementations wait for it before starting another term.
 //
-// OnLost is invoked synchronously after OnAcquired's ctx cancels, in
-// the same goroutine. It runs synchronously so the caller can
-// guarantee any leader-state cleanup completes before Run returns.
+// OnLost is invoked synchronously once for each acquired leadership
+// term, after OnAcquired returns and before the implementation starts
+// another term or returns from Run. It is not invoked when leadership
+// was never acquired.
 type Callbacks struct {
 	OnAcquired func(ctx context.Context)
 	OnLost     func()
@@ -40,9 +43,9 @@ type Elector interface {
 	// ctx cancels (caller-initiated shutdown) or the elector decides
 	// to give up (unrecoverable backend error).
 	//
-	// While the caller holds leadership, callbacks.OnAcquired runs in
-	// the same goroutine. callbacks.OnLost is invoked just before Run
-	// returns, even if the caller never became leader.
+	// While the caller holds leadership, callbacks.OnAcquired runs for
+	// the term. callbacks.OnLost is invoked exactly once for each
+	// acquired term after callbacks.OnAcquired has returned.
 	Run(ctx context.Context, callbacks Callbacks) error
 
 	// IsLeader is a non-blocking, eventually-consistent leadership

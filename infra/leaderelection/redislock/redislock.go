@@ -129,25 +129,10 @@ func (e *Elector) IsLeader() bool {
 }
 
 // Run blocks while trying to acquire and hold leadership.
-func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err error) {
+func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	if ctx == nil {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
-	defer func() {
-		if cb.OnLost == nil {
-			return
-		}
-		defer func() {
-			if rec := recover(); rec != nil {
-				e.logger.Error("leader-election: OnLost callback panicked",
-					redact.String("key", e.key),
-					redact.Panic(rec),
-				)
-				err = errors.Join(err, fmt.Errorf("leader-election: OnLost panic: %s", redact.PanicValue(rec)))
-			}
-		}()
-		cb.OnLost()
-	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -175,10 +160,9 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err err
 		e.leader.Store(true)
 		e.logger.Info("leader-election: acquired", redact.String("key", e.key))
 
-		leaderCtx, leaderCancel := context.WithCancel(ctx)
-		holdErr := e.holdLeadership(leaderCtx, handle, cb)
-		leaderCancel()
+		holdErr := e.holdLeadership(ctx, handle, cb)
 		e.leader.Store(false)
+		lostErr := e.runOnLost(cb)
 		// Bound Release: a hung Redis must not pin this goroutine
 		// indefinitely and starve the elector loop.
 		releaseCtx, releaseCancel := leaderReleaseContext(ctx, 5*time.Second)
@@ -190,14 +174,47 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err err
 		}
 		releaseCancel()
 
-		if errors.Is(holdErr, context.Canceled) {
-			return ctx.Err()
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), holdErr, lostErr)
+		}
+		if lostErr != nil {
+			return errors.Join(holdErr, lostErr)
+		}
+		if holdErr == nil {
+			e.logger.Info("leader-election: leadership callback returned; retrying",
+				redact.String("key", e.key),
+			)
+			if !sleep(ctx, e.retryInterval) {
+				return ctx.Err()
+			}
+			continue
 		}
 		e.logger.Warn("leader-election: leadership lost; retrying",
 			redact.String("key", e.key),
 			redact.Error(holdErr),
 		)
 	}
+}
+
+func (e *Elector) runOnLost(cb leaderelection.Callbacks) (err error) {
+	if cb.OnLost == nil {
+		return nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("leader-election: OnLost callback panicked",
+				redact.String("key", e.key),
+				redact.Panic(rec),
+			)
+			err = fmt.Errorf("leader-election: OnLost panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	cb.OnLost()
+	return nil
 }
 
 func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -207,13 +224,17 @@ func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
-// holdLeadership runs the OnAcquired callback in this goroutine and
-// renews the lock on the renewInterval cadence. Returns when the
-// callback finishes, ctx cancels, or renewal fails.
-func (e *Elector) holdLeadership(ctx context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
+// holdLeadership runs the OnAcquired callback and renews the lock on
+// the renewInterval cadence. Returns only after the callback has
+// exited, so a retry cannot overlap with leader work from the previous
+// term inside this process.
+func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
 	type callbackResult struct {
 		panicValue any
 	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
 	cbDone := make(chan callbackResult, 1)
 	go func() {
 		var result callbackResult
@@ -233,27 +254,44 @@ func (e *Elector) holdLeadership(ctx context.Context, handle lock.Lock, cb leade
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-parent.Done():
+			cancel()
 			result := <-cbDone
 			if result.panicValue != nil {
-				return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(result.panicValue))
+				return errors.Join(parent.Err(), onAcquiredPanicError(result.panicValue))
 			}
-			return ctx.Err()
+			return parent.Err()
 		case result := <-cbDone:
 			if result.panicValue != nil {
-				return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(result.panicValue))
+				return onAcquiredPanicError(result.panicValue)
 			}
 			return nil
 		case <-renewTicker.C:
 			ok, err := handle.Extend(ctx)
 			if err != nil {
-				return fmt.Errorf("extend: %w", err)
+				termErr := fmt.Errorf("extend: %w", err)
+				cancel()
+				result := <-cbDone
+				if result.panicValue != nil {
+					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
+				}
+				return termErr
 			}
 			if !ok {
-				return errors.New("leader-election: handle reports lost")
+				termErr := errors.New("leader-election: handle reports lost")
+				cancel()
+				result := <-cbDone
+				if result.panicValue != nil {
+					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
+				}
+				return termErr
 			}
 		}
 	}
+}
+
+func onAcquiredPanicError(rec any) error {
+	return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(rec))
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

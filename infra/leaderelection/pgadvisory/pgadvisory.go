@@ -111,25 +111,10 @@ func (e *Elector) IsLeader() bool {
 
 // Run blocks while trying to acquire and hold leadership. See
 // [leaderelection.Elector.Run] for callback semantics.
-func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err error) {
+func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	if ctx == nil {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
-	defer func() {
-		if cb.OnLost == nil {
-			return
-		}
-		defer func() {
-			if rec := recover(); rec != nil {
-				e.logger.Error("leader-election: OnLost callback panicked",
-					redact.String("key", e.key),
-					redact.Panic(rec),
-				)
-				err = errors.Join(err, fmt.Errorf("leader-election: OnLost panic: %s", redact.PanicValue(rec)))
-			}
-		}()
-		cb.OnLost()
-	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -159,10 +144,9 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err err
 		e.leader.Store(true)
 		e.logger.Info("leader-election: acquired", redact.String("key", e.key))
 
-		leaderCtx, leaderCancel := context.WithCancel(ctx)
-		holdErr := e.holdLeadership(leaderCtx, handle, cb)
-		leaderCancel()
+		holdErr := e.holdLeadership(ctx, handle, cb)
 		e.leader.Store(false)
+		lostErr := e.runOnLost(cb)
 		releaseCtx, releaseCancel := leaderReleaseContext(ctx, 5*time.Second)
 		if err := handle.Release(releaseCtx); err != nil && !errors.Is(err, lock.ErrLockLost) {
 			e.logger.Warn("leader-election: release failed; advisory lock will release on session end",
@@ -172,8 +156,20 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err err
 		}
 		releaseCancel()
 
-		if errors.Is(holdErr, context.Canceled) {
-			return ctx.Err()
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), holdErr, lostErr)
+		}
+		if lostErr != nil {
+			return errors.Join(holdErr, lostErr)
+		}
+		if holdErr == nil {
+			e.logger.Info("leader-election: leadership callback returned; retrying",
+				redact.String("key", e.key),
+			)
+			if !sleep(ctx, e.retryInterval) {
+				return ctx.Err()
+			}
+			continue
 		}
 		// Lost leadership for non-cancellation reasons (renewal
 		// failure). Loop to retry.
@@ -184,6 +180,27 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) (err err
 	}
 }
 
+func (e *Elector) runOnLost(cb leaderelection.Callbacks) (err error) {
+	if cb.OnLost == nil {
+		return nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("leader-election: OnLost callback panicked",
+				redact.String("key", e.key),
+				redact.Panic(rec),
+			)
+			err = fmt.Errorf("leader-election: OnLost panic: %s", redact.PanicValue(rec))
+		}
+	}()
+	cb.OnLost()
+	return nil
+}
+
 func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -191,13 +208,17 @@ func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
-// holdLeadership runs the OnAcquired callback in this goroutine while
-// a sub-goroutine pings the connection to detect loss. Returns when
-// the callback finishes, ctx cancels, or the connection is lost.
-func (e *Elector) holdLeadership(ctx context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
+// holdLeadership runs the OnAcquired callback while a sub-goroutine
+// pings the connection to detect loss. Returns only after the callback
+// has exited, so a retry cannot overlap with leader work from the
+// previous term inside this process.
+func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
 	type callbackResult struct {
 		panicValue any
 	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
 	cbDone := make(chan callbackResult, 1)
 	go func() {
 		var result callbackResult
@@ -217,25 +238,42 @@ func (e *Elector) holdLeadership(ctx context.Context, handle lock.Lock, cb leade
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-parent.Done():
+			cancel()
 			result := <-cbDone // wait for caller to release leader work
 			if result.panicValue != nil {
-				return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(result.panicValue))
+				return errors.Join(parent.Err(), onAcquiredPanicError(result.panicValue))
 			}
-			return ctx.Err()
+			return parent.Err()
 		case result := <-cbDone:
 			if result.panicValue != nil {
-				return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(result.panicValue))
+				return onAcquiredPanicError(result.panicValue)
 			}
 			return nil
 		case <-healthTicker.C:
 			if ok, err := handle.Extend(ctx); err != nil {
-				return fmt.Errorf("extend: %w", err)
+				termErr := fmt.Errorf("extend: %w", err)
+				cancel()
+				result := <-cbDone
+				if result.panicValue != nil {
+					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
+				}
+				return termErr
 			} else if !ok {
-				return errors.New("leader-election: handle reports lost")
+				termErr := errors.New("leader-election: handle reports lost")
+				cancel()
+				result := <-cbDone
+				if result.panicValue != nil {
+					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
+				}
+				return termErr
 			}
 		}
 	}
+}
+
+func onAcquiredPanicError(rec any) error {
+	return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(rec))
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

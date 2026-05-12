@@ -18,36 +18,34 @@ type fakeElector struct {
 func (f *fakeElector) IsLeader() bool { return f.leader }
 
 func (f *fakeElector) Run(ctx context.Context, cb Callbacks) error {
-	defer func() {
-		if cb.OnLost != nil {
-			cb.OnLost()
-		}
-	}()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	leaderCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	f.leader = true
 	if cb.OnAcquired != nil {
-		go cb.OnAcquired(leaderCtx)
+		cb.OnAcquired(leaderCtx)
 	}
 
 	<-ctx.Done()
 	f.leader = false
+	if cb.OnLost != nil {
+		cb.OnLost()
+	}
 	return ctx.Err()
 }
 
-func TestCallbacks_OnLostFiresEvenWithoutAcquired(t *testing.T) {
-	var lost int
-	cb := Callbacks{
-		OnLost: func() { lost++ },
-	}
+func TestCallbacks_OnLostDoesNotFireWithoutAcquired(t *testing.T) {
+	called := false
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 
 	e := &fakeElector{}
-	_ = e.Run(ctx, cb)
-	assert.Equal(t, 1, lost, "OnLost must fire even when leadership was never acquired")
+	_ = e.Run(ctx, Callbacks{OnLost: func() { called = true }})
+	assert.False(t, called, "OnLost should describe an acquired term, not a never-started one")
 }
 
 func TestCallbacks_OnAcquiredCtxCancelsOnRunReturn(t *testing.T) {
@@ -68,7 +66,7 @@ func TestCallbacks_OnAcquiredCtxCancelsOnRunReturn(t *testing.T) {
 	}()
 
 	e := &fakeElector{}
-	_ = e.Run(ctx, cb)
+	go func() { _ = e.Run(ctx, cb) }()
 	<-doneCh
 
 	assert.True(t, sawCtxDone, "OnAcquired's ctx must cancel when Run returns")

@@ -119,17 +119,29 @@ func TestHoldLeadership_OnAcquiredPanicReturnsError(t *testing.T) {
 	require.NotContains(t, err.Error(), "leader work exploded")
 }
 
-func TestRun_OnLostPanicReturned(t *testing.T) {
+func TestRun_DoesNotCallOnLostWithoutLeadership(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	e := &Elector{logger: slog.Default(), key: "leader"}
 
+	var called atomic.Bool
 	err := e.Run(ctx, leaderelection.Callbacks{
+		OnLost: func() {
+			called.Store(true)
+		},
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, called.Load())
+}
+
+func TestRunOnLost_PanicReturned(t *testing.T) {
+	e := &Elector{logger: slog.Default(), key: "leader"}
+
+	err := e.runOnLost(leaderelection.Callbacks{
 		OnLost: func() {
 			panic("lost cleanup exploded")
 		},
 	})
-	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorContains(t, err, "OnLost panic")
 	require.ErrorContains(t, err, "<redacted panic value: string>")
 	require.NotContains(t, err.Error(), "lost cleanup exploded")
@@ -141,6 +153,26 @@ func TestRun_RejectsNilContext(t *testing.T) {
 	err := e.Run(ctx, leaderelection.Callbacks{})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "non-nil context")
+}
+
+func TestHoldLeadership_LossCancelsAndWaitsForCallback(t *testing.T) {
+	e := &Elector{
+		renewInterval: 10 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+	stub := &stubAcquirer{handle: handle}
+
+	var callbackExited atomic.Bool
+	err := runWithStub(t, e, stub, leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done()
+			time.Sleep(10 * time.Millisecond)
+			callbackExited.Store(true)
+		},
+	})
+	require.ErrorContains(t, err, "handle reports lost")
+	require.True(t, callbackExited.Load(), "leader work must drain before retry")
 }
 
 func TestLeaderReleaseContextPreservesValuesAfterCancellation(t *testing.T) {
