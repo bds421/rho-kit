@@ -17,7 +17,7 @@ func mustPASETOProvider(t *testing.T) *paseto.Provider {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	p, err := paseto.NewProvider(context.Background(),
+	p, err := paseto.OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			return []ed25519.PublicKey{pub}, nil
 		},

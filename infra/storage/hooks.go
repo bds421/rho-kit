@@ -162,6 +162,16 @@ func (h *hookedStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Close delegates [storage.Close] to the wrapped backend so a
+// hooks-wrapped Storage forwards lifecycle calls correctly. Uses the
+// helper so a backend without Close is a no-op.
+func (h *hookedStorage) Close() error {
+	if h == nil || h.backend == nil {
+		return nil
+	}
+	return Close(h.backend)
+}
+
 func (h *hookedStorage) Exists(ctx context.Context, key string) (bool, error) {
 	if err := ValidateKey(key); err != nil {
 		return false, err

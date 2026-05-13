@@ -3,7 +3,6 @@ package storage
 import (
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"sync"
 
@@ -202,11 +201,8 @@ func (m *Manager) Close() error {
 	var errs []error
 	for i := len(m.order) - 1; i >= 0; i-- {
 		name := m.order[i]
-		backend := m.backends[name]
-		if closer, ok := backend.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close backend: %w", err))
-			}
+		if err := Close(m.backends[name]); err != nil {
+			errs = append(errs, fmt.Errorf("close backend: %w", err))
 		}
 	}
 	return errors.Join(errs...)

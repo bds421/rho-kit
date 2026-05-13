@@ -182,6 +182,12 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Bac
 	return b
 }
 
+// Close releases any resources held by the backend. The Azure SDK
+// HTTP client is stateless from the kit's perspective (idle-connection
+// pool is owned by the global http.DefaultTransport tier), so this is
+// a documented no-op present only for uniform interface implementation.
+func (b *Backend) Close() error { return nil }
+
 // Put uploads content from r to the given blob key.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Put")

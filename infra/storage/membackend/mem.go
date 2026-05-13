@@ -122,6 +122,10 @@ func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
+// Close releases any resources. Memory backend has none, so this is a
+// documented no-op present only for uniform interface implementation.
+func (b *Backend) Close() error { return nil }
+
 // Copy duplicates an object within the backend.
 func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
 	if err := storage.ValidateKey(srcKey); err != nil {

@@ -62,6 +62,11 @@ func New(dir string, opts ...Option) (*Backend, error) {
 	return b, nil
 }
 
+// Close releases any resources. The local filesystem backend has no
+// long-lived handles, so this is a documented no-op for uniform
+// interface implementation.
+func (b *Backend) Close() error { return nil }
+
 // Put writes content from r to <root>/<key>. Uses atomic write via temp file
 // and rename to prevent partial writes on crash.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {

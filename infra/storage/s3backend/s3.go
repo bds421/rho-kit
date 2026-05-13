@@ -192,6 +192,11 @@ func (b *Backend) Bucket() string {
 	return b.bucket
 }
 
+// Close releases any resources held by the backend. The AWS SDK
+// HTTP client is stateless from the kit's perspective, so this is a
+// documented no-op present only for uniform interface implementation.
+func (b *Backend) Close() error { return nil }
+
 // Put uploads content from r to the given key. Validators run before the upload.
 // The reader is piped directly to S3 without buffering into memory.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {

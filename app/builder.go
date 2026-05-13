@@ -334,7 +334,7 @@ func (b *Builder) WithoutJWTIssuer() *Builder {
 // and `alg=none` attack classes by baking exactly one algorithm into
 // each (version, purpose) tuple.
 //
-// The caller constructs the Provider (via [paseto.NewProvider]) so
+// The caller constructs the Provider (via [paseto.OpenProvider]) so
 // the kit is unopinionated about key sourcing — services pull from
 // KMS, a JWKS-equivalent endpoint, or a static config file using
 // whatever shape fits their deployment.

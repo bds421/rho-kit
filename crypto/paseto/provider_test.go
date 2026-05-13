@@ -22,13 +22,13 @@ func mustGenKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 }
 
 func TestNewProvider_RejectsNilSource(t *testing.T) {
-	_, err := NewProvider(context.Background(), nil, time.Second)
+	_, err := OpenProvider(context.Background(), nil, time.Second)
 	require.Error(t, err)
 }
 
 func TestNewProvider_RejectsNilContext(t *testing.T) {
 	pub, _ := mustGenKey(t)
-	_, err := NewProvider(nilContextForTest(),
+	_, err := OpenProvider(nilContextForTest(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Second,
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
@@ -38,7 +38,7 @@ func TestNewProvider_RejectsNilContext(t *testing.T) {
 
 func TestNewProvider_RejectsZeroInterval(t *testing.T) {
 	pub, _ := mustGenKey(t)
-	_, err := NewProvider(context.Background(),
+	_, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		0,
 	)
@@ -52,7 +52,7 @@ func TestNewProvider_RejectsNilOption(t *testing.T) {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	_, _ = NewProvider(context.Background(),
+	_, _ = OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Second,
 		nil,
@@ -62,7 +62,7 @@ func TestNewProvider_RejectsNilOption(t *testing.T) {
 func TestWithVerifyOptionsCopiesCallerSlice(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	opts := []Option{WithExpectedIssuer("svc"), WithAllowAnyAudience()}
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Hour,
 		WithVerifyOptions(opts...),
@@ -76,7 +76,7 @@ func TestWithVerifyOptionsCopiesCallerSlice(t *testing.T) {
 
 func TestNewProvider_PropagatesInitialLoadFailure(t *testing.T) {
 	boom := errors.New("backend down")
-	_, err := NewProvider(context.Background(),
+	_, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return nil, boom },
 		time.Second,
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
@@ -86,7 +86,7 @@ func TestNewProvider_PropagatesInitialLoadFailure(t *testing.T) {
 
 func TestProvider_VerifiesAgainstActiveKey(t *testing.T) {
 	pub, priv := mustGenKey(t)
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Hour,
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
@@ -116,7 +116,7 @@ func TestProvider_RotatesAcceptedKey(t *testing.T) {
 	keysOld := []ed25519.PublicKey{pubOld}
 	current.Store(&keysOld)
 
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			return *current.Load(), nil
 		},
@@ -169,7 +169,7 @@ func TestProvider_KeepsOldKeysOnRefreshFailure(t *testing.T) {
 	var failNext atomic.Bool
 	var refreshErrors atomic.Int32
 
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			if failNext.Load() {
 				return nil, errors.New("source unavailable")
@@ -206,7 +206,7 @@ func TestProvider_FailsClosedWhenKeySetStale(t *testing.T) {
 	pub, priv := mustGenKey(t)
 	now := time.Unix(1000, 0)
 
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			return []ed25519.PublicKey{pub}, nil
 		},
@@ -249,7 +249,7 @@ func TestProvider_RejectsEmptyKeySetOnRefresh(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	first := true
 	var refreshErrors atomic.Int32
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) {
 			if first {
 				first = false
@@ -277,7 +277,7 @@ func TestProvider_OnRefreshErrorPanicDoesNotCrashLoop(t *testing.T) {
 	first.Store(true)
 	var refreshErrors atomic.Int32
 
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(context.Context) ([]ed25519.PublicKey, error) {
 			if first.CompareAndSwap(true, false) {
 				return []ed25519.PublicKey{pub}, nil
@@ -301,7 +301,7 @@ func TestProvider_OnRefreshErrorPanicDoesNotCrashLoop(t *testing.T) {
 
 func TestProvider_CloseIdempotent(t *testing.T) {
 	pub, _ := mustGenKey(t)
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Hour,
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
@@ -313,7 +313,7 @@ func TestProvider_CloseIdempotent(t *testing.T) {
 
 func TestProvider_CloseConcurrentSafe(t *testing.T) {
 	pub, _ := mustGenKey(t)
-	p, err := NewProvider(context.Background(),
+	p, err := OpenProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Hour,
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),

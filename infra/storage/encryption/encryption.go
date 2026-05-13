@@ -123,6 +123,15 @@ func (e *EncryptedStorage) Unwrap() storage.Storage { return e.backend }
 // the wrapper itself implements with safe semantics (Copier, Lister).
 func (e *EncryptedStorage) OpaqueStorageDecorator() {}
 
+// Close delegates [storage.Close] to the wrapped backend so an
+// encryption-wrapped Storage forwards lifecycle calls correctly.
+func (e *EncryptedStorage) Close() error {
+	if e == nil || e.backend == nil {
+		return nil
+	}
+	return storage.Close(e.backend)
+}
+
 // New wraps backend with client-side AES-256-GCM encryption.
 //
 // The returned value always implements [storage.Copier] (via internal

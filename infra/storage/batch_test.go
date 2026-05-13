@@ -201,6 +201,8 @@ func (b *inlineBackend) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
+func (b *inlineBackend) Close() error { return nil }
+
 type deleteFailBackend struct {
 	*inlineBackend
 }

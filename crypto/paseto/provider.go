@@ -122,7 +122,7 @@ func WithOnRefreshError(fn func(error)) ProviderOption {
 	return func(p *Provider) { p.onRefreshErr = fn }
 }
 
-// NewProvider performs the initial key load synchronously, then
+// OpenProvider performs the initial key load synchronously, then
 // starts a background goroutine that refreshes every `interval`. The
 // initial load failure surfaces as the constructor's error return
 // — no goroutine is started in that case.
@@ -130,7 +130,13 @@ func WithOnRefreshError(fn func(error)) ProviderOption {
 // `interval` must be positive. Pick a value substantially shorter
 // than the keys' overlap window: if old and new keys are valid for
 // 30 minutes after rotation, refresh every 5–10 minutes.
-func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duration, opts ...ProviderOption) (*Provider, error) {
+//
+// Naming: this is `Open*` (not `New*`) because the constructor does
+// I/O (the initial key fetch) and spawns a long-lived background
+// goroutine. `New*` is reserved for pure construction with no
+// side effects. Always pair with [Provider.Close] in a defer or
+// shutdown hook.
+func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Duration, opts ...ProviderOption) (*Provider, error) {
 	if ctx == nil {
 		return nil, errors.New("paseto: context must not be nil")
 	}

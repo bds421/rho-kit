@@ -17,7 +17,7 @@ type pasetoModule struct {
 
 // newPasetoModule constructs a module wrapping the supplied
 // Provider. The Provider is constructed by the caller (via
-// [paseto.NewProvider]) so they retain control over the key source
+// [paseto.OpenProvider]) so they retain control over the key source
 // — the kit deliberately doesn't ship a "default" PASETO source the
 // way it does for JWT, because PASETO key rotation is much more
 // service-specific.
@@ -33,7 +33,7 @@ func newPasetoModule(p *paseto.Provider) *pasetoModule {
 
 func (m *pasetoModule) Init(_ context.Context, mc ModuleContext) error {
 	// The Provider's refresh loop is already running (kicked off in
-	// paseto.NewProvider). We just need to ensure Close is called on
+	// paseto.OpenProvider). We just need to ensure Close is called on
 	// shutdown.
 	mc.Runner.AddFunc("paseto-provider", func(ctx context.Context) error {
 		<-ctx.Done()

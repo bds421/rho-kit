@@ -19,6 +19,7 @@ func (s *stubStorage) Get(context.Context, string) (io.ReadCloser, ObjectMeta, e
 }
 func (s *stubStorage) Delete(context.Context, string) error         { return nil }
 func (s *stubStorage) Exists(context.Context, string) (bool, error) { return false, nil }
+func (s *stubStorage) Close() error                                 { return nil }
 
 // listerStorage implements Storage + Lister.
 type listerStorage struct{ stubStorage }

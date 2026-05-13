@@ -179,6 +179,21 @@ type Storage interface {
 	Exists(ctx context.Context, key string) (bool, error)
 }
 
+// Close releases any resources held by the backend (HTTP clients with
+// idle-connection pools, SFTP sessions, etc.). It runs Close on the
+// backend when it implements [io.Closer]; otherwise it is a no-op so
+// adopters can call this uniformly regardless of whether the underlying
+// backend has resources to release.
+//
+// Adopters that wire backends via [Manager] do not need to call this
+// directly; [Manager.Close] invokes it on every registered backend.
+func Close(s Storage) error {
+	if c, ok := s.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 // PresignedStore is an optional extension implemented by backends that
 // support pre-signed URLs (e.g. S3). Call-site code checks capability:
 //

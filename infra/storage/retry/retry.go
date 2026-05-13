@@ -228,6 +228,15 @@ func (r *RetryStorage) Delete(ctx context.Context, key string) error {
 	})
 }
 
+// Close delegates [storage.Close] to the wrapped backend so a
+// retry-wrapped Storage forwards lifecycle calls correctly.
+func (r *RetryStorage) Close() error {
+	if r == nil || r.backend == nil {
+		return nil
+	}
+	return storage.Close(r.backend)
+}
+
 // Exists retries on transient errors.
 func (r *RetryStorage) Exists(ctx context.Context, key string) (bool, error) {
 	if err := storage.ValidateKey(key); err != nil {

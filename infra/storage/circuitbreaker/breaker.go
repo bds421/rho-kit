@@ -226,6 +226,16 @@ func (cb *CircuitBreaker) Delete(ctx context.Context, key string) error {
 	})
 }
 
+// Close delegates to the wrapped backend so a circuit-breaker-wrapped
+// Storage forwards [storage.Close] correctly. Uses [storage.Close] so
+// a backend without Close (io.Closer) is a no-op.
+func (cb *CircuitBreaker) Close() error {
+	if cb == nil || cb.backend == nil {
+		return nil
+	}
+	return storage.Close(cb.backend)
+}
+
 // Exists delegates to the backend if the circuit allows.
 func (cb *CircuitBreaker) Exists(ctx context.Context, key string) (bool, error) {
 	if err := storage.ValidateKey(key); err != nil {
