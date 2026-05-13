@@ -208,6 +208,11 @@ func (c *Client) FloatE(ctx context.Context, key string, fallback float64) (floa
 
 // Object evaluates an opaque-shape flag (typically JSON). Useful for
 // configuration-style flags that ship a struct.
+//
+// Prefer the package-level [Object] / [ObjectE] generic free functions
+// when the flag's payload has a known Go shape — those return T
+// directly without the caller-side type assertion that this method's
+// signature forces.
 func (c *Client) Object(ctx context.Context, key string, fallback any) any {
 	v, _ := c.ObjectE(ctx, key, fallback)
 	return v
@@ -229,6 +234,40 @@ func (c *Client) ObjectE(ctx context.Context, key string, fallback any) (any, er
 	}
 	d, err := c.inner.ObjectValueDetails(ctx, key, fallback, ec)
 	return d.Value, c.finishEval(key, d.EvaluationDetails, err)
+}
+
+// Object is a generic free function that returns the evaluated flag
+// as T, eliminating the caller-side type assertion that
+// [Client.Object] forces. On any error (eval failure, type mismatch
+// between the provider's value and T) the fallback is returned with
+// no error — matching the swallow-errors contract of [Client.Object].
+//
+// Type-mismatch case: if the provider returns a value that cannot be
+// asserted to T, fallback is returned. If the caller needs to
+// distinguish "flag missing" from "flag exists but wrong type", use
+// [ObjectE].
+func Object[T any](c *Client, ctx context.Context, key string, fallback T) T {
+	v, err := ObjectE(c, ctx, key, fallback)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+// ObjectE is a generic free function that returns the evaluated flag
+// as T plus any provider error. A successful eval whose returned
+// value is not a T surfaces an explicit error so callers can branch
+// on type mismatches.
+func ObjectE[T any](c *Client, ctx context.Context, key string, fallback T) (T, error) {
+	raw, err := c.ObjectE(ctx, key, fallback)
+	if err != nil {
+		return fallback, err
+	}
+	v, ok := raw.(T)
+	if !ok {
+		return fallback, fmt.Errorf("flags: %s: provider returned %T, want %T", key, raw, fallback)
+	}
+	return v, nil
 }
 
 // SetEvalErrorHook installs a callback fired whenever any flag

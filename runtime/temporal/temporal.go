@@ -136,7 +136,7 @@ type Worker struct {
 }
 
 type temporalWorker interface {
-	Run(interruptCh <-chan interface{}) error
+	Run(interruptCh <-chan any) error
 	Stop()
 }
 
@@ -187,7 +187,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.started = true
 	w.mu.Unlock()
 
-	// The SDK's worker.Run wants a <-chan interface{} for shutdown
+	// The SDK's worker.Run wants a <-chan any for shutdown
 	// signalling (legacy interrupt-channel API). Bridge ctx onto it
 	// in a goroutine so the runner's cancellation flows through
 	// cleanly without exposing the SDK's chan type to callers.

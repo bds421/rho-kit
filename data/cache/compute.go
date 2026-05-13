@@ -356,7 +356,7 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
 	// follower can exit promptly instead of waiting for the leader's
 	// long compute to finish.
-	resCh := cc.group.DoChan(full, func() (interface{}, error) {
+	resCh := cc.group.DoChan(full, func() (any, error) {
 		// The function only runs in the leader. Track inflight gauge
 		// for the duration of the actual compute.
 		cc.recordSingleflightInflightInc()
@@ -369,7 +369,7 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 		return val, execErr
 	})
 	var (
-		result interface{}
+		result any
 		err    error
 	)
 	select {
@@ -496,7 +496,7 @@ func (cc *ComputeCache[T]) triggerBackgroundRefresh(full string, fn ComputeFunc[
 	cc.bgWg.Add(1)
 	cc.bgMu.Unlock()
 
-	ch := cc.group.DoChan(full, func() (interface{}, error) {
+	ch := cc.group.DoChan(full, func() (any, error) {
 		// Use a timeout-scoped context derived from the background context
 		// created at construction time. This prevents unbounded refresh
 		// operations and allows Close() to cancel in-flight refreshes.

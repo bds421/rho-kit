@@ -359,7 +359,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 	if err != nil {
 		return false, 0, 0, fmt.Errorf("budget/redis: script: %w", err)
 	}
-	pair, ok := res.([]interface{})
+	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {
 		return false, 0, 0, errors.New("budget/redis: unexpected script result shape")
 	}

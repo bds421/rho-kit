@@ -123,7 +123,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	if err := k.validate(ctx); err != nil {
 		return "", nil, err
 	}
-	data := map[string]interface{}{
+	data := map[string]any{
 		"plaintext": base64.StdEncoding.EncodeToString(dek),
 	}
 	if len(k.contextAAD) > 0 {
@@ -160,7 +160,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if len(wrapped) == 0 {
 		return nil, errors.New("vaulttransit: wrapped DEK must not be empty")
 	}
-	data := map[string]interface{}{
+	data := map[string]any{
 		"ciphertext": string(wrapped),
 	}
 	if len(k.contextAAD) > 0 {

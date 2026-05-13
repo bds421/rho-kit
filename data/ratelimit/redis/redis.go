@@ -246,7 +246,7 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	if err != nil {
 		return false, 0, fmt.Errorf("ratelimit/redis: script: %w", err)
 	}
-	pair, ok := res.([]interface{})
+	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {
 		return false, 0, errors.New("ratelimit/redis: unexpected script result shape")
 	}
