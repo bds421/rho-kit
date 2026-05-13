@@ -17,9 +17,9 @@
 //
 // # Backend-Prefixed Type Names
 //
-// The backend-specific implementations (`s3backend.S3Backend`,
-// `azurebackend.AzureBackend`, `gcsbackend.GCSBackend`,
-// `sftpbackend.SFTPBackend`) deliberately keep the cloud/protocol prefix in
+// The backend-specific implementations (`s3backend.Backend`,
+// `azurebackend.Backend`, `gcsbackend.Backend`,
+// `sftpbackend.Backend`) deliberately keep the cloud/protocol prefix in
 // their exported type names. Go's package-name lint will flag this as
 // stutter and tempt future contributors to rename them to plain `Backend`.
 //
@@ -28,6 +28,6 @@
 // With plain `Backend`, the imports collide and the call site has to alias
 // every package — a worse readability outcome than the prefix stutter on a
 // fully-qualified name. The prefix is a feature: it stays embedded so the
-// type name is self-describing wherever it appears (`s3backend.S3Backend`
+// type name is self-describing wherever it appears (`s3backend.Backend`
 // in code, "S3Backend" in error messages and stack traces).
 package storage

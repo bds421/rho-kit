@@ -13,34 +13,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewJWKSMetricsCollector_NilProvider rejects nil at construction time
+// TestNewMetricsCollector_NilProvider rejects nil at construction time
 // because the collector reads provider state inside Collect() with no
 // further guards.
-func TestNewJWKSMetricsCollector_NilProvider(t *testing.T) {
+func TestNewMetricsCollector_NilProvider(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	c, err := NewJWKSMetricsCollector(nil, reg, "primary")
+	c, err := NewMetricsCollector(nil, reg, "primary")
 	require.Error(t, err)
 	assert.Nil(t, c)
 }
 
-// TestNewJWKSMetricsCollector_EmptyInstance pins the requirement: every
+// TestNewMetricsCollector_EmptyInstance pins the requirement: every
 // collector instance must have a label so multi-provider services do not
 // silently collapse samples into one time series.
-func TestNewJWKSMetricsCollector_EmptyInstance(t *testing.T) {
+func TestNewMetricsCollector_EmptyInstance(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	_, err := NewJWKSMetricsCollector(p, reg, "")
+	_, err := NewMetricsCollector(p, reg, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "instance")
 }
 
-// TestJWKSMetricsCollector_EmitsZerosOnEmptyProvider proves the collector is
+// TestMetricsCollector_EmitsZerosOnEmptyProvider proves the collector is
 // usable before the Provider has fetched anything: timestamps are 0 and the
 // fetch-failures counter is at zero for every reason.
-func TestJWKSMetricsCollector_EmitsZerosOnEmptyProvider(t *testing.T) {
+func TestMetricsCollector_EmitsZerosOnEmptyProvider(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	_, err := NewJWKSMetricsCollector(p, reg, "primary")
+	_, err := NewMetricsCollector(p, reg, "primary")
 	require.NoError(t, err)
 
 	families, err := reg.Gather()
@@ -60,10 +60,10 @@ func TestJWKSMetricsCollector_EmitsZerosOnEmptyProvider(t *testing.T) {
 	assert.Equal(t, 0.0, reasons["stale-rejected"])
 }
 
-// TestJWKSMetricsCollector_TracksSuccessAndStaleness simulates a provider
+// TestMetricsCollector_TracksSuccessAndStaleness simulates a provider
 // state where the last successful fetch is a known time ago, and confirms
 // both the timestamp and the staleness gauges reflect it.
-func TestJWKSMetricsCollector_TracksSuccessAndStaleness(t *testing.T) {
+func TestMetricsCollector_TracksSuccessAndStaleness(t *testing.T) {
 	p := newFixtureProvider(t)
 	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	last := now.Add(-15 * time.Minute)
@@ -73,7 +73,7 @@ func TestJWKSMetricsCollector_TracksSuccessAndStaleness(t *testing.T) {
 	p.mu.Unlock()
 
 	reg := prometheus.NewRegistry()
-	c, err := NewJWKSMetricsCollector(p, reg, "primary")
+	c, err := NewMetricsCollector(p, reg, "primary")
 	require.NoError(t, err)
 	// Pin the clock so the staleness math is deterministic.
 	c.clock = func() time.Time { return now }
@@ -86,10 +86,10 @@ func TestJWKSMetricsCollector_TracksSuccessAndStaleness(t *testing.T) {
 	assert.Equal(t, float64(15*60), gaugeValue(got["jwks_staleness_seconds"]))
 }
 
-// TestJWKSMetricsCollector_ReportsStaleRejectedFailures wires the end-to-end
+// TestMetricsCollector_ReportsStaleRejectedFailures wires the end-to-end
 // path: a provider whose last fetch is past max-stale returns ErrKeySetStale
 // from Verify, the counter increments, and the collector exposes it.
-func TestJWKSMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
+func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	p := newFixtureProvider(t)
 	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	p.maxStale = 5 * time.Minute
@@ -108,7 +108,7 @@ func TestJWKSMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	}
 
 	reg := prometheus.NewRegistry()
-	_, err := NewJWKSMetricsCollector(p, reg, "primary")
+	_, err := NewMetricsCollector(p, reg, "primary")
 	require.NoError(t, err)
 
 	families, err := reg.Gather()
@@ -120,15 +120,15 @@ func TestJWKSMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	assert.Equal(t, 0.0, reasons["parse"])
 }
 
-// TestJWKSMetricsCollector_DuplicateRegistrationReusesCollector covers the
+// TestMetricsCollector_DuplicateRegistrationReusesCollector covers the
 // AlreadyRegisteredError fast path so the Builder's "register on every JWT
 // module Init" wiring is idempotent against the default registerer.
-func TestJWKSMetricsCollector_DuplicateRegistrationReusesCollector(t *testing.T) {
+func TestMetricsCollector_DuplicateRegistrationReusesCollector(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	first, err := NewJWKSMetricsCollector(p, reg, "primary")
+	first, err := NewMetricsCollector(p, reg, "primary")
 	require.NoError(t, err)
-	second, err := NewJWKSMetricsCollector(p, reg, "primary")
+	second, err := NewMetricsCollector(p, reg, "primary")
 	require.NoError(t, err)
 	assert.Same(t, first, second)
 }

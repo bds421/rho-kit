@@ -16,7 +16,7 @@ import (
 
 var (
 	s3Once    sync.Once
-	s3Config  s3backend.S3Config
+	s3Config  s3backend.Config
 	s3InitErr error
 )
 
@@ -25,7 +25,7 @@ var (
 // test process (Ryuk terminates it when the process exits).
 //
 // Each test should use a unique bucket name to ensure isolation.
-func StartS3(t *testing.T, bucket string) s3backend.S3Config {
+func StartS3(t *testing.T, bucket string) s3backend.Config {
 	t.Helper()
 
 	s3Once.Do(func() {
@@ -57,7 +57,7 @@ func StartS3(t *testing.T, bucket string) s3backend.S3Config {
 			return
 		}
 
-		s3Config = s3backend.S3Config{
+		s3Config = s3backend.Config{
 			Region:                "us-east-1",
 			Endpoint:              fmt.Sprintf("http://%s:%s", host, port.Port()),
 			ForcePathStyle:        true,

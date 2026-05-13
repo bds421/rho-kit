@@ -21,24 +21,24 @@ import (
 const tracerName = "kit/storage/gcs"
 
 // Compile-time interface compliance check.
-var _ storage.Storage = (*GCSBackend)(nil)
+var _ storage.Storage = (*Backend)(nil)
 
-// GCSBackend implements [storage.Storage] using Google Cloud Storage.
-type GCSBackend struct {
+// Backend implements [storage.Storage] using Google Cloud Storage.
+type Backend struct {
 	client     *gcsstorage.Client
 	bucket     *gcsstorage.BucketHandle
-	cfg        GCSConfig
+	cfg        Config
 	instance   string
 	validators []storage.Validator
-	metrics    *GCSMetrics
+	metrics    *Metrics
 }
 
-// Option configures a GCSBackend.
-type Option func(*GCSBackend)
+// Option configures a Backend.
+type Option func(*Backend)
 
 // WithInstance sets the metrics/tracing instance label.
 func WithInstance(name string) Option {
-	return func(b *GCSBackend) {
+	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
 			panic("gcsbackend: invalid instance name")
 		}
@@ -49,7 +49,7 @@ func WithInstance(name string) Option {
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
-	return func(b *GCSBackend) {
+	return func(b *Backend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
@@ -57,15 +57,15 @@ func WithValidators(validators ...storage.Validator) Option {
 // WithRegisterer sets the Prometheus registerer for GCS metrics.
 // If not set, prometheus.DefaultRegisterer is used.
 func WithRegisterer(reg prometheus.Registerer) Option {
-	return func(b *GCSBackend) {
-		b.metrics = NewGCSMetrics(reg)
+	return func(b *Backend) {
+		b.metrics = NewMetrics(reg)
 	}
 }
 
-// New creates a new GCSBackend from config.
-func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error) {
+// New creates a new Backend from config.
+func New(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.Bucket == "" {
-		panic("gcsbackend: GCSConfig.Bucket is required")
+		panic("gcsbackend: Config.Bucket is required")
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -84,12 +84,12 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 		return nil, storage.WrapSafe("gcsbackend: create client failed", err)
 	}
 
-	b := &GCSBackend{
+	b := &Backend{
 		client:   client,
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultGCSMetrics,
+		metrics:  defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -100,20 +100,20 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 	return b, nil
 }
 
-// NewWithClient creates a GCSBackend with a custom GCS client for testing.
-func NewWithClient(client *gcsstorage.Client, cfg GCSConfig, opts ...Option) *GCSBackend {
+// NewWithClient creates a Backend with a custom GCS client for testing.
+func NewWithClient(client *gcsstorage.Client, cfg Config, opts ...Option) *Backend {
 	if client == nil {
 		panic("gcsbackend: NewWithClient requires a non-nil *storage.Client")
 	}
 	if cfg.Bucket == "" {
-		panic("gcsbackend: GCSConfig.Bucket is required")
+		panic("gcsbackend: Config.Bucket is required")
 	}
-	b := &GCSBackend{
+	b := &Backend{
 		client:   client,
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultGCSMetrics,
+		metrics:  defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -125,7 +125,7 @@ func NewWithClient(client *gcsstorage.Client, cfg GCSConfig, opts ...Option) *GC
 }
 
 // Put uploads content from r to the given GCS object key.
-func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "gcs.Put")
 	defer span.End()
 	span.SetAttributes(
@@ -201,7 +201,7 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 }
 
 // Get downloads a GCS object. Caller must close the returned ReadCloser.
-func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "gcs.Get")
 	defer span.End()
 	span.SetAttributes(
@@ -253,7 +253,7 @@ func (b *GCSBackend) Get(ctx context.Context, key string) (io.ReadCloser, storag
 }
 
 // Delete removes a GCS object. Returns nil if the object does not exist.
-func (b *GCSBackend) Delete(ctx context.Context, key string) error {
+func (b *Backend) Delete(ctx context.Context, key string) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "gcs.Delete")
 	defer span.End()
 	span.SetAttributes(
@@ -280,7 +280,7 @@ func (b *GCSBackend) Delete(ctx context.Context, key string) error {
 }
 
 // Exists checks whether a GCS object exists using Attrs.
-func (b *GCSBackend) Exists(ctx context.Context, key string) (bool, error) {
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "gcs.Exists")
 	defer span.End()
 	span.SetAttributes(
@@ -345,7 +345,7 @@ func translateGCSCapacity(err error) error {
 }
 
 // Close closes the underlying GCS client.
-func (b *GCSBackend) Close() error {
+func (b *Backend) Close() error {
 	if b == nil || b.client == nil {
 		return nil
 	}

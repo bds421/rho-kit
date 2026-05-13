@@ -17,7 +17,7 @@ import (
 const maxPresignTTL = 1 * time.Hour
 
 // PresignGetURL generates a pre-signed GET URL valid for the given TTL.
-func (b *S3Backend) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+func (b *Backend) PresignGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
 	}
@@ -41,13 +41,13 @@ func (b *S3Backend) PresignGetURL(ctx context.Context, key string, ttl time.Dura
 // PresignPutURL generates a pre-signed PUT URL valid for the given TTL.
 // The caller is responsible for sending the correct Content-Type header.
 //
-// The configured server-side encryption policy (S3Config.SSE / SSEKMSKeyID)
+// The configured server-side encryption policy (Config.SSE / SSEKMSKeyID)
 // is signed into the presigned URL so the client must echo the matching
 // x-amz-server-side-encryption (and x-amz-server-side-encryption-aws-kms-
 // key-id where applicable) header on PUT — without that, S3 rejects the
 // upload. This stops clients from bypassing the bucket's encryption
 // policy via direct uploads.
-func (b *S3Backend) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
+func (b *Backend) PresignPutURL(ctx context.Context, key string, ttl time.Duration, meta storage.ObjectMeta) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
 	}

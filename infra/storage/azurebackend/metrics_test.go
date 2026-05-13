@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestNewAzureMetricsReusesCollectors(t *testing.T) {
+func TestNewMetricsReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewAzureMetrics(reg)
-	m2 := NewAzureMetrics(reg)
+	m1 := NewMetrics(reg)
+	m2 := NewMetrics(reg)
 
 	if m1.opDuration != m2.opDuration {
 		t.Fatal("opDuration collector was not reused")
@@ -24,9 +24,9 @@ func TestNewAzureMetricsReusesCollectors(t *testing.T) {
 	}
 }
 
-func TestAzureMetricsContract(t *testing.T) {
+func TestMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewAzureMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("documents", "put", start, nil)
@@ -43,9 +43,9 @@ func TestAzureMetricsContract(t *testing.T) {
 	}
 }
 
-func TestAzureMetricsNormalizeExpectedNotFound(t *testing.T) {
+func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewAzureMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("documents", "delete", start, azureMetricErr(azureBlobNotFoundErr()))

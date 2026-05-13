@@ -10,10 +10,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestNewS3MetricsReusesCollectors(t *testing.T) {
+func TestNewMetricsReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewS3Metrics(reg)
-	m2 := NewS3Metrics(reg)
+	m1 := NewMetrics(reg)
+	m2 := NewMetrics(reg)
 
 	if m1.opDuration != m2.opDuration {
 		t.Fatal("opDuration collector was not reused")
@@ -23,9 +23,9 @@ func TestNewS3MetricsReusesCollectors(t *testing.T) {
 	}
 }
 
-func TestS3MetricsContract(t *testing.T) {
+func TestMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewS3Metrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("assets", "put", start, nil)
@@ -42,9 +42,9 @@ func TestS3MetricsContract(t *testing.T) {
 	}
 }
 
-func TestS3MetricsNormalizeExpectedNotFound(t *testing.T) {
+func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewS3Metrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("assets", "delete", start, s3MetricErr(&types.NotFound{}))

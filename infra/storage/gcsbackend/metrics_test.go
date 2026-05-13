@@ -10,10 +10,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestNewGCSMetricsReusesCollectors(t *testing.T) {
+func TestNewMetricsReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewGCSMetrics(reg)
-	m2 := NewGCSMetrics(reg)
+	m1 := NewMetrics(reg)
+	m2 := NewMetrics(reg)
 
 	if m1.opDuration != m2.opDuration {
 		t.Fatal("opDuration collector was not reused")
@@ -23,9 +23,9 @@ func TestNewGCSMetricsReusesCollectors(t *testing.T) {
 	}
 }
 
-func TestGCSMetricsContract(t *testing.T) {
+func TestMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewGCSMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("avatars", "put", start, nil)
@@ -42,9 +42,9 @@ func TestGCSMetricsContract(t *testing.T) {
 	}
 }
 
-func TestGCSMetricsNormalizeExpectedNotFound(t *testing.T) {
+func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewGCSMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("avatars", "delete", start, gcsMetricErr(gcsstorage.ErrObjectNotExist))

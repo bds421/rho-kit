@@ -6,15 +6,15 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// JWTFields holds the JWKS URL for JWT verification.
+// Fields holds the JWKS URL for JWT verification.
 // Embed this in service configs that verify JWTs.
-type JWTFields struct {
+type Fields struct {
 	JWKSURL string
 }
 
-// LoadJWTFields reads the JWKS URL from environment variables.
-func LoadJWTFields() JWTFields {
-	return JWTFields{
+// LoadFields reads the JWKS URL from environment variables.
+func LoadFields() Fields {
+	return Fields{
 		JWKSURL: config.Get("JWKS_URL", ""),
 	}
 }

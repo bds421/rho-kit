@@ -14,11 +14,11 @@ import (
 	"github.com/bds421/rho-kit/infra/redis/v2"
 )
 
-// testEnv bundles a miniredis, Connection, RedisCache, and in-memory fallback for tests.
+// testEnv bundles a miniredis, Connection, Cache, and in-memory fallback for tests.
 type testEnv struct {
 	mr       *miniredis.Miniredis
 	conn     *redis.Connection
-	primary  *RedisCache
+	primary  *Cache
 	fallback *sharedcache.MemoryCache
 }
 
@@ -34,7 +34,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	client := conn.Client()
-	primary, err := NewRedisCache(client, "test-degraded")
+	primary, err := NewCache(client, "test-degraded")
 	require.NoError(t, err)
 
 	fallback, err2 := sharedcache.NewMemoryCache()
@@ -65,7 +65,7 @@ func TestNewDegradedCache_PanicsOnNilConnection(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	primary, err := NewRedisCache(client, "test")
+	primary, err := NewCache(client, "test")
 	require.NoError(t, err)
 
 	assert.Panics(t, func() {

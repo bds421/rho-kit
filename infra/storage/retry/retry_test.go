@@ -229,7 +229,7 @@ func TestRetryStorage_New_PanicsOnZeroBaseDelay(t *testing.T) {
 // hooks so we can verify retry forwards capabilities and applies retry
 // policy.
 type presignedListerBackend struct {
-	*membackend.MemBackend
+	*membackend.Backend
 	presignCalls atomic.Int32
 	urlCalls     atomic.Int32
 	failPresign  func() error
@@ -270,7 +270,7 @@ func TestAsPresigned_ReachesUnderlyingThroughRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	backend := &presignedListerBackend{MemBackend: membackend.New()}
+	backend := &presignedListerBackend{Backend: membackend.New()}
 	r := New(backend, WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
 
 	ps, ok := storage.AsPresigned(r)
@@ -296,7 +296,7 @@ func TestAsLister_RetryRetriesUnderlyingErrors(t *testing.T) {
 	// must reissue and succeed.
 	var attempts atomic.Int32
 	backend := &presignedListerBackend{
-		MemBackend: membackend.New(),
+		Backend: membackend.New(),
 		failPresign: func() error {
 			if attempts.Add(1) == 1 {
 				return storage.NewTransientError("presign", "key", errors.New("timeout"))
@@ -319,7 +319,7 @@ func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	backend := &presignedListerBackend{MemBackend: membackend.New()}
+	backend := &presignedListerBackend{Backend: membackend.New()}
 	r := New(backend, WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
 
 	urler, ok := storage.AsPublicURLer(r)
@@ -332,7 +332,7 @@ func TestAsPublicURLer_ReachesUnderlyingThroughRetry(t *testing.T) {
 
 // failingBackend wraps MemBackend but can inject errors per-operation.
 type failingBackend struct {
-	underlying *membackend.MemBackend
+	underlying *membackend.Backend
 	getFn      func() error
 	deleteFn   func() error
 }

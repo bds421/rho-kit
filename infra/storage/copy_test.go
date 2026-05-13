@@ -156,7 +156,7 @@ func TestCopyAcross_PutDestinationErrorDoesNotReflectKey(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-token")
 }
 
-func newTestBackend(t *testing.T) *localbackend.LocalBackend {
+func newTestBackend(t *testing.T) *localbackend.Backend {
 	t.Helper()
 	b, err := localbackend.New(t.TempDir())
 	require.NoError(t, err)

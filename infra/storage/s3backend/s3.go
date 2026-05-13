@@ -25,13 +25,13 @@ const tracerName = "kit/storage/s3"
 
 // Compile-time interface compliance checks.
 var (
-	_ storage.Storage        = (*S3Backend)(nil)
-	_ storage.PresignedStore = (*S3Backend)(nil)
+	_ storage.Storage        = (*Backend)(nil)
+	_ storage.PresignedStore = (*Backend)(nil)
 )
 
-// S3Client abstracts the S3 API methods used by S3Backend.
+// Client abstracts the S3 API methods used by Backend.
 // This enables unit testing with a mock client.
-type S3Client interface {
+type Client interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
@@ -41,30 +41,30 @@ type S3Client interface {
 	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
 }
 
-// S3Presigner abstracts the S3 presign API methods.
-type S3Presigner interface {
+// Presigner abstracts the S3 presign API methods.
+type Presigner interface {
 	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
 	PresignPutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
 }
 
-// S3Backend implements [storage.Storage] using AWS S3 (or compatible endpoints).
-type S3Backend struct {
-	client     S3Client
-	presigner  S3Presigner
+// Backend implements [storage.Storage] using AWS S3 (or compatible endpoints).
+type Backend struct {
+	client     Client
+	presigner  Presigner
 	bucket     string
-	cfg        S3Config
+	cfg        Config
 	instance   string
 	validators []storage.Validator
-	metrics    *S3Metrics
+	metrics    *Metrics
 }
 
-// Option configures an S3Backend.
-type Option func(*S3Backend)
+// Option configures an Backend.
+type Option func(*Backend)
 
 // WithInstance sets the Prometheus instance label. Defaults to "default".
 // Use a small static name like "avatars" or "documents".
 func WithInstance(name string) Option {
-	return func(b *S3Backend) {
+	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
 			panic("s3backend: invalid instance name")
 		}
@@ -72,10 +72,10 @@ func WithInstance(name string) Option {
 	}
 }
 
-// WithConfig overrides the stored S3Config. This is primarily useful in tests
+// WithConfig overrides the stored Config. This is primarily useful in tests
 // via NewWithClient where no config is loaded from environment.
-func WithConfig(cfg S3Config) Option {
-	return func(b *S3Backend) {
+func WithConfig(cfg Config) Option {
+	return func(b *Backend) {
 		b.cfg = cfg
 		if cfg.Bucket != "" {
 			b.bucket = cfg.Bucket
@@ -86,7 +86,7 @@ func WithConfig(cfg S3Config) Option {
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
-	return func(b *S3Backend) {
+	return func(b *Backend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
@@ -94,16 +94,16 @@ func WithValidators(validators ...storage.Validator) Option {
 // WithRegisterer sets the Prometheus registerer for S3 metrics.
 // If not set, prometheus.DefaultRegisterer is used.
 func WithRegisterer(reg prometheus.Registerer) Option {
-	return func(b *S3Backend) {
-		b.metrics = NewS3Metrics(reg)
+	return func(b *Backend) {
+		b.metrics = NewMetrics(reg)
 	}
 }
 
-// New creates a new S3Backend from the given config.
+// New creates a new Backend from the given config.
 // Panics if cfg.Bucket is empty.
-func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
+func New(cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.Bucket == "" {
-		panic("s3backend: S3Config.Bucket is required")
+		panic("s3backend: Config.Bucket is required")
 	}
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
@@ -120,13 +120,13 @@ func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
 		}
 	})
 
-	b := &S3Backend{
+	b := &Backend{
 		client:    client,
 		presigner: s3.NewPresignClient(client),
 		bucket:    cfg.Bucket,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultS3Metrics,
+		metrics:   defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -137,24 +137,24 @@ func New(cfg S3Config, opts ...Option) (*S3Backend, error) {
 	return b, nil
 }
 
-// NewWithClient creates an S3Backend with a custom S3Client and presigner.
+// NewWithClient creates an Backend with a custom Client and presigner.
 // Intended for testing with mock clients.
-func NewWithClient(client S3Client, presigner S3Presigner, bucket string, opts ...Option) *S3Backend {
+func NewWithClient(client Client, presigner Presigner, bucket string, opts ...Option) *Backend {
 	if client == nil {
-		panic("s3backend: NewWithClient requires a non-nil S3Client")
+		panic("s3backend: NewWithClient requires a non-nil Client")
 	}
 	if presigner == nil {
-		panic("s3backend: NewWithClient requires a non-nil S3Presigner")
+		panic("s3backend: NewWithClient requires a non-nil Presigner")
 	}
 	if bucket == "" {
 		panic("s3backend: bucket must not be empty")
 	}
-	b := &S3Backend{
+	b := &Backend{
 		client:    client,
 		presigner: presigner,
 		bucket:    bucket,
 		instance:  "default",
-		metrics:   defaultS3Metrics,
+		metrics:   defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -165,7 +165,7 @@ func NewWithClient(client S3Client, presigner S3Presigner, bucket string, opts .
 	return b
 }
 
-func buildAWSConfig(ctx context.Context, cfg S3Config) (aws.Config, error) {
+func buildAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
 	}
@@ -188,13 +188,13 @@ func buildAWSConfig(ctx context.Context, cfg S3Config) (aws.Config, error) {
 }
 
 // Bucket returns the configured bucket name.
-func (b *S3Backend) Bucket() string {
+func (b *Backend) Bucket() string {
 	return b.bucket
 }
 
 // Put uploads content from r to the given key. Validators run before the upload.
 // The reader is piped directly to S3 without buffering into memory.
-func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Put")
 	defer span.End()
 	span.SetAttributes(
@@ -290,7 +290,7 @@ func translateS3Capacity(err error, size int64) error {
 }
 
 // Get downloads object content. Caller must close the returned ReadCloser.
-func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Get")
 	defer span.End()
 	span.SetAttributes(
@@ -335,7 +335,7 @@ func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage
 }
 
 // Delete removes an object by key. Returns nil if the key does not exist.
-func (b *S3Backend) Delete(ctx context.Context, key string) error {
+func (b *Backend) Delete(ctx context.Context, key string) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Delete")
 	defer span.End()
 	span.SetAttributes(
@@ -366,7 +366,7 @@ func (b *S3Backend) Delete(ctx context.Context, key string) error {
 }
 
 // Exists checks presence using HeadObject.
-func (b *S3Backend) Exists(ctx context.Context, key string) (bool, error) {
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Exists")
 	defer span.End()
 	span.SetAttributes(
@@ -416,7 +416,7 @@ func isS3NotFound(err error) bool {
 // fields on a PutObjectInput based on the configured SSE policy. The default
 // is "AES256" so buckets without a default-encryption policy still receive
 // encrypted objects; callers can opt out by setting cfg.SSE = "".
-func validateSSEConfig(cfg S3Config) error {
+func validateSSEConfig(cfg Config) error {
 	switch cfg.SSE {
 	case "", "AES256":
 	case "aws:kms":
@@ -432,7 +432,7 @@ func validateSSEConfig(cfg S3Config) error {
 	return nil
 }
 
-func applySSE(input *s3.PutObjectInput, cfg S3Config) error {
+func applySSE(input *s3.PutObjectInput, cfg Config) error {
 	if err := validateSSEConfig(cfg); err != nil {
 		return err
 	}
@@ -448,7 +448,7 @@ func applySSE(input *s3.PutObjectInput, cfg S3Config) error {
 	return nil
 }
 
-func applyCopySSE(input *s3.CopyObjectInput, cfg S3Config) error {
+func applyCopySSE(input *s3.CopyObjectInput, cfg Config) error {
 	if err := validateSSEConfig(cfg); err != nil {
 		return err
 	}

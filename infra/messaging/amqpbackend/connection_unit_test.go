@@ -11,34 +11,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Dial validation ---
+// --- Connect validation ---
 
 func TestDial_EmptyURL_ReturnsError(t *testing.T) {
-	_, err := Dial("", discardLogger())
+	_, err := Connect("", discardLogger())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "amqp URL must not be empty")
 }
 
 func TestDial_NilLogger_ReturnsError(t *testing.T) {
-	_, err := Dial("amqp://localhost", nil)
+	_, err := Connect("amqp://localhost", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "logger must not be nil")
 }
 
 func TestDial_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
-		_, _ = Dial("amqp://localhost", discardLogger(), nil)
+		_, _ = Connect("amqp://localhost", discardLogger(), nil)
 	})
 }
 
 func TestDial_InvalidURL_ReturnsError(t *testing.T) {
-	_, err := Dial("not-a-valid-url", discardLogger())
+	_, err := Connect("not-a-valid-url", discardLogger())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "absolute amqp(s) URL")
 }
 
 func TestDial_RejectsPlaintextWithoutOptIn(t *testing.T) {
-	_, err := Dial("amqp://localhost:5672/", discardLogger())
+	_, err := Connect("amqp://localhost:5672/", discardLogger())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WithAllowPlaintext")
 }
@@ -343,12 +343,12 @@ func TestConnection_InvalidReceiverSafety(t *testing.T) {
 	assert.Contains(t, err.Error(), "not initialized")
 }
 
-// --- Dial with lazy connect ---
+// --- Connect with lazy connect ---
 
 func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 	// LazyConnect should return a connection immediately, even with an invalid URL.
 	// The reconnect loop runs in the background.
-	conn, err := Dial("amqp://invalid-host:99999", discardLogger(),
+	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),
 		WithAllowPlaintext(),
 		WithLazyConnect(),
 		WithMaxReconnectAttempts(1),
@@ -373,7 +373,7 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 
 func TestDial_WithAllOptions(t *testing.T) {
 	var reconnectCalled bool
-	conn, err := Dial("amqp://invalid-host:99999", discardLogger(),
+	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),
 		WithMaxReconnectAttempts(1),
 		WithLazyConnect(),
 		WithAllowPlaintext(),

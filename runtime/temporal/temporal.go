@@ -96,20 +96,30 @@ func Connect(ctx context.Context, opts client.Options) (*Client, error) {
 // Client wraps [client.Client] so the kit can attach extra
 // helpers (worker registration, lifecycle integration) without
 // callers reaching into the SDK directly. Callers that need the raw
-// SDK client use [Client.SDK].
+// SDK client use [Client.SDK]. Client is safe for concurrent use; in
+// particular [Client.Close] is idempotent and may be called from any
+// goroutine.
 type Client struct {
-	c client.Client
+	c        client.Client
+	closeOne sync.Once
 }
 
 // SDK returns the underlying SDK client. Use this for anything the
 // kit doesn't wrap — workflow execution, query API, signal API.
 func (c *Client) SDK() client.Client { return c.c }
 
-// Close terminates the connection. Safe to call multiple times.
+// Close terminates the connection. Idempotent and goroutine-safe — the
+// underlying SDK's Close is not contractually idempotent across versions,
+// so we gate it behind a sync.Once instead of forwarding every call.
 func (c *Client) Close() {
-	if c.c != nil {
-		c.c.Close()
+	if c == nil {
+		return
 	}
+	c.closeOne.Do(func() {
+		if c.c != nil {
+			c.c.Close()
+		}
+	})
 }
 
 // Worker bundles a Temporal worker with the kit's

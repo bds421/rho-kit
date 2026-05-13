@@ -361,7 +361,7 @@ func TestLocalBackend_FilesystemErrorsDoNotReflectRootPath(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	b := &LocalBackend{root: "secret-token-root\x00"}
+	b := &Backend{root: "secret-token-root\x00"}
 
 	err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 	require.Error(t, err)
@@ -511,7 +511,7 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 	})
 }
 
-func newBackend(t *testing.T, opts ...Option) *LocalBackend {
+func newBackend(t *testing.T, opts ...Option) *Backend {
 	t.Helper()
 	b, err := New(t.TempDir(), opts...)
 	require.NoError(t, err)
@@ -528,7 +528,7 @@ func (r *trackingReadCloser) Close() error {
 	return nil
 }
 
-func replaceRootWithSymlink(t *testing.T, b *LocalBackend) string {
+func replaceRootWithSymlink(t *testing.T, b *Backend) string {
 	t.Helper()
 	outside := t.TempDir()
 	require.NoError(t, os.RemoveAll(b.root))

@@ -8,21 +8,21 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// SFTPMetrics holds Prometheus collectors for SFTP storage operation monitoring.
-type SFTPMetrics struct {
+// Metrics holds Prometheus collectors for SFTP storage operation monitoring.
+type Metrics struct {
 	opDuration        *prometheus.HistogramVec
 	opErrors          *prometheus.CounterVec
 	connectionHealthy *prometheus.GaugeVec
 }
 
-// NewSFTPMetrics creates and registers SFTP metrics with the given registerer.
+// NewMetrics creates and registers SFTP metrics with the given registerer.
 // If reg is nil, prometheus.DefaultRegisterer is used.
-func NewSFTPMetrics(reg prometheus.Registerer) *SFTPMetrics {
+func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	m := &SFTPMetrics{
+	m := &Metrics{
 		opDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "storage",
@@ -60,12 +60,12 @@ func NewSFTPMetrics(reg prometheus.Registerer) *SFTPMetrics {
 	return m
 }
 
-var defaultSFTPMetrics = NewSFTPMetrics(nil)
+var defaultMetrics = NewMetrics(nil)
 
 // now returns the current time. A variable so tests can override it.
 var now = time.Now
 
-func (m *SFTPMetrics) observeOp(instance, op string, start time.Time, err error) {
+func (m *Metrics) observeOp(instance, op string, start time.Time, err error) {
 	m.opDuration.WithLabelValues(instance, op).Observe(time.Since(start).Seconds())
 	if err != nil {
 		m.opErrors.WithLabelValues(instance, op).Inc()

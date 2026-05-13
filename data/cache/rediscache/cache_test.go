@@ -20,26 +20,26 @@ func newTestClient(t *testing.T) goredis.UniversalClient {
 	return goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 }
 
-// TestNewRedisCache_NilClientPanics verifies the constructor fails fast
+// TestNewCache_NilClientPanics verifies the constructor fails fast
 // rather than letting a miswired cache dereference nil on first use.
-func TestNewRedisCache_NilClientPanics(t *testing.T) {
+func TestNewCache_NilClientPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic for nil client")
 		}
 	}()
-	_, _ = NewRedisCache(nil, "test")
+	_, _ = NewCache(nil, "test")
 }
 
-func TestNewRedisCache_InvalidName(t *testing.T) {
+func TestNewCache_InvalidName(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	_, err := NewRedisCache(client, "")
+	_, err := NewCache(client, "")
 	assert.Error(t, err)
 }
 
-func TestNewRedisCache_RejectsNilOption(t *testing.T) {
+func TestNewCache_RejectsNilOption(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -48,13 +48,13 @@ func TestNewRedisCache_RejectsNilOption(t *testing.T) {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	_, _ = NewRedisCache(client, "test", nil)
+	_, _ = NewCache(client, "test", nil)
 }
 
-func TestRedisCache_InvalidReceiverReturnsError(t *testing.T) {
+func TestCache_InvalidReceiverReturnsError(t *testing.T) {
 	ctx := context.Background()
 
-	for name, rc := range map[string]*RedisCache{
+	for name, rc := range map[string]*Cache{
 		"nil":  nil,
 		"zero": {},
 	} {
@@ -85,22 +85,22 @@ func TestRedisCache_InvalidReceiverReturnsError(t *testing.T) {
 	}
 }
 
-func TestRedisCache_GetMiss(t *testing.T) {
+func TestCache_GetMiss(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 
 	_, getErr := rc.Get(context.Background(), "nonexistent")
 	assert.ErrorIs(t, getErr, sharedcache.ErrCacheMiss)
 }
 
-func TestRedisCache_SetAndGet(t *testing.T) {
+func TestCache_SetAndGet(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -111,11 +111,11 @@ func TestRedisCache_SetAndGet(t *testing.T) {
 	assert.Equal(t, []byte("value1"), val)
 }
 
-func TestRedisCache_Delete(t *testing.T) {
+func TestCache_Delete(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -126,11 +126,11 @@ func TestRedisCache_Delete(t *testing.T) {
 	assert.ErrorIs(t, getErr, sharedcache.ErrCacheMiss)
 }
 
-func TestRedisCache_Exists(t *testing.T) {
+func TestCache_Exists(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -145,11 +145,11 @@ func TestRedisCache_Exists(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestRedisCache_NegativeTTLDoesNotReflectValue(t *testing.T) {
+func TestCache_NegativeTTLDoesNotReflectValue(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -186,11 +186,11 @@ func TestRedisCache_NegativeTTLDoesNotReflectValue(t *testing.T) {
 	}
 }
 
-func TestRedisCache_Set_ExceedsMaxValueSize(t *testing.T) {
+func TestCache_Set_ExceedsMaxValueSize(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test", WithCacheMaxValueSize(10))
+	rc, err := NewCache(client, "test", WithCacheMaxValueSize(10))
 	require.NoError(t, err)
 
 	err = rc.Set(context.Background(), "key", make([]byte, 20), time.Minute)
@@ -200,11 +200,11 @@ func TestRedisCache_Set_ExceedsMaxValueSize(t *testing.T) {
 	assert.NotContains(t, err.Error(), "20")
 }
 
-func TestRedisCache_MSet_ExceedsMaxValueSizeDoesNotReflectKey(t *testing.T) {
+func TestCache_MSet_ExceedsMaxValueSizeDoesNotReflectKey(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test", WithCacheMaxValueSize(10))
+	rc, err := NewCache(client, "test", WithCacheMaxValueSize(10))
 	require.NoError(t, err)
 
 	err = rc.MSet(context.Background(), map[string][]byte{
@@ -234,11 +234,11 @@ func oversizedRedisItemsForTest() map[string][]byte {
 	return items
 }
 
-func TestRedisCache_BulkOperationsRejectOversizedBatches(t *testing.T) {
+func TestCache_BulkOperationsRejectOversizedBatches(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 
 	_, err = rc.MGet(context.Background(), oversizedRedisKeysForTest())
@@ -248,11 +248,11 @@ func TestRedisCache_BulkOperationsRejectOversizedBatches(t *testing.T) {
 	assert.ErrorIs(t, err, sharedcache.ErrBulkTooLarge)
 }
 
-func TestRedisCache_InvalidKey(t *testing.T) {
+func TestCache_InvalidKey(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	rc, err := NewRedisCache(client, "test")
+	rc, err := NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -276,7 +276,7 @@ func TestWithCacheMaxValueSize_PanicsOnNegative(t *testing.T) {
 }
 
 func TestWithCacheMaxValueSize_ZeroDisablesLimit(t *testing.T) {
-	rc := &RedisCache{maxValueSize: defaultMaxValueSize}
+	rc := &Cache{maxValueSize: defaultMaxValueSize}
 	WithCacheMaxValueSize(0)(rc)
 	assert.Equal(t, 0, rc.maxValueSize)
 }

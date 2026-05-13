@@ -10,7 +10,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-// ErrStoreUnavailable is returned by [RedisStore] when the underlying Redis
+// ErrStoreUnavailable is returned by [Store] when the underlying Redis
 // connection is reachable but cannot service the request — typically because
 // a Sentinel/Cluster failover demoted the primary to a replica (READONLY
 // reply), the connection pool is exhausted, or the client returned a

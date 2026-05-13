@@ -26,20 +26,20 @@ import (
 var validTableName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
 
 // Compile-time interface check.
-var _ idempotency.Store = (*PgStore)(nil)
+var _ idempotency.Store = (*Store)(nil)
 
-// Option configures the PgStore.
-type Option func(*PgStore)
+// Option configures the Store.
+type Option func(*Store)
 
 // WithTableName sets the table name for idempotency entries.
 // Default: "idempotency_keys". Panics if the name contains unsafe characters.
 func WithTableName(name string) Option {
-	return func(s *PgStore) { s.table = name }
+	return func(s *Store) { s.table = name }
 }
 
-// PgStore implements idempotency.Store using PostgreSQL.
+// Store implements idempotency.Store using PostgreSQL.
 // Safe for concurrent use across multiple service instances.
-type PgStore struct {
+type Store struct {
 	db    *sql.DB
 	table string
 }
@@ -60,15 +60,15 @@ func intervalSeconds(d time.Duration) string {
 	return fmt.Sprintf("%d seconds", secs)
 }
 
-// New creates a PgStore backed by the given database connection.
+// New creates a Store backed by the given database connection.
 // Panics if db is nil or the table name is not a valid SQL identifier —
 // both are programming errors that would otherwise defer the failure to
 // the first request after startup.
-func New(db *sql.DB, opts ...Option) *PgStore {
+func New(db *sql.DB, opts ...Option) *Store {
 	if db == nil {
 		panic("pgstore: New requires a non-nil *sql.DB")
 	}
-	s := &PgStore{
+	s := &Store{
 		db:    db,
 		table: "idempotency_keys",
 	}
@@ -93,10 +93,10 @@ func New(db *sql.DB, opts ...Option) *PgStore {
 // empty body (HTTP 204 No Content, 304 Not Modified, an empty 200) used
 // to look identical to "still locked, no response yet" — Get returned
 // (nil, false, nil) and the middleware would re-execute the handler
-// instead of replaying. status_code is only ever set by [PgStore.Set]
-// and cleared back to NULL by [PgStore.TryLock] (ON CONFLICT branch),
+// instead of replaying. status_code is only ever set by [Store.Set]
+// and cleared back to NULL by [Store.TryLock] (ON CONFLICT branch),
 // so it is the correct cache-vs-lock signal.
-func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	if err := s.ready(); err != nil {
 		return nil, false, err
 	}
@@ -157,7 +157,7 @@ func (s *PgStore) Get(ctx context.Context, key string, fingerprint []byte) (*ide
 // Returns [idempotency.ErrInvalidTTL] when ttl <= 0 — the interval cast
 // would otherwise round sub-second values to "0 seconds" and create a
 // row that's already expired before any consumer can read it.
-func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func (s *PgStore) Set(ctx context.Context, key, token string, resp idempotency.C
 // calls with a *different* fingerprint can be rejected with
 // fingerprintMismatch=true. Returns [idempotency.ErrInvalidTTL] when
 // ttl <= 0.
-func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	if err := s.ready(); err != nil {
 		return "", false, false, err
 	}
@@ -278,7 +278,7 @@ func (s *PgStore) TryLock(ctx context.Context, key string, fingerprint []byte, t
 // (audit FR-030). Using `response_body IS NULL` here would mean
 // Unlock could destroy a successfully-cached empty-body response
 // (HTTP 204) on a panic-during-second-request path.
-func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
+func (s *Store) Unlock(ctx context.Context, key, token string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (s *PgStore) Unlock(ctx context.Context, key, token string) error {
 	return nil
 }
 
-func (s *PgStore) ready() error {
+func (s *Store) ready() error {
 	if s == nil || s.db == nil || s.table == "" || !validTableName.MatchString(s.table) {
 		return idempotency.ErrInvalidStore
 	}
@@ -305,7 +305,7 @@ func (s *PgStore) ready() error {
 
 // DeleteExpired removes all expired entries. Call this periodically
 // (e.g., via cron) to prevent table bloat.
-func (s *PgStore) DeleteExpired(ctx context.Context) (int64, error) {
+func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
 	if err := s.ready(); err != nil {
 		return 0, err
 	}

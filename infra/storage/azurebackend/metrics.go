@@ -8,21 +8,21 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// AzureMetrics holds Prometheus collectors for Azure Blob Storage operation
+// Metrics holds Prometheus collectors for Azure Blob Storage operation
 // monitoring.
-type AzureMetrics struct {
+type Metrics struct {
 	opDuration *prometheus.HistogramVec
 	opErrors   *prometheus.CounterVec
 }
 
-// NewAzureMetrics creates and registers Azure Blob Storage metrics with the
+// NewMetrics creates and registers Azure Blob Storage metrics with the
 // given registerer. If reg is nil, prometheus.DefaultRegisterer is used.
-func NewAzureMetrics(reg prometheus.Registerer) *AzureMetrics {
+func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	m := &AzureMetrics{
+	m := &Metrics{
 		opDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "storage",
@@ -50,12 +50,12 @@ func NewAzureMetrics(reg prometheus.Registerer) *AzureMetrics {
 	return m
 }
 
-var defaultAzureMetrics = NewAzureMetrics(nil)
+var defaultMetrics = NewMetrics(nil)
 
 // now returns the current time. A variable so tests can override it.
 var now = time.Now
 
-func (m *AzureMetrics) observeOp(instance, op string, start time.Time, err error) {
+func (m *Metrics) observeOp(instance, op string, start time.Time, err error) {
 	m.opDuration.WithLabelValues(instance, op).Observe(time.Since(start).Seconds())
 	if err != nil {
 		m.opErrors.WithLabelValues(instance, op).Inc()

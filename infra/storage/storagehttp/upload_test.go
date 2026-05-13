@@ -505,7 +505,7 @@ func TestPartContentTypeRejectsInvalidRawHeaderValue(t *testing.T) {
 	}
 }
 
-func newLocalBackend(t *testing.T) *localbackend.LocalBackend {
+func newLocalBackend(t *testing.T) *localbackend.Backend {
 	t.Helper()
 	b, err := localbackend.New(t.TempDir())
 	require.NoError(t, err)

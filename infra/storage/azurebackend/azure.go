@@ -23,9 +23,9 @@ import (
 const tracerName = "kit/storage/azure"
 
 // Compile-time interface compliance check.
-var _ storage.Storage = (*AzureBackend)(nil)
+var _ storage.Storage = (*Backend)(nil)
 
-// BlobClient abstracts the Azure Blob container methods used by AzureBackend.
+// BlobClient abstracts the Azure Blob container methods used by Backend.
 type BlobClient interface {
 	UploadStream(ctx context.Context, blobName string, body io.Reader, opts *azblob.UploadStreamOptions) (azblob.UploadStreamResponse, error)
 	DownloadStream(ctx context.Context, blobName string, opts *azblob.DownloadStreamOptions) (azblob.DownloadStreamResponse, error)
@@ -39,22 +39,22 @@ type BlobPager interface {
 	NextPage(ctx context.Context) (container.ListBlobsFlatResponse, error)
 }
 
-// AzureBackend implements [storage.Storage] using Azure Blob Storage.
-type AzureBackend struct {
+// Backend implements [storage.Storage] using Azure Blob Storage.
+type Backend struct {
 	client     BlobClient
 	container  string
-	cfg        AzureConfig
+	cfg        Config
 	instance   string
 	validators []storage.Validator
-	metrics    *AzureMetrics
+	metrics    *Metrics
 }
 
-// Option configures an AzureBackend.
-type Option func(*AzureBackend)
+// Option configures an Backend.
+type Option func(*Backend)
 
 // WithInstance sets the metrics/tracing instance label.
 func WithInstance(name string) Option {
-	return func(b *AzureBackend) {
+	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
 			panic("azurebackend: invalid instance name")
 		}
@@ -65,7 +65,7 @@ func WithInstance(name string) Option {
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
-	return func(b *AzureBackend) {
+	return func(b *Backend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
@@ -73,15 +73,15 @@ func WithValidators(validators ...storage.Validator) Option {
 // WithRegisterer sets the Prometheus registerer for Azure Blob Storage metrics.
 // If not set, prometheus.DefaultRegisterer is used.
 func WithRegisterer(reg prometheus.Registerer) Option {
-	return func(b *AzureBackend) {
-		b.metrics = NewAzureMetrics(reg)
+	return func(b *Backend) {
+		b.metrics = NewMetrics(reg)
 	}
 }
 
-// New creates a new AzureBackend from config.
-func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
+// New creates a new Backend from config.
+func New(cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.ContainerName == "" {
-		panic("azurebackend: AzureConfig.ContainerName is required")
+		panic("azurebackend: Config.ContainerName is required")
 	}
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
@@ -102,12 +102,12 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 		return nil, storage.WrapSafe("azurebackend: create client failed", err)
 	}
 
-	b := &AzureBackend{
+	b := &Backend{
 		client:    &azureBlobClient{client: client, container: cfg.ContainerName},
 		container: cfg.ContainerName,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultAzureMetrics,
+		metrics:   defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -118,13 +118,13 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 	return b, nil
 }
 
-// NewWithTokenCredential creates an AzureBackend using Azure AD / workload
+// NewWithTokenCredential creates an Backend using Azure AD / workload
 // identity credentials instead of a storage account key. The Azure SDK refreshes
 // tokens through cred, so managed identity, workload identity, and chained
 // credential rotations are handled without rebuilding the backend.
-func NewWithTokenCredential(cfg AzureConfig, cred azcore.TokenCredential, opts ...Option) (*AzureBackend, error) {
+func NewWithTokenCredential(cfg Config, cred azcore.TokenCredential, opts ...Option) (*Backend, error) {
 	if cfg.ContainerName == "" {
-		panic("azurebackend: AzureConfig.ContainerName is required")
+		panic("azurebackend: Config.ContainerName is required")
 	}
 	if cred == nil {
 		return nil, fmt.Errorf("azurebackend: token credential is required")
@@ -143,12 +143,12 @@ func NewWithTokenCredential(cfg AzureConfig, cred azcore.TokenCredential, opts .
 		return nil, storage.WrapSafe("azurebackend: create client failed", err)
 	}
 
-	b := &AzureBackend{
+	b := &Backend{
 		client:    &azureBlobClient{client: client, container: cfg.ContainerName},
 		container: cfg.ContainerName,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultAzureMetrics,
+		metrics:   defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -159,19 +159,19 @@ func NewWithTokenCredential(cfg AzureConfig, cred azcore.TokenCredential, opts .
 	return b, nil
 }
 
-// NewWithClient creates an AzureBackend with a custom BlobClient for testing.
-func NewWithClient(client BlobClient, containerName string, opts ...Option) *AzureBackend {
+// NewWithClient creates an Backend with a custom BlobClient for testing.
+func NewWithClient(client BlobClient, containerName string, opts ...Option) *Backend {
 	if client == nil {
 		panic("azurebackend: NewWithClient requires a non-nil BlobClient")
 	}
 	if containerName == "" {
 		panic("azurebackend: containerName must not be empty")
 	}
-	b := &AzureBackend{
+	b := &Backend{
 		client:    client,
 		container: containerName,
 		instance:  "default",
-		metrics:   defaultAzureMetrics,
+		metrics:   defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -183,7 +183,7 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Azu
 }
 
 // Put uploads content from r to the given blob key.
-func (b *AzureBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Put")
 	defer span.End()
 	span.SetAttributes(
@@ -266,7 +266,7 @@ func translateAzureCapacity(err error) error {
 }
 
 // Get downloads a blob. Caller must close the returned ReadCloser.
-func (b *AzureBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Get")
 	defer span.End()
 	span.SetAttributes(
@@ -310,7 +310,7 @@ func (b *AzureBackend) Get(ctx context.Context, key string) (io.ReadCloser, stor
 }
 
 // Delete removes a blob. Returns nil if the blob does not exist.
-func (b *AzureBackend) Delete(ctx context.Context, key string) error {
+func (b *Backend) Delete(ctx context.Context, key string) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Delete")
 	defer span.End()
 	span.SetAttributes(
@@ -337,7 +337,7 @@ func (b *AzureBackend) Delete(ctx context.Context, key string) error {
 }
 
 // Exists checks whether a blob exists using DownloadStream with range 0-0.
-func (b *AzureBackend) Exists(ctx context.Context, key string) (bool, error) {
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "azure.Exists")
 	defer span.End()
 	span.SetAttributes(
@@ -396,7 +396,7 @@ func (c *azureBlobClient) NewListBlobsFlatPager(opts *container.ListBlobsFlatOpt
 }
 
 // Healthy reports whether the container is accessible.
-func (b *AzureBackend) Healthy() bool {
+func (b *Backend) Healthy() bool {
 	if b == nil || b.client == nil {
 		return false
 	}

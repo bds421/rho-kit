@@ -63,10 +63,10 @@ return 0
 `)
 
 // Compile-time interface check.
-var _ idempotency.Store = (*RedisStore)(nil)
+var _ idempotency.Store = (*Store)(nil)
 
-// Option configures the RedisStore.
-type Option func(*RedisStore)
+// Option configures the Store.
+type Option func(*Store)
 
 // WithKeyPrefix sets the key prefix for all stored entries.
 // Default: "idempotency:".
@@ -83,7 +83,7 @@ func WithKeyPrefix(prefix string) Option {
 	if containsInvalidStringBytes(prefix) {
 		panic("redisstore: WithKeyPrefix prefix contains invalid characters")
 	}
-	return func(s *RedisStore) { s.prefix = prefix }
+	return func(s *Store) { s.prefix = prefix }
 }
 
 // maxKeyPrefixLen caps Redis key prefixes so direct
@@ -93,21 +93,21 @@ func WithKeyPrefix(prefix string) Option {
 // traffic stays well below these limits.
 const maxKeyPrefixLen = 128
 
-// RedisStore implements idempotency.Store using Redis. Safe for concurrent
+// Store implements idempotency.Store using Redis. Safe for concurrent
 // use across processes.
-type RedisStore struct {
+type Store struct {
 	client goredis.UniversalClient
 	prefix string
 }
 
-// New creates a RedisStore backed by the given Redis client. Panics if
+// New creates a Store backed by the given Redis client. Panics if
 // client is nil — a miswired store would otherwise dereference nil on
 // first use.
-func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
+func New(client goredis.UniversalClient, opts ...Option) *Store {
 	if client == nil {
 		panic("redisstore: New requires a non-nil Redis client")
 	}
-	s := &RedisStore{
+	s := &Store{
 		client: client,
 		prefix: "idempotency:",
 	}
@@ -120,7 +120,7 @@ func New(client goredis.UniversalClient, opts ...Option) *RedisStore {
 	return s
 }
 
-func (s *RedisStore) k(key string) string { return s.prefix + key }
+func (s *Store) k(key string) string { return s.prefix + key }
 
 // validateKey preserves the local helper name used throughout this backend
 // while delegating to the Store-wide key contract.
@@ -189,7 +189,7 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 
 // Get returns a cached response and applies fingerprint comparison if a
 // non-nil fingerprint is supplied.
-func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	if err := s.ready(); err != nil {
 		return nil, false, err
 	}
@@ -239,7 +239,7 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 // TryLock implements the contract from [idempotency.Store.TryLock]. Returns
 // [idempotency.ErrInvalidTTL] when ttl <= 0 — Redis SET NX with EX 0 would
 // otherwise create a permanent lock.
-func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	if err := s.ready(); err != nil {
 		return "", false, false, err
 	}
@@ -307,7 +307,7 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 // Set replaces the lock value with the response envelope, atomically
 // requiring that the caller still holds the lock. Returns
 // [idempotency.ErrInvalidTTL] when ttl <= 0.
-func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -367,7 +367,7 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 
 // Unlock releases the processing lock under the caller's token. Token
 // mismatch is silently ignored (best-effort cleanup, e.g. on handler panic).
-func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
+func (s *Store) Unlock(ctx context.Context, key, token string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -402,7 +402,7 @@ func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
 	return nil
 }
 
-func (s *RedisStore) ready() error {
+func (s *Store) ready() error {
 	if s == nil || s.client == nil || s.prefix == "" || len(s.prefix) > maxKeyPrefixLen || containsInvalidStringBytes(s.prefix) {
 		return idempotency.ErrInvalidStore
 	}

@@ -204,7 +204,7 @@ func TestEncryptedStorage_BackendErrorsDoNotReflectCause(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		t.Parallel()
 		backendErr := errors.New("backend list failed for secret-token")
-		enc := New(&failingListBackend{MemBackend: membackend.New(), err: backendErr}, StaticKey(testKey(t)))
+		enc := New(&failingListBackend{Backend: membackend.New(), err: backendErr}, StaticKey(testKey(t)))
 		lister, ok := storage.AsLister(enc)
 		require.True(t, ok)
 
@@ -361,7 +361,7 @@ func TestEncryptedStorage_New_PanicsOnNilOption(t *testing.T) {
 // presignedMemBackend wraps MemBackend with a stub PresignedStore so we can
 // verify capability discovery does not bypass encryption.
 type presignedMemBackend struct {
-	*membackend.MemBackend
+	*membackend.Backend
 }
 
 func (p *presignedMemBackend) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
@@ -374,7 +374,7 @@ func (p *presignedMemBackend) PresignPutURL(_ context.Context, key string, _ tim
 
 // publicURLBackend wraps MemBackend with a stub PublicURLer.
 type publicURLBackend struct {
-	*membackend.MemBackend
+	*membackend.Backend
 }
 
 func (p *publicURLBackend) URL(_ context.Context, key string) (string, error) {
@@ -387,7 +387,7 @@ func TestAsPresigned_BlockedByEncryption(t *testing.T) {
 	// wrapper to the underlying presigner. Returning the raw presigner
 	// would let callers upload plaintext directly to the bucket and
 	// download raw ciphertext, bypassing encryption-at-rest.
-	backend := &presignedMemBackend{MemBackend: membackend.New()}
+	backend := &presignedMemBackend{Backend: membackend.New()}
 	enc := New(backend, StaticKey(testKey(t)))
 
 	_, ok := storage.AsPresigned(enc)
@@ -397,7 +397,7 @@ func TestAsPresigned_BlockedByEncryption(t *testing.T) {
 func TestAsPublicURLer_BlockedByEncryption(t *testing.T) {
 	t.Parallel()
 	// Same hazard as presigned: a raw public URL would serve ciphertext.
-	backend := &publicURLBackend{MemBackend: membackend.New()}
+	backend := &publicURLBackend{Backend: membackend.New()}
 	enc := New(backend, StaticKey(testKey(t)))
 
 	_, ok := storage.AsPublicURLer(enc)
@@ -496,7 +496,7 @@ func (r errReader) Read([]byte) (int, error) {
 }
 
 type failingListBackend struct {
-	*membackend.MemBackend
+	*membackend.Backend
 	err error
 }
 
@@ -516,7 +516,7 @@ func TestAsPresigned_BlockedByEncryption_DeepStack(t *testing.T) {
 	// that has presigned, then assert AsPresigned returns false on the
 	// encryption layer alone, which is what the deeper stack would also see
 	// because retry/CB ask AsPresigned of the underlying chain.
-	backend := &presignedMemBackend{MemBackend: membackend.New()}
+	backend := &presignedMemBackend{Backend: membackend.New()}
 	enc := New(backend, StaticKey(testKey(t)))
 	_, ok := storage.AsPresigned(enc)
 	assert.False(t, ok)

@@ -37,7 +37,7 @@ func redisClient(t *testing.T) goredis.UniversalClient {
 func TestRedisCache_LiveRedis_SetAndGet(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "test")
+	rc, err := rediscache.NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -52,7 +52,7 @@ func TestRedisCache_LiveRedis_SetAndGet(t *testing.T) {
 func TestRedisCache_LiveRedis_GetMiss(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "test")
+	rc, err := rediscache.NewCache(client, "test")
 	require.NoError(t, err)
 
 	_, getErr := rc.Get(context.Background(), "test:nonexistent")
@@ -62,7 +62,7 @@ func TestRedisCache_LiveRedis_GetMiss(t *testing.T) {
 func TestRedisCache_LiveRedis_Expiration(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "test")
+	rc, err := rediscache.NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -78,7 +78,7 @@ func TestRedisCache_LiveRedis_Expiration(t *testing.T) {
 func TestRedisCache_LiveRedis_Delete(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "test")
+	rc, err := rediscache.NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -93,7 +93,7 @@ func TestRedisCache_LiveRedis_Delete(t *testing.T) {
 func TestRedisCache_LiveRedis_Exists(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "test")
+	rc, err := rediscache.NewCache(client, "test")
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -113,7 +113,7 @@ func TestRedisCache_LiveRedis_Exists(t *testing.T) {
 func TestTypedCache_LiveRedis_SetAndGet(t *testing.T) {
 	client := redisClient(t)
 
-	rc, err := rediscache.NewRedisCache(client, "typed-test")
+	rc, err := rediscache.NewCache(client, "typed-test")
 	require.NoError(t, err)
 	typed, typedErr := sharedcache.NewTypedCache[testUser](rc, "user:")
 	require.NoError(t, typedErr)

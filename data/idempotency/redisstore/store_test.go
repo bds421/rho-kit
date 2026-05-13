@@ -63,10 +63,10 @@ func TestWithKeyPrefix_PanicsOnInvalid(t *testing.T) {
 	}
 }
 
-func TestRedisStore_InvalidReceiverReturnsError(t *testing.T) {
+func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 	ctx := context.Background()
 
-	for name, store := range map[string]*RedisStore{
+	for name, store := range map[string]*Store{
 		"nil":  nil,
 		"zero": {},
 	} {
@@ -92,7 +92,7 @@ func TestRedisStore_InvalidReceiverReturnsError(t *testing.T) {
 	}
 }
 
-func TestRedisStore_SetRejectsInvalidCachedResponseBeforeRedisUse(t *testing.T) {
+func TestStore_SetRejectsInvalidCachedResponseBeforeRedisUse(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = client.Close() })
 	store := New(client)

@@ -19,7 +19,7 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
-// mockS3Client implements S3Client for unit tests.
+// mockS3Client implements Client for unit tests.
 type mockS3Client struct {
 	putFn    func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
 	getFn    func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
@@ -79,7 +79,7 @@ func (m *mockS3Client) CopyObject(ctx context.Context, params *s3.CopyObjectInpu
 	return &s3.CopyObjectOutput{}, nil
 }
 
-// mockPresigner implements S3Presigner for unit tests.
+// mockPresigner implements Presigner for unit tests.
 type mockPresigner struct {
 	getURL   string
 	putURL   string
@@ -102,7 +102,7 @@ func (m *mockPresigner) PresignPutObject(_ context.Context, input *s3.PutObjectI
 	return &v4.PresignedHTTPRequest{URL: m.putURL}, nil
 }
 
-func newTestBackend(client *mockS3Client, opts ...Option) *S3Backend {
+func newTestBackend(client *mockS3Client, opts ...Option) *Backend {
 	return NewWithClient(client, &mockPresigner{getURL: "https://presigned-get", putURL: "https://presigned-put"}, "test-bucket", opts...)
 }
 
@@ -246,7 +246,7 @@ func TestS3Backend_Put(t *testing.T) {
 				return &s3.PutObjectOutput{}, nil
 			},
 		}
-		b := newTestBackend(client, WithConfig(S3Config{
+		b := newTestBackend(client, WithConfig(Config{
 			SSE:         "aws:kms",
 			SSEKMSKeyID: "arn:aws:kms:eu-central-1:123456789012:key/abc",
 		}))
@@ -266,7 +266,7 @@ func TestS3Backend_Put(t *testing.T) {
 				return &s3.PutObjectOutput{}, nil
 			},
 		}
-		b := newTestBackend(client, WithConfig(S3Config{SSE: "AES-256"}))
+		b := newTestBackend(client, WithConfig(Config{SSE: "AES-256"}))
 
 		err := b.Put(ctx, "file.txt", bytes.NewReader([]byte("x")), storage.ObjectMeta{})
 		require.Error(t, err)
@@ -522,7 +522,7 @@ func TestS3Backend_PresignPutURL(t *testing.T) {
 	t.Run("rejects invalid encryption config", func(t *testing.T) {
 		t.Parallel()
 		presigner := &mockPresigner{}
-		b := NewWithClient(&mockS3Client{}, presigner, "bucket", WithConfig(S3Config{SSE: "AES-256"}))
+		b := NewWithClient(&mockS3Client{}, presigner, "bucket", WithConfig(Config{SSE: "AES-256"}))
 
 		_, err := b.PresignPutURL(ctx, "file.txt", 15*time.Minute, storage.ObjectMeta{ContentType: "image/png"})
 		require.Error(t, err)
@@ -750,7 +750,7 @@ func TestS3Backend_Copy(t *testing.T) {
 				return &s3.CopyObjectOutput{}, nil
 			},
 		}
-		b := newTestBackend(client, WithConfig(S3Config{
+		b := newTestBackend(client, WithConfig(Config{
 			SSE:         "aws:kms",
 			SSEKMSKeyID: "arn:aws:kms:eu-central-1:123456789012:key/abc",
 		}))
@@ -770,7 +770,7 @@ func TestS3Backend_Copy(t *testing.T) {
 				return &s3.CopyObjectOutput{}, nil
 			},
 		}
-		b := newTestBackend(client, WithConfig(S3Config{SSE: "AES-256"}))
+		b := newTestBackend(client, WithConfig(Config{SSE: "AES-256"}))
 
 		err := b.Copy(ctx, "src.txt", "dst.txt")
 		require.Error(t, err)
@@ -812,7 +812,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("custom endpoint uses path-style", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(Config{
 			Endpoint: "https://cdn.example.com",
 			Bucket:   "my-bucket",
 		}))
@@ -824,7 +824,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("custom endpoint uses active bucket even when config omits bucket", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(Config{
 			Endpoint: "https://cdn.example.com",
 		}))
 
@@ -838,33 +838,33 @@ func TestS3Backend_URL(t *testing.T) {
 
 		tests := []struct {
 			name    string
-			cfg     S3Config
+			cfg     Config
 			wantErr string
 		}{
 			{
 				name: "http requires opt-in",
-				cfg: S3Config{
+				cfg: Config{
 					Endpoint: "http://localhost:9000",
 				},
 				wantErr: "must use https",
 			},
 			{
 				name: "credentials rejected",
-				cfg: S3Config{
+				cfg: Config{
 					Endpoint: "https://user:pass@cdn.example.com",
 				},
 				wantErr: "must not contain credentials",
 			},
 			{
 				name: "query rejected",
-				cfg: S3Config{
+				cfg: Config{
 					Endpoint: "https://cdn.example.com?token=abc",
 				},
 				wantErr: "must not contain query or fragment components",
 			},
 			{
 				name: "insecure endpoint opt-in",
-				cfg: S3Config{
+				cfg: Config{
 					Endpoint:              "http://localhost:9000",
 					AllowInsecureEndpoint: true,
 				},
@@ -890,7 +890,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("AWS uses virtual-hosted style", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(Config{
 			Region: "eu-central-1",
 			Bucket: "my-bucket",
 		}))
@@ -902,7 +902,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("URL template renders validated public URL", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(Config{
 			Region:      "eu-central-1",
 			URLTemplate: "https://cdn.example.com/{bucket}",
 		}))
@@ -914,7 +914,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("URL template rejects unsafe public URL", func(t *testing.T) {
 		t.Parallel()
-		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(S3Config{
+		b := NewWithClient(&mockS3Client{}, &mockPresigner{}, "my-bucket", WithConfig(Config{
 			Region:      "eu-central-1",
 			URLTemplate: "javascript:alert(1)",
 		}))
@@ -933,7 +933,7 @@ func TestS3Backend_URL(t *testing.T) {
 
 	t.Run("nil backend returns error", func(t *testing.T) {
 		t.Parallel()
-		var b *S3Backend
+		var b *Backend
 		_, err := b.URL(ctx, "photos/cat.jpg")
 		assert.Error(t, err)
 	})

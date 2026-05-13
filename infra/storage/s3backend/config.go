@@ -10,8 +10,8 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
-// S3Config holds AWS S3 connection settings.
-type S3Config struct {
+// Config holds AWS S3 connection settings.
+type Config struct {
 	Region                string
 	Bucket                string
 	Endpoint              string // empty for real AWS; set for localstack/minio
@@ -43,7 +43,7 @@ type S3Config struct {
 	// for SSE = "AES256". Required when SSE = "aws:kms".
 	SSEKMSKeyID string
 
-	// URLTemplate overrides the host portion of [S3Backend.URL] for
+	// URLTemplate overrides the host portion of [Backend.URL] for
 	// non-standard AWS partitions (China, GovCloud) or custom CDN domains.
 	// Two placeholders are recognised: {bucket} and {region}. Both forms
 	// resolve to a virtual-hosted-style URL.
@@ -60,7 +60,7 @@ type S3Config struct {
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
-func (c S3Config) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("region", c.Region),
 		slog.Bool("bucket_configured", c.Bucket != ""),
@@ -77,7 +77,7 @@ func (c S3Config) LogValue() slog.Value {
 	)
 }
 
-// LoadS3Config reads S3 settings from environment variables.
+// LoadConfig reads S3 settings from environment variables.
 //
 // Environment variables:
 //   - STORAGE_S3_REGION (required, e.g. "eu-central-1")
@@ -89,16 +89,16 @@ func (c S3Config) LogValue() slog.Value {
 //   - STORAGE_S3_USE_DEFAULT_CREDENTIALS (optional bool, default false)
 //   - {envPrefix}_S3_ACCESS_KEY_ID (required)
 //   - {envPrefix}_S3_SECRET_ACCESS_KEY (required, supports _FILE suffix)
-func LoadS3Config(envPrefix, environment string) (S3Config, error) {
+func LoadConfig(envPrefix, environment string) (Config, error) {
 	p := &config.Parser{}
 	forcePathStyle := p.Bool("STORAGE_S3_FORCE_PATH_STYLE", false)
 	allowInsecureEndpoint := p.Bool("STORAGE_S3_ALLOW_INSECURE_ENDPOINT", false)
 	useDefaultCredentials := p.Bool("STORAGE_S3_USE_DEFAULT_CREDENTIALS", false)
 	if err := p.Err(); err != nil {
-		return S3Config{}, err
+		return Config{}, err
 	}
 
-	cfg := S3Config{
+	cfg := Config{
 		Region:                config.Get("STORAGE_S3_REGION", ""),
 		Bucket:                config.Get("STORAGE_S3_BUCKET", ""),
 		Endpoint:              config.Get("STORAGE_S3_ENDPOINT", ""),
@@ -113,7 +113,7 @@ func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 	}
 
 	if err := cfg.Validate(environment); err != nil {
-		return S3Config{}, err
+		return Config{}, err
 	}
 
 	return cfg, nil
@@ -121,7 +121,7 @@ func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 
 // Validate checks that required S3 fields are present and credentials
 // are not weak in non-development environments.
-func (c S3Config) Validate(environment string) error {
+func (c Config) Validate(environment string) error {
 	if c.Region == "" {
 		return fmt.Errorf("STORAGE_S3_REGION is required")
 	}
@@ -153,7 +153,7 @@ func (c S3Config) Validate(environment string) error {
 	return nil
 }
 
-func (c S3Config) validateCredentialSource() error {
+func (c Config) validateCredentialSource() error {
 	hasStatic := c.AccessKeyID != "" || c.SecretAccessKey != ""
 	switch {
 	case c.CredentialProvider != nil && c.UseDefaultCredentials:

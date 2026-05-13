@@ -13,11 +13,11 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Lister = (*LocalBackend)(nil)
+var _ storage.Lister = (*Backend)(nil)
 
 // List returns an iterator over objects whose keys start with prefix.
 // Objects are discovered via filepath.WalkDir under the root directory.
-func (b *LocalBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
 			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))

@@ -16,9 +16,9 @@ import (
 
 // Compile-time interface compliance checks.
 var (
-	_ storage.Storage = (*MemBackend)(nil)
-	_ storage.Lister  = (*MemBackend)(nil)
-	_ storage.Copier  = (*MemBackend)(nil)
+	_ storage.Storage = (*Backend)(nil)
+	_ storage.Lister  = (*Backend)(nil)
+	_ storage.Copier  = (*Backend)(nil)
 )
 
 type storedObject struct {
@@ -27,23 +27,23 @@ type storedObject struct {
 	modTime time.Time
 }
 
-// MemBackend is a thread-safe in-memory storage backend for testing.
-type MemBackend struct {
+// Backend is a thread-safe in-memory storage backend for testing.
+type Backend struct {
 	mu         sync.RWMutex
 	objects    map[string]storedObject
 	validators []storage.Validator
 }
 
-// New creates an empty MemBackend.
-func New(validators ...storage.Validator) *MemBackend {
-	return &MemBackend{
+// New creates an empty Backend.
+func New(validators ...storage.Validator) *Backend {
+	return &Backend{
 		objects:    make(map[string]storedObject),
 		validators: storage.CloneValidators(validators...),
 	}
 }
 
 // Put stores content at key. The reader is fully consumed into memory.
-func (b *MemBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func (b *MemBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 }
 
 // Get retrieves stored content. Returns ErrObjectNotFound if key is absent.
-func (b *MemBackend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
@@ -97,7 +97,7 @@ func (b *MemBackend) Get(_ context.Context, key string) (io.ReadCloser, storage.
 }
 
 // Delete removes an object. Returns nil if the key does not exist.
-func (b *MemBackend) Delete(_ context.Context, key string) error {
+func (b *Backend) Delete(_ context.Context, key string) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (b *MemBackend) Delete(_ context.Context, key string) error {
 }
 
 // Exists reports whether the key exists.
-func (b *MemBackend) Exists(_ context.Context, key string) (bool, error) {
+func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -123,7 +123,7 @@ func (b *MemBackend) Exists(_ context.Context, key string) (bool, error) {
 }
 
 // Copy duplicates an object within the backend.
-func (b *MemBackend) Copy(_ context.Context, srcKey, dstKey string) error {
+func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
 	if err := storage.ValidateKey(srcKey); err != nil {
 		return fmt.Errorf("membackend: copy: invalid source key: %w", err)
 	}
@@ -151,7 +151,7 @@ func (b *MemBackend) Copy(_ context.Context, srcKey, dstKey string) error {
 }
 
 // List returns an iterator over objects matching the prefix.
-func (b *MemBackend) List(_ context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+func (b *Backend) List(_ context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
 			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
@@ -205,14 +205,14 @@ func (b *MemBackend) List(_ context.Context, prefix string, opts storage.ListOpt
 }
 
 // Len returns the number of stored objects. Useful in test assertions.
-func (b *MemBackend) Len() int {
+func (b *Backend) Len() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.objects)
 }
 
 // Reset removes all stored objects. Useful between test cases.
-func (b *MemBackend) Reset() {
+func (b *Backend) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.objects = make(map[string]storedObject)

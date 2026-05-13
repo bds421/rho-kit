@@ -100,7 +100,7 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	// Register the JWKS observability collector. Failures degrade the
 	// dashboard but never block service startup — the verifier itself is
 	// untouched by registration errors.
-	if _, err := jwtutil.NewJWKSMetricsCollector(m.provider, m.registerer, m.instance); err != nil {
+	if _, err := jwtutil.NewMetricsCollector(m.provider, m.registerer, m.instance); err != nil {
 		mc.Logger.Warn("jwks metrics collector not registered",
 			slog.Any("error", err),
 		)

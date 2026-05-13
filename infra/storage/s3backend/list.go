@@ -15,12 +15,12 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Lister = (*S3Backend)(nil)
+var _ storage.Lister = (*Backend)(nil)
 
 // List returns an iterator over objects in the bucket whose keys start with prefix.
 // Pagination is handled internally — the iterator fetches pages lazily as the
 // caller consumes results.
-func (b *S3Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	if err := storage.ValidatePrefix(prefix); err != nil {
 		return func(yield func(storage.ObjectInfo, error) bool) {
 			yield(storage.ObjectInfo{}, fmt.Errorf("s3backend: %w", err))

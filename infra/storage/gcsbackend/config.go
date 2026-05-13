@@ -10,8 +10,8 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
-// GCSConfig holds Google Cloud Storage connection settings.
-type GCSConfig struct {
+// Config holds Google Cloud Storage connection settings.
+type Config struct {
 	// Bucket is the GCS bucket name.
 	Bucket string
 
@@ -36,7 +36,7 @@ type GCSConfig struct {
 }
 
 // LogValue implements slog.LogValuer.
-func (c GCSConfig) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Bool("bucket_configured", c.Bucket != ""),
 		slog.Bool("project_id_configured", c.ProjectID != ""),
@@ -47,7 +47,7 @@ func (c GCSConfig) LogValue() slog.Value {
 	)
 }
 
-// LoadGCSConfig reads GCS settings from environment variables.
+// LoadConfig reads GCS settings from environment variables.
 //
 // Environment variables:
 //   - STORAGE_GCS_BUCKET (required)
@@ -55,14 +55,14 @@ func (c GCSConfig) LogValue() slog.Value {
 //   - STORAGE_GCS_CREDENTIALS_FILE (optional, path to service account JSON)
 //   - STORAGE_GCS_ENDPOINT (optional, for testing)
 //   - STORAGE_GCS_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
-func LoadGCSConfig() (GCSConfig, error) {
+func LoadConfig() (Config, error) {
 	p := &config.Parser{}
 	allowInsecureEndpoint := p.Bool("STORAGE_GCS_ALLOW_INSECURE_ENDPOINT", false)
 	if err := p.Err(); err != nil {
-		return GCSConfig{}, err
+		return Config{}, err
 	}
 
-	cfg := GCSConfig{
+	cfg := Config{
 		Bucket:                config.Get("STORAGE_GCS_BUCKET", ""),
 		ProjectID:             config.Get("STORAGE_GCS_PROJECT_ID", ""),
 		CredentialsFile:       config.Get("STORAGE_GCS_CREDENTIALS_FILE", ""),
@@ -71,14 +71,14 @@ func LoadGCSConfig() (GCSConfig, error) {
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return GCSConfig{}, err
+		return Config{}, err
 	}
 
 	return cfg, nil
 }
 
 // Validate checks that required GCS fields are present.
-func (c GCSConfig) Validate() error {
+func (c Config) Validate() error {
 	if c.Bucket == "" {
 		return fmt.Errorf("STORAGE_GCS_BUCKET is required")
 	}

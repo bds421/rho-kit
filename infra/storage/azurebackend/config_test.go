@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-func TestAzureConfigValidate_Endpoint(t *testing.T) {
+func TestConfigValidate_Endpoint(t *testing.T) {
 	t.Parallel()
 
-	base := AzureConfig{
+	base := Config{
 		AccountName:   "account",
 		AccountKey:    "S3cur3-Azure-Account-Key-Value-123456",
 		ContainerName: "container",
@@ -16,32 +16,32 @@ func TestAzureConfigValidate_Endpoint(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mutate  func(*AzureConfig)
+		mutate  func(*Config)
 		wantErr bool
 	}{
 		{
 			name: "https endpoint",
-			mutate: func(cfg *AzureConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://account.blob.core.windows.net"
 			},
 		},
 		{
 			name: "http endpoint requires opt-in",
-			mutate: func(cfg *AzureConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://127.0.0.1:10000/account"
 			},
 			wantErr: true,
 		},
 		{
 			name: "http endpoint with opt-in",
-			mutate: func(cfg *AzureConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://127.0.0.1:10000/account"
 				cfg.AllowInsecureEndpoint = true
 			},
 		},
 		{
 			name: "endpoint fragment rejected",
-			mutate: func(cfg *AzureConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://account.blob.core.windows.net#frag"
 			},
 			wantErr: true,
@@ -64,10 +64,10 @@ func TestAzureConfigValidate_Endpoint(t *testing.T) {
 	}
 }
 
-func TestAzureConfigLogValueRedactsEndpointSecrets(t *testing.T) {
+func TestConfigLogValueRedactsEndpointSecrets(t *testing.T) {
 	t.Parallel()
 
-	cfg := AzureConfig{
+	cfg := Config{
 		AccountName:   "tenantprodaccount",
 		AccountKey:    "azure-secret-value",
 		ContainerName: "tenant-prod-container",
@@ -103,7 +103,7 @@ func TestAzureConfigLogValueRedactsEndpointSecrets(t *testing.T) {
 func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(AzureConfig{
+	_, err := New(Config{
 		AccountName:   "account",
 		AccountKey:    "S3cur3-Azure-Account-Key-Value-123456",
 		ContainerName: "container",

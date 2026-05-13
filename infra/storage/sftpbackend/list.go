@@ -21,11 +21,11 @@ import (
 var errIterStopped = errors.New("iteration stopped")
 
 // Compile-time interface compliance check.
-var _ storage.Lister = (*SFTPBackend)(nil)
+var _ storage.Lister = (*Backend)(nil)
 
 // List returns an iterator over objects on the remote server whose keys start
 // with prefix. Directories are walked recursively.
-func (b *SFTPBackend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
 		if err := storage.ValidatePrefix(prefix); err != nil {
 			yield(storage.ObjectInfo{}, fmt.Errorf("sftpbackend: %w", err))
@@ -75,9 +75,9 @@ func (b *SFTPBackend) List(ctx context.Context, prefix string, opts storage.List
 
 // walkDir recursively walks a remote directory, yielding ObjectInfo for files
 // matching the prefix. Returns an error if iteration was aborted due to error.
-func (b *SFTPBackend) walkDir(
+func (b *Backend) walkDir(
 	ctx context.Context,
-	client SFTPClient,
+	client Client,
 	dir string,
 	prefix string,
 	opts storage.ListOptions,
@@ -152,7 +152,7 @@ func (b *SFTPBackend) walkDir(
 }
 
 // toKey converts a remote absolute path back to a storage key (relative to root).
-func (b *SFTPBackend) toKey(remotePath string) string {
+func (b *Backend) toKey(remotePath string) string {
 	rel, _ := relPath(b.cfg.RootPath, remotePath)
 	return rel
 }

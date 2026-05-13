@@ -47,7 +47,7 @@ func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
 func TestNewWithTokenCredential_DoesNotRequireAccountKey(t *testing.T) {
 	t.Parallel()
 
-	b, err := NewWithTokenCredential(AzureConfig{
+	b, err := NewWithTokenCredential(Config{
 		AccountName:   "account",
 		ContainerName: "container",
 	}, fakeTokenCredential{})
@@ -63,7 +63,7 @@ func TestNewWithTokenCredential_DoesNotRequireAccountKey(t *testing.T) {
 func TestNewWithTokenCredential_RejectsNilCredential(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewWithTokenCredential(AzureConfig{
+	_, err := NewWithTokenCredential(Config{
 		AccountName:   "account",
 		ContainerName: "container",
 	}, nil)
@@ -74,11 +74,11 @@ func TestNewWithTokenCredential_RejectsNilCredential(t *testing.T) {
 func TestAzureBackend_InvalidReceiverSafety(t *testing.T) {
 	t.Parallel()
 
-	var nilBackend *AzureBackend
+	var nilBackend *Backend
 	if nilBackend.Healthy() {
 		t.Fatal("nil backend must not report healthy")
 	}
-	if (&AzureBackend{}).Healthy() {
+	if (&Backend{}).Healthy() {
 		t.Fatal("zero backend must not report healthy")
 	}
 }

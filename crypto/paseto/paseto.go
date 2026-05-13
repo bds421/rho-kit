@@ -69,6 +69,16 @@ var (
 	// ErrSignerClosed is returned by [V4PublicSigner.Sign] after the
 	// signer has been [V4PublicSigner.Close]-zeroed.
 	ErrSignerClosed = errors.New("paseto: signer is closed")
+
+	// ErrV4LocalClosed is returned by [V4Local.Verify] and [V4Local.Seal]
+	// after the v4.local sealer has been [V4Local.Close]-zeroed.
+	ErrV4LocalClosed = errors.New("paseto: V4Local is closed")
+
+	// ErrProviderClosed is returned by [Provider.Verify] after the
+	// provider has been [Provider.Close]-shut. Lets callers distinguish
+	// closed from transient stale-keys situations (which surface as
+	// [ErrKeySetUnavailable]).
+	ErrProviderClosed = errors.New("paseto: provider is closed")
 )
 
 // reservedClaims are the names of standard registered claims that
@@ -324,11 +334,13 @@ func (s *V4PublicSigner) Close() error {
 }
 
 // V4Local verifies and seals v4.local tokens (XChaCha20-Poly1305).
+// V4Local is safe for concurrent use by multiple goroutines.
 type V4Local struct {
 	cfg         config
 	parser      paseto.Parser
 	key         paseto.V4SymmetricKey
 	initialized bool
+	closed      atomic.Bool
 }
 
 // NewV4Local constructs a sealer/verifier for v4.local tokens. The key
@@ -354,6 +366,9 @@ func (v *V4Local) Verify(token string, now time.Time) (*Claims, error) {
 	if err := v.validateReady(); err != nil {
 		return nil, err
 	}
+	if v.closed.Load() {
+		return nil, ErrV4LocalClosed
+	}
 	parsed, err := v.parser.ParseV4Local(v.key, token, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: authentication failed", ErrTokenInvalid)
@@ -366,11 +381,41 @@ func (v *V4Local) Seal(claims Claims) (string, error) {
 	if err := v.validateReady(); err != nil {
 		return "", err
 	}
+	if v.closed.Load() {
+		return "", ErrV4LocalClosed
+	}
 	tok, err := buildToken(claims, v.cfg)
 	if err != nil {
 		return "", err
 	}
 	return tok.V4Encrypt(v.key, nil), nil
+}
+
+// Close overwrites the wrapped XChaCha20 symmetric-key bytes with zeroes.
+// Subsequent [V4Local.Seal] / [V4Local.Verify] calls return
+// [ErrV4LocalClosed]. Idempotent and safe for concurrent use.
+//
+// As with [V4PublicSigner.Close], the upstream library's
+// [paseto.V4SymmetricKey.ExportBytes] returns the underlying slice without
+// copying, so zeroing through the returned slice wipes the in-memory key
+// material in place. If a future upstream release changes ExportBytes to
+// defensive-copy, this method continues to trip the closed flag but the
+// actual byte zeroing becomes a no-op — covered by a tripwire test.
+func (v *V4Local) Close() error {
+	if v == nil {
+		return nil
+	}
+	if !v.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !v.initialized {
+		return nil
+	}
+	raw := v.key.ExportBytes()
+	for i := range raw {
+		raw[i] = 0
+	}
+	return nil
 }
 
 func buildToken(c Claims, cfg config) (paseto.Token, error) {

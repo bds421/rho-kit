@@ -155,7 +155,7 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 		mqOpts = append(mqOpts, amqpbackend.WithURLProvider(m.urlProvider))
 	}
 
-	conn, dialErr := amqpbackend.Dial(m.url, mc.Logger, mqOpts...)
+	conn, dialErr := amqpbackend.Connect(m.url, mc.Logger, mqOpts...)
 	if dialErr != nil {
 		return fmt.Errorf("amqp module: %w", dialErr)
 	}
@@ -221,7 +221,7 @@ func (m *messagingModule) Stop(ctx context.Context) error {
 func enforceTransportSafety(amqpURL string) {
 	u, err := url.Parse(amqpURL)
 	if err != nil {
-		// Defer detailed URL parsing to amqpbackend.Dial; we only
+		// Defer detailed URL parsing to amqpbackend.Connect; we only
 		// guard the obvious plaintext-on-non-loopback case here.
 		return
 	}
@@ -231,7 +231,7 @@ func enforceTransportSafety(amqpURL string) {
 	}
 	host := u.Hostname()
 	if host == "" {
-		return // amqpbackend.Dial will reject the empty host.
+		return // amqpbackend.Connect will reject the empty host.
 	}
 	if isLoopbackHost(host) {
 		return

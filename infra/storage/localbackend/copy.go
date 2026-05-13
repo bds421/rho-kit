@@ -11,11 +11,11 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Copier = (*LocalBackend)(nil)
+var _ storage.Copier = (*Backend)(nil)
 
 // Copy duplicates a file within the local filesystem.
 // Uses direct file-to-file copy with atomic rename for crash safety.
-func (b *LocalBackend) Copy(_ context.Context, srcKey, dstKey string) error {
+func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
 	if err := storage.ValidateKey(srcKey); err != nil {
 		return err
 	}

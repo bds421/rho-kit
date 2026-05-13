@@ -8,42 +8,42 @@ import (
 	"google.golang.org/api/option"
 )
 
-func TestGCSConfigValidate_Endpoint(t *testing.T) {
+func TestConfigValidate_Endpoint(t *testing.T) {
 	t.Parallel()
 
-	base := GCSConfig{
+	base := Config{
 		Bucket:    "bucket",
 		ProjectID: "project",
 	}
 
 	tests := []struct {
 		name    string
-		mutate  func(*GCSConfig)
+		mutate  func(*Config)
 		wantErr bool
 	}{
 		{
 			name: "https endpoint",
-			mutate: func(cfg *GCSConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://storage.example.com/storage/v1"
 			},
 		},
 		{
 			name: "http endpoint requires opt-in",
-			mutate: func(cfg *GCSConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://localhost:4443/storage/v1"
 			},
 			wantErr: true,
 		},
 		{
 			name: "http endpoint with opt-in",
-			mutate: func(cfg *GCSConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://localhost:4443/storage/v1"
 				cfg.AllowInsecureEndpoint = true
 			},
 		},
 		{
 			name: "endpoint query rejected",
-			mutate: func(cfg *GCSConfig) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://storage.example.com/storage/v1?token=abc"
 			},
 			wantErr: true,
@@ -66,10 +66,10 @@ func TestGCSConfigValidate_Endpoint(t *testing.T) {
 	}
 }
 
-func TestGCSConfigLogValueDoesNotExposeCredentialsFile(t *testing.T) {
+func TestConfigLogValueDoesNotExposeCredentialsFile(t *testing.T) {
 	t.Parallel()
 
-	cfg := GCSConfig{
+	cfg := Config{
 		Bucket:          "tenant-prod-bucket",
 		ProjectID:       "customer-prod-project",
 		CredentialsFile: "/var/run/secrets/gcp/service-account.json",
@@ -111,7 +111,7 @@ func TestGCSConfigLogValueDoesNotExposeCredentialsFile(t *testing.T) {
 func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(context.Background(), GCSConfig{
+	_, err := New(context.Background(), Config{
 		Bucket:    "bucket",
 		ProjectID: "project",
 		Endpoint:  "http://localhost:4443/storage/v1",

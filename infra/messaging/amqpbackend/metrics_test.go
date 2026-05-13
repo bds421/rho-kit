@@ -89,7 +89,7 @@ func TestAMQPMetrics_NilSafe(t *testing.T) {
 }
 
 // TestWithConnectionMetrics_NilPanics — fail fast at construction so a
-// misconfigured DialOption surfaces at Dial() rather than at first
+// misconfigured DialOption surfaces at Connect() rather than at first
 // metric observation.
 func TestWithConnectionMetrics_NilPanics(t *testing.T) {
 	assert.Panics(t, func() { WithConnectionMetrics(nil, "primary") })

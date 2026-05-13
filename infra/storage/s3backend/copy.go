@@ -14,10 +14,10 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Copier = (*S3Backend)(nil)
+var _ storage.Copier = (*Backend)(nil)
 
 // Copy performs a server-side copy within the same bucket using S3 CopyObject.
-func (b *S3Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
+func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "s3.Copy")
 	defer span.End()
 	span.SetAttributes(

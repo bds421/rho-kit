@@ -50,10 +50,10 @@ func TestNew_InvalidTableNamePanicDoesNotReflectName(t *testing.T) {
 	New(&sql.DB{}, WithTableName("secret_token;drop"))
 }
 
-func TestPgStore_InvalidReceiverReturnsError(t *testing.T) {
+func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 	ctx := context.Background()
 
-	for name, store := range map[string]*PgStore{
+	for name, store := range map[string]*Store{
 		"nil":  nil,
 		"zero": {},
 	} {
@@ -83,8 +83,8 @@ func TestPgStore_InvalidReceiverReturnsError(t *testing.T) {
 	}
 }
 
-func TestPgStore_RejectsInvalidKeyBeforeDBUse(t *testing.T) {
-	store := &PgStore{db: &sql.DB{}, table: "idempotency_keys"}
+func TestStore_RejectsInvalidKeyBeforeDBUse(t *testing.T) {
+	store := &Store{db: &sql.DB{}, table: "idempotency_keys"}
 	ctx := context.Background()
 
 	resp, mismatch, err := store.Get(ctx, "", nil)
@@ -106,8 +106,8 @@ func TestPgStore_RejectsInvalidKeyBeforeDBUse(t *testing.T) {
 	}
 }
 
-func TestPgStore_SetRejectsInvalidCachedResponseBeforeDBUse(t *testing.T) {
-	store := &PgStore{db: &sql.DB{}, table: "idempotency_keys"}
+func TestStore_SetRejectsInvalidCachedResponseBeforeDBUse(t *testing.T) {
+	store := &Store{db: &sql.DB{}, table: "idempotency_keys"}
 
 	err := store.Set(context.Background(), "k", "token", idempotency.CachedResponse{StatusCode: 99}, time.Minute)
 	if !errors.Is(err, idempotency.ErrInvalidCachedResponse) {

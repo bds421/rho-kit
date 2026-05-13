@@ -14,17 +14,17 @@ import (
 
 // HealthCheck returns a non-critical DependencyCheck for S3.
 // It performs a HeadBucket probe with a 5-second timeout.
-func HealthCheck(b *S3Backend) health.DependencyCheck {
+func HealthCheck(b *Backend) health.DependencyCheck {
 	return healthCheck(b, false)
 }
 
 // CriticalHealthCheck returns a critical DependencyCheck for S3.
 // An unhealthy S3 triggers HTTP 503 on the readiness endpoint.
-func CriticalHealthCheck(b *S3Backend) health.DependencyCheck {
+func CriticalHealthCheck(b *Backend) health.DependencyCheck {
 	return healthCheck(b, true)
 }
 
-func healthCheck(b *S3Backend, critical bool) health.DependencyCheck {
+func healthCheck(b *Backend, critical bool) health.DependencyCheck {
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("s3", b.bucket),
 		Check: func(ctx context.Context) string {

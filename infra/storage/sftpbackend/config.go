@@ -10,8 +10,8 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// SFTPConfig holds SFTP connection settings.
-type SFTPConfig struct {
+// Config holds SFTP connection settings.
+type Config struct {
 	Host     string
 	Port     int
 	User     string
@@ -35,7 +35,7 @@ type SFTPConfig struct {
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
-func (c SFTPConfig) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Bool("host_configured", c.Host != ""),
 		slog.Int("port", c.Port),
@@ -49,7 +49,7 @@ func (c SFTPConfig) LogValue() slog.Value {
 	)
 }
 
-// LoadSFTPConfig reads SFTP settings from environment variables.
+// LoadConfig reads SFTP settings from environment variables.
 //
 // Environment variables:
 //   - STORAGE_SFTP_HOST (required)
@@ -59,14 +59,14 @@ func (c SFTPConfig) LogValue() slog.Value {
 //   - STORAGE_SFTP_KEY_FILE (path to SSH private key)
 //   - STORAGE_SFTP_ROOT_PATH (default "/")
 //   - STORAGE_SFTP_KNOWN_HOSTS_FILE (required; OpenSSH known_hosts path)
-func LoadSFTPConfig(envPrefix, environment string) (SFTPConfig, error) {
+func LoadConfig(envPrefix, environment string) (Config, error) {
 	p := &config.Parser{}
 	port := p.Int("STORAGE_SFTP_PORT", 22)
 	if err := p.Err(); err != nil {
-		return SFTPConfig{}, err
+		return Config{}, err
 	}
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host:           config.Get("STORAGE_SFTP_HOST", ""),
 		Port:           port,
 		User:           config.Get("STORAGE_SFTP_USER", ""),
@@ -77,14 +77,14 @@ func LoadSFTPConfig(envPrefix, environment string) (SFTPConfig, error) {
 	}
 
 	if err := cfg.Validate(environment); err != nil {
-		return SFTPConfig{}, err
+		return Config{}, err
 	}
 
 	return cfg, nil
 }
 
 // Validate checks that required SFTP fields are present.
-func (c SFTPConfig) Validate(environment string) error {
+func (c Config) Validate(environment string) error {
 	if c.Host == "" {
 		return fmt.Errorf("STORAGE_SFTP_HOST is required")
 	}

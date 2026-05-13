@@ -8,8 +8,8 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
-// AzureConfig holds Azure Blob Storage connection settings.
-type AzureConfig struct {
+// Config holds Azure Blob Storage connection settings.
+type Config struct {
 	// AccountName is the Azure Storage account name.
 	AccountName string
 
@@ -28,7 +28,7 @@ type AzureConfig struct {
 }
 
 // LogValue implements slog.LogValuer to prevent logging credentials.
-func (c AzureConfig) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Bool("account_name_configured", c.AccountName != ""),
 		slog.Bool("account_key_configured", c.AccountKey != ""),
@@ -38,7 +38,7 @@ func (c AzureConfig) LogValue() slog.Value {
 	)
 }
 
-// LoadAzureConfig reads Azure settings from environment variables.
+// LoadConfig reads Azure settings from environment variables.
 //
 // Environment variables:
 //   - STORAGE_AZURE_ACCOUNT_NAME (required)
@@ -46,14 +46,14 @@ func (c AzureConfig) LogValue() slog.Value {
 //   - STORAGE_AZURE_CONTAINER_NAME (required)
 //   - STORAGE_AZURE_ENDPOINT (optional, for Azurite)
 //   - STORAGE_AZURE_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
-func LoadAzureConfig(envPrefix, environment string) (AzureConfig, error) {
+func LoadConfig(envPrefix, environment string) (Config, error) {
 	p := &config.Parser{}
 	allowInsecureEndpoint := p.Bool("STORAGE_AZURE_ALLOW_INSECURE_ENDPOINT", false)
 	if err := p.Err(); err != nil {
-		return AzureConfig{}, err
+		return Config{}, err
 	}
 
-	cfg := AzureConfig{
+	cfg := Config{
 		AccountName:           config.Get("STORAGE_AZURE_ACCOUNT_NAME", ""),
 		AccountKey:            config.MustGetSecret(envPrefix+"_AZURE_ACCOUNT_KEY", ""),
 		ContainerName:         config.Get("STORAGE_AZURE_CONTAINER_NAME", ""),
@@ -62,14 +62,14 @@ func LoadAzureConfig(envPrefix, environment string) (AzureConfig, error) {
 	}
 
 	if err := cfg.Validate(environment); err != nil {
-		return AzureConfig{}, err
+		return Config{}, err
 	}
 
 	return cfg, nil
 }
 
 // Validate checks that required Azure fields are present.
-func (c AzureConfig) Validate(environment string) error {
+func (c Config) Validate(environment string) error {
 	if err := c.validateCommon(environment); err != nil {
 		return err
 	}
@@ -82,11 +82,11 @@ func (c AzureConfig) Validate(environment string) error {
 	return nil
 }
 
-func (c AzureConfig) validateTokenCredential(environment string) error {
+func (c Config) validateTokenCredential(environment string) error {
 	return c.validateCommon(environment)
 }
 
-func (c AzureConfig) validateCommon(environment string) error {
+func (c Config) validateCommon(environment string) error {
 	if c.AccountName == "" {
 		return fmt.Errorf("STORAGE_AZURE_ACCOUNT_NAME is required")
 	}

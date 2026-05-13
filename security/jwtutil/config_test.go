@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-func TestLoadJWTFields(t *testing.T) {
+func TestLoadFields(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
-		f := LoadJWTFields()
+		f := LoadFields()
 		if f.JWKSURL != "" {
 			t.Errorf("jwks_url = %q", f.JWKSURL)
 		}
@@ -15,7 +15,7 @@ func TestLoadJWTFields(t *testing.T) {
 
 	t.Run("env override", func(t *testing.T) {
 		t.Setenv("JWKS_URL", "https://custom:1234/jwks")
-		f := LoadJWTFields()
+		f := LoadFields()
 		if f.JWKSURL != "https://custom:1234/jwks" {
 			t.Errorf("jwks_url = %q, want custom URL", f.JWKSURL)
 		}

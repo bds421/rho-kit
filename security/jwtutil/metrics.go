@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// JWKSMetricsCollector is a Prometheus collector that exposes Provider state
+// MetricsCollector is a Prometheus collector that exposes Provider state
 // at scrape time. The collector reads Provider counters directly inside
 // Collect(), so /metrics scrapes always see the latest fetch/staleness values
 // without a background ticker.
@@ -15,7 +15,7 @@ import (
 // The instance label distinguishes multiple Providers in one process (e.g. a
 // service that verifies tokens from two trust roots). Keep instance values
 // bounded and static.
-type JWKSMetricsCollector struct {
+type MetricsCollector struct {
 	provider *Provider
 	instance string
 	clock    func() time.Time
@@ -25,7 +25,7 @@ type JWKSMetricsCollector struct {
 	staleness           *prometheus.Desc
 }
 
-// NewJWKSMetricsCollector constructs a collector for p and registers it on
+// NewMetricsCollector constructs a collector for p and registers it on
 // reg. If reg is nil, [prometheus.DefaultRegisterer] is used. The collector is
 // safe to construct repeatedly against the same registerer: an
 // AlreadyRegisteredError with an equivalent collector is treated as success
@@ -33,19 +33,19 @@ type JWKSMetricsCollector struct {
 //
 // Returns an error when p is nil or instance is empty so wiring bugs surface
 // at startup rather than at first scrape.
-func NewJWKSMetricsCollector(p *Provider, reg prometheus.Registerer, instance string) (*JWKSMetricsCollector, error) {
+func NewMetricsCollector(p *Provider, reg prometheus.Registerer, instance string) (*MetricsCollector, error) {
 	if p == nil {
-		return nil, errors.New("jwtutil: NewJWKSMetricsCollector requires a non-nil Provider")
+		return nil, errors.New("jwtutil: NewMetricsCollector requires a non-nil Provider")
 	}
 	if instance == "" {
-		return nil, errors.New("jwtutil: NewJWKSMetricsCollector requires a non-empty instance label")
+		return nil, errors.New("jwtutil: NewMetricsCollector requires a non-empty instance label")
 	}
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
 	labels := prometheus.Labels{"instance": instance}
-	c := &JWKSMetricsCollector{
+	c := &MetricsCollector{
 		provider: p,
 		instance: instance,
 		clock:    time.Now,
@@ -69,7 +69,7 @@ func NewJWKSMetricsCollector(p *Provider, reg prometheus.Registerer, instance st
 	if err := reg.Register(c); err != nil {
 		var are prometheus.AlreadyRegisteredError
 		if errors.As(err, &are) {
-			if existing, ok := are.ExistingCollector.(*JWKSMetricsCollector); ok {
+			if existing, ok := are.ExistingCollector.(*MetricsCollector); ok {
 				return existing, nil
 			}
 			return nil, errors.New("jwtutil: JWKS metrics collector already registered with a different type")
@@ -80,7 +80,7 @@ func NewJWKSMetricsCollector(p *Provider, reg prometheus.Registerer, instance st
 }
 
 // Describe implements [prometheus.Collector].
-func (c *JWKSMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
+func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	if c == nil {
 		return
 	}
@@ -91,7 +91,7 @@ func (c *JWKSMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements [prometheus.Collector]. Reads provider counters and
 // timestamps at scrape time so every sample reflects the live Provider state.
-func (c *JWKSMetricsCollector) Collect(ch chan<- prometheus.Metric) {
+func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	if c == nil || c.provider == nil {
 		return
 	}

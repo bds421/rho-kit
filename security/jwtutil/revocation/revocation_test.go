@@ -159,7 +159,7 @@ func TestStore_RejectsExpiredToken(t *testing.T) {
 	}
 }
 
-func TestStore_ForgetID(t *testing.T) {
+func TestStore_Unrevoke(t *testing.T) {
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	cache := newFakeCache()
 	store := New(cache, WithClock(func() time.Time { return now }))
@@ -168,15 +168,15 @@ func TestStore_ForgetID(t *testing.T) {
 	if err := store.RevokeID(ctx, "issuer", "token", now.Add(time.Minute)); err != nil {
 		t.Fatalf("RevokeID: %v", err)
 	}
-	if err := store.ForgetID(ctx, "issuer", "token"); err != nil {
-		t.Fatalf("ForgetID: %v", err)
+	if err := store.Unrevoke(ctx, "issuer", "token"); err != nil {
+		t.Fatalf("Unrevoke: %v", err)
 	}
 	revoked, err := store.IsRevokedID(ctx, "issuer", "token")
 	if err != nil {
 		t.Fatalf("IsRevokedID: %v", err)
 	}
 	if revoked {
-		t.Fatal("expected revoked=false after ForgetID")
+		t.Fatal("expected revoked=false after Unrevoke")
 	}
 }
 
@@ -269,7 +269,7 @@ func TestStore_AuditEmitsOnRevoke(t *testing.T) {
 	}
 }
 
-func TestStore_AuditEmitsOnForgetID(t *testing.T) {
+func TestStore_AuditEmitsOnUnrevoke(t *testing.T) {
 	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	sink := &recordingSink{}
 	store := New(newFakeCache(),
@@ -279,15 +279,15 @@ func TestStore_AuditEmitsOnForgetID(t *testing.T) {
 	if err := store.RevokeID(context.Background(), "issuer", "token", now.Add(time.Minute)); err != nil {
 		t.Fatalf("RevokeID: %v", err)
 	}
-	if err := store.ForgetID(context.Background(), "issuer", "token"); err != nil {
-		t.Fatalf("ForgetID: %v", err)
+	if err := store.Unrevoke(context.Background(), "issuer", "token"); err != nil {
+		t.Fatalf("Unrevoke: %v", err)
 	}
 	events := sink.snapshot()
 	if len(events) != 2 {
 		t.Fatalf("audit events = %d, want 2 (revoke + forget)", len(events))
 	}
-	if events[1].Action != "jwt.revoke.forget" {
-		t.Errorf("Action = %q, want jwt.revoke.forget", events[1].Action)
+	if events[1].Action != "jwt.revoke.undo" {
+		t.Errorf("Action = %q, want jwt.revoke.undo", events[1].Action)
 	}
 	if events[1].Outcome != "success" {
 		t.Errorf("Outcome = %q, want success", events[1].Outcome)

@@ -14,30 +14,30 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Storage = (*LocalBackend)(nil)
+var _ storage.Storage = (*Backend)(nil)
 
-// LocalBackend implements [storage.Storage] using the local filesystem.
+// Backend implements [storage.Storage] using the local filesystem.
 // Keys are converted to relative paths within the root directory.
 // Directory components are created automatically on Put.
-type LocalBackend struct {
+type Backend struct {
 	root       string
 	validators []storage.Validator
 }
 
-// Option configures a LocalBackend.
-type Option func(*LocalBackend)
+// Option configures a Backend.
+type Option func(*Backend)
 
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
-	return func(b *LocalBackend) {
+	return func(b *Backend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
 
-// New creates a LocalBackend rooted at dir. The directory is created if it
+// New creates a Backend rooted at dir. The directory is created if it
 // does not exist. Panics if dir is empty — this catches misconfigured tests.
-func New(dir string, opts ...Option) (*LocalBackend, error) {
+func New(dir string, opts ...Option) (*Backend, error) {
 	if dir == "" {
 		panic("localbackend: root directory must not be empty")
 	}
@@ -52,7 +52,7 @@ func New(dir string, opts ...Option) (*LocalBackend, error) {
 	if err != nil {
 		return nil, localFileError("resolve root symlinks", err)
 	}
-	b := &LocalBackend{root: realRoot}
+	b := &Backend{root: realRoot}
 	for _, o := range opts {
 		if o == nil {
 			panic("localbackend: option must not be nil")
@@ -64,7 +64,7 @@ func New(dir string, opts ...Option) (*LocalBackend, error) {
 
 // Put writes content from r to <root>/<key>. Uses atomic write via temp file
 // and rename to prevent partial writes on crash.
-func (b *LocalBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func fsyncDir(dir string) error {
 }
 
 // Get opens <root>/<key> for reading. Caller must close the returned ReadCloser.
-func (b *LocalBackend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
@@ -182,7 +182,7 @@ func (b *LocalBackend) Get(_ context.Context, key string) (io.ReadCloser, storag
 }
 
 // Delete removes <root>/<key>. Returns nil if the file does not exist (idempotent).
-func (b *LocalBackend) Delete(_ context.Context, key string) error {
+func (b *Backend) Delete(_ context.Context, key string) error {
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func (b *LocalBackend) Delete(_ context.Context, key string) error {
 }
 
 // Exists reports whether <root>/<key> exists on disk.
-func (b *LocalBackend) Exists(_ context.Context, key string) (bool, error) {
+func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -229,7 +229,7 @@ func (b *LocalBackend) Exists(_ context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-func (b *LocalBackend) keyPath(key string) (string, error) {
+func (b *Backend) keyPath(key string) (string, error) {
 	path := filepath.Join(b.root, filepath.FromSlash(key))
 	if err := b.ensureContained(path); err != nil {
 		return "", err
@@ -237,7 +237,7 @@ func (b *LocalBackend) keyPath(key string) (string, error) {
 	return path, nil
 }
 
-func (b *LocalBackend) existingRegularPath(key string) (string, error) {
+func (b *Backend) existingRegularPath(key string) (string, error) {
 	path, err := b.keyPath(key)
 	if err != nil {
 		return "", err
@@ -255,7 +255,7 @@ func (b *LocalBackend) existingRegularPath(key string) (string, error) {
 	return path, nil
 }
 
-func (b *LocalBackend) rejectSymlinkPath(path string) error {
+func (b *Backend) rejectSymlinkPath(path string) error {
 	if err := b.ensureContained(path); err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func (b *LocalBackend) rejectSymlinkPath(path string) error {
 	return nil
 }
 
-func (b *LocalBackend) ensureContained(path string) error {
+func (b *Backend) ensureContained(path string) error {
 	rel, err := filepath.Rel(b.root, path)
 	if err != nil {
 		return localPathError("resolve path")

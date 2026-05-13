@@ -18,10 +18,10 @@ func (testCredentialsProvider) Retrieve(context.Context) (awssdk.Credentials, er
 	}, nil
 }
 
-func TestS3ConfigValidate_Endpoint(t *testing.T) {
+func TestConfigValidate_Endpoint(t *testing.T) {
 	t.Parallel()
 
-	base := S3Config{
+	base := Config{
 		Region:          "eu-central-1",
 		Bucket:          "bucket",
 		AccessKeyID:     "access-key",
@@ -30,32 +30,32 @@ func TestS3ConfigValidate_Endpoint(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mutate  func(*S3Config)
+		mutate  func(*Config)
 		wantErr bool
 	}{
 		{
 			name: "https endpoint",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://s3.example.com"
 			},
 		},
 		{
 			name: "http endpoint requires opt-in",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://localhost:9000"
 			},
 			wantErr: true,
 		},
 		{
 			name: "http endpoint with opt-in",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "http://localhost:9000"
 				cfg.AllowInsecureEndpoint = true
 			},
 		},
 		{
 			name: "endpoint credentials rejected",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.Endpoint = "https://user:pass@s3.example.com"
 			},
 			wantErr: true,
@@ -78,10 +78,10 @@ func TestS3ConfigValidate_Endpoint(t *testing.T) {
 	}
 }
 
-func TestS3ConfigLogValueRedactsResourceHandlesAndEndpointSecrets(t *testing.T) {
+func TestConfigLogValueRedactsResourceHandlesAndEndpointSecrets(t *testing.T) {
 	t.Parallel()
 
-	cfg := S3Config{
+	cfg := Config{
 		Region:          "eu-central-1",
 		Bucket:          "tenant-prod-bucket",
 		Endpoint:        "https://token-user:endpoint-secret@s3.example.com?token=query-secret#frag",
@@ -122,35 +122,35 @@ func TestS3ConfigLogValueRedactsResourceHandlesAndEndpointSecrets(t *testing.T) 
 	}
 }
 
-func TestS3ConfigValidate_CredentialSources(t *testing.T) {
+func TestConfigValidate_CredentialSources(t *testing.T) {
 	t.Parallel()
 
-	base := S3Config{
+	base := Config{
 		Region: "eu-central-1",
 		Bucket: "bucket",
 	}
 
 	tests := []struct {
 		name    string
-		mutate  func(*S3Config)
+		mutate  func(*Config)
 		wantErr bool
 	}{
 		{
 			name: "static credentials",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.AccessKeyID = "access-key"
 				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
 			},
 		},
 		{
 			name: "default provider chain",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.UseDefaultCredentials = true
 			},
 		},
 		{
 			name: "custom provider",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.CredentialProvider = testCredentialsProvider{}
 			},
 		},
@@ -160,7 +160,7 @@ func TestS3ConfigValidate_CredentialSources(t *testing.T) {
 		},
 		{
 			name: "default and static rejected",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.UseDefaultCredentials = true
 				cfg.AccessKeyID = "access-key"
 				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
@@ -169,7 +169,7 @@ func TestS3ConfigValidate_CredentialSources(t *testing.T) {
 		},
 		{
 			name: "provider and static rejected",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.CredentialProvider = testCredentialsProvider{}
 				cfg.AccessKeyID = "access-key"
 				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
@@ -178,7 +178,7 @@ func TestS3ConfigValidate_CredentialSources(t *testing.T) {
 		},
 		{
 			name: "provider and default rejected",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.CredentialProvider = testCredentialsProvider{}
 				cfg.UseDefaultCredentials = true
 			},
@@ -204,10 +204,10 @@ func TestS3ConfigValidate_CredentialSources(t *testing.T) {
 	}
 }
 
-func TestS3ConfigValidate_URLTemplate(t *testing.T) {
+func TestConfigValidate_URLTemplate(t *testing.T) {
 	t.Parallel()
 
-	base := S3Config{
+	base := Config{
 		Region:          "eu-central-1",
 		Bucket:          "bucket",
 		AccessKeyID:     "access-key",
@@ -244,10 +244,10 @@ func TestS3ConfigValidate_URLTemplate(t *testing.T) {
 	}
 }
 
-func TestS3ConfigValidate_SSE(t *testing.T) {
+func TestConfigValidate_SSE(t *testing.T) {
 	t.Parallel()
 
-	base := S3Config{
+	base := Config{
 		Region:          "eu-central-1",
 		Bucket:          "bucket",
 		AccessKeyID:     "access-key",
@@ -256,7 +256,7 @@ func TestS3ConfigValidate_SSE(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mutate  func(*S3Config)
+		mutate  func(*Config)
 		wantErr bool
 	}{
 		{
@@ -264,34 +264,34 @@ func TestS3ConfigValidate_SSE(t *testing.T) {
 		},
 		{
 			name: "AES256 accepted",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.SSE = "AES256"
 			},
 		},
 		{
 			name: "KMS accepted with key",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.SSE = "aws:kms"
 				cfg.SSEKMSKeyID = "arn:aws:kms:eu-central-1:123456789012:key/abc"
 			},
 		},
 		{
 			name: "unknown value rejected",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.SSE = "AES-256"
 			},
 			wantErr: true,
 		},
 		{
 			name: "KMS requires key",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.SSE = "aws:kms"
 			},
 			wantErr: true,
 		},
 		{
 			name: "KMS key requires KMS mode",
-			mutate: func(cfg *S3Config) {
+			mutate: func(cfg *Config) {
 				cfg.SSE = "AES256"
 				cfg.SSEKMSKeyID = "arn:aws:kms:eu-central-1:123456789012:key/abc"
 			},
@@ -320,7 +320,7 @@ func TestS3ConfigValidate_SSE(t *testing.T) {
 func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(S3Config{
+	_, err := New(Config{
 		Region:          "eu-central-1",
 		Bucket:          "bucket",
 		AccessKeyID:     "access-key",
@@ -335,7 +335,7 @@ func TestNewRejectsInsecureEndpointWithoutOptIn(t *testing.T) {
 func TestNewRejectsInvalidSSEConfig(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(S3Config{
+	_, err := New(Config{
 		Region:          "eu-central-1",
 		Bucket:          "bucket",
 		AccessKeyID:     "access-key",

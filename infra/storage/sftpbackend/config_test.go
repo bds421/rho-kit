@@ -18,15 +18,15 @@ func TestLoadSFTPConfigReadsKnownHostsFile(t *testing.T) {
 	t.Setenv("STORAGE_SFTP_ROOT_PATH", "/uploads")
 	t.Setenv("STORAGE_SFTP_KNOWN_HOSTS_FILE", "/etc/ssh/ssh_known_hosts")
 
-	cfg, err := LoadSFTPConfig("APP", "production")
+	cfg, err := LoadConfig("APP", "production")
 	require.NoError(t, err)
 	assert.Equal(t, "/etc/ssh/ssh_known_hosts", cfg.KnownHostsFile)
 }
 
-func TestSFTPConfigLogValueDoesNotExposeCredentialFilePaths(t *testing.T) {
+func TestConfigLogValueDoesNotExposeCredentialFilePaths(t *testing.T) {
 	t.Parallel()
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host:           "tenant-sftp.example.com",
 		Port:           22,
 		User:           "tenant-upload-user",
@@ -57,10 +57,10 @@ func TestSFTPConfigLogValueDoesNotExposeCredentialFilePaths(t *testing.T) {
 	assert.Contains(t, rendered, "known_hosts_file_configured=true")
 }
 
-func TestSFTPConfigValidateRequiresKnownHostsFile(t *testing.T) {
+func TestConfigValidateRequiresKnownHostsFile(t *testing.T) {
 	t.Parallel()
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host:     "sftp.example.com",
 		Port:     22,
 		User:     "svc",
@@ -73,10 +73,10 @@ func TestSFTPConfigValidateRequiresKnownHostsFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "KNOWN_HOSTS")
 }
 
-func TestSFTPConfigValidateAllowsPasswordProvider(t *testing.T) {
+func TestConfigValidateAllowsPasswordProvider(t *testing.T) {
 	t.Parallel()
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host: "sftp.example.com",
 		Port: 22,
 		User: "svc",
@@ -90,10 +90,10 @@ func TestSFTPConfigValidateAllowsPasswordProvider(t *testing.T) {
 	require.NoError(t, cfg.Validate("production"))
 }
 
-func TestSFTPConfigValidateRejectsNegativePasswordProviderTimeout(t *testing.T) {
+func TestConfigValidateRejectsNegativePasswordProviderTimeout(t *testing.T) {
 	t.Parallel()
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host:                    "sftp.example.com",
 		Port:                    22,
 		User:                    "svc",
@@ -108,10 +108,10 @@ func TestSFTPConfigValidateRejectsNegativePasswordProviderTimeout(t *testing.T) 
 	assert.Contains(t, err.Error(), "PasswordProviderTimeout")
 }
 
-func TestSFTPConfigValidateRejectsMultipleAuthSources(t *testing.T) {
+func TestConfigValidateRejectsMultipleAuthSources(t *testing.T) {
 	t.Parallel()
 
-	cfg := SFTPConfig{
+	cfg := Config{
 		Host: "sftp.example.com",
 		Port: 22,
 		User: "svc",
@@ -128,10 +128,10 @@ func TestSFTPConfigValidateRejectsMultipleAuthSources(t *testing.T) {
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
-func TestSFTPConfigValidateRequiresCleanAbsoluteRoot(t *testing.T) {
+func TestConfigValidateRequiresCleanAbsoluteRoot(t *testing.T) {
 	t.Parallel()
 
-	base := SFTPConfig{
+	base := Config{
 		Host:           "sftp.example.com",
 		Port:           22,
 		User:           "svc",
@@ -153,10 +153,10 @@ func TestSFTPConfigValidateRequiresCleanAbsoluteRoot(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-token")
 }
 
-func TestSFTPConfigKnownHostsErrorDoesNotExposePath(t *testing.T) {
+func TestConfigKnownHostsErrorDoesNotExposePath(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(SFTPConfig{
+	_, err := New(Config{
 		Host:           "sftp.example.com",
 		Port:           22,
 		User:           "svc",
@@ -174,7 +174,7 @@ func TestSFTPConfigKnownHostsErrorDoesNotExposePath(t *testing.T) {
 func TestNewLazyConnectValidatesConfig(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(SFTPConfig{
+	_, err := New(Config{
 		Host:           "sftp.example.com",
 		Port:           0,
 		User:           "svc",
@@ -185,7 +185,7 @@ func TestNewLazyConnectValidatesConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "port")
 
-	_, err = New(SFTPConfig{
+	_, err = New(Config{
 		Host:     "sftp.example.com",
 		Port:     22,
 		User:     "svc",
@@ -195,7 +195,7 @@ func TestNewLazyConnectValidatesConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KNOWN_HOSTS")
 
-	_, err = New(SFTPConfig{
+	_, err = New(Config{
 		Host:           "sftp.example.com",
 		Port:           22,
 		User:           "svc",

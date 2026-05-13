@@ -7,7 +7,7 @@
 //
 // # Audit logging
 //
-// Mutating operations (Revoke, RevokeID, ForgetID) modify token-lifecycle state
+// Mutating operations (Revoke, RevokeID, Unrevoke) modify token-lifecycle state
 // with real authorization consequences and so are auditable events. Wire either
 // [WithLogger] (slog) or [WithAuditSink] (an observability/auditlog-shaped
 // sink) and every revocation operation will emit a structured record with
@@ -71,7 +71,7 @@ type Cache interface {
 // rho-kit so a single sink can decode events from any source — see the
 // "Cross-cutting field set" note in docs/audit/THREAT_MODEL.md.
 type AuditEvent struct {
-	Action   string // dot-namespaced verb: "jwt.revoke", "jwt.revoke.forget"
+	Action   string // dot-namespaced verb: "jwt.revoke", "jwt.revoke.undo"
 	Actor    string // principal performing the operation, derived from ctx
 	Resource string // canonical revocation key (length-prefixed issuer/jti)
 	Issuer   string // token issuer; may be empty
@@ -124,7 +124,7 @@ func WithClock(fn func() time.Time) Option {
 }
 
 // WithLogger wires a slog.Logger that receives a structured record on every
-// mutating call (Revoke, RevokeID, ForgetID). Success records are emitted at
+// mutating call (Revoke, RevokeID, Unrevoke). Success records are emitted at
 // info level; failures at error. If both [WithLogger] and [WithAuditSink] are
 // wired both receive the same event — slog is intended for operator-visible
 // triage and AuditSink for tamper-evident retention.
@@ -247,15 +247,18 @@ func (s *Store) IsRevokedID(ctx context.Context, issuer, id string) (bool, error
 	return s.cache.Exists(ctx, key)
 }
 
-// ForgetID removes a revocation marker. It is mostly useful for tests and
-// administrative repair after an accidental revocation.
-func (s *Store) ForgetID(ctx context.Context, issuer, id string) error {
-	err := s.forgetID(ctx, issuer, id)
-	s.emit(ctx, "jwt.revoke.forget", issuer, id, err)
+// Unrevoke removes a revocation marker — the token referenced by (issuer, id)
+// becomes valid again until its natural expiry. The previous name was
+// Unrevoke, which was misleading: "Forget" implied cache eviction, but the
+// semantic is "undo a Revoke." Used for tests and administrative repair
+// after an accidental revocation.
+func (s *Store) Unrevoke(ctx context.Context, issuer, id string) error {
+	err := s.unrevoke(ctx, issuer, id)
+	s.emit(ctx, "jwt.revoke.undo", issuer, id, err)
 	return err
 }
 
-func (s *Store) forgetID(ctx context.Context, issuer, id string) error {
+func (s *Store) unrevoke(ctx context.Context, issuer, id string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}

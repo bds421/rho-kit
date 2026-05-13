@@ -9,7 +9,7 @@ import (
 func TestNewWithClient_PanicsOnNilClient(t *testing.T) {
 	t.Parallel()
 	assertPanics(t, func() {
-		NewWithClient(nil, GCSConfig{Bucket: "b"})
+		NewWithClient(nil, Config{Bucket: "b"})
 	})
 }
 
@@ -19,25 +19,25 @@ func TestNewWithClient_PanicsOnEmptyBucket(t *testing.T) {
 		_ = recover()
 	}()
 	assertPanics(t, func() {
-		NewWithClient(nil, GCSConfig{Bucket: ""})
+		NewWithClient(nil, Config{Bucket: ""})
 	})
 }
 
 func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
 	t.Parallel()
 	assertPanics(t, func() {
-		NewWithClient(&gcsstorage.Client{}, GCSConfig{Bucket: "b"}, nil)
+		NewWithClient(&gcsstorage.Client{}, Config{Bucket: "b"}, nil)
 	})
 }
 
 func TestGCSBackend_InvalidReceiverSafety(t *testing.T) {
 	t.Parallel()
 
-	var nilBackend *GCSBackend
+	var nilBackend *Backend
 	if err := nilBackend.Close(); err != nil {
 		t.Fatalf("nil backend Close error = %v", err)
 	}
-	if err := (&GCSBackend{}).Close(); err != nil {
+	if err := (&Backend{}).Close(); err != nil {
 		t.Fatalf("zero backend Close error = %v", err)
 	}
 }

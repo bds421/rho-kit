@@ -262,7 +262,7 @@ func TestCircuitBreaker_New_PanicsOnZeroThreshold(t *testing.T) {
 // hooks so we can verify circuit breaker forwards capabilities and that
 // open circuits block them.
 type presignedListerCBBackend struct {
-	*membackend.MemBackend
+	*membackend.Backend
 	failPresign func() error
 	failURL     func() error
 }
@@ -298,7 +298,7 @@ func TestAsPresigned_ReachesUnderlyingThroughCircuitBreaker(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	backend := &presignedListerCBBackend{MemBackend: membackend.New()}
+	backend := &presignedListerCBBackend{Backend: membackend.New()}
 	cb := New(backend)
 
 	ps, ok := storage.AsPresigned(cb)
@@ -336,7 +336,7 @@ func TestAsLister_CircuitBreakerBlocksOpenCircuit(t *testing.T) {
 
 	// Now wrap a Lister-capable backend and re-test that an open circuit
 	// blocks List dispatch.
-	backend := &presignedListerCBBackend{MemBackend: membackend.New()}
+	backend := &presignedListerCBBackend{Backend: membackend.New()}
 	cb2 := New(backend, WithThreshold(1), WithResetTimeout(time.Hour))
 
 	// Trip the breaker on cb2.

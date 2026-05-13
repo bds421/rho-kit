@@ -25,7 +25,7 @@ func (e *smithyErr) ErrorCode() string             { return e.code }
 func (e *smithyErr) ErrorMessage() string          { return e.message }
 func (e *smithyErr) ErrorFault() smithy.ErrorFault { return smithy.FaultServer }
 
-func TestTranslateS3Capacity(t *testing.T) {
+func TestTranslateCapacity(t *testing.T) {
 	cases := []struct {
 		name     string
 		err      error

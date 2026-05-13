@@ -39,6 +39,7 @@ type Provider struct {
 
 	current               atomic.Pointer[V4PublicVerifier]
 	lastSuccessfulRefresh atomic.Int64
+	closed                atomic.Bool
 	stop                  chan struct{}
 	done                  chan struct{}
 	stopOnce              sync.Once
@@ -169,13 +170,17 @@ func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duratio
 	return p, nil
 }
 
-// Verify delegates to the currently-loaded [V4PublicVerifier]. Returns
-// [ErrTokenInvalid] (wrapped by the underlying verifier) when no
-// active key set is available — should only happen if the caller
-// races Verify against Close.
+// Verify delegates to the currently-loaded [V4PublicVerifier]. After Close,
+// returns [ErrProviderClosed] so callers can distinguish a shut-down
+// Provider from a transient stale-key situation. Returns
+// [ErrKeySetUnavailable] when the key set has expired its
+// [WithMaxStale] window or never loaded.
 func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 	if p == nil {
 		return nil, ErrKeySetUnavailable
+	}
+	if p.closed.Load() {
+		return nil, ErrProviderClosed
 	}
 	v := p.current.Load()
 	if v == nil {
@@ -193,17 +198,17 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 	return v.Verify(token, now)
 }
 
-// Close terminates the refresh goroutine. Subsequent Verify calls
-// continue to use the last loaded key set until it expires; callers
-// that need stricter shutdown semantics should drop the Provider
-// reference. Always returns nil — the signature matches [io.Closer]
-// so Provider can be wired into resource-cleanup helpers, but the
-// shutdown path itself cannot fail.
+// Close terminates the refresh goroutine. Subsequent Verify calls return
+// [ErrProviderClosed]. Idempotent; safe for concurrent use. Always
+// returns nil — the signature matches [io.Closer] so Provider can be
+// wired into resource-cleanup helpers, but the shutdown path itself
+// cannot fail.
 func (p *Provider) Close() error {
 	if p == nil || p.stop == nil || p.done == nil {
 		return nil
 	}
 	p.stopOnce.Do(func() {
+		p.closed.Store(true)
 		close(p.stop)
 		if p.rootCancel != nil {
 			p.rootCancel()

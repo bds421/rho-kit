@@ -36,15 +36,15 @@ const (
 )
 
 // Compile-time interface compliance check.
-var _ storage.Storage = (*SFTPBackend)(nil)
+var _ storage.Storage = (*Backend)(nil)
 
-// SFTPClient abstracts the sftp.Client methods used by SFTPBackend.
+// Client abstracts the sftp.Client methods used by Backend.
 //
 // Note: Create and Open return *sftp.File (a concrete type) because sftp.File
 // combines io.ReadWriteCloser with io.Seeker and Stat — there is no standard
 // interface covering all these. This means Put and Get cannot be unit-tested
 // with a mock client; use integration tests with a real SFTP server instead.
-type SFTPClient interface {
+type Client interface {
 	Create(path string) (*sftp.File, error)
 	Open(path string) (*sftp.File, error)
 	Remove(path string) error
@@ -56,16 +56,16 @@ type SFTPClient interface {
 	Close() error
 }
 
-// SFTPBackend implements [storage.Storage] using SFTP.
-type SFTPBackend struct {
-	cfg        SFTPConfig
+// Backend implements [storage.Storage] using SFTP.
+type Backend struct {
+	cfg        Config
 	instance   string
 	validators []storage.Validator
 	logger     *slog.Logger
-	metrics    *SFTPMetrics
+	metrics    *Metrics
 
 	mu        sync.RWMutex
-	client    SFTPClient
+	client    Client
 	sshConn   io.Closer
 	connected bool
 	lazyConn  bool
@@ -82,12 +82,12 @@ type SFTPBackend struct {
 	cleanupWg sync.WaitGroup
 }
 
-// Option configures an SFTPBackend.
-type Option func(*SFTPBackend)
+// Option configures an Backend.
+type Option func(*Backend)
 
 // WithInstance sets the Prometheus instance label. Defaults to "default".
 func WithInstance(name string) Option {
-	return func(b *SFTPBackend) {
+	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
 			panic("sftpbackend: invalid instance name")
 		}
@@ -98,7 +98,7 @@ func WithInstance(name string) Option {
 // WithValidators sets upload validators applied in order before every Put.
 func WithValidators(validators ...storage.Validator) Option {
 	copied := storage.CloneValidators(validators...)
-	return func(b *SFTPBackend) {
+	return func(b *Backend) {
 		b.validators = storage.AppendValidators(b.validators, copied...)
 	}
 }
@@ -106,7 +106,7 @@ func WithValidators(validators ...storage.Validator) Option {
 // WithLazyConnect defers the SSH/SFTP connection until the first operation.
 // By default, New connects eagerly and returns an error if the connection fails.
 func WithLazyConnect() Option {
-	return func(b *SFTPBackend) {
+	return func(b *Backend) {
 		b.lazyConn = true
 	}
 }
@@ -115,7 +115,7 @@ func WithLazyConnect() Option {
 // Passing nil falls back to slog.Default() rather than creating a latent
 // nil-deref panic on connect or health-failure paths.
 func WithLogger(logger *slog.Logger) Option {
-	return func(b *SFTPBackend) {
+	return func(b *Backend) {
 		if logger == nil {
 			logger = slog.Default()
 		}
@@ -126,23 +126,23 @@ func WithLogger(logger *slog.Logger) Option {
 // WithRegisterer sets the Prometheus registerer for SFTP metrics.
 // If not set, prometheus.DefaultRegisterer is used.
 func WithRegisterer(reg prometheus.Registerer) Option {
-	return func(b *SFTPBackend) {
-		b.metrics = NewSFTPMetrics(reg)
+	return func(b *Backend) {
+		b.metrics = NewMetrics(reg)
 	}
 }
 
-// New creates a new SFTPBackend. By default, it connects eagerly.
+// New creates a new Backend. By default, it connects eagerly.
 // Use WithLazyConnect to defer connection.
-func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
+func New(cfg Config, opts ...Option) (*Backend, error) {
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
 	}
 
-	b := &SFTPBackend{
+	b := &Backend{
 		cfg:      cfg,
 		instance: "default",
 		logger:   slog.Default(),
-		metrics:  defaultSFTPMetrics,
+		metrics:  defaultMetrics,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -160,23 +160,23 @@ func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
 	return b, nil
 }
 
-// NewWithClient creates an SFTPBackend with a custom client, for testing.
-func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBackend {
+// NewWithClient creates an Backend with a custom client, for testing.
+func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 	if client == nil {
-		panic("sftpbackend: NewWithClient requires a non-nil SFTPClient")
+		panic("sftpbackend: NewWithClient requires a non-nil Client")
 	}
 	if cfg.RootPath == "" {
 		cfg.RootPath = "/"
 	}
 	if !path.IsAbs(cfg.RootPath) {
-		panic("sftpbackend: SFTPConfig.RootPath must be absolute")
+		panic("sftpbackend: Config.RootPath must be absolute")
 	}
 	cfg.RootPath = path.Clean(cfg.RootPath)
-	b := &SFTPBackend{
+	b := &Backend{
 		cfg:       cfg,
 		instance:  "default",
 		logger:    slog.Default(),
-		metrics:   defaultSFTPMetrics,
+		metrics:   defaultMetrics,
 		client:    client,
 		connected: true,
 	}
@@ -190,7 +190,7 @@ func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBacke
 }
 
 // connect establishes the SSH and SFTP connection. Caller must not hold b.mu.
-func (b *SFTPBackend) connect(ctx context.Context) error {
+func (b *Backend) connect(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -273,7 +273,7 @@ func (b *SFTPBackend) connect(ctx context.Context) error {
 	return nil
 }
 
-func (b *SFTPBackend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error) {
+func (b *Backend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error) {
 	if b.cfg.Password == "" && b.cfg.KeyFile == "" && b.cfg.PasswordProvider == nil {
 		return nil, fmt.Errorf("no SSH authentication method configured (need Password, PasswordProvider, or KeyFile)")
 	}
@@ -334,7 +334,7 @@ func (b *SFTPBackend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, er
 	return cfg, nil
 }
 
-func (b *SFTPBackend) passwordProviderTimeout() time.Duration {
+func (b *Backend) passwordProviderTimeout() time.Duration {
 	if b == nil || b.cfg.PasswordProviderTimeout == 0 {
 		return defaultPasswordProviderTimeout
 	}
@@ -342,7 +342,7 @@ func (b *SFTPBackend) passwordProviderTimeout() time.Duration {
 }
 
 // getClient returns the SFTP client, connecting if needed (lazy connect).
-func (b *SFTPBackend) getClient(ctx context.Context) (SFTPClient, error) {
+func (b *Backend) getClient(ctx context.Context) (Client, error) {
 	b.mu.RLock()
 	if b.connected {
 		client := b.client
@@ -364,11 +364,11 @@ func (b *SFTPBackend) getClient(ctx context.Context) (SFTPClient, error) {
 }
 
 // remotePath joins the root path with the given key.
-func (b *SFTPBackend) remotePath(key string) string {
+func (b *Backend) remotePath(key string) string {
 	return path.Join(b.cfg.RootPath, key)
 }
 
-func (b *SFTPBackend) ensureRemotePathUnderRoot(remotePath string) error {
+func (b *Backend) ensureRemotePathUnderRoot(remotePath string) error {
 	rel, err := relPath(b.cfg.RootPath, remotePath)
 	if err != nil {
 		return err
@@ -382,7 +382,7 @@ func (b *SFTPBackend) ensureRemotePathUnderRoot(remotePath string) error {
 	return nil
 }
 
-func (b *SFTPBackend) rejectSymlinkAncestors(client SFTPClient, remotePath string) error {
+func (b *Backend) rejectSymlinkAncestors(client Client, remotePath string) error {
 	if err := b.ensureRemotePathUnderRoot(remotePath); err != nil {
 		return err
 	}
@@ -417,7 +417,7 @@ func (b *SFTPBackend) rejectSymlinkAncestors(client SFTPClient, remotePath strin
 	return nil
 }
 
-func (b *SFTPBackend) rejectSymlinkPath(client SFTPClient, remotePath string) error {
+func (b *Backend) rejectSymlinkPath(client Client, remotePath string) error {
 	if err := b.rejectSymlinkAncestors(client, remotePath); err != nil {
 		return err
 	}
@@ -430,7 +430,7 @@ func (b *SFTPBackend) rejectSymlinkPath(client SFTPClient, remotePath string) er
 	return nil
 }
 
-func rejectSFTPSymlinkAt(client SFTPClient, remotePath string) error {
+func rejectSFTPSymlinkAt(client Client, remotePath string) error {
 	info, err := client.Lstat(remotePath)
 	if err != nil {
 		if isNotExist(err) {
@@ -471,7 +471,7 @@ func translateSFTPCapacity(err error) error {
 }
 
 // Put writes content from r to the remote path. Validators run before upload.
-func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Put")
 	defer span.End()
 	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
@@ -588,7 +588,7 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 }
 
 // Get retrieves file content from the remote path. Caller must close the returned ReadCloser.
-func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Get")
 	defer span.End()
 	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
@@ -640,7 +640,7 @@ func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, stora
 }
 
 // Delete removes a file at the remote path. Returns nil if the file does not exist.
-func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
+func (b *Backend) Delete(ctx context.Context, key string) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Delete")
 	defer span.End()
 	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
@@ -681,7 +681,7 @@ func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 }
 
 // Exists reports whether the key exists on the remote server.
-func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Exists")
 	defer span.End()
 	span.SetAttributes(attribute.Int("storage.key_len", len(key)))
@@ -729,7 +729,7 @@ func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 // the client reference is copied under RLock. However, calling Stat on a
 // closed sftp.Client returns an error (which correctly makes Healthy return
 // false). Do not rely on Healthy returning meaningful results after Close.
-func (b *SFTPBackend) Healthy() bool {
+func (b *Backend) Healthy() bool {
 	if b == nil {
 		return false
 	}
@@ -769,7 +769,7 @@ func (b *SFTPBackend) Healthy() bool {
 
 // Close closes the SFTP and SSH connections and waits for any pending
 // cleanup goroutines from previous reconnections to finish.
-func (b *SFTPBackend) Close() error {
+func (b *Backend) Close() error {
 	if b == nil {
 		return nil
 	}

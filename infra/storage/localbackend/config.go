@@ -6,8 +6,8 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// LocalConfig holds configuration for the local filesystem backend.
-type LocalConfig struct {
+// Config holds configuration for the local filesystem backend.
+type Config struct {
 	// RootDir is the base directory for storing objects.
 	RootDir string
 }
@@ -16,10 +16,10 @@ type LocalConfig struct {
 //
 // Environment variables:
 //   - STORAGE_LOCAL_ROOT (required)
-func LoadLocalConfig() (LocalConfig, error) {
+func LoadLocalConfig() (Config, error) {
 	root := config.Get("STORAGE_LOCAL_ROOT", "")
 	if root == "" {
-		return LocalConfig{}, fmt.Errorf("STORAGE_LOCAL_ROOT is required")
+		return Config{}, fmt.Errorf("STORAGE_LOCAL_ROOT is required")
 	}
-	return LocalConfig{RootDir: root}, nil
+	return Config{RootDir: root}, nil
 }

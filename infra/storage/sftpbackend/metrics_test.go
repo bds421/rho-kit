@@ -10,10 +10,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestNewSFTPMetricsReusesCollectors(t *testing.T) {
+func TestNewMetricsReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewSFTPMetrics(reg)
-	m2 := NewSFTPMetrics(reg)
+	m1 := NewMetrics(reg)
+	m2 := NewMetrics(reg)
 
 	if m1.opDuration != m2.opDuration {
 		t.Fatal("opDuration collector was not reused")
@@ -26,9 +26,9 @@ func TestNewSFTPMetricsReusesCollectors(t *testing.T) {
 	}
 }
 
-func TestSFTPMetricsContract(t *testing.T) {
+func TestMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewSFTPMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("documents", "put", start, nil)
@@ -45,9 +45,9 @@ func TestSFTPMetricsContract(t *testing.T) {
 	}
 }
 
-func TestSFTPMetricsNormalizeExpectedNotFound(t *testing.T) {
+func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewSFTPMetrics(reg)
+	metrics := NewMetrics(reg)
 	start := time.Now().Add(-10 * time.Millisecond)
 	notFound := &sftp.StatusError{Code: ssh_FX_NO_SUCH_FILE}
 

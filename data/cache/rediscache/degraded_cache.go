@@ -11,7 +11,7 @@ import (
 // Compile-time interface compliance check.
 var _ sharedcache.Cache = (*DegradedCache)(nil)
 
-// DegradedCache wraps a primary RedisCache and a fallback Cache. When the
+// DegradedCache wraps a primary Cache and a fallback Cache. When the
 // Redis connection is healthy, all operations go to the primary. When
 // unhealthy, the degradation policy decides whether to delegate to the
 // fallback or return an error.
@@ -19,7 +19,7 @@ var _ sharedcache.Cache = (*DegradedCache)(nil)
 // The fallback is typically a MemoryCache (passthrough) or nil (fail-fast).
 // DegradedCache never mutates its inputs.
 type DegradedCache struct {
-	primary  *RedisCache
+	primary  *Cache
 	fallback sharedcache.Cache
 	conn     *redis.Connection
 	policy   redis.DegradationPolicy
@@ -46,7 +46,7 @@ func WithDegradationPolicy(p redis.DegradationPolicy) DegradedCacheOption {
 // Set/Delete/Exists return the policy's OnUnavailable error (or nil for
 // passthrough).
 func NewDegradedCache(
-	primary *RedisCache,
+	primary *Cache,
 	fallback sharedcache.Cache,
 	conn *redis.Connection,
 	opts ...DegradedCacheOption,

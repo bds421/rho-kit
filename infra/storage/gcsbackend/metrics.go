@@ -8,20 +8,20 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// GCSMetrics holds Prometheus collectors for GCS storage operation monitoring.
-type GCSMetrics struct {
+// Metrics holds Prometheus collectors for GCS storage operation monitoring.
+type Metrics struct {
 	opDuration *prometheus.HistogramVec
 	opErrors   *prometheus.CounterVec
 }
 
-// NewGCSMetrics creates and registers GCS metrics with the given registerer.
+// NewMetrics creates and registers GCS metrics with the given registerer.
 // If reg is nil, prometheus.DefaultRegisterer is used.
-func NewGCSMetrics(reg prometheus.Registerer) *GCSMetrics {
+func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	m := &GCSMetrics{
+	m := &Metrics{
 		opDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "storage",
@@ -49,12 +49,12 @@ func NewGCSMetrics(reg prometheus.Registerer) *GCSMetrics {
 	return m
 }
 
-var defaultGCSMetrics = NewGCSMetrics(nil)
+var defaultMetrics = NewMetrics(nil)
 
 // now returns the current time. A variable so tests can override it.
 var now = time.Now
 
-func (m *GCSMetrics) observeOp(instance, op string, start time.Time, err error) {
+func (m *Metrics) observeOp(instance, op string, start time.Time, err error) {
 	m.opDuration.WithLabelValues(instance, op).Observe(time.Since(start).Seconds())
 	if err != nil {
 		m.opErrors.WithLabelValues(instance, op).Inc()

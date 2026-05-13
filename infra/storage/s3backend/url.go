@@ -10,7 +10,7 @@ import (
 )
 
 // Compile-time interface compliance check.
-var _ storage.PublicURLer = (*S3Backend)(nil)
+var _ storage.PublicURLer = (*Backend)(nil)
 
 // URL returns a public, non-expiring URL for the given key.
 // The URL is constructed from the backend configuration and does not
@@ -19,7 +19,7 @@ var _ storage.PublicURLer = (*S3Backend)(nil)
 //
 // Path-style:     <endpoint>/<bucket>/<key>
 // Virtual-hosted: https://<bucket>.s3.<region>.amazonaws.com/<key>
-func (b *S3Backend) URL(_ context.Context, key string) (string, error) {
+func (b *Backend) URL(_ context.Context, key string) (string, error) {
 	if err := storage.ValidateKey(key); err != nil {
 		return "", err
 	}

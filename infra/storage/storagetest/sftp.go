@@ -28,7 +28,7 @@ const (
 
 var (
 	sftpOnce    sync.Once
-	sftpConfig  sftpbackend.SFTPConfig
+	sftpConfig  sftpbackend.Config
 	sftpInitErr error
 )
 
@@ -38,7 +38,7 @@ var (
 //
 // The container creates a test user with a strong password and home directory
 // "/home/testuser/upload".
-func StartSFTP(t *testing.T) sftpbackend.SFTPConfig {
+func StartSFTP(t *testing.T) sftpbackend.Config {
 	t.Helper()
 
 	sftpOnce.Do(func() {
@@ -81,7 +81,7 @@ func StartSFTP(t *testing.T) sftpbackend.SFTPConfig {
 			return
 		}
 
-		sftpConfig = sftpbackend.SFTPConfig{
+		sftpConfig = sftpbackend.Config{
 			Host:           host,
 			Port:           portNum,
 			User:           sftpTestUser,
