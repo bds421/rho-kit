@@ -58,6 +58,7 @@ type Connection struct {
 	generation           uint64        // incremented on each reconnect; stale watchers self-terminate
 	reconnecting         atomic.Bool   // prevents overlapping reconnect goroutines
 	reconnectSignal      chan struct{} // buffered(1); queues a reconnect when loop is finishing
+	reconnectWG          sync.WaitGroup // tracks in-flight reconnect goroutines so Stop can wait
 
 	// metrics, brokerLabel are observability hooks set via WithConnectionMetrics.
 	// When metrics is non-nil, dial success/failure flip connection_up and
@@ -368,6 +369,13 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 // the only ctx handling we can offer is a fast-path: if ctx is already
 // cancelled at entry, return its error without invoking the broker
 // close. Once the close call starts it runs to completion.
+//
+// Stop waits for any in-flight reconnect goroutine to exit so the
+// Connection's goroutines are not still running when Stop returns —
+// a non-nil ctx caps the wait at ctx deadline, in which case Stop
+// returns ctx.Err() but still completes the broker close. The
+// reconnect loop honors c.closed promptly between dial attempts, so
+// the wait is normally bounded by the in-flight dial timeout.
 func (c *Connection) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -384,15 +392,35 @@ func (c *Connection) Stop(ctx context.Context) error {
 		}
 
 		c.mu.Lock()
-		defer c.mu.Unlock()
-
 		if c.conn != nil && !c.conn.IsClosed() {
 			if err := c.conn.Close(); err != nil {
 				closeErr = fmt.Errorf("messaging: close connection: %w", err)
 			}
 		}
+		c.mu.Unlock()
 	})
-	return closeErr
+	// Wait outside closeOnce so callers that race past a completed Stop
+	// still observe the wait on this call. The Wait/Done dance is
+	// idempotent — additional Stops after the goroutine drained simply
+	// observe a zeroed counter.
+	if ctx == nil {
+		c.reconnectWG.Wait()
+		return closeErr
+	}
+	done := make(chan struct{})
+	go func() {
+		c.reconnectWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return closeErr
+	case <-ctx.Done():
+		if closeErr != nil {
+			return closeErr
+		}
+		return ctx.Err()
+	}
 }
 
 // Healthy reports whether the AMQP connection is alive and has not been
@@ -487,7 +515,9 @@ func (c *Connection) startReconnect() {
 		}
 		return
 	}
+	c.reconnectWG.Add(1)
 	go func() {
+		defer c.reconnectWG.Done()
 		defer c.reconnecting.Store(false)
 		c.reconnect()
 	}()
