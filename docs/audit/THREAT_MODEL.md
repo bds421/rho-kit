@@ -787,11 +787,16 @@ Authenticity is HMAC over canonical request bytes plus a server-side
 nonce store.
 
 ```go
-mux.Handle("/webhooks/billing", signedrequest.Verify(
-    nonceStore,
-    signedrequest.WithKey("billing", billingKey),
+keyResolver := func(keyID string) ([]byte, error) {
+    if keyID == "billing" {
+        return billingKey, nil
+    }
+    return nil, fmt.Errorf("unknown key id")
+}
+verifyMW := signedrequest.Middleware(keyResolver, nonceStore,
     signedrequest.WithMaxClockSkew(2*time.Minute),
-)(handler))
+)
+mux.Handle("/webhooks/billing", verifyMW(handler))
 ```
 
 Request lifecycle:
@@ -800,7 +805,7 @@ Request lifecycle:
 |---|---|---|
 | 1 | `recover`, `metrics`, `requestID`, `tracing`, `logging` | H-01, H-13 |
 | 2 | `maxbody` middleware sized for webhook payloads | H-02 |
-| 3 | `signedrequest.Verify` reads `(timestamp, nonce, signature, signed-headers)` | W-01, W-02, W-03, W-04 |
+| 3 | `signedrequest.Middleware` reads `(timestamp, nonce, signature, signed-headers)` | W-01, W-02, W-03, W-04 |
 | 4 | Canonical request bytes recomputed; HMAC compared in constant time | W-02, W-04 |
 | 5 | Nonce checked against TTL'd Redis store; recorded if absent | W-01 |
 | 6 | Handler runs with tenant ID derived from a signed claim in the body, not the URL | A4 (LLM cannot inject), L-02 |

@@ -467,9 +467,14 @@ func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 
 // Close stops the underlying cache workers (including the TTL cleanup
 // goroutine started by WithCleanupInterval). Implements io.Closer.
-// Callers MUST call Close when the cache is no longer needed; failing to
-// do so leaks goroutines. In server lifecycle code, register Close as a
-// shutdown hook or use defer.
+//
+// Call Close for deterministic shutdown — it releases the ristretto
+// store immediately and unblocks the nxClaims sweeper without waiting
+// for GC. If Close is forgotten, the sweeper goroutine holds only a
+// [weak.Pointer] to the cache and exits on its own once the cache
+// becomes unreachable, so it does not pin the cache or leak forever.
+// "Forgetting Close" is a deterministic-cleanup bug, not a goroutine
+// leak.
 //
 // Idempotent and safe for concurrent calls — the underlying ristretto
 // cache is Close()-d exactly once. MemoryCache is safe for concurrent use

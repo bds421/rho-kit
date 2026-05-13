@@ -47,8 +47,12 @@ var defaultTrustedProxyCIDRs = func() []*net.IPNet {
 //  2. X-Forwarded-For — walked right-to-left, skipping trusted proxy IPs.
 //  3. RemoteAddr — direct connection address (final fallback).
 //
-// Both X-Real-IP and X-Forwarded-For are only trusted when RemoteAddr
-// itself comes from a trusted proxy (private/loopback ranges).
+// X-Real-IP and X-Forwarded-For are only trusted when RemoteAddr itself
+// comes from a configured trusted proxy CIDR. The default proxy set is
+// loopback-only — RFC1918/ULA ranges are NOT trusted unless the caller
+// supplies them via [ClientIPWithTrustedProxies]. This is a fail-closed
+// default: an unconfigured ingress chain returns the direct peer rather
+// than a forwarded header an upstream tenant could have set.
 func ClientIP(r *http.Request) string {
 	return ClientIPWithTrustedProxies(r, nil)
 }

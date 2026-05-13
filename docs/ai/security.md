@@ -120,8 +120,11 @@ if len(tsHeaders) != 1 || len(sigHeaders) != 1 {
     return
 }
 ts, err := strconv.ParseInt(strings.TrimSpace(tsHeaders[0]), 10, 64)
-ok, verifyErr := signing.Verify(secret, body, ts, strings.TrimSpace(sigHeaders[0]), signing.DefaultSignatureMaxAge)
-if err != nil || verifyErr != nil || !ok {
+if err != nil {
+    httpx.WriteError(w, 401, "invalid signature")
+    return
+}
+if err := signing.Verify(secret, body, ts, strings.TrimSpace(sigHeaders[0]), signing.DefaultSignatureMaxAge); err != nil {
     httpx.WriteError(w, 401, "invalid signature")
     return
 }
