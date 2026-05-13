@@ -172,7 +172,7 @@ type Entry struct {
 
 	// Signature is HMAC-SHA256 over the canonical form of all other
 	// fields (including [Entry.Seq] and [Entry.PrevHash]), hex-encoded.
-	// Set by [Logger.Append]; read via [Logger.Verify] or implicitly by
+	// Set by [Logger.Append]; verified via [VerifyEntry] or implicitly by
 	// [Logger.Get] / [Logger.List].
 	Signature string `json:"signature"`
 }
@@ -251,7 +251,11 @@ func ValidateStoredEntry(tenantID string, e Entry) error {
 }
 
 // Logger appends and reads entries, signing on write and verifying on
-// read.
+// read. The chain-aware methods live on the interface; the stateless
+// per-entry primitives ([SignEntry], [VerifyEntry]) are package-level
+// free functions because they only depend on the [SecretSource], not
+// on a Store. Off-band tools (forensics, replay, audit dumps) can
+// verify entries without constructing a Logger or wiring a Store.
 type Logger interface {
 	// Append persists the entry. Fills in ID, OccurredAt, Signature,
 	// SignatureKeyID, Seq, and PrevHash; returns the populated entry.
@@ -274,16 +278,6 @@ type Logger interface {
 	// last one; otherwise it is the opaque marker callers feed back via
 	// [Query.Cursor] to retrieve the next page.
 	List(ctx context.Context, q Query) ([]Entry, string, error)
-
-	// Sign returns the canonical signature for the entry without
-	// touching the store. Useful for off-band verification tools and
-	// for tests.
-	Sign(e Entry) (signature, keyID string, err error)
-
-	// Verify reports whether the entry's stored signature matches the
-	// recomputed canonical signature. Returns nil on match;
-	// [ErrSignatureInvalid] / [ErrUnknownKeyID] otherwise.
-	Verify(e Entry) error
 
 	// VerifyChain streams every entry for tenantID in chronological
 	// order (Seq ascending) and verifies that:
@@ -588,7 +582,7 @@ func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
 		return Entry{}, err
 	}
 	e = cloneEntry(e)
-	if err := l.Verify(e); err != nil {
+	if err := VerifyEntry(e, l.secrets); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -613,7 +607,7 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	out := make([]Entry, len(entries))
 	for i, e := range entries {
 		e = cloneEntry(e)
-		if err := l.Verify(e); err != nil {
+		if err := VerifyEntry(e, l.secrets); err != nil {
 			return nil, "", fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		out[i] = e
@@ -633,7 +627,7 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	var prev Entry
 	var wantSeq int64 = 1
 	return l.store.RangeByTenantSeq(ctx, tenantID, func(e Entry) error {
-		if err := l.Verify(e); err != nil {
+		if err := VerifyEntry(e, l.secrets); err != nil {
 			return fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		if e.Seq != wantSeq {
@@ -658,17 +652,25 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	})
 }
 
-// Sign computes and returns the canonical signature for an entry
-// without persisting it. Used by off-band verifiers and tests.
-func (l *signedLogger) Sign(e Entry) (string, string, error) {
-	if err := l.ready(); err != nil {
-		return "", "", err
+// SignEntry computes and returns the canonical signature for an entry
+// without persisting it. Useful for off-band tools that need to sign
+// without constructing a Logger / Store pair.
+//
+// Mutates e.SignatureKeyID to the resolved key id; callers that want
+// the returned signature applied should set e.Signature themselves
+// (the contract mirrors [Logger.Append] which fills both fields).
+//
+// Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty
+// or the resolved secret is shorter than [minSignatureSecretLen].
+func SignEntry(e Entry, secrets SecretSource) (signature, keyID string, err error) {
+	if secrets == nil {
+		return "", "", ErrInvalidStore
 	}
-	keyID := l.secrets.CurrentKeyID()
+	keyID = secrets.CurrentKeyID()
 	if keyID == "" {
 		return "", "", fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
 	}
-	secret, err := resolveSignatureSecret(l.secrets, keyID)
+	secret, err := resolveSignatureSecret(secrets, keyID)
 	if err != nil {
 		return "", "", fmt.Errorf("actionlog: current key id: %w", err)
 	}
@@ -680,15 +682,23 @@ func (l *signedLogger) Sign(e Entry) (string, string, error) {
 	return sig, keyID, nil
 }
 
-// Verify recomputes the signature and constant-time compares.
-func (l *signedLogger) Verify(e Entry) error {
-	if err := l.ready(); err != nil {
-		return err
+// VerifyEntry reports whether the entry's stored signature matches the
+// recomputed canonical signature. Returns nil on match,
+// [ErrSignatureInvalid] / [ErrUnknownKeyID] otherwise.
+//
+// Like [SignEntry], this is stateless — verifiers can validate a dump
+// of entries without a Logger or Store. The implementation uses a
+// fixed-size buffer for the constant-time compare so a valid-hex but
+// wrong-length stored signature does not take a faster code path than
+// a same-length forgery attempt (FR-052 [LOW]).
+func VerifyEntry(e Entry, secrets SecretSource) error {
+	if secrets == nil {
+		return ErrInvalidStore
 	}
 	if e.SignatureKeyID == "" {
 		return ErrSignatureInvalid
 	}
-	secret, err := resolveSignatureSecret(l.secrets, e.SignatureKeyID)
+	secret, err := resolveSignatureSecret(secrets, e.SignatureKeyID)
 	if err != nil {
 		return err
 	}
@@ -696,10 +706,6 @@ func (l *signedLogger) Verify(e Entry) error {
 	if err != nil {
 		return err
 	}
-	// FR-052 [LOW]: hmac.Equal short-circuits on length mismatch.
-	// Force the decoded got to a fixed sha256.Size buffer so a
-	// valid-hex but wrong-length signature does not take a faster
-	// code path than a same-length forgery attempt.
 	gotRaw, err := hex.DecodeString(e.Signature)
 	if err != nil {
 		return ErrSignatureInvalid
@@ -712,8 +718,6 @@ func (l *signedLogger) Verify(e Entry) error {
 	if len(gotRaw) == sha256.Size {
 		copy(got[:], gotRaw)
 	}
-	// Equal compares fixed-size buffers regardless of decoded length;
-	// length difference folds into the result via the zeroed got.
 	if !hmac.Equal(got[:], want) {
 		return ErrSignatureInvalid
 	}

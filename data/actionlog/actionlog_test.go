@@ -437,19 +437,20 @@ func TestAppend_RejectsShortCustomSecret(t *testing.T) {
 }
 
 func TestSign_RejectsEmptyCurrentKeyIDFromCustomSecrets(t *testing.T) {
-	logger := New(newMemStore(), stubSecrets{
+	secrets := stubSecrets{
 		current: "",
 		keys:    map[string][]byte{"": make([]byte, 32)},
-	})
+	}
+	_ = New(newMemStore(), secrets)
 
-	sig, keyID, err := logger.Sign(Entry{
+	sig, keyID, err := SignEntry(Entry{
 		ID:         "e1",
 		TenantID:   "t",
 		Actor:      "a",
 		Action:     "x",
 		Outcome:    OutcomeSuccess,
 		OccurredAt: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
-	})
+	}, secrets)
 	assert.ErrorIs(t, err, ErrUnknownKeyID)
 	assert.Empty(t, sig)
 	assert.Empty(t, keyID)
@@ -466,12 +467,13 @@ func TestVerify_RejectsShortCustomSecret(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	weakLogger := New(store, stubSecrets{
+	weakSecrets := stubSecrets{
 		current: "k1",
 		keys:    map[string][]byte{"k1": []byte("too-short")},
-	})
+	}
+	_ = New(store, weakSecrets)
 
-	err = weakLogger.Verify(e)
+	err = VerifyEntry(e, weakSecrets)
 	assert.ErrorIs(t, err, ErrSecretTooShort)
 }
 
@@ -686,7 +688,8 @@ func TestStaticSecrets_NilReceiverFailsClosed(t *testing.T) {
 // sequence after the join. Post-fix the length prefix on each field
 // makes the parse unambiguous.
 func TestSign_NewlineInjectionDoesNotCollide(t *testing.T) {
-	logger := New(newMemStore(), newTestSecrets(t))
+	secrets := newTestSecrets(t)
+	_ = New(newMemStore(), secrets)
 	now := time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
 
 	a := Entry{
@@ -706,16 +709,17 @@ func TestSign_NewlineInjectionDoesNotCollide(t *testing.T) {
 		OccurredAt: now,
 	}
 
-	sigA, _, err := logger.Sign(a)
+	sigA, _, err := SignEntry(a, secrets)
 	require.NoError(t, err)
-	sigB, _, err := logger.Sign(b)
+	sigB, _, err := SignEntry(b, secrets)
 	require.NoError(t, err)
 	assert.NotEqual(t, sigA, sigB,
 		"length-prefix canonical form must distinguish entries that differ only in newline placement")
 }
 
 func TestSign_DeterministicAcrossInvocations(t *testing.T) {
-	logger := New(newMemStore(), newTestSecrets(t))
+	secrets := newTestSecrets(t)
+	_ = New(newMemStore(), secrets)
 	e := Entry{
 		ID:         "e1",
 		TenantID:   "t",
@@ -725,9 +729,9 @@ func TestSign_DeterministicAcrossInvocations(t *testing.T) {
 		OccurredAt: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 		Metadata:   map[string]any{"b": 1, "a": 2, "z": map[string]any{"y": 3, "x": 4}},
 	}
-	s1, _, err := logger.Sign(e)
+	s1, _, err := SignEntry(e, secrets)
 	require.NoError(t, err)
-	s2, _, err := logger.Sign(e)
+	s2, _, err := SignEntry(e, secrets)
 	require.NoError(t, err)
 	assert.Equal(t, s1, s2)
 }
@@ -735,7 +739,8 @@ func TestSign_DeterministicAcrossInvocations(t *testing.T) {
 func TestSign_OrderInsensitiveMetadata(t *testing.T) {
 	// The signature must be the same regardless of the source map's
 	// internal iteration order, because canonicalisation sorts keys.
-	logger := New(newMemStore(), newTestSecrets(t))
+	secrets := newTestSecrets(t)
+	_ = New(newMemStore(), secrets)
 	base := Entry{
 		ID:         "e1",
 		TenantID:   "t",
@@ -749,9 +754,9 @@ func TestSign_OrderInsensitiveMetadata(t *testing.T) {
 	b := base
 	b.Metadata = map[string]any{"beta": 2, "alpha": 1}
 
-	sa, _, err := logger.Sign(a)
+	sa, _, err := SignEntry(a, secrets)
 	require.NoError(t, err)
-	sb, _, err := logger.Sign(b)
+	sb, _, err := SignEntry(b, secrets)
 	require.NoError(t, err)
 	assert.Equal(t, sa, sb)
 }
@@ -818,10 +823,10 @@ func TestSignedLogger_InvalidReceiverReturnsError(t *testing.T) {
 			_, _, err = tc.log.List(ctx, Query{TenantID: "t"})
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			_, _, err = tc.log.Sign(Entry{})
+			_, _, err = SignEntry(Entry{}, nil)
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			assert.ErrorIs(t, tc.log.Verify(Entry{}), ErrInvalidStore)
+			assert.ErrorIs(t, VerifyEntry(Entry{}, nil), ErrInvalidStore)
 			assert.ErrorIs(t, tc.log.VerifyChain(ctx, "t"), ErrInvalidStore)
 		})
 	}

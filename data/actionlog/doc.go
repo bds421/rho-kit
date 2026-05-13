@@ -44,7 +44,9 @@
 //	          recursively sorted; no insignificant whitespace)
 //
 // The signature is HMAC-SHA256(secret, canonical) hex-encoded. Use
-// [Logger.Sign] / [Logger.Verify] if you need to verify off-band — the
+// [SignEntry] / [VerifyEntry] if you need to verify off-band — both are
+// stateless free functions that take only a [SecretSource], so chain-
+// inspection tools do not need to construct a Logger / Store pair. The
 // canonical form is deterministic across processes that share the secret.
 //
 // # Secret rotation

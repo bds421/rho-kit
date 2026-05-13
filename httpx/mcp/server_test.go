@@ -655,14 +655,6 @@ func (l *asyncBlockingLogger) List(ctx context.Context, q actionlog.Query) ([]ac
 	return l.inner.List(ctx, q)
 }
 
-func (l *asyncBlockingLogger) Sign(e actionlog.Entry) (string, string, error) {
-	return l.inner.Sign(e)
-}
-
-func (l *asyncBlockingLogger) Verify(e actionlog.Entry) error {
-	return l.inner.Verify(e)
-}
-
 func (l *asyncBlockingLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	return l.inner.VerifyChain(ctx, tenantID)
 }
@@ -687,14 +679,6 @@ func (l *contextRecordingLogger) Get(ctx context.Context, id string) (actionlog.
 
 func (l *contextRecordingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
-}
-
-func (l *contextRecordingLogger) Sign(e actionlog.Entry) (string, string, error) {
-	return l.inner.Sign(e)
-}
-
-func (l *contextRecordingLogger) Verify(e actionlog.Entry) error {
-	return l.inner.Verify(e)
 }
 
 func (l *contextRecordingLogger) VerifyChain(ctx context.Context, tenantID string) error {
@@ -1085,12 +1069,6 @@ func (l *failingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlo
 	return l.inner.List(ctx, q)
 }
 
-func (l *failingLogger) Sign(e actionlog.Entry) (string, string, error) {
-	return l.inner.Sign(e)
-}
-
-func (l *failingLogger) Verify(e actionlog.Entry) error { return l.inner.Verify(e) }
-
 func (l *failingLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	return l.inner.VerifyChain(ctx, tenantID)
 }
@@ -1182,14 +1160,6 @@ func (l *blockingForeverLogger) Get(ctx context.Context, id string) (actionlog.E
 
 func (l *blockingForeverLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
-}
-
-func (l *blockingForeverLogger) Sign(e actionlog.Entry) (string, string, error) {
-	return l.inner.Sign(e)
-}
-
-func (l *blockingForeverLogger) Verify(e actionlog.Entry) error {
-	return l.inner.Verify(e)
 }
 
 func (l *blockingForeverLogger) VerifyChain(ctx context.Context, tenantID string) error {
