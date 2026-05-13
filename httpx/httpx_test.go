@@ -313,9 +313,8 @@ func TestDecodeJSON_InvalidJSON(t *testing.T) {
 }
 
 func TestDecodeJSON_TooLarge(t *testing.T) {
-	// Create valid JSON body larger than MaxBodySize (1MB):
-	// {"data":"AAAA...AAA"} where the value is large enough to exceed the limit.
-	largeValue := strings.Repeat("A", MaxBodySize+100)
+	// Create valid JSON body larger than the default 1MB cap.
+	largeValue := strings.Repeat("A", maxBodySize+100)
 	body := strings.NewReader(`{"data":"` + largeValue + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/", body)
 	req.Header.Set("Content-Type", "application/json")

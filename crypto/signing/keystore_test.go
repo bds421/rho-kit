@@ -190,14 +190,8 @@ func TestStaticKeyStore_ZeroValueMethodsFailClosed(t *testing.T) {
 	if k, ok := store.Key("k1"); ok || k != nil {
 		t.Fatalf("zero-value Key = (%v, %v), want nil false", k, ok)
 	}
-	if k, ok := store.KeyUnsafe("k1"); ok || k != nil {
-		t.Fatalf("zero-value KeyUnsafe = (%v, %v), want nil false", k, ok)
-	}
 	if id, k := store.CurrentKeyID(); id != "" || k != nil {
 		t.Fatalf("zero-value CurrentKeyID = (%q, %v), want empty nil", id, k)
-	}
-	if id, k := store.CurrentKeyUnsafe(); id != "" || k != nil {
-		t.Fatalf("zero-value CurrentKeyUnsafe = (%q, %v), want empty nil", id, k)
 	}
 }
 
@@ -206,14 +200,8 @@ func TestStaticKeyStore_NilReceiverMethodsFailClosed(t *testing.T) {
 	if k, ok := store.Key("k1"); ok || k != nil {
 		t.Fatalf("nil Key = (%v, %v), want nil false", k, ok)
 	}
-	if k, ok := store.KeyUnsafe("k1"); ok || k != nil {
-		t.Fatalf("nil KeyUnsafe = (%v, %v), want nil false", k, ok)
-	}
 	if id, k := store.CurrentKeyID(); id != "" || k != nil {
 		t.Fatalf("nil CurrentKeyID = (%q, %v), want empty nil", id, k)
-	}
-	if id, k := store.CurrentKeyUnsafe(); id != "" || k != nil {
-		t.Fatalf("nil CurrentKeyUnsafe = (%q, %v), want empty nil", id, k)
 	}
 }
 
@@ -249,14 +237,8 @@ func TestStaticKeyStore_Close_ZeroesKeysAndFailsClosed(t *testing.T) {
 	if k, ok := store.Key("k1"); ok || k != nil {
 		t.Fatalf("Key after Close = (%v, %v), want nil false", k, ok)
 	}
-	if k, ok := store.KeyUnsafe("k1"); ok || k != nil {
-		t.Fatalf("KeyUnsafe after Close = (%v, %v), want nil false", k, ok)
-	}
 	if id, k := store.CurrentKeyID(); id != "" || k != nil {
 		t.Fatalf("CurrentKeyID after Close = (%q, %v), want empty nil", id, k)
-	}
-	if id, k := store.CurrentKeyUnsafe(); id != "" || k != nil {
-		t.Fatalf("CurrentKeyUnsafe after Close = (%q, %v), want empty nil", id, k)
 	}
 	// Idempotent.
 	if err := store.Close(); err != nil {

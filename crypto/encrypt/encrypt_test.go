@@ -356,7 +356,7 @@ func TestFieldEncryptor_CiphertextIsPostgresTextSafe(t *testing.T) {
 }
 
 func TestEncryptOptional_NilEncryptor(t *testing.T) {
-	got, err := EncryptOptional(nil, "plaintext")
+	got, err := encryptOptional(nil, "plaintext")
 	if !errors.Is(err, ErrInvalidEncryptor) {
 		t.Fatalf("expected ErrInvalidEncryptor, got %v", err)
 	}
@@ -365,14 +365,14 @@ func TestEncryptOptional_NilEncryptor(t *testing.T) {
 	}
 }
 
-func TestEncryptOptionalWithContext_BindsAAD(t *testing.T) {
+func TestEncryptOptional_BindsAAD(t *testing.T) {
 	enc, err := NewFieldEncryptor(testKey(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	aad := []byte("tenant:acme:users:42:ssn")
-	got, err := EncryptOptionalWithContext(enc, "secret-value", aad)
+	got, err := encryptOptionalWithContext(enc, "secret-value", aad)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestEncryptOptional_EmptyValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := EncryptOptional(enc, "")
+	got, err := encryptOptional(enc, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestEncryptOptional_WithEncryptor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := EncryptOptional(enc, "secret-value")
+	got, err := encryptOptional(enc, "secret-value")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -650,7 +650,7 @@ func TestAppend_BuildsHMACChain(t *testing.T) {
 
 	// First event: PrevHMAC must be nil/empty (no predecessor).
 	assert.Empty(t, events[0].PrevHMAC, "first event's PrevHMAC must be empty")
-	assert.Len(t, events[0].HMAC, HMACSize, "HMAC must be HMAC-SHA256 sized")
+	assert.Len(t, events[0].HMAC, hmacSize, "HMAC must be HMAC-SHA256 sized")
 
 	// Each subsequent event must chain to its predecessor.
 	for i := 1; i < len(events); i++ {

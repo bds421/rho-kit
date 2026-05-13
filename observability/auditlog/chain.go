@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// HMACSize is the byte length of a chain HMAC. HMAC-SHA256 → 32 bytes.
-const HMACSize = sha256.Size
+// hmacSize is the byte length of a chain HMAC. HMAC-SHA256 → 32 bytes.
+const hmacSize = sha256.Size
 
 // MinChainKeyLen is the minimum acceptable length of a chain HMAC key.
 // 32 bytes matches HMAC-SHA256's block-cipher output and the kit's other
@@ -47,7 +47,7 @@ var ErrChainBroken = errors.New("auditlog: chain integrity check failed")
 // path if the format ever has to change.
 func canonicalEvent(prevHMAC []byte, event Event) []byte {
 	// Estimate the buffer size to avoid reallocs on the hot path.
-	approx := HMACSize +
+	approx := hmacSize +
 		len(event.ID) + len(event.Actor) + len(event.Action) +
 		len(event.Resource) + len(event.Status) + len(event.IPAddress) +
 		len(event.TraceID) + len(event.Metadata) + len(event.PrevHMAC) +

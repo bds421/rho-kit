@@ -17,13 +17,6 @@ const minKeyLen = 32
 // secret-store lookup keys.
 const maxKeyIDLen = 256
 
-// UnsafeKeyStore provides zero-copy key access for performance-critical paths.
-// Implementations must guarantee the returned slice is never mutated.
-type UnsafeKeyStore interface {
-	KeyUnsafe(keyID string) ([]byte, bool)
-	CurrentKeyUnsafe() (string, []byte)
-}
-
 // KeyStore manages signing keys. Implementations must be safe for concurrent use.
 //
 // WARNING: The canonical string does not include the Host header. If keys are
@@ -36,9 +29,6 @@ type KeyStore interface {
 	// CurrentKeyID returns the active signing key ID and secret.
 	CurrentKeyID() (string, []byte)
 }
-
-// NilKeyStoreMsg is the panic message used when a nil KeyStore is passed.
-const NilKeyStoreMsg = "signing: KeyStore must not be nil"
 
 // StaticKeyStore holds a fixed set of keys. Multiple keys support rotation:
 // sign with current, verify against any.
@@ -131,28 +121,6 @@ func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
 	return k.Reveal(), true
 }
 
-// KeyUnsafe is retained for API compatibility with v1 callers but now
-// returns a defensive copy — the wrapped [secret.String] does not expose
-// a non-copying view. The historic "MUST NOT be mutated or retained"
-// contract still applies.
-func (s *StaticKeyStore) KeyUnsafe(keyID string) ([]byte, bool) {
-	return s.Key(keyID)
-}
-
-// CurrentKeyUnsafe returns the active signing key ID and a defensive copy
-// of the key bytes. See [StaticKeyStore.KeyUnsafe] for the historical
-// "Unsafe" contract.
-func (s *StaticKeyStore) CurrentKeyUnsafe() (string, []byte) {
-	if s == nil || s.keys == nil || s.closed.Load() {
-		return "", nil
-	}
-	k, ok := s.keys[s.currentID]
-	if !ok || k == nil || k.IsEmpty() {
-		return s.currentID, nil
-	}
-	return s.currentID, k.Reveal()
-}
-
 // CurrentKeyID returns the active signing key ID and secret.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
@@ -167,9 +135,8 @@ func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
 }
 
 // Close zeroes every wrapped key in the store. Subsequent Key /
-// CurrentKeyID / KeyUnsafe / CurrentKeyUnsafe calls return empty
-// values. Idempotent — calling Close on an already-closed store is
-// a no-op.
+// CurrentKeyID calls return empty values. Idempotent — calling Close
+// on an already-closed store is a no-op.
 //
 // Close is intended for graceful shutdown paths where the kit owns
 // the key material's lifecycle (typically alongside server.Close()).

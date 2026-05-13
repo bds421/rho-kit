@@ -313,8 +313,11 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 	return srv
 }
 
-// MaxBodySize is the maximum allowed JSON request body (1 MB).
-const MaxBodySize = 1 << 20
+// maxBodySize is the default JSON request body cap (1 MB) used by
+// [DecodeJSON]. Callers that need a different cap should install
+// [github.com/bds421/rho-kit/httpx/middleware/maxbody.MaxBodySize] in
+// their middleware stack rather than relying on a global constant.
+const maxBodySize = 1 << 20
 
 // APIError is the standard error response envelope.
 type APIError struct {
@@ -415,7 +418,7 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBodySize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

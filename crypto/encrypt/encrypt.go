@@ -245,19 +245,19 @@ func (e *FieldEncryptor) EncryptIfPlainWithContext(value string, aad []byte) (st
 	return e.EncryptWithContext(value, aad)
 }
 
-// EncryptOptional encrypts the value with enc. A nil encryptor is a
+// encryptOptional encrypts the value with enc. A nil encryptor is a
 // misconfiguration and returns ErrInvalidEncryptor; callers that
 // intentionally store plaintext should make that branch explicit at
 // the call site.
-func EncryptOptional(enc *FieldEncryptor, value string) (string, error) {
-	return EncryptOptionalWithContext(enc, value, nil)
+func encryptOptional(enc *FieldEncryptor, value string) (string, error) {
+	return encryptOptionalWithContext(enc, value, nil)
 }
 
-// EncryptOptionalWithContext encrypts the value with enc and binds it
+// encryptOptionalWithContext encrypts the value with enc and binds it
 // to aad. A nil encryptor is a misconfiguration and returns
 // ErrInvalidEncryptor; callers that intentionally store plaintext
 // should make that branch explicit at the call site.
-func EncryptOptionalWithContext(enc *FieldEncryptor, value string, aad []byte) (string, error) {
+func encryptOptionalWithContext(enc *FieldEncryptor, value string, aad []byte) (string, error) {
 	if enc == nil {
 		return "", ErrInvalidEncryptor
 	}

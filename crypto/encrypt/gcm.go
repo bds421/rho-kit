@@ -42,22 +42,6 @@ func NewGCM(key []byte) (AEAD, error) {
 	return a, nil
 }
 
-// NewGCMAndZeroKey creates an AES-256-GCM AEAD and zeros the
-// caller's key slice after Tink has copied it internally. Use this
-// when the caller does not need to retain the key material after
-// constructing the cipher.
-func NewGCMAndZeroKey(key []byte) (AEAD, error) {
-	a, err := NewGCM(key)
-	zeroBytes(key)
-	return a, err
-}
-
-// zeroBytes overwrites a byte slice with zeros.
-// Uses the clear builtin (Go 1.21+) which is not eliminated by compiler optimizations.
-func zeroBytes(b []byte) {
-	clear(b)
-}
-
 // EncryptBytes encrypts plaintext using AES-256-GCM and returns
 // "iv ‖ ciphertext ‖ tag". A fresh random IV is generated per call.
 // Equivalent to [EncryptBytesAAD] with nil AAD.
