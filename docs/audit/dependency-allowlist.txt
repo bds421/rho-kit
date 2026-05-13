@@ -26,6 +26,7 @@ github.com/riverqueue/river/rivertype
 # Messaging, scheduling, and resilience.
 github.com/cenkalti/backoff/v5
 github.com/nats-io/nats.go
+github.com/nexus-rpc/sdk-go
 github.com/open-feature/go-sdk
 github.com/openfga/go-sdk
 github.com/rabbitmq/amqp091-go

@@ -12,6 +12,7 @@ module github.com/bds421/rho-kit/runtime/temporal/v2
 go 1.26.2
 
 require (
+	github.com/nexus-rpc/sdk-go v0.5.1
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/sdk v1.38.0
 )
@@ -24,7 +25,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
-	github.com/nexus-rpc/sdk-go v0.5.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
