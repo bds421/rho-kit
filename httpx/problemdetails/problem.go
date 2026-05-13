@@ -131,9 +131,16 @@ func WithBaseURL(s string) Option {
 // WithInstance sets the `instance` URI on the generated Problem.
 // Prefer path-only request-derived values such as r.URL.EscapedPath(); query
 // strings often carry secrets and should not be reflected into error bodies.
+//
+// Invalid instances are dropped silently rather than panicking — every
+// HTTP error path routes r.URL.EscapedPath() through this option, and
+// some legitimate-but-unusual URL shapes (OPTIONS *, CONNECT, mounts
+// stripped to "", router rewrites) would otherwise crash the host
+// service mid-response. The Problem just omits the instance field on
+// invalid input; FromError continues to produce a valid Problem.
 func WithInstance(instance string) Option {
 	if err := validateInstance(instance); err != nil {
-		panic("problemdetails: instance path is invalid")
+		return func(*config) {}
 	}
 	return func(c *config) { c.instance = instance }
 }

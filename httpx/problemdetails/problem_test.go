@@ -249,7 +249,11 @@ func TestFromError_WithInstance(t *testing.T) {
 	assert.Equal(t, "/users/1", p.Instance)
 }
 
-func TestFromError_WithInstancePanicsOnUnsafeInstance(t *testing.T) {
+// TestFromError_WithInstanceDropsUnsafeInstance pins the no-panic
+// behaviour for every unsafe instance shape — the Problem still
+// produces, the instance field is dropped, and none of the original
+// (potentially-secret) bytes leak into the body.
+func TestFromError_WithInstanceDropsUnsafeInstance(t *testing.T) {
 	tests := []string{
 		"users/1",
 		"//evil.example/path",
@@ -264,17 +268,21 @@ func TestFromError_WithInstancePanicsOnUnsafeInstance(t *testing.T) {
 	}
 	for _, instance := range tests {
 		t.Run(instance, func(t *testing.T) {
-			assert.Panics(t, func() {
-				_ = FromError(apperror.NewNotFound("user", 1), WithInstance(instance))
-			})
+			p := FromError(apperror.NewNotFound("user", 1), WithInstance(instance))
+			assert.Empty(t, p.Instance, "unsafe instance must be dropped")
 		})
 	}
 }
 
-func TestFromError_WithInstanceEscapeErrorDoesNotEchoValue(t *testing.T) {
-	require.PanicsWithValue(t, "problemdetails: instance path is invalid", func() {
-		_ = FromError(apperror.NewNotFound("user", 1), WithInstance("/users/%zz/secret-token"))
-	})
+func TestFromError_WithInstanceDropsInvalidValue(t *testing.T) {
+	// Invalid instances are dropped silently rather than panicking —
+	// HTTP error paths feed r.URL.EscapedPath() through here on every
+	// response. The Problem still produces successfully; the instance
+	// field is just absent. The value also must not leak into the
+	// Problem body (e.g. through a fallback string-rendering).
+	p := FromError(apperror.NewNotFound("user", 1), WithInstance("/users/%zz/secret-token"))
+	assert.Empty(t, p.Instance, "invalid instance must be dropped, not echoed")
+	assert.NotContains(t, p.Detail, "%zz", "invalid instance bytes must not appear in the body")
 }
 
 func TestFromError_FieldValidation(t *testing.T) {
