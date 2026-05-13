@@ -310,6 +310,25 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery, h
 
 	d := fromAMQPDelivery(delivery, msg)
 
+	// Validate the post-extraction message contract before invoking the
+	// handler. Publishers call messaging.ValidateMessage before sending,
+	// but a foreign producer (or a misconfigured peer) can bypass the kit
+	// publisher path entirely. Without this guard, handlers receive
+	// metadata the messaging.Message contract says cannot exist —
+	// oversized IDs/types, too many headers, invalid header bytes, etc.
+	// Ack-discard rather than nack: a malformed message will never
+	// validate, so retrying via DLX would create an infinite loop.
+	if err := messaging.ValidateMessage(d.Message); err != nil {
+		c.logger.Error("inbound message failed validation, discarding",
+			redact.Error(err), redact.String("id", msg.ID), redact.String("type", msg.Type))
+		if ackErr := delivery.Ack(false); ackErr != nil {
+			c.logger.Error("ack failed after validation error", redact.Error(ackErr))
+		}
+		c.onDiscard(msg.ID, msg.Type, b.Queue)
+		c.metrics.observeConsumed(b.Queue, amqpConsumeOutcomeValidateError)
+		return
+	}
+
 	handlerStarted := time.Now()
 	handlerErr := c.invokeHandler(ctx, handler, d, msg, b.Queue)
 	if handlerErr != nil {

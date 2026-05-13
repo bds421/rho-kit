@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -600,6 +601,42 @@ func TestConsumer_InvalidReceiverReturnsError(t *testing.T) {
 	err = NewConsumer(&Connection{}, ConsumerConfig{Stream: "events", Durable: "durable"}, slog.Default()).
 		Consume(t.Context(), func(context.Context, messaging.Delivery) error { return nil })
 	assert.ErrorIs(t, err, messaging.ErrInvalidConsumer)
+}
+
+// TestDispatch_ForeignProducerInvalidMessage_TermsAndSkipsHandler pins
+// H-002: a JetStream publisher bypassing kit validation can land a
+// message with metadata that fails messaging.ValidateMessage (oversized
+// ID/type, invalid headers, etc.). The consumer must Term-discard
+// before reaching the handler — otherwise handlers see metadata the
+// contract says cannot exist, and a permanently-malformed message
+// would burn the entire MaxDeliver budget through repeated redelivery.
+func TestDispatch_ForeignProducerInvalidMessage_TermsAndSkipsHandler(t *testing.T) {
+	oversizedType := strings.Repeat("a", messaging.MaxMessageTypeBytes+1)
+	rawMsg := messaging.Message{
+		ID:      "id-foreign",
+		Type:    oversizedType,
+		Payload: json.RawMessage(`{}`),
+	}
+	data, err := json.Marshal(rawMsg)
+	require.NoError(t, err)
+
+	jm := &fakeJetstreamMsg{
+		subject: "events.foo",
+		data:    data,
+		headers: nats.Header{},
+	}
+	c := &Consumer{logger: slog.Default()}
+
+	var handlerCalled bool
+	c.dispatch(t.Context(), jm, func(_ context.Context, _ messaging.Delivery) error {
+		handlerCalled = true
+		return nil
+	})
+
+	assert.True(t, jm.termed, "validation failure must Term — Nak would loop until MaxDeliver")
+	assert.False(t, jm.acked)
+	assert.False(t, jm.nacked)
+	assert.False(t, handlerCalled, "handler must NOT see a message that fails ValidateMessage")
 }
 
 func TestDispatch_PopulatesMessageHeadersAndDetachesMessage(t *testing.T) {

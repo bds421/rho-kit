@@ -19,8 +19,9 @@ const (
 	natsConsumeOutcomeRetry        = "retry"
 	natsConsumeOutcomeNakFailed    = "nak_failed"
 	natsConsumeOutcomePermanent    = "permanent"
-	natsConsumeOutcomeDecodeError  = "decode_error"
-	natsConsumeOutcomeHandlerPanic = "handler_panic"
+	natsConsumeOutcomeDecodeError   = "decode_error"
+	natsConsumeOutcomeValidateError = "validate_error"
+	natsConsumeOutcomeHandlerPanic  = "handler_panic"
 	natsConsumeOutcomeTermFailed   = "term_failed"
 
 	natsHandlerOutcomeSuccess = "success"

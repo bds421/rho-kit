@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -155,6 +156,54 @@ func TestConsumer_HandleDelivery_HandlerError_CallsHandleFailure(t *testing.T) {
 	// to defensively prevent unexpected routing if a DLX is manually added.
 	assert.True(t, ack.acked)
 	assert.False(t, ack.nacked)
+}
+
+// TestConsumer_HandleDelivery_ForeignProducerInvalidMessage_AcksAndDiscards
+// pins H-002: a publisher bypassing kit validation can send a message
+// with metadata that fails messaging.ValidateMessage (oversized ID,
+// invalid header chars, etc.). The consumer must ack-discard before
+// reaching the handler — otherwise handlers see metadata the contract
+// says cannot exist.
+func TestConsumer_HandleDelivery_ForeignProducerInvalidMessage_AcksAndDiscards(t *testing.T) {
+	ack := &fakeAcknowledger{}
+	var discardCalled bool
+	var handlerCalled bool
+	c := newTestConsumer(nil, ConsumerHooks{
+		OnDiscard: func(_, _, queue string) {
+			discardCalled = true
+			assert.Equal(t, "test-queue", queue)
+		},
+	})
+	binding := messaging.Binding{BindingSpec: messaging.BindingSpec{Queue: "test-queue"}}
+
+	// Craft a wire-level message that JSON-decodes cleanly but has an
+	// oversized message Type (foreign producer bypassing kit
+	// publisher validation). The kit publisher would have rejected
+	// this at publish time.
+	oversizedType := strings.Repeat("a", messaging.MaxMessageTypeBytes+1)
+	rawMsg := messaging.Message{
+		ID:      "id-123",
+		Type:    oversizedType,
+		Payload: json.RawMessage(`{}`),
+	}
+	body, _ := json.Marshal(rawMsg)
+	delivery := amqp.Delivery{
+		Acknowledger: ack,
+		Body:         body,
+		Exchange:     "test-exchange",
+		RoutingKey:   "ignored",
+	}
+	handler := func(_ context.Context, _ messaging.Delivery) error {
+		handlerCalled = true
+		return nil
+	}
+
+	c.handleDelivery(context.Background(), delivery, handler, binding)
+
+	assert.True(t, ack.acked, "validation failure must ack-discard")
+	assert.False(t, ack.nacked, "validation failure must not nack — never validates, would loop")
+	assert.True(t, discardCalled, "OnDiscard hook must fire for invalid inbound message")
+	assert.False(t, handlerCalled, "handler must NOT see a message that fails ValidateMessage")
 }
 
 func TestConsumer_HandleDelivery_UnmarshalError_DiscardHookCalled(t *testing.T) {

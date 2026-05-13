@@ -18,6 +18,7 @@ const (
 	amqpConsumeOutcomeAcked            = "acked"
 	amqpConsumeOutcomeAckFailed        = "ack_failed"
 	amqpConsumeOutcomeDecodeError      = "decode_error"
+	amqpConsumeOutcomeValidateError    = "validate_error"
 	amqpConsumeOutcomeRetry            = "retry"
 	amqpConsumeOutcomeDeadLettered     = "dead_lettered"
 	amqpConsumeOutcomeDiscarded        = "discarded"

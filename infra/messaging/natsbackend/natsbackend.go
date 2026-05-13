@@ -864,6 +864,28 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	msg = msg.Clone()
 	msg.Headers = msgHeaders
 
+	// Validate the post-extraction message contract before invoking the
+	// handler. Publishers call messaging.ValidateMessage before sending,
+	// but a foreign producer (or a misconfigured peer) can bypass the kit
+	// publisher path entirely. Without this guard, handlers receive
+	// metadata the messaging.Message contract says cannot exist —
+	// oversized IDs/types, too many headers, invalid header bytes, etc.
+	// Term rather than Nak: a malformed message will never validate, so
+	// JetStream redelivery would burn the entire MaxDeliver budget.
+	if err := messaging.ValidateMessage(msg); err != nil {
+		c.logger.Error("natsbackend: inbound message failed validation — terminating",
+			redact.String("subject", subject),
+			redact.String("msg_id", msg.ID),
+			redact.Error(err),
+		)
+		if err := jm.Term(); err != nil {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+		} else {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeValidateError)
+		}
+		return
+	}
+
 	// Surface JetStream-level redelivery via metadata.
 	redelivered := false
 	if md, err := jm.Metadata(); err == nil {
