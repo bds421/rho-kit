@@ -5,11 +5,11 @@ The project follows **coordinated disclosure** for any valid report.
 
 ## Reporting a Vulnerability
 
-- **Preferred:** Open a private vulnerability report via GitHub Private Security
-  Advisories at https://github.com/bds421/rho-kit/security/advisories/new.
-- **Email (low-sensitivity intake only):** `security@bds421.com`. Do not send
-  exploit details, credentials, or customer data over email until a private
-  GitHub Security Advisory has been opened.
+- **Preferred and only channel:** Open a private vulnerability report via
+  GitHub Private Security Advisories at
+  https://github.com/bds421/rho-kit/security/advisories/new.
+  GHSA gives us authenticated reporting, end-to-end encryption, and an audit
+  trail; we do not maintain a separate disclosure mailbox.
 - **Bug bounty:** none at present.
 
 We acknowledge receipt within 24 hours and provide a triage decision within the
@@ -21,7 +21,7 @@ Quoted from [`docs/audit/SUPPLY_CHAIN.md`](docs/audit/SUPPLY_CHAIN.md) §7.1:
 
 | Severity (CVSS / GHSA) | Time to patch | Time to release | Consumer notification |
 |---|---|---|---|
-| CRITICAL (9.0+) | 48 hours from disclosure to merge | 24 hours from merge to tagged release | Public advisory + email to security@ subscribers within 24h of release |
+| CRITICAL (9.0+) | 48 hours from disclosure to merge | 24 hours from merge to tagged release | Public advisory + GHSA watchers notified within 24h of release |
 | HIGH (7.0–8.9) | 7 days from disclosure to merge | 7 days from merge to tagged release | Public advisory at release time |
 | MEDIUM (4.0–6.9) | next planned release window (≤ 30 days) | ≤ 30 days | release notes |
 | LOW (< 4.0) | rolled into the next Dependabot cycle | rolled into the next Dependabot cycle | release notes |

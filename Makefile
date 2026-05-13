@@ -144,3 +144,7 @@ check-dependency-allowlist:
 ## check-dependency-boundaries: Keep heavy optional SDKs in adapter/test modules.
 check-dependency-boundaries:
 	@bash tools/check-heavy-dependency-boundaries.sh
+
+## check-release-team: Verify the @bds421/security team and branch protection exist before tagging.
+check-release-team:
+	@bash tools/check-release-team.sh

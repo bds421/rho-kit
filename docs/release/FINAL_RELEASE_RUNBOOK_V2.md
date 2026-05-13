@@ -34,6 +34,9 @@ run during preparation.
   other than `v2.0.0`.
 - Any local internal `replace` directive remains on the release branch after
   the replace-dropping preparation step.
+- `make check-release-team` fails (the `@bds421/security` team is missing,
+  has zero members, or branch protection on `main` does not require
+  CODEOWNERS reviews — CODEOWNERS is decorative until both are true).
 - `MIGRATION_V2.md` has not been revalidated against the current API.
 - `docs/RELEASE_NOTES_v2.md` is not the exact body to publish.
 - Docker is unavailable; integration tests must run for this release.
@@ -49,6 +52,7 @@ git rev-parse --abbrev-ref HEAD
 git remote get-url origin
 git tag --list '*v2.0.0'
 git ls-remote --tags origin '*v2.0.0'
+make check-release-team
 ```
 
 Expected output:
@@ -58,6 +62,9 @@ Expected output:
 - Origin: `git@github.com:bds421/rho-kit.git`.
 - Local tag list: no output.
 - Remote tag list: no output.
+- `make check-release-team`: `OK: team @bds421/security exists ... CODEOWNERS
+  enforced on bds421/rho-kit@main.` This requires a `gh`-authenticated shell;
+  see `tools/check-release-team.sh` for environment overrides.
 
 ## 2. Verify Artifact Coverage
 

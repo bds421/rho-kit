@@ -521,7 +521,7 @@ If a key listed in §6.1 is suspected compromised:
 
 | Severity (CVSS / GHSA) | Time to patch | Time to release | Consumer notification |
 |---|---|---|---|
-| CRITICAL (9.0+) | 48 hours from disclosure to merge | 24 hours from merge to tagged release | Public advisory + email to security@ subscribers within 24h of release |
+| CRITICAL (9.0+) | 48 hours from disclosure to merge | 24 hours from merge to tagged release | Public advisory + GHSA watchers notified within 24h of release |
 | HIGH (7.0–8.9) | 7 days from disclosure to merge | 7 days from merge to tagged release | Public advisory at release time |
 | MEDIUM (4.0–6.9) | next planned release window (≤ 30 days) | ≤ 30 days | release notes |
 | LOW (< 4.0) | rolled into the next Dependabot cycle | rolled into the next Dependabot cycle | release notes |
@@ -529,8 +529,7 @@ If a key listed in §6.1 is suspected compromised:
 The clock starts at the *earliest* of:
 
 - A CVE / GHSA being filed against a dep that the kit imports.
-- A GitHub Security Advisory report or private report to
-  security@bds421.example (see §9).
+- A GitHub Private Security Advisory report (see §9).
 - A `govulncheck` finding hitting the kit's `main` branch.
 
 ### 7.2 Process
@@ -545,8 +544,8 @@ The clock starts at the *earliest* of:
 3. **Release.** Bump and tag the affected modules through the release
    runbook. The release notes include the GHSA ID and a short
    attack-vector summary.
-4. **Notify.** GitHub Security Advisory + email to security@
-   subscribers.
+4. **Notify.** GitHub Security Advisory publication; GHSA watchers
+   and downstream consumers are notified via the advisory itself.
 5. **Post-mortem** for any CRITICAL: filed under
    [`THREAT_MODEL.md`](THREAT_MODEL.md) §4 (the affected area) and
    referenced by commit or advisory ID.
@@ -641,14 +640,12 @@ of the corresponding component.
 
 ### 9.1 Reporting channels
 
-- **Preferred:** GitHub Security Advisory (private vulnerability
-  report) on `bds421/rho-kit`. Web flow:
+- **Preferred and only channel:** GitHub Private Security Advisory
+  on `bds421/rho-kit`. Web flow:
   https://github.com/bds421/rho-kit/security/advisories/new
-- **Email:** security@bds421.example (responses within 1 business
-  day). Use email for coordination and low-sensitivity intake; do not
-  send exploit details, credentials, or customer data over email until
-  the triage team opens a private GitHub Security Advisory or another
-  encrypted channel.
+  This is an authenticated, end-to-end-encrypted channel with a
+  durable audit trail. The project does not operate a separate
+  disclosure mailbox for v2.0.0.
 - **Bug bounty:** none at present; this may change post-v2.0.0.
 
 We commit to acknowledging receipt within 24 hours and providing a
