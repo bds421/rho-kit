@@ -40,6 +40,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
@@ -196,7 +197,7 @@ func WithKeyTTL(d time.Duration) Option {
 // WithClock overrides the local clock used to compute the current
 // period (tests only). Panics on nil to fail loudly at construction
 // rather than dereferencing a nil func on the first Consume/Peek/Refund.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("budget/redis: WithClock requires a non-nil time source")
 	}

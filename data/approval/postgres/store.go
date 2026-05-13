@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
@@ -22,7 +23,7 @@ const defaultLimit = 100
 // request serialise on the row lock.
 type Store struct {
 	pool  *pgxpool.Pool
-	clock func() time.Time
+	clock clock.Func
 }
 
 // Option configures a Store.
@@ -31,7 +32,7 @@ type Option func(*Store)
 // WithClock overrides the wall-clock used for the auto-expire branch
 // inside Decide. Tests use this to make the late-approval branch
 // deterministic. Panics on a nil fn.
-func WithClock(fn func() time.Time) Option {
+func WithClock(fn clock.Func) Option {
 	if fn == nil {
 		panic("approval/postgres: WithClock requires a non-nil function")
 	}

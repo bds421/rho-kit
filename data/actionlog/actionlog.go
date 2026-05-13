@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/google/uuid"
 )
@@ -424,7 +425,7 @@ func resolveSignatureSecret(source SecretSource, keyID string) ([]byte, error) {
 type signedLogger struct {
 	store   Store
 	secrets SecretSource
-	clock   func() time.Time
+	clock   clock.Func
 	newID   func() (string, error)
 }
 
@@ -435,7 +436,7 @@ type LoggerOption func(*signedLogger)
 // by tests to make signed payloads deterministic. Panics on nil so a
 // misconfigured test option does not turn into a production panic on
 // the first Append.
-func WithClock(fn func() time.Time) LoggerOption {
+func WithClock(fn clock.Func) LoggerOption {
 	if fn == nil {
 		panic("actionlog: WithClock: fn must not be nil")
 	}

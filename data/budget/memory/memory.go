@@ -25,6 +25,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
@@ -37,7 +38,7 @@ const defaultSweepInterval = 5 * time.Minute
 type Budget struct {
 	cap    int64
 	period time.Duration
-	now    func() time.Time
+	now    clock.Func
 
 	buckets sync.Map // map[string]*bucket
 
@@ -59,7 +60,7 @@ type Option func(*Budget)
 // WithClock overrides the time source (tests only). Panics on nil to
 // fail loudly at construction rather than dereferencing a nil func on
 // the first Consume/Peek/Refund.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("budget/memory: WithClock requires a non-nil time source")
 	}

@@ -25,6 +25,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
@@ -96,7 +97,7 @@ type ActorFromContext func(ctx context.Context) string
 type Store struct {
 	cache    Cache
 	prefix   string
-	clock    func() time.Time
+	clock    clock.Func
 	logger   *slog.Logger
 	audit    AuditSink
 	actorFn  ActorFromContext
@@ -116,7 +117,7 @@ func WithKeyPrefix(prefix string) Option {
 }
 
 // WithClock overrides the time source. Useful for deterministic tests.
-func WithClock(fn func() time.Time) Option {
+func WithClock(fn clock.Func) Option {
 	if fn == nil {
 		panic("jwt revocation: WithClock requires a non-nil time source")
 	}

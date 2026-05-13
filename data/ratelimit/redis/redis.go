@@ -37,6 +37,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
@@ -121,7 +122,7 @@ func WithKeyTTL(d time.Duration) Option {
 
 // WithClock overrides the local clock used to compute `now`. Tests
 // only.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("ratelimit/redis: clock must not be nil")
 	}

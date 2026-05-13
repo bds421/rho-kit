@@ -27,6 +27,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
 
@@ -38,7 +39,7 @@ const defaultSweepInterval = 5 * time.Minute
 type Limiter struct {
 	rate  time.Duration
 	burst int
-	now   func() time.Time
+	now   clock.Func
 
 	mu   sync.Mutex
 	tats map[string]time.Time
@@ -53,7 +54,7 @@ type Limiter struct {
 type Option func(*Limiter)
 
 // WithClock overrides the time source for tests.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("gcra: clock must not be nil")
 	}

@@ -15,6 +15,7 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
@@ -45,7 +46,7 @@ type RateLimiter struct {
 	shards         [numShards]shard
 	limit          int
 	window         time.Duration
-	now            func() time.Time
+	now            clock.Func
 	trustedProxies []*net.IPNet
 	maxPerShard    int
 	health         HealthIndicator
@@ -66,7 +67,7 @@ type RateLimiterOption func(*RateLimiter)
 // WithClock sets a custom time source (useful for testing). Panics on
 // nil to fail fast at construction rather than dereferencing a nil
 // func on the first request through the limiter.
-func WithClock(fn func() time.Time) RateLimiterOption {
+func WithClock(fn clock.Func) RateLimiterOption {
 	if fn == nil {
 		panic("ratelimit: WithClock requires a non-nil time source")
 	}

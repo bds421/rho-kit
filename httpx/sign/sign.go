@@ -28,6 +28,7 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 )
@@ -57,7 +58,7 @@ type Option func(*config)
 type config struct {
 	includeHeaders []string
 	bodyMaxSize    int64
-	now            func() time.Time
+	now            clock.Func
 	nonceFn        func() (string, error)
 }
 
@@ -121,7 +122,7 @@ func WithBodyMaxSize(n int64) Option {
 //
 // Panics if now is nil — RoundTrip would otherwise dereference a nil func
 // on every outbound request.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("sign: WithClock requires a non-nil time source")
 	}

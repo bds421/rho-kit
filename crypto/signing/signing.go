@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/clock"
 )
 
 // ErrEmptySecret is returned when an empty or too-short secret is passed to Sign or Verify.
@@ -60,7 +62,7 @@ func NewSecret(secret []byte) Secret {
 
 // Signer holds configuration for computing and verifying HMAC-SHA256 signatures.
 type Signer struct {
-	clock      func() time.Time
+	clock      clock.Func
 	futureSkew time.Duration
 }
 
@@ -70,7 +72,7 @@ type SignerOption func(*Signer)
 // WithClock sets the time source for signing. Useful for deterministic
 // testing. Panics on nil to fail fast at construction rather than
 // dereferencing a nil func on the first Sign/Verify call.
-func WithClock(fn func() time.Time) SignerOption {
+func WithClock(fn clock.Func) SignerOption {
 	if fn == nil {
 		panic("signing: WithClock requires a non-nil time source")
 	}

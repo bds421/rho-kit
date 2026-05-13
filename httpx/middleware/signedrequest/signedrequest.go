@@ -39,6 +39,7 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/httpx/v2"
 )
 
@@ -160,7 +161,7 @@ type config struct {
 	maxClockSkew    time.Duration
 	requiredHeaders []string
 	bodyMaxSize     int64
-	now             func() time.Time
+	now             clock.Func
 	metrics         *Metrics
 }
 
@@ -214,7 +215,7 @@ func WithBodyMaxSize(n int64) Option {
 //
 // Panics if now is nil — a nil clock would compile but blow up on the
 // first signed request, well after construction.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("signedrequest: WithClock requires a non-nil clock function")
 	}

@@ -30,6 +30,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
@@ -72,7 +73,7 @@ const sessionPrefixLen = 8
 type Issuer struct {
 	secrets [][]byte
 	ttl     time.Duration
-	now     func() time.Time
+	now     clock.Func
 }
 
 // Option configures an [Issuer].
@@ -86,7 +87,7 @@ func WithTTL(d time.Duration) Option {
 // WithClock overrides the time source. Test-only — production callers
 // should not need this. Panics on nil to fail fast at construction
 // rather than dereferencing a nil func on the first Issue/Verify call.
-func WithClock(now func() time.Time) Option {
+func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("csrf: WithClock requires a non-nil time source")
 	}

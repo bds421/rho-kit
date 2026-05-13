@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
@@ -21,7 +22,7 @@ const defaultLimit = 100
 type Store struct {
 	mu       sync.Mutex
 	requests map[string]approval.Request
-	clock    func() time.Time
+	clock    clock.Func
 }
 
 // Option configures the Store.
@@ -30,7 +31,7 @@ type Option func(*Store)
 // WithClock overrides the wall-clock used to detect expiry inside
 // Decide. Tests use this to make the "approve an expired request"
 // branch hermetic. Panics on a nil fn.
-func WithClock(fn func() time.Time) Option {
+func WithClock(fn clock.Func) Option {
 	if fn == nil {
 		panic("approval/memory: WithClock requires a non-nil function")
 	}
