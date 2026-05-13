@@ -126,6 +126,9 @@ func (s *sessionLock) Release(ctx context.Context) error {
 // that the session itself is still alive. A failed ping returns
 // (false, err) so the [leaderelection.Elector] can step down.
 func (s *sessionLock) Extend(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("pgadvisory: extend ping: %w", err)
+	}
 	if _, err := s.conn.ExecContext(ctx, "SELECT 1"); err != nil {
 		return false, fmt.Errorf("pgadvisory: extend ping: %w", err)
 	}
