@@ -32,18 +32,30 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
+
+// ErrKEKClosed is returned by every mutating or wrap/unwrap call after
+// [KEK.Close]. Distinct from "no active key" so use-after-close is
+// detectable via errors.Is in callers and tests.
+var ErrKEKClosed = errors.New("kekstatic: KEK closed")
 
 // KEK is an in-memory KEK that holds one or more named keys. The
 // "current" key (selected at construction or via [KEK.Rotate]) is
 // returned by [KEK.KeyID] and used by [KEK.Wrap]; older keys remain
 // available for [KEK.Unwrap] until removed.
+//
+// Once [KEK.Close] has been called the KEK is terminally closed:
+// every subsequent AddKey, Rotate, RemoveKey, Wrap, and Unwrap returns
+// [ErrKEKClosed] so callers cannot resurrect the keyset by registering
+// fresh master bytes after a zeroize.
 type KEK struct {
 	mu      sync.RWMutex
 	keys    map[string][]byte
 	current string
+	closed  atomic.Bool
 }
 
 // NewKEK returns a KEK with the given keyID active and no other keys
@@ -64,9 +76,13 @@ func NewKEK(keyID string, masterKey []byte) (*KEK, error) {
 
 // AddKey registers an additional master key under keyID. The new key is
 // not made active — callers can [KEK.Rotate] to switch when ready.
+// Returns [ErrKEKClosed] if the KEK has been closed.
 func (k *KEK) AddKey(keyID string, masterKey []byte) error {
 	if k == nil {
 		return errors.New("kekstatic: KEK must not be nil")
+	}
+	if k.closed.Load() {
+		return ErrKEKClosed
 	}
 	if err := validateKeyID(keyID); err != nil {
 		return err
@@ -76,6 +92,9 @@ func (k *KEK) AddKey(keyID string, masterKey []byte) error {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.closed.Load() {
+		return ErrKEKClosed
+	}
 	if k.keys == nil {
 		k.keys = make(map[string][]byte)
 	}
@@ -89,13 +108,20 @@ func (k *KEK) AddKey(keyID string, masterKey []byte) error {
 // Rotate makes keyID the active key. The keyID must already be
 // registered via [New] or [KEK.AddKey]. Subsequent Wrap calls embed
 // the new keyID; existing blobs continue to decrypt via the older key
-// until they are rewrapped.
+// until they are rewrapped. Returns [ErrKEKClosed] if the KEK has been
+// closed.
 func (k *KEK) Rotate(keyID string) error {
 	if k == nil {
 		return errors.New("kekstatic: KEK must not be nil")
 	}
+	if k.closed.Load() {
+		return ErrKEKClosed
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.closed.Load() {
+		return ErrKEKClosed
+	}
 	if _, exists := k.keys[keyID]; !exists {
 		return fmt.Errorf("kekstatic: keyID not registered")
 	}
@@ -114,8 +140,14 @@ func (k *KEK) RemoveKey(keyID string) error {
 	if k == nil {
 		return errors.New("kekstatic: KEK must not be nil")
 	}
+	if k.closed.Load() {
+		return ErrKEKClosed
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.closed.Load() {
+		return ErrKEKClosed
+	}
 	if k.current == keyID {
 		return fmt.Errorf("kekstatic: cannot remove the active keyID; rotate to a different active key first")
 	}
@@ -128,15 +160,19 @@ func (k *KEK) RemoveKey(keyID string) error {
 }
 
 // Close zeroes every registered master key and clears the keyset.
-// Subsequent Wrap / Unwrap / Rotate calls report "no active key" or
-// "unknown keyID" — the KEK fails closed once closed. Idempotent;
-// calling Close on an already-closed KEK is a no-op.
+// Every subsequent AddKey, Rotate, RemoveKey, Wrap, and Unwrap call
+// returns [ErrKEKClosed] — the KEK is terminally closed and cannot be
+// resurrected by registering fresh key material. Idempotent; calling
+// Close on an already-closed KEK is a no-op.
 //
 // Mirrors paseto.V4PublicSigner.Close so that test wiring which
 // registers + zeros key material across the kit has a consistent
 // shutdown surface.
 func (k *KEK) Close() error {
 	if k == nil {
+		return nil
+	}
+	if !k.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	k.mu.Lock()
@@ -177,9 +213,16 @@ func (k *KEK) Wrap(_ context.Context, dek []byte) (string, []byte, error) {
 	if k == nil {
 		return "", nil, errors.New("kekstatic: KEK must not be nil")
 	}
+	if k.closed.Load() {
+		return "", nil, ErrKEKClosed
+	}
 	// Build the GCM under the lock so a concurrent RemoveKey or future
 	// zero-on-removal hardening cannot mutate the slice while we use it.
 	k.mu.RLock()
+	if k.closed.Load() {
+		k.mu.RUnlock()
+		return "", nil, ErrKEKClosed
+	}
 	keyID := k.current
 	master := k.keys[keyID]
 	if master == nil {
@@ -212,7 +255,14 @@ func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, e
 	if k == nil {
 		return nil, errors.New("kekstatic: KEK must not be nil")
 	}
+	if k.closed.Load() {
+		return nil, ErrKEKClosed
+	}
 	k.mu.RLock()
+	if k.closed.Load() {
+		k.mu.RUnlock()
+		return nil, ErrKEKClosed
+	}
 	master := k.keys[keyID]
 	k.mu.RUnlock()
 	if master == nil {

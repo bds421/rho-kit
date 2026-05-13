@@ -92,4 +92,11 @@ var (
 	// ErrBackendUnavailable is returned when the backend is temporarily unreachable.
 	// This is always a transient error.
 	ErrBackendUnavailable = errors.New("storage: backend unavailable")
+
+	// ErrBackendClosed is returned when a backend operation is invoked after
+	// Close. Unlike ErrBackendUnavailable, this is terminal — the backend will
+	// not recover, callers must construct a new instance. Backends should
+	// return this error rather than silently reconnecting, so use-after-close
+	// bugs are detectable in tests and logs.
+	ErrBackendClosed = errors.New("storage: backend closed")
 )

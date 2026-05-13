@@ -60,7 +60,9 @@ type Client interface {
 //
 // Safe for concurrent use — connections are pooled, the per-Backend
 // RWMutex guards the close path, and live cleanup goroutines are
-// joined on Close via the internal WaitGroup.
+// joined on Close via the internal WaitGroup. Once [Backend.Close] has
+// been called the backend is terminally closed; all further operations
+// return [storage.ErrBackendClosed].
 type Backend struct {
 	cfg        Config
 	instance   string
@@ -73,6 +75,10 @@ type Backend struct {
 	sshConn   io.Closer
 	connected bool
 	lazyConn  bool
+
+	// closed is the terminal latch. Set by Close to fail every subsequent
+	// operation closed rather than silently reconnecting.
+	closed atomic.Bool
 
 	// cleanupGen is the latest cleanup generation. Cleanup goroutines hold
 	// the generation they were spawned at; before sleeping for the grace
@@ -198,6 +204,9 @@ func (b *Backend) connect(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.closed.Load() {
+		return fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	}
 	if b.connected {
 		return nil
 	}
@@ -346,7 +355,12 @@ func (b *Backend) passwordProviderTimeout() time.Duration {
 }
 
 // getClient returns the SFTP client, connecting if needed (lazy connect).
+// After Close has been called, getClient returns [storage.ErrBackendClosed]
+// rather than reconnecting — a closed backend is terminally closed.
 func (b *Backend) getClient(ctx context.Context) (Client, error) {
+	if b.closed.Load() {
+		return nil, fmt.Errorf("sftpbackend: %w", storage.ErrBackendClosed)
+	}
 	b.mu.RLock()
 	if b.connected {
 		client := b.client
@@ -737,6 +751,9 @@ func (b *Backend) Healthy() bool {
 	if b == nil {
 		return false
 	}
+	if b.closed.Load() {
+		return false
+	}
 	b.mu.RLock()
 	if !b.connected || b.client == nil {
 		b.mu.RUnlock()
@@ -772,9 +789,16 @@ func (b *Backend) Healthy() bool {
 }
 
 // Close closes the SFTP and SSH connections and waits for any pending
-// cleanup goroutines from previous reconnections to finish.
+// cleanup goroutines from previous reconnections to finish. Close is the
+// terminal state — subsequent operations return [storage.ErrBackendClosed]
+// rather than silently reconnecting. Close is idempotent; calling it on an
+// already-closed backend is a no-op.
 func (b *Backend) Close() error {
 	if b == nil {
+		return nil
+	}
+	if !b.closed.CompareAndSwap(false, true) {
+		// Already closed — return nil and skip joining cleanupWg again.
 		return nil
 	}
 	b.mu.Lock()

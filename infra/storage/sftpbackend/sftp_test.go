@@ -810,3 +810,31 @@ func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
 		NewWithClient(newMockSFTPClient("/data"), Config{Host: "localhost", RootPath: "/data"}, nil)
 	})
 }
+
+// TestCloseIsTerminal pins the H-006 finding: after Close the backend
+// must not silently reconnect on the next getClient. Operations should
+// return storage.ErrBackendClosed instead.
+func TestCloseIsTerminal(t *testing.T) {
+	t.Parallel()
+	mock := newMockSFTPClient("/data")
+	b := NewWithClient(mock, Config{Host: "localhost", RootPath: "/data"})
+
+	require.NoError(t, b.Close())
+	// Idempotent.
+	require.NoError(t, b.Close())
+
+	if got := b.Healthy(); got {
+		t.Fatalf("Healthy() after Close = true, want false")
+	}
+
+	ctx := context.Background()
+	if err := b.Delete(ctx, "anything"); !errors.Is(err, storage.ErrBackendClosed) {
+		t.Fatalf("Delete after Close: err = %v, want ErrBackendClosed", err)
+	}
+	if _, err := b.Exists(ctx, "anything"); !errors.Is(err, storage.ErrBackendClosed) {
+		t.Fatalf("Exists after Close: err = %v, want ErrBackendClosed", err)
+	}
+	if _, _, err := b.Get(ctx, "anything"); !errors.Is(err, storage.ErrBackendClosed) {
+		t.Fatalf("Get after Close: err = %v, want ErrBackendClosed", err)
+	}
+}
