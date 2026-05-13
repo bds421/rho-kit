@@ -136,7 +136,7 @@ RELEASE_MODE=all make release-plan
 RELEASE_MODE=all RELEASE_FORMAT=tsv make release-plan > /tmp/rho-kit-v2-plan.tsv
 ```
 
-Expected output: all 67 modules are assigned to dependency levels. Modules in
+Expected output: all 73 modules are assigned to dependency levels. Modules in
 the same level can be prepared and tagged together.
 
 ## 4. Run RC Gates
@@ -161,11 +161,11 @@ RELEASE_MODE=all make release-plan
 Expected output summary:
 
 - `git diff --check`: no output.
-- `make check-dependency-boundaries`: OK; current evidence is `348 direct
+- `make check-dependency-boundaries`: OK; current evidence is `393 direct
   module edges checked`.
 - `make check-dependency-allowlist`: OK; current evidence is `59 direct
   external deps approved`.
-- `make check-operational-readiness`: OK; current evidence is `67 modules
+- `make check-operational-readiness`: OK; current evidence is `73 modules
   covered`.
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable`: OK for internal pins, internal require versions, no

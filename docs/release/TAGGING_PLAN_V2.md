@@ -157,11 +157,11 @@ Expected output summary:
 - `git status --short` prints nothing.
 - `git diff --check` prints nothing.
 - `make check-dependency-boundaries` prints an OK line; current evidence is
-  `348 direct module edges checked`.
+  `393 direct module edges checked`.
 - `make check-dependency-allowlist` prints an OK line; current evidence is
   `59 direct external deps approved`.
 - `make check-operational-readiness` prints `operational readiness check OK
-  (67 modules covered)`.
+  (73 modules covered)`.
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable` confirms no internal replaces remain and all internal
   requires point at `v2.0.0`.
