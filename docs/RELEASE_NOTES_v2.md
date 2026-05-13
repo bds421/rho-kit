@@ -954,7 +954,7 @@ enforce a check. The following call-site checks went unconditional:
   pair `WithExpectedIssuer` or `WithAllowAnyIssuer`).
 - `infra/sqldb/pgx.Connect` — TLS check is unconditional; loopback-only tests
   can pass `Config{AllowPlaintextLoopbackForTests: true}` to opt out.
-- `infra/messaging.NewBufferedPublisher` — state-file requirement is
+- `infra/messaging.OpenBufferedPublisher` — state-file requirement is
   unconditional; the existing `WithEphemeralBuffer()` is the only
   opt-out.
 - `httpx/middleware/csrf.New` — HMAC secret requirement is

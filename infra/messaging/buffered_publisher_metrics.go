@@ -98,7 +98,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer, publisherName string) *Prom
 // [WithMetrics]:
 //
 //	pm := messaging.NewPrometheusMetrics(reg, "events")
-//	pub := messaging.NewBufferedPublisher(inner, conn, logger,
+//	pub := messaging.OpenBufferedPublisher(inner, conn, logger,
 //	    messaging.WithStateFile(path),
 //	    messaging.WithMetrics(pm.Hooks()),
 //	)
