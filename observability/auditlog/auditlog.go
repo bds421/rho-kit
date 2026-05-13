@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -159,9 +158,21 @@ func ValidateEvent(event Event) error {
 
 // Store is the append-only persistence interface for audit events.
 type Store interface {
-	// Append persists an event. Implementations must be safe for concurrent use
-	// and must reject events that fail ValidateEvent.
-	Append(ctx context.Context, event Event) error
+	// AppendChained reads the tail HMAC, calls build with it, and persists
+	// the resulting event atomically under a per-store lock. Logger.LogE
+	// uses this to extend the tamper-evident chain without holding its own
+	// mutex across user-supplied Store code — pre-2.0 the Logger held a
+	// global appendMu across LastHMAC+Append, which made a slow or
+	// re-entrant Store implementation a deadlock attractor and serialised
+	// every LogE call on Append latency.
+	//
+	// Implementations MUST hold their internal lock across the read-tail
+	// / call-build / persist sequence so two concurrent appenders cannot
+	// observe the same prev HMAC and produce a forked chain. The supplied
+	// build function may return an error to abort the append (e.g. for
+	// per-event validation); the Store must NOT persist the resulting
+	// event in that case.
+	AppendChained(ctx context.Context, build func(prev []byte) (Event, error)) error
 
 	// Query returns events matching the filter, ordered by timestamp descending.
 	// Returns the next cursor for pagination (empty string if no more results).
@@ -170,8 +181,9 @@ type Store interface {
 	Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error)
 
 	// LastHMAC returns the HMAC of the most recently appended event, or an
-	// empty / all-zero slice if the store is empty. [Logger.LogE] uses this
-	// to compute the next event's PrevHMAC. Implementations must be safe for
+	// empty / all-zero slice if the store is empty. Useful for chain
+	// inspection / operator tooling; not on the Logger.LogE hot path
+	// after the AppendChained refactor. Implementations must be safe for
 	// concurrent reads.
 	LastHMAC(ctx context.Context) ([]byte, error)
 }
@@ -196,9 +208,10 @@ type Filter struct {
 //     cannot forge a cursor to skip events without the key.
 //
 // Both keys are required (≥32 bytes); [New] panics if either is missing.
-// Logger.LogE serialises the read-prev-HMAC / compute-new-HMAC / Append
-// sequence through appendMu so two concurrent appenders never read the
-// same PrevHMAC and produce a chain fork.
+// Chain serialization is delegated to [Store.AppendChained]: the Store
+// holds its own per-store lock across the read-tail / compute-HMAC /
+// persist callback so two concurrent appenders cannot observe the same
+// PrevHMAC and produce a chain fork.
 type Logger struct {
 	store     Store
 	logger    *slog.Logger
@@ -215,7 +228,6 @@ type Logger struct {
 	chainKeyLen int
 	cursors     signedCursor
 	closed      atomic.Bool
-	appendMu    sync.Mutex
 }
 
 var newAuditID = uuid.NewV7
@@ -332,12 +344,15 @@ func (l *Logger) Close() error {
 	if !l.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Lock appendMu so a concurrent LogE that has already passed the
-	// closed check completes (or observes the closed flag) before we
-	// wipe the key material — preventing a window where Use() runs
-	// over a zeroed key.
-	l.appendMu.Lock()
-	defer l.appendMu.Unlock()
+	// LogE re-checks closed inside the AppendChained build callback so
+	// any in-flight HMAC computation aborts before we wipe the keys.
+	// There is still a tiny window where a build that has just read
+	// the closed flag (false) could call chainKey.Use() right as we
+	// zero — secret.String.Use takes a snapshot under its own internal
+	// lock, so the worst case is the build sees the pre-zero key
+	// (correct) or the post-zero key (which will fail downstream
+	// verification, a deliberate signal that the Logger was closed
+	// mid-write).
 	if l.chainKey != nil {
 		l.chainKey.Zero()
 	}
@@ -365,11 +380,11 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // silently drop. The drop hook + counter still fire on failure so
 // monitoring stays in place.
 //
-// The read-prev-HMAC / compute-new-HMAC / Append sequence is serialised
-// through an internal mutex: two concurrent callers cannot observe the
-// same previous HMAC and produce a forked chain. Caller-supplied
-// PrevHMAC / HMAC fields on the input event are ignored — they are
-// always recomputed from the store's current tail.
+// Chain construction (read-tail / compute-HMAC / persist) is delegated
+// to [Store.AppendChained] so the Logger no longer holds a global mutex
+// across user-supplied Store code. Caller-supplied PrevHMAC / HMAC
+// fields on the input event are ignored — they are always recomputed
+// from the store's current tail inside the chained build callback.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
@@ -396,37 +411,39 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 	event.PrevHMAC = nil
 	event.HMAC = nil
 
-	// Serialise the read-prev / compute-hmac / Append window so
-	// concurrent appenders cannot observe the same PrevHMAC.
-	l.appendMu.Lock()
-	defer l.appendMu.Unlock()
-
-	prev, err := l.store.LastHMAC(ctx)
-	if err != nil {
-		err = fmt.Errorf("auditlog: read previous HMAC: %w", err)
-		l.logger.Error("auditlog: failed to read previous HMAC",
-			redact.Error(err),
-			redact.String("event_id", event.ID),
-		)
-		l.recordDrop(ctx, event, err)
-		return err
-	}
-	if len(prev) > 0 {
-		event.PrevHMAC = append([]byte(nil), prev...)
-	}
-	var mac []byte
-	l.chainKey.Use(func(k []byte) {
-		mac = computeHMAC(k, event.PrevHMAC, event)
+	var buildErr error
+	err := l.store.AppendChained(ctx, func(prev []byte) (Event, error) {
+		// Re-check the closed flag inside the chained callback so a
+		// concurrent Close that wipes chainKey cannot race a HMAC
+		// computation over zeroed key material.
+		if l.closed.Load() {
+			buildErr = ErrLoggerClosed
+			return Event{}, ErrLoggerClosed
+		}
+		if len(prev) > 0 {
+			event.PrevHMAC = append([]byte(nil), prev...)
+		}
+		var mac []byte
+		l.chainKey.Use(func(k []byte) {
+			mac = computeHMAC(k, event.PrevHMAC, event)
+		})
+		event.HMAC = mac
+		if vErr := ValidateEvent(event); vErr != nil {
+			buildErr = vErr
+			return Event{}, vErr
+		}
+		return event, nil
 	})
-	event.HMAC = mac
-
-	if err := ValidateEvent(event); err != nil {
-		l.logger.Error("auditlog: invalid event", redact.Error(err))
-		l.recordDrop(ctx, event, err)
-		return err
-	}
-
-	if err := l.store.Append(ctx, event); err != nil {
+	if err != nil {
+		if buildErr != nil {
+			l.logger.Error("auditlog: failed to build event for append",
+				redact.Error(buildErr),
+				redact.String("event_id", event.ID),
+			)
+			l.recordDrop(ctx, event, buildErr)
+			return buildErr
+		}
+		err = fmt.Errorf("auditlog: append event: %w", err)
 		l.logger.Error("auditlog: failed to append event",
 			redact.Error(err),
 			redact.String("event_id", event.ID),

@@ -362,6 +362,22 @@ func (s *auditRecordingStore) Append(_ context.Context, e auditlog.Event) error 
 	return nil
 }
 
+func (s *auditRecordingStore) AppendChained(_ context.Context, build func(prev []byte) (auditlog.Event, error)) error {
+	var prev []byte
+	if len(s.events) > 0 {
+		tail := s.events[len(s.events)-1].HMAC
+		if len(tail) > 0 {
+			prev = append([]byte(nil), tail...)
+		}
+	}
+	event, err := build(prev)
+	if err != nil {
+		return err
+	}
+	s.events = append(s.events, event)
+	return nil
+}
+
 func (s *auditRecordingStore) Query(_ context.Context, _ auditlog.Filter, _ string, _ int) ([]auditlog.Event, string, error) {
 	return nil, "", nil
 }

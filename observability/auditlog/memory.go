@@ -17,7 +17,39 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{}
 }
 
-// Append adds an event to the in-memory store.
+// AppendChained holds the store mutex, reads the tail HMAC, runs build,
+// validates the resulting event, and persists it atomically. Two
+// concurrent appenders cannot observe the same prev HMAC because the
+// read-tail / build / persist sequence happens under m.mu.
+func (m *MemoryStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+	if build == nil {
+		return ErrInvalidEvent
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var prev []byte
+	if len(m.events) > 0 {
+		tail := m.events[len(m.events)-1].HMAC
+		if len(tail) > 0 {
+			prev = append([]byte(nil), tail...)
+		}
+	}
+	event, err := build(prev)
+	if err != nil {
+		return err
+	}
+	if err := ValidateEvent(event); err != nil {
+		return err
+	}
+	m.events = append(m.events, cloneEvent(event))
+	return nil
+}
+
+// Append is retained as a free-form append for retention / replay
+// tooling that legitimately needs to insert pre-built events (e.g. a
+// historical chain restore). It does NOT participate in chain
+// construction — use [MemoryStore.AppendChained] from production
+// writers (Logger.LogE delegates to that path).
 func (m *MemoryStore) Append(_ context.Context, event Event) error {
 	if err := ValidateEvent(event); err != nil {
 		return err

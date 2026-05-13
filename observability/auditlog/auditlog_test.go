@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -303,6 +304,15 @@ func (s failingStore) Append(context.Context, Event) error {
 	return s.err
 }
 
+func (s failingStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+	// Allow build to run (so the Logger exercises its HMAC path) and
+	// then surface the store error as if the persist step failed.
+	if _, err := build(nil); err != nil {
+		return err
+	}
+	return s.err
+}
+
 func (s failingStore) Query(context.Context, Filter, string, int) ([]Event, string, error) {
 	return nil, "", s.err
 }
@@ -311,11 +321,16 @@ func (s failingStore) LastHMAC(context.Context) ([]byte, error) {
 	return nil, nil
 }
 
-// hmacFailingStore returns an error from LastHMAC. Used to exercise the
-// branch where the Logger cannot read the chain tail and must drop.
+// hmacFailingStore returns an error from AppendChained without invoking
+// build. Used to exercise the branch where the Logger cannot read the
+// chain tail and must drop.
 type hmacFailingStore struct {
 	failingStore
 	hmacErr error
+}
+
+func (s hmacFailingStore) AppendChained(context.Context, func(prev []byte) (Event, error)) error {
+	return s.hmacErr
 }
 
 func (s hmacFailingStore) LastHMAC(context.Context) ([]byte, error) {
@@ -356,6 +371,42 @@ func TestLogger_LogE_PrevHMACReadFailureCountsAsDrop(t *testing.T) {
 	assert.Equal(t, uint64(1), l.DroppedCount())
 }
 
+// TestLogger_LogE_ConcurrentAppendDoesNotForkChain pins the invariant
+// that drove the AppendChained refactor: the Store, not the Logger,
+// holds the lock across the read-tail / compute-HMAC / persist
+// sequence. Two concurrent LogE calls must still observe distinct
+// PrevHMACs and produce a strictly-monotonic chain.
+func TestLogger_LogE_ConcurrentAppendDoesNotForkChain(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	const writers = 8
+	const perWriter = 20
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for w := 0; w < writers; w++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				_ = l.LogE(ctx, Event{
+					Actor:    fmt.Sprintf("worker-%d", id),
+					Action:   "ping",
+					Resource: "r",
+					Status:   StatusSuccess,
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	events := store.Events()
+	require.Len(t, events, writers*perWriter)
+	if err := VerifyChain(events, testChainKey); err != nil {
+		t.Fatalf("chain verification failed under concurrent append: %v", err)
+	}
+}
+
 type captureStore struct {
 	mu     sync.Mutex
 	event  Event
@@ -365,6 +416,25 @@ type captureStore struct {
 func (s *captureStore) Append(_ context.Context, event Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.event = event
+	s.events = append(s.events, cloneEvent(event))
+	return nil
+}
+
+func (s *captureStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var prev []byte
+	if len(s.events) > 0 {
+		tail := s.events[len(s.events)-1].HMAC
+		if len(tail) > 0 {
+			prev = append([]byte(nil), tail...)
+		}
+	}
+	event, err := build(prev)
+	if err != nil {
+		return err
+	}
 	s.event = event
 	s.events = append(s.events, cloneEvent(event))
 	return nil
@@ -925,6 +995,11 @@ type retentionCaptureStore struct {
 
 func (s *retentionCaptureStore) Append(context.Context, Event) error {
 	return nil
+}
+
+func (s *retentionCaptureStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+	_, err := build(nil)
+	return err
 }
 
 func (s *retentionCaptureStore) Query(context.Context, Filter, string, int) ([]Event, string, error) {
