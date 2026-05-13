@@ -29,7 +29,10 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
-const tracerName = "kit/storage/sftp"
+const (
+	tracerName                     = "kit/storage/sftp"
+	defaultPasswordProviderTimeout = 5 * time.Second
+)
 
 // Compile-time interface compliance check.
 var _ storage.Storage = (*SFTPBackend)(nil)
@@ -148,7 +151,7 @@ func New(cfg SFTPConfig, opts ...Option) (*SFTPBackend, error) {
 	}
 
 	if !b.lazyConn {
-		if err := b.connect(); err != nil {
+		if err := b.connect(context.Background()); err != nil {
 			return nil, storage.WrapSafe("sftpbackend: initial connect failed", err)
 		}
 	}
@@ -186,7 +189,7 @@ func NewWithClient(client SFTPClient, cfg SFTPConfig, opts ...Option) *SFTPBacke
 }
 
 // connect establishes the SSH and SFTP connection. Caller must not hold b.mu.
-func (b *SFTPBackend) connect() error {
+func (b *SFTPBackend) connect(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -194,7 +197,7 @@ func (b *SFTPBackend) connect() error {
 		return nil
 	}
 
-	sshCfg, err := b.buildSSHConfig()
+	sshCfg, err := b.buildSSHConfig(ctx)
 	if err != nil {
 		return storage.WrapSafe("build SSH config failed", err)
 	}
@@ -269,7 +272,7 @@ func (b *SFTPBackend) connect() error {
 	return nil
 }
 
-func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
+func (b *SFTPBackend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error) {
 	if b.cfg.Password == "" && b.cfg.KeyFile == "" && b.cfg.PasswordProvider == nil {
 		return nil, fmt.Errorf("no SSH authentication method configured (need Password, PasswordProvider, or KeyFile)")
 	}
@@ -290,9 +293,22 @@ func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
 
 	password := b.cfg.Password
 	if b.cfg.PasswordProvider != nil {
+		providerCtx := ctx
+		if providerCtx == nil {
+			providerCtx = context.Background()
+		}
+		timeout := b.passwordProviderTimeout()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			providerCtx, cancel = context.WithTimeout(providerCtx, timeout)
+			defer cancel()
+		}
 		var err error
-		password, err = b.cfg.PasswordProvider(context.Background())
+		password, err = b.cfg.PasswordProvider(providerCtx)
 		if err != nil {
+			return nil, storage.WrapSafe("load SFTP password failed", err)
+		}
+		if err := providerCtx.Err(); err != nil {
 			return nil, storage.WrapSafe("load SFTP password failed", err)
 		}
 		if password == "" {
@@ -317,8 +333,15 @@ func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
 	return cfg, nil
 }
 
+func (b *SFTPBackend) passwordProviderTimeout() time.Duration {
+	if b == nil || b.cfg.PasswordProviderTimeout == 0 {
+		return defaultPasswordProviderTimeout
+	}
+	return b.cfg.PasswordProviderTimeout
+}
+
 // getClient returns the SFTP client, connecting if needed (lazy connect).
-func (b *SFTPBackend) getClient() (SFTPClient, error) {
+func (b *SFTPBackend) getClient(ctx context.Context) (SFTPClient, error) {
 	b.mu.RLock()
 	if b.connected {
 		client := b.client
@@ -329,7 +352,7 @@ func (b *SFTPBackend) getClient() (SFTPClient, error) {
 
 	// connect() acquires the write lock and re-checks b.connected,
 	// so concurrent callers safely converge on a single connection.
-	if err := b.connect(); err != nil {
+	if err := b.connect(ctx); err != nil {
 		return nil, err
 	}
 
@@ -450,7 +473,7 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 		return err
 	}
 
-	client, err := b.getClient()
+	client, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: put connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -546,7 +569,7 @@ func (b *SFTPBackend) Get(ctx context.Context, key string) (io.ReadCloser, stora
 		return nil, storage.ObjectMeta{}, err
 	}
 
-	client, err := b.getClient()
+	client, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: get connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -598,7 +621,7 @@ func (b *SFTPBackend) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
-	client, err := b.getClient()
+	client, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: delete connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
@@ -639,7 +662,7 @@ func (b *SFTPBackend) Exists(ctx context.Context, key string) (bool, error) {
 		return false, err
 	}
 
-	client, err := b.getClient()
+	client, err := b.getClient(ctx)
 	if err != nil {
 		opErr := storage.WrapSafe("sftpbackend: exists connection failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,6 +88,24 @@ func TestSFTPConfigValidateAllowsPasswordProvider(t *testing.T) {
 	}
 
 	require.NoError(t, cfg.Validate("production"))
+}
+
+func TestSFTPConfigValidateRejectsNegativePasswordProviderTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := SFTPConfig{
+		Host:                    "sftp.example.com",
+		Port:                    22,
+		User:                    "svc",
+		PasswordProvider:        func(context.Context) (string, error) { return "strong-password-123", nil },
+		PasswordProviderTimeout: -time.Second,
+		RootPath:                "/uploads",
+		KnownHostsFile:          "/etc/ssh/ssh_known_hosts",
+	}
+
+	err := cfg.Validate("production")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PasswordProviderTimeout")
 }
 
 func TestSFTPConfigValidateRejectsMultipleAuthSources(t *testing.T) {

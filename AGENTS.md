@@ -20,6 +20,7 @@ make lint          # golangci-lint v2
 make vulncheck     # govulncheck
 make check-dependency-allowlist # direct external Go dependency policy
 make check-dependency-boundaries # keep heavy SDKs behind adapters/test helpers
+make check-operational-readiness # operational-review coverage for every module
 make check-publishable # pre-tag Go module release invariants
 make check-dashboards # Grafana JSON + Prometheus rule validation
 make release-candidate # full local pre-release quality gate

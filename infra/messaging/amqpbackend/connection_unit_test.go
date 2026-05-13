@@ -185,6 +185,12 @@ func TestWithURLProvider_PanicsOnNil(t *testing.T) {
 	})
 }
 
+func TestWithURLProviderTimeout_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() {
+		WithURLProviderTimeout(0)
+	})
+}
+
 func TestResolveDialURL_UsesProvider(t *testing.T) {
 	c := &Connection{
 		allowPlaintext: true,
@@ -197,6 +203,24 @@ func TestResolveDialURL_UsesProvider(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "amqp://user:rotated@rabbit:5672/vhost", got)
+}
+
+func TestResolveDialURL_ProviderReceivesTimeoutContext(t *testing.T) {
+	var sawDeadline bool
+	c := &Connection{
+		allowPlaintext:     true,
+		urlProviderTimeout: 10 * time.Second,
+		urlProvider: func(ctx context.Context) (string, error) {
+			deadline, ok := ctx.Deadline()
+			sawDeadline = ok && time.Until(deadline) > 0
+			return "amqp://user:rotated@rabbit:5672/vhost", nil
+		},
+	}
+
+	_, err := c.resolveDialURL(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, sawDeadline)
 }
 
 func TestResolveDialURL_ProviderErrorDoesNotRenderCause(t *testing.T) {

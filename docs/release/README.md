@@ -7,6 +7,7 @@ read immediately before tagging v2.0.0. Security policy documents remain under
 | File | Purpose |
 |---|---|
 | [API_FREEZE_V2.md](API_FREEZE_V2.md) | Per-module keep/remove/rename decision record for the v2 public surface. |
+| [OPERATIONAL_READINESS_V2.md](OPERATIONAL_READINESS_V2.md) | Per-module operational-readiness review for rotation, TLS, startup, shutdown, bounded work, health, metrics, migrations, and release gates. |
 | [MIGRATION_V2.md](MIGRATION_V2.md) | Downstream migration guide from v1.x / pre-RC v2 code to the v2.0.0 contract. |
 | [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md) | Prompt-to-artifact release checklist with evidence commands and remaining RC checks. |
 | [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md) | Future dependency-ordered multi-module tag strategy and exact tag commands. |
@@ -32,3 +33,7 @@ Run `tools/rehearse-v2-release.sh` before touching the real remote. It executes
 the dependency-ordered release against a temporary bare repository and writes a
 local-only log under `docs/release/rehearsals/`; those logs are evidence
 artifacts and are not tracked.
+
+Run `make check-operational-readiness` whenever `go.work` changes or an
+operationally sensitive API is added. The check makes sure the operational
+review still covers every workspace module.

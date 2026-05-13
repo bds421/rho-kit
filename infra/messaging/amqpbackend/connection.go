@@ -18,7 +18,10 @@ import (
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
-const minimumTLSVersion = tls.VersionTLS12
+const (
+	minimumTLSVersion      = tls.VersionTLS12
+	defaultProviderTimeout = 5 * time.Second
+)
 
 type safeCauseError struct {
 	msg   string
@@ -37,6 +40,7 @@ func (e safeCauseError) Unwrap() error {
 type Connection struct {
 	url                  string
 	urlProvider          func(context.Context) (string, error)
+	urlProviderTimeout   time.Duration
 	tlsConfig            *tls.Config
 	allowPlaintext       bool
 	conn                 *amqp.Connection
@@ -133,6 +137,19 @@ func WithURLProvider(provider func(context.Context) (string, error)) DialOption 
 	}
 }
 
+// WithURLProviderTimeout bounds the context passed to a dynamic AMQP URL
+// provider. The provider must honor ctx cancellation; this timeout prevents
+// Vault/KMS/secret-manager lookups from silently stretching startup and
+// reconnect loops when the backing control plane is slow.
+func WithURLProviderTimeout(d time.Duration) DialOption {
+	if d <= 0 {
+		panic("amqpbackend: WithURLProviderTimeout requires a positive duration")
+	}
+	return func(c *Connection) {
+		c.urlProviderTimeout = d
+	}
+}
+
 // Dial establishes a new AMQP connection and starts monitoring for disconnects.
 // By default, reconnection retries are unlimited. Use WithMaxReconnectAttempts
 // to set a finite limit (Dead() fires when exhausted).
@@ -145,12 +162,13 @@ func Dial(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connection, 
 	}
 
 	c := &Connection{
-		url:             rawURL,
-		logger:          logger,
-		closed:          make(chan struct{}),
-		dead:            make(chan struct{}),
-		connected:       make(chan struct{}),
-		reconnectSignal: make(chan struct{}, 1),
+		url:                rawURL,
+		logger:             logger,
+		closed:             make(chan struct{}),
+		dead:               make(chan struct{}),
+		connected:          make(chan struct{}),
+		reconnectSignal:    make(chan struct{}, 1),
+		urlProviderTimeout: defaultProviderTimeout,
 	}
 
 	for _, opt := range opts {
@@ -191,8 +209,20 @@ func Dial(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connection, 
 func (c *Connection) resolveDialURL(ctx context.Context) (string, error) {
 	rawURL := c.url
 	if c.urlProvider != nil {
-		provided, err := c.urlProvider(ctx)
+		providerCtx := ctx
+		if providerCtx == nil {
+			providerCtx = context.Background()
+		}
+		if c.urlProviderTimeout > 0 {
+			var cancel context.CancelFunc
+			providerCtx, cancel = context.WithTimeout(providerCtx, c.urlProviderTimeout)
+			defer cancel()
+		}
+		provided, err := c.urlProvider(providerCtx)
 		if err != nil {
+			return "", safeCauseError{msg: "amqp URL provider failed", cause: err}
+		}
+		if err := providerCtx.Err(); err != nil {
 			return "", safeCauseError{msg: "amqp URL provider failed", cause: err}
 		}
 		rawURL = provided

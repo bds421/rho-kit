@@ -28,11 +28,13 @@ operational migration sequence.
   [`docs/audit/THREAT_MODEL.md`](docs/audit/THREAT_MODEL.md) and
   [`docs/audit/SUPPLY_CHAIN.md`](docs/audit/SUPPLY_CHAIN.md).
 - **Operational primitives.** RED metrics, Grafana dashboards (HTTP, gRPC, DB,
-  Redis, Outbox, AMQP, rate-limit, storage), runbooks, `promtool` CI.
+  Redis, Outbox, AMQP, rate-limit, storage), runbooks, `promtool` CI, and an
+  operational-readiness coverage gate for every workspace module.
 - **Crypto.** AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit
   envelope-KEK adapters; PASETO; Argon2id password hashing; field encryption.
 - **Credential rotation.** Provider-backed rotation hooks across pgx, Redis,
-  AMQP, NATS, S3, Azure Blob, GCS, SFTP, CSRF, and signed HTTP requests.
+  AMQP, NATS, S3, Azure Blob, GCS, SFTP, CSRF, and signed HTTP requests, with
+  bounded provider contexts where the kit owns startup/reconnect calls.
 - **Builder integrations.** Golden-path `app.Builder` exposes every new
   primitive without per-service middleware wiring.
 - **Breaking changes.** Background components are one-shot; manual lifecycle

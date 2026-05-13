@@ -147,6 +147,7 @@ make test
 make lint
 make check-dependency-boundaries
 make check-dependency-allowlist
+make check-operational-readiness
 FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
 make vulncheck
@@ -160,10 +161,12 @@ RELEASE_MODE=all make release-plan
 Expected output summary:
 
 - `git diff --check`: no output.
-- `make check-dependency-boundaries`: OK; current evidence is `345 direct
+- `make check-dependency-boundaries`: OK; current evidence is `348 direct
   module edges checked`.
-- `make check-dependency-allowlist`: OK; current evidence is `58 direct
+- `make check-dependency-allowlist`: OK; current evidence is `59 direct
   external deps approved`.
+- `make check-operational-readiness`: OK; current evidence is `67 modules
+  covered`.
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable`: OK for internal pins, internal require versions, no
   local internal replaces, and Go directives.

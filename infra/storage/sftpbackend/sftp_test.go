@@ -3,11 +3,15 @@ package sftpbackend
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +19,8 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -28,6 +34,20 @@ type mockSFTPClient struct {
 	readFn  func(string) ([]os.FileInfo, error)
 	openFn  func(string) (*sftp.File, error)
 	closeFn func() error
+}
+
+func writeKnownHostsForTest(t *testing.T, host string, port int) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	line := knownhosts.Line([]string{net.JoinHostPort(host, strconv.Itoa(port))}, pub) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(line), 0o600))
+	return path
 }
 
 func newMockSFTPClient(root string) *mockSFTPClient {
@@ -195,6 +215,33 @@ func (f fakeFileInfo) Sys() any { return nil }
 // Since sftp.File can't be constructed in tests, we test the SFTP backend
 // at a higher level using the actual local backend pattern for Put/Get,
 // and test the stateless operations (Delete, Exists, Healthy) with the mock.
+
+func TestBuildSSHConfig_PasswordProviderReceivesTimeoutContext(t *testing.T) {
+	t.Parallel()
+
+	cfg := SFTPConfig{
+		Host:                    "sftp.example.com",
+		Port:                    22,
+		User:                    "svc",
+		RootPath:                "/uploads",
+		KnownHostsFile:          writeKnownHostsForTest(t, "sftp.example.com", 22),
+		PasswordProviderTimeout: time.Second,
+	}
+	var sawDeadline bool
+	cfg.PasswordProvider = func(ctx context.Context) (string, error) {
+		deadline, ok := ctx.Deadline()
+		sawDeadline = ok && time.Until(deadline) > 0
+		return "strong-password-123", nil
+	}
+	b := &SFTPBackend{cfg: cfg}
+
+	sshCfg, err := b.buildSSHConfig(t.Context())
+
+	require.NoError(t, err)
+	require.NotNil(t, sshCfg)
+	assert.True(t, sawDeadline)
+	assert.NotEmpty(t, sshCfg.Auth)
+}
 
 func TestSFTPBackend_Delete(t *testing.T) {
 	t.Parallel()

@@ -66,6 +66,7 @@ conn, err := amqpbackend.Dial(url, logger,
     amqpbackend.WithMaxReconnectAttempts(0), // 0 = unlimited
     amqpbackend.WithTLS(tlsConfig),          // mTLS; amqp:// is upgraded to amqps://
     amqpbackend.WithURLProvider(vaultAMQPURL), // optional: called on every dial/reconnect
+    amqpbackend.WithURLProviderTimeout(5*time.Second),
     amqpbackend.OnReconnect(func(c amqpbackend.Connector) error {
         return amqpbackend.DeclareAll(c, specs...) // re-declare after reconnect
     }),
@@ -79,7 +80,9 @@ cloned and raised to a TLS 1.2 minimum; stricter caller settings are
 preserved.
 For credential rotation, use `WithURLProvider` (or
 `app.WithRabbitMQURLProvider`) so a fresh AMQP URL is fetched before the
-initial dial and every reconnect.
+initial dial and every reconnect. URL providers receive a bounded context; tune
+that bound with `WithURLProviderTimeout` when the secret manager has a known
+tail-latency SLO.
 
 Reconnect backoff: 3s base, 2x multiplier, 60s max, ±25% jitter.
 

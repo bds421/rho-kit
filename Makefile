@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries
+.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-operational-readiness
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -144,6 +144,10 @@ check-dependency-allowlist:
 ## check-dependency-boundaries: Keep heavy optional SDKs in adapter/test modules.
 check-dependency-boundaries:
 	@bash tools/check-heavy-dependency-boundaries.sh
+
+## check-operational-readiness: Verify the v2 operational-readiness review covers every module
+check-operational-readiness:
+	@bash tools/check-operational-readiness.sh
 
 ## check-release-team: Verify the @bds421/security team and branch protection exist before tagging.
 check-release-team:

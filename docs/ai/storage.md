@@ -37,8 +37,10 @@ Credential rotation:
   remains available through `New`.
 - GCS: leave `CredentialsFile` empty for ADC/workload identity, or pass
   advanced rotating credentials via `GCSConfig.ClientOptions`.
-- SFTP: use `PasswordProvider` for rotating passwords; key files are read when
-  a new SSH connection opens, so projected key updates apply after reconnect.
+- SFTP: use `PasswordProvider` for rotating passwords; providers receive a
+  bounded context via `PasswordProviderTimeout` or the package default. Key
+  files are read when a new SSH connection opens, so projected key updates
+  apply after reconnect.
 
 ## Quick Start (S3)
 

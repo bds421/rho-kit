@@ -19,6 +19,7 @@ repository root unless a block says to `cd` into a module first.
 | Migration guide complete and validated | [MIGRATION_V2.md](MIGRATION_V2.md), [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md), API grep checks | Breaking changes and adoption sequence are documented in one operational guide and named APIs exist in the current tree. | Passed 2026-05-11: import, safety opt-out, authz, Builder, DB migration, API-reshape, Redis health-check, and deferred-item migration paths are documented; API presence evidence is recorded in `MIGRATION_V2.md`. |
 | Release notes complete | [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md) | Notes include breaking changes, new primitives, deferred items, links to release artifacts, and are ready to paste into a future GitHub release. | Passed 2026-05-11: release notes link to release artifacts and cover breaking changes, shipped primitives, verification, and deferred work. |
 | Semantic security/default review complete | Source, tests, and commit history | Fail-open defaults, audit metadata idempotency, auth bypass semantics, and misleading legacy APIs are reviewed before the API freeze. | Passed 2026-05-11/12: S2S auth checked fail-closed for missing permissions/scopes, approval idempotency preserves audit metadata, Redis per-feature health policy is explicit, MCP audited calls require actor attribution, and leader election term semantics are hardened. |
+| Operational readiness review complete | [OPERATIONAL_READINESS_V2.md](OPERATIONAL_READINESS_V2.md), `make check-operational-readiness` | Every `go.work` module has an operational review row covering rotation, TLS, startup, shutdown, bounded work, health, metrics, migrations, and release gates. | Added 2026-05-13: check covers all 67 workspace modules and records AMQP/SFTP provider-timeout follow-up findings. |
 | Benchmark baselines captured | [benchmarks/v2.0.0/MANIFEST.md](benchmarks/v2.0.0/MANIFEST.md), `make bench-baseline` | Current benchmark suites have raw `go test -bench` outputs that can be used as `kit-bench-gate -baseline` inputs. | Captured 2026-05-12: `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime` baseline files exist with `-count=5`, including the added tenant, envelope, rate-limit, and middleware-chain hot-path benchmarks. |
 | Docs snippets executable or illustrative | This checklist plus per-doc notes | Executable snippets are tied to tests or commands; recipe snippets are explicitly illustrative. | Passed 2026-05-11: markdown snippet sweep found every fenced-block document covered by a snippet-status note or explicit executable evidence. |
 | Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, dashboard/rule validation, benchmark baseline capture, coverage, benchmarks, kit-doctor, diff check. | Partial refresh 2026-05-12: diff, test, lint, build, dependency, dashboard, publishability, release-plan, kit-doctor, benchmark-baseline, and Azure Key Vault module race/vulncheck gates passed on the 67-module tree. Full workspace race, coverage, benchmark, Docker integration, and release rehearsal remain to rerun before tagging. |
@@ -48,6 +49,7 @@ make test
 make lint
 make check-dependency-boundaries
 make check-dependency-allowlist
+make check-operational-readiness
 make check-publishable
 make check-dashboards
 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
@@ -317,3 +319,23 @@ All commands above passed. Focused changed-module tests also passed for
 `app`, `infra/messaging/amqpbackend`, `infra/messaging/natsbackend`,
 `infra/storage/s3backend`, `infra/storage/azurebackend`,
 `infra/storage/gcsbackend`, and `infra/storage/sftpbackend`.
+
+2026-05-13 follow-up for the operational-readiness review added
+`docs/release/OPERATIONAL_READINESS_V2.md` plus
+`make check-operational-readiness`, and tightened AMQP/SFTP rotating credential
+provider contexts:
+
+```bash
+git diff --check
+(cd infra/messaging/amqpbackend && go test ./...)
+(cd infra/storage/sftpbackend && go test ./...)
+make check-operational-readiness
+make test
+make lint
+make vulncheck
+make check-dependency-allowlist
+make check-dependency-boundaries
+```
+
+All commands above passed. `make check-operational-readiness` covered all 67
+workspace modules.

@@ -40,7 +40,7 @@ func (b *SFTPBackend) List(ctx context.Context, prefix string, opts storage.List
 		defer span.End()
 		span.SetAttributes(attribute.Int("storage.prefix_len", len(prefix)))
 
-		client, err := b.getClient()
+		client, err := b.getClient(ctx)
 		if err != nil {
 			opErr := storage.WrapSafe("sftpbackend: list connection failed", err)
 			span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))

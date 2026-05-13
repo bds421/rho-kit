@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"time"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 )
@@ -23,6 +24,10 @@ type SFTPConfig struct {
 	// connections keep their current authentication until the backend reconnects.
 	PasswordProvider func(context.Context) (string, error)
 
+	// PasswordProviderTimeout bounds the context passed to PasswordProvider.
+	// Zero uses the package default. The provider must honor ctx cancellation.
+	PasswordProviderTimeout time.Duration
+
 	// KnownHostsFile is the path to an OpenSSH known_hosts file for SSH
 	// host key verification.
 	// Example: "/etc/ssh/ssh_known_hosts" or "~/.ssh/known_hosts".
@@ -37,6 +42,7 @@ func (c SFTPConfig) LogValue() slog.Value {
 		slog.Bool("user_configured", c.User != ""),
 		slog.Bool("password_configured", c.Password != ""),
 		slog.Bool("password_provider_configured", c.PasswordProvider != nil),
+		slog.Bool("password_provider_timeout_configured", c.PasswordProviderTimeout > 0),
 		slog.Bool("key_file_configured", c.KeyFile != ""),
 		slog.Bool("root_path_configured", c.RootPath != ""),
 		slog.Bool("known_hosts_file_configured", c.KnownHostsFile != ""),
@@ -90,6 +96,9 @@ func (c SFTPConfig) Validate(environment string) error {
 	}
 	if c.Password == "" && c.KeyFile == "" && c.PasswordProvider == nil {
 		return fmt.Errorf("SFTP_PASSWORD, PasswordProvider, or STORAGE_SFTP_KEY_FILE is required")
+	}
+	if c.PasswordProviderTimeout < 0 {
+		return fmt.Errorf("SFTP PasswordProviderTimeout must be >= 0")
 	}
 	authMethods := 0
 	if c.Password != "" {

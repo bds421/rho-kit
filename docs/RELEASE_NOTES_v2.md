@@ -153,6 +153,17 @@ providers; S3 supports AWS default-chain or explicit SDK credential providers;
 Azure Blob supports `NewWithTokenCredential`; GCS accepts advanced client
 options; SFTP accepts a password provider; CSRF accepts secret rings through
 `WithSecrets`; and outbound signed requests can use `sign.WrapKeyStore`.
+AMQP URL providers and SFTP password providers receive bounded contexts so
+secret-manager stalls do not silently stretch startup or reconnect paths.
+
+### Operational readiness review is explicit
+
+`docs/release/OPERATIONAL_READINESS_V2.md` records the v2 operational review
+across every module in `go.work`: credential rotation, TLS material rotation
+contracts, startup/configuration bounds, shutdown/draining, bounded work,
+observability, health/readiness, migrations, and dependency/runtime gates.
+`make check-operational-readiness` fails if a workspace module is missing from
+that matrix.
 
 ### Key-management errors avoid reflecting key IDs
 
@@ -1129,6 +1140,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `.github/workflows/vuln.yml` — `govulncheck` + `osv-scanner` on PR / push / weekly
 - `docs/audit/dependency-allowlist.txt` + `make check-dependency-allowlist` — exact source ledger for direct external Go dependencies
 - `make check-dependency-boundaries` — keeps Redis, pgx, cloud, messaging, KMS, OpenFGA, Temporal, River, and Testcontainers deps behind adapter/test boundaries
+- `make check-operational-readiness` — verifies the release operational review covers every workspace module
 - `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations; no open in-kit mitigation gaps at this revision
 - `docs/audit/SUPPLY_CHAIN.md` — pinning policy, direct dependency allowlist, heavy SDK boundary guard, release provenance, key rotation, vuln SLO
 - `security/asvs.Lookup` uses stable unknown-control errors instead of echoing
