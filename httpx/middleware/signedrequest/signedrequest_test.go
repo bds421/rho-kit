@@ -46,7 +46,14 @@ func signRequest(t *testing.T, method, target, body string, ts time.Time, nonce 
 	req.Header.Set(HeaderTimestamp, formatUnix(tsUnix))
 	req.Header.Set(HeaderNonce, nonce)
 	req.Header.Set(HeaderKeyID, keyID)
-	sig, err := SignCanonical([]byte(secretStr), req, formatUnix(tsUnix), nonce, []byte(body), requiredHeaders)
+	sig, err := SignCanonical(SignRequest{
+		Secret:          []byte(secretStr),
+		Request:         req,
+		Timestamp:       formatUnix(tsUnix),
+		Nonce:           nonce,
+		Body:            []byte(body),
+		RequiredHeaders: requiredHeaders,
+	})
 	require.NoError(t, err)
 	req.Header.Set(HeaderSignature, sig)
 	// Re-attach the body so the middleware can read it. SignCanonical
@@ -217,7 +224,13 @@ func TestVerify_RejectsExtremeTimestampWithoutOverflow(t *testing.T) {
 			req.Header.Set(HeaderTimestamp, ts)
 			req.Header.Set(HeaderNonce, nonce)
 			req.Header.Set(HeaderKeyID, keyID)
-			sig, err := SignCanonical([]byte(secretStr), req, ts, nonce, body, nil)
+			sig, err := SignCanonical(SignRequest{
+				Secret:    []byte(secretStr),
+				Request:   req,
+				Timestamp: ts,
+				Nonce:     nonce,
+				Body:      body,
+			})
 			require.NoError(t, err)
 			req.Header.Set(HeaderSignature, sig)
 			req.Body = newBody(string(body))
@@ -545,7 +558,13 @@ func TestVerify_AcceptsExactly32ByteResolvedSecret(t *testing.T) {
 	req.Header.Set(HeaderTimestamp, formatUnix(tsUnix))
 	req.Header.Set(HeaderNonce, makeNonce("n-32-exact"))
 	req.Header.Set(HeaderKeyID, keyID)
-	sig, err := SignCanonical(exact, req, formatUnix(tsUnix), makeNonce("n-32-exact"), []byte(body), nil)
+	sig, err := SignCanonical(SignRequest{
+		Secret:    exact,
+		Request:   req,
+		Timestamp: formatUnix(tsUnix),
+		Nonce:     makeNonce("n-32-exact"),
+		Body:      []byte(body),
+	})
 	require.NoError(t, err)
 	req.Header.Set(HeaderSignature, sig)
 	req.Body = newBody(body)
@@ -688,7 +707,13 @@ func TestSignCanonical_RejectsInvalidInputs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sig, err := SignCanonical(tc.secret, tc.req, tc.ts, tc.nonce, nil, tc.headers)
+			sig, err := SignCanonical(SignRequest{
+				Secret:          tc.secret,
+				Request:         tc.req,
+				Timestamp:       tc.ts,
+				Nonce:           tc.nonce,
+				RequiredHeaders: tc.headers,
+			})
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, tc.want), "got %v, want %v", err, tc.want)
 			if tc.notInErr != "" {
@@ -710,9 +735,13 @@ func TestSignCanonical_UsesURLHostWhenRequestHostEmpty(t *testing.T) {
 	ts := formatUnix(time.Now().UTC().Unix())
 	nonce := makeNonce("url-host-fallback")
 	body := []byte("payload")
-	sigURLHost, err := SignCanonical([]byte(secretStr), reqURLHost, ts, nonce, body, nil)
+	sigURLHost, err := SignCanonical(SignRequest{
+		Secret: []byte(secretStr), Request: reqURLHost, Timestamp: ts, Nonce: nonce, Body: body,
+	})
 	require.NoError(t, err)
-	sigHost, err := SignCanonical([]byte(secretStr), reqHost, ts, nonce, body, nil)
+	sigHost, err := SignCanonical(SignRequest{
+		Secret: []byte(secretStr), Request: reqHost, Timestamp: ts, Nonce: nonce, Body: body,
+	})
 	require.NoError(t, err)
 
 	assert.Equal(t, sigHost, sigURLHost)
@@ -723,7 +752,13 @@ func TestSignCanonical_RejectsDuplicateRequiredHeaderValues(t *testing.T) {
 	req.Header.Add("X-Secret-Token", "acme")
 	req.Header.Add("X-Secret-Token", "other")
 
-	sig, err := SignCanonical([]byte(secretStr), req, formatUnix(time.Now().UTC().Unix()), makeNonce("dup-sign"), nil, []string{"X-Secret-Token"})
+	sig, err := SignCanonical(SignRequest{
+		Secret:          []byte(secretStr),
+		Request:         req,
+		Timestamp:       formatUnix(time.Now().UTC().Unix()),
+		Nonce:           makeNonce("dup-sign"),
+		RequiredHeaders: []string{"X-Secret-Token"},
+	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrInvalidRequest), "got %v", err)
 	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
@@ -738,7 +773,9 @@ func TestSignCanonical_RejectsInvalidCanonicalHeaderValues(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
 		req.Header.Set("Content-Type", "application/json\r\nX-Evil: 1")
 
-		sig, err := SignCanonical([]byte(secretStr), req, ts, nonce, nil, nil)
+		sig, err := SignCanonical(SignRequest{
+			Secret: []byte(secretStr), Request: req, Timestamp: ts, Nonce: nonce,
+		})
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInvalidRequest), "got %v", err)
 		assert.Empty(t, sig)
@@ -748,7 +785,10 @@ func TestSignCanonical_RejectsInvalidCanonicalHeaderValues(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/x", nil)
 		req.Header.Set("X-Secret-Token", "acme\ncorp")
 
-		sig, err := SignCanonical([]byte(secretStr), req, ts, nonce, nil, []string{"X-Secret-Token"})
+		sig, err := SignCanonical(SignRequest{
+			Secret: []byte(secretStr), Request: req, Timestamp: ts, Nonce: nonce,
+			RequiredHeaders: []string{"X-Secret-Token"},
+		})
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInvalidRequest), "got %v", err)
 		assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")

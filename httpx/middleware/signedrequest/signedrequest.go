@@ -614,38 +614,65 @@ func hmacSHA256(secret, msg []byte) []byte {
 	return h.Sum(nil)
 }
 
+// SignRequest carries the inputs to [SignCanonical]. Named fields
+// keep the 6-input call site readable — Secret/Body are both byte
+// slices and Timestamp/Nonce are both short strings, so the positional
+// form was easy to misorder at the call site.
+type SignRequest struct {
+	// Secret is the shared HMAC key (>= 32 bytes — minSecretLen).
+	Secret []byte
+	// Request is the outbound *http.Request whose canonical form is
+	// signed. Body is supplied separately via Body so the caller can
+	// retain ownership of the reader (the canonical form does not
+	// consume the request body).
+	Request *http.Request
+	// Timestamp is the [HeaderTimestamp] value (unix seconds, decimal).
+	Timestamp string
+	// Nonce is the [HeaderNonce] value (>= nonceMinLen base64 chars).
+	Nonce string
+	// Body is the request body bytes that will be sent on the wire.
+	// Pass nil for bodyless requests; pass the same bytes that the
+	// recipient's middleware will receive.
+	Body []byte
+	// RequiredHeaders names the request headers that must be present
+	// and covered by the signature; the verifier rejects requests that
+	// drop any of them. Nil is "the canonical defaults".
+	RequiredHeaders []string
+}
+
 // SignCanonical computes the kit-format signature for outbound calls.
 // Exported so the client-side wrapper (httpx/sign) can use the same
-// canonical string as the verifier.
-func SignCanonical(secret []byte, r *http.Request, ts, nonce string, body []byte, requiredHeaders []string) (string, error) {
-	if len(secret) < minSecretLen {
+// canonical string as the verifier. See [SignRequest] for the field
+// contract.
+func SignCanonical(sr SignRequest) (string, error) {
+	if len(sr.Secret) < minSecretLen {
 		return "", ErrSecretTooShort
 	}
-	if err := validateCanonicalRequest(r); err != nil {
+	if err := validateCanonicalRequest(sr.Request); err != nil {
 		return "", err
 	}
-	if ts == "" {
+	if sr.Timestamp == "" {
 		return "", fmt.Errorf("%w: missing timestamp", ErrMissingHeaders)
 	}
-	if err := validateStrictHeaderValue(ts, timestampMaxLen); err != nil {
+	if err := validateStrictHeaderValue(sr.Timestamp, timestampMaxLen); err != nil {
 		return "", err
 	}
-	if !validNonce(nonce) {
+	if !validNonce(sr.Nonce) {
 		return "", ErrNonceInvalid
 	}
-	headers, err := normalizeHeaders(requiredHeaders)
+	headers, err := normalizeHeaders(sr.RequiredHeaders)
 	if err != nil {
 		return "", err
 	}
 	for _, h := range headers {
-		if err := validateRequiredHeaderValue(r, h); err != nil {
+		if err := validateRequiredHeaderValue(sr.Request, h); err != nil {
 			return "", err
 		}
 	}
-	if err := validateOptionalHeaderValue(r, canonicalContentTypeHeader); err != nil {
+	if err := validateOptionalHeaderValue(sr.Request, canonicalContentTypeHeader); err != nil {
 		return "", err
 	}
-	mac := hmacSHA256(secret, buildCanonical(r, ts, nonce, body, headers))
+	mac := hmacSHA256(sr.Secret, buildCanonical(sr.Request, sr.Timestamp, sr.Nonce, sr.Body, headers))
 	return signaturePrefix + base64.StdEncoding.EncodeToString(mac), nil
 }
 

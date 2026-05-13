@@ -280,7 +280,14 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone.Header.Set(signedrequest.HeaderNonce, nonce)
 	clone.Header.Set(signedrequest.HeaderKeyID, keyID)
 
-	sig, err := signedrequest.SignCanonical(secret, clone, ts, nonce, body, t.cfg.includeHeaders)
+	sig, err := signedrequest.SignCanonical(signedrequest.SignRequest{
+		Secret:          secret,
+		Request:         clone,
+		Timestamp:       ts,
+		Nonce:           nonce,
+		Body:            body,
+		RequiredHeaders: t.cfg.includeHeaders,
+	})
 	if err != nil {
 		return nil, err
 	}
