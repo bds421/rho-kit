@@ -96,13 +96,26 @@ type Observer interface {
 }
 
 // Store is the full persistence contract — every production backend
-// implements all four roles. The split into [Inserter], [Claimer],
+// implements all five roles. The split into [Inserter], [Claimer],
 // [Outcomer], [Janitor], and [Observer] exists so callers can declare
 // the narrowest possible dependency: a transactional producer asks
-// for just a Inserter; a metrics exporter asks for just an Observer.
+// for just an Inserter; a metrics exporter asks for just an Observer.
 // Implementations must be safe for concurrent use.
 type Store interface {
 	Inserter
+	Claimer
+	Outcomer
+	Janitor
+	Observer
+}
+
+// RelayStore is the subset of [Store] the [Relay] actually consumes:
+// claim entries, record outcomes, run janitorial work, and observe
+// pending depth. NewRelay accepts this narrower contract so producer
+// code paths (which only need [Inserter]) cannot be misused as relay
+// state and so test doubles can implement just the relay-relevant
+// methods.
+type RelayStore interface {
 	Claimer
 	Outcomer
 	Janitor

@@ -42,7 +42,7 @@ const (
 // duplicate claims. A given Relay may not have Start called more than
 // once; the started flag enforces this.
 type Relay struct {
-	store     Store
+	store     RelayStore
 	publisher Publisher
 	logger    *slog.Logger
 	metrics   *Metrics
@@ -196,12 +196,17 @@ func WithMaxConcurrentPublishes(n int) RelayOption {
 // NewRelay creates a Relay that polls the outbox store and publishes entries
 // via the given Publisher. Configure with RelayOption functions.
 //
+// store is the narrow [RelayStore] interface (claim + outcome + janitor +
+// observer). The full [Store] satisfies it, but callers can hand in a
+// composed value that excludes [Inserter] so the relay cannot accidentally
+// produce new entries.
+//
 // Panics if store or publisher is nil — both are programming errors that
 // would otherwise crash the first poll cycle. Logger nil is accepted and
 // defaults to slog.Default() since dropping logs is recoverable.
-func NewRelay(store Store, publisher Publisher, logger *slog.Logger, opts ...RelayOption) *Relay {
+func NewRelay(store RelayStore, publisher Publisher, logger *slog.Logger, opts ...RelayOption) *Relay {
 	if store == nil {
-		panic("outbox: NewRelay requires a non-nil Store")
+		panic("outbox: NewRelay requires a non-nil RelayStore")
 	}
 	if publisher == nil {
 		panic("outbox: NewRelay requires a non-nil Publisher")

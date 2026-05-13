@@ -109,10 +109,13 @@ type WriteParams struct {
 	Headers     map[string]string
 }
 
-// Writer writes outbox entries via a Store implementation.
-// Safe for concurrent use.
+// Writer writes outbox entries via an [Inserter]. Safe for concurrent
+// use. Writer only needs the insert side of the persistence contract,
+// so callers can hand in a typed transactional inserter rather than the
+// full [Store] — keeping the producer codepath independent of relay
+// semantics (claim, outcome, janitor).
 type Writer struct {
-	store           Store
+	store           Inserter
 	txCheck         func(context.Context) error
 	requireTxPolicy bool
 	sizeLimiter     messaging.MessageSizeLimiter
@@ -189,12 +192,14 @@ func WithRouteMaxMessageBytes(topic, routingKey string, maxBytes int) WriterOpti
 	}
 }
 
-// NewWriter creates a Writer backed by the given store. Panics if store is
-// nil — the misconfiguration would otherwise surface as a nil-deref on the
-// first Write call.
-func NewWriter(store Store, opts ...WriterOption) *Writer {
+// NewWriter creates a Writer backed by the given [Inserter]. Panics if
+// store is nil — the misconfiguration would otherwise surface as a
+// nil-deref on the first Write call. Accepting an Inserter rather than
+// the full [Store] means producer code only sees Insert and cannot
+// accidentally call Claimer/Outcomer/Janitor methods.
+func NewWriter(store Inserter, opts ...WriterOption) *Writer {
 	if store == nil {
-		panic("outbox: NewWriter requires a non-nil Store")
+		panic("outbox: NewWriter requires a non-nil Inserter")
 	}
 	w := &Writer{
 		store:       store,
