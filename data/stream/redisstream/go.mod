@@ -12,8 +12,6 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-require github.com/klauspost/cpuid/v2 v2.2.5 // indirect
-
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0

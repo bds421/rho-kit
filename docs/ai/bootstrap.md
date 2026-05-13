@@ -129,8 +129,8 @@ type Infrastructure struct {
 
     DB            *pgxbackend.Pool
     Broker        messaging.Connector
-    Publisher     messaging.MessagePublisher
-    Consumer      messaging.MessageConsumer
+    Publisher     messaging.Publisher
+    Consumer      messaging.Consumer
     NATS          *natsbackend.Connection
     NATSPublisher *natsbackend.Publisher
 

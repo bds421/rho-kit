@@ -29,3 +29,9 @@ the benchmark output directory is ignored when computing source-tree cleanliness
   v2.0.0 ahead of the tag. Those rows reflect the v1 baseline retained for
   historical reference; new bench runs will omit them. Use `httpx/sign` with
   `httpx/middleware/signedrequest` as the active signed-request path.
+- `core.bench` was captured before the `WithIDChecked` removal: `tenant.WithID`
+  was renamed and the standalone `WithIDChecked` helper was deleted. The
+  `BenchmarkWithIDChecked-16` rows in `core.bench` therefore reflect the
+  pre-rename baseline; the post-rename benchmark is `BenchmarkWithID` and a
+  refresh will replace those rows. Treat the existing rows as the closest
+  available comparison point for the now-renamed function.

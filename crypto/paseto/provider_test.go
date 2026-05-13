@@ -64,7 +64,7 @@ func TestWithVerifyOptionsCopiesCallerSlice(t *testing.T) {
 		WithVerifyOptions(opts...),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	opts[0] = nil
 	require.NoError(t, p.refresh(context.Background()))
@@ -88,7 +88,7 @@ func TestProvider_VerifiesAgainstActiveKey(t *testing.T) {
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	signer, err := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestProvider_RotatesAcceptedKey(t *testing.T) {
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	signOld, err := NewV4PublicSigner(privOld, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestProvider_KeepsOldKeysOnRefreshFailure(t *testing.T) {
 		WithOnRefreshError(func(error) { refreshErrors.Add(1) }),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	signer, _ := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	tok, _ := signer.Sign(Claims{
@@ -212,7 +212,7 @@ func TestProvider_FailsClosedWhenKeySetStale(t *testing.T) {
 		withProviderClock(func() time.Time { return now }),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	signer, _ := NewV4PublicSigner(priv, WithExpectedIssuer("svc"), WithAllowAnyAudience())
 	tok, _ := signer.Sign(Claims{
@@ -258,7 +258,7 @@ func TestProvider_RejectsEmptyKeySetOnRefresh(t *testing.T) {
 		WithOnRefreshError(func(error) { refreshErrors.Add(1) }),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) && refreshErrors.Load() == 0 {
@@ -288,14 +288,14 @@ func TestProvider_OnRefreshErrorPanicDoesNotCrashLoop(t *testing.T) {
 		}),
 	)
 	require.NoError(t, err)
-	defer p.Stop()
+	defer func() { _ = p.Close() }()
 
 	require.Eventually(t, func() bool {
 		return refreshErrors.Load() > 0
 	}, time.Second, 10*time.Millisecond)
 }
 
-func TestProvider_StopIdempotent(t *testing.T) {
+func TestProvider_CloseIdempotent(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	p, err := NewProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
@@ -303,11 +303,11 @@ func TestProvider_StopIdempotent(t *testing.T) {
 		WithVerifyOptions(WithExpectedIssuer("svc"), WithAllowAnyAudience()),
 	)
 	require.NoError(t, err)
-	p.Stop()
-	p.Stop() // must not panic
+	require.NoError(t, p.Close())
+	require.NoError(t, p.Close()) // must not panic
 }
 
-func TestProvider_StopConcurrentSafe(t *testing.T) {
+func TestProvider_CloseConcurrentSafe(t *testing.T) {
 	pub, _ := mustGenKey(t)
 	p, err := NewProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
@@ -324,7 +324,7 @@ func TestProvider_StopConcurrentSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			p.Stop()
+			_ = p.Close()
 		}()
 	}
 	close(start)
@@ -336,13 +336,13 @@ func TestProvider_InvalidReceiverDoesNotPanic(t *testing.T) {
 	if _, err := nilProvider.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
 		t.Fatalf("nil Verify error = %v, want ErrKeySetUnavailable", err)
 	}
-	nilProvider.Stop()
+	require.NoError(t, nilProvider.Close())
 
 	var zero Provider
 	if _, err := zero.Verify("token", time.Now()); !errors.Is(err, ErrKeySetUnavailable) {
 		t.Fatalf("zero Verify error = %v, want ErrKeySetUnavailable", err)
 	}
-	zero.Stop()
+	require.NoError(t, zero.Close())
 }
 
 func nilContextForTest() context.Context { return nil }

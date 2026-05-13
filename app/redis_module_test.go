@@ -93,6 +93,68 @@ func TestNewRedisModule_AllowsPlaintextWithOptOut(t *testing.T) {
 	})
 }
 
+func TestNewRedisModule_TransportSafety_Table(t *testing.T) {
+	cases := []struct {
+		name           string
+		addr           string
+		tlsConfig      *tls.Config
+		password       string
+		allowPlaintext bool
+		wantPanic      bool
+	}{
+		{
+			name: "non-loopback no TLS no password panics",
+			addr: "redis.prod.example:6379", wantPanic: true,
+		},
+		{
+			name:      "non-loopback TLS but no password panics",
+			addr:      "redis.prod.example:6379",
+			tlsConfig: &tls.Config{},
+			wantPanic: true,
+		},
+		{
+			name:      "non-loopback TLS and password allowed",
+			addr:      "redis.prod.example:6379",
+			tlsConfig: &tls.Config{},
+			password:  "secret",
+		},
+		{
+			name: "loopback name (localhost) plaintext allowed",
+			addr: "localhost:6379",
+		},
+		{
+			name: "loopback IPv4 (127.0.0.1) plaintext allowed",
+			addr: "127.0.0.1:6379",
+		},
+		{
+			name: "loopback IPv6 ([::1]) plaintext allowed",
+			addr: "[::1]:6379",
+		},
+		{
+			name:      "wildcard 0.0.0.0 is not loopback and panics",
+			addr:      "0.0.0.0:6379",
+			wantPanic: true,
+		},
+		{
+			name:           "non-loopback plaintext allowed via WithoutRedisTLS opt-out",
+			addr:           "redis.prod.example:6379",
+			allowPlaintext: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &goredis.Options{Addr: tc.addr, TLSConfig: tc.tlsConfig, Password: tc.password}
+			fn := func() { newRedisModule(opts, tc.allowPlaintext) }
+			if tc.wantPanic {
+				assert.Panics(t, fn)
+			} else {
+				assert.NotPanics(t, fn)
+			}
+		})
+	}
+}
+
 func TestRedisModule_HealthChecksBeforeInit(t *testing.T) {
 	m := newRedisModule(&goredis.Options{Addr: "localhost:6379"}, true)
 	checks := m.HealthChecks()

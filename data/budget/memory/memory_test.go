@@ -78,7 +78,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 			assert.Equal(t, int64(0), rem)
 			assert.ErrorIs(t, err, budget.ErrInvalidBudget)
 
-			assert.NotPanics(t, tc.b.Stop)
+			assert.NotPanics(t, func() { _ = tc.b.Close() })
 			assert.Equal(t, 0, tc.b.Len())
 		})
 	}
@@ -356,7 +356,7 @@ func TestSweeper_RemovesStaleKeys(t *testing.T) {
 		memory.WithClock(func() time.Time { return time.Unix(0, cur.Load()).UTC() }),
 		memory.WithSweeper(10*time.Millisecond),
 	)
-	t.Cleanup(b.Stop)
+	t.Cleanup(func() { _ = b.Close() })
 	ctx := context.Background()
 
 	for _, k := range []string{"k1", "k2", "k3"} {
@@ -376,12 +376,12 @@ func TestSweeper_RemovesStaleKeys(t *testing.T) {
 	assert.Equal(t, 0, b.Len(), "sweeper must drop keys whose period has rolled over")
 }
 
-// TestStop_Idempotent ensures a double Stop neither panics nor
+// TestClose_Idempotent ensures a double Close neither panics nor
 // blocks.
-func TestStop_Idempotent(t *testing.T) {
+func TestClose_Idempotent(t *testing.T) {
 	b := memory.New(100, time.Hour, memory.WithSweeper(time.Hour))
-	b.Stop()
-	b.Stop()
+	require.NoError(t, b.Close())
+	require.NoError(t, b.Close())
 }
 
 // TestConsume_RetryAfterUsesInjectedClock verifies retry-after is
@@ -428,7 +428,7 @@ func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 		memory.WithClock(func() time.Time { return time.Unix(0, cur.Load()).UTC() }),
 		memory.WithSweeper(time.Microsecond),
 	)
-	t.Cleanup(b.Stop)
+	t.Cleanup(func() { _ = b.Close() })
 
 	const callers = 50
 	deadline := time.Now().Add(200 * time.Millisecond)

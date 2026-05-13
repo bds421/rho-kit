@@ -34,7 +34,9 @@
 //
 // # Lifecycle
 //
-// Call [String.Close] during graceful shutdown to zero the buffer. The
-// type is otherwise GC-managed; there is no requirement to Close every
-// secret you create.
+// Call [String.Zero] during graceful shutdown to overwrite the underlying
+// buffer with zero bytes. Zero is not an [io.Closer] — it wipes the
+// in-memory copy and leaves the value safe to reuse. The type is
+// otherwise GC-managed; there is no requirement to Zero every secret
+// you create.
 package secret

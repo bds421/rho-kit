@@ -33,12 +33,11 @@ func newPasetoModule(p *paseto.Provider) *pasetoModule {
 
 func (m *pasetoModule) Init(_ context.Context, mc ModuleContext) error {
 	// The Provider's refresh loop is already running (kicked off in
-	// paseto.NewProvider). We just need to ensure Stop is called on
+	// paseto.NewProvider). We just need to ensure Close is called on
 	// shutdown.
 	mc.Runner.AddFunc("paseto-provider", func(ctx context.Context) error {
 		<-ctx.Done()
-		m.provider.Stop()
-		return nil
+		return m.provider.Close()
 	})
 	mc.Logger.Info("paseto provider wired")
 	return nil

@@ -168,7 +168,7 @@ func TestFullOrderFlow(t *testing.T) {
 
 ## In-Memory Broker (Unit Tests)
 
-`infra/messaging/membroker` implements `messaging.MessagePublisher` for unit tests.
+`infra/messaging/membroker` implements `messaging.Publisher` for unit tests.
 
 ```go
 func TestOrderService(t *testing.T) {

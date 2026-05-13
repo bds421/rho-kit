@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestSealOpenBytes_RoundTrip(t *testing.T) {
+func TestEncryptDecryptBytes_RoundTrip(t *testing.T) {
 	gcm, err := NewGCM(testKey(t))
 	if err != nil {
 		t.Fatalf("NewGCM: %v", err)
@@ -32,7 +32,7 @@ func TestSealOpenBytes_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestSealBytes_UniqueNonces(t *testing.T) {
+func TestEncryptBytes_UniqueNonces(t *testing.T) {
 	gcm, err := NewGCM(testKey(t))
 	if err != nil {
 		t.Fatalf("NewGCM: %v", err)
@@ -47,7 +47,7 @@ func TestSealBytes_UniqueNonces(t *testing.T) {
 	}
 }
 
-func TestOpenBytes_TooShort(t *testing.T) {
+func TestDecryptBytes_TooShort(t *testing.T) {
 	gcm, err := NewGCM(testKey(t))
 	if err != nil {
 		t.Fatalf("NewGCM: %v", err)
@@ -66,7 +66,7 @@ func TestNewGCM_InvalidKeySize(t *testing.T) {
 	}
 }
 
-func TestSealOpenBytes_EmptyPlaintext(t *testing.T) {
+func TestEncryptDecryptBytes_EmptyPlaintext(t *testing.T) {
 	gcm, err := NewGCM(testKey(t))
 	if err != nil {
 		t.Fatalf("NewGCM: %v", err)
@@ -87,7 +87,7 @@ func TestSealOpenBytes_EmptyPlaintext(t *testing.T) {
 	}
 }
 
-func TestSealOpenBytes_NilAEADReturnsError(t *testing.T) {
+func TestEncryptDecryptBytes_NilAEADReturnsError(t *testing.T) {
 	if _, err := EncryptBytes(nil, []byte("secret")); !errors.Is(err, ErrInvalidAEAD) {
 		t.Fatalf("EncryptBytes nil AEAD error = %v, want ErrInvalidAEAD", err)
 	}

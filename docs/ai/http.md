@@ -24,7 +24,7 @@ Router(func(infra app.Infrastructure) http.Handler {
 
     return stack.Default(mux, infra.Logger,
         stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
-        stack.WithInner(auth.RequireUserWithJWT(infra.JWT)),
+        stack.WithInner(auth.JWT(infra.JWT)),
     )
 })
 ```
@@ -46,7 +46,7 @@ Router(func(infra app.Infrastructure) http.Handler {
 ```go
 stack.Default(mux, logger,
     stack.WithOuter(
-        infra.RateLimiter.Middleware,
+        ratelimit.Middleware(infra.RateLimiter),
         csrf.New(
             csrf.WithSecret(cfg.CSRFSecret),
             csrf.WithAllowedOrigins(cfg.PublicOrigin),
@@ -54,7 +54,7 @@ stack.Default(mux, logger,
         csrf.RequireJSONContentType,
     ),
     stack.WithInner(
-        auth.RequireUserWithJWT(infra.JWT),
+        auth.JWT(infra.JWT),
         auth.RequirePermission("users:read"),
     ),
     stack.WithQuietPaths("/ready", "/health"), // logged at Debug level
@@ -65,7 +65,7 @@ stack.Default(mux, logger,
 
 ```go
 // JWT-only:
-auth.RequireUserWithJWT(infra.JWT)
+auth.JWT(infra.JWT)
 
 // Service-to-service (JWT OR mTLS):
 auth.RequireS2SAuth(infra.JWT, []string{"payment-service", "order-service"},
@@ -104,12 +104,12 @@ response headers or propagated to downstream calls.
 ```go
 // IP-based (via Builder):
 app.New(...).WithIPRateLimit(100, time.Minute)
-// then: stack.WithOuter(infra.RateLimiter.Middleware)
+// then: stack.WithOuter(ratelimit.Middleware(infra.RateLimiter))
 
 // Keyed per-user (via Builder):
 app.New(...).WithKeyedRateLimit("api", 10, time.Second)
 // then in router:
-mux.Handle("/api/", ratelimit.KeyedRateLimitMiddleware(
+mux.Handle("/api/", ratelimit.KeyedMiddleware(
     infra.KeyedLimiters["api"],
     func(r *http.Request) string { return auth.UserID(r.Context()) },
 )(apiHandler))
@@ -119,24 +119,27 @@ Both return `429` with `Retry-After` header.
 
 Builder-managed rate limiters register their cleanup loops automatically. When
 constructing `ratelimit.NewRateLimiter` or `NewKeyedRateLimiter` manually, run
-exactly one cleanup loop per limiter and propagate its error:
+exactly one cleanup loop per limiter and propagate its error. The limiter
+satisfies `lifecycle.Component` (`Start(ctx) error` / `Stop(ctx) error`):
 
 ```go
 go func() {
-    if err := limiter.Run(ctx); err != nil {
+    if err := limiter.Start(ctx); err != nil {
         logger.Error("rate limiter cleanup stopped", "err", err)
     }
 }()
+// On shutdown:
+_ = limiter.Stop(shutdownCtx)
 ```
 
-`Run` rejects nil contexts, uninitialized limiters, and duplicate starts.
+`Start` rejects nil contexts, uninitialized limiters, and duplicate starts.
 
 Builder-created IP and keyed rate limiters are wired with these metrics
 automatically. Manual rate limiters expose the same stable Prometheus counters
 and retry-after histograms:
 
 ```go
-metrics := ratelimit.NewMetrics(prometheus.DefaultRegisterer)
+metrics := ratelimit.NewMetrics(ratelimit.WithRegisterer(prometheus.DefaultRegisterer))
 
 limiter := ratelimit.NewRateLimiter(100, time.Minute,
     ratelimit.WithMetrics(metrics),
@@ -206,7 +209,7 @@ var req CreateUserRequest
 if !httpx.DecodeJSON(w, r, &req) { return } // writes 415 on non-JSON, 400 on malformed or invalid requests
 
 // Respond with JSON:
-httpx.WriteJSON(w, http.StatusOK, user)
+httpx.WriteJSON(w, r, http.StatusOK, user)
 
 // Error response (structured {error, code}):
 httpx.WriteError(w, http.StatusNotFound, "user not found")
@@ -367,7 +370,7 @@ chain := stack.NewChain(
 )
 
 // Immutable — Append returns a new chain:
-withAuth := chain.Append(auth.RequireUserWithJWT(provider))
+withAuth := chain.Append(auth.JWT(provider))
 
 handler := withAuth.Then(mux)     // or .ThenFunc(fn)
 chain.Len()                        // number of middlewares
@@ -406,8 +409,8 @@ id, ok := httpx.ParseID(r) // from {id} wildcard
 
 // Partial update helper (only sets non-nil fields):
 updates := make(map[string]any)
-httpx.SetIfNotNil(updates, "name", req.Name)   // *string
-httpx.SetIfNotNil(updates, "age", req.Age)      // *int
+maputil.SetIfNotNil(updates, "name", req.Name)   // *string
+maputil.SetIfNotNil(updates, "age", req.Age)      // *int
 ```
 
 ## Anti-Patterns
@@ -415,5 +418,5 @@ httpx.SetIfNotNil(updates, "age", req.Age)      // *int
 - **Never** create or serve with `net/http` server entrypoints (`http.Server{}`, `http.ListenAndServe`, `http.Serve`) directly — use `httpx.NewServer` for safe defaults.
 - **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `infra.HTTPClient`.
 - **Never** manually order middleware — use `stack.Default` with `WithOuter`/`WithInner`.
-- **Never** pass `nil` JWT provider to `auth.RequireUserWithJWT` — it panics by design.
+- **Never** pass `nil` JWT provider to `auth.JWT` — it panics by design.
 - **Never** use `r.URL.Path` for metrics labels — use `r.Pattern` (Go 1.22+) to avoid cardinality explosion.

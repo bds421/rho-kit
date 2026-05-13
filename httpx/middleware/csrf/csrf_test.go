@@ -28,6 +28,14 @@ func testSecret() []byte {
 	return secret
 }
 
+func generateSignedToken(secret []byte) string {
+	token, err := mintSignedToken(secret)
+	if err != nil {
+		panic("csrf test: failed to generate signed token: " + err.Error())
+	}
+	return token
+}
+
 func TestWithSecretClonesInput(t *testing.T) {
 	secret := testSecret()
 	opt := WithSecret(secret)
@@ -1325,14 +1333,15 @@ func TestWithSameSitePanicDoesNotReflectMode(t *testing.T) {
 	})
 }
 
-func TestGenerateSignedTokenPanicIsStable(t *testing.T) {
+func TestMintSignedToken_EntropyFailureReturnsError(t *testing.T) {
 	prev := tokenRandReader
 	tokenRandReader = secretFailingReader{}
 	t.Cleanup(func() { tokenRandReader = prev })
 
-	assert.PanicsWithValue(t, "csrf: failed to generate random token", func() {
-		generateSignedToken(testSecret())
-	})
+	token, err := mintSignedToken(testSecret())
+	require.Error(t, err)
+	assert.Empty(t, token)
+	assert.Contains(t, err.Error(), "csrf: generate random token")
 }
 
 // --- SkipCheck regen bug ---

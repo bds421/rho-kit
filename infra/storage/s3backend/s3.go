@@ -259,7 +259,7 @@ func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(key),
 	})
-	b.metrics.observeOp(b.instance, "get", start, err)
+	b.metrics.observeOp(b.instance, "get", start, s3MetricErr(err))
 
 	if err != nil {
 		var noSuchKey *types.NoSuchKey

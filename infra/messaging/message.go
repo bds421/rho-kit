@@ -2,12 +2,12 @@ package messaging
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/google/uuid"
 )
 
@@ -30,12 +30,16 @@ const (
 )
 
 // ErrInvalidMessage marks message metadata or payload that is not portable
-// across the kit's AMQP, NATS, Redis, and in-memory messaging backends.
-var ErrInvalidMessage = errors.New("messaging: invalid message")
+// across the kit's AMQP, NATS, Redis, and in-memory messaging backends. It is
+// an [apperror.ValidationError] so HTTP and gRPC adapters map it to
+// 400/InvalidArgument automatically.
+var ErrInvalidMessage = apperror.NewValidation("messaging: invalid message")
 
 // ErrInvalidMessageHeader marks message headers that are not portable across
-// the kit's AMQP, NATS, Redis, and in-memory messaging backends.
-var ErrInvalidMessageHeader = errors.New("messaging: invalid message header")
+// the kit's AMQP, NATS, Redis, and in-memory messaging backends. It is an
+// [apperror.ValidationError] so HTTP and gRPC adapters map it to
+// 400/InvalidArgument automatically.
+var ErrInvalidMessageHeader = apperror.NewValidation("messaging: invalid message header")
 
 // Message represents a structured message with metadata.
 // It is transport-agnostic and used by both AMQP and Redis backends.

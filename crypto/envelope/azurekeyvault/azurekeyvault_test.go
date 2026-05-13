@@ -59,6 +59,86 @@ func TestNewBuildsFallbackKeyIDFromName(t *testing.T) {
 	if got := k.KeyID(); got != "azurekeyvault://keys/wrap-key/123" {
 		t.Fatalf("KeyID = %q", got)
 	}
+	if k.keyHost != "" {
+		t.Fatalf("KeyName-only KEK keyHost = %q, want empty (no VaultURL pin)", k.keyHost)
+	}
+}
+
+func TestNewPinsHostFromVaultURLInKeyNameMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		vaultURL string
+		wantHost string
+	}{
+		{"full https URL", "https://kv.vault.azure.net", "kv.vault.azure.net"},
+		{"bare host", "kv.vault.azure.net", "kv.vault.azure.net"},
+		{"mixed case", "https://KV.vault.azure.net", "kv.vault.azure.net"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			k, err := NewKEK(&fakeKeyClient{}, Config{
+				KeyName:  "wrap-key",
+				VaultURL: tc.vaultURL,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if k.keyHost != tc.wantHost {
+				t.Fatalf("keyHost = %q, want %q", k.keyHost, tc.wantHost)
+			}
+		})
+	}
+}
+
+func TestNewVaultURLMustMatchKeyIDHost(t *testing.T) {
+	if _, err := NewKEK(&fakeKeyClient{}, Config{
+		KeyID:    "https://kv-a.vault.azure.net/keys/wrap-key/1",
+		VaultURL: "https://kv-b.vault.azure.net",
+	}); err == nil {
+		t.Fatal("expected error for mismatched VaultURL")
+	}
+
+	if _, err := NewKEK(&fakeKeyClient{}, Config{
+		KeyID:    "https://kv-a.vault.azure.net/keys/wrap-key/1",
+		VaultURL: "https://kv-a.vault.azure.net",
+	}); err != nil {
+		t.Fatalf("expected success when VaultURL matches KeyID host: %v", err)
+	}
+}
+
+func TestKEKKeyNameModeWithVaultURLRejectsCrossVaultEnvelopeKeyID(t *testing.T) {
+	k, err := NewKEK(&fakeKeyClient{}, Config{
+		KeyName:  "wrap-key",
+		VaultURL: "https://expected.vault.azure.net",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := k.Unwrap(context.Background(), "https://other.vault.azure.net/keys/wrap-key/1", []byte("wrapped")); err == nil {
+		t.Fatal("Unwrap with cross-vault envelope keyID expected error")
+	}
+}
+
+func TestNewRejectsMalformedVaultURL(t *testing.T) {
+	bad := []string{
+		"http://kv.vault.azure.net",
+		"https://kv.vault.azure.net/path",
+		"https://kv.vault.azure.net?query=1",
+		"https://kv.vault.azure.net#frag",
+		" kv.vault.azure.net",
+		"kv.vault.azure.net/path",
+		"",
+	}
+	for _, v := range bad {
+		if v == "" {
+			continue
+		}
+		t.Run(v, func(t *testing.T) {
+			if _, err := NewKEK(&fakeKeyClient{}, Config{KeyName: "wrap-key", VaultURL: v}); err == nil {
+				t.Fatalf("expected error for VaultURL=%q", v)
+			}
+		})
+	}
 }
 
 func TestNewRejectsInvalidConfig(t *testing.T) {

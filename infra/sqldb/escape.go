@@ -3,6 +3,8 @@ package sqldb
 import (
 	"regexp"
 	"strings"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // safeColumnName matches valid SQL column names: letters, digits, underscores,
@@ -10,10 +12,24 @@ import (
 // Rejects trailing dots, leading dots, double dots, and multi-dot names like "a.b.c".
 var safeColumnName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
 
-// ValidateColumn panics if name is not a safe SQL column identifier.
-// This is a defense-in-depth measure — callers should always pass hardcoded
-// column names, never user input.
-func ValidateColumn(name string) {
+// ValidateColumn returns an [apperror.ValidationError] when name is not a
+// safe SQL column identifier. Use this when name originates anywhere it
+// could plausibly be derived from runtime input (config reload, request
+// parameter, generated migration). For hardcoded identifiers in init or
+// startup code, prefer [MustValidateColumn] which panics on the same
+// inputs and surfaces misconfiguration at boot.
+func ValidateColumn(name string) error {
+	if !safeColumnName.MatchString(name) {
+		return apperror.NewValidation("database: unsafe column name")
+	}
+	return nil
+}
+
+// MustValidateColumn panics if name is not a safe SQL column identifier.
+// Reserve for callers that already restrict name to a hardcoded set; any
+// caller that accepts runtime input must use [ValidateColumn] and handle
+// the returned error.
+func MustValidateColumn(name string) {
 	if !safeColumnName.MatchString(name) {
 		panic("database: unsafe column name")
 	}
@@ -22,11 +38,15 @@ func ValidateColumn(name string) {
 // QuoteColumn wraps a column name in PostgreSQL double quotes. Supports
 // dot-qualified names like "table.column" by quoting each part separately.
 // Escapes embedded quote characters as defense-in-depth even though
-// ValidateColumn would normally reject names containing them.
+// MustValidateColumn would normally reject names containing them.
+//
+// QuoteColumn panics on unsafe names. Callers that may pass runtime
+// input must first call [ValidateColumn] and return the error rather
+// than letting the panic escape.
 //
 // v2 dropped the Dialect parameter — kit only supports PostgreSQL now.
 func QuoteColumn(name string) string {
-	ValidateColumn(name)
+	MustValidateColumn(name)
 
 	const q = `"`
 	const escape = `""`

@@ -10,7 +10,7 @@ import (
 func ExampleNew() {
 	// Capacity 2, refill 1/sec. The first two requests pass; the third is denied.
 	lim := tokenbucket.New(2, 1, tokenbucket.WithoutSweeper())
-	defer lim.Stop()
+	defer func() { _ = lim.Close() }()
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {

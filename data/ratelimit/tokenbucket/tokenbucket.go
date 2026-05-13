@@ -124,16 +124,19 @@ func (l *Limiter) ready() error {
 	return nil
 }
 
-// Stop terminates the background sweeper. Safe to call multiple
-// times.
-func (l *Limiter) Stop() {
+// Close terminates the background sweeper. Safe to call multiple
+// times. Always returns nil — the signature matches [io.Closer] so the
+// Limiter can be wired into resource-cleanup helpers, but the
+// shutdown path itself cannot fail.
+func (l *Limiter) Close() error {
 	if l == nil || l.stopCh == nil || l.doneCh == nil {
-		return
+		return nil
 	}
 	l.stopOnce.Do(func() {
 		close(l.stopCh)
 		<-l.doneCh
 	})
+	return nil
 }
 
 func (l *Limiter) sweepLoop() {

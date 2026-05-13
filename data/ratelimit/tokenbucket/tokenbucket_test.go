@@ -124,7 +124,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 			assert.Equal(t, time.Duration(0), retry)
 			assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
 
-			assert.NotPanics(t, tc.l.Stop)
+			assert.NotPanics(t, func() { _ = tc.l.Close() })
 			assert.Equal(t, 0, tc.l.Len())
 		})
 	}
@@ -180,7 +180,7 @@ func TestSweeper_RemovesColdBuckets(t *testing.T) {
 		WithClock(func() time.Time { return time.Unix(0, cur.Load()) }),
 		WithSweeper(10*time.Millisecond),
 	)
-	t.Cleanup(l.Stop)
+	t.Cleanup(func() { _ = l.Close() })
 
 	for _, k := range []string{"a", "b", "c"} {
 		ok, _, err := l.Allow(context.Background(), k)
@@ -201,10 +201,10 @@ func TestSweeper_RemovesColdBuckets(t *testing.T) {
 	assert.Equal(t, 0, l.Len(), "sweeper must drop fully-refilled buckets")
 }
 
-func TestStop_Idempotent(t *testing.T) {
+func TestClose_Idempotent(t *testing.T) {
 	l := New(1, 1, WithSweeper(time.Hour))
-	l.Stop()
-	l.Stop()
+	require.NoError(t, l.Close())
+	require.NoError(t, l.Close())
 }
 
 func TestWithClock_PanicsOnNil(t *testing.T) {

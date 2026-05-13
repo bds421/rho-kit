@@ -638,16 +638,9 @@ func canonicalOrigin(raw string, allowPath bool) (string, error) {
 	return strings.ToLower(u.Scheme + "://" + u.Host), nil
 }
 
-// generateSignedToken creates a random token with an HMAC signature.
-// Format: "<random_hex>.<hmac_hex>"
-func generateSignedToken(secret []byte) string {
-	token, err := mintSignedToken(secret)
-	if err != nil {
-		panic("csrf: failed to generate random token")
-	}
-	return token
-}
-
+// mintSignedToken creates a random token with an HMAC signature.
+// Format: "<random_hex>.<hmac_hex>". The middleware handler converts a
+// crypto/rand failure into HTTP 500 rather than crashing the request goroutine.
 func mintSignedToken(secret []byte) (string, error) {
 	raw := make([]byte, tokenLength)
 	if _, err := io.ReadFull(tokenRandReader, raw); err != nil {

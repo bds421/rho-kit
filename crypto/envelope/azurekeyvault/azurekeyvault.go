@@ -69,6 +69,15 @@ type Config struct {
 	// exact version-qualified KID for future Unwrap calls.
 	KeyVersion string
 
+	// VaultURL optionally pins the expected Azure Key Vault host so the
+	// Unwrap path rejects envelope key IDs that target a different vault.
+	// When KeyID is set the host is derived from it automatically; in the
+	// KeyName/KeyVersion construction path Wrap returns whichever KID the
+	// SDK client points at, so supplying VaultURL is the defense-in-depth
+	// way to keep cross-vault key IDs from silently decrypting. Accepts
+	// either the full URL ("https://kv.vault.azure.net") or a bare host.
+	VaultURL string
+
 	// Algorithm is the Key Vault wrapping algorithm. Empty defaults to
 	// RSA-OAEP-256. RSA1_5 and RSA-OAEP are rejected; use RSA-OAEP-256,
 	// AES-KW, or CKM AES key-wrap algorithms.
@@ -208,6 +217,15 @@ func keyConfig(cfg Config) (string, string, string, string, error) {
 		if err != nil {
 			return "", "", "", "", err
 		}
+		if cfg.VaultURL != "" {
+			vaultHost, err := parseVaultHost(cfg.VaultURL)
+			if err != nil {
+				return "", "", "", "", err
+			}
+			if !strings.EqualFold(vaultHost, keyHost) {
+				return "", "", "", "", errors.New("azurekeyvault: Config.VaultURL host must match Config.KeyID host")
+			}
+		}
 		return keyName, keyVersion, cfg.KeyID, keyHost, nil
 	}
 	if err := validateKeySegment("Config.KeyName", cfg.KeyName, false); err != nil {
@@ -216,8 +234,43 @@ func keyConfig(cfg Config) (string, string, string, string, error) {
 	if err := validateKeySegment("Config.KeyVersion", cfg.KeyVersion, true); err != nil {
 		return "", "", "", "", err
 	}
+	vaultHost := ""
+	if cfg.VaultURL != "" {
+		host, err := parseVaultHost(cfg.VaultURL)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		vaultHost = host
+	}
 	keyID := fallbackKeyID(cfg.KeyName, cfg.KeyVersion)
-	return cfg.KeyName, cfg.KeyVersion, keyID, "", nil
+	return cfg.KeyName, cfg.KeyVersion, keyID, vaultHost, nil
+}
+
+// parseVaultHost extracts the lowercased host from a Key Vault URL or
+// a bare host string. Empty input is rejected by callers — this helper
+// is only invoked when cfg.VaultURL is set.
+func parseVaultHost(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed != raw || trimmed == "" {
+		return "", errors.New("azurekeyvault: Config.VaultURL must be a clean non-empty value")
+	}
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", errors.New("azurekeyvault: Config.VaultURL must be a valid URL")
+		}
+		if u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return "", errors.New("azurekeyvault: Config.VaultURL must be an https Key Vault URL")
+		}
+		if strings.Trim(u.Path, "/") != "" {
+			return "", errors.New("azurekeyvault: Config.VaultURL must not include a path")
+		}
+		return strings.ToLower(u.Host), nil
+	}
+	if strings.ContainsAny(trimmed, "/?#") {
+		return "", errors.New("azurekeyvault: Config.VaultURL must be an https URL or bare host")
+	}
+	return strings.ToLower(trimmed), nil
 }
 
 func normalizeAlgorithm(algorithm azkeys.EncryptionAlgorithm) (azkeys.EncryptionAlgorithm, error) {

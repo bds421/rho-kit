@@ -63,8 +63,11 @@ a stopped background service must be started again.
 `security/jwtutil.Provider.Run` now returns `error`; callers that manually
 start a provider should return or log that error from their lifecycle goroutine.
 `app.Builder.WithJWT` already wires this through the lifecycle runner.
-`httpx/middleware/ratelimit.RateLimiter.Run` and `KeyedRateLimiter.Run` also
-return `error`; `app.Builder` wires those errors through automatically.
+`httpx/middleware/ratelimit.RateLimiter` and `KeyedRateLimiter` expose
+`Start(ctx) error` / `Stop(ctx) error` (renamed from `Run`) and satisfy
+`lifecycle.Component`; `app.Builder` wires both methods automatically. Manual
+wiring should call `Start` on a background goroutine and `Stop` during
+shutdown, propagating any returned error.
 `infra/messaging.BufferedPublisher.Run` now returns `error`; manual wiring
 should log or return it from the goroutine that owns the drain loop.
 
@@ -971,7 +974,7 @@ the marker.
 ### Other soft incompatibilities
 
 1. **`BufferedPublisher` requires a state file in non-dev**
-   environments. Set `WithBufferedStateFile(path)` or pass
+   environments. Set `WithStateFile(path)` or pass
    `WithEphemeralBuffer()` for an explicit opt-out backed by an
    upstream outbox. Dev environments warn but allow ephemeral
    buffering. *This was already in main pre-v2; flagged here for

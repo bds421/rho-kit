@@ -15,7 +15,7 @@ var (
 func BenchmarkAllowAllowed(b *testing.B) {
 	now := time.Unix(0, 0)
 	limiter := New(1, 1, WithClock(func() time.Time { return now }), WithoutSweeper())
-	defer limiter.Stop()
+	defer func() { _ = limiter.Close() }()
 
 	var allowed bool
 	var retryAfter time.Duration
@@ -36,7 +36,7 @@ func BenchmarkAllowAllowed(b *testing.B) {
 func BenchmarkAllowDenied(b *testing.B) {
 	now := time.Unix(0, 0)
 	limiter := New(1, 1, WithClock(func() time.Time { return now }), WithoutSweeper())
-	defer limiter.Stop()
+	defer func() { _ = limiter.Close() }()
 	if allowed, _, err := limiter.Allow(context.Background(), "tenant-123"); err != nil || !allowed {
 		b.Fatalf("initial Allow = %v, %v", allowed, err)
 	}

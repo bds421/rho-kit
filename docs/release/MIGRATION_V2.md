@@ -69,8 +69,8 @@ installed by `RequireS2SAuth`.
 
 Migration:
 
-1. Put `RequireUserWithJWT`, `RequireS2SAuth`, PASETO, or signed-request
-   middleware ahead of authorization middleware on every protected route.
+1. Put `auth.JWT`, `RequireS2SAuth`, PASETO, or signed-request middleware
+   ahead of authorization middleware on every protected route.
 2. Ensure JWT/PASETO issuers include explicit permissions or scopes for user
    routes.
 3. Use `httpx/authz.RequirePermission` with a policy when decisions need RBAC
@@ -208,6 +208,7 @@ by package.
 | Area | Migration |
 |---|---|
 | `paseto.NewV4Public` | Split into `paseto.NewV4PublicSigner` and `paseto.NewV4PublicVerifier`. Verifiers now reject reserved claim names at verify time. |
+| `paseto.Provider.Stop` | Renamed to `Provider.Close() error`. `Provider` is not a lifecycle Component; it pairs with `Run(ctx)` for cache refresh and only releases its own background resources. |
 
 ### `httpx`
 
@@ -248,14 +249,26 @@ by package.
 |---|---|
 | `MessagePublisher` / `MessageConsumer` | Renamed to `Publisher` / `Consumer`. Update all interface references and embeds. |
 | `Connector.Close` | Renamed to `Connector.Stop(ctx) error`. The new signature takes a `context.Context` so shutdown can be bounded. |
-| `BufferedPublisher` options | Destuttered. `WithBufferedMaxSize` → `WithMaxSize`, `WithBufferedFlushInterval` → `WithFlushInterval`, and so on. |
+| `BufferedPublisher` options | Destuttered. `WithBufferedMaxSize` → `WithMaxSize`, `WithBufferedStateFile` → `WithStateFile`, `WithBufferedMaxMessageBytes` → `WithMaxMessageBytes`, `WithBufferedFinalDrainTimeout` → `WithFinalDrainTimeout`. |
 
 ### `infra/storage`
 
 | Area | Migration |
 |---|---|
-| `storage.Manager.Disk` | Renamed to `storage.Manager.Backend` and now returns `(Storage, error)` with `apperror.NewNotFound` instead of panicking on a missing entry. |
+| `storage.Manager.Disk` | Renamed to `storage.Manager.Backend` and now returns `(Storage, error)` with `apperror.NewNotFound` instead of panicking on a missing entry. Use `storage.Manager.MustBackend(name)` for the panic-on-miss form. |
 | Storage / messaging sentinel errors | Now return `apperror` codes (e.g. `apperror.NewNotFound`) rather than package-local sentinels. Use `apperror.IsNotFound` etc. to inspect. |
+
+### `infra/leaderelection/pgadvisory`, `infra/leaderelection/redislock`
+
+| Area | Migration |
+|---|---|
+| `WithCallbackDrainTimeout` | Option removed. `holdLeadership` now blocks until `Callbacks.OnAcquired` returns, so the same process cannot run two overlapping leadership terms. The cancelled `OnAcquired` context is the only signal — your callback MUST observe `ctx.Done()` and return promptly. If you need a hard upper bound, wrap the callback body with your own `context.WithTimeout`. See `TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains` in each adapter. |
+
+### `data/budget/memory`, `data/ratelimit/gcra`, `data/ratelimit/tokenbucket`
+
+| Area | Migration |
+|---|---|
+| `Budget.Stop`, `gcra.Limiter.Stop`, `tokenbucket.Limiter.Stop` | All three renamed to `Close() error`. These types own background ticker goroutines only — they do not satisfy `lifecycle.Component` and should be released via `defer x.Close()` from the owning constructor's caller. |
 
 ### `data/queue/redisqueue`
 
@@ -306,10 +319,11 @@ Validation evidence for the current release-prep tree:
 
 - Accessors for `security/asvs`, `observability/redmetrics`, and
   `resilience/retry` exist as functions in their owning modules.
-- `security/jwtutil.Provider.Run`,
-  `httpx/middleware/ratelimit.RateLimiter.Run`,
-  `httpx/middleware/ratelimit.KeyedRateLimiter.Run`, and
-  `infra/messaging.BufferedPublisher.Run` all return `error`.
+- `security/jwtutil.Provider.Run` and
+  `infra/messaging.BufferedPublisher.Run` return `error`.
+- `httpx/middleware/ratelimit.RateLimiter` and
+  `httpx/middleware/ratelimit.KeyedRateLimiter` expose `Start(ctx) error` /
+  `Stop(ctx) error` (renamed from `Run`) and satisfy `lifecycle.Component`.
 - `infra/redis.HealthCheck` and `infra/redis.NonCriticalHealthCheck` both
   exist, and integration evidence is recorded in
   [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md).

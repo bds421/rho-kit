@@ -116,7 +116,7 @@ func waitForBufferedPublisherRunStarted(t *testing.T, pub *BufferedPublisher) {
 	t.Fatal("BufferedPublisher.Run did not start")
 }
 
-func TestWithBufferedFinalDrainTimeout_PanicsOnNonPositive(t *testing.T) {
+func TestWithFinalDrainTimeout_PanicsOnNonPositive(t *testing.T) {
 	for _, d := range []time.Duration{0, -time.Second} {
 		t.Run(d.String(), func(t *testing.T) {
 			defer func() {
@@ -129,7 +129,7 @@ func TestWithBufferedFinalDrainTimeout_PanicsOnNonPositive(t *testing.T) {
 	}
 }
 
-func TestWithBufferedMaxSize_PanicDoesNotReflectValue(t *testing.T) {
+func TestWithMaxSize_PanicDoesNotReflectValue(t *testing.T) {
 	defer func() {
 		rec := recover()
 		if rec == nil {

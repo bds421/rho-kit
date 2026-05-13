@@ -1,11 +1,12 @@
 package messaging
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 const (
@@ -16,8 +17,10 @@ const (
 )
 
 // ErrInvalidRoute marks an exchange name or routing key that is not portable
-// across the kit's AMQP, NATS, Redis, buffered, and in-memory publishers.
-var ErrInvalidRoute = errors.New("messaging: invalid route")
+// across the kit's AMQP, NATS, Redis, buffered, and in-memory publishers. It
+// is an [apperror.ValidationError] so HTTP and gRPC adapters map it to
+// 400/InvalidArgument automatically.
+var ErrInvalidRoute = apperror.NewValidation("messaging: invalid route")
 
 // ValidatePublishRoute checks the shared publisher route contract. The
 // exchange is required; routingKey may be empty for fanout/exchange-only

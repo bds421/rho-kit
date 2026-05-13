@@ -36,6 +36,11 @@ type KEK struct {
 	c       *kms.Client
 	keyID   string
 	context map[string]string
+	// region is captured from the KMS client at construction time so
+	// the bare-keyID decrypt path can reject envelope ARNs from a
+	// different region. Empty when the SDK client did not surface a
+	// region (best-effort).
+	region string
 }
 
 // Config bundles the kit's KMS knobs.
@@ -63,7 +68,9 @@ func (c Config) LogValue() slog.Value {
 }
 
 // NewKEK builds a KEK from cfg using the given KMS client. Returns an
-// error if KeyID is empty.
+// error if KeyID is empty. The client's region is captured (best-effort)
+// so the bare-keyID decrypt path can reject envelope ARNs from a
+// different region.
 func NewKEK(c *kms.Client, cfg Config) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("awskms: client must not be nil")
@@ -71,7 +78,12 @@ func NewKEK(c *kms.Client, cfg Config) (*KEK, error) {
 	if cfg.KeyID == "" {
 		return nil, errors.New("awskms: Config.KeyID must not be empty")
 	}
-	return &KEK{c: c, keyID: cfg.KeyID, context: cloneContext(cfg.EncryptionContext)}, nil
+	return &KEK{
+		c:       c,
+		keyID:   cfg.KeyID,
+		context: cloneContext(cfg.EncryptionContext),
+		region:  c.Options().Region,
+	}, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the configured AWS key
@@ -169,6 +181,12 @@ func (k *KEK) decryptKeyIDFor(keyID string) (string, error) {
 		if !isKMSKeyARN(keyID) {
 			return "", errors.New("awskms: keyID does not match this KEK")
 		}
+		if k.region != "" {
+			region, ok := kmsARNRegion(keyID)
+			if !ok || region != k.region {
+				return "", errors.New("awskms: keyID region does not match this KEK")
+			}
+		}
 		return keyID, nil
 	}
 
@@ -230,6 +248,17 @@ func kmsARNResource(s string) (string, bool) {
 		return "", false
 	}
 	return parts[5], true
+}
+
+func kmsARNRegion(s string) (string, bool) {
+	parts := strings.SplitN(s, ":", 6)
+	if len(parts) != 6 {
+		return "", false
+	}
+	if parts[0] != "arn" || parts[2] != "kms" || parts[3] == "" {
+		return "", false
+	}
+	return parts[3], true
 }
 
 func cloneContext(in map[string]string) map[string]string {

@@ -384,7 +384,7 @@ func combineAAD(version uint8, callerAAD []byte) []byte {
 		out = append(out, callerAAD...)
 		out = append(out, aadDomainSepV2...)
 		return out
-	default:
+	case blobVersionV3:
 		var lp [binary.MaxVarintLen64]byte
 		n := binary.PutUvarint(lp[:], uint64(len(callerAAD)))
 		out := make([]byte, 0, len(aadDomainSepV3)+n+len(callerAAD))
@@ -392,6 +392,8 @@ func combineAAD(version uint8, callerAAD []byte) []byte {
 		out = append(out, lp[:n]...)
 		out = append(out, callerAAD...)
 		return out
+	default:
+		panic(fmt.Sprintf("envelope: combineAAD: unknown version %d", version))
 	}
 }
 

@@ -2,8 +2,9 @@ package messaging
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 // DefaultMaxMessageBytes is the cross-backend publish limit used by
@@ -11,8 +12,10 @@ import (
 const DefaultMaxMessageBytes = 1 << 20 // 1 MiB
 
 // ErrMessageTooLarge marks publish attempts rejected before they reach the
-// broker because the serialized message exceeds the configured size policy.
-var ErrMessageTooLarge = errors.New("messaging: message exceeds max size")
+// broker because the serialized message exceeds the configured size policy. It
+// is an [apperror.ValidationError] so HTTP and gRPC adapters map it to
+// 400/InvalidArgument automatically.
+var ErrMessageTooLarge = apperror.NewValidation("messaging: message exceeds max size")
 
 // MessageTooLargeError reports the measured message size and the effective
 // limit that rejected it.

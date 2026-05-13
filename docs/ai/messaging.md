@@ -8,7 +8,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 
 ## When to Use
 
-Use `infra/messaging` for **cross-service durable messaging**. The root package defines transport-agnostic interfaces (`MessagePublisher`, `MessageConsumer`, `Handler`, `Connector`). Backend implementations live in sub-packages.
+Use `infra/messaging` for **cross-service durable messaging**. The root package defines transport-agnostic interfaces (`Publisher`, `Consumer`, `Handler`, `Connector`). Backend implementations live in sub-packages.
 
 | Backend | Use when |
 |---|---|
@@ -56,7 +56,7 @@ app.New(...).
     })
 ```
 
-**Key point:** `infra.Publisher` and `infra.Consumer` are pre-wired by the Builder as `messaging.MessagePublisher` and `messaging.MessageConsumer` — no need to call `amqpbackend.NewPublisher` or `amqpbackend.NewConsumer` manually.
+**Key point:** `infra.Publisher` and `infra.Consumer` are pre-wired by the Builder as `messaging.Publisher` and `messaging.Consumer` — no need to call `amqpbackend.NewPublisher` or `amqpbackend.NewConsumer` manually.
 
 ## Connection (AMQP)
 
@@ -169,13 +169,13 @@ persisted and retried forever:
 
 ```go
 buffered := messaging.NewBufferedPublisher(pub, conn, logger,
-    messaging.WithBufferedStateFile("/var/data/buffered.json"),
-    messaging.WithBufferedMaxMessageBytes(512<<10),
+    messaging.WithStateFile("/var/data/buffered.json"),
+    messaging.WithMaxMessageBytes(512<<10),
 )
 ```
 
-Use `WithoutMaxMessageBytes` / `WithoutBufferedMaxMessageBytes` only
-when another protocol or product contract already enforces a smaller cap.
+Use `WithoutMaxMessageBytes` only when another protocol or product
+contract already enforces a smaller cap.
 
 ## Topology Declaration (AMQP)
 
@@ -214,7 +214,6 @@ When `RetryPolicy` is set, DeclareAll creates:
 ```go
 // Manual wiring (not needed when using Builder):
 pub := amqpbackend.NewPublisher(conn, logger)
-defer pub.Close()
 
 err := pub.Publish(ctx, "orders", "order.created", msg) // confirms mode, waits for ACK
 ```
@@ -359,8 +358,8 @@ messaging.StartConsumers(ctx, consumer, bindings,
 
 ```go
 pub := messaging.NewBufferedPublisher(publisher, conn, logger,
-    messaging.WithBufferedMaxSize(10_000),
-    messaging.WithBufferedStateFile("/var/data/buffered.json"), // crash-safe persistence
+    messaging.WithMaxSize(10_000),
+    messaging.WithStateFile("/var/data/buffered.json"), // crash-safe persistence
 )
 go func() {
     if err := pub.Run(ctx); err != nil {
@@ -479,7 +478,7 @@ Loaded via `amqpbackend.LoadRabbitMQFields()`. Use `cfg.RabbitMQ.AMQPURL()` to g
 - **Never** use `apperror.Permanent` for transient failures — it skips all retries.
 - **Never** create Publisher/Consumer outside the Router closure — the connection may not be ready.
 - **Never** share AMQP channels across goroutines — Publisher serializes internally.
-- **Never** forget `defer pub.Close()` — leaks AMQP channels.
+- **Never** forget to `Stop(ctx)` the broker `Connector` on shutdown — leaks channels and connections.
 - **Never** call `amqpbackend.NewPublisher`/`NewConsumer` when using the Builder — use `infra.Publisher`/`infra.Consumer` instead.
 
 ## Testing

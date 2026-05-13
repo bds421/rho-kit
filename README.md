@@ -119,7 +119,7 @@ go get github.com/bds421/rho-kit/httpx/v2
 
 ## Conventions and notes
 
-- `RequireUserWithJWT` panics if the provider is nil to prevent accidental auth bypass.
+- `auth.JWT` panics if the provider is nil to prevent accidental auth bypass.
 - Some packages intentionally **panic** on programmer errors to fail fast.
 - `httpx` intentionally avoids the stdlib `net/http/httputil` name collision.
 - Resource names are used as Prometheus labels; keep them small and static.

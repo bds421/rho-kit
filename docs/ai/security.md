@@ -181,7 +181,7 @@ go func() {
     }
 }() // retries initial fetch indefinitely; one Run per provider
 
-// In middleware (automatic via auth.RequireUserWithJWT):
+// In middleware (automatic via auth.JWT):
 claims, err := provider.VerifyContext(r.Context(), tokenString, time.Now())
 // claims.ID, claims.Subject, claims.Permissions, claims.Scopes
 ```

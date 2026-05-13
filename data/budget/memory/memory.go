@@ -129,17 +129,20 @@ func (b *Budget) ready() error {
 	return nil
 }
 
-// Stop terminates the background sweeper. Safe to call multiple
-// times. After Stop, the budget continues to admit and refund as
-// normal but no longer evicts cold keys.
-func (b *Budget) Stop() {
+// Close terminates the background sweeper. Safe to call multiple
+// times. After Close, the budget continues to admit and refund as
+// normal but no longer evicts cold keys. Always returns nil — the
+// signature matches [io.Closer] so the Budget can be wired into
+// resource-cleanup helpers, but the shutdown path itself cannot fail.
+func (b *Budget) Close() error {
 	if b == nil || b.stopCh == nil || b.doneCh == nil {
-		return
+		return nil
 	}
 	b.stopOnce.Do(func() {
 		close(b.stopCh)
 		<-b.doneCh
 	})
+	return nil
 }
 
 func (b *Budget) sweepLoop() {

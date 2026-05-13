@@ -17,10 +17,11 @@ require (
 	golang.org/x/net v0.53.0
 )
 
+require github.com/kylelemons/godebug v1.1.0 // indirect
+
 require (
 	github.com/bds421/rho-kit/authz/v2 v2.0.0
 	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
 	github.com/bds421/rho-kit/resilience/v2 v2.0.0

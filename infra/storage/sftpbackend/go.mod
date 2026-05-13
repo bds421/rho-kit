@@ -10,6 +10,8 @@ require (
 	golang.org/x/crypto v0.50.0
 )
 
+require github.com/kylelemons/godebug v1.1.0 // indirect
+
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/v2 v2.0.0

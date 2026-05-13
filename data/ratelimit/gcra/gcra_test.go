@@ -116,7 +116,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 			assert.Equal(t, time.Duration(0), retry)
 			assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
 
-			assert.NotPanics(t, tc.l.Stop)
+			assert.NotPanics(t, func() { _ = tc.l.Close() })
 			assert.Equal(t, 0, tc.l.Len())
 		})
 	}
@@ -170,7 +170,7 @@ func TestSweeper_RemovesColdKeys(t *testing.T) {
 		WithClock(func() time.Time { return time.Unix(0, cur.Load()) }),
 		WithSweeper(10*time.Millisecond),
 	)
-	t.Cleanup(l.Stop)
+	t.Cleanup(func() { _ = l.Close() })
 
 	for _, k := range []string{"a", "b", "c"} {
 		ok, _, err := l.Allow(context.Background(), k)
@@ -191,10 +191,10 @@ func TestSweeper_RemovesColdKeys(t *testing.T) {
 	assert.Equal(t, 0, l.Len(), "sweeper must drop cold keys whose TAT has elapsed")
 }
 
-func TestStop_Idempotent(t *testing.T) {
+func TestClose_Idempotent(t *testing.T) {
 	l := New(time.Second, 1, WithSweeper(time.Hour))
-	l.Stop()
-	l.Stop()
+	require.NoError(t, l.Close())
+	require.NoError(t, l.Close())
 }
 
 func TestAllow_RetryAtAdvertisedBoundaryAdmits(t *testing.T) {

@@ -28,7 +28,7 @@ func mustPASETOProvider(t *testing.T) *paseto.Provider {
 		),
 	)
 	require.NoError(t, err)
-	t.Cleanup(p.Stop)
+	t.Cleanup(func() { _ = p.Close() })
 	return p
 }
 

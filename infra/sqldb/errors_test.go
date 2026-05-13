@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
 func TestIsDuplicateKeyError_Nil(t *testing.T) {
@@ -65,32 +67,69 @@ func TestIsNotFound(t *testing.T) {
 func TestValidateColumn_Safe(t *testing.T) {
 	safe := []string{"name", "user_id", "table.column", "a1", "_private"}
 	for _, col := range safe {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("ValidateColumn(%q) panicked: %v", col, r)
-				}
-			}()
-			ValidateColumn(col)
-		}()
+		if err := ValidateColumn(col); err != nil {
+			t.Errorf("ValidateColumn(%q) returned error: %v", col, err)
+		}
 	}
 }
 
 func TestValidateColumn_Unsafe(t *testing.T) {
 	unsafe := []string{"1name", "name; DROP TABLE", "col name", "a-b", ""}
 	for _, col := range unsafe {
+		err := ValidateColumn(col)
+		if err == nil {
+			t.Errorf("ValidateColumn(%q) should have returned an error", col)
+			continue
+		}
+		var vErr *apperror.ValidationError
+		if !errors.As(err, &vErr) {
+			t.Errorf("ValidateColumn(%q) error type = %T, want *apperror.ValidationError", col, err)
+		}
+	}
+}
+
+func TestValidateColumn_ErrorDoesNotReflectUnsafeName(t *testing.T) {
+	err := ValidateColumn("secret-token; DROP TABLE users")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if msg := err.Error(); msg != "database: unsafe column name" {
+		t.Fatalf("error = %q, want stable unsafe-column message", msg)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("error leaked unsafe column name: %q", err.Error())
+	}
+}
+
+func TestMustValidateColumn_Safe(t *testing.T) {
+	safe := []string{"name", "user_id", "table.column", "a1", "_private"}
+	for _, col := range safe {
 		func() {
 			defer func() {
-				if r := recover(); r == nil {
-					t.Errorf("ValidateColumn(%q) should have panicked", col)
+				if r := recover(); r != nil {
+					t.Errorf("MustValidateColumn(%q) panicked: %v", col, r)
 				}
 			}()
-			ValidateColumn(col)
+			MustValidateColumn(col)
 		}()
 	}
 }
 
-func TestValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
+func TestMustValidateColumn_Unsafe(t *testing.T) {
+	unsafe := []string{"1name", "name; DROP TABLE", "col name", "a-b", ""}
+	for _, col := range unsafe {
+		func() {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("MustValidateColumn(%q) should have panicked", col)
+				}
+			}()
+			MustValidateColumn(col)
+		}()
+	}
+}
+
+func TestMustValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
 	defer func() {
 		rec := recover()
 		if rec == nil {
@@ -107,7 +146,7 @@ func TestValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
 			t.Fatalf("panic leaked unsafe column name: %q", msg)
 		}
 	}()
-	ValidateColumn("secret-token; DROP TABLE users")
+	MustValidateColumn("secret-token; DROP TABLE users")
 }
 
 func TestEscapeLike_NoSpecialChars(t *testing.T) {

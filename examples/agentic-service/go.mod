@@ -7,7 +7,10 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-require golang.org/x/net v0.53.0 // indirect
+require (
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
+	golang.org/x/net v0.53.0 // indirect
+)
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect

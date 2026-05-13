@@ -43,7 +43,7 @@ type Provider struct {
 	done                  chan struct{}
 	stopOnce              sync.Once
 
-	// rootCtx is cancelled by Stop so an in-flight refresh exits
+	// rootCtx is cancelled by Close so an in-flight refresh exits
 	// promptly instead of running to completion at p.interval (audit
 	// FR-046). fetchTimeout caps each refresh independently of the
 	// poll interval.
@@ -56,7 +56,7 @@ type Provider struct {
 
 // defaultFetchTimeout caps each refresh independently of the
 // poll interval (audit FR-046). 10s is large enough for a slow JWKS
-// endpoint and small enough that Stop returns within seconds even
+// endpoint and small enough that Close returns within seconds even
 // when a refresh is in flight.
 const defaultFetchTimeout = 10 * time.Second
 
@@ -166,7 +166,7 @@ func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duratio
 // Verify delegates to the currently-loaded [V4PublicVerifier]. Returns
 // [ErrTokenInvalid] (wrapped by the underlying verifier) when no
 // active key set is available — should only happen if the caller
-// races Verify against Stop.
+// races Verify against Close.
 func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 	if p == nil {
 		return nil, ErrKeySetUnavailable
@@ -187,13 +187,15 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 	return v.Verify(token, now)
 }
 
-// Stop terminates the refresh goroutine. Subsequent Verify calls
+// Close terminates the refresh goroutine. Subsequent Verify calls
 // continue to use the last loaded key set until it expires; callers
 // that need stricter shutdown semantics should drop the Provider
-// reference.
-func (p *Provider) Stop() {
+// reference. Always returns nil — the signature matches [io.Closer]
+// so Provider can be wired into resource-cleanup helpers, but the
+// shutdown path itself cannot fail.
+func (p *Provider) Close() error {
 	if p == nil || p.stop == nil || p.done == nil {
-		return
+		return nil
 	}
 	p.stopOnce.Do(func() {
 		close(p.stop)
@@ -202,6 +204,7 @@ func (p *Provider) Stop() {
 		}
 	})
 	<-p.done
+	return nil
 }
 
 func (p *Provider) loop() {
@@ -214,7 +217,7 @@ func (p *Provider) loop() {
 			return
 		case <-t.C:
 			// FR-046 [MED]: derive each refresh from rootCtx (cancelled
-			// by Stop) so a Stop in flight aborts the network call
+			// by Close) so a Close in flight aborts the network call
 			// instead of waiting for the per-refresh timeout. The
 			// per-refresh timeout uses fetchTimeout — independent of
 			// p.interval — so a long polling cadence does not also

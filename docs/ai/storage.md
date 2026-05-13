@@ -78,7 +78,14 @@ app.New(...).
     WithNamedStorage("s3", s3).
     WithNamedStorage("local", local).
     Router(func(infra app.Infrastructure) http.Handler {
-        infra.StorageManager.Disk("s3").Put(ctx, key, r, meta)
+        // Panics if "s3" is not registered — use when the disk is a startup-time guarantee:
+        infra.StorageManager.MustBackend("s3").Put(ctx, key, r, meta)
+
+        // Or check at call time:
+        s3, err := infra.StorageManager.Backend("s3")
+        if err != nil { return err }
+        s3.Put(ctx, key, r, meta)
+
         infra.StorageManager.Default().Get(ctx, key) // first registered = default
     })
 ```

@@ -253,13 +253,20 @@ Use `core/tenant` for tenant IDs at trust boundaries and for shared key construc
 
 ```go
 id, err := tenant.NewID(rawTenant)
-ctx = tenant.WithID(ctx, id)
+ctx, err = tenant.WithID(ctx, id) // returns ErrAlreadySet on cross-tenant rebind
 
 key, err := tenant.Key(ctx, "user", userID, "profile")
 // tenant:<len(id)>:<id>:<len(part)>:<part>...
 ```
 
-`WithID` refuses to overwrite a different tenant already on the context and normalizes nil contexts to `context.Background()`. Use `WithIDChecked` when you need an error instead of a panic. Use `tenant.Key` instead of `fmt.Sprintf("tenant:%s:...", id)` so separator characters in IDs or key parts cannot collide.
+`WithID` returns `(context.Context, error)` — it normalizes nil contexts to
+`context.Background()`, treats applying the same tenant ID or the zero ID as a
+no-op, and returns `tenant.ErrAlreadySet` (wraps `tenant.ErrInvalid`) when the
+context already carries a different tenant. There is no separate `Checked`
+variant; handle the error directly. When you need to skip validation on a
+trusted upstream value (e.g. a database column populated via `NewID`), use
+`tenant.MustNewID`. Use `tenant.Key` instead of `fmt.Sprintf("tenant:%s:...", id)`
+so separator characters in IDs or key parts cannot collide.
 
 ## config — Struct-Tag Config Loading
 

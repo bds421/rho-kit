@@ -26,6 +26,9 @@ BenchmarkValidateID-16       	22521130	        53.64 ns/op	       0 B/op	       
 BenchmarkValidateID-16       	22319905	        53.07 ns/op	       0 B/op	       0 allocs/op
 BenchmarkValidateID-16       	20742867	        53.96 ns/op	       0 B/op	       0 allocs/op
 BenchmarkValidateID-16       	22085956	        54.19 ns/op	       0 B/op	       0 allocs/op
+# NOTE: BenchmarkWithIDChecked was renamed to BenchmarkWithID after v2.0.0
+# removed the standalone WithIDChecked helper. These rows are the pre-rename
+# baseline retained for comparison; refresh on next bench run.
 BenchmarkWithIDChecked-16    	40626493	        29.17 ns/op	      64 B/op	       2 allocs/op
 BenchmarkWithIDChecked-16    	40244204	        29.56 ns/op	      64 B/op	       2 allocs/op
 BenchmarkWithIDChecked-16    	41059154	        29.13 ns/op	      64 B/op	       2 allocs/op

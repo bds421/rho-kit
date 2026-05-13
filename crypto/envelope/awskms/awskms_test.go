@@ -177,3 +177,49 @@ func TestDecryptKeyIDForConstrainsAliasBackedEnvelopeARN(t *testing.T) {
 }
 
 func nilContextForTest() context.Context { return nil }
+
+func TestDecryptKeyIDForRejectsBareKeyIDFromDifferentRegion(t *testing.T) {
+	k := &KEK{
+		keyID:  "12345678-1234-1234-1234-123456789abc",
+		region: "us-east-1",
+	}
+
+	got, err := k.decryptKeyIDFor("arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc")
+	if err != nil {
+		t.Fatalf("decryptKeyIDFor same-region: %v", err)
+	}
+	wantSame := "arn:aws:kms:us-east-1:111122223333:key/12345678-1234-1234-1234-123456789abc"
+	if got != wantSame {
+		t.Fatalf("decryptKeyIDFor same-region = %q, want %q", got, wantSame)
+	}
+
+	if _, err := k.decryptKeyIDFor("arn:aws:kms:eu-west-1:111122223333:key/12345678-1234-1234-1234-123456789abc"); err == nil {
+		t.Fatal("decryptKeyIDFor cross-region expected error")
+	}
+}
+
+func TestDecryptKeyIDForBareKeyIDWithoutRegionContextIsBestEffort(t *testing.T) {
+	// When the KEK has no region context (zero-value KEK in unit tests, or
+	// SDK client constructed without a region), the bare-keyID path remains
+	// best-effort and continues to accept matching ARN suffixes regardless
+	// of region. Region pinning kicks in only when the client provides one.
+	k := &KEK{keyID: "12345678-1234-1234-1234-123456789abc"}
+	got, err := k.decryptKeyIDFor("arn:aws:kms:eu-west-1:111122223333:key/12345678-1234-1234-1234-123456789abc")
+	if err != nil {
+		t.Fatalf("decryptKeyIDFor: %v", err)
+	}
+	if !strings.Contains(got, "12345678") {
+		t.Fatalf("decryptKeyIDFor = %q, want ARN containing keyID", got)
+	}
+}
+
+func TestNewKEKCapturesClientRegion(t *testing.T) {
+	c := kms.New(kms.Options{Region: "us-west-2"})
+	k, err := NewKEK(c, Config{KeyID: "12345678-1234-1234-1234-123456789abc"})
+	if err != nil {
+		t.Fatalf("NewKEK: %v", err)
+	}
+	if k.region != "us-west-2" {
+		t.Fatalf("region = %q, want %q", k.region, "us-west-2")
+	}
+}

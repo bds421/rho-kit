@@ -10,8 +10,6 @@ require (
 	golang.org/x/crypto v0.50.0
 )
 
-require github.com/tink-crypto/tink-go/v2 v2.6.0 // indirect
-
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
@@ -36,7 +34,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7 // indirect
 	github.com/aws/smithy-go v1.24.1 // indirect
 	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/crypto/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/infra/v2 v2.0.0
 	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
