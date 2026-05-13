@@ -180,7 +180,17 @@ FROM approval_requests`
 // Mirrors data/approval/memory: idempotent no-op for the same decision,
 // refuses to flip a recorded decision, refuses to move out of a
 // terminal state, auto-expires past-deadline pending requests.
-func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+// Approve implements [approval.Store.Approve].
+func (s *Store) Approve(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
+	return s.decide(ctx, id, decidedBy, reason, true)
+}
+
+// Reject implements [approval.Store.Reject].
+func (s *Store) Reject(ctx context.Context, id, decidedBy, reason string) (approval.Request, error) {
+	return s.decide(ctx, id, decidedBy, reason, false)
+}
+
+func (s *Store) decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}

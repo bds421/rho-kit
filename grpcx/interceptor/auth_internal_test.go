@@ -4,7 +4,7 @@ import "testing"
 
 func TestWithAllowedSANsClonesInput(t *testing.T) {
 	sans := []string{"svc-a.internal", "spiffe://example.org/svc-a"}
-	opt := WithAllowedSANs(sans)
+	opt := WithAllowedSANs(sans...)
 	sans[0] = "mutated.internal"
 	sans[1] = "spiffe://example.org/mutated"
 
@@ -27,7 +27,7 @@ func TestWithAllowedSANsClonesInput(t *testing.T) {
 
 func TestWithAllowedCNsClonesInput(t *testing.T) {
 	cns := []string{"svc-a"}
-	opt := WithAllowedCNs(cns)
+	opt := WithAllowedCNs(cns...)
 	cns[0] = "mutated"
 
 	var cfg mtlsIdentityConfig

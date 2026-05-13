@@ -25,7 +25,7 @@ func TestTenantStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.List(ctx, Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			_, err = store.Decide(ctx, "r", "approver", "ok", true)
+			_, err = store.Approve(ctx, "r", "approver", "ok")
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
 			_, err = store.MarkExecuted(ctx, "r")
@@ -96,16 +96,20 @@ func (s *tenantStoreTestStore) List(_ context.Context, q Query) ([]Request, erro
 	return out, nil
 }
 
-func (s *tenantStoreTestStore) Decide(_ context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
+func (s *tenantStoreTestStore) Approve(_ context.Context, id, decidedBy, reason string) (Request, error) {
+	return s.decide(id, decidedBy, reason, StateApproved)
+}
+
+func (s *tenantStoreTestStore) Reject(_ context.Context, id, decidedBy, reason string) (Request, error) {
+	return s.decide(id, decidedBy, reason, StateRejected)
+}
+
+func (s *tenantStoreTestStore) decide(id, decidedBy, reason string, target State) (Request, error) {
 	r, ok := s.requests[id]
 	if !ok {
 		return Request{}, ErrNotFound
 	}
-	if approve {
-		r.State = StateApproved
-	} else {
-		r.State = StateRejected
-	}
+	r.State = target
 	r.DecidedBy = decidedBy
 	r.Reason = reason
 	s.requests[id] = r

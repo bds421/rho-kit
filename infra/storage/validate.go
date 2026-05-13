@@ -39,11 +39,27 @@ const mimeSniffSize = 3072
 // to the validation chain and storage backend.
 type Validator func(ctx context.Context, r io.Reader, meta *ObjectMeta) (io.Reader, error)
 
-// ValidateEndpointURL checks an optional storage service endpoint override.
-// Empty endpoints are valid and mean "use the provider default". Non-empty
-// endpoints must be absolute http(s) URLs with a host and no embedded
-// credentials, query, or fragment. Plain http requires an explicit opt-in.
-func ValidateEndpointURL(name, rawURL string, allowInsecure bool) error {
+// ValidateEndpointURL checks an optional storage service endpoint override
+// and rejects plain http. Empty endpoints are valid and mean "use the
+// provider default". Non-empty endpoints must be absolute https URLs with
+// a host and no embedded credentials, query, or fragment.
+//
+// Use [ValidateEndpointURLAllowingInsecure] for development setups that
+// genuinely need http (loopback test fixtures); the split is intentional
+// so the insecure path is never reachable behind a flipped boolean at the
+// call site.
+func ValidateEndpointURL(name, rawURL string) error {
+	return validateEndpointURL(name, rawURL, false)
+}
+
+// ValidateEndpointURLAllowingInsecure is [ValidateEndpointURL] with
+// plain http permitted. Reserved for explicit dev-only overrides where
+// the operator has acknowledged the loss of transport security.
+func ValidateEndpointURLAllowingInsecure(name, rawURL string) error {
+	return validateEndpointURL(name, rawURL, true)
+}
+
+func validateEndpointURL(name, rawURL string, allowInsecure bool) error {
 	if rawURL == "" {
 		return nil
 	}

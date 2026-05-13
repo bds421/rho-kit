@@ -31,7 +31,11 @@ func (b *Backend) URL(_ context.Context, key string) (string, error) {
 	encodedKey := encodeKeyPath(key)
 
 	if b.cfg.Endpoint != "" {
-		if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", b.cfg.Endpoint, b.cfg.AllowInsecureEndpoint); err != nil {
+		if b.cfg.AllowInsecureEndpoint {
+			if err := storage.ValidateEndpointURLAllowingInsecure("STORAGE_S3_ENDPOINT", b.cfg.Endpoint); err != nil {
+				return "", err
+			}
+		} else if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", b.cfg.Endpoint); err != nil {
 			return "", err
 		}
 		// Custom endpoint (localstack, minio, CDN) — always use path-style.
@@ -75,7 +79,7 @@ func renderURLTemplate(tpl, bucket, region string) (string, error) {
 	if strings.ContainsAny(base, "{}") {
 		return "", fmt.Errorf("s3backend: STORAGE_S3_URL_TEMPLATE contains unknown placeholder")
 	}
-	if err := storage.ValidateEndpointURL("STORAGE_S3_URL_TEMPLATE", base, false); err != nil {
+	if err := storage.ValidateEndpointURL("STORAGE_S3_URL_TEMPLATE", base); err != nil {
 		return "", err
 	}
 	return base, nil

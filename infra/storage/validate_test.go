@@ -46,7 +46,12 @@ func TestValidateEndpointURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateEndpointURL("STORAGE_ENDPOINT", tt.rawURL, tt.allowInsecure)
+			var err error
+			if tt.allowInsecure {
+				err = ValidateEndpointURLAllowingInsecure("STORAGE_ENDPOINT", tt.rawURL)
+			} else {
+				err = ValidateEndpointURL("STORAGE_ENDPOINT", tt.rawURL)
+			}
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -59,7 +64,7 @@ func TestValidateEndpointURL(t *testing.T) {
 func TestValidateEndpointURL_ParseErrorDoesNotEchoValue(t *testing.T) {
 	t.Parallel()
 
-	err := ValidateEndpointURL("STORAGE_ENDPOINT", "https://storage.example.com/%zz?token=secret-token", false)
+	err := ValidateEndpointURL("STORAGE_ENDPOINT", "https://storage.example.com/%zz?token=secret-token")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "STORAGE_ENDPOINT is invalid")
 	assert.NotContains(t, err.Error(), "secret-token")
@@ -70,7 +75,7 @@ func TestValidateEndpointURL_ParseErrorDoesNotEchoValue(t *testing.T) {
 func TestValidateEndpointURL_SchemeErrorDoesNotEchoValue(t *testing.T) {
 	t.Parallel()
 
-	err := ValidateEndpointURL("STORAGE_ENDPOINT", "secret-token://storage.example.com", false)
+	err := ValidateEndpointURL("STORAGE_ENDPOINT", "secret-token://storage.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "STORAGE_ENDPOINT scheme must be https")
 	assert.NotContains(t, err.Error(), "secret-token")

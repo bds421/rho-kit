@@ -55,7 +55,7 @@ func allowS2SImpersonationForTest() MTLSIdentityOption {
 
 func TestWithAllowedSANsClonesInput(t *testing.T) {
 	sans := []string{"svc-a.internal", "spiffe://example.org/svc-a"}
-	opt := WithAllowedSANs(sans)
+	opt := WithAllowedSANs(sans...)
 	sans[0] = "mutated.internal"
 	sans[1] = "spiffe://example.org/mutated"
 
@@ -78,7 +78,7 @@ func TestWithAllowedSANsClonesInput(t *testing.T) {
 
 func TestWithAllowedCNsClonesInput(t *testing.T) {
 	cns := []string{"svc-a"}
-	opt := WithAllowedCNs(cns)
+	opt := WithAllowedCNs(cns...)
 	cns[0] = "mutated"
 
 	var cfg mtlsIdentityConfig
@@ -1367,7 +1367,7 @@ func TestRequireS2SAuthWithIdentity_PanicsOnNilProvider(t *testing.T) {
 			t.Fatal("expected panic for nil provider")
 		}
 	}()
-	RequireS2SAuthWithIdentity(nil, WithAllowedCNs([]string{"backend"}))
+	RequireS2SAuthWithIdentity(nil, WithAllowedCNs("backend"))
 }
 
 func TestRequireS2SAuthWithIdentity_PanicsOnNoIdentities(t *testing.T) {
@@ -1393,7 +1393,7 @@ func TestRequireS2SAuthWithIdentity_PanicsWithoutImpersonationGuard(t *testing.T
 			t.Fatal("expected panic when mTLS identity auth has no impersonation guard")
 		}
 	}()
-	RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{"svc-a.internal"}))
+	RequireS2SAuthWithIdentity(provider, WithAllowedSANs("svc-a.internal"))
 }
 
 func TestRequireS2SAuthWithIdentity_PanicsOnAllEmptyEntries(t *testing.T) {
@@ -1408,8 +1408,8 @@ func TestRequireS2SAuthWithIdentity_PanicsOnAllEmptyEntries(t *testing.T) {
 	}()
 	RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedCNs([]string{"", "  "}),
-		WithAllowedSANs([]string{"", "   "}),
+		WithAllowedCNs("", "  "),
+		WithAllowedSANs("", "   "),
 	)
 }
 
@@ -1436,7 +1436,7 @@ func TestRequireS2SAuthWithIdentity_PanicsOnInvalidSANEntries(t *testing.T) {
 					t.Fatal("expected panic for invalid SAN allowlist entry")
 				}
 			}()
-			RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{san}))
+			RequireS2SAuthWithIdentity(provider, WithAllowedSANs(san))
 		})
 	}
 }
@@ -1458,7 +1458,7 @@ func TestRequireS2SAuthWithIdentity_PanicsOnInvalidCNEntries(t *testing.T) {
 					t.Fatal("expected panic for invalid CN allowlist entry")
 				}
 			}()
-			RequireS2SAuthWithIdentity(provider, WithAllowedCNs([]string{cn}))
+			RequireS2SAuthWithIdentity(provider, WithAllowedCNs(cn))
 		})
 	}
 }
@@ -1477,14 +1477,14 @@ func TestRequireS2SAuthWithIdentity_InvalidIdentityPanicDoesNotEchoValue(t *test
 			name: "uri san",
 			want: "middleware: WithAllowedSANs invalid URI SAN",
 			fn: func() {
-				RequireS2SAuthWithIdentity(provider, WithAllowedSANs([]string{"spiffe://example.org/%zz?token=secret-token"}))
+				RequireS2SAuthWithIdentity(provider, WithAllowedSANs("spiffe://example.org/%zz?token=secret-token"))
 			},
 		},
 		{
 			name: "cn",
 			want: "middleware: WithAllowedCNs invalid CN",
 			fn: func() {
-				RequireS2SAuthWithIdentity(provider, WithAllowedCNs([]string{"svc\nsecret-token"}))
+				RequireS2SAuthWithIdentity(provider, WithAllowedCNs("svc\nsecret-token"))
 			},
 		},
 	}
@@ -1537,7 +1537,7 @@ func TestRequireS2SAuthWithIdentity_SANDNSMatch(t *testing.T) {
 
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedSANs([]string{"svc-a.internal"}),
+		WithAllowedSANs("svc-a.internal"),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1564,7 +1564,7 @@ func TestRequireS2SAuthWithIdentity_SANDNSMatchIsCaseInsensitive(t *testing.T) {
 
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedSANs([]string{"SVC-A.INTERNAL"}),
+		WithAllowedSANs("SVC-A.INTERNAL"),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1591,7 +1591,7 @@ func TestRequireS2SAuthWithIdentity_SANURIMatch(t *testing.T) {
 
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedSANs([]string{"spiffe://example.org/svc-a"}),
+		WithAllowedSANs("spiffe://example.org/svc-a"),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1623,8 +1623,8 @@ func TestRequireS2SAuthWithIdentity_NoMatchOnEither(t *testing.T) {
 	called := false
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedCNs([]string{"svc-cn"}),
-		WithAllowedSANs([]string{"svc-other.internal"}),
+		WithAllowedCNs("svc-cn"),
+		WithAllowedSANs("svc-other.internal"),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
@@ -1663,7 +1663,7 @@ func TestRequireS2SAuthWithIdentity_RejectsCertWithoutClientAuthEKU(t *testing.T
 			called := false
 			handler := RequireS2SAuthWithIdentity(provider,
 				allowS2SImpersonationForTest(),
-				WithAllowedSANs([]string{"svc-a.internal"}),
+				WithAllowedSANs("svc-a.internal"),
 			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
 			}))
@@ -1695,8 +1695,8 @@ func TestRequireS2SAuthWithIdentity_SANPreferredOverCN(t *testing.T) {
 
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedCNs([]string{"svc-cn"}),
-		WithAllowedSANs([]string{"svc-san.internal"}),
+		WithAllowedCNs("svc-cn"),
+		WithAllowedSANs("svc-san.internal"),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1724,8 +1724,8 @@ func TestRequireS2SAuthWithIdentity_TrimsAndSkipsEmpty(t *testing.T) {
 	// Mix of empty/whitespace and one real entry — handler must still build and accept.
 	handler := RequireS2SAuthWithIdentity(provider,
 		allowS2SImpersonationForTest(),
-		WithAllowedCNs([]string{"", "  ", "  backend  "}),
-		WithAllowedSANs([]string{""}),
+		WithAllowedCNs("", "  ", "  backend  "),
+		WithAllowedSANs(""),
 	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

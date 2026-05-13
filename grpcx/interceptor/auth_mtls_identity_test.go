@@ -36,7 +36,7 @@ func TestVerifyClientCertGRPC_SANURIMatch(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedSANs([]string{"spiffe://example.org/svc-a"}),
+		WithAllowedSANs("spiffe://example.org/svc-a"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.True(t, ok)
@@ -50,7 +50,7 @@ func TestVerifyClientCertGRPC_SANDNSMatch(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedSANs([]string{"svc-a.internal"}),
+		WithAllowedSANs("svc-a.internal"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.True(t, ok)
@@ -64,7 +64,7 @@ func TestVerifyClientCertGRPC_SANDNSMatchIsCaseInsensitive(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedSANs([]string{"SVC-A.INTERNAL"}),
+		WithAllowedSANs("SVC-A.INTERNAL"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.True(t, ok)
@@ -77,7 +77,7 @@ func TestVerifyClientCertGRPC_CNMatchLegacyOnly(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedCNs([]string{"svc-legacy"}),
+		WithAllowedCNs("svc-legacy"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.True(t, ok, "CN-only allowlist must continue to authorize for legacy CAs")
@@ -91,8 +91,8 @@ func TestVerifyClientCertGRPC_NoMatch(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedCNs([]string{"svc-y"}),
-		WithAllowedSANs([]string{"svc-y.internal"}),
+		WithAllowedCNs("svc-y"),
+		WithAllowedSANs("svc-y.internal"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.False(t, ok)
@@ -106,8 +106,8 @@ func TestVerifyClientCertGRPC_SANPreferredOverCN(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedCNs([]string{"svc-cn"}),
-		WithAllowedSANs([]string{"svc-san.internal"}),
+		WithAllowedCNs("svc-cn"),
+		WithAllowedSANs("svc-san.internal"),
 	})
 	ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 	assert.True(t, ok)
@@ -122,7 +122,7 @@ func TestVerifyClientCertGRPC_RejectsUnverifiedChain(t *testing.T) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-		WithAllowedSANs([]string{"svc-san.internal"}),
+		WithAllowedSANs("svc-san.internal"),
 	})
 	tlsState := tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
 	p := &peer.Peer{AuthInfo: credentials.TLSInfo{State: tlsState}}
@@ -147,7 +147,7 @@ func TestVerifyClientCertGRPC_RejectsCertWithoutClientAuthEKU(t *testing.T) {
 				ExtKeyUsage: tt.eku,
 			}
 			cfg := buildMTLSIdentityConfig([]MTLSIdentityOption{
-				WithAllowedSANs([]string{"svc-san.internal"}),
+				WithAllowedSANs("svc-san.internal"),
 			})
 			ok, identity := verifyClientCertGRPC(peerCtxWith(cert), cfg)
 			assert.False(t, ok)
@@ -171,7 +171,7 @@ func TestWithAllowedSANsRejectsInvalidEntries(t *testing.T) {
 	} {
 		t.Run(san, func(t *testing.T) {
 			assert.Panics(t, func() {
-				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedSANs([]string{san})})
+				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedSANs(san)})
 			})
 		})
 	}
@@ -186,7 +186,7 @@ func TestWithAllowedCNsRejectsInvalidEntries(t *testing.T) {
 	} {
 		t.Run(cn, func(t *testing.T) {
 			assert.Panics(t, func() {
-				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedCNs([]string{cn})})
+				buildMTLSIdentityConfig([]MTLSIdentityOption{WithAllowedCNs(cn)})
 			})
 		})
 	}
@@ -195,12 +195,12 @@ func TestWithAllowedCNsRejectsInvalidEntries(t *testing.T) {
 func TestWithAllowedIdentityPanicsDoNotEchoValues(t *testing.T) {
 	assert.PanicsWithValue(t, "interceptor: WithAllowedSANs invalid URI SAN", func() {
 		buildMTLSIdentityConfig([]MTLSIdentityOption{
-			WithAllowedSANs([]string{"spiffe://example.org/%zz?token=secret-token"}),
+			WithAllowedSANs("spiffe://example.org/%zz?token=secret-token"),
 		})
 	})
 	assert.PanicsWithValue(t, "interceptor: WithAllowedCNs invalid CN", func() {
 		buildMTLSIdentityConfig([]MTLSIdentityOption{
-			WithAllowedCNs([]string{"svc\nsecret-token"}),
+			WithAllowedCNs("svc\nsecret-token"),
 		})
 	})
 }

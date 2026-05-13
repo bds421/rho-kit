@@ -37,7 +37,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.List(ctx, approval.Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
-			_, err = store.Decide(ctx, "r", "approver", "ok", true)
+			_, err = store.Approve(ctx, "r", "approver", "ok")
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
 			_, err = store.MarkExecuted(ctx, "r")
@@ -80,6 +80,6 @@ func TestCreate_UsesSharedValidationBeforeDBUse(t *testing.T) {
 func TestDecide_UsesSharedValidationBeforeDBUse(t *testing.T) {
 	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now}
 
-	_, err := store.Decide(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok", true)
+	_, err := store.Approve(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok")
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
 }

@@ -43,7 +43,7 @@ func TestNewInternalHandler_PanicsOnNilOption(t *testing.T) {
 
 func TestHTTPCheckReturnsValidDependencyCheck(t *testing.T) {
 	client := &http.Client{}
-	check := HTTPCheck("upstream-api", "http://127.0.0.1", client, false)
+	check := HTTPCheck("upstream-api", "http://127.0.0.1", client)
 	assert.NoError(t, health.ValidateDependencyCheck(check))
 }
 
@@ -124,7 +124,7 @@ func TestHTTPCheckBlocksRedirectsByDefault(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	check := HTTPCheck("upstream-api", redirector.URL, &http.Client{}, false)
+	check := HTTPCheck("upstream-api", redirector.URL, &http.Client{})
 	got := check.Check(t.Context())
 	if got != health.StatusUnhealthy {
 		t.Fatalf("status = %q, want %q", got, health.StatusUnhealthy)

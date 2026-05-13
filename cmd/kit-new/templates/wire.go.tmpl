@@ -93,7 +93,7 @@ func newTenantResources(redis *kitredis.Connection) (tenantResources, error) {
 	if redis == nil {
 		return tenantResources{}, fmt.Errorf("tenant resources require Redis")
 	}
-	baseCache, err := rediscache.NewRedisCache(redis.Client(), "{{.ServiceName}}-cache")
+	baseCache, err := rediscache.NewCache(redis.Client(), "{{.ServiceName}}-cache")
 	if err != nil {
 		return tenantResources{}, err
 	}
@@ -175,7 +175,7 @@ func Run(_ *slog.Logger) error {
 
 	b = b.
 		With(kitredisadapter.Module(redisOpts)).
-		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"), true)
+		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"))
 {{- end}}
 
 	return b.

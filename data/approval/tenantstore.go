@@ -89,17 +89,34 @@ func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, error) {
 	return t.inner.List(ctx, q)
 }
 
-// Decide enforces tenant ownership before delegating to the inner
+// Approve enforces tenant ownership before delegating to the inner
 // store. Returns [ErrNotFound] when the request belongs to another
 // tenant.
-func (t *TenantStore) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
+func (t *TenantStore) Approve(ctx context.Context, id, decidedBy, reason string) (Request, error) {
+	return t.decideTenant(ctx, id, decidedBy, reason, true)
+}
+
+// Reject enforces tenant ownership before delegating to the inner
+// store. Returns [ErrNotFound] when the request belongs to another
+// tenant.
+func (t *TenantStore) Reject(ctx context.Context, id, decidedBy, reason string) (Request, error) {
+	return t.decideTenant(ctx, id, decidedBy, reason, false)
+}
+
+func (t *TenantStore) decideTenant(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error) {
 	if err := t.ready(); err != nil {
 		return Request{}, err
 	}
 	if _, err := t.Get(ctx, id); err != nil {
 		return Request{}, err
 	}
-	r, err := t.inner.Decide(ctx, id, decidedBy, reason, approve)
+	var r Request
+	var err error
+	if approve {
+		r, err = t.inner.Approve(ctx, id, decidedBy, reason)
+	} else {
+		r, err = t.inner.Reject(ctx, id, decidedBy, reason)
+	}
 	if err != nil {
 		return Request{}, err
 	}

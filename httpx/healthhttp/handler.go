@@ -105,11 +105,26 @@ func noStoreHandler(h http.Handler) http.Handler {
 	})
 }
 
-// HTTPCheck returns a [health.DependencyCheck] that probes the given URL with
-// an HTTP GET. Use this to monitor external HTTP dependencies (e.g., upstream
-// APIs, auth servers). The check applies a 5-second timeout and blocks
-// redirects unless the supplied client has an explicit redirect policy.
-func HTTPCheck(name, url string, client *http.Client, critical bool) health.DependencyCheck {
+// HTTPCheck returns a non-critical [health.DependencyCheck] that probes
+// the given URL with an HTTP GET. Use this for external dependencies
+// whose failure should degrade readiness but not flip /ready to 503
+// (e.g. an analytics ingest). Use [CriticalHTTPCheck] when the
+// dependency's failure should fail readiness outright.
+//
+// The check applies a 5-second timeout and blocks redirects unless the
+// supplied client has an explicit redirect policy.
+func HTTPCheck(name, url string, client *http.Client) health.DependencyCheck {
+	return httpCheck(name, url, client, false)
+}
+
+// CriticalHTTPCheck is [HTTPCheck] with Critical=true — a failure flips
+// the service's /ready response to unhealthy. Use only for dependencies
+// without which the service cannot serve correctly.
+func CriticalHTTPCheck(name, url string, client *http.Client) health.DependencyCheck {
+	return httpCheck(name, url, client, true)
+}
+
+func httpCheck(name, url string, client *http.Client, critical bool) health.DependencyCheck {
 	client = dependencyHTTPClient(client)
 	return health.DependencyCheck{
 		Name: name,

@@ -208,10 +208,18 @@ type Store interface {
 	// distinct error so they can communicate the timeout to the
 	// requester.
 	//
-	// Out-of-terminal: Decide returns [ErrInvalidTransition] when the
-	// request is in StateExecuted or StateExpired and the requested
+	// Out-of-terminal: Approve/Reject return [ErrInvalidTransition] when
+	// the request is in StateExecuted or StateExpired and the requested
 	// transition is not idempotent.
-	Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (Request, error)
+	//
+	// Approve transitions a StatePending request to StateApproved. Reject
+	// transitions to StateRejected. The split (vs. a single
+	// `Decide(..., approve bool)` method) keeps the audit trail's verb
+	// readable at the call site: `store.Approve(ctx, id, who, why)` reads
+	// as the action it performs; `store.Decide(ctx, id, who, why, true)`
+	// did not.
+	Approve(ctx context.Context, id, decidedBy, reason string) (Request, error)
+	Reject(ctx context.Context, id, decidedBy, reason string) (Request, error)
 
 	// MarkExecuted moves a StateApproved request to StateExecuted.
 	// Returns [ErrInvalidTransition] for any other source state. The

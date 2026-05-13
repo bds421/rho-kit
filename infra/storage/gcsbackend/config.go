@@ -85,7 +85,11 @@ func (c Config) Validate() error {
 	if c.ProjectID == "" {
 		return fmt.Errorf("STORAGE_GCS_PROJECT_ID is required")
 	}
-	if err := storage.ValidateEndpointURL("STORAGE_GCS_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+	if c.AllowInsecureEndpoint {
+		if err := storage.ValidateEndpointURLAllowingInsecure("STORAGE_GCS_ENDPOINT", c.Endpoint); err != nil {
+			return err
+		}
+	} else if err := storage.ValidateEndpointURL("STORAGE_GCS_ENDPOINT", c.Endpoint); err != nil {
 		return err
 	}
 	return nil

@@ -407,7 +407,7 @@ func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID str
 // DNS values (e.g. "svc-a.internal") are matched against [x509.Certificate.DNSNames].
 // URI values (e.g. "spiffe://example.org/svc-a") are matched against
 // [x509.Certificate.URIs] using exact string equality after URL parsing.
-func WithAllowedSANs(sans []string) MTLSIdentityOption {
+func WithAllowedSANs(sans ...string) MTLSIdentityOption {
 	dnsSANs := make([]string, 0, len(sans))
 	uriSANs := make([]string, 0, len(sans))
 	for _, s := range sans {
@@ -457,7 +457,7 @@ func WithAllowedSANs(sans []string) MTLSIdentityOption {
 // issues CN-only certs. New code should pair it with [WithAllowedSANs] or
 // migrate to SANs entirely — a runtime warning is logged at startup when CN
 // is the sole identity source.
-func WithAllowedCNs(cns []string) MTLSIdentityOption {
+func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 	canonical := make([]string, 0, len(cns))
 	for _, input := range cns {
 		cn, ok, err := mtlsidentity.NormalizeCN(input)

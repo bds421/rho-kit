@@ -131,7 +131,11 @@ func (c Config) Validate(environment string) error {
 	if err := c.validateCredentialSource(); err != nil {
 		return err
 	}
-	if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+	if c.AllowInsecureEndpoint {
+		if err := storage.ValidateEndpointURLAllowingInsecure("STORAGE_S3_ENDPOINT", c.Endpoint); err != nil {
+			return err
+		}
+	} else if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", c.Endpoint); err != nil {
 		return err
 	}
 	if err := validateURLTemplate(c.URLTemplate, c.Bucket, c.Region); err != nil {

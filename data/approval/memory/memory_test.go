@@ -57,7 +57,7 @@ func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(gotAgain.Payload))
 
-	decided, err := store.Decide(context.Background(), "copy-payload", "approver", "ok", true)
+	decided, err := store.Approve(context.Background(), "copy-payload", "approver", "ok")
 	require.NoError(t, err)
 	decided.Payload[0] = 'd'
 	gotAgain, err = store.Get(context.Background(), "copy-payload")
@@ -138,7 +138,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.List(ctx, approval.Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
-			_, err = store.Decide(ctx, "r", "approver", "ok", true)
+			_, err = store.Approve(ctx, "r", "approver", "ok")
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
 			_, err = store.MarkExecuted(ctx, "r")
@@ -151,7 +151,7 @@ func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", "", "ok", true)
+	_, err = store.Approve(context.Background(), "r1", "", "ok")
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
 }
 
@@ -159,7 +159,7 @@ func TestDecide_RejectsInvalidDecidedBy(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok", true)
+	_, err = store.Approve(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok")
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)
 }
 
@@ -167,7 +167,7 @@ func TestDecide_RejectsInvalidReason(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", "approver-1", strings.Repeat("r", approval.MaxReasonLen+1), true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", strings.Repeat("r", approval.MaxReasonLen+1))
 	assert.ErrorIs(t, err, approval.ErrInvalidReason)
 }
 
@@ -176,7 +176,7 @@ func TestDecide_ApprovesPending(t *testing.T) {
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 
-	r, err := store.Decide(context.Background(), "r1", "approver-1", "looks legit", true)
+	r, err := store.Approve(context.Background(), "r1", "approver-1", "looks legit")
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateApproved, r.State)
 	assert.Equal(t, "approver-1", r.DecidedBy)
@@ -189,7 +189,7 @@ func TestDecide_RejectsPending(t *testing.T) {
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 
-	r, err := store.Decide(context.Background(), "r1", "approver-1", "denied", false)
+	r, err := store.Reject(context.Background(), "r1", "approver-1", "denied")
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateRejected, r.State)
 }
@@ -198,10 +198,10 @@ func TestDecide_IdempotentApproveApprove(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	r1, err := store.Decide(context.Background(), "r1", "approver-1", "ok", true)
+	r1, err := store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
 
-	r2, err := store.Decide(context.Background(), "r1", "approver-2", "still ok", true)
+	r2, err := store.Approve(context.Background(), "r1", "approver-2", "still ok")
 	require.NoError(t, err)
 	assert.Equal(t, approval.StateApproved, r2.State)
 	// The whole decision record is idempotent; a replay must not rewrite
@@ -215,10 +215,10 @@ func TestDecide_RefusesFlip(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", "approver-1", "ok", true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
 
-	_, err = store.Decide(context.Background(), "r1", "approver-2", "changed mind", false)
+	_, err = store.Reject(context.Background(), "r1", "approver-2", "changed mind")
 	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
 }
 
@@ -226,12 +226,12 @@ func TestDecide_RefusesAfterExecution(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", "approver-1", "ok", true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
 	_, err = store.MarkExecuted(context.Background(), "r1")
 	require.NoError(t, err)
 
-	_, err = store.Decide(context.Background(), "r1", "approver-2", "too late", false)
+	_, err = store.Reject(context.Background(), "r1", "approver-2", "too late")
 	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
 }
 
@@ -248,7 +248,7 @@ func TestDecide_AutoExpiresPastDeadline(t *testing.T) {
 	// Jump past the deadline.
 	clock = now.Add(2 * time.Minute)
 
-	_, err = store.Decide(context.Background(), "r1", "approver-1", "late", true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", "late")
 	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
 
 	got, err := store.Get(context.Background(), "r1")
@@ -269,7 +269,7 @@ func TestMarkExecuted_Idempotent(t *testing.T) {
 	store := New()
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
-	_, err = store.Decide(context.Background(), "r1", "approver-1", "ok", true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
 	r1, err := store.MarkExecuted(context.Background(), "r1")
 	require.NoError(t, err)
@@ -302,7 +302,7 @@ func TestList_Filters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, pending, 3)
 
-	_, err = store.Decide(context.Background(), "r1", "approver-1", "ok", true)
+	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
 	pending, err = store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
 	require.NoError(t, err)
@@ -361,7 +361,7 @@ func TestDecide_ExpiresAtTheInstant(t *testing.T) {
 
 	clock = r.ExpiresAt
 
-	_, err = store.Decide(context.Background(), "r-instant", "approver-1", "right at expiry", true)
+	_, err = store.Approve(context.Background(), "r-instant", "approver-1", "right at expiry")
 	assert.ErrorIs(t, err, approval.ErrInvalidTransition)
 
 	got, err := store.Get(context.Background(), "r-instant")

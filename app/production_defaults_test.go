@@ -270,7 +270,7 @@ func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 		WithoutTLS().
 		WithoutJWTAudience().
 		WithoutRateLimit().
-		WithMultiTenant(nil, true).
+		WithMultiTenant(nil).
 		WithTenantBudget(&stubBudget{})
 	require.NoError(t, b.Validate(),
 		"WithTenantBudget paired with WithMultiTenant must pass validation")

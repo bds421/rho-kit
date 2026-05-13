@@ -445,7 +445,7 @@ func TestScaffold_TenantFlag_WiresTenantWrappers(t *testing.T) {
 	wire := string(wireBody)
 	assert.Contains(t, wire, "kitredis.LoadFields()",
 		"tenant scaffold must load Redis settings through the kit")
-	assert.Contains(t, wire, "WithMultiTenant(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"), true)",
+	assert.Contains(t, wire, "WithMultiTenant(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"))",
 		"tenant scaffold must enable strict tenant extraction")
 	assert.Contains(t, wire, "tenantcache.Wrap(baseCache)",
 		"tenant scaffold must wrap Redis cache with the tenant-scoped cache")

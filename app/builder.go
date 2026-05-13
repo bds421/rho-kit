@@ -390,31 +390,42 @@ func (b *Builder) WithSignedRequests(
 	return b
 }
 
-// WithMultiTenant activates tenant-aware request handling. The
-// public mux gets the tenant middleware (extracts the tenant ID
-// from the request and stores it on ctx); handlers downstream
-// can call [tenant.FromContext] / [tenant.Required] without
-// each route reinventing the extractor.
+// WithMultiTenant activates tenant-aware request handling and rejects
+// requests without a tenant with HTTP 400. The public mux gets the
+// tenant middleware (extracts the tenant ID from the request and stores
+// it on ctx); handlers downstream can call [tenant.FromContext] /
+// [tenant.Required] without each route reinventing the extractor.
 //
 // `extractor` defaults to [httpxtenant.HeaderExtractor("X-Tenant-Id")]
 // when nil. Pass a custom one to read from a JWT claim, mTLS
 // certificate, or whatever your auth boundary surfaces.
 //
-// `required` controls whether requests without a tenant are
-// rejected with 400 — applied to every method by default
-// (including GET/HEAD/OPTIONS). Health/readiness probes belong on
-// the kit's internal ops port, which is a separate listener and
-// never sees the tenant middleware. Use
-// [Builder.WithAllowMissingTenantOnSafeMethods] only when the
-// public mux must serve pre-auth GETs alongside tenant-scoped
-// routes.
+// Tenant requirement is applied to every method by default (including
+// GET/HEAD/OPTIONS). Health/readiness probes belong on the kit's
+// internal ops port, which is a separate listener and never sees the
+// tenant middleware. Use [Builder.WithAllowMissingTenantOnSafeMethods]
+// only when the public mux must serve pre-auth GETs alongside
+// tenant-scoped routes; use [Builder.WithMultiTenantOptional] to
+// extract-but-not-reject for hybrid public/private services.
 //
 // Cache and idempotency wrappers ([data/cache/tenant.Wrap] /
 // [data/idempotency/tenant.Wrap]) are caller-applied — the
 // Builder doesn't own those instances and shouldn't silently
 // rewrite them.
-func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor, required bool) *Builder {
-	b.tenantSpec = &tenantSpec{extractor: extractor, required: required}
+func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor) *Builder {
+	b.tenantSpec = &tenantSpec{extractor: extractor, required: true}
+	return b
+}
+
+// WithMultiTenantOptional activates tenant-aware request handling
+// without rejecting requests that don't supply a tenant — the tenant
+// ID is extracted onto ctx when present and absent otherwise. Use this
+// for hybrid services where a subset of routes is genuinely public.
+//
+// Cannot be combined with [Builder.WithTenantBudget]: budget
+// enforcement requires a tenant on every charged request.
+func (b *Builder) WithMultiTenantOptional(extractor httpxtenant.Extractor) *Builder {
+	b.tenantSpec = &tenantSpec{extractor: extractor, required: false}
 	return b
 }
 

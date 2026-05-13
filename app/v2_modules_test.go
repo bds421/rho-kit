@@ -57,7 +57,10 @@ func (stubApproval) Get(_ context.Context, _ string) (approval.Request, error) {
 func (stubApproval) List(_ context.Context, _ approval.Query) ([]approval.Request, error) {
 	return nil, nil
 }
-func (stubApproval) Decide(_ context.Context, _, _, _ string, _ bool) (approval.Request, error) {
+func (stubApproval) Approve(_ context.Context, _, _, _ string) (approval.Request, error) {
+	return approval.Request{}, nil
+}
+func (stubApproval) Reject(_ context.Context, _, _, _ string) (approval.Request, error) {
 	return approval.Request{}, nil
 }
 func (stubApproval) MarkExecuted(_ context.Context, _ string) (approval.Request, error) {
@@ -66,13 +69,13 @@ func (stubApproval) MarkExecuted(_ context.Context, _ string) (approval.Request,
 
 func TestWithMultiTenant_RegistersOnBuilder(t *testing.T) {
 	ext := httpxtenant.HeaderExtractor("X-Tenant-Id")
-	b := New("test", "v1", BaseConfig{}).WithMultiTenant(ext, true)
+	b := New("test", "v1", BaseConfig{}).WithMultiTenant(ext)
 	require.NotNil(t, b.tenantSpec)
 	assert.True(t, b.tenantSpec.required)
 }
 
 func TestTenantMiddleware_PopulatesContext(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).WithMultiTenant(nil, true)
+	b := New("test", "v1", BaseConfig{}).WithMultiTenant(nil)
 	mw := b.tenantMiddleware()
 	require.NotNil(t, mw)
 
@@ -121,7 +124,7 @@ func TestWithTenantBudget_ClonesOptions(t *testing.T) {
 // Validate must reject the combination at startup.
 func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithMultiTenant(nil, true).
+		WithMultiTenant(nil).
 		WithAllowMissingTenantOnSafeMethods().
 		WithTenantBudget(&stubBudget{})
 	err := b.Validate()
@@ -134,7 +137,7 @@ func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
 // without a tenant key. Validate must reject this.
 func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithMultiTenant(nil, false).
+		WithMultiTenantOptional(nil).
 		WithTenantBudget(&stubBudget{})
 	err := b.Validate()
 	require.Error(t, err)
@@ -147,7 +150,7 @@ func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
 // before the budget middleware has to reject a missing key).
 func TestWithTenantBudget_RejectsGETWithoutTenant(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithMultiTenant(nil, true).
+		WithMultiTenant(nil).
 		WithTenantBudget(&stubBudget{})
 
 	tenantMW := b.tenantMiddleware()

@@ -79,7 +79,7 @@ func JWT(provider *jwtutil.Provider) func(http.Handler) http.Handler {
 // An auditor can grep for "RequireS2SAuth" to find all S2S entry points.
 func RequireS2SAuth(provider *jwtutil.Provider, allowedCNs []string, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
 	all := make([]MTLSIdentityOption, 0, len(opts)+1)
-	all = append(all, WithAllowedCNs(allowedCNs))
+	all = append(all, WithAllowedCNs(allowedCNs...))
 	all = append(all, opts...)
 	return RequireS2SAuthWithIdentity(provider, all...)
 }
@@ -118,7 +118,7 @@ func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string)
 // [x509.Certificate.URIs] using exact string equality after URL parsing.
 //
 // Empty/whitespace entries are skipped.
-func WithAllowedSANs(sans []string) MTLSIdentityOption {
+func WithAllowedSANs(sans ...string) MTLSIdentityOption {
 	dnsSANs := make([]string, 0, len(sans))
 	uriSANs := make([]string, 0, len(sans))
 	for _, s := range sans {
@@ -164,7 +164,7 @@ func WithAllowedSANs(sans []string) MTLSIdentityOption {
 // new code should pair this with [WithAllowedSANs] or migrate to SANs.
 //
 // Empty/whitespace entries are skipped.
-func WithAllowedCNs(cns []string) MTLSIdentityOption {
+func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 	canonical := make([]string, 0, len(cns))
 	for _, input := range cns {
 		cn, ok, err := mtlsidentity.NormalizeCN(input)

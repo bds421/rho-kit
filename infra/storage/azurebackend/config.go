@@ -93,7 +93,11 @@ func (c Config) validateCommon(environment string) error {
 	if c.ContainerName == "" {
 		return fmt.Errorf("STORAGE_AZURE_CONTAINER_NAME is required")
 	}
-	if err := storage.ValidateEndpointURL("STORAGE_AZURE_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
+	if c.AllowInsecureEndpoint {
+		if err := storage.ValidateEndpointURLAllowingInsecure("STORAGE_AZURE_ENDPOINT", c.Endpoint); err != nil {
+			return err
+		}
+	} else if err := storage.ValidateEndpointURL("STORAGE_AZURE_ENDPOINT", c.Endpoint); err != nil {
 		return err
 	}
 	_ = environment // accepted for API compatibility; no longer consulted
