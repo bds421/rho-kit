@@ -34,7 +34,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.Get(ctx, "r")
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
-			_, err = store.List(ctx, approval.Query{TenantID: "tenant"})
+			_, _, err = store.List(ctx, approval.Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
 			_, err = store.Approve(ctx, "r", "approver", "ok")
@@ -49,7 +49,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 func TestList_ValidatesQueryScopeBeforeDBUse(t *testing.T) {
 	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now}
 
-	_, err := store.List(context.Background(), approval.Query{TenantID: "tenant", AllTenants: true})
+	_, _, err := store.List(context.Background(), approval.Query{TenantID: "tenant", AllTenants: true})
 	assert.ErrorIs(t, err, approval.ErrQueryScopeConflict)
 }
 

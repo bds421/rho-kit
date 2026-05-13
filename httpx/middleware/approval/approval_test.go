@@ -43,7 +43,7 @@ func headerActor() Option {
 
 func requireApprovalCount(t *testing.T, store *memory.Store, want int) {
 	t.Helper()
-	got, err := store.List(context.Background(), approval.Query{AllTenants: true})
+	got, _, err := store.List(context.Background(), approval.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Len(t, got, want)
 }

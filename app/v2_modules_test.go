@@ -37,8 +37,8 @@ func (stubActionLog) Append(_ context.Context, e actionlog.Entry) (actionlog.Ent
 func (stubActionLog) Get(_ context.Context, _ string) (actionlog.Entry, error) {
 	return actionlog.Entry{}, nil
 }
-func (stubActionLog) List(_ context.Context, _ actionlog.Query) ([]actionlog.Entry, error) {
-	return nil, nil
+func (stubActionLog) List(_ context.Context, _ actionlog.Query) ([]actionlog.Entry, string, error) {
+	return nil, "", nil
 }
 func (stubActionLog) Sign(_ actionlog.Entry) (string, string, error) {
 	return "", "", nil
@@ -54,8 +54,8 @@ func (stubApproval) Create(_ context.Context, r approval.Request) (approval.Requ
 func (stubApproval) Get(_ context.Context, _ string) (approval.Request, error) {
 	return approval.Request{}, nil
 }
-func (stubApproval) List(_ context.Context, _ approval.Query) ([]approval.Request, error) {
-	return nil, nil
+func (stubApproval) List(_ context.Context, _ approval.Query) ([]approval.Request, string, error) {
+	return nil, "", nil
 }
 func (stubApproval) Approve(_ context.Context, _, _, _ string) (approval.Request, error) {
 	return approval.Request{}, nil

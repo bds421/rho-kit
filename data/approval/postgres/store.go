@@ -109,20 +109,27 @@ WHERE id = $1`
 // [approval.Query.TenantID] or opt into AllTenants — see audit
 // FR-053 for why cross-tenant listings must be explicit. Returns
 // [approval.ErrQueryScopeConflict] when both scope modes are set.
-func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, error) {
+// Honours [approval.Query.Cursor] for keyset pagination — the
+// returned cursor is non-empty iff at least one more row matches the
+// filters past the page boundary.
+func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, string, error) {
 	if err := s.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	cursorTime, cursorID, err := approval.DecodeCursor(q.Cursor)
+	if err != nil {
+		return nil, "", err
 	}
 	limit := q.Limit
 	if limit <= 0 {
 		limit = defaultLimit
 	}
 
-	args := make([]any, 0, 6)
-	clauses := make([]string, 0, 6)
+	args := make([]any, 0, 7)
+	clauses := make([]string, 0, 7)
 	add := func(expr string, val any) {
 		args = append(args, val)
 		clauses = append(clauses, fmt.Sprintf(expr, len(args)))
@@ -145,6 +152,15 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 	if !q.Until.IsZero() {
 		add("created_at <= $%d", q.Until.UTC())
 	}
+	if q.Cursor != "" {
+		// Keyset on (created_at DESC, id DESC): the next page contains
+		// rows strictly older OR same-time-but-lower-id than the marker.
+		args = append(args, cursorTime, cursorID)
+		clauses = append(clauses, fmt.Sprintf(
+			"(created_at < $%d OR (created_at = $%d AND id < $%d))",
+			len(args)-1, len(args)-1, len(args),
+		))
+	}
 
 	sql := `SELECT id, tenant_id, actor, action, resource, payload, state, decided_by,
        decided_at, reason, created_at, expires_at
@@ -152,12 +168,14 @@ FROM approval_requests`
 	if len(clauses) > 0 {
 		sql += " WHERE " + joinAnd(clauses)
 	}
-	args = append(args, limit)
+	// Fetch limit+1 rows so we can tell whether another page exists
+	// without issuing a second COUNT(*) query.
+	args = append(args, limit+1)
 	sql += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
 
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, fmt.Errorf("approval/postgres: list: %w", err)
+		return nil, "", fmt.Errorf("approval/postgres: list: %w", err)
 	}
 	defer rows.Close()
 
@@ -165,14 +183,20 @@ FROM approval_requests`
 	for rows.Next() {
 		req, scanErr := scanRequest(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("approval/postgres: list scan: %w", scanErr)
+			return nil, "", fmt.Errorf("approval/postgres: list scan: %w", scanErr)
 		}
 		out = append(out, req)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("approval/postgres: list iterate: %w", err)
+		return nil, "", fmt.Errorf("approval/postgres: list iterate: %w", err)
 	}
-	return out, nil
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		next = approval.EncodeCursor(last.CreatedAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
 }
 
 // Decide records an approver's decision atomically.

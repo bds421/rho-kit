@@ -79,10 +79,10 @@ func (t *TenantStore) Get(ctx context.Context, id string) (Request, error) {
 
 // List substitutes the wrapper's TenantID into the query so a
 // caller cannot widen the scope or set AllTenants from a tenant-
-// scoped boundary.
-func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, error) {
+// scoped boundary. The cursor is opaque and passed through unchanged.
+func (t *TenantStore) List(ctx context.Context, q Query) ([]Request, string, error) {
 	if err := t.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	q.TenantID = t.tenantID
 	q.AllTenants = false

@@ -61,7 +61,7 @@ func (s *memStore) Get(_ context.Context, id string) (Entry, error) {
 	return e, nil
 }
 
-func (s *memStore) List(_ context.Context, q Query) ([]Entry, error) {
+func (s *memStore) List(_ context.Context, q Query) ([]Entry, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Entry, 0, len(s.entries))
@@ -72,7 +72,7 @@ func (s *memStore) List(_ context.Context, q Query) ([]Entry, error) {
 		}
 		out = append(out, e)
 	}
-	return out, nil
+	return out, "", nil
 }
 
 func (s *memStore) ListByTenantSeq(_ context.Context, tenantID string) ([]Entry, error) {
@@ -494,7 +494,7 @@ func TestList_FailsClosedOnTamperedEntry(t *testing.T) {
 	store.entries[bad.ID] = tampered
 	store.mu.Unlock()
 
-	_, err = logger.List(context.Background(), Query{TenantID: "t"})
+	_, _, err = logger.List(context.Background(), Query{TenantID: "t"})
 	assert.ErrorIs(t, err, ErrSignatureInvalid)
 	_ = good
 }
@@ -502,14 +502,14 @@ func TestList_FailsClosedOnTamperedEntry(t *testing.T) {
 func TestList_RejectsZeroQuery(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
-	_, err := logger.List(context.Background(), Query{})
+	_, _, err := logger.List(context.Background(), Query{})
 	assert.ErrorIs(t, err, ErrQueryTenantRequired)
 }
 
 func TestList_RejectsQueryScopeConflict(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))
-	_, err := logger.List(context.Background(), Query{TenantID: "t", AllTenants: true})
+	_, _, err := logger.List(context.Background(), Query{TenantID: "t", AllTenants: true})
 	assert.ErrorIs(t, err, ErrQueryScopeConflict)
 }
 
@@ -532,7 +532,7 @@ func TestList_AllTenantsOptIn(t *testing.T) {
 		TenantID: "t2", Actor: "a", Action: "x", Outcome: OutcomeSuccess,
 	})
 	require.NoError(t, err)
-	got, err := logger.List(context.Background(), Query{AllTenants: true})
+	got, _, err := logger.List(context.Background(), Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
 }
@@ -551,7 +551,7 @@ func TestList_VerificationErrorDoesNotReflectEntryID(t *testing.T) {
 	store.entries[written.ID] = tampered
 	store.mu.Unlock()
 
-	_, err = logger.List(context.Background(), Query{TenantID: "t"})
+	_, _, err = logger.List(context.Background(), Query{TenantID: "t"})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrSignatureInvalid)
 	assert.NotContains(t, strings.ToLower(err.Error()), "secret-token")
@@ -815,7 +815,7 @@ func TestSignedLogger_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = tc.log.Get(ctx, "id")
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			_, err = tc.log.List(ctx, Query{TenantID: "t"})
+			_, _, err = tc.log.List(ctx, Query{TenantID: "t"})
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
 			_, _, err = tc.log.Sign(Entry{})

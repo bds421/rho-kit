@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(gotAgain.Payload))
 
-	listed, err := store.List(context.Background(), approval.Query{TenantID: "tenant"})
+	listed, _, err := store.List(context.Background(), approval.Query{TenantID: "tenant"})
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	listed[0].Payload[0] = 'l'
@@ -135,7 +136,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.Get(ctx, "r")
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
-			_, err = store.List(ctx, approval.Query{TenantID: "tenant"})
+			_, _, err = store.List(ctx, approval.Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, approval.ErrInvalidStore)
 
 			_, err = store.Approve(ctx, "r", "approver", "ok")
@@ -293,22 +294,22 @@ func TestList_Filters(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	t1, err := store.List(context.Background(), approval.Query{TenantID: "t1"})
+	t1, _, err := store.List(context.Background(), approval.Query{TenantID: "t1"})
 	require.NoError(t, err)
 	assert.Len(t, t1, 2)
 
 	// Cross-tenant listings (no TenantID) need AllTenants=true after FR-053.
-	pending, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
+	pending, _, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
 	require.NoError(t, err)
 	assert.Len(t, pending, 3)
 
 	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
 	require.NoError(t, err)
-	pending, err = store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
+	pending, _, err = store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StatePending})
 	require.NoError(t, err)
 	assert.Len(t, pending, 2)
 
-	approved, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StateApproved})
+	approved, _, err := store.List(context.Background(), approval.Query{AllTenants: true, State: approval.StateApproved})
 	require.NoError(t, err)
 	assert.Len(t, approved, 1)
 }
@@ -317,14 +318,67 @@ func TestList_RejectsEmptyTenantWithoutAllTenants(t *testing.T) {
 	// FR-053 [HIGH]: a handler that forgets to set TenantID must NOT
 	// silently leak across tenants. The store rejects ambiguous queries.
 	store := New()
-	_, err := store.List(context.Background(), approval.Query{State: approval.StatePending})
+	_, _, err := store.List(context.Background(), approval.Query{State: approval.StatePending})
 	require.ErrorIs(t, err, approval.ErrQueryTenantRequired)
 }
 
 func TestList_RejectsTenantAndAllTenantsConflict(t *testing.T) {
 	store := New()
-	_, err := store.List(context.Background(), approval.Query{TenantID: "t1", AllTenants: true})
+	_, _, err := store.List(context.Background(), approval.Query{TenantID: "t1", AllTenants: true})
 	require.ErrorIs(t, err, approval.ErrQueryScopeConflict)
+}
+
+// TestList_CursorPaginatesAllRows locks in the invariant that drove
+// the cursor work: every created request is reachable by following
+// the next cursor. Before this change, Store.List capped output at
+// Limit silently, so a tenant with >Limit requests silently lost the
+// tail.
+func TestList_CursorPaginatesAllRows(t *testing.T) {
+	store := New()
+	now := time.Now().UTC()
+	const total = 25
+	for i := 0; i < total; i++ {
+		_, err := store.Create(context.Background(), approval.Request{
+			ID:        fmt.Sprintf("r%02d", i),
+			TenantID:  "t",
+			Actor:     "a",
+			Action:    "user.delete",
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+			ExpiresAt: now.Add(time.Hour),
+		})
+		require.NoError(t, err)
+	}
+
+	seen := make(map[string]struct{}, total)
+	cursor := ""
+	pages := 0
+	for {
+		reqs, next, err := store.List(context.Background(), approval.Query{
+			TenantID: "t", Limit: 7, Cursor: cursor,
+		})
+		require.NoError(t, err)
+		for _, r := range reqs {
+			if _, dup := seen[r.ID]; dup {
+				t.Fatalf("cursor produced a duplicate id %q", r.ID)
+			}
+			seen[r.ID] = struct{}{}
+		}
+		pages++
+		if next == "" {
+			break
+		}
+		cursor = next
+		require.LessOrEqual(t, pages, 10, "pagination did not converge")
+	}
+	assert.Len(t, seen, total)
+}
+
+func TestList_RejectsMalformedCursor(t *testing.T) {
+	store := New()
+	_, _, err := store.List(context.Background(), approval.Query{
+		TenantID: "t", Cursor: "not-a-valid-cursor!!!",
+	})
+	assert.ErrorIs(t, err, approval.ErrInvalidCursor)
 }
 
 func TestQuery_Validate(t *testing.T) {

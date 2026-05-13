@@ -119,7 +119,7 @@ func TestStore_CopiesMetadataOnPublicBoundaries(t *testing.T) {
 	assert.Equal(t, "original", gotAgain.Metadata["reason"])
 	assert.Equal(t, "value", gotAgain.Metadata["nested"].(map[string]any)["key"])
 
-	listed, err := store.List(context.Background(), actionlog.Query{TenantID: "t"})
+	listed, _, err := store.List(context.Background(), actionlog.Query{TenantID: "t"})
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	listed[0].Metadata["reason"] = "list-mutated"
@@ -191,7 +191,7 @@ func TestList_FiltersAndOrders(t *testing.T) {
 	}
 
 	// Tenant filter.
-	t1, err := logger.List(context.Background(), actionlog.Query{TenantID: "t1"})
+	t1, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "t1"})
 	require.NoError(t, err)
 	assert.Len(t, t1, 3)
 	// Newest-first ordering.
@@ -200,22 +200,22 @@ func TestList_FiltersAndOrders(t *testing.T) {
 	}
 
 	// Actor filter (cross-tenant, so opt in).
-	actorA, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Actor: "a"})
+	actorA, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Actor: "a"})
 	require.NoError(t, err)
 	assert.Len(t, actorA, 3)
 
 	// Action filter (cross-tenant, so opt in).
-	creates, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Action: "user.create"})
+	creates, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Action: "user.create"})
 	require.NoError(t, err)
 	assert.Len(t, creates, 3)
 
 	// Time filter (cross-tenant, so opt in).
-	recent, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Since: now.Add(-90 * time.Minute)})
+	recent, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Since: now.Add(-90 * time.Minute)})
 	require.NoError(t, err)
 	assert.Len(t, recent, 2)
 
 	// Limit.
-	limited, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Limit: 1})
+	limited, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true, Limit: 1})
 	require.NoError(t, err)
 	assert.Len(t, limited, 1)
 }
@@ -232,16 +232,16 @@ func TestStore_ListRejectsZeroQuery(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = store.List(context.Background(), actionlog.Query{})
+	_, _, err = store.List(context.Background(), actionlog.Query{})
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 
-	_, err = store.List(context.Background(), actionlog.Query{Actor: "a"})
+	_, _, err = store.List(context.Background(), actionlog.Query{Actor: "a"})
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 
-	_, err = store.List(context.Background(), actionlog.Query{TenantID: "t1", AllTenants: true})
+	_, _, err = store.List(context.Background(), actionlog.Query{TenantID: "t1", AllTenants: true})
 	assert.ErrorIs(t, err, actionlog.ErrQueryScopeConflict)
 
-	all, err := store.List(context.Background(), actionlog.Query{AllTenants: true})
+	all, _, err := store.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Len(t, all, 2)
 }
@@ -286,9 +286,58 @@ func TestList_DefaultLimitApplied(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	all, err := logger.List(context.Background(), actionlog.Query{TenantID: "t"})
+	all, next, err := logger.List(context.Background(), actionlog.Query{TenantID: "t"})
 	require.NoError(t, err)
 	assert.Len(t, all, defaultLimit)
+	assert.NotEmpty(t, next, "more rows past the page must produce a cursor")
+}
+
+// TestList_CursorPaginatesAllRows asserts the invariant that drove this
+// cursor work: every appended entry is reachable by following the next
+// cursor. Previously Logger.List capped output at Limit silently, so a
+// tenant with >Limit entries silently lost the tail.
+func TestList_CursorPaginatesAllRows(t *testing.T) {
+	store := New()
+	logger := actionlog.New(store, newTestSecrets(t))
+
+	const total = 25
+	for i := 0; i < total; i++ {
+		_, err := logger.Append(context.Background(), actionlog.Entry{
+			TenantID: "t", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
+		})
+		require.NoError(t, err)
+	}
+
+	seen := make(map[string]struct{}, total)
+	cursor := ""
+	pages := 0
+	for {
+		entries, next, err := logger.List(context.Background(), actionlog.Query{
+			TenantID: "t", Limit: 7, Cursor: cursor,
+		})
+		require.NoError(t, err)
+		for _, e := range entries {
+			if _, dup := seen[e.ID]; dup {
+				t.Fatalf("cursor produced a duplicate id %q", e.ID)
+			}
+			seen[e.ID] = struct{}{}
+		}
+		pages++
+		if next == "" {
+			break
+		}
+		cursor = next
+		require.LessOrEqual(t, pages, 10, "pagination did not converge")
+	}
+	assert.Len(t, seen, total)
+}
+
+func TestList_RejectsMalformedCursor(t *testing.T) {
+	store := New()
+	_, _, err := store.List(context.Background(), actionlog.Query{
+		TenantID: "t", Cursor: "not-a-valid-cursor!!!",
+	})
+	assert.ErrorIs(t, err, actionlog.ErrInvalidCursor)
 }
 
 func TestStore_InvalidReceiverReturnsError(t *testing.T) {
@@ -311,7 +360,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = tc.store.Get(ctx, "id")
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
-			_, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
+			_, _, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
 			_, err = tc.store.ListByTenantSeq(ctx, "t")

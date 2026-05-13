@@ -153,13 +153,19 @@ func (s *Store) Get(_ context.Context, id string) (actionlog.Entry, error) {
 }
 
 // List returns entries matching q ordered by OccurredAt descending,
-// then ID descending.
-func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+// then ID descending. Honours [actionlog.Query.Cursor] for keyset
+// pagination so the full list is reachable by following the returned
+// cursor; an empty next-cursor means the last page.
+func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	if err := s.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	cursorTime, cursorID, err := actionlog.DecodeCursor(q.Cursor)
+	if err != nil {
+		return nil, "", err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -185,10 +191,26 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, e
 		return matched[i].ID > matched[j].ID
 	})
 
+	if q.Cursor != "" {
+		idx := 0
+		for idx < len(matched) {
+			e := matched[idx]
+			if e.OccurredAt.Before(cursorTime) ||
+				(e.OccurredAt.Equal(cursorTime) && e.ID < cursorID) {
+				break
+			}
+			idx++
+		}
+		matched = matched[idx:]
+	}
+
+	var next string
 	if len(matched) > limit {
+		last := matched[limit-1]
+		next = actionlog.EncodeCursor(last.OccurredAt, last.ID)
 		matched = matched[:limit]
 	}
-	return matched, nil
+	return matched, next, nil
 }
 
 // RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC order.

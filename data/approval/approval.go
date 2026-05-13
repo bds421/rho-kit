@@ -155,7 +155,19 @@ type Query struct {
 	State  State
 	Since  time.Time
 	Until  time.Time
-	Limit  int
+
+	// Limit caps the number of requests returned in one page. Stores
+	// apply a default of 100 when Limit <= 0 to bound query cost. The
+	// list's total size is bounded by [Cursor] pagination, not by
+	// Limit — callers must follow the returned next cursor to read
+	// all requests.
+	Limit int
+
+	// Cursor is an opaque page marker returned by a previous call to
+	// [Store.List]. Empty cursor reads from the head; opaque format
+	// is implementation-defined and verified by [DecodeCursor]. A
+	// malformed cursor surfaces [ErrInvalidCursor].
+	Cursor string
 }
 
 // Validate enforces the tenant-scoping contract documented above.
@@ -191,8 +203,12 @@ type Store interface {
 	// the next Decide call. This keeps reads side-effect-free.
 	Get(ctx context.Context, id string) (Request, error)
 
-	// List returns requests matching q, newest-first.
-	List(ctx context.Context, q Query) ([]Request, error)
+	// List returns requests matching q, newest-first. Implementations
+	// honour [Query.Cursor] for keyset pagination on (CreatedAt, ID)
+	// so total list size is bounded by the caller's cursor follow,
+	// not by [Query.Limit]. The returned cursor is empty when no more
+	// rows match.
+	List(ctx context.Context, q Query) ([]Request, string, error)
 
 	// Decide records an approver's decision.
 	//

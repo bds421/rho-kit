@@ -103,16 +103,23 @@ func (s *Store) Get(ctx context.Context, id string) (approval.Request, error) {
 // List returns matching requests newest-first by CreatedAt. Returns
 // [approval.ErrQueryTenantRequired] when the caller did not set
 // [approval.Query.TenantID] or opt into AllTenants — see audit
-// FR-053 for why cross-tenant listings must be explicit.
-func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, error) {
+// FR-053 for why cross-tenant listings must be explicit. Honours
+// [approval.Query.Cursor] for keyset pagination so the full list is
+// reachable by following the returned cursor; an empty next-cursor
+// means the last page.
+func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, string, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := s.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	cursorTime, cursorID, err := approval.DecodeCursor(q.Cursor)
+	if err != nil {
+		return nil, "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,10 +143,25 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		}
 		return matched[i].ID > matched[j].ID
 	})
+	if q.Cursor != "" {
+		idx := 0
+		for idx < len(matched) {
+			r := matched[idx]
+			if r.CreatedAt.Before(cursorTime) ||
+				(r.CreatedAt.Equal(cursorTime) && r.ID < cursorID) {
+				break
+			}
+			idx++
+		}
+		matched = matched[idx:]
+	}
+	var next string
 	if len(matched) > limit {
+		last := matched[limit-1]
+		next = approval.EncodeCursor(last.CreatedAt, last.ID)
 		matched = matched[:limit]
 	}
-	return matched, nil
+	return matched, next, nil
 }
 
 // Decide records an approver's decision. See [approval.Store] for the

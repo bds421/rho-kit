@@ -481,7 +481,7 @@ func TestServer_ActionLog_SuccessfulCallWritesEntry(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-123"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-123"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	e := entries[0]
@@ -493,7 +493,7 @@ func TestServer_ActionLog_SuccessfulCallWritesEntry(t *testing.T) {
 	assert.Equal(t, "echo", e.Metadata["tool"])
 
 	// Sanity check the store roundtripped one row.
-	listed, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-123"})
+	listed, _, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-123"})
 	require.NoError(t, err)
 	assert.Len(t, listed, 1)
 }
@@ -513,7 +513,7 @@ func TestServer_ActionLog_FailureEntryRecordsReason(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-9"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-9"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, actionlog.OutcomeFailure, entries[0].Outcome)
@@ -553,7 +553,7 @@ func TestServer_ActionLog_StrictMode_NoTenant_RefusesDispatch(t *testing.T) {
 
 	assert.Equal(t, 0, calls, "tool MUST NOT execute when strict-mode audit cannot be attributed")
 
-	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no audit entry should be written when tool was refused")
 }
@@ -604,7 +604,7 @@ func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T)
 	assert.Equal(t, "hi", result["echoed"])
 	assert.Equal(t, 1, calls, "tool must execute in loose mode")
 
-	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	assert.Empty(t, entries, "loose mode skips the audit entry when tenant absent")
 
@@ -625,7 +625,7 @@ func TestServer_ActionLog_StrictMode_WithTenant_WritesEntry(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-strict"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-strict"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "agent-strict", entries[0].Actor)
@@ -651,7 +651,7 @@ func (l *asyncBlockingLogger) Get(ctx context.Context, id string) (actionlog.Ent
 	return l.inner.Get(ctx, id)
 }
 
-func (l *asyncBlockingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+func (l *asyncBlockingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
 }
 
@@ -685,7 +685,7 @@ func (l *contextRecordingLogger) Get(ctx context.Context, id string) (actionlog.
 	return l.inner.Get(ctx, id)
 }
 
-func (l *contextRecordingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+func (l *contextRecordingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
 }
 
@@ -736,7 +736,7 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 
 	// At this point the goroutine is parked on `<-release`. No
 	// entry has reached the inner store yet.
-	entriesEarly, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
+	entriesEarly, _, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
 	require.NoError(t, err)
 	assert.Empty(t, entriesEarly, "async append must not yet have written when response is returned")
 
@@ -744,7 +744,7 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 	close(blocking.release)
 	wg.Wait()
 
-	entriesLate, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
+	entriesLate, _, err := innerLogger.List(context.Background(), actionlog.Query{TenantID: "tenant-async"})
 	require.NoError(t, err)
 	require.Len(t, entriesLate, 1, "async append must eventually write the entry")
 	assert.Equal(t, "mcp.echo", entriesLate[0].Action)
@@ -794,7 +794,7 @@ func TestServer_ActionLog_SyncMode_AppendBeforeResponse(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-sync"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-sync"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1, "sync mode writes the entry before returning the response")
 }
@@ -862,7 +862,7 @@ func TestDefaultActorExtractor_StrictAuditRefusesAnonymousDespiteHeader(t *testi
 	rpcErr := resp["error"].(map[string]any)
 	assert.EqualValues(t, -32603, rpcErr["code"])
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7"})
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
@@ -882,7 +882,7 @@ func TestWithAllowAnonymousActor_RecordsAnonymous(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-anon"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-anon"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, mcp.AnonymousActor, entries[0].Actor)
@@ -917,7 +917,7 @@ func TestWithActorFromContext_ReadsAuthContext(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7-ctx"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-h7-ctx"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "verified-bob", entries[0].Actor,
@@ -937,7 +937,7 @@ func TestServer_ActorExtractor_OverrideUsedOverHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{AllTenants: true})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "fixed-actor", entries[0].Actor)
@@ -962,7 +962,7 @@ func TestServer_ActorExtractorPanicRefusesStrictAuditDispatch(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	require.NotNil(t, resp["error"])
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-panic"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-panic"})
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
@@ -995,7 +995,7 @@ func TestServer_ActorExtractorInvalidRefusesStrictAuditDispatch(t *testing.T) {
 			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 			require.NotNil(t, resp["error"])
 
-			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-invalid"})
+			entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-invalid"})
 			require.NoError(t, err)
 			assert.Empty(t, entries)
 		})
@@ -1058,7 +1058,7 @@ func TestWithActorFromHeader_AmbiguousHeaderRefusesStrictAuditDispatch(t *testin
 			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 			require.NotNil(t, resp["error"])
 
-			entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-header"})
+			entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-actor-header"})
 			require.NoError(t, err)
 			assert.Empty(t, entries)
 		})
@@ -1081,7 +1081,7 @@ func (l *failingLogger) Get(ctx context.Context, id string) (actionlog.Entry, er
 	return l.inner.Get(ctx, id)
 }
 
-func (l *failingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+func (l *failingLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
 }
 
@@ -1180,7 +1180,7 @@ func (l *blockingForeverLogger) Get(ctx context.Context, id string) (actionlog.E
 	return l.inner.Get(ctx, id)
 }
 
-func (l *blockingForeverLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+func (l *blockingForeverLogger) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	return l.inner.List(ctx, q)
 }
 
@@ -1260,7 +1260,7 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	require.NoError(t, s.Stop(stopCtx), "Stop must drain within timeout")
 
 	// All 4 entries should now be visible.
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-drain"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-drain"})
 	require.NoError(t, err)
 	assert.Len(t, entries, 4)
 }
@@ -1328,7 +1328,7 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 	require.NoError(t, s.Stop(stopCtx))
 	wg.Wait()
 
-	entries, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-race"})
+	entries, _, err := store.List(context.Background(), actionlog.Query{TenantID: "tenant-race"})
 	require.NoError(t, err)
 	dropped := s.AsyncAuditDropped() - droppedBefore
 	assert.Equal(t, int64(N), int64(len(entries))+dropped,
@@ -1388,7 +1388,7 @@ func TestTruncateReason_PreservesUTF8Boundaries(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 
-	entries, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-utf8"})
+	entries, _, err := logger.List(context.Background(), actionlog.Query{TenantID: "tenant-utf8"})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	reason := entries[0].Reason

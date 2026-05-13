@@ -155,7 +155,7 @@ func TestPostgres_Live_ConcurrentFirstAppend(t *testing.T) {
 
 	require.NoError(t, log.VerifyChain(context.Background(), "tenant-first"))
 
-	got, err := log.List(context.Background(), actionlog.Query{TenantID: "tenant-first", Limit: n + 1})
+	got, _, err := log.List(context.Background(), actionlog.Query{TenantID: "tenant-first", Limit: n + 1})
 	require.NoError(t, err)
 	assert.Len(t, got, n)
 }

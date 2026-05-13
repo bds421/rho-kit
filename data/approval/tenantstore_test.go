@@ -22,7 +22,7 @@ func TestTenantStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = store.Get(ctx, "r")
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			_, err = store.List(ctx, Query{TenantID: "tenant"})
+			_, _, err = store.List(ctx, Query{TenantID: "tenant"})
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
 			_, err = store.Approve(ctx, "r", "approver", "ok")
@@ -85,7 +85,7 @@ func (s *tenantStoreTestStore) Get(_ context.Context, id string) (Request, error
 	return r, nil
 }
 
-func (s *tenantStoreTestStore) List(_ context.Context, q Query) ([]Request, error) {
+func (s *tenantStoreTestStore) List(_ context.Context, q Query) ([]Request, string, error) {
 	out := make([]Request, 0, len(s.requests))
 	for _, r := range s.requests {
 		if q.TenantID != "" && r.TenantID != q.TenantID {
@@ -93,7 +93,7 @@ func (s *tenantStoreTestStore) List(_ context.Context, q Query) ([]Request, erro
 		}
 		out = append(out, r)
 	}
-	return out, nil
+	return out, "", nil
 }
 
 func (s *tenantStoreTestStore) Approve(_ context.Context, id, decidedBy, reason string) (Request, error) {

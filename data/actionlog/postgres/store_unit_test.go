@@ -30,7 +30,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, err = tc.store.Get(ctx, "id")
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
-			_, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
+			_, _, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
 			_, err = tc.store.ListByTenantSeq(ctx, "t")
@@ -46,13 +46,13 @@ func TestStore_ValidatesBeforeQueryingPool(t *testing.T) {
 	ctx := context.Background()
 	store := &Store{pool: &pgxpool.Pool{}}
 
-	_, err := store.List(ctx, actionlog.Query{})
+	_, _, err := store.List(ctx, actionlog.Query{})
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 
-	_, err = store.List(ctx, actionlog.Query{Actor: "a"})
+	_, _, err = store.List(ctx, actionlog.Query{Actor: "a"})
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 
-	_, err = store.List(ctx, actionlog.Query{TenantID: "tenant", AllTenants: true})
+	_, _, err = store.List(ctx, actionlog.Query{TenantID: "tenant", AllTenants: true})
 	assert.ErrorIs(t, err, actionlog.ErrQueryScopeConflict)
 
 	_, err = store.ListByTenantSeq(ctx, "")

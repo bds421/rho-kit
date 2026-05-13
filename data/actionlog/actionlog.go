@@ -212,9 +212,18 @@ type Query struct {
 	Since time.Time
 	Until time.Time
 
-	// Limit caps the number of entries returned. Stores apply a
-	// default of 100 when Limit <= 0 to bound query cost.
+	// Limit caps the number of entries returned in one page. Stores
+	// apply a default of 100 when Limit <= 0 to bound query cost. The
+	// list's total size is bounded by [Cursor] pagination, not by
+	// Limit — callers must follow the returned next cursor to read
+	// all entries.
 	Limit int
+
+	// Cursor is an opaque page marker returned by a previous call to
+	// [Logger.List]. Empty cursor reads from the head; opaque format
+	// is implementation-defined and verified by [DecodeCursor]. A
+	// malformed cursor surfaces [ErrInvalidCursor].
+	Cursor string
 }
 
 // Validate enforces the tenant-scoping contract documented above.
@@ -258,11 +267,13 @@ type Logger interface {
 	// key id is no longer resolvable.
 	Get(ctx context.Context, id string) (Entry, error)
 
-	// List returns entries matching q, signature-verified. Tampered
-	// entries surface [ErrSignatureInvalid] rather than being silently
-	// skipped — a partial result that hides forgeries is worse than no
-	// result.
-	List(ctx context.Context, q Query) ([]Entry, error)
+	// List returns the next page of entries matching q, signature-verified.
+	// Tampered entries surface [ErrSignatureInvalid] rather than being
+	// silently skipped — a partial result that hides forgeries is worse
+	// than no result. The returned cursor is empty when the page is the
+	// last one; otherwise it is the opaque marker callers feed back via
+	// [Query.Cursor] to retrieve the next page.
+	List(ctx context.Context, q Query) ([]Entry, string, error)
 
 	// Sign returns the canonical signature for the entry without
 	// touching the store. Useful for off-band verification tools and
@@ -306,8 +317,11 @@ type Store interface {
 
 	// List returns entries matching q, ordered by OccurredAt
 	// descending, then ID descending for stable ordering when
-	// timestamps tie.
-	List(ctx context.Context, q Query) ([]Entry, error)
+	// timestamps tie. Implementations honour [Query.Cursor] via
+	// keyset pagination on (OccurredAt, ID) so total list size is
+	// bounded by the caller's cursor follow, not by [Query.Limit].
+	// The returned cursor is empty when no more rows match.
+	List(ctx context.Context, q Query) ([]Entry, string, error)
 
 	// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC
 	// order. Used by [Logger.VerifyChain]. Implementations should stream
@@ -583,27 +597,28 @@ func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
 // List reads and verifies a batch of entries. Rejects queries that lack
 // a TenantID and have not opted into AllTenants, or that specify both
 // scope modes — see [Query]. The first verification failure aborts the
-// call so callers don't get a half-truthful page.
-func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, error) {
+// call so callers don't get a half-truthful page. Returns the next
+// page cursor (empty when the page is the last one).
+func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, error) {
 	if err := l.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	entries, err := l.store.List(ctx, q)
+	entries, next, err := l.store.List(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	out := make([]Entry, len(entries))
 	for i, e := range entries {
 		e = cloneEntry(e)
 		if err := l.Verify(e); err != nil {
-			return nil, fmt.Errorf("actionlog: entry verification failed: %w", err)
+			return nil, "", fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		out[i] = e
 	}
-	return out, nil
+	return out, next, nil
 }
 
 // VerifyChain streams the per-tenant chain and reports any deletion,

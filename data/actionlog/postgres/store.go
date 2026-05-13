@@ -125,12 +125,19 @@ WHERE id = $1`
 }
 
 // List returns entries matching q, ordered by occurred_at DESC, id DESC.
-func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, error) {
+// Honours [actionlog.Query.Cursor] for keyset pagination — the returned
+// cursor is non-empty iff at least one more row matches the filters
+// past the page boundary.
+func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	if err := s.ready(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	cursorTime, cursorID, err := actionlog.DecodeCursor(q.Cursor)
+	if err != nil {
+		return nil, "", err
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -140,8 +147,8 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 	// Build the WHERE clause incrementally. Using positional placeholders
 	// keeps the parameter list aligned with the SQL string and avoids any
 	// risk of operator-supplied filter values being interpolated.
-	args := make([]any, 0, 5)
-	clauses := make([]string, 0, 5)
+	args := make([]any, 0, 6)
+	clauses := make([]string, 0, 6)
 	add := func(expr string, val any) {
 		args = append(args, val)
 		clauses = append(clauses, fmt.Sprintf(expr, len(args)))
@@ -161,6 +168,15 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 	if !q.Until.IsZero() {
 		add("occurred_at <= $%d", q.Until.UTC())
 	}
+	if q.Cursor != "" {
+		// Keyset on (occurred_at DESC, id DESC): the next page contains
+		// rows strictly older OR same-time-but-lower-id than the marker.
+		args = append(args, cursorTime, cursorID)
+		clauses = append(clauses, fmt.Sprintf(
+			"(occurred_at < $%d OR (occurred_at = $%d AND id < $%d))",
+			len(args)-1, len(args)-1, len(args),
+		))
+	}
 
 	sql := `SELECT id, tenant_id, actor, action, resource, outcome, reason,
        metadata, occurred_at, signature_key_id, seq, prev_hash, signature
@@ -168,12 +184,14 @@ FROM action_log_entries`
 	if len(clauses) > 0 {
 		sql += " WHERE " + joinAnd(clauses)
 	}
-	args = append(args, limit)
+	// Fetch limit+1 rows so we can tell whether another page exists
+	// without issuing a second COUNT(*) query.
+	args = append(args, limit+1)
 	sql += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", len(args))
 
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, fmt.Errorf("actionlog/postgres: list: %w", err)
+		return nil, "", fmt.Errorf("actionlog/postgres: list: %w", err)
 	}
 	defer rows.Close()
 
@@ -181,14 +199,20 @@ FROM action_log_entries`
 	for rows.Next() {
 		entry, scanErr := scanEntry(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("actionlog/postgres: list scan: %w", scanErr)
+			return nil, "", fmt.Errorf("actionlog/postgres: list scan: %w", scanErr)
 		}
 		out = append(out, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("actionlog/postgres: list iterate: %w", err)
+		return nil, "", fmt.Errorf("actionlog/postgres: list iterate: %w", err)
 	}
-	return out, nil
+	var next string
+	if len(out) > limit {
+		last := out[limit-1]
+		next = actionlog.EncodeCursor(last.OccurredAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
 }
 
 // RangeByTenantSeq calls fn for every entry for tenantID ordered by Seq ASC.
