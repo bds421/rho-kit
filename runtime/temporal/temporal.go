@@ -117,11 +117,17 @@ func (c *Client) Close() {
 // it via [worker.Registry] (returned by [Worker.Registry]) before
 // starting; once Start runs the registry is sealed.
 type Worker struct {
-	w        worker.Worker
+	w        temporalWorker
+	registry worker.Registry
 	mu       sync.Mutex
 	started  bool
 	stopped  bool
 	stopOnce sync.Once
+}
+
+type temporalWorker interface {
+	Run(interruptCh <-chan interface{}) error
+	Stop()
 }
 
 // NewWorker creates a kit Worker for the given task queue. Pass
@@ -135,13 +141,14 @@ func NewWorker(client *Client, taskQueue string, opts worker.Options) *Worker {
 	if taskQueue == "" {
 		panic("temporal: taskQueue must not be empty")
 	}
-	return &Worker{w: worker.New(client.c, taskQueue, opts)}
+	w := worker.New(client.c, taskQueue, opts)
+	return &Worker{w: w, registry: w}
 }
 
 // Registry returns the Temporal worker's registration surface so the
 // caller can attach workflows / activities. Safe to call before
 // Start, panics afterwards (Temporal SDK enforces the same).
-func (w *Worker) Registry() worker.Registry { return w.w }
+func (w *Worker) Registry() worker.Registry { return w.registry }
 
 // Start begins polling the task queue. Blocks until ctx is cancelled
 // or Stop is called. Returns the worker's terminal error (nil on

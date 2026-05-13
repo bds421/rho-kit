@@ -23,7 +23,7 @@ repository root unless a block says to `cd` into a module first.
 | Docs snippets executable or illustrative | This checklist plus per-doc notes | Executable snippets are tied to tests or commands; recipe snippets are explicitly illustrative. | Passed 2026-05-11: markdown snippet sweep found every fenced-block document covered by a snippet-status note or explicit executable evidence. |
 | Full gates pass | Commands below | test, race, lint, vulncheck, dependency allowlist, dependency boundaries, dashboard/rule validation, benchmark baseline capture, coverage, benchmarks, kit-doctor, diff check. | Partial refresh 2026-05-12: diff, test, lint, build, dependency, dashboard, publishability, release-plan, kit-doctor, benchmark-baseline, and Azure Key Vault module race/vulncheck gates passed on the 67-module tree. Full workspace race, coverage, benchmark, Docker integration, and release rehearsal remain to rerun before tagging. |
 | Docker-backed integration tests pass where available | `go test -tags integration ./...` in split integration modules | Docker available: pass. Docker unavailable: record skip reason. | Blocked 2026-05-12: `docker info` hung before the first module; the stuck process was terminated. Last successful full Docker run remains 2026-05-11 with Docker 29.4.1. |
-| No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-13 on live workspace: boundary check reviewed 349 direct module edges; allowlist check reviewed 60 direct external deps including Vault API, Azure Key Vault keys, NATS Prometheus metrics, and the Temporal SDK's Nexus test dependency. |
+| No unreviewed heavy deps in core modules | `make check-dependency-boundaries`, `make check-dependency-allowlist`, [../audit/dependency-allowlist.txt](../audit/dependency-allowlist.txt) | Both checks pass and allowlist is reviewed. | Passed 2026-05-13 on live workspace: boundary check reviewed 348 direct module edges; allowlist check reviewed 59 direct external deps including Vault API, Azure Key Vault keys, and NATS Prometheus metrics. |
 | Security-sensitive files have review ownership | [.github/CODEOWNERS](../../.github/CODEOWNERS), [../audit/SUPPLY_CHAIN.md](../audit/SUPPLY_CHAIN.md) | Supply-chain policy, threat model, dependency allowlist, release docs, workflows, and release gate scripts route to the security owner. | Present for security-sensitive package and release files. Branch-protection enforcement of CODEOWNERS reviews and existence of the `@bds421/security` GitHub team remain open as of 2026-05-12. |
 | License finalized | [`LICENSE.md`](../../LICENSE.md) | Repository carries a complete, dated copyright/license header consistent with the chosen license. | DONE 2026-05-12: Apache 2.0 chosen, `Copyright 2026 BDS421` line populated. |
 | SECURITY.md present at repo root | [`SECURITY.md`](../../SECURITY.md) | Public, coordinated-disclosure security policy is published at the repo root and references the supply-chain SLA. | DONE 2026-05-12: `SECURITY.md` references private GitHub Security Advisories, the `security@bds421.com` mailbox (pending operator confirmation), and the SLA from `docs/audit/SUPPLY_CHAIN.md`. |
@@ -294,7 +294,7 @@ Redis Streams dashboards, recording rules, alerts, and runbooks. A clean
 detached worktree of the committed metrics changes also passed
 `bash tools/check-direct-dependency-allowlist.sh` with 59 approved direct
 external dependencies. The live workspace allowlist caveat from
-`runtime/temporal/go.mod` was resolved by approving `github.com/nexus-rpc/sdk-go`
-as the Temporal SDK's direct Nexus test dependency; the live
-`make check-dependency-allowlist` run now passes with 60 approved direct
-external dependencies.
+`runtime/temporal/go.mod` was resolved by narrowing the Temporal worker test
+seam so `github.com/nexus-rpc/sdk-go` remains only an indirect dependency of
+`go.temporal.io/sdk`; the live `make check-dependency-allowlist` run now
+passes with 59 approved direct external dependencies.

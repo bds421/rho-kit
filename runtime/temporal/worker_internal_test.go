@@ -7,11 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/workflow"
 )
 
 func TestWorker_StartRejectsNilContext(t *testing.T) {
@@ -122,8 +119,6 @@ func waitForFakeTemporalRun(t *testing.T, fw *fakeTemporalWorker) {
 	}
 }
 
-func (f *fakeTemporalWorker) Start() error { return nil }
-
 func (f *fakeTemporalWorker) Run(interrupt <-chan interface{}) error {
 	f.startOnce.Do(func() { close(f.runStarted) })
 	select {
@@ -140,21 +135,3 @@ func (f *fakeTemporalWorker) Stop() {
 		close(f.stopped)
 	})
 }
-
-func (f *fakeTemporalWorker) RegisterWorkflow(w interface{}) {}
-
-func (f *fakeTemporalWorker) RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions) {
-}
-
-func (f *fakeTemporalWorker) RegisterDynamicWorkflow(w interface{}, options workflow.DynamicRegisterOptions) {
-}
-
-func (f *fakeTemporalWorker) RegisterActivity(a interface{}) {}
-
-func (f *fakeTemporalWorker) RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions) {
-}
-
-func (f *fakeTemporalWorker) RegisterDynamicActivity(a interface{}, options activity.DynamicRegisterOptions) {
-}
-
-func (f *fakeTemporalWorker) RegisterNexusService(service *nexus.Service) {}
