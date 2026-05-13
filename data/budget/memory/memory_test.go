@@ -466,6 +466,35 @@ func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 		"concurrent Consume must make progress against an active sweeper")
 }
 
+// TestHonorsCancelledContext pins the H-011 finding. A cancelled ctx
+// must return ctx.Err() without consuming budget or mutating state,
+// matching the Redis-backed implementation. Without this, memory and
+// Redis wirings disagree about what a cancelled caller observes.
+func TestHonorsCancelledContext(t *testing.T) {
+	b := memory.New(10, time.Minute, memory.WithoutSweeper())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ok, remaining, retry, err := b.Consume(ctx, "alice", 1)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, ok)
+	assert.Equal(t, int64(0), remaining)
+	assert.Equal(t, time.Duration(0), retry)
+
+	_, err = b.Peek(ctx, "alice")
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = b.Refund(ctx, "alice", 1)
+	require.ErrorIs(t, err, context.Canceled)
+
+	// State must be untouched: a fresh (background) Consume should
+	// still see the full cap available.
+	ok, remaining, _, err = b.Consume(context.Background(), "alice", 10)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, int64(0), remaining)
+}
+
 // TestSweeperDisabled keeps the sweeper goroutine off and verifies
 // keys persist regardless of period rollover. Useful for callers that
 // want to bound cardinality themselves.

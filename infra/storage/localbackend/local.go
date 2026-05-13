@@ -73,7 +73,14 @@ func (b *Backend) Close() error { return nil }
 
 // Put writes content from r to <root>/<key>. Uses atomic write via temp file
 // and rename to prevent partial writes on crash.
+//
+// Honours context cancellation symmetrically with remote backends: ctx.Err
+// is checked at method entry and again before the body copy, so a cancelled
+// caller does not pay for the validator/MkdirAll/temp-file work.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -101,6 +108,13 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("localbackend: unsafe parent: %w", err)
+	}
+
+	// Re-check cancellation after the symlink/mkdir prep work: a
+	// long-running validator chain may have run and we should not
+	// burn an fsync if the caller is already gone.
+	if err := ctxErr(ctx); err != nil {
+		return err
 	}
 
 	// Atomic write: write to temp file, then rename.
@@ -161,7 +175,13 @@ func fsyncDir(dir string) error {
 }
 
 // Get opens <root>/<key> for reading. Caller must close the returned ReadCloser.
-func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+// Honours context cancellation: ctx.Err is checked before the open syscall so
+// memory/local wirings agree with remote backends about what a cancelled
+// caller observes.
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
@@ -191,7 +211,11 @@ func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.Obj
 }
 
 // Delete removes <root>/<key>. Returns nil if the file does not exist (idempotent).
-func (b *Backend) Delete(_ context.Context, key string) error {
+// Honours context cancellation: ctx.Err is checked before the unlink syscall.
+func (b *Backend) Delete(ctx context.Context, key string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -215,7 +239,11 @@ func (b *Backend) Delete(_ context.Context, key string) error {
 }
 
 // Exists reports whether <root>/<key> exists on disk.
-func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
+// Honours context cancellation: ctx.Err is checked before the stat syscall.
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
+	if err := ctxErr(ctx); err != nil {
+		return false, err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -337,6 +365,16 @@ func localFileError(op string, err error) error {
 
 func localPathError(op string) error {
 	return fmt.Errorf("localbackend: %s failed", op)
+}
+
+// ctxErr returns ctx.Err() for non-nil ctx, or nil otherwise.
+// Matches the kit-wide convention used by remote backends: nil ctx is
+// treated as context.Background() rather than rejected.
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 // wrapInsufficientCapacity wraps an ENOSPC-bearing error so callers can

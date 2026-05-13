@@ -15,7 +15,13 @@ var _ storage.Copier = (*Backend)(nil)
 
 // Copy duplicates a file within the local filesystem.
 // Uses direct file-to-file copy with atomic rename for crash safety.
-func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
+//
+// Honours context cancellation symmetrically with remote backends:
+// ctx.Err is checked at method entry and again before the body copy.
+func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(srcKey); err != nil {
 		return err
 	}
@@ -52,6 +58,10 @@ func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
 	}
 	if err := b.rejectSymlinkPath(filepath.Dir(dstPath)); err != nil {
 		return fmt.Errorf("localbackend: copy unsafe parent: %w", err)
+	}
+
+	if err := ctxErr(ctx); err != nil {
+		return err
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dstPath), ".tmp-*")

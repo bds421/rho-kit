@@ -134,6 +134,17 @@ func (b *Budget) ready() error {
 	return nil
 }
 
+// ctxErr returns ctx.Err() for non-nil ctx, or nil otherwise.
+// Symmetry with rediscache: a nil ctx is treated as not-cancelled
+// rather than rejected, matching the kit-wide convention that "no
+// ctx" is equivalent to context.Background().
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
 // Close terminates the background sweeper. Safe to call multiple
 // times. After Close, the budget continues to admit and refund as
 // normal but no longer evicts cold keys. Always returns nil — the
@@ -205,7 +216,15 @@ func (b *Budget) loadOrInitBucket(key string, currentPeriod int64) *bucket {
 
 // Consume implements [budget.Budget]. amount==0 returns the current
 // remaining without changing state.
-func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
+//
+// Honours context cancellation symmetrically with the Redis-backed
+// budget: a cancelled or already-expired ctx returns ctx.Err() before
+// any state mutation, so memory wiring and Redis wiring agree about
+// what a cancelled caller observes.
+func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, int64, time.Duration, error) {
+	if err := ctxErr(ctx); err != nil {
+		return false, 0, 0, err
+	}
 	if err := b.ready(); err != nil {
 		return false, 0, 0, err
 	}
@@ -232,6 +251,12 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 		bk.mu.Unlock()
 	}
 	defer bk.mu.Unlock()
+
+	// Re-check cancellation after acquiring the bucket lock: a
+	// contended caller may have been cancelled while waiting.
+	if err := ctxErr(ctx); err != nil {
+		return false, 0, 0, err
+	}
 
 	if bk.periodN.Load() != periodID {
 		bk.periodN.Store(periodID)
@@ -268,7 +293,14 @@ func (b *Budget) Consume(_ context.Context, key string, amount int64) (bool, int
 }
 
 // Peek implements [budget.Budget]. Unknown keys return the full cap.
-func (b *Budget) Peek(_ context.Context, key string) (int64, error) {
+//
+// Honours context cancellation symmetrically with the Redis-backed
+// budget: a cancelled or already-expired ctx returns ctx.Err() before
+// any work.
+func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
+	if err := ctxErr(ctx); err != nil {
+		return 0, err
+	}
 	if err := b.ready(); err != nil {
 		return 0, err
 	}
@@ -298,7 +330,14 @@ func (b *Budget) Peek(_ context.Context, key string) (int64, error) {
 // Refund implements [budget.Refunder]. Crediting an unknown key is a
 // no-op (there is nothing to refund); refunds past the cap clamp at
 // `cap` so the budget never inflates above its configured limit.
-func (b *Budget) Refund(_ context.Context, key string, amount int64) (int64, error) {
+//
+// Honours context cancellation symmetrically with the Redis-backed
+// budget: a cancelled or already-expired ctx returns ctx.Err() before
+// any state mutation.
+func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, error) {
+	if err := ctxErr(ctx); err != nil {
+		return 0, err
+	}
 	if err := b.ready(); err != nil {
 		return 0, err
 	}

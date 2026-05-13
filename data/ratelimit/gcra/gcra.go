@@ -135,6 +135,16 @@ func (l *Limiter) ready() error {
 	return nil
 }
 
+// ctxErr returns ctx.Err() for non-nil ctx, or nil otherwise.
+// Matches the tokenbucket/budget convention: a nil ctx is treated as
+// context.Background() rather than rejected.
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
 // Close terminates the background sweeper. Safe to call multiple
 // times. Always returns nil — the signature matches [io.Closer] so the
 // Limiter can be wired into resource-cleanup helpers, but the
@@ -190,7 +200,16 @@ func (l *Limiter) sweep() {
 
 // Allow reports whether key's next event is permitted. retryAfter is
 // the time-until-next-allowed when denied.
-func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, error) {
+//
+// Honours context cancellation symmetrically with the Redis-backed
+// limiter: a cancelled or already-expired ctx returns ctx.Err() before
+// taking the limiter lock, and again after acquiring it, so contended
+// callers cannot silently spend a slot after their request has been
+// cancelled.
+func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
+	if err := ctxErr(ctx); err != nil {
+		return false, 0, err
+	}
 	if err := l.ready(); err != nil {
 		return false, 0, err
 	}
@@ -201,6 +220,10 @@ func (l *Limiter) Allow(_ context.Context, key string) (bool, time.Duration, err
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if err := ctxErr(ctx); err != nil {
+		return false, 0, err
+	}
 
 	tat, ok := l.tats[key]
 	if !ok || tat.Before(now) {

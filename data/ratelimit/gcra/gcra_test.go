@@ -216,3 +216,21 @@ func TestAllow_RetryAtAdvertisedBoundaryAdmits(t *testing.T) {
 func TestWithClock_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithClock(nil) })
 }
+
+// TestAllow_HonorsCancelledContext pins H-011: a cancelled ctx must
+// return ctx.Err() without spending a slot, so memory and Redis
+// wirings agree about what a cancelled caller observes.
+func TestAllow_HonorsCancelledContext(t *testing.T) {
+	l := New(time.Second, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ok, retry, err := l.Allow(ctx, "k")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, ok)
+	assert.Equal(t, time.Duration(0), retry)
+
+	ok, _, err = l.Allow(context.Background(), "k")
+	require.NoError(t, err)
+	require.True(t, ok)
+}

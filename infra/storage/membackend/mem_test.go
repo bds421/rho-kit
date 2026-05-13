@@ -290,6 +290,38 @@ func TestMemBackend_EmptyKeyRejected(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestHonorsCancelledContext pins M-005: a cancelled ctx must return
+// ctx.Err() from every storage operation, so memory wiring agrees with
+// remote backends about cancellation semantics.
+func TestHonorsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	b := New()
+
+	require.ErrorIs(t, b.Put(ctx, "k", bytes.NewReader([]byte("v")), storage.ObjectMeta{}), context.Canceled)
+
+	_, _, err := b.Get(ctx, "k")
+	require.ErrorIs(t, err, context.Canceled)
+
+	require.ErrorIs(t, b.Delete(ctx, "k"), context.Canceled)
+
+	_, err = b.Exists(ctx, "k")
+	require.ErrorIs(t, err, context.Canceled)
+
+	require.ErrorIs(t, b.Copy(ctx, "k", "k2"), context.Canceled)
+
+	var listErr error
+	for _, e := range b.List(ctx, "", storage.ListOptions{}) {
+		listErr = e
+		break
+	}
+	require.ErrorIs(t, listErr, context.Canceled)
+
+	// Sanity: state is untouched.
+	require.Equal(t, 0, b.Len())
+}
+
 type trackingReadCloser struct {
 	io.Reader
 	closed *bool

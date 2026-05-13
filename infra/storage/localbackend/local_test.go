@@ -511,6 +511,36 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 	})
 }
 
+// TestHonorsCancelledContext pins M-005: a cancelled ctx must return
+// ctx.Err() from every storage operation, so local wiring agrees with
+// remote backends about cancellation semantics.
+func TestHonorsCancelledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	b := newBackend(t)
+
+	require.ErrorIs(t, b.Put(ctx, "k", bytes.NewReader([]byte("v")), storage.ObjectMeta{}), context.Canceled)
+
+	_, _, err := b.Get(ctx, "k")
+	require.ErrorIs(t, err, context.Canceled)
+
+	require.ErrorIs(t, b.Delete(ctx, "k"), context.Canceled)
+
+	_, err = b.Exists(ctx, "k")
+	require.ErrorIs(t, err, context.Canceled)
+
+	require.ErrorIs(t, b.Copy(ctx, "k", "k2"), context.Canceled)
+
+	var listErr error
+	for _, e := range b.List(ctx, "", storage.ListOptions{}) {
+		listErr = e
+		break
+	}
+	require.ErrorIs(t, listErr, context.Canceled)
+}
+
 func newBackend(t *testing.T, opts ...Option) *Backend {
 	t.Helper()
 	b, err := New(t.TempDir(), opts...)

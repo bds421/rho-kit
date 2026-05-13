@@ -43,7 +43,12 @@ func New(validators ...storage.Validator) *Backend {
 }
 
 // Put stores content at key. The reader is fully consumed into memory.
+// Honours context cancellation symmetrically with remote backends: a
+// cancelled ctx is rejected at entry and again before the map write.
 func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -64,6 +69,10 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 		return storage.WrapSafe("membackend: read content failed", err)
 	}
 
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -76,7 +85,11 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 }
 
 // Get retrieves stored content. Returns ErrObjectNotFound if key is absent.
-func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if err := ctxErr(ctx); err != nil {
+		return nil, storage.ObjectMeta{}, err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
@@ -97,7 +110,11 @@ func (b *Backend) Get(_ context.Context, key string) (io.ReadCloser, storage.Obj
 }
 
 // Delete removes an object. Returns nil if the key does not exist.
-func (b *Backend) Delete(_ context.Context, key string) error {
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Delete(ctx context.Context, key string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return err
 	}
@@ -110,7 +127,11 @@ func (b *Backend) Delete(_ context.Context, key string) error {
 }
 
 // Exists reports whether the key exists.
-func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Exists(ctx context.Context, key string) (bool, error) {
+	if err := ctxErr(ctx); err != nil {
+		return false, err
+	}
 	if err := storage.ValidateKey(key); err != nil {
 		return false, err
 	}
@@ -127,7 +148,11 @@ func (b *Backend) Exists(_ context.Context, key string) (bool, error) {
 func (b *Backend) Close() error { return nil }
 
 // Copy duplicates an object within the backend.
-func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
+// Honours context cancellation: ctx.Err is checked at entry.
+func (b *Backend) Copy(ctx context.Context, srcKey, dstKey string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
 	if err := storage.ValidateKey(srcKey); err != nil {
 		return fmt.Errorf("membackend: copy: invalid source key: %w", err)
 	}
@@ -155,8 +180,15 @@ func (b *Backend) Copy(_ context.Context, srcKey, dstKey string) error {
 }
 
 // List returns an iterator over objects matching the prefix.
-func (b *Backend) List(_ context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
+// Honours context cancellation symmetrically with remote backends:
+// ctx.Err is checked at entry and on every yielded item, so a long
+// scan over a large keyset terminates promptly when the caller cancels.
+func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
+		if err := ctxErr(ctx); err != nil {
+			yield(storage.ObjectInfo{}, err)
+			return
+		}
 		if err := storage.ValidatePrefix(prefix); err != nil {
 			yield(storage.ObjectInfo{}, fmt.Errorf("membackend: %w", err))
 			return
@@ -180,6 +212,10 @@ func (b *Backend) List(_ context.Context, prefix string, opts storage.ListOption
 		count := 0
 
 		for _, key := range keys {
+			if err := ctxErr(ctx); err != nil {
+				yield(storage.ObjectInfo{}, err)
+				return
+			}
 			if opts.StartAfter != "" && key <= opts.StartAfter {
 				continue
 			}
@@ -206,6 +242,16 @@ func (b *Backend) List(_ context.Context, prefix string, opts storage.ListOption
 			}
 		}
 	}
+}
+
+// ctxErr returns ctx.Err() for non-nil ctx, or nil otherwise.
+// Matches the kit-wide convention: nil ctx is treated as
+// context.Background() rather than rejected.
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 // Len returns the number of stored objects. Useful in test assertions.

@@ -19,6 +19,10 @@ var _ storage.Lister = (*Backend)(nil)
 // Objects are discovered via filepath.WalkDir under the root directory.
 func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOptions) iter.Seq2[storage.ObjectInfo, error] {
 	return func(yield func(storage.ObjectInfo, error) bool) {
+		if err := ctxErr(ctx); err != nil {
+			yield(storage.ObjectInfo{}, err)
+			return
+		}
 		if err := storage.ValidatePrefix(prefix); err != nil {
 			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
 			return
