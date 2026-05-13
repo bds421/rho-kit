@@ -179,6 +179,43 @@ func TestWithLazyConnect_SetsFlag(t *testing.T) {
 	assert.True(t, c.lazyConnect)
 }
 
+func TestWithURLProvider_PanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() {
+		WithURLProvider(nil)
+	})
+}
+
+func TestResolveDialURL_UsesProvider(t *testing.T) {
+	c := &Connection{
+		allowPlaintext: true,
+		urlProvider: func(context.Context) (string, error) {
+			return "amqp://user:rotated@rabbit:5672/vhost", nil
+		},
+	}
+
+	got, err := c.resolveDialURL(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, "amqp://user:rotated@rabbit:5672/vhost", got)
+}
+
+func TestResolveDialURL_ProviderErrorDoesNotRenderCause(t *testing.T) {
+	cause := fmt.Errorf("vault denied token=secret")
+	c := &Connection{
+		allowPlaintext: true,
+		urlProvider: func(context.Context) (string, error) {
+			return "", cause
+		},
+	}
+
+	_, err := c.resolveDialURL(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "amqp URL provider failed")
+	assert.NotContains(t, err.Error(), "token=secret")
+	assert.ErrorIs(t, err, cause)
+}
+
 // --- Channel on nil connection ---
 
 func TestChannel_NilConnection_ReturnsError(t *testing.T) {

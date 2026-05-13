@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
@@ -96,6 +97,47 @@ func New(cfg AzureConfig, opts ...Option) (*AzureBackend, error) {
 	}
 
 	client, err := azblob.NewClientWithSharedKeyCredential(endpoint, cred, nil)
+	if err != nil {
+		return nil, storage.WrapSafe("azurebackend: create client failed", err)
+	}
+
+	b := &AzureBackend{
+		client:    &azureBlobClient{client: client, container: cfg.ContainerName},
+		container: cfg.ContainerName,
+		cfg:       cfg,
+		instance:  "default",
+		metrics:   defaultAzureMetrics,
+	}
+	for _, o := range opts {
+		if o == nil {
+			panic("azurebackend: option must not be nil")
+		}
+		o(b)
+	}
+	return b, nil
+}
+
+// NewWithTokenCredential creates an AzureBackend using Azure AD / workload
+// identity credentials instead of a storage account key. The Azure SDK refreshes
+// tokens through cred, so managed identity, workload identity, and chained
+// credential rotations are handled without rebuilding the backend.
+func NewWithTokenCredential(cfg AzureConfig, cred azcore.TokenCredential, opts ...Option) (*AzureBackend, error) {
+	if cfg.ContainerName == "" {
+		panic("azurebackend: AzureConfig.ContainerName is required")
+	}
+	if cred == nil {
+		return nil, fmt.Errorf("azurebackend: token credential is required")
+	}
+	if err := cfg.validateTokenCredential(""); err != nil {
+		return nil, err
+	}
+
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("https://%s.blob.core.windows.net", cfg.AccountName)
+	}
+
+	client, err := azblob.NewClient(endpoint, cred, nil)
 	if err != nil {
 		return nil, storage.WrapSafe("azurebackend: create client failed", err)
 	}

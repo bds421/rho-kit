@@ -70,9 +70,9 @@ const sessionPrefixLen = 8
 
 // Issuer signs and verifies CSRF tokens.
 type Issuer struct {
-	secret []byte
-	ttl    time.Duration
-	now    func() time.Time
+	secrets [][]byte
+	ttl     time.Duration
+	now     func() time.Time
 }
 
 // Option configures an [Issuer].
@@ -98,13 +98,22 @@ func WithClock(now func() time.Time) Option {
 // rejected to fail loudly at startup rather than silently shipping a
 // brute-forceable token format.
 func NewIssuer(secret []byte, opts ...Option) (*Issuer, error) {
-	if len(secret) < 32 {
-		return nil, fmt.Errorf("csrf: secret must be at least 32 bytes")
+	return NewIssuerWithSecrets(secret, nil, opts...)
+}
+
+// NewIssuerWithSecrets creates an Issuer with one active signing secret and
+// zero or more previous verification-only secrets. Issue always signs with the
+// current secret; Verify accepts tokens signed by any configured secret until
+// callers remove the old values after their overlap window.
+func NewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) (*Issuer, error) {
+	secrets, err := cloneSecretRing(current, previous...)
+	if err != nil {
+		return nil, err
 	}
 	i := &Issuer{
-		secret: append([]byte(nil), secret...),
-		ttl:    DefaultTTL,
-		now:    time.Now,
+		secrets: secrets,
+		ttl:     DefaultTTL,
+		now:     time.Now,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -123,6 +132,15 @@ func NewIssuer(secret []byte, opts ...Option) (*Issuer, error) {
 // runtime condition.
 func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 	i, err := NewIssuer(secret, opts...)
+	if err != nil {
+		panic("csrf: issuer configuration is invalid")
+	}
+	return i
+}
+
+// MustNewIssuerWithSecrets is the panic variant of [NewIssuerWithSecrets].
+func MustNewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) *Issuer {
+	i, err := NewIssuerWithSecrets(current, previous, opts...)
 	if err != nil {
 		panic("csrf: issuer configuration is invalid")
 	}
@@ -157,7 +175,7 @@ func (i *Issuer) Issue(sessionID string) (Token, error) {
 	body = binary.BigEndian.AppendUint64(body, uint64(now))
 	body = append(body, nonce...)
 
-	mac := computeMAC(i.secret, sessionID, now, nonce)
+	mac := computeMAC(i.secrets[0], sessionID, now, nonce)
 	full := append(body, mac...)
 
 	return Token(base64.RawURLEncoding.EncodeToString(full)), nil
@@ -192,8 +210,13 @@ func (i *Issuer) Verify(t Token, sessionID string) error {
 	// could distinguish the two error returns or measure timing.
 	// Computing the MAC unconditionally folds the session-prefix
 	// signal into the HMAC's constant-time check.
-	expectedMAC := computeMAC(i.secret, sessionID, iat, nonce)
-	macOK := hmac.Equal(mac, expectedMAC)
+	macOK := false
+	for _, secret := range i.secrets {
+		expectedMAC := computeMAC(secret, sessionID, iat, nonce)
+		if hmac.Equal(mac, expectedMAC) {
+			macOK = true
+		}
+	}
 
 	expectedPrefix := sessionPrefix(sessionID)
 	prefixOK := subtle.ConstantTimeCompare(prefix, expectedPrefix) == 1
@@ -233,6 +256,21 @@ func computeMAC(secret []byte, sessionID string, iat int64, nonce []byte) []byte
 	h.Write(lp8[:])
 	h.Write(nonce)
 	return h.Sum(nil)
+}
+
+func cloneSecretRing(current []byte, previous ...[]byte) ([][]byte, error) {
+	if len(current) < 32 {
+		return nil, fmt.Errorf("csrf: secret must be at least 32 bytes")
+	}
+	secrets := make([][]byte, 0, 1+len(previous))
+	secrets = append(secrets, append([]byte(nil), current...))
+	for _, secret := range previous {
+		if len(secret) < 32 {
+			return nil, fmt.Errorf("csrf: secret must be at least 32 bytes")
+		}
+		secrets = append(secrets, append([]byte(nil), secret...))
+	}
+	return secrets, nil
 }
 
 func sessionPrefix(sessionID string) []byte {

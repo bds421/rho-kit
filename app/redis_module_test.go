@@ -81,6 +81,18 @@ func TestNewRedisModule_AllowsNonLoopbackWithTLSAndPassword(t *testing.T) {
 	})
 }
 
+func TestNewRedisModule_AllowsNonLoopbackWithRotatingCredentialProvider(t *testing.T) {
+	assert.NotPanics(t, func() {
+		newRedisModule(&goredis.Options{
+			Addr:      "redis.example.com:6379",
+			TLSConfig: &tls.Config{},
+			CredentialsProviderContext: func(context.Context) (string, string, error) {
+				return "user", "rotated", nil
+			},
+		}, false)
+	})
+}
+
 func TestNewRedisModule_AllowsLoopbackWithoutTLS(t *testing.T) {
 	assert.NotPanics(t, func() {
 		newRedisModule(&goredis.Options{Addr: "localhost:6379"}, false)

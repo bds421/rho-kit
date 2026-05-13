@@ -15,6 +15,7 @@ import (
 // and cleanup.
 type messagingModule struct {
 	url            string
+	urlProvider    func(context.Context) (string, error)
 	criticalBroker bool
 
 	// initialized during Init
@@ -35,6 +36,13 @@ func newMessagingModule(url string) *messagingModule {
 	return &messagingModule{url: url}
 }
 
+func newMessagingModuleWithURLProvider(provider func(context.Context) (string, error)) *messagingModule {
+	if provider == nil {
+		panic("app: WithRabbitMQURLProvider requires a non-nil provider")
+	}
+	return &messagingModule{urlProvider: provider}
+}
+
 func (m *messagingModule) Name() string { return "rabbitmq" }
 
 func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
@@ -48,6 +56,9 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 	mqOpts := []amqpbackend.DialOption{amqpbackend.WithLazyConnect()}
 	if clientTLS != nil {
 		mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
+	}
+	if m.urlProvider != nil {
+		mqOpts = append(mqOpts, amqpbackend.WithURLProvider(m.urlProvider))
 	}
 
 	conn, dialErr := amqpbackend.Dial(m.url, mc.Logger, mqOpts...)

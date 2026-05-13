@@ -61,13 +61,17 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
 
 Use `app.LoadBaseConfig`, `sqldb.LoadFields`, and package-specific loaders for
 env-backed settings. Pass a hardened `pgxbackend.Config` to `WithPostgres`.
+For credential rotation, prefer provider hooks over static secrets: pgx
+`PasswordProvider`, go-redis credential providers, AMQP/NATS auth providers,
+cloud SDK default credentials, CSRF `WithSecrets`, and signed-request
+`WrapKeyStore`. See [docs/ai/credential-rotation.md](docs/ai/credential-rotation.md).
 See `examples/agentic-service` for a full example.
 
 ## HTTP stack (recommended)
 
 ```go
 csrfMW := csrf.New(
-    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
     csrf.WithAllowedOrigins(cfg.PublicOrigin),
 )
 handler := stack.Default(router, logger,

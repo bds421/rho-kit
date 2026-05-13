@@ -174,6 +174,12 @@ identifiers. One call is capped at `pgxbackend.MaxCopyRows` rows and
 
 `pgxbackend.Connect` rejects plaintext and fallback TLS modes. It accepts `verify-ca` and `verify-full` by default. `sslmode=require` needs the explicit `AllowSSLModeRequire` opt-out and a documented reason.
 
+For rotating database credentials, set `pgxbackend.Config.PasswordProvider`.
+The provider is called before every new physical pgx connection and replaces
+the password embedded in the DSN. Existing pooled connections keep their
+current authentication until they age out; call `Pool.Reset()` after a rotation
+event to force the pool to open fresh connections.
+
 ## Testing
 
 Use the split Docker-backed helper only in integration tests:

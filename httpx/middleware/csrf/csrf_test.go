@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	securitycsrf "github.com/bds421/rho-kit/security/v2/csrf"
 )
 
 type secretFailingReader struct{}
@@ -44,12 +46,12 @@ func TestWithSecretClonesInput(t *testing.T) {
 	var cfg config
 	opt(&cfg)
 
-	require.Equal(t, byte(1), cfg.secret[0])
-	cfg.secret[0] = 77
+	require.Equal(t, byte(1), cfg.secrets[0][0])
+	cfg.secrets[0][0] = 77
 
 	var cfg2 config
 	opt(&cfg2)
-	require.Equal(t, byte(1), cfg2.secret[0])
+	require.Equal(t, byte(1), cfg2.secrets[0][0])
 }
 
 func okHandler() http.Handler {
@@ -303,6 +305,30 @@ func TestNew_TokenFromDifferentSecretRejected(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNew_WithSecretsAcceptsPreviousSecretDuringRotation(t *testing.T) {
+	oldSecret := testSecret()
+	newSecret := make([]byte, 32)
+	for i := range newSecret {
+		newSecret[i] = byte(i + 100)
+	}
+
+	mw := New(WithSecrets(newSecret, oldSecret))
+	handler := mw(okHandler())
+
+	token := generateSignedToken(oldSecret)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "__csrf", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	cookies := rec.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.NotEqual(t, token, cookies[0].Value)
+	assert.True(t, isValidSignedToken(cookies[0].Value, newSecret))
 }
 
 func TestIsValidSignedToken_InvalidFormats(t *testing.T) {
@@ -1273,6 +1299,37 @@ func TestNew_SessionExtractorPanicRejects(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.False(t, called)
 	assert.Empty(t, rec.Header().Values("Set-Cookie"))
+}
+
+func TestNew_WithSecretsReissuesPreviousSessionBoundToken(t *testing.T) {
+	oldSecret := testSecret()
+	newSecret := make([]byte, 32)
+	for i := range newSecret {
+		newSecret[i] = byte(i + 100)
+	}
+	const sessionID = "session-1"
+	extractor := func(*http.Request) string { return sessionID }
+
+	oldHandler := New(WithSecret(oldSecret), WithSessionExtractor(extractor))(okHandler())
+	getReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	getRec := httptest.NewRecorder()
+	oldHandler.ServeHTTP(getRec, getReq)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	oldCookie := getRec.Result().Cookies()[0]
+
+	rotatedHandler := New(WithSecrets(newSecret, oldSecret), WithSessionExtractor(extractor))(okHandler())
+	postReq := httptest.NewRequest(http.MethodPost, "/", nil)
+	postReq.AddCookie(oldCookie)
+	postReq.Header.Set("X-CSRF-Token", oldCookie.Value)
+	postRec := httptest.NewRecorder()
+	rotatedHandler.ServeHTTP(postRec, postReq)
+
+	require.Equal(t, http.StatusOK, postRec.Code)
+	cookies := postRec.Result().Cookies()
+	require.Len(t, cookies, 1)
+	require.NotEqual(t, oldCookie.Value, cookies[0].Value)
+	currentIssuer := securitycsrf.MustNewIssuer(newSecret)
+	require.NoError(t, currentIssuer.Verify(securitycsrf.Token(cookies[0].Value), sessionID))
 }
 
 func TestNew_SameSiteNoneWithSecureIsAllowed(t *testing.T) {

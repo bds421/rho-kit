@@ -47,6 +47,15 @@ type Config struct {
 	// inspected at Connect time and must be require/verify-ca/verify-full.
 	DSN string
 
+	// PasswordProvider, when set, is called before every new physical
+	// connection is opened and its return value replaces the password parsed
+	// from DSN. Use it for managed database credentials that rotate under a
+	// stable host/user/database tuple, such as Vault-issued Postgres passwords
+	// or cloud IAM auth tokens. Existing pooled connections keep their current
+	// authentication until they are closed; call [Pool.Reset] after a rotation
+	// event to force fresh connections.
+	PasswordProvider func(context.Context) (string, error)
+
 	// AllowPlaintextLoopbackForTests opts out of the unconditional
 	// sslmode check, but ONLY when the DSN's host resolves to a
 	// loopback address (127.0.0.0/8 or ::1) — the connection literally
@@ -94,6 +103,7 @@ type Config struct {
 func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Bool("dsn_configured", c.DSN != ""),
+		slog.Bool("password_provider_configured", c.PasswordProvider != nil),
 		slog.Bool("allow_plaintext_loopback_for_tests", c.AllowPlaintextLoopbackForTests),
 		slog.Bool("allow_sslmode_require", c.AllowSSLModeRequire),
 		slog.Int("max_conns", int(c.MaxConns)),
@@ -172,6 +182,7 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 		}
 	}
 	applyPoolDefaults(pcfg, cfg)
+	applyPasswordProvider(pcfg, cfg.PasswordProvider)
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {
@@ -198,6 +209,18 @@ func (p *Pool) Close() error {
 	if p.pool != nil {
 		p.pool.Close()
 	}
+	return nil
+}
+
+// Reset closes all currently-open pool connections. The pool remains usable and
+// opens fresh connections on demand. Pair this with [Config.PasswordProvider]
+// after a credential-rotation signal so old authenticated connections do not
+// survive until their normal max lifetime.
+func (p *Pool) Reset() error {
+	if p == nil || p.pool == nil {
+		return nil
+	}
+	p.pool.Reset()
 	return nil
 }
 
@@ -428,6 +451,29 @@ func applyPoolDefaults(pcfg *pgxpool.Config, cfg Config) {
 		pcfg.HealthCheckPeriod = time.Minute
 	} else {
 		pcfg.HealthCheckPeriod = cfg.HealthCheckPeriod
+	}
+}
+
+func applyPasswordProvider(pcfg *pgxpool.Config, provider func(context.Context) (string, error)) {
+	if pcfg == nil || provider == nil {
+		return
+	}
+	previous := pcfg.BeforeConnect
+	pcfg.BeforeConnect = func(ctx context.Context, connCfg *pgx.ConnConfig) error {
+		if previous != nil {
+			if err := previous(ctx, connCfg); err != nil {
+				return err
+			}
+		}
+		password, err := provider(ctx)
+		if err != nil {
+			return fmt.Errorf("pgx: password provider: %w", err)
+		}
+		if password == "" {
+			return errors.New("pgx: password provider returned an empty password")
+		}
+		connCfg.Password = password
+		return nil
 	}
 }
 

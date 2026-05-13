@@ -270,8 +270,8 @@ func (b *SFTPBackend) connect() error {
 }
 
 func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
-	if b.cfg.Password == "" && b.cfg.KeyFile == "" {
-		return nil, fmt.Errorf("no SSH authentication method configured (need Password or KeyFile)")
+	if b.cfg.Password == "" && b.cfg.KeyFile == "" && b.cfg.PasswordProvider == nil {
+		return nil, fmt.Errorf("no SSH authentication method configured (need Password, PasswordProvider, or KeyFile)")
 	}
 
 	cfg := &ssh.ClientConfig{
@@ -288,8 +288,20 @@ func (b *SFTPBackend) buildSSHConfig() (*ssh.ClientConfig, error) {
 	}
 	cfg.HostKeyCallback = hostKeyCallback
 
-	if b.cfg.Password != "" {
-		cfg.Auth = []ssh.AuthMethod{ssh.Password(b.cfg.Password)}
+	password := b.cfg.Password
+	if b.cfg.PasswordProvider != nil {
+		var err error
+		password, err = b.cfg.PasswordProvider(context.Background())
+		if err != nil {
+			return nil, storage.WrapSafe("load SFTP password failed", err)
+		}
+		if password == "" {
+			return nil, fmt.Errorf("SFTP password provider returned an empty password")
+		}
+	}
+
+	if password != "" {
+		cfg.Auth = []ssh.AuthMethod{ssh.Password(password)}
 	} else {
 		key, err := os.ReadFile(b.cfg.KeyFile)
 		if err != nil {

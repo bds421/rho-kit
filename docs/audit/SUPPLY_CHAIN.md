@@ -480,12 +480,11 @@ release runbook in the same change.
 For the per-deployment keys (rows 2–6 of §6.1), the kit's role is
 to make rotation cheap. The expected pattern:
 
-- **CSRF / signedrequest HMAC.** Wrap the new secret in
-  `core/secret.String`, redeploy the service, observe one
-  request-cycle's worth of "old token rejected" errors during the
-  cutover, then remove the old secret. The kit's middleware
-  supports a comma-separated list of accepted secrets so the cutover
-  can be zero-downtime.
+- **CSRF / signedrequest HMAC.** Deploy the new secret as active while
+  keeping the previous secret as verification-only: CSRF uses
+  `csrf.WithSecrets(current, previous...)`, inbound signed requests resolve by
+  key ID, and outbound signed requests can use `sign.WrapKeyStore`. Remove the
+  previous secret after the longest cookie/token/nonce overlap window.
 - **PASETO key.** `crypto/paseto` accepts a `Provider` interface
   that can return multiple verification keys; the active signing
   key is one of them. Cutover: introduce new key as

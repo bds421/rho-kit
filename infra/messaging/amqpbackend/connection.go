@@ -20,9 +20,23 @@ import (
 
 const minimumTLSVersion = tls.VersionTLS12
 
+type safeCauseError struct {
+	msg   string
+	cause error
+}
+
+func (e safeCauseError) Error() string {
+	return e.msg
+}
+
+func (e safeCauseError) Unwrap() error {
+	return e.cause
+}
+
 // Connection manages an AMQP connection with automatic reconnection.
 type Connection struct {
 	url                  string
+	urlProvider          func(context.Context) (string, error)
 	tlsConfig            *tls.Config
 	allowPlaintext       bool
 	conn                 *amqp.Connection
@@ -106,22 +120,32 @@ func WithLazyConnect() DialOption {
 	}
 }
 
+// WithURLProvider configures a dynamic AMQP URL source. The provider is called
+// before every physical dial, including reconnects, so rotated broker
+// passwords from Vault, Kubernetes Secret projection, or another credential
+// source are picked up without rebuilding the Connection.
+func WithURLProvider(provider func(context.Context) (string, error)) DialOption {
+	if provider == nil {
+		panic("amqpbackend: WithURLProvider requires a non-nil provider")
+	}
+	return func(c *Connection) {
+		c.urlProvider = provider
+	}
+}
+
 // Dial establishes a new AMQP connection and starts monitoring for disconnects.
 // By default, reconnection retries are unlimited. Use WithMaxReconnectAttempts
 // to set a finite limit (Dead() fires when exhausted).
 //
 // With WithLazyConnect(), Dial returns immediately without connecting. The
 // connection is established in the background via the reconnect loop.
-func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, error) {
-	if url == "" {
-		return nil, fmt.Errorf("amqp URL must not be empty")
-	}
+func Dial(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connection, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger must not be nil")
 	}
 
 	c := &Connection{
-		url:             url,
+		url:             rawURL,
 		logger:          logger,
 		closed:          make(chan struct{}),
 		dead:            make(chan struct{}),
@@ -136,14 +160,16 @@ func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, err
 		opt(c)
 	}
 
-	normalizedURL, err := normalizeDialURL(c.url, c.tlsConfig != nil, c.allowPlaintext)
+	normalizedURL, err := c.resolveDialURL(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	c.url = normalizedURL
+	if c.urlProvider == nil {
+		c.url = normalizedURL
+	}
 
 	if c.lazyConnect {
-		logger.Info("amqp lazy connect enabled, connecting in background", "url_configured", url != "")
+		logger.Info("amqp lazy connect enabled, connecting in background", "url_configured", c.urlConfigured())
 		c.startReconnect()
 		return c, nil
 	}
@@ -160,6 +186,25 @@ func Dial(url string, logger *slog.Logger, opts ...DialOption) (*Connection, err
 	go c.watchConnection(conn, 1)
 
 	return c, nil
+}
+
+func (c *Connection) resolveDialURL(ctx context.Context) (string, error) {
+	rawURL := c.url
+	if c.urlProvider != nil {
+		provided, err := c.urlProvider(ctx)
+		if err != nil {
+			return "", safeCauseError{msg: "amqp URL provider failed", cause: err}
+		}
+		rawURL = provided
+	}
+	if rawURL == "" {
+		return "", fmt.Errorf("amqp URL must not be empty")
+	}
+	return normalizeDialURL(rawURL, c.tlsConfig != nil, c.allowPlaintext)
+}
+
+func (c *Connection) urlConfigured() bool {
+	return c != nil && (c.url != "" || c.urlProvider != nil)
 }
 
 func normalizeDialURL(rawURL string, tlsConfigured, allowPlaintext bool) (string, error) {
@@ -403,7 +448,7 @@ func (c *Connection) reconnect() {
 		conn, err := c.dial()
 		if err != nil {
 			c.logger.Error("amqp reconnect failed",
-				redact.Error(err), "attempt", attempts+1, "url_configured", c.url != "")
+				redact.Error(err), "attempt", attempts+1, "url_configured", c.urlConfigured())
 			attempts++
 			continue
 		}
@@ -496,10 +541,14 @@ func (c *Connection) callOnReconnect() (err error) {
 
 // dial opens an AMQP connection, using TLS when configured.
 func (c *Connection) dial() (*amqp.Connection, error) {
-	if c.tlsConfig != nil {
-		return amqp.DialTLS(c.url, c.tlsConfig)
+	dialURL, err := c.resolveDialURL(context.Background())
+	if err != nil {
+		return nil, err
 	}
-	return amqp.Dial(c.url)
+	if c.tlsConfig != nil {
+		return amqp.DialTLS(dialURL, c.tlsConfig)
+	}
+	return amqp.Dial(dialURL)
 }
 
 // sanitizeURL strips credentials from an AMQP URL for safe logging.

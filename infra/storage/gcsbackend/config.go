@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"google.golang.org/api/option"
+
 	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -20,6 +22,12 @@ type GCSConfig struct {
 	// Leave empty to use Application Default Credentials (ADC).
 	CredentialsFile string
 
+	// ClientOptions are appended to the google storage client options. Use
+	// option.WithTokenSource or option.WithCredentialsJSON for advanced
+	// credential flows; prefer empty CredentialsFile + ADC/workload identity
+	// for production rotation.
+	ClientOptions []option.ClientOption
+
 	// Endpoint overrides the default GCS endpoint (for testing with fake-gcs-server).
 	Endpoint string
 
@@ -33,6 +41,7 @@ func (c GCSConfig) LogValue() slog.Value {
 		slog.Bool("bucket_configured", c.Bucket != ""),
 		slog.Bool("project_id_configured", c.ProjectID != ""),
 		slog.Bool("credentials_file_configured", c.CredentialsFile != ""),
+		slog.Bool("client_options_configured", len(c.ClientOptions) > 0),
 		slog.Bool("endpoint_configured", c.Endpoint != ""),
 		slog.Bool("allow_insecure_endpoint", c.AllowInsecureEndpoint),
 	)

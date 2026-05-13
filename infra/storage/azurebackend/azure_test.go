@@ -7,12 +7,21 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
+
+type fakeTokenCredential struct{}
+
+func (fakeTokenCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return azcore.AccessToken{Token: "token", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
 
 func TestNewWithClient_PanicsOnNilClient(t *testing.T) {
 	t.Parallel()
@@ -33,6 +42,33 @@ func TestNewWithClient_PanicsOnNilOption(t *testing.T) {
 	assertPanics(t, func() {
 		NewWithClient(stubBlobClient{}, "container", nil)
 	})
+}
+
+func TestNewWithTokenCredential_DoesNotRequireAccountKey(t *testing.T) {
+	t.Parallel()
+
+	b, err := NewWithTokenCredential(AzureConfig{
+		AccountName:   "account",
+		ContainerName: "container",
+	}, fakeTokenCredential{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("expected backend")
+	}
+}
+
+func TestNewWithTokenCredential_RejectsNilCredential(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewWithTokenCredential(AzureConfig{
+		AccountName:   "account",
+		ContainerName: "container",
+	}, nil)
+
+	requireError(t, err)
 }
 
 func TestAzureBackend_InvalidReceiverSafety(t *testing.T) {

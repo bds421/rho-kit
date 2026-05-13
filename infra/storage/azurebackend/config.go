@@ -70,20 +70,30 @@ func LoadAzureConfig(envPrefix, environment string) (AzureConfig, error) {
 
 // Validate checks that required Azure fields are present.
 func (c AzureConfig) Validate(environment string) error {
-	if c.AccountName == "" {
-		return fmt.Errorf("STORAGE_AZURE_ACCOUNT_NAME is required")
+	if err := c.validateCommon(environment); err != nil {
+		return err
 	}
 	if c.AccountKey == "" {
 		return fmt.Errorf("AZURE_ACCOUNT_KEY is required")
+	}
+	if err := config.RejectWeakCredential("AZURE_ACCOUNT_KEY", c.AccountKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c AzureConfig) validateTokenCredential(environment string) error {
+	return c.validateCommon(environment)
+}
+
+func (c AzureConfig) validateCommon(environment string) error {
+	if c.AccountName == "" {
+		return fmt.Errorf("STORAGE_AZURE_ACCOUNT_NAME is required")
 	}
 	if c.ContainerName == "" {
 		return fmt.Errorf("STORAGE_AZURE_CONTAINER_NAME is required")
 	}
 	if err := storage.ValidateEndpointURL("STORAGE_AZURE_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
-		return err
-	}
-
-	if err := config.RejectWeakCredential("AZURE_ACCOUNT_KEY", c.AccountKey); err != nil {
 		return err
 	}
 	_ = environment // accepted for API compatibility; no longer consulted

@@ -54,6 +54,11 @@ conn.Healthy()             // bool
 Health ping every 5s. Reconnect backoff: 3s base, 60s max.
 
 URL validation: `redis.ValidateRedisURL("cache", rawURL)` — supports `redis://` and `rediss://` (TLS). Production configuration should use `rediss://` with credentials; parsed and caller-supplied TLS options are cloned and raised to a TLS 1.2 minimum before clients are created.
+For Redis credential rotation, pass one of go-redis'
+`CredentialsProvider`, `CredentialsProviderContext`, or
+`StreamingCredentialsProvider` fields in `*redis.Options`; `app.WithRedis`
+recognizes these as valid non-loopback credentials, and the go-redis client
+handles new connection auth or streaming reauth according to the provider type.
 
 ## Environment Variables
 

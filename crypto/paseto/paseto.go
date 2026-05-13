@@ -53,17 +53,17 @@ import (
 // Sentinel errors. Verify wraps the underlying library error in one of
 // these so callers can branch without parsing strings.
 var (
-	ErrTokenInvalid       = errors.New("paseto: invalid token")
-	ErrKeySetUnavailable  = errors.New("paseto: key set unavailable")
-	ErrTokenExpired       = errors.New("paseto: token expired")
-	ErrTokenNotYet        = errors.New("paseto: token not yet valid")
-	ErrTokenNoExp         = errors.New("paseto: token missing required exp claim")
-	ErrIssuerMismatch     = errors.New("paseto: issuer mismatch")
-	ErrAudienceUnknown    = errors.New("paseto: audience mismatch")
-	ErrReservedClaim   = errors.New("paseto: reserved claim name in Custom")
-	ErrNoExpiration    = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
-	ErrMultiAudience   = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
-	ErrInvalidVerifier = errors.New("paseto: verifier is not initialized")
+	ErrTokenInvalid      = errors.New("paseto: invalid token")
+	ErrKeySetUnavailable = errors.New("paseto: key set unavailable")
+	ErrTokenExpired      = errors.New("paseto: token expired")
+	ErrTokenNotYet       = errors.New("paseto: token not yet valid")
+	ErrTokenNoExp        = errors.New("paseto: token missing required exp claim")
+	ErrIssuerMismatch    = errors.New("paseto: issuer mismatch")
+	ErrAudienceUnknown   = errors.New("paseto: audience mismatch")
+	ErrReservedClaim     = errors.New("paseto: reserved claim name in Custom")
+	ErrNoExpiration      = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
+	ErrMultiAudience     = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
+	ErrInvalidVerifier   = errors.New("paseto: verifier is not initialized")
 )
 
 // reservedClaims are the names of standard registered claims that

@@ -86,7 +86,8 @@ func LoadConfig() (Config, error) {
 | `WithMigrations(dir)` | Goose SQL migrations on startup | `WithPostgres` |
 | `WithRedis(opts, connOpts...)` | Redis connection and pool metrics | - |
 | `WithRabbitMQ(url)` | Lazy AMQP connection plus pre-wired Publisher and Consumer | - |
-| `WithCriticalBroker()` | Broker health failure returns HTTP 503 | `WithRabbitMQ` |
+| `WithRabbitMQURLProvider(provider)` | RabbitMQ URL fetched before each dial/reconnect for credential rotation | - |
+| `WithCriticalBroker()` | Broker health failure returns HTTP 503 | `WithRabbitMQ` / `WithRabbitMQURLProvider` |
 | `WithNATS(cfg)` | NATS connection plus default JetStream publisher and publish metrics | - |
 | `WithMaxMessageBytes(n)` / `WithRouteMaxMessageBytes(exchange, routingKey, n)` | Serialized message-size limits for Builder-created RabbitMQ and NATS publishers | `WithRabbitMQ` / `WithNATS` |
 | `WithJWT(jwksURL)` | Background JWKS key cache | - |

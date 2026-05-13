@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"testing"
 	"time"
 
@@ -154,6 +155,37 @@ func TestConnect_RejectsNegativeTimingConfig(t *testing.T) {
 			mutate(&cfg)
 			_, err := Connect(t.Context(), cfg)
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateAuth_AcceptsRotatingCredentialProviders(t *testing.T) {
+	serverURL := &url.URL{Scheme: "nats", Host: "nats.example.com:4222"}
+
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "username password provider",
+			cfg: Config{
+				UsernamePasswordProvider: func() (string, string) {
+					return "user", "rotated-password"
+				},
+			},
+		},
+		{
+			name: "token provider",
+			cfg: Config{
+				TokenProvider: func() string {
+					return "rotated-token"
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, tt.cfg.validateAuth(serverURL))
 		})
 	}
 }

@@ -65,6 +65,7 @@ conn, err := amqpbackend.Dial(url, logger,
     amqpbackend.WithLazyConnect(),           // non-blocking startup (default in Builder)
     amqpbackend.WithMaxReconnectAttempts(0), // 0 = unlimited
     amqpbackend.WithTLS(tlsConfig),          // mTLS; amqp:// is upgraded to amqps://
+    amqpbackend.WithURLProvider(vaultAMQPURL), // optional: called on every dial/reconnect
     amqpbackend.OnReconnect(func(c amqpbackend.Connector) error {
         return amqpbackend.DeclareAll(c, specs...) // re-declare after reconnect
     }),
@@ -76,6 +77,9 @@ conn, err := amqpbackend.Dial(url, logger,
 `amqps://` URLs in deployed configuration. Custom TLS configs are
 cloned and raised to a TLS 1.2 minimum; stricter caller settings are
 preserved.
+For credential rotation, use `WithURLProvider` (or
+`app.WithRabbitMQURLProvider`) so a fresh AMQP URL is fetched before the
+initial dial and every reconnect.
 
 Reconnect backoff: 3s base, 2x multiplier, 60s max, ±25% jitter.
 
@@ -86,6 +90,7 @@ conn, err := natsbackend.Connect(ctx, natsbackend.Config{
     URL: "tls://nats.internal:4222",
     Name: "orders",
     TLS: tlsConfig, // optional custom trust/client certs; cloned with TLS 1.2+ floor
+    TokenProvider: tokenSource.Current, // optional rotating token callback
 })
 ```
 
@@ -94,10 +99,13 @@ credentials, or `AllowInsecure` is configured. Use `AllowInsecure` only
 for trusted single-host development setups. NATS URLs must use
 `nats://`, `tls://`, `ws://`, or `wss://`, include a host, and must not
 embed credentials, query parameters, or fragments; use `Username`,
-`Token`, `CredentialsFile`, or `NKeyFile` for authentication.
+`Token`, `CredentialsFile`, `NKeyFile`, `UsernamePasswordProvider`, or
+`TokenProvider` for authentication.
 `natsbackend.Config.Clone`, `Connect`, and `app.Builder.WithNATS`
 snapshot caller-owned config; custom TLS configs are cloned with the TLS
 1.2+ floor, and `ExtraOptions` slices are copied before storage/dial.
+`UsernamePasswordProvider` and `TokenProvider` are delegated to nats.go auth
+callbacks, so reconnects and server-triggered reauth use the latest value.
 
 ## Messages
 

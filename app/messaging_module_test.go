@@ -18,6 +18,12 @@ func TestNewMessagingModule_PanicsOnEmptyURL(t *testing.T) {
 	newMessagingModule("")
 }
 
+func TestNewMessagingModuleWithURLProvider_PanicsOnNil(t *testing.T) {
+	require.Panics(t, func() {
+		newMessagingModuleWithURLProvider(nil)
+	})
+}
+
 func TestMessagingModule_Name(t *testing.T) {
 	m := newMessagingModule("amqp://localhost")
 	assert.Equal(t, "rabbitmq", m.Name())
@@ -58,6 +64,26 @@ func TestBuildIntegrationModules_Messaging(t *testing.T) {
 
 	modules := b.buildIntegrationModules()
 	assert.True(t, hasModule(modules, "rabbitmq"), "rabbitmq module should be present")
+}
+
+func TestBuildIntegrationModules_MessagingURLProvider(t *testing.T) {
+	provider := func(context.Context) (string, error) {
+		return "amqp://user:rotated@localhost:5672/", nil
+	}
+	b := New("test", "v1", BaseConfig{}).
+		WithRabbitMQURLProvider(provider)
+
+	modules := b.buildIntegrationModules()
+	var mm *messagingModule
+	for _, m := range modules {
+		if mqm, ok := m.(*messagingModule); ok {
+			mm = mqm
+			break
+		}
+	}
+	require.NotNil(t, mm, "messaging module should be present")
+	assert.NotNil(t, mm.urlProvider)
+	assert.Empty(t, mm.url)
 }
 
 func TestBuildIntegrationModules_MessagingCritical(t *testing.T) {

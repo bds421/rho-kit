@@ -144,6 +144,16 @@ explicit `signing.Secret(...)` conversion at the boundary where bytes become a
 webhook secret. This keeps the v2 `(secret, body)` order while making accidental
 body/secret swaps a compile-time error.
 
+### Credential rotation hooks are explicit
+
+Postgres pgx pools can now use `Config.PasswordProvider` and `Pool.Reset()`;
+RabbitMQ can use `amqpbackend.WithURLProvider` or
+`app.WithRabbitMQURLProvider`; NATS exposes username/password and token
+providers; S3 supports AWS default-chain or explicit SDK credential providers;
+Azure Blob supports `NewWithTokenCredential`; GCS accepts advanced client
+options; SFTP accepts a password provider; CSRF accepts secret rings through
+`WithSecrets`; and outbound signed requests can use `sign.WrapKeyStore`.
+
 ### Key-management errors avoid reflecting key IDs
 
 Action-log signing and envelope-encryption failures no longer echo secret-store

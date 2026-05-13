@@ -150,8 +150,8 @@ func TestWithMaxSize_PanicDoesNotReflectValue(t *testing.T) {
 // to exercise NewBufferedPublisher's nil-dependency guards.
 type fakeConnector struct{ healthy bool }
 
-func (f *fakeConnector) Healthy() bool                 { return f.healthy }
-func (f *fakeConnector) Stop(context.Context) error    { return nil }
+func (f *fakeConnector) Healthy() bool              { return f.healthy }
+func (f *fakeConnector) Stop(context.Context) error { return nil }
 
 type noopPublisher struct{}
 

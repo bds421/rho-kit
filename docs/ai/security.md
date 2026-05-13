@@ -73,6 +73,10 @@ Production KEKs live in split modules so services only pull the SDK they use:
 `crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit`. Use
 `crypto/envelope/kekstatic` only for tests and local development.
 
+Credential rotation across DB, Redis, brokers, storage, CSRF, signed requests,
+JWT, PASETO, and KMS/Vault is summarized in
+[credential-rotation.md](credential-rotation.md).
+
 Per-backend constructors are named `NewKEK` (each backend ships its own
 type, so the verb stays explicit at the call site). Wrap an Encryptor
 around any KEK with `envelope.NewEncryptor(kek)`.
@@ -148,6 +152,15 @@ client := &http.Client{
     ),
     Timeout: 10 * time.Second,
 }
+```
+
+For outbound key rotation, pass a reloading key store to `sign.WrapKeyStore`
+instead of rebuilding the HTTP client:
+
+```go
+client.Transport = sign.WrapKeyStore(base.Transport, keyStore,
+    sign.WithIncludeHeaders("X-Tenant-ID"),
+)
 ```
 
 Pinned canonical headers must be singleton valid HTTP header values. The signer
@@ -328,7 +341,7 @@ HMAC-signed tokens:
 
 ```go
 csrfMiddleware := csrf.New(
-    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
     csrf.WithAllowedOrigins("https://app.example.com"),
 )
 mux.Handle("/api/", csrfMiddleware(apiHandler))
@@ -337,7 +350,7 @@ mux.Handle("/api/", csrfMiddleware(apiHandler))
 For additional defense-in-depth, combine with `RequireJSONContentType`:
 ```go
 csrfMiddleware := csrf.New(
-    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
     csrf.WithAllowedOrigins("https://app.example.com"),
 )
 mux.Handle("/api/", csrfMiddleware(csrf.RequireJSONContentType(apiHandler)))
@@ -356,6 +369,7 @@ fetch('/api/resource', {
 
 Options:
 - `WithSecret(key)` — Required HMAC key (min 32 bytes).
+- `WithSecrets(current, previous...)` — Zero-downtime rotation; signs new cookies with `current` and accepts previous secrets until the overlap window ends.
 - `WithDevSecret()` — Local-development-only random per-process secret.
 - `WithSecure(false)` — Explicit local plain-HTTP opt-out; default is `Secure=true`.
 - `WithAllowedOrigins(origin...)` — Origin/Referer allowlist; each entry must be a full `http(s)://host[:port]` origin with no path, query, fragment, userinfo, or trailing slash.

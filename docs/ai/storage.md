@@ -27,6 +27,19 @@ labels. Use `WithRegisterer(reg)` for test isolation or custom registries; the
 production dashboards live under `observability/dashboards/grafana/` as the
 storage overview plus one provider dashboard per backend.
 
+Credential rotation:
+
+- S3: prefer `UseDefaultCredentials` for AWS default-chain providers
+  (IAM role, web identity, ECS/EKS/EC2 metadata, SSO, process provider) or
+  `CredentialProvider` for an explicit rotating AWS SDK provider.
+- Azure Blob: prefer `NewWithTokenCredential` with managed identity, workload
+  identity, or another `azcore.TokenCredential`; account-key construction
+  remains available through `New`.
+- GCS: leave `CredentialsFile` empty for ADC/workload identity, or pass
+  advanced rotating credentials via `GCSConfig.ClientOptions`.
+- SFTP: use `PasswordProvider` for rotating passwords; key files are read when
+  a new SSH connection opens, so projected key updates apply after reconnect.
+
 ## Quick Start (S3)
 
 ```go
@@ -203,14 +216,15 @@ err := storagehttp.ServeFile(w, r, backend, key, storagehttp.ServeOptions{
 | `STORAGE_S3_ALLOW_INSECURE_ENDPOINT` | No | Set `true` only for local `http://` emulators |
 | `STORAGE_S3_SSE` | No | Default `AES256`; set `aws:kms` with `STORAGE_S3_SSE_KMS_KEY_ID`, or empty to rely on bucket policy |
 | `STORAGE_S3_SSE_KMS_KEY_ID` | Conditional | Required when `STORAGE_S3_SSE=aws:kms` |
-| `{PREFIX}_S3_ACCESS_KEY_ID` | Yes | |
-| `{PREFIX}_S3_SECRET_ACCESS_KEY` | Yes | Supports `_FILE` suffix |
+| `STORAGE_S3_USE_DEFAULT_CREDENTIALS` | No | Use AWS SDK default credential chain; mutually exclusive with static keys |
+| `{PREFIX}_S3_ACCESS_KEY_ID` | Conditional | Required only when not using default credentials or `CredentialProvider` |
+| `{PREFIX}_S3_SECRET_ACCESS_KEY` | Conditional | Supports `_FILE` suffix; required only for static-key mode |
 
 ### Azure
 | Variable | Required | Notes |
 |---|---|---|
 | `STORAGE_AZURE_ACCOUNT_NAME` | Yes | |
-| `{PREFIX}_AZURE_ACCOUNT_KEY` | Yes | Supports `_FILE` suffix |
+| `{PREFIX}_AZURE_ACCOUNT_KEY` | Conditional | Supports `_FILE` suffix; required only for account-key `New`, not `NewWithTokenCredential` |
 | `STORAGE_AZURE_CONTAINER_NAME` | Yes | |
 | `STORAGE_AZURE_ENDPOINT` | No | HTTPS endpoint override for Azurite/sovereign clouds |
 | `STORAGE_AZURE_ALLOW_INSECURE_ENDPOINT` | No | Set `true` only for local `http://` emulators |
@@ -220,7 +234,7 @@ err := storagehttp.ServeFile(w, r, backend, key, storagehttp.ServeOptions{
 |---|---|---|
 | `STORAGE_GCS_BUCKET` | Yes | |
 | `STORAGE_GCS_PROJECT_ID` | Yes | |
-| `STORAGE_GCS_CREDENTIALS_FILE` | No | Omit for ADC |
+| `STORAGE_GCS_CREDENTIALS_FILE` | No | Omit for ADC/workload identity; advanced client options can be passed in code |
 | `STORAGE_GCS_ENDPOINT` | No | HTTPS endpoint override for fake-gcs-server/custom endpoints |
 | `STORAGE_GCS_ALLOW_INSECURE_ENDPOINT` | No | Set `true` only for local `http://` emulators |
 
@@ -230,7 +244,7 @@ err := storagehttp.ServeFile(w, r, backend, key, storagehttp.ServeOptions{
 | `STORAGE_SFTP_HOST` | Yes | |
 | `STORAGE_SFTP_PORT` | No | Default `22` |
 | `STORAGE_SFTP_USER` | Yes | |
-| `{PREFIX}_SFTP_PASSWORD` | Conditional | Mutually exclusive with key |
+| `{PREFIX}_SFTP_PASSWORD` | Conditional | Mutually exclusive with key and `PasswordProvider` |
 | `STORAGE_SFTP_KEY_FILE` | Conditional | SSH private key path |
 | `STORAGE_SFTP_KNOWN_HOSTS_FILE` | Yes | OpenSSH known_hosts file |
 | `STORAGE_SFTP_ROOT_PATH` | No | Default `/` |

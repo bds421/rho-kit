@@ -57,9 +57,19 @@ func enforceRedisTransportSafety(opts *goredis.Options) {
 	if opts.TLSConfig == nil {
 		panic("app: WithRedis requires TLSConfig for non-loopback addresses (use WithoutRedisTLS for local dev)")
 	}
-	if opts.Password == "" {
-		panic("app: WithRedis requires a non-empty Password for non-loopback addresses (use WithoutRedisTLS for local dev)")
+	if !redisOptionsHaveCredentials(opts) {
+		panic("app: WithRedis requires Password or a Redis credentials provider for non-loopback addresses (use WithoutRedisTLS for local dev)")
 	}
+}
+
+func redisOptionsHaveCredentials(opts *goredis.Options) bool {
+	if opts == nil {
+		return false
+	}
+	return opts.Password != "" ||
+		opts.CredentialsProvider != nil ||
+		opts.CredentialsProviderContext != nil ||
+		opts.StreamingCredentialsProvider != nil
 }
 
 // isLoopbackRedisAddr reports whether addr is a loopback host. Accepts bare

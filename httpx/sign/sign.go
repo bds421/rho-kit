@@ -44,11 +44,17 @@ const keyIDMaxLen = 256
 // to sign a structurally invalid HTTP request.
 var ErrInvalidRequest = errors.New("sign: invalid request")
 
+// KeyStore supplies the active outbound signing key. Implementations must be
+// safe for concurrent use. Returning a different key ID/secret pair over time
+// lets clients rotate HMAC credentials without rebuilding the HTTP client.
+type KeyStore interface {
+	CurrentKeyID() (string, []byte)
+}
+
 // Option configures the [Wrap] RoundTripper.
 type Option func(*config)
 
 type config struct {
-	keyID          string
 	includeHeaders []string
 	bodyMaxSize    int64
 	now            func() time.Time
@@ -144,17 +150,28 @@ func WithNonceFn(fn func() string) Option {
 // X-Signature-Key-Id so the verifier can pick the right key from its
 // resolver.
 func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) http.RoundTripper {
+	return wrap(base, staticKeyStore{keyID: keyID, secret: append([]byte(nil), secret...)}, opts...)
+}
+
+// WrapKeyStore returns an http.RoundTripper that resolves the current signing
+// key from keys for every request. Use this with a reloading key store so new
+// outbound requests move to the new key immediately while verifiers still keep
+// the previous key in their resolver during the overlap window.
+func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
+	if keys == nil {
+		panic("sign: KeyStore must not be nil")
+	}
+	return wrap(base, keys, opts...)
+}
+
+func wrap(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
 	if base == nil {
 		base = transportdefaults.New(nil, 0, "httpx/sign: Wrap")
 	}
-	if len(secret) < minSecretLen {
-		panic("sign: secret is too short for HMAC-SHA256")
-	}
-	if err := validateKeyID(keyID); err != nil {
-		panic("sign: keyID is invalid")
+	if err := validateSigningKeyStore(keys); err != nil {
+		panic(err.Error())
 	}
 	cfg := config{
-		keyID:       keyID,
 		bodyMaxSize: 10 * 1024 * 1024,
 		now:         time.Now,
 		nonceFn:     defaultNonce,
@@ -165,7 +182,7 @@ func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) h
 		}
 		o(&cfg)
 	}
-	return &transport{base: base, secret: append([]byte(nil), secret...), cfg: cfg}
+	return &transport{base: base, keys: keys, cfg: cfg}
 }
 
 func validateKeyID(keyID string) error {
@@ -187,10 +204,34 @@ func validateKeyID(keyID string) error {
 	return nil
 }
 
-type transport struct {
-	base   http.RoundTripper
+func validateSigningKeyStore(keys KeyStore) error {
+	keyID, secret := keys.CurrentKeyID()
+	return validateSigningKey(keyID, secret)
+}
+
+func validateSigningKey(keyID string, secret []byte) error {
+	if len(secret) < minSecretLen {
+		return errors.New("sign: secret is too short for HMAC-SHA256")
+	}
+	if err := validateKeyID(keyID); err != nil {
+		return errors.New("sign: keyID is invalid")
+	}
+	return nil
+}
+
+type staticKeyStore struct {
+	keyID  string
 	secret []byte
-	cfg    config
+}
+
+func (s staticKeyStore) CurrentKeyID() (string, []byte) {
+	return s.keyID, append([]byte(nil), s.secret...)
+}
+
+type transport struct {
+	base http.RoundTripper
+	keys KeyStore
+	cfg  config
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -229,12 +270,16 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	keyID, secret := t.keys.CurrentKeyID()
+	if err := validateSigningKey(keyID, secret); err != nil {
+		return nil, err
+	}
 
 	clone.Header.Set(signedrequest.HeaderTimestamp, ts)
 	clone.Header.Set(signedrequest.HeaderNonce, nonce)
-	clone.Header.Set(signedrequest.HeaderKeyID, t.cfg.keyID)
+	clone.Header.Set(signedrequest.HeaderKeyID, keyID)
 
-	sig, err := signedrequest.SignCanonical(t.secret, clone, ts, nonce, body, t.cfg.includeHeaders)
+	sig, err := signedrequest.SignCanonical(secret, clone, ts, nonce, body, t.cfg.includeHeaders)
 	if err != nil {
 		return nil, err
 	}

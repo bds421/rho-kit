@@ -1,6 +1,7 @@
 package sftpbackend
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -69,6 +70,43 @@ func TestSFTPConfigValidateRequiresKnownHostsFile(t *testing.T) {
 	err := cfg.Validate("production")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KNOWN_HOSTS")
+}
+
+func TestSFTPConfigValidateAllowsPasswordProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := SFTPConfig{
+		Host: "sftp.example.com",
+		Port: 22,
+		User: "svc",
+		PasswordProvider: func(context.Context) (string, error) {
+			return "strong-password-123", nil
+		},
+		RootPath:       "/uploads",
+		KnownHostsFile: "/etc/ssh/ssh_known_hosts",
+	}
+
+	require.NoError(t, cfg.Validate("production"))
+}
+
+func TestSFTPConfigValidateRejectsMultipleAuthSources(t *testing.T) {
+	t.Parallel()
+
+	cfg := SFTPConfig{
+		Host: "sftp.example.com",
+		Port: 22,
+		User: "svc",
+		PasswordProvider: func(context.Context) (string, error) {
+			return "strong-password-123", nil
+		},
+		Password:       "another-strong-password-123",
+		RootPath:       "/uploads",
+		KnownHostsFile: "/etc/ssh/ssh_known_hosts",
+	}
+
+	err := cfg.Validate("production")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
 func TestSFTPConfigValidateRequiresCleanAbsoluteRoot(t *testing.T) {

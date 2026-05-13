@@ -298,3 +298,22 @@ external dependencies. The live workspace allowlist caveat from
 seam so `github.com/nexus-rpc/sdk-go` remains only an indirect dependency of
 `go.temporal.io/sdk`; the live `make check-dependency-allowlist` run now
 passes with 59 approved direct external dependencies.
+
+2026-05-13 follow-up for credential-rotation support refreshed the broad
+non-Docker gates after adding provider-backed rotation APIs for pgx, Redis,
+AMQP, NATS, S3, Azure Blob, GCS, SFTP, CSRF, and signed requests:
+
+```bash
+git diff --check
+make test
+make lint
+make vulncheck
+make check-dependency-allowlist
+make check-dependency-boundaries
+```
+
+All commands above passed. Focused changed-module tests also passed for
+`security/csrf`, `httpx/sign`, `httpx/middleware/csrf`, `infra/sqldb/pgx`,
+`app`, `infra/messaging/amqpbackend`, `infra/messaging/natsbackend`,
+`infra/storage/s3backend`, `infra/storage/azurebackend`,
+`infra/storage/gcsbackend`, and `infra/storage/sftpbackend`.

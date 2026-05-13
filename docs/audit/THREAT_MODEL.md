@@ -320,8 +320,8 @@ patterns.
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
 | D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; the always-on `app.Builder` validator rejects `disable`/`prefer`/`allow` and requires one of `require`/`verify-ca`/`verify-full`. The `pgx.Config.AllowPlaintextLoopbackForTests` field is the only relaxation, gated on every host (and every multi-host fallback) resolving to loopback | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go) |
-| D-02 | SQL injection via string concatenation | A1, A2 | Kit uses GORM (parameterised) and pgx (parameterised); no string-concat helper in the kit's surface area |
-| D-03 | DB credential leakage via process logs | A6 | `sqldb.Config.Password` is a `*core/secret.String` — refuses to render via slog/JSON | [core/secret/secret.go](../../core/secret/secret.go), [infra/sqldb/config.go](../../infra/sqldb/config.go) |
+| D-02 | SQL injection via string concatenation | A1, A2 | Kit runtime DB path is pgx/sqlc-style parameterized queries; no string-concat query helper in the kit's surface area |
+| D-03 | DB credential leakage via process logs | A6 | `sqldb.Config` / `pgxbackend.Config` implement safe `LogValue` renderers and `_FILE` secret loading avoids embedding password material in config errors; `pgxbackend.Config.PasswordProvider` supports rotating credentials without logging returned values | [infra/sqldb/config.go](../../infra/sqldb/config.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go), [core/config](../../core/config/) |
 | D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpen` is required (no zero default); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
 | D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
 | D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | [docs/ai/sqldb.md](../ai/sqldb.md) |
@@ -476,17 +476,18 @@ through:
 - `encoding/text` and `encoding/binary`.
 
 Intentional access is via `s.RevealString()` / `s.Reveal()`, which
-are greppable for audit. Every kit configuration field that holds a
-credential is typed as `*secret.String`; this includes:
+are greppable for audit. Not every integration config stores credentials as
+`core/secret.String`; URL/DSN and SDK-provider based fields instead implement
+safe `LogValue` renderers, stable errors, `_FILE` loading, or provider
+callbacks. Current high-risk credential surfaces are covered by:
 
-- `infra/sqldb.Config.Password`
-- `infra/redis.Config.Password`
-- AMQP DSN (when constructed via `app.WithRabbitMQ`)
-- JWT signing keys, JWKS keys
-- PASETO keys (`crypto/paseto`)
-- HMAC keys for CSRF, signed requests, audit-log chain, idempotency
-  owner tokens
-- Envelope KEK material (`crypto/envelope`)
+- DB/Redis/AMQP/NATS config log redaction plus DB/Redis/AMQP/NATS provider
+  hooks for rotation.
+- Storage config log redaction plus S3 default/provider credentials, Azure
+  token credentials, GCS ADC/client options, and SFTP password providers.
+- JWT/PASETO/HMAC signing keys through JWKS refresh, caller-supplied PASETO
+  providers, CSRF secret rings, and signed-request key stores.
+- Envelope KEK material through KMS/Vault provider SDKs and recorded KEK IDs.
 
 ### 5.3 Tenant scoping
 
@@ -555,7 +556,7 @@ app.New("payments", version, cfg.BaseConfig).
 	    Router(func(infra app.Infrastructure) http.Handler {
 	        h := payments.NewHandler(infra.DB, infra.Cache, audit)
 	        csrfMW := csrf.New(
-	            csrf.WithSecret(cfg.CSRFSecret),
+	            csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
 	            csrf.WithAllowedOrigins(cfg.PublicOrigin),
 	        )
 	        return stack.Default(h, infra.Logger,

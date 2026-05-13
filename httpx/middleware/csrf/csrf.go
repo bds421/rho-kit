@@ -54,7 +54,7 @@ type config struct {
 	// plain-HTTP development.
 	secure           bool
 	secureSet        bool
-	secret           []byte // HMAC key for token signing
+	secrets          [][]byte // HMAC keys: current first, previous verification-only keys after
 	sameSite         http.SameSite
 	path             string
 	skipCheck        func(*http.Request) bool
@@ -102,13 +102,55 @@ func WithSecure(secure bool) Option {
 // The secret is defensively copied at construction time, so callers
 // can safely zero or reuse the buffer they pass in.
 func WithSecret(secret []byte) Option {
-	if len(secret) < 32 {
-		panic("csrf: HMAC secret must be at least 32 bytes")
+	return WithSecrets(secret)
+}
+
+// WithSecrets sets the active HMAC secret plus previous verification-only
+// secrets for zero-downtime rotation. Newly issued cookies are signed with
+// current. Existing cookies signed by previous secrets continue to verify until
+// callers remove those secrets after the cookie/token overlap window.
+func WithSecrets(current []byte, previous ...[]byte) Option {
+	secrets, err := cloneSecretRing(current, previous...)
+	if err != nil {
+		panic(err.Error())
 	}
-	copied := append([]byte(nil), secret...)
 	return func(c *config) {
-		c.secret = append([]byte(nil), copied...)
+		c.secrets = cloneSecretRingMust(secrets...)
 	}
+}
+
+func cloneSecretRing(current []byte, previous ...[]byte) ([][]byte, error) {
+	if len(current) < 32 {
+		return nil, fmt.Errorf("csrf: HMAC secret must be at least 32 bytes")
+	}
+	secrets := make([][]byte, 0, 1+len(previous))
+	secrets = append(secrets, append([]byte(nil), current...))
+	for _, secret := range previous {
+		if len(secret) < 32 {
+			return nil, fmt.Errorf("csrf: HMAC secret must be at least 32 bytes")
+		}
+		secrets = append(secrets, append([]byte(nil), secret...))
+	}
+	return secrets, nil
+}
+
+func cloneSecretRingMust(secrets ...[]byte) [][]byte {
+	cloned := make([][]byte, 0, len(secrets))
+	for _, secret := range secrets {
+		cloned = append(cloned, append([]byte(nil), secret...))
+	}
+	return cloned
+}
+
+func activeSecret(secrets [][]byte) []byte {
+	if len(secrets) == 0 {
+		return nil
+	}
+	return secrets[0]
+}
+
+func acceptedSecrets(secrets [][]byte) [][]byte {
+	return secrets
 }
 
 // WithDevSecret opts in to per-process random secret generation. Use this
@@ -299,14 +341,15 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		cfg.secure = true
 	}
 
-	if cfg.secret == nil {
+	if len(cfg.secrets) == 0 {
 		if !cfg.allowDevSecret {
 			panic("csrf: no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 		}
-		cfg.secret = make([]byte, 32)
-		if _, err := io.ReadFull(tokenRandReader, cfg.secret); err != nil {
+		secret := make([]byte, 32)
+		if _, err := io.ReadFull(tokenRandReader, secret); err != nil {
 			panic("csrf: failed to generate HMAC secret")
 		}
+		cfg.secrets = [][]byte{secret}
 	}
 
 	// SameSite=None requires Secure: every modern browser rejects a cookie
@@ -324,8 +367,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		if cfg.sessionTTL > 0 {
 			issuerOpts = append(issuerOpts, securitycsrf.WithTTL(cfg.sessionTTL))
 		}
-		issuer := securitycsrf.MustNewIssuer(cfg.secret, issuerOpts...)
-		return sessionBoundMiddleware(&cfg, issuer)
+		issuer := securitycsrf.MustNewIssuerWithSecrets(activeSecret(cfg.secrets), acceptedSecrets(cfg.secrets)[1:], issuerOpts...)
+		currentIssuer := securitycsrf.MustNewIssuer(activeSecret(cfg.secrets), issuerOpts...)
+		return sessionBoundMiddleware(&cfg, issuer, currentIssuer)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -333,9 +377,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			// Ensure a CSRF cookie exists on every response.
 			cookie, err := r.Cookie(cfg.cookieName)
 			cookieRegenerated := false
-			if err != nil || !isValidSignedToken(cookie.Value, cfg.secret) {
+			if err != nil || !isValidSignedTokenAny(cookie.Value, cfg.secrets) {
 				// Generate a new token and set it as a cookie.
-				token, err := mintSignedToken(cfg.secret)
+				token, err := mintSignedToken(activeSecret(cfg.secrets))
 				if err != nil {
 					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
 					return
@@ -355,6 +399,25 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				// request that just received a new cookie.
 				cookie = &http.Cookie{Name: cfg.cookieName, Value: token}
 				cookieRegenerated = true
+			} else if !isValidSignedToken(cookie.Value, activeSecret(cfg.secrets)) {
+				// Previous-secret token accepted during rotation. Reissue a
+				// current-secret cookie for the next request, but keep the
+				// incoming cookie as the value to compare against this request's
+				// header.
+				token, err := mintSignedToken(activeSecret(cfg.secrets))
+				if err != nil {
+					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name:     cfg.cookieName,
+					Value:    token,
+					Path:     cfg.path,
+					MaxAge:   86400,
+					HttpOnly: false,
+					Secure:   cfg.secure,
+					SameSite: cfg.sameSite,
+				})
 			}
 
 			// Safe methods are exempt from CSRF validation.
@@ -422,7 +485,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			}
 
 			// Verify the token was signed by this server.
-			if !isValidSignedToken(headerToken, cfg.secret) {
+			if !isValidSignedTokenAny(headerToken, cfg.secrets) {
 				httpx.WriteError(w, http.StatusForbidden, "invalid CSRF token")
 				return
 			}
@@ -435,7 +498,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 // sessionBoundMiddleware is the session-bound flow: tokens are minted
 // and verified by [securitycsrf.Issuer] so cross-session replay is
 // rejected even when the cookie itself is intact.
-func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.Handler) http.Handler {
+func sessionBoundMiddleware(cfg *config, issuer, currentIssuer *securitycsrf.Issuer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			session, ok := safeSessionExtractor(cfg.sessionExtractor, r)
@@ -466,6 +529,21 @@ func sessionBoundMiddleware(cfg *config, issuer *securitycsrf.Issuer) func(http.
 				})
 				cookie = &http.Cookie{Name: cfg.cookieName, Value: string(token)}
 				cookieRegenerated = true
+			} else if currentIssuer.Verify(securitycsrf.Token(cookie.Value), session) != nil {
+				token, mintErr := issuer.Issue(session)
+				if mintErr != nil {
+					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name:     cfg.cookieName,
+					Value:    string(token),
+					Path:     cfg.path,
+					MaxAge:   86400,
+					HttpOnly: false,
+					Secure:   cfg.secure,
+					SameSite: cfg.sameSite,
+				})
 			}
 
 			switch r.Method {
@@ -659,6 +737,16 @@ func isValidSignedToken(token string, secret []byte) bool {
 	}
 	expectedSig := computeHMAC(parts[0], secret)
 	return hmac.Equal([]byte(parts[1]), []byte(expectedSig))
+}
+
+func isValidSignedTokenAny(token string, secrets [][]byte) bool {
+	valid := false
+	for _, secret := range secrets {
+		if isValidSignedToken(token, secret) {
+			valid = true
+		}
+	}
+	return valid
 }
 
 // computeHMAC returns the hex-encoded HMAC-SHA256 of data using the given key.

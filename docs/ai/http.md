@@ -18,7 +18,7 @@ Router(func(infra app.Infrastructure) http.Handler {
     mux.HandleFunc("GET /users/{id}", getUser(infra))
     mux.HandleFunc("POST /users", createUser(infra))
     csrfMW := csrf.New(
-        csrf.WithSecret(cfg.CSRFSecret),
+        csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
         csrf.WithAllowedOrigins(cfg.PublicOrigin),
     )
 
@@ -48,7 +48,7 @@ stack.Default(mux, logger,
     stack.WithOuter(
         ratelimit.Middleware(infra.RateLimiter),
         csrf.New(
-            csrf.WithSecret(cfg.CSRFSecret),
+            csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
             csrf.WithAllowedOrigins(cfg.PublicOrigin),
         ),
         csrf.RequireJSONContentType,
@@ -305,7 +305,7 @@ The middleware stores the ID using `httpx.SetRequestID(ctx, id)`, so retrieval i
 ```go
 // CSRF (defense-in-depth, use both):
 csrf.New(
-    csrf.WithSecret(cfg.CSRFSecret),
+    csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
     csrf.WithAllowedOrigins(cfg.PublicOrigin),
 )                           // double-submit cookie + HMAC token validation
 csrf.RequireJSONContentType // rejects POST/PUT/PATCH with bodies without JSON Content-Type

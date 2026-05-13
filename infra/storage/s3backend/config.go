@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+
 	"github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -17,6 +19,13 @@ type S3Config struct {
 	AllowInsecureEndpoint bool   // permits http:// endpoints for local emulators
 	AccessKeyID           string
 	SecretAccessKey       string
+	UseDefaultCredentials bool
+
+	// CredentialProvider overrides static access keys with an AWS SDK
+	// provider. Use it for rotating STS, IAM-role, web-identity, or Vault-
+	// backed credentials. It is mutually exclusive with AccessKeyID /
+	// SecretAccessKey and UseDefaultCredentials to avoid ambiguous auth.
+	CredentialProvider awssdk.CredentialsProvider
 
 	// SSE controls server-side encryption applied to PutObject and signed
 	// into presigned PUT URLs. Empty disables (the bucket may still apply
@@ -61,6 +70,8 @@ func (c S3Config) LogValue() slog.Value {
 		slog.Bool("allow_insecure_endpoint", c.AllowInsecureEndpoint),
 		slog.Bool("access_key_id_configured", c.AccessKeyID != ""),
 		slog.Bool("secret_access_key_configured", c.SecretAccessKey != ""),
+		slog.Bool("use_default_credentials", c.UseDefaultCredentials),
+		slog.Bool("credential_provider_configured", c.CredentialProvider != nil),
 		slog.String("sse", c.SSE),
 		slog.Bool("sse_kms_key_configured", c.SSEKMSKeyID != ""),
 	)
@@ -75,12 +86,14 @@ func (c S3Config) LogValue() slog.Value {
 //   - STORAGE_S3_URL_TEMPLATE (optional, HTTPS public URL template)
 //   - STORAGE_S3_FORCE_PATH_STYLE (optional bool, default false)
 //   - STORAGE_S3_ALLOW_INSECURE_ENDPOINT (optional bool, default false)
+//   - STORAGE_S3_USE_DEFAULT_CREDENTIALS (optional bool, default false)
 //   - {envPrefix}_S3_ACCESS_KEY_ID (required)
 //   - {envPrefix}_S3_SECRET_ACCESS_KEY (required, supports _FILE suffix)
 func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 	p := &config.Parser{}
 	forcePathStyle := p.Bool("STORAGE_S3_FORCE_PATH_STYLE", false)
 	allowInsecureEndpoint := p.Bool("STORAGE_S3_ALLOW_INSECURE_ENDPOINT", false)
+	useDefaultCredentials := p.Bool("STORAGE_S3_USE_DEFAULT_CREDENTIALS", false)
 	if err := p.Err(); err != nil {
 		return S3Config{}, err
 	}
@@ -92,6 +105,7 @@ func LoadS3Config(envPrefix, environment string) (S3Config, error) {
 		URLTemplate:           config.Get("STORAGE_S3_URL_TEMPLATE", ""),
 		ForcePathStyle:        forcePathStyle,
 		AllowInsecureEndpoint: allowInsecureEndpoint,
+		UseDefaultCredentials: useDefaultCredentials,
 		AccessKeyID:           config.Get(envPrefix+"_S3_ACCESS_KEY_ID", ""),
 		SecretAccessKey:       config.MustGetSecret(envPrefix+"_S3_SECRET_ACCESS_KEY", ""),
 		SSE:                   config.Get("STORAGE_S3_SSE", "AES256"),
@@ -114,11 +128,8 @@ func (c S3Config) Validate(environment string) error {
 	if c.Bucket == "" {
 		return fmt.Errorf("STORAGE_S3_BUCKET is required")
 	}
-	if c.AccessKeyID == "" {
-		return fmt.Errorf("S3_ACCESS_KEY_ID is required")
-	}
-	if c.SecretAccessKey == "" {
-		return fmt.Errorf("S3_SECRET_ACCESS_KEY is required")
+	if err := c.validateCredentialSource(); err != nil {
+		return err
 	}
 	if err := storage.ValidateEndpointURL("STORAGE_S3_ENDPOINT", c.Endpoint, c.AllowInsecureEndpoint); err != nil {
 		return err
@@ -132,10 +143,33 @@ func (c S3Config) Validate(environment string) error {
 
 	// Credential-strength check is unconditional — production-safe
 	// defaults are the only mode (see docs/RELEASE_NOTES_v2.md).
-	if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
-		return err
+	if c.CredentialProvider == nil && !c.UseDefaultCredentials {
+		if err := config.RejectWeakCredential("S3_SECRET_ACCESS_KEY", c.SecretAccessKey); err != nil {
+			return err
+		}
 	}
 	_ = environment // accepted for API compatibility; no longer consulted
 
+	return nil
+}
+
+func (c S3Config) validateCredentialSource() error {
+	hasStatic := c.AccessKeyID != "" || c.SecretAccessKey != ""
+	switch {
+	case c.CredentialProvider != nil && c.UseDefaultCredentials:
+		return fmt.Errorf("S3 CredentialProvider and UseDefaultCredentials are mutually exclusive")
+	case c.CredentialProvider != nil && hasStatic:
+		return fmt.Errorf("S3 CredentialProvider is mutually exclusive with static access keys")
+	case c.UseDefaultCredentials && hasStatic:
+		return fmt.Errorf("S3 UseDefaultCredentials is mutually exclusive with static access keys")
+	case c.CredentialProvider != nil || c.UseDefaultCredentials:
+		return nil
+	}
+	if c.AccessKeyID == "" {
+		return fmt.Errorf("S3_ACCESS_KEY_ID is required")
+	}
+	if c.SecretAccessKey == "" {
+		return fmt.Errorf("S3_SECRET_ACCESS_KEY is required")
+	}
 	return nil
 }

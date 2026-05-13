@@ -100,8 +100,19 @@ type Config struct {
 	Username string
 	Password string
 
+	// UsernamePasswordProvider supplies user/password credentials whenever
+	// nats.go authenticates or reauthenticates a connection. Use this for
+	// rotating broker credentials; the provider should return the current
+	// credential pair and avoid blocking.
+	UsernamePasswordProvider func() (string, string)
+
 	// Token configures NATS bearer-token authentication.
 	Token string
+
+	// TokenProvider supplies a bearer token whenever nats.go authenticates or
+	// reauthenticates a connection. Use this for rotating tokens; it takes
+	// precedence over Token when both are set.
+	TokenProvider func() string
 
 	// CredentialsFile points to a NATS `.creds` JWT-NKey credentials
 	// file (the standard format produced by `nsc add user`). Honoured
@@ -160,7 +171,9 @@ func (c Config) LogValue() slog.Value {
 		slog.Bool("tls_configured", c.TLS != nil),
 		slog.Bool("username_configured", c.Username != "" || urlUserConfigured),
 		slog.Bool("password_configured", c.Password != "" || urlPasswordConfigured),
+		slog.Bool("username_password_provider_configured", c.UsernamePasswordProvider != nil),
 		slog.Bool("token_configured", c.Token != ""),
+		slog.Bool("token_provider_configured", c.TokenProvider != nil),
 		slog.Bool("credentials_file_configured", c.CredentialsFile != ""),
 		slog.Bool("nkey_file_configured", c.NKeyFile != ""),
 		slog.Bool("allow_insecure", c.AllowInsecure),
@@ -226,7 +239,8 @@ func (c Config) validateAuth(serverURL *url.URL) error {
 	if c.TLS != nil {
 		return nil
 	}
-	if c.Username != "" || c.Token != "" || c.CredentialsFile != "" || c.NKeyFile != "" {
+	if c.Username != "" || c.Token != "" || c.CredentialsFile != "" || c.NKeyFile != "" ||
+		c.UsernamePasswordProvider != nil || c.TokenProvider != nil {
 		return nil
 	}
 	if serverURL != nil {
@@ -242,7 +256,7 @@ func (c Config) validateAuth(serverURL *url.URL) error {
 		// "TLS is configured" signal.
 		return nil
 	}
-	return errors.New("natsbackend: connect requires TLS, authentication (Username/Token/CredentialsFile/NKeyFile), or explicit AllowInsecure (audit FR-073)")
+	return errors.New("natsbackend: connect requires TLS, authentication (Username/Token/CredentialsFile/NKeyFile or provider), or explicit AllowInsecure (audit FR-073)")
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
@@ -316,10 +330,14 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if cfg.TLS != nil {
 		opts = append(opts, nats.Secure(cfg.TLS))
 	}
-	if cfg.Username != "" {
+	if cfg.UsernamePasswordProvider != nil {
+		opts = append(opts, nats.UserInfoHandler(cfg.UsernamePasswordProvider))
+	} else if cfg.Username != "" {
 		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
 	}
-	if cfg.Token != "" {
+	if cfg.TokenProvider != nil {
+		opts = append(opts, nats.TokenHandler(cfg.TokenProvider))
+	} else if cfg.Token != "" {
 		opts = append(opts, nats.Token(cfg.Token))
 	}
 	if cfg.CredentialsFile != "" {

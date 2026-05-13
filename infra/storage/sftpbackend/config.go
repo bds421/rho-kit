@@ -1,6 +1,7 @@
 package sftpbackend
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path"
@@ -17,6 +18,11 @@ type SFTPConfig struct {
 	KeyFile  string // path to SSH private key
 	RootPath string // base path on the remote server
 
+	// PasswordProvider supplies the current SSH password when a new SSH
+	// connection is opened. Use it for rotating SFTP passwords; existing
+	// connections keep their current authentication until the backend reconnects.
+	PasswordProvider func(context.Context) (string, error)
+
 	// KnownHostsFile is the path to an OpenSSH known_hosts file for SSH
 	// host key verification.
 	// Example: "/etc/ssh/ssh_known_hosts" or "~/.ssh/known_hosts".
@@ -30,6 +36,7 @@ func (c SFTPConfig) LogValue() slog.Value {
 		slog.Int("port", c.Port),
 		slog.Bool("user_configured", c.User != ""),
 		slog.Bool("password_configured", c.Password != ""),
+		slog.Bool("password_provider_configured", c.PasswordProvider != nil),
 		slog.Bool("key_file_configured", c.KeyFile != ""),
 		slog.Bool("root_path_configured", c.RootPath != ""),
 		slog.Bool("known_hosts_file_configured", c.KnownHostsFile != ""),
@@ -81,11 +88,21 @@ func (c SFTPConfig) Validate(environment string) error {
 	if c.User == "" {
 		return fmt.Errorf("STORAGE_SFTP_USER is required")
 	}
-	if c.Password == "" && c.KeyFile == "" {
-		return fmt.Errorf("either SFTP_PASSWORD or STORAGE_SFTP_KEY_FILE is required")
+	if c.Password == "" && c.KeyFile == "" && c.PasswordProvider == nil {
+		return fmt.Errorf("SFTP_PASSWORD, PasswordProvider, or STORAGE_SFTP_KEY_FILE is required")
 	}
-	if c.Password != "" && c.KeyFile != "" {
-		return fmt.Errorf("SFTP_PASSWORD and STORAGE_SFTP_KEY_FILE are mutually exclusive")
+	authMethods := 0
+	if c.Password != "" {
+		authMethods++
+	}
+	if c.KeyFile != "" {
+		authMethods++
+	}
+	if c.PasswordProvider != nil {
+		authMethods++
+	}
+	if authMethods > 1 {
+		return fmt.Errorf("SFTP password, PasswordProvider, and STORAGE_SFTP_KEY_FILE are mutually exclusive")
 	}
 	if c.Password != "" {
 		if err := config.RejectWeakCredential("SFTP_PASSWORD", c.Password); err != nil {

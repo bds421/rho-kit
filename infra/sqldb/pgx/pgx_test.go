@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,43 @@ func TestConfig_LogValue_RedactsKeywordValueDSN(t *testing.T) {
 	assert.NotContains(t, rendered, "dbname=app")
 }
 
+func TestApplyPasswordProviderOverridesParsedPassword(t *testing.T) {
+	pcfg := parseForTest(t, "postgres://u:old@localhost/db?sslmode=disable")
+	called := 0
+	applyPasswordProvider(pcfg, func(context.Context) (string, error) {
+		called++
+		return "rotated", nil
+	})
+
+	require.NotNil(t, pcfg.BeforeConnect)
+	require.NoError(t, pcfg.BeforeConnect(context.Background(), pcfg.ConnConfig))
+
+	assert.Equal(t, 1, called)
+	assert.Equal(t, "rotated", pcfg.ConnConfig.Password)
+}
+
+func TestApplyPasswordProviderPreservesExistingBeforeConnect(t *testing.T) {
+	pcfg := parseForTest(t, "postgres://u:old@localhost/db?sslmode=disable")
+	previousCalled := false
+	pcfg.BeforeConnect = func(_ context.Context, connCfg *pgx.ConnConfig) error {
+		previousCalled = true
+		if connCfg.RuntimeParams == nil {
+			connCfg.RuntimeParams = map[string]string{}
+		}
+		connCfg.RuntimeParams["application_name"] = "kit-test"
+		return nil
+	}
+
+	applyPasswordProvider(pcfg, func(context.Context) (string, error) {
+		return "rotated", nil
+	})
+	require.NoError(t, pcfg.BeforeConnect(context.Background(), pcfg.ConnConfig))
+
+	assert.True(t, previousCalled)
+	assert.Equal(t, "kit-test", pcfg.ConnConfig.RuntimeParams["application_name"])
+	assert.Equal(t, "rotated", pcfg.ConnConfig.Password)
+}
+
 func TestConnect_RejectsEmptyDSN(t *testing.T) {
 	_, err := Connect(context.Background(), Config{})
 	require.Error(t, err)
@@ -62,11 +100,12 @@ func TestConnect_RejectsNilContext(t *testing.T) {
 func TestPool_InvalidReceiverSafety(t *testing.T) {
 	for name, pool := range map[string]*Pool{
 		"nil":  nil,
-		"zero": &Pool{},
+		"zero": {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.Nil(t, pool.Pool())
 			assert.NoError(t, pool.Close())
+			assert.NoError(t, pool.Reset())
 
 			assert.Error(t, pool.Ping(context.Background()))
 			_, err := pool.Copy(context.Background(), "table", []string{"id"}, [][]any{{1}})

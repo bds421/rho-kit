@@ -53,11 +53,11 @@ type RateLimiter struct {
 	metrics        *Metrics
 	name           string
 
-	startMu    sync.Mutex
-	started    bool
-	stopped    bool
-	cancel     context.CancelFunc
-	doneCh     chan struct{}
+	startMu sync.Mutex
+	started bool
+	stopped bool
+	cancel  context.CancelFunc
+	doneCh  chan struct{}
 }
 
 // RateLimiterOption configures optional RateLimiter behaviour.

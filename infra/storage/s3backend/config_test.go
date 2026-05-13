@@ -1,9 +1,22 @@
 package s3backend
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
+
+type testCredentialsProvider struct{}
+
+func (testCredentialsProvider) Retrieve(context.Context) (awssdk.Credentials, error) {
+	return awssdk.Credentials{
+		AccessKeyID:     "provider-access-key",
+		SecretAccessKey: "provider-secret-key",
+		Source:          "test",
+	}, nil
+}
 
 func TestS3ConfigValidate_Endpoint(t *testing.T) {
 	t.Parallel()
@@ -106,6 +119,88 @@ func TestS3ConfigLogValueRedactsResourceHandlesAndEndpointSecrets(t *testing.T) 
 		if !strings.Contains(rendered, marker) {
 			t.Fatalf("LogValue missing marker %q: %s", marker, rendered)
 		}
+	}
+}
+
+func TestS3ConfigValidate_CredentialSources(t *testing.T) {
+	t.Parallel()
+
+	base := S3Config{
+		Region: "eu-central-1",
+		Bucket: "bucket",
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*S3Config)
+		wantErr bool
+	}{
+		{
+			name: "static credentials",
+			mutate: func(cfg *S3Config) {
+				cfg.AccessKeyID = "access-key"
+				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
+			},
+		},
+		{
+			name: "default provider chain",
+			mutate: func(cfg *S3Config) {
+				cfg.UseDefaultCredentials = true
+			},
+		},
+		{
+			name: "custom provider",
+			mutate: func(cfg *S3Config) {
+				cfg.CredentialProvider = testCredentialsProvider{}
+			},
+		},
+		{
+			name:    "missing source",
+			wantErr: true,
+		},
+		{
+			name: "default and static rejected",
+			mutate: func(cfg *S3Config) {
+				cfg.UseDefaultCredentials = true
+				cfg.AccessKeyID = "access-key"
+				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
+			},
+			wantErr: true,
+		},
+		{
+			name: "provider and static rejected",
+			mutate: func(cfg *S3Config) {
+				cfg.CredentialProvider = testCredentialsProvider{}
+				cfg.AccessKeyID = "access-key"
+				cfg.SecretAccessKey = "S3cur3-S3-Secret-Key-Value-123456"
+			},
+			wantErr: true,
+		},
+		{
+			name: "provider and default rejected",
+			mutate: func(cfg *S3Config) {
+				cfg.CredentialProvider = testCredentialsProvider{}
+				cfg.UseDefaultCredentials = true
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			if tt.mutate != nil {
+				tt.mutate(&cfg)
+			}
+			err := cfg.Validate("production")
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

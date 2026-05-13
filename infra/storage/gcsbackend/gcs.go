@@ -69,7 +69,7 @@ func New(ctx context.Context, cfg GCSConfig, opts ...Option) (*GCSBackend, error
 		return nil, err
 	}
 
-	var clientOpts []option.ClientOption
+	clientOpts := append([]option.ClientOption(nil), cfg.ClientOptions...)
 	if cfg.CredentialsFile != "" {
 		clientOpts = append(clientOpts, option.WithAuthCredentialsFile(option.ServiceAccount, cfg.CredentialsFile))
 	}

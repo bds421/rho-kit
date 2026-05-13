@@ -46,6 +46,28 @@ func TestIssueAndVerify_RoundTrip(t *testing.T) {
 	require.NoError(t, i.Verify(tok, "user-42"))
 }
 
+func TestIssuer_VerifiesPreviousSecretDuringRotation(t *testing.T) {
+	oldSecret := make([]byte, 32)
+	newSecret := make([]byte, 32)
+	for i := range oldSecret {
+		oldSecret[i] = byte(i + 1)
+		newSecret[i] = byte(i + 101)
+	}
+
+	oldIssuer, err := NewIssuer(oldSecret)
+	require.NoError(t, err)
+	oldToken, err := oldIssuer.Issue("user-42")
+	require.NoError(t, err)
+
+	rotated, err := NewIssuerWithSecrets(newSecret, [][]byte{oldSecret})
+	require.NoError(t, err)
+	require.NoError(t, rotated.Verify(oldToken, "user-42"))
+
+	newToken, err := rotated.Issue("user-42")
+	require.NoError(t, err)
+	require.ErrorIs(t, oldIssuer.Verify(newToken, "user-42"), ErrTokenInvalid)
+}
+
 func TestIssue_RejectsInvalidSessionID(t *testing.T) {
 	i := newTestIssuer(t)
 	for name, sessionID := range invalidSessionIDs() {

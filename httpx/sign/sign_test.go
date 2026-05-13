@@ -49,6 +49,15 @@ func (b closeErrorBody) Close() error {
 	return b.err
 }
 
+type mutableKeyStore struct {
+	keyID  string
+	secret []byte
+}
+
+func (s *mutableKeyStore) CurrentKeyID() (string, []byte) {
+	return s.keyID, append([]byte(nil), s.secret...)
+}
+
 // Round-trip end-to-end: client signs, server verifies. The most
 // useful guarantee a kit can give callers is "signer + verifier agree
 // on the wire format" — a single test that runs both proves it.
@@ -76,6 +85,52 @@ func TestSignAndVerify_RoundTrip(t *testing.T) {
 
 	echoed, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, `{"hello":"world"}`, string(echoed))
+}
+
+func TestWrapKeyStore_UsesCurrentKeyPerRequest(t *testing.T) {
+	const (
+		oldKeyID  = "prod-old"
+		newKeyID  = "prod-new"
+		oldSecret = "this-is-32-bytes-of-old-secret!!"
+		newSecret = "this-is-32-bytes-of-new-secret!!"
+	)
+	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
+	resolver := func(id string) ([]byte, error) {
+		switch id {
+		case oldKeyID:
+			return []byte(oldSecret), nil
+		case newKeyID:
+			return []byte(newSecret), nil
+		default:
+			return nil, errors.New("unknown key")
+		}
+	}
+	mw := signedrequest.Middleware(resolver, store)
+
+	var seen []string
+	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get(signedrequest.HeaderKeyID))
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	defer srv.Close()
+
+	keys := &mutableKeyStore{keyID: oldKeyID, secret: []byte(oldSecret)}
+	client := &http.Client{Transport: WrapKeyStore(http.DefaultTransport, keys)}
+
+	resp, err := client.Post(srv.URL+"/api/x", "application/json", strings.NewReader("old"))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	keys.keyID = newKeyID
+	keys.secret = []byte(newSecret)
+
+	resp, err = client.Post(srv.URL+"/api/x", "application/json", strings.NewReader("new"))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	assert.Equal(t, []string{oldKeyID, newKeyID}, seen)
 }
 
 func TestSign_RejectsEmptySecret(t *testing.T) {

@@ -141,8 +141,13 @@ func (b *Builder) buildIntegrationModules() []Module {
 		modules = append(modules, newRedisModule(b.redisOpts, b.allowPlaintextRedis, b.redisConnOpts...))
 	}
 
-	if b.mqURL != "" {
-		m := newMessagingModule(b.mqURL)
+	if b.mqURL != "" || b.mqURLProvider != nil {
+		var m *messagingModule
+		if b.mqURLProvider != nil {
+			m = newMessagingModuleWithURLProvider(b.mqURLProvider)
+		} else {
+			m = newMessagingModule(b.mqURL)
+		}
 		m.criticalBroker = b.criticalBroker
 		m.messageSizeLimiter = b.messageSizeLimiter
 		modules = append(modules, m)

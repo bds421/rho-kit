@@ -167,9 +167,18 @@ func NewWithClient(client S3Client, presigner S3Presigner, bucket string, opts .
 func buildAWSConfig(ctx context.Context, cfg S3Config) (aws.Config, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
-		awsconfig.WithCredentialsProvider(
+	}
+	switch {
+	case cfg.CredentialProvider != nil:
+		opts = append(opts, awsconfig.WithCredentialsProvider(cfg.CredentialProvider))
+	case cfg.UseDefaultCredentials:
+		// Let the AWS SDK resolve and refresh credentials from the default
+		// chain: environment, shared config, web identity, ECS/EKS/EC2 roles,
+		// SSO, process providers, and any SDK-supported rotating source.
+	default:
+		opts = append(opts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		),
+		))
 	}
 	if cfg.Endpoint != "" {
 		opts = append(opts, awsconfig.WithBaseEndpoint(cfg.Endpoint))

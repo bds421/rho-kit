@@ -82,7 +82,7 @@ func (b *Builder) Validate() error {
 	if b.migrationsDir != nil && b.pgxCfg == nil {
 		return fmt.Errorf("WithMigrations requires WithPostgres — migrations need a configured database")
 	}
-	if b.criticalBroker && b.mqURL == "" {
+	if b.criticalBroker && b.mqURL == "" && b.mqURLProvider == nil {
 		return fmt.Errorf("critical broker requires a RabbitMQ URL")
 	}
 	if b.ipRateRequests > 0 && b.ipRateWindow <= 0 {

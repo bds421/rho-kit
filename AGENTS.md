@@ -54,7 +54,7 @@ app.Main("my-service", version, func(logger *slog.Logger) error {
             // Auto-migrate / register repositories using infra.DB here.
             mux := http.NewServeMux()
             // register routes using infra.DB, infra.Publisher, etc.
-            csrfMW := csrf.New(csrf.WithSecret(cfg.CSRFSecret))
+            csrfMW := csrf.New(csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...))
             return stack.Default(mux, logger,
                 stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
             )
@@ -173,6 +173,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | ASVS control catalog | `security/asvs` | [security](docs/ai/security.md) |
 | mTLS identity (peer cert claims) | `security/mtlsidentity` | [security](docs/ai/security.md) |
 | CSRF helpers (token mint/verify) | `security/csrf` | [security](docs/ai/security.md) |
+| Rotate infrastructure credentials | `pgxbackend.PasswordProvider`, Redis credential providers, AMQP/NATS auth providers, storage provider credentials, CSRF/signed-request key rings | [credential rotation](docs/ai/credential-rotation.md) |
 
 ## Key Conventions
 
@@ -189,6 +190,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Scaffolds**: Use `kit-new -tenant` for new multi-tenant services so Redis cache and idempotency start behind the tenant wrappers.
 - **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
 - **Messaging size**: Builder-created RabbitMQ and NATS publishers enforce `messaging.DefaultMaxMessageBytes`; use `WithRouteMaxMessageBytes` for explicitly large routes instead of disabling the cap globally.
+- **Credential rotation**: Prefer provider-backed credentials over static secrets when the upstream SDK supports it. Use DB `PasswordProvider`, go-redis credential providers, AMQP URL providers, NATS auth providers, cloud SDK default credentials, CSRF `WithSecrets`, and signed-request key stores for zero-downtime rotation.
 - **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; these are the canonical `kit-bench-gate -baseline` inputs for the release branch.
 
 ## Anti-Patterns

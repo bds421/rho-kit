@@ -95,6 +95,7 @@ type Builder struct {
 
 	// RabbitMQ
 	mqURL              string
+	mqURLProvider      func(context.Context) (string, error)
 	criticalBroker     bool
 	messageSizeLimiter messaging.MessageSizeLimiter
 
@@ -383,6 +384,19 @@ func (b *Builder) WithRabbitMQ(url string) *Builder {
 		panic("app: WithRabbitMQ requires a non-empty URL")
 	}
 	b.mqURL = url
+	b.mqURLProvider = nil
+	return b
+}
+
+// WithRabbitMQURLProvider configures RabbitMQ with a dynamic URL source. The
+// provider is evaluated before each AMQP dial/reconnect, so rotated broker
+// passwords are picked up without rebuilding the service.
+func (b *Builder) WithRabbitMQURLProvider(provider func(context.Context) (string, error)) *Builder {
+	if provider == nil {
+		panic("app: WithRabbitMQURLProvider requires a non-nil provider")
+	}
+	b.mqURL = ""
+	b.mqURLProvider = provider
 	return b
 }
 

@@ -115,7 +115,7 @@ func TestEchoWorkflow_MockedActivity(t *testing.T) {
 // shapes match what the SDK expects. If these break the example test
 // won't compile, signalling the scaffold drifted from the SDK contract.
 var (
-	_ func(context.Context, string) (string, error)   = echoActivity
-	_ func(workflow.Context, string) (string, error)  = echoWorkflow
-	_ activity.RegisterOptions                        = activity.RegisterOptions{} //nolint:exhaustruct
+	_ func(context.Context, string) (string, error)  = echoActivity
+	_ func(workflow.Context, string) (string, error) = echoWorkflow
+	_ activity.RegisterOptions                       = activity.RegisterOptions{} //nolint:exhaustruct
 )

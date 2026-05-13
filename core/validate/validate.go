@@ -205,4 +205,3 @@ func message(fe validator.FieldError) string {
 		return "failed validation: " + fe.Tag()
 	}
 }
-

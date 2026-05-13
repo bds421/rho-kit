@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"google.golang.org/api/option"
 )
 
 func TestGCSConfigValidate_Endpoint(t *testing.T) {
@@ -71,6 +73,7 @@ func TestGCSConfigLogValueDoesNotExposeCredentialsFile(t *testing.T) {
 		Bucket:          "tenant-prod-bucket",
 		ProjectID:       "customer-prod-project",
 		CredentialsFile: "/var/run/secrets/gcp/service-account.json",
+		ClientOptions:   []option.ClientOption{option.WithoutAuthentication()},
 		Endpoint:        "https://token-user:endpoint-secret@storage.example.com/storage/v1?token=query-secret#frag",
 	}
 
@@ -96,6 +99,9 @@ func TestGCSConfigLogValueDoesNotExposeCredentialsFile(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "credentials_file_configured=true") {
 		t.Fatalf("LogValue did not report configured credentials file: %s", rendered)
+	}
+	if !strings.Contains(rendered, "client_options_configured=true") {
+		t.Fatalf("LogValue did not report configured client options: %s", rendered)
 	}
 	if !strings.Contains(rendered, "endpoint_configured=true") {
 		t.Fatalf("LogValue did not report configured endpoint: %s", rendered)

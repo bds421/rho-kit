@@ -31,6 +31,8 @@ operational migration sequence.
   Redis, Outbox, AMQP, rate-limit, storage), runbooks, `promtool` CI.
 - **Crypto.** AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit
   envelope-KEK adapters; PASETO; Argon2id password hashing; field encryption.
+- **Credential rotation.** Provider-backed rotation hooks across pgx, Redis,
+  AMQP, NATS, S3, Azure Blob, GCS, SFTP, CSRF, and signed HTTP requests.
 - **Builder integrations.** Golden-path `app.Builder` exposes every new
   primitive without per-service middleware wiring.
 - **Breaking changes.** Background components are one-shot; manual lifecycle
