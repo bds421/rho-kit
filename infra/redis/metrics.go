@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -141,8 +142,14 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-// defaultMetrics is the package-level metrics instance for backward compatibility.
-var defaultMetrics = NewMetrics(nil)
+// defaultMetrics() returns the package-level metrics instance, lazily
+// initialized on first use. Lazy init keeps importing the package side-
+// effect-free: Prometheus collector registration happens only when an
+// adopter actually constructs a connection without supplying their own
+// registerer, never at package-load time. Wires through
+// [sync.OnceValue] so concurrent first-callers converge on a single
+// instance.
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
 
 // knownCommands is an allowlist of Redis command names used as Prometheus
 // label values. Commands not in this set are bucketed as "other" to prevent
@@ -245,7 +252,7 @@ func (h *metricsHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.
 // Note: only works with *redis.Client (not ClusterClient or Ring). For
 // cluster clients or nil, this is a no-op.
 func CollectPoolMetrics(client redis.UniversalClient, instance string) {
-	collectPoolMetrics(defaultMetrics, client, instance)
+	collectPoolMetrics(defaultMetrics(), client, instance)
 }
 
 func collectPoolMetrics(m *Metrics, client redis.UniversalClient, instance string) {
@@ -292,7 +299,7 @@ func WithPoolMetrics(m *Metrics) PoolCollectorOption {
 // connections (e.g. "cache", "streams"). Panics if instance name or interval
 // is invalid.
 func StartPoolMetricsCollector(ctx context.Context, client redis.UniversalClient, instance string, interval time.Duration, opts ...PoolCollectorOption) {
-	cfg := poolCollectorConfig{metrics: defaultMetrics}
+	cfg := poolCollectorConfig{metrics: defaultMetrics()}
 	for _, o := range opts {
 		if o == nil {
 			panic("redis: pool metrics collector option must not be nil")

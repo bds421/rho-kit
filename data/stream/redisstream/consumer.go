@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -128,7 +129,7 @@ func NewConsumerMetrics(reg prometheus.Registerer) *ConsumerMetrics {
 	return m
 }
 
-var defaultConsumerMetrics = NewConsumerMetrics(nil)
+var defaultConsumerMetrics = sync.OnceValue(func() *ConsumerMetrics { return NewConsumerMetrics(nil) })
 
 // Consumer reads from a Redis stream using consumer groups.
 // It handles automatic consumer group creation, pending message claim,
@@ -335,7 +336,7 @@ func NewConsumer(client goredis.UniversalClient, group string, opts ...ConsumerO
 		maxRetries:       defaultMaxRetries,
 		maxPayloadSize:   defaultStreamMaxPayloadSize,
 		deadLetterMaxLen: defaultDeadLetterMaxLen,
-		metrics:          defaultConsumerMetrics,
+		metrics:          defaultConsumerMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {

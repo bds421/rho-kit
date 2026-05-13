@@ -1,6 +1,7 @@
 package azurebackend
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -50,7 +51,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-var defaultMetrics = NewMetrics(nil)
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
 
 // now returns the current time. A variable so tests can override it.
 var now = time.Now

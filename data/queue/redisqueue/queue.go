@@ -242,7 +242,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-var defaultMetrics = NewMetrics(nil)
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
 
 func queueMetricLabel(queue string) string {
 	return promutil.OpaqueLabelValue("queue", queue)
@@ -512,7 +512,7 @@ func NewQueueE(client goredis.UniversalClient, opts ...Option) (*Queue, error) {
 		heartbeatTTL:      defaultHeartbeatTTL,
 		heartbeatInterval: defaultHeartbeatInterval,
 		recoveryEnabled:   true,
-		metrics:           defaultMetrics,
+		metrics:           defaultMetrics(),
 		activeQueues:      make(map[string]bool),
 	}
 	for _, o := range opts {

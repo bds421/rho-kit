@@ -322,7 +322,10 @@ func (m *MemoryStore) now() time.Time { return m.clock() }
 
 // Get returns a cached response for the key, applying fingerprint comparison
 // if a non-nil fingerprint is supplied.
-func (m *MemoryStore) Get(_ context.Context, key string, fingerprint []byte) (*CachedResponse, bool, error) {
+func (m *MemoryStore) Get(ctx context.Context, key string, fingerprint []byte) (*CachedResponse, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	if err := m.ready(); err != nil {
 		return nil, false, err
 	}
@@ -372,7 +375,10 @@ const sweepInterval = 30 * time.Second
 // Set stores the response under the caller's token. Returns ErrLockLost if
 // the lock for the key has been taken by another caller (or has expired).
 // Returns [ErrInvalidTTL] when ttl <= 0.
-func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedResponse, ttl time.Duration) error {
+func (m *MemoryStore) Set(ctx context.Context, key, token string, resp CachedResponse, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.ready(); err != nil {
 		return err
 	}
@@ -416,7 +422,10 @@ func (m *MemoryStore) Set(_ context.Context, key, token string, resp CachedRespo
 
 // TryLock implements the contract from [Store.TryLock]. Returns
 // [ErrInvalidTTL] when ttl <= 0.
-func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+func (m *MemoryStore) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, false, err
+	}
 	if err := m.ready(); err != nil {
 		return "", false, false, err
 	}
@@ -464,7 +473,10 @@ func (m *MemoryStore) TryLock(_ context.Context, key string, fingerprint []byte,
 
 // Unlock releases the processing lock if the caller's token still owns it.
 // Best-effort cleanup: token mismatch is silently ignored (returns nil).
-func (m *MemoryStore) Unlock(_ context.Context, key, token string) error {
+func (m *MemoryStore) Unlock(ctx context.Context, key, token string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.ready(); err != nil {
 		return err
 	}

@@ -270,8 +270,11 @@ func MustNewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 }
 
 // Get retrieves a value. Returns ErrCacheMiss if not found or expired.
-func (mc *MemoryCache) Get(_ context.Context, key string) ([]byte, error) {
+func (mc *MemoryCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := mc.ready(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if err := ValidateKey(key); err != nil {
@@ -290,7 +293,10 @@ func (mc *MemoryCache) Get(_ context.Context, key string) ([]byte, error) {
 
 // Set stores a value with an expiration. Zero TTL means no expiration.
 // Returns an error if TTL is negative (likely a programming error).
-func (mc *MemoryCache) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
+func (mc *MemoryCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := mc.ready(); err != nil {
 		return err
 	}
@@ -415,7 +421,10 @@ func (mc *MemoryCache) SetNX(ctx context.Context, key string, value []byte, ttl 
 // cannot interleave its claim store between this Delete's two clears —
 // otherwise the stale claim would outlive the entry and block legitimate
 // re-claims until the original TTL elapsed.
-func (mc *MemoryCache) Delete(_ context.Context, key string) error {
+func (mc *MemoryCache) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := mc.ready(); err != nil {
 		return err
 	}
@@ -430,7 +439,10 @@ func (mc *MemoryCache) Delete(_ context.Context, key string) error {
 }
 
 // Exists checks whether a non-expired key exists.
-func (mc *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
+func (mc *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if err := mc.ready(); err != nil {
 		return false, err
 	}

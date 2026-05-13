@@ -64,7 +64,7 @@ func TestConnection_MarkReadOnly_FlipsHealthy(t *testing.T) {
 	c := &Connection{
 		healthy:  true,
 		instance: "test",
-		metrics:  defaultMetrics,
+		metrics:  defaultMetrics(),
 	}
 	assert.True(t, c.Healthy())
 	assert.False(t, c.ReadOnly())

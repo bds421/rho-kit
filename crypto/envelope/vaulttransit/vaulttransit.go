@@ -135,7 +135,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 
 	secret, err := k.c.Logical().WriteWithContext(ctx, k.encryptPath(), data)
 	if err != nil {
-		return "", nil, fmt.Errorf("vaulttransit: encrypt: %w", err)
+		return "", nil, fmt.Errorf("vaulttransit: encrypt: %w", classifyVaultError("encrypt", err))
 	}
 	ciphertext, err := secretString(secret, "ciphertext")
 	if err != nil {
@@ -169,7 +169,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 
 	secret, err := k.c.Logical().WriteWithContext(ctx, k.decryptPath(), data)
 	if err != nil {
-		return nil, fmt.Errorf("vaulttransit: decrypt: %w", err)
+		return nil, fmt.Errorf("vaulttransit: decrypt: %w", classifyVaultError("decrypt", err))
 	}
 	plaintext, err := secretString(secret, "plaintext")
 	if err != nil {

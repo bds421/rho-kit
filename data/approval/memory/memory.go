@@ -54,7 +54,10 @@ func New(opts ...Option) *Store {
 
 // Create persists a new request in StatePending. Rejects requests
 // without a future ExpiresAt — see [approval.ValidateForCreate].
-func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request, error) {
+func (s *Store) Create(ctx context.Context, r approval.Request) (approval.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return approval.Request{}, err
+	}
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}
@@ -81,7 +84,10 @@ func (s *Store) Create(_ context.Context, r approval.Request) (approval.Request,
 }
 
 // Get returns the request by id.
-func (s *Store) Get(_ context.Context, id string) (approval.Request, error) {
+func (s *Store) Get(ctx context.Context, id string) (approval.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return approval.Request{}, err
+	}
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}
@@ -98,7 +104,10 @@ func (s *Store) Get(_ context.Context, id string) (approval.Request, error) {
 // [approval.ErrQueryTenantRequired] when the caller did not set
 // [approval.Query.TenantID] or opt into AllTenants — see audit
 // FR-053 for why cross-tenant listings must be explicit.
-func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, error) {
+func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
@@ -135,7 +144,10 @@ func (s *Store) List(_ context.Context, q approval.Query) ([]approval.Request, e
 
 // Decide records an approver's decision. See [approval.Store] for the
 // full contract.
-func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+func (s *Store) Decide(ctx context.Context, id, decidedBy, reason string, approve bool) (approval.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return approval.Request{}, err
+	}
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}
@@ -198,7 +210,10 @@ func (s *Store) Decide(_ context.Context, id, decidedBy, reason string, approve 
 }
 
 // MarkExecuted moves an approved request to executed.
-func (s *Store) MarkExecuted(_ context.Context, id string) (approval.Request, error) {
+func (s *Store) MarkExecuted(ctx context.Context, id string) (approval.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return approval.Request{}, err
+	}
 	if err := s.ready(); err != nil {
 		return approval.Request{}, err
 	}

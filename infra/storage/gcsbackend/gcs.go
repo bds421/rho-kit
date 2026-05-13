@@ -65,7 +65,7 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // New creates a new Backend from config.
 func New(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.Bucket == "" {
-		panic("gcsbackend: Config.Bucket is required")
+		return nil, fmt.Errorf("gcsbackend: Config.Bucket is required")
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultMetrics,
+		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -113,7 +113,7 @@ func NewWithClient(client *gcsstorage.Client, cfg Config, opts ...Option) *Backe
 		bucket:   client.Bucket(cfg.Bucket),
 		cfg:      cfg,
 		instance: "default",
-		metrics:  defaultMetrics,
+		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {

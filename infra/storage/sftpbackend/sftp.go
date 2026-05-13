@@ -142,7 +142,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 		cfg:      cfg,
 		instance: "default",
 		logger:   slog.Default(),
-		metrics:  defaultMetrics,
+		metrics:  defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -176,7 +176,7 @@ func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 		cfg:       cfg,
 		instance:  "default",
 		logger:    slog.Default(),
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 		client:    client,
 		connected: true,
 	}

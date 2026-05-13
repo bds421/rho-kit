@@ -145,7 +145,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 		Value:     dek,
 	}, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("azurekeyvault: wrap key: %w", err)
+		return "", nil, fmt.Errorf("azurekeyvault: wrap key: %w", classifyAzureError("wrap", err))
 	}
 	if resp.KID == nil || string(*resp.KID) == "" {
 		return "", nil, errors.New("azurekeyvault: wrap response missing KID")
@@ -187,7 +187,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		Value:     wrapped,
 	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("azurekeyvault: unwrap key: %w", err)
+		return nil, fmt.Errorf("azurekeyvault: unwrap key: %w", classifyAzureError("unwrap", err))
 	}
 	if len(resp.Result) == 0 {
 		return nil, errors.New("azurekeyvault: unwrap response missing result")

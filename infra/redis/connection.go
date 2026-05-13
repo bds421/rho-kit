@@ -229,7 +229,7 @@ func connectInternal(client redis.UniversalClient, connOpts ...ConnOption) (*Con
 		instance:           "default",
 		healthInterval:     5 * time.Second,
 		onReconnectTimeout: defaultOnReconnectTimeout,
-		metrics:            defaultMetrics,
+		metrics:            defaultMetrics(),
 	}
 	for _, o := range connOpts {
 		if o == nil {

@@ -129,7 +129,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	}
 	resp, err := k.c.Encrypt(ctx, req)
 	if err != nil {
-		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", err)
+		return "", nil, fmt.Errorf("gcpkms: encrypt: %w", classifyGCPError("encrypt", err))
 	}
 	if resp.GetName() == "" {
 		return "", nil, errors.New("gcpkms: encrypt response missing Name")
@@ -175,7 +175,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	}
 	resp, err := k.c.Decrypt(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gcpkms: decrypt: %w", err)
+		return nil, fmt.Errorf("gcpkms: decrypt: %w", classifyGCPError("decrypt", err))
 	}
 	plaintext := resp.GetPlaintext()
 	if got, want := crc32.Checksum(plaintext, crc32cTable), uint32(resp.GetPlaintextCrc32C().GetValue()); got != want {

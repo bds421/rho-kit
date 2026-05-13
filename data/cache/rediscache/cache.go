@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -60,7 +61,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-var defaultMetrics = NewMetrics(nil)
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
 
 // Cache implements Cache using a Redis backend.
 type Cache struct {
@@ -108,7 +109,7 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 		client:       client,
 		name:         name,
 		maxValueSize: defaultMaxValueSize,
-		metrics:      defaultMetrics,
+		metrics:      defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {

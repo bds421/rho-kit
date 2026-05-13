@@ -1218,11 +1218,19 @@ func (s *contextRecordingStore) Unlock(ctx context.Context, key, token string) e
 
 func TestPostHandlerContextPreservesRequestValuesAfterCancellation(t *testing.T) {
 	store := newContextRecordingStore()
-	handler := Middleware(store, WithAllowSharedKeys())(newTestHandler("ok", http.StatusOK))
 
 	parent := context.WithValue(context.Background(), postHandlerContextKey{}, "trace-123")
 	ctx, cancel := context.WithCancel(parent)
-	cancel()
+	// Cancel inside the handler so the store's TryLock runs with a live
+	// ctx (honoring its cancellation contract) and the post-handler Set
+	// runs with the detached, value-preserving ctx the middleware builds.
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	handler := Middleware(store, WithAllowSharedKeys())(innerHandler)
+
 	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
 	req.Header.Set("Idempotency-Key", "context-key")
 	rec := httptest.NewRecorder()

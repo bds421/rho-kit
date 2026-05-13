@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,7 +50,7 @@ func NewProducerMetrics(reg prometheus.Registerer) *ProducerMetrics {
 	return m
 }
 
-var defaultProducerMetrics = NewProducerMetrics(nil)
+var defaultProducerMetrics = sync.OnceValue(func() *ProducerMetrics { return NewProducerMetrics(nil) })
 
 func streamMetricLabel(stream string) string {
 	return promutil.OpaqueLabelValue("stream", stream)
@@ -168,7 +169,7 @@ func NewProducer(client goredis.UniversalClient, opts ...ProducerOption) *Produc
 		client:         client,
 		logger:         slog.Default(),
 		maxPayloadSize: defaultStreamMaxPayloadSize,
-		metrics:        defaultProducerMetrics,
+		metrics:        defaultProducerMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {

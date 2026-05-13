@@ -126,7 +126,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 		bucket:    cfg.Bucket,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -154,7 +154,7 @@ func NewWithClient(client Client, presigner Presigner, bucket string, opts ...Op
 		presigner: presigner,
 		bucket:    bucket,
 		instance:  "default",
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {

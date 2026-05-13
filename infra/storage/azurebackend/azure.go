@@ -81,7 +81,7 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // New creates a new Backend from config.
 func New(cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.ContainerName == "" {
-		panic("azurebackend: Config.ContainerName is required")
+		return nil, fmt.Errorf("azurebackend: Config.ContainerName is required")
 	}
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
@@ -107,7 +107,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 		container: cfg.ContainerName,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -124,7 +124,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 // credential rotations are handled without rebuilding the backend.
 func NewWithTokenCredential(cfg Config, cred azcore.TokenCredential, opts ...Option) (*Backend, error) {
 	if cfg.ContainerName == "" {
-		panic("azurebackend: Config.ContainerName is required")
+		return nil, fmt.Errorf("azurebackend: Config.ContainerName is required")
 	}
 	if cred == nil {
 		return nil, fmt.Errorf("azurebackend: token credential is required")
@@ -148,7 +148,7 @@ func NewWithTokenCredential(cfg Config, cred azcore.TokenCredential, opts ...Opt
 		container: cfg.ContainerName,
 		cfg:       cfg,
 		instance:  "default",
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -171,7 +171,7 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Bac
 		client:    client,
 		container: containerName,
 		instance:  "default",
-		metrics:   defaultMetrics,
+		metrics:   defaultMetrics(),
 	}
 	for _, o := range opts {
 		if o == nil {
