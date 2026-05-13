@@ -113,3 +113,26 @@ func TestConnection_NilWhenAdapterNotRegistered(t *testing.T) {
 	assert.Nil(t, Publisher(infra))
 	assert.Nil(t, Consumer(infra))
 }
+
+// TestModule_WithoutTLS_PropagatesToBackend pins H-004: the app-level
+// WithoutTLS opt-out must reach the backend Connect path. Before the
+// fix, Module accepted amqp:// loopback but Init still rejected the
+// same URL because amqpbackend.WithAllowPlaintext was not appended.
+func TestModule_WithoutTLS_PropagatesToBackend(t *testing.T) {
+	m := Module("amqp://localhost:5672", WithoutTLS()).(*messagingModule)
+	assert.True(t, m.allowPlaintext,
+		"WithoutTLS must be threaded into messagingModule so Init/Connect see it")
+}
+
+// TestModule_WithoutTLS_AllowsURLProviderPath pins H-004 for the
+// URL-provider case: Module construction skips the static URL check
+// when only a provider is supplied, but the backend still needs the
+// allow-plaintext flag to accept what the provider returns.
+func TestModule_WithoutTLS_AllowsURLProviderPath(t *testing.T) {
+	provider := func(context.Context) (string, error) {
+		return "amqp://broker.dev.example:5672/", nil
+	}
+	m := Module("", WithURLProvider(provider), WithoutTLS()).(*messagingModule)
+	assert.True(t, m.allowPlaintext)
+	assert.NotNil(t, m.urlProvider)
+}

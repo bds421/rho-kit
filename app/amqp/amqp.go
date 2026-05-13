@@ -108,6 +108,7 @@ func Module(amqpURL string, opts ...Option) app.Module {
 		urlProvider:        mc.urlProvider,
 		criticalBroker:     mc.criticalBroker,
 		messageSizeLimiter: mc.messageSizeLimiter,
+		allowPlaintext:     mc.allowPlaintext,
 	}
 }
 
@@ -118,6 +119,7 @@ type messagingModule struct {
 	url            string
 	urlProvider    func(context.Context) (string, error)
 	criticalBroker bool
+	allowPlaintext bool
 
 	// initialized during Init
 	conn      *amqpbackend.Connection
@@ -153,6 +155,13 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 	}
 	if m.urlProvider != nil {
 		mqOpts = append(mqOpts, amqpbackend.WithURLProvider(m.urlProvider))
+	}
+	// Thread the app-level WithoutTLS opt-out into the backend so the
+	// dial path accepts amqp:// for loopback/dev fixtures. Without this
+	// the construction-time check passes but Init or the lazy reconnect
+	// path rejects the same plaintext URL.
+	if m.allowPlaintext {
+		mqOpts = append(mqOpts, amqpbackend.WithAllowPlaintext())
 	}
 
 	conn, dialErr := amqpbackend.Connect(m.url, mc.Logger, mqOpts...)
