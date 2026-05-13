@@ -436,8 +436,11 @@ func TestOptions_RejectInvalidInput(t *testing.T) {
 	assert.Panics(t, func() { WithDefaultLifetime(0) })
 	assert.Panics(t, func() { WithDefaultLifetime(-time.Second) })
 
-	_, err := NewV4PublicVerifier([]ed25519.PublicKey{pub}, nil)
-	assert.Error(t, err)
+	// Nil opt panics — wiring bug surfaces at construction (matches the
+	// canonical Option-shape contract used elsewhere in the kit).
+	assert.Panics(t, func() {
+		_, _ = NewV4PublicVerifier([]ed25519.PublicKey{pub}, nil)
+	})
 }
 
 func TestVerify_RejectsTokenWithoutExp(t *testing.T) {
@@ -799,5 +802,67 @@ func TestV4Local_InvalidReceiverReturnsError(t *testing.T) {
 				t.Fatalf("Seal error = %v, want ErrInvalidVerifier", err)
 			}
 		})
+	}
+}
+
+func TestV4PublicSigner_Close_ZeroesPrivateKeyAndFailsClosed(t *testing.T) {
+	pub, priv := mustEd25519Pair(t)
+	signer, err := NewV4PublicSigner(priv,
+		WithExpectedIssuer("issuer"),
+		WithExpectedAudience("aud"),
+	)
+	if err != nil {
+		t.Fatalf("NewV4PublicSigner: %v", err)
+	}
+
+	// Sanity: signing works before Close.
+	if _, err := signer.Sign(Claims{
+		Issuer:    "issuer",
+		Audience:  []string{"aud"},
+		ExpiresAt: futureExp(),
+	}); err != nil {
+		t.Fatalf("Sign before Close: %v", err)
+	}
+
+	if err := signer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Verify the underlying material was overwritten.
+	raw := signer.priv.ExportBytes()
+	zero := true
+	for _, b := range raw {
+		if b != 0 {
+			zero = false
+			break
+		}
+	}
+	if !zero {
+		t.Fatalf("private-key bytes not zeroed after Close: % x", raw)
+	}
+
+	// Subsequent Sign returns ErrSignerClosed.
+	if _, err := signer.Sign(Claims{
+		Issuer:    "issuer",
+		Audience:  []string{"aud"},
+		ExpiresAt: futureExp(),
+	}); !errors.Is(err, ErrSignerClosed) {
+		t.Fatalf("Sign after Close = %v, want ErrSignerClosed", err)
+	}
+
+	// Idempotent.
+	if err := signer.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	// The verifier is unaffected — its public key has nothing to do
+	// with the signer's wiped private key.
+	_ = pub
+}
+
+func TestV4PublicSigner_Close_NilReceiverIsSafe(t *testing.T) {
+	var s *V4PublicSigner
+	if err := s.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
 	}
 }

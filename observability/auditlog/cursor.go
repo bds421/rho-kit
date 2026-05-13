@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // ErrInvalidCursor is returned by [Logger.Query] when a supplied cursor is
@@ -30,7 +32,11 @@ var ErrInvalidCursor = errors.New("auditlog: invalid or tampered cursor")
 // Comparing the HMAC in constant time prevents timing oracles on the
 // verify path.
 type signedCursor struct {
-	key []byte
+	// key wraps the HMAC signing material in [secret.String] so the
+	// raw bytes can be zeroed at [Logger.Close]. Reveals are bounded
+	// by [secret.String.Use] closures inside encode/decode.
+	key    *secret.String
+	keyLen int
 }
 
 // encodeCursor signs the raw cursor payload. Returns "" for empty
@@ -38,13 +44,17 @@ type signedCursor struct {
 // no key — but callers should never invoke this path; [Logger]
 // constructs the signer with a validated key at startup.
 func (s signedCursor) encodeCursor(payload string) string {
-	if payload == "" || len(s.key) == 0 {
+	if payload == "" || s.keyLen == 0 || s.key == nil || s.key.IsEmpty() {
 		return ""
 	}
-	mac := hmac.New(sha256.New, s.key)
-	mac.Write([]byte(payload))
+	var sum []byte
+	s.key.Use(func(k []byte) {
+		mac := hmac.New(sha256.New, k)
+		mac.Write([]byte(payload))
+		sum = mac.Sum(nil)
+	})
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
-		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		base64.RawURLEncoding.EncodeToString(sum)
 }
 
 // decodeCursor verifies and decodes a signed cursor produced by
@@ -57,7 +67,7 @@ func (s signedCursor) decodeCursor(cursor string) (string, error) {
 	if cursor == "" {
 		return "", nil
 	}
-	if len(s.key) == 0 {
+	if s.keyLen == 0 || s.key == nil || s.key.IsEmpty() {
 		return "", fmt.Errorf("%w: cursor signer is not configured", ErrInvalidCursor)
 	}
 	idx := strings.IndexByte(cursor, '.')
@@ -72,9 +82,13 @@ func (s signedCursor) decodeCursor(cursor string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: cursor signature is not base64url", ErrInvalidCursor)
 	}
-	expected := hmac.New(sha256.New, s.key)
-	expected.Write(payload)
-	if subtle.ConstantTimeCompare(sig, expected.Sum(nil)) != 1 {
+	var match bool
+	s.key.Use(func(k []byte) {
+		expected := hmac.New(sha256.New, k)
+		expected.Write(payload)
+		match = subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
+	})
+	if !match {
 		return "", fmt.Errorf("%w: cursor signature does not verify", ErrInvalidCursor)
 	}
 	return string(payload), nil

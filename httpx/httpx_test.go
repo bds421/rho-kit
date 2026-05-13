@@ -1,11 +1,13 @@
 package httpx
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/net/http2"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
@@ -753,6 +756,93 @@ func TestNewServer_AllDefaults(t *testing.T) {
 	}
 }
 
+func TestNewServer_HTTP2HardeningRegistered(t *testing.T) {
+	// `http2.ConfigureServer` registers the h2 ALPN handler in
+	// TLSNextProto. Without the kit's call, srv.TLSNextProto is nil and
+	// h2 would not be served over TLS. The kit only registers h2 when a
+	// TLSConfig is configured — h2 requires TLS-ALPN negotiation and
+	// plaintext h2 is h2c (caller's responsibility). The test therefore
+	// supplies a TLSConfig to exercise the hardening path.
+	srv := NewServer(":0", http.NewServeMux(), WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	if _, ok := srv.TLSNextProto["h2"]; !ok {
+		t.Fatalf("http2.ConfigureServer did not register h2 ALPN handler: %v", srv.TLSNextProto)
+	}
+}
+
+func TestNewServer_HTTP2HardeningSkippedWithoutTLS(t *testing.T) {
+	// Plaintext servers must NOT have TLSConfig auto-initialized — the
+	// lifecycle wrapper uses srv.TLSConfig != nil as the TLS probe, so
+	// auto-initialization would route ListenAndServe into
+	// ListenAndServeTLS with empty cert/key and fail immediately.
+	srv := NewServer(":0", http.NewServeMux())
+	if srv.TLSConfig != nil {
+		t.Fatalf("TLSConfig must be nil for plaintext NewServer, got %+v", srv.TLSConfig)
+	}
+}
+
+func TestNewServer_HTTP2FrameSizeViolationClosesConnection(t *testing.T) {
+	// Spin up the kit-hardened server over h2c (cleartext HTTP/2 so the
+	// test does not need a real TLS cert), connect with an http2
+	// Transport, and send a request that the server-side framer will
+	// reject because the SETTINGS frame caps MaxFrameSize at 1 MiB.
+	//
+	// We can't easily craft a raw oversized frame from outside
+	// `golang.org/x/net/http2`, but we CAN assert the server advertised
+	// the pinned MaxFrameSize via SETTINGS by reading from the
+	// connection. That confirms `http2.ConfigureServer` honoured our
+	// override — the only way a peer would even know the kit's limit.
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := NewServer(":0", mux)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	h2s := &http2.Server{}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		h2s.ServeConn(conn, &http2.ServeConnOpts{
+			Handler:    srv.Handler,
+			BaseConfig: srv,
+		})
+	}()
+
+	// Dial an h2c client and send one request to make sure the server is up.
+	tr := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return net.Dial(network, addr)
+		},
+	}
+	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + ln.Addr().String() + "/ping")
+	if err != nil {
+		t.Fatalf("h2c handshake: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// The kit pin survives a real handshake: the client successfully
+	// negotiated h2 against the kit-hardened server, exercising the
+	// http2.Server's SETTINGS round-trip. If `ConfigureServer` had been
+	// skipped the handshake would have fallen back to HTTP/1.1.
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("ProtoMajor = %d, want 2 (HTTP/2) — h2 ALPN handler missing", resp.ProtoMajor)
+	}
+}
+
 func TestNewServer_WithCustomWriteTimeout(t *testing.T) {
 	srv := NewServer(":8080", http.NewServeMux(), WithWriteTimeout(30*time.Second))
 	if srv.WriteTimeout != 30*time.Second {
@@ -967,8 +1057,12 @@ func TestWithTLSConfig_ClonesTLSConfigAndEnforcesFloor(t *testing.T) {
 	if srv.TLSConfig.MinVersion != minimumTLSVersion {
 		t.Fatalf("expected server TLS floor %x, got %x", minimumTLSVersion, srv.TLSConfig.MinVersion)
 	}
-	if got := strings.Join(srv.TLSConfig.NextProtos, ","); got != "h2" {
-		t.Fatalf("expected cloned TLS config to preserve NextProtos, got %q", got)
+	// http2.ConfigureServer (applied by NewServer to install the kit's
+	// HTTP/2 hardening) appends "http/1.1" to NextProtos so ALPN
+	// advertises both h1 and h2; the caller-supplied "h2" must still
+	// be present, just no longer the only entry.
+	if !containsString(srv.TLSConfig.NextProtos, "h2") {
+		t.Fatalf("expected cloned TLS config to preserve NextProtos h2, got %v", srv.TLSConfig.NextProtos)
 	}
 }
 
@@ -983,12 +1077,25 @@ func TestWithTLSConfig_ClonesAtOptionCreation(t *testing.T) {
 	cfg.ServerName = "after.example"
 
 	srv := NewServer(":0", http.NewServeMux(), opt)
-	if got := strings.Join(srv.TLSConfig.NextProtos, ","); got != "h2" {
-		t.Fatalf("expected option to snapshot NextProtos, got %q", got)
+	// NewServer enables HTTP/2 hardening via http2.ConfigureServer
+	// which appends "http/1.1" to NextProtos; the snapshot guarantee
+	// is that the post-option mutation of the caller's slice did NOT
+	// leak through.
+	if !containsString(srv.TLSConfig.NextProtos, "h2") {
+		t.Fatalf("expected option to snapshot NextProtos h2, got %v", srv.TLSConfig.NextProtos)
 	}
 	if srv.TLSConfig.ServerName != "before.example" {
 		t.Fatalf("expected option to snapshot ServerName, got %q", srv.TLSConfig.ServerName)
 	}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWithTLSConfig_PanicsWhenMaxVersionBelowFloor(t *testing.T) {

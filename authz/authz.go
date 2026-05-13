@@ -11,6 +11,20 @@
 // interface, the audit-log integration, the request-context wiring;
 // the actual decision goes to the engine.
 //
+// # Audit logging
+//
+// SOC2 CC6.3 requires the access-control decision to be recorded at the
+// point of decision. Wrap any [Decider] with [Logged] (or pass an existing
+// Decider into [Logged]) to emit a structured record on every Allow call:
+//
+//   - deny: slog Info ("authz.deny") with subject, resource, action, reason
+//   - allow: slog Debug ("authz.allow") — operators enable verbose authz
+//     logging to surface the allow path
+//
+// The same record is also delivered to an optional [AuditSink] for
+// tamper-evident retention. Default Builder pipes a logger automatically;
+// raw httpx.Middleware users must wire it themselves.
+//
 // asvs: V4.1.1, V4.1.5
 package authz
 
@@ -24,6 +38,13 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
+// MaxRequestPartLen bounds the byte length of each field in a [Request]
+// (subject, action, resource) before it reaches a [Decider]. Engines vary
+// widely on their own ceilings; 512 bytes is large enough for SPIFFE
+// IDs, deeply-nested resource paths, and namespaced action verbs, while
+// small enough to keep policy-engine input lookups predictable and to
+// make pathological inputs (gigabyte URLs, attacker-supplied logs)
+// fail closed at the kit layer.
 const MaxRequestPartLen = 512
 
 // Decider answers authorization questions. Implementations may be

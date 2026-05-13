@@ -13,7 +13,7 @@ go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/open-feature/go-sdk v1.16.0
+	github.com/open-feature/go-sdk v1.17.2
 	github.com/stretchr/testify v1.11.1
 )
 

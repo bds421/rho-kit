@@ -180,7 +180,7 @@ func NewComputeCache[T any](backend Cache, prefix string, opts ...ComputeOption)
 	}
 	for _, o := range opts {
 		if o == nil {
-			return nil, fmt.Errorf("cache: NewComputeCache option must not be nil")
+			panic("cache: NewComputeCache option must not be nil")
 		}
 		o(&cfg)
 	}

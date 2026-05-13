@@ -1011,6 +1011,192 @@ var c = http.DefaultClient
 	}
 }
 
+// TestScan_FlagsRateLimitOmission pins Lens F A.15: a fluent
+// `app.New(...).Run()` chain with no rate-limit declaration must be
+// surfaced by kit-doctor before the Builder fails closed at runtime.
+func TestScan_FlagsRateLimitOmission(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/app/v2"
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "rate-limit-omission"),
+		"Builder.Run() without a rate-limit declaration must be flagged, got %+v", findings)
+	for _, f := range findings {
+		if f.Rule == "rate-limit-omission" {
+			assert.Equal(t, rules.High, f.Severity,
+				"rate-limit-omission must be HIGH severity")
+		}
+	}
+}
+
+// TestScan_FlagsRateLimitOmission_AliasedImport ensures the rule
+// resolves through an import alias.
+func TestScan_FlagsRateLimitOmission_AliasedImport(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import kitapp "github.com/bds421/rho-kit/app/v2"
+
+func wire() {
+	_ = kitapp.New("svc", "v1", kitapp.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "rate-limit-omission"),
+		"aliased app import must still trigger rule, got %+v", findings)
+}
+
+// TestScan_AcceptsRateLimitWithIPRateLimit verifies WithIPRateLimit
+// suppresses the rule — the canonical declaration shape.
+func TestScan_AcceptsRateLimitWithIPRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import (
+	"time"
+
+	"github.com/bds421/rho-kit/app/v2"
+)
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithIPRateLimit(100, time.Minute).
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"WithIPRateLimit must satisfy the rule, got %+v", findings)
+}
+
+// TestScan_AcceptsRateLimitWithKeyedRateLimit verifies a keyed limiter
+// alone is sufficient declaration.
+func TestScan_AcceptsRateLimitWithKeyedRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import (
+	"time"
+
+	"github.com/bds421/rho-kit/app/v2"
+)
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithKeyedRateLimit("api", 10, time.Minute).
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"WithKeyedRateLimit must satisfy the rule, got %+v", findings)
+}
+
+// TestScan_AcceptsRateLimitWithoutRateLimit verifies the explicit
+// opt-out suppresses the rule. The Builder's own panic mirrors this.
+func TestScan_AcceptsRateLimitWithoutRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/app/v2"
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithoutRateLimit().
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"WithoutRateLimit must satisfy the rule, got %+v", findings)
+}
+
+// TestScan_RateLimitOmissionSkipsTestFiles confirms tests are not
+// flagged — they routinely build Builders without ever reaching Run.
+func TestScan_RateLimitOmissionSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire_test.go", `package svc
+
+import "github.com/bds421/rho-kit/app/v2"
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"_test.go must not be flagged for rate-limit-omission, got %+v", findings)
+}
+
+// TestScan_RateLimitOmissionRespectsInlineSuppression confirms the
+// standard `kit-doctor:allow` marker silences the rule.
+func TestScan_RateLimitOmissionRespectsInlineSuppression(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/app/v2"
+
+func wire() {
+	_ = app.New("svc", "v1", app.BaseConfig{}).
+		WithoutTLS().
+		WithoutJWTAudience().
+		Run() // kit-doctor:allow rate-limit-omission reason="upstream gateway enforces rate limits"
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"inline suppression must skip finding, got %+v", findings)
+}
+
+// TestScan_RateLimitOmissionIgnoresUnrelatedRun ensures the rule does
+// not match `.Run()` calls on receivers that did not originate at
+// `<app>.New(...)`. Other libraries use the same name.
+func TestScan_RateLimitOmissionIgnoresUnrelatedRun(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+type cli struct{}
+
+func (cli) Run() error { return nil }
+
+func wire() {
+	_ = cli{}.Run()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "rate-limit-omission"),
+		"unrelated Run() calls must not be flagged, got %+v", findings)
+}
+
 func TestExitCode_FloorRespected(t *testing.T) {
 	findings := []rules.Finding{
 		{Severity: rules.Warning, Rule: "x"},

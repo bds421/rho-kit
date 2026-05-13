@@ -43,6 +43,9 @@ func TestDefaults_PlainHTTP(t *testing.T) {
 		{"Permissions-Policy", "geolocation=(), microphone=(), camera=()"},
 		{"Cache-Control", "no-store"},
 		{"Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"},
+		{"Cross-Origin-Opener-Policy", "same-origin"},
+		{"Cross-Origin-Embedder-Policy", "require-corp"},
+		{"Cross-Origin-Resource-Policy", "same-origin"},
 	}
 
 	for _, tt := range tests {
@@ -142,6 +145,7 @@ func TestDisableAll(t *testing.T) {
 		WithoutHSTS(),
 		WithCacheControl(""),
 		WithContentSecurityPolicy(""),
+		WithoutCrossOriginPolicies(),
 	)
 
 	for _, h := range []string{
@@ -152,10 +156,99 @@ func TestDisableAll(t *testing.T) {
 		"Strict-Transport-Security",
 		"Cache-Control",
 		"Content-Security-Policy",
+		"Cross-Origin-Opener-Policy",
+		"Cross-Origin-Embedder-Policy",
+		"Cross-Origin-Resource-Policy",
 	} {
 		if got := rec.Header().Get(h); got != "" {
 			t.Errorf("%s = %q, want empty", h, got)
 		}
+	}
+}
+
+func TestCustomCOOP(t *testing.T) {
+	rec := serve(WithCrossOriginOpenerPolicy("same-origin-allow-popups"))
+	if got := rec.Header().Get("Cross-Origin-Opener-Policy"); got != "same-origin-allow-popups" {
+		t.Errorf("COOP = %q, want same-origin-allow-popups", got)
+	}
+}
+
+func TestCustomCOEP(t *testing.T) {
+	rec := serve(WithCrossOriginEmbedderPolicy("credentialless"))
+	if got := rec.Header().Get("Cross-Origin-Embedder-Policy"); got != "credentialless" {
+		t.Errorf("COEP = %q, want credentialless", got)
+	}
+}
+
+func TestCustomCORP(t *testing.T) {
+	rec := serve(WithCrossOriginResourcePolicy("cross-origin"))
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "cross-origin" {
+		t.Errorf("CORP = %q, want cross-origin", got)
+	}
+}
+
+func TestWithoutCOOP(t *testing.T) {
+	rec := serve(WithoutCrossOriginOpener())
+	if got := rec.Header().Get("Cross-Origin-Opener-Policy"); got != "" {
+		t.Errorf("COOP after WithoutCrossOriginOpener = %q, want empty", got)
+	}
+	// COEP/CORP still default.
+	if got := rec.Header().Get("Cross-Origin-Embedder-Policy"); got != "require-corp" {
+		t.Errorf("COEP = %q, want require-corp", got)
+	}
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
+		t.Errorf("CORP = %q, want same-origin", got)
+	}
+}
+
+func TestWithoutCOEP(t *testing.T) {
+	rec := serve(WithoutCrossOriginEmbedder())
+	if got := rec.Header().Get("Cross-Origin-Embedder-Policy"); got != "" {
+		t.Errorf("COEP after WithoutCrossOriginEmbedder = %q, want empty", got)
+	}
+	if got := rec.Header().Get("Cross-Origin-Opener-Policy"); got != "same-origin" {
+		t.Errorf("COOP = %q, want same-origin", got)
+	}
+}
+
+func TestWithoutCORP(t *testing.T) {
+	rec := serve(WithoutCrossOriginResource())
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "" {
+		t.Errorf("CORP after WithoutCrossOriginResource = %q, want empty", got)
+	}
+}
+
+func TestWithoutCrossOriginPolicies_DisablesAllThree(t *testing.T) {
+	rec := serve(WithoutCrossOriginPolicies())
+	for _, h := range []string{
+		"Cross-Origin-Opener-Policy",
+		"Cross-Origin-Embedder-Policy",
+		"Cross-Origin-Resource-Policy",
+	} {
+		if got := rec.Header().Get(h); got != "" {
+			t.Errorf("%s = %q, want empty", h, got)
+		}
+	}
+}
+
+func TestCrossOriginPolicyOptions_PanicOnInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(string) Option
+	}{
+		{"coop", WithCrossOriginOpenerPolicy},
+		{"coep", WithCrossOriginEmbedderPolicy},
+		{"corp", WithCrossOriginResourcePolicy},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic on invalid header value")
+				}
+			}()
+			tt.fn("ok\r\nX-Evil: 1")
+		})
 	}
 }
 

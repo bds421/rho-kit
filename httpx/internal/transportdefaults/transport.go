@@ -2,6 +2,7 @@ package transportdefaults
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"time"
@@ -40,10 +41,17 @@ func New(tlsConfig *tls.Config, idleConnTimeout time.Duration, label string) *ht
 }
 
 // CloneTLSConfigWithFloor returns an owned TLS config with the kit TLS floor
-// enforced. Caller-set higher floors are honored.
+// enforced. Caller-set higher floors are honored. A caller TLS config with
+// `InsecureSkipVerify=true` panics — the kit refuses to silently inherit a
+// "trust any certificate" toggle into a production transport. Diagnostic
+// tooling that genuinely needs the bypass should call tlsclone directly
+// with the [tlsclone.AllowInsecureSkipVerify] opt-in.
 func CloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			panic("transportdefaults: TLS InsecureSkipVerify=true is not permitted — see tlsclone.AllowInsecureSkipVerify for the explicit opt-in")
+		}
 		panic("transportdefaults: TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned

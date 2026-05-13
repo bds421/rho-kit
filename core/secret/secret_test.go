@@ -284,6 +284,66 @@ func TestString_RedactsAcrossAllRenderVerbs(t *testing.T) {
 	assertRedacted(t, "%v (map[string]String)", fmt.Sprintf("%v", mVal))
 }
 
+func TestUse_ProvidesCopyAndZeroesAfter(t *testing.T) {
+	s := NewFromString(plain)
+
+	var captured []byte
+	s.Use(func(b []byte) {
+		assert.Equal(t, plain, string(b))
+		// The slice is freshly-allocated copy; storage cannot alias the inner buf.
+		captured = b
+	})
+	// After Use returns, the slice it handed in is zeroed; capturing it
+	// outside the closure is a misuse but the post-zero state is observable.
+	for _, v := range captured {
+		assert.Equal(t, byte(0), v, "Use must zero the temporary slice on return")
+	}
+	// The wrapped secret itself is untouched.
+	assert.Equal(t, plain, s.RevealString())
+}
+
+func TestUse_ZeroesEvenOnPanic(t *testing.T) {
+	s := NewFromString(plain)
+
+	var captured []byte
+	defer func() {
+		_ = recover()
+		for _, v := range captured {
+			assert.Equal(t, byte(0), v, "Use must zero the temporary slice even when fn panics")
+		}
+	}()
+	s.Use(func(b []byte) {
+		captured = b
+		panic("boom")
+	})
+}
+
+func TestUse_NilReceiverPassesNilSlice(t *testing.T) {
+	var s *String
+	called := false
+	s.Use(func(b []byte) {
+		called = true
+		assert.Nil(t, b)
+	})
+	assert.True(t, called)
+}
+
+func TestUse_EmptyStringPassesNilSlice(t *testing.T) {
+	s := NewFromString("")
+	called := false
+	s.Use(func(b []byte) {
+		called = true
+		assert.Empty(t, b)
+	})
+	assert.True(t, called)
+}
+
+func TestUse_NilCallbackIsNoOp(t *testing.T) {
+	s := NewFromString(plain)
+	s.Use(nil) // must not panic
+	assert.Equal(t, plain, s.RevealString())
+}
+
 func TestConcurrentReadsAreSafe(t *testing.T) {
 	s := NewFromString(plain)
 	done := make(chan struct{})

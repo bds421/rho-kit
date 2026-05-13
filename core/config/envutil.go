@@ -36,10 +36,14 @@ func Get(key, fallback string) string {
 // degrade gracefully.
 func GetSecret(key, fallback string) (string, error) {
 	if filePath := os.Getenv(key + "_FILE"); filePath != "" {
-		v, err := readSecretFile(filePath)
+		b, err := readSecretFile(filePath)
 		if err != nil {
 			return "", fmt.Errorf("config: secret file for %s_FILE is unreadable: %w", key, err)
 		}
+		// Copy into a string and zero the originating buffer so the
+		// raw bytes don't linger on the heap longer than necessary.
+		v := string(b)
+		zeroBytes(b)
 		return v, nil
 	}
 	return Get(key, fallback), nil

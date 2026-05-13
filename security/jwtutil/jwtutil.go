@@ -845,6 +845,9 @@ func blockJWKSRedirect(_ *http.Request, _ []*http.Request) error {
 func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			panic("jwtutil: JWKS HTTP client TLS InsecureSkipVerify=true is not permitted")
+		}
 		panic("jwtutil: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned

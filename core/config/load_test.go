@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -499,4 +500,68 @@ func TestLoad_NestedEnvTags_Ok(t *testing.T) {
 	cfg, err := Load[outer]()
 	require.NoError(t, err)
 	assert.Equal(t, "localhost", cfg.DB.Host)
+}
+
+func TestReadSecretFile_ErrorClassification(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("missing", func(t *testing.T) {
+		_, err := readSecretFile(filepath.Join(tmpDir, "no-such-file"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("permission denied", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("permission semantics differ under root")
+		}
+		unreadable := filepath.Join(tmpDir, "unreadable")
+		require.NoError(t, os.WriteFile(unreadable, []byte("x"), 0o000))
+		t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+		_, err := readSecretFile(unreadable)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fs.ErrPermission)
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		_, err := readSecretFile(tmpDir)
+		require.Error(t, err)
+		// EISDIR maps to fs.ErrInvalid via classifyReadError; the
+		// path itself is never surfaced.
+		assert.ErrorIs(t, err, fs.ErrInvalid)
+		assert.NotContains(t, err.Error(), tmpDir)
+	})
+
+	t.Run("size exceeded", func(t *testing.T) {
+		oversized := filepath.Join(tmpDir, "oversized")
+		// Write maxSecretFileSize + 1 bytes.
+		require.NoError(t, os.WriteFile(oversized, make([]byte, int(maxSecretFileSize)+1), 0o600))
+		_, err := readSecretFile(oversized)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fs.ErrInvalid)
+	})
+}
+
+func TestReadSecretFile_TrimsTrailingLineEndings(t *testing.T) {
+	tmpDir := t.TempDir()
+	cases := []struct {
+		name    string
+		written string
+		want    string
+	}{
+		{"plain", "secret", "secret"},
+		{"trailing LF", "secret\n", "secret"},
+		{"trailing CRLF", "secret\r\n", "secret"},
+		{"multiple trailing CRLF", "secret\r\n\r\n", "secret"},
+		{"interior spaces preserved", "  pass word  \n", "  pass word  "},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(tmpDir, "f-"+tt.name)
+			require.NoError(t, os.WriteFile(path, []byte(tt.written), 0o600))
+			got, err := readSecretFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(got))
+		})
+	}
 }

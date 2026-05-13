@@ -15,8 +15,12 @@ import (
 )
 
 func TestNewMemoryCache_RejectsNilOption(t *testing.T) {
-	_, err := NewMemoryCache(nil)
-	assert.Error(t, err)
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_, _ = NewMemoryCache(nil)
 }
 
 func TestCacheHelpers_NilCacheReturnsInvalidCache(t *testing.T) {

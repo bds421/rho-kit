@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // Event represents a single audit log entry.
@@ -80,6 +81,12 @@ const (
 
 // ErrInvalidEvent marks an audit event that cannot safely be persisted.
 var ErrInvalidEvent = errors.New("auditlog: invalid event")
+
+// ErrLoggerClosed is returned by Logger operations after [Logger.Close]
+// has zeroed the chain / cursor keys. Subsequent LogE / Query / VerifyChain
+// calls fail fast with this error rather than appending unauthenticated
+// records.
+var ErrLoggerClosed = errors.New("auditlog: logger is closed")
 
 func cloneEvent(event Event) Event {
 	if event.Metadata != nil {
@@ -199,9 +206,16 @@ type Logger struct {
 	dropTotal atomic.Uint64
 	onDrop    func(ctx context.Context, event Event, err error)
 
-	chainKey []byte
-	cursors  signedCursor
-	appendMu sync.Mutex
+	// chainKey wraps the HMAC key for the tamper-evident chain in
+	// [secret.String] so the bytes can be zeroed at shutdown via
+	// [Logger.Close] and never linger on the heap as a long-lived
+	// []byte. Reveal-into-local happens inside the closure passed
+	// to [computeHMACWithKey].
+	chainKey    *secret.String
+	chainKeyLen int
+	cursors     signedCursor
+	closed      atomic.Bool
+	appendMu    sync.Mutex
 }
 
 var newAuditID = uuid.NewV7
@@ -257,7 +271,8 @@ func WithLogger(l *slog.Logger) Option {
 // never let each pod mint its own random key.
 func WithChainKey(key []byte) Option {
 	return func(a *Logger) {
-		a.chainKey = append([]byte(nil), key...)
+		a.chainKey = secret.New(key)
+		a.chainKeyLen = len(key)
 	}
 }
 
@@ -270,7 +285,7 @@ func WithChainKey(key []byte) Option {
 // key so the two can be rotated separately.
 func WithCursorKey(key []byte) Option {
 	return func(a *Logger) {
-		a.cursors = signedCursor{key: append([]byte(nil), key...)}
+		a.cursors = signedCursor{key: secret.New(key), keyLen: len(key)}
 	}
 }
 
@@ -294,13 +309,42 @@ func New(store Store, opts ...Option) *Logger {
 		}
 		o(l)
 	}
-	if len(l.chainKey) < MinChainKeyLen {
+	if l.chainKeyLen < MinChainKeyLen {
 		panic(fmt.Sprintf("auditlog: chain key must be at least %d bytes — pass WithChainKey", MinChainKeyLen))
 	}
-	if len(l.cursors.key) < MinCursorKeyLen {
+	if l.cursors.keyLen < MinCursorKeyLen {
 		panic(fmt.Sprintf("auditlog: cursor key must be at least %d bytes — pass WithCursorKey", MinCursorKeyLen))
 	}
 	return l
+}
+
+// Close zeroes the chain and cursor HMAC keys held by the Logger.
+// Subsequent calls to [Logger.LogE], [Logger.Query], or
+// [Logger.VerifyChain] return [ErrLoggerClosed]. Idempotent — calling
+// Close after the Logger is already closed is a no-op.
+//
+// Close does not touch the underlying [Store]; close that separately
+// if it owns connections / file handles.
+func (l *Logger) Close() error {
+	if l == nil {
+		return nil
+	}
+	if !l.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	// Lock appendMu so a concurrent LogE that has already passed the
+	// closed check completes (or observes the closed flag) before we
+	// wipe the key material — preventing a window where Use() runs
+	// over a zeroed key.
+	l.appendMu.Lock()
+	defer l.appendMu.Unlock()
+	if l.chainKey != nil {
+		l.chainKey.Zero()
+	}
+	if l.cursors.key != nil {
+		l.cursors.key.Zero()
+	}
+	return nil
 }
 
 // Log appends an audit event. Auto-populates ID, Timestamp, and TraceID if empty.
@@ -327,6 +371,9 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // PrevHMAC / HMAC fields on the input event are ignored — they are
 // always recomputed from the store's current tail.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
+	if l.closed.Load() {
+		return ErrLoggerClosed
+	}
 	if event.ID == "" {
 		id, err := newAuditID()
 		if err != nil {
@@ -367,7 +414,11 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if len(prev) > 0 {
 		event.PrevHMAC = append([]byte(nil), prev...)
 	}
-	event.HMAC = computeHMAC(l.chainKey, event.PrevHMAC, event)
+	var mac []byte
+	l.chainKey.Use(func(k []byte) {
+		mac = computeHMAC(k, event.PrevHMAC, event)
+	})
+	event.HMAC = mac
 
 	if err := ValidateEvent(event); err != nil {
 		l.logger.Error("auditlog: invalid event", redact.Error(err))
@@ -442,6 +493,9 @@ func (l *Logger) LogAction(ctx context.Context, actor, action, resource, status 
 // key, so an attacker who captures a cursor cannot mint adjacent ones to
 // skip records or enumerate IDs.
 func (l *Logger) Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
+	if l.closed.Load() {
+		return nil, "", ErrLoggerClosed
+	}
 	rawCursor, err := l.cursors.decodeCursor(cursor)
 	if err != nil {
 		return nil, "", err
@@ -469,11 +523,18 @@ func (l *Logger) Query(ctx context.Context, filter Filter, cursor string, limit 
 // every record's HMAC matches its content AND every record's PrevHMAC
 // links to the previous record's HMAC.
 func (l *Logger) VerifyChain(ctx context.Context) error {
+	if l.closed.Load() {
+		return ErrLoggerClosed
+	}
 	all, err := l.collectAllEventsAscending(ctx)
 	if err != nil {
 		return err
 	}
-	return VerifyChain(all, l.chainKey)
+	var verifyErr error
+	l.chainKey.Use(func(k []byte) {
+		verifyErr = VerifyChain(all, k)
+	})
+	return verifyErr
 }
 
 // verifyChainPageSize bounds the per-page batch for VerifyChain. Tuned to

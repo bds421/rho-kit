@@ -230,3 +230,43 @@ func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestStaticKeyStore_Close_ZeroesKeysAndFailsClosed(t *testing.T) {
+	store := MustNewStaticKeyStore(map[string][]byte{
+		"k1": testKey(32, 1),
+		"k2": testKey(32, 2),
+	}, "k1")
+
+	// Sanity: keys present before Close.
+	if k, ok := store.Key("k1"); !ok || len(k) == 0 {
+		t.Fatal("expected k1 present before Close")
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// After Close, lookups must report missing.
+	if k, ok := store.Key("k1"); ok || k != nil {
+		t.Fatalf("Key after Close = (%v, %v), want nil false", k, ok)
+	}
+	if k, ok := store.KeyUnsafe("k1"); ok || k != nil {
+		t.Fatalf("KeyUnsafe after Close = (%v, %v), want nil false", k, ok)
+	}
+	if id, k := store.CurrentKeyID(); id != "" || k != nil {
+		t.Fatalf("CurrentKeyID after Close = (%q, %v), want empty nil", id, k)
+	}
+	if id, k := store.CurrentKeyUnsafe(); id != "" || k != nil {
+		t.Fatalf("CurrentKeyUnsafe after Close = (%q, %v), want empty nil", id, k)
+	}
+	// Idempotent.
+	if err := store.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestStaticKeyStore_Close_NilReceiverIsSafe(t *testing.T) {
+	var store *StaticKeyStore
+	if err := store.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+}

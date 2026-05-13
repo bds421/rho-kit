@@ -41,7 +41,7 @@ func TestMetricsHook_ProcessHook(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	reg := prometheus.NewRegistry()
-	m := NewRedisMetrics(reg)
+	m := NewMetrics(reg)
 	client.AddHook(&metricsHook{metrics: m})
 
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestMetricsHook_Pipeline(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	reg := prometheus.NewRegistry()
-	m := NewRedisMetrics(reg)
+	m := NewMetrics(reg)
 	client.AddHook(&metricsHook{metrics: m})
 
 	ctx := context.Background()

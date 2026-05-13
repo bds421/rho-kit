@@ -19,6 +19,7 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/internal/transportdefaults"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/net/http/httpguts"
+	"golang.org/x/net/http2"
 )
 
 // defaultMaxIdleConnsPerHost overrides the stdlib default of 2, which causes
@@ -28,6 +29,22 @@ import (
 const defaultMaxIdleConnsPerHost = transportdefaults.DefaultMaxIdleConnsPerHost
 
 const minimumTLSVersion = transportdefaults.MinimumTLSVersion
+
+// HTTP/2 hardening pins applied by [NewServer]. Without these, the
+// `net/http2` defaults are large enough to be DoS-relevant:
+//
+//   - MaxReadFrameSize defaults to 1 MiB internally but is renegotiable
+//     up to 16 MiB by the peer's SETTINGS frame; pinning at 1 MiB
+//     bounds the per-stream read buffer footprint.
+//   - MaxConcurrentStreams defaults to 250 in `golang.org/x/net/http2`,
+//     which is still ~250× the per-handler goroutine cost a single
+//     TCP peer can pin until the request times out. 1000 keeps parity
+//     with the gRPC ceiling so the kit-wide stream-flood story
+//     (THREAT_MODEL.md §4.2 G-03) reads consistently across protocols.
+const (
+	defaultHTTP2MaxReadFrameSize     uint32 = 1 << 20
+	defaultHTTP2MaxConcurrentStreams uint32 = 1000
+)
 
 // ClientOption configures the kit-wide HTTP client transport.
 type ClientOption func(*clientConfig)
@@ -239,6 +256,16 @@ func WithErrorLog(l *log.Logger) ServerOption {
 // error messages (TLS handshake failures, peer-reset reads) flow through the
 // structured logger rather than the global "log" package — without this,
 // raw client RemoteAddrs leak to stdout and pollute SIEMs.
+//
+// The returned server has HTTP/2 hardening installed via
+// [http2.ConfigureServer] with [defaultHTTP2MaxReadFrameSize] and
+// [defaultHTTP2MaxConcurrentStreams] applied. Pinning these explicitly
+// matters because the `net/http2` defaults are renegotiable by the peer
+// (frame size) or large (concurrent streams) and would otherwise let a
+// single TCP peer pin server memory and goroutines well above the
+// THREAT_MODEL.md §4.2 G-03 streaming-flood budget. Operators who need
+// to raise these limits should compose a custom server rather than
+// silently undoing the pin.
 func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Server {
 	if addr == "" {
 		panic("httpx: NewServer requires a non-empty addr")
@@ -261,6 +288,27 @@ func NewServer(addr string, handler http.Handler, opts ...ServerOption) *http.Se
 			panic("httpx: NewServer option must not be nil")
 		}
 		opt(srv)
+	}
+	// Pin HTTP/2 limits after options run so a caller-supplied
+	// TLSConfig (which forces TLS-ALPN h2 negotiation) still picks up
+	// the kit defaults. http2.ConfigureServer returns an error only on
+	// programmer mistakes (e.g. nil server); kit construction panics
+	// rather than papering over the misconfiguration.
+	//
+	// Gate on srv.TLSConfig != nil: http2.ConfigureServer initializes
+	// TLSConfig when it is nil, which would trick the lifecycle wrapper
+	// (and any caller using `srv.TLSConfig != nil` as a TLS-enabled
+	// probe) into calling ListenAndServeTLS on plaintext servers — that
+	// returns immediately with an empty-cert error and never serves any
+	// traffic. HTTP/2 over plaintext requires h2c, which is the
+	// caller's responsibility.
+	if srv.TLSConfig != nil {
+		if err := http2.ConfigureServer(srv, &http2.Server{
+			MaxReadFrameSize:     defaultHTTP2MaxReadFrameSize,
+			MaxConcurrentStreams: defaultHTTP2MaxConcurrentStreams,
+		}); err != nil {
+			panic("httpx: http2.ConfigureServer failed: " + err.Error())
+		}
 	}
 	return srv
 }

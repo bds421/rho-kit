@@ -38,7 +38,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		WithModule(NewBaseModule("svc-extra")).
 		WithServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
-		Background("bg", func(_ context.Context) error { return nil }).
+		WithBackground("bg", func(_ context.Context) error { return nil }).
 		OnShutdown(func(_ context.Context) {}).
 		Router(func(infra Infrastructure) http.Handler { return http.NotFoundHandler() })
 
@@ -224,13 +224,13 @@ func TestBuilder_AddHealthCheckPanicsOnInvalidCheck(t *testing.T) {
 	})
 }
 
-func TestBuilder_BackgroundPanicsOnInvalidInput(t *testing.T) {
+func TestBuilder_WithBackgroundPanicsOnInvalidInput(t *testing.T) {
 	assert.Panics(t, func() {
 		New("test-svc", "v0.1.0", BaseConfig{}).
-			Background("", func(_ context.Context) error { return nil })
+			WithBackground("", func(_ context.Context) error { return nil })
 	})
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).Background("bg", nil)
+		New("test-svc", "v0.1.0", BaseConfig{}).WithBackground("bg", nil)
 	})
 }
 
@@ -360,6 +360,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		b := New("lifecycle-test", "v0.0.1", cfg).
 			WithoutTLS().
 			WithoutJWTAudience().
+			WithoutRateLimit().
 			AddHealthCheck(health.DependencyCheck{
 				Name:     "test-dep",
 				Check:    func(_ context.Context) string { return health.StatusHealthy },
@@ -444,7 +445,8 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		b := New("lifecycle-bg-test", "v0.0.2", cfg).
 			WithoutTLS().
 			WithoutJWTAudience().
-			Background("early-bg", func(ctx context.Context) error {
+			WithoutRateLimit().
+			WithBackground("early-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()
 				bgStopped.Store(true)
@@ -509,8 +511,9 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		b := New("lifecycle-context-test", "v0.0.3", cfg).
 			WithoutTLS().
 			WithoutJWTAudience().
+			WithoutRateLimit().
 			WithModule(module).
-			Background("ctx-bg", func(ctx context.Context) error {
+			WithBackground("ctx-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()
 				bgStopped.Store(true)

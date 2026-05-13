@@ -98,7 +98,7 @@ Notes:
   longer pulls pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
 - Non-loopback Redis MUST set `TLSConfig` (or a `rediss://` URL) and a
   non-empty `Password` — `redis.Module` rejects plaintext URIs (FR-077)
-  unless you opt out with `redis.ModuleWithOptions(..., redis.WithoutTLS())`
+  unless you opt out with `redis.Module(..., redis.WithoutTLS())`
   on a reviewed boundary.
 - Non-loopback AMQP MUST use `amqps://` — `amqp.Module` rejects
   plaintext `amqp://` URLs (mirrors FR-077) unless you opt out with

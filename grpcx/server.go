@@ -15,21 +15,22 @@ import (
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	unaryInterceptors  []grpc.UnaryServerInterceptor
-	streamInterceptors []grpc.StreamServerInterceptor
-	grpcOpts           []grpc.ServerOption
-	maxRecvMsgSize     int
-	maxSendMsgSize     int
-	keepaliveParams    *keepalive.ServerParameters
-	keepalivePolicy    *keepalive.EnforcementPolicy
-	disableRecovery    bool
-	recoveryLogger     *slog.Logger
-	defaultDeadline    time.Duration
-	disableDefaultDL   bool
-	disableLogging     bool
-	loggingLogger      *slog.Logger
-	disableMetrics     bool
-	metricsRegisterer  prometheus.Registerer
+	unaryInterceptors    []grpc.UnaryServerInterceptor
+	streamInterceptors   []grpc.StreamServerInterceptor
+	grpcOpts             []grpc.ServerOption
+	maxRecvMsgSize       int
+	maxSendMsgSize       int
+	maxConcurrentStreams uint32
+	keepaliveParams      *keepalive.ServerParameters
+	keepalivePolicy      *keepalive.EnforcementPolicy
+	disableRecovery      bool
+	recoveryLogger       *slog.Logger
+	defaultDeadline      time.Duration
+	disableDefaultDL     bool
+	disableLogging       bool
+	loggingLogger        *slog.Logger
+	disableMetrics       bool
+	metricsRegisterer    prometheus.Registerer
 }
 
 // DefaultRPCDeadline is the per-RPC deadline applied automatically by
@@ -45,6 +46,22 @@ const (
 
 	// defaultMaxSendMsgSize is 4 MB, matching the gRPC default.
 	defaultMaxSendMsgSize = 4 << 20
+
+	// defaultMaxConcurrentStreams caps the number of in-flight HTTP/2 streams
+	// per TCP connection. Go's gRPC default is math.MaxUint32, so a single
+	// peer can open ~4B streams, each pinning a goroutine + stream state
+	// until the per-RPC deadline fires — the GAP-03 streaming-flood vector
+	// in docs/audit/THREAT_MODEL.md. 1000 is a conservative production
+	// ceiling; override with [WithMaxConcurrentStreams] for fan-in proxies.
+	defaultMaxConcurrentStreams uint32 = 1000
+
+	// defaultMaxHeaderListSize caps the total uncompressed size of HTTP/2
+	// header blocks per stream. Go's gRPC server defaults to 16 MiB, large
+	// enough that a single client can pin tens of MiB of decompression
+	// state per stream. 1 MiB matches the httpx HTTP/1.1 header ceiling
+	// (MaxHeaderBytes), keeping the cross-protocol header-flood budget
+	// consistent.
+	defaultMaxHeaderListSize uint32 = 1 << 20
 )
 
 // defaultKeepalive returns production-safe keepalive parameters.
@@ -110,6 +127,24 @@ func WithMaxSendMsgSize(size int) ServerOption {
 		panic("grpcx: WithMaxSendMsgSize requires a positive size")
 	}
 	return func(c *serverConfig) { c.maxSendMsgSize = size }
+}
+
+// WithMaxConcurrentStreams overrides the per-connection HTTP/2 stream cap
+// (default [defaultMaxConcurrentStreams]). The kit pins this away from
+// Go gRPC's math.MaxUint32 default to close the GAP-03 streaming-flood
+// vector documented in docs/audit/THREAT_MODEL.md §4.2 — a single peer
+// can otherwise open billions of streams, each pinning a goroutine and
+// stream-state memory until the per-RPC deadline fires.
+//
+// Raise the cap only for trusted fan-in proxies where the upstream
+// connection multiplexes many client connections through a single TCP
+// session. Panics if n is 0 (the gRPC framework treats 0 as "unlimited",
+// which silently undoes the hardening).
+func WithMaxConcurrentStreams(n uint32) ServerOption {
+	if n == 0 {
+		panic("grpcx: WithMaxConcurrentStreams requires a positive limit (0 means unlimited)")
+	}
+	return func(c *serverConfig) { c.maxConcurrentStreams = n }
 }
 
 // WithKeepaliveParams overrides the default keepalive parameters.
@@ -209,8 +244,9 @@ func WithoutMetrics() ServerOption {
 }
 
 // NewServer returns a *grpc.Server with production defaults: keepalive,
-// message size limits, recovery + logging + metrics interceptors, a
-// per-RPC default deadline, and the user-supplied interceptors.
+// message size limits, a per-connection [defaultMaxConcurrentStreams]
+// cap, recovery + logging + metrics interceptors, a per-RPC default
+// deadline, and the user-supplied interceptors.
 //
 // Final chain order (outermost first):
 //
@@ -231,9 +267,10 @@ func WithoutMetrics() ServerOption {
 // Options are applied in order; later options override earlier ones.
 func NewServer(opts ...ServerOption) *grpc.Server {
 	cfg := serverConfig{
-		maxRecvMsgSize:  defaultMaxRecvMsgSize,
-		maxSendMsgSize:  defaultMaxSendMsgSize,
-		defaultDeadline: DefaultRPCDeadline,
+		maxRecvMsgSize:       defaultMaxRecvMsgSize,
+		maxSendMsgSize:       defaultMaxSendMsgSize,
+		maxConcurrentStreams: defaultMaxConcurrentStreams,
+		defaultDeadline:      DefaultRPCDeadline,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -255,6 +292,8 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 	grpcOpts := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(cfg.maxRecvMsgSize),
 		grpc.MaxSendMsgSize(cfg.maxSendMsgSize),
+		grpc.MaxConcurrentStreams(cfg.maxConcurrentStreams),
+		grpc.MaxHeaderListSize(defaultMaxHeaderListSize),
 		grpc.KeepaliveParams(kp),
 		grpc.KeepaliveEnforcementPolicy(ep),
 	}

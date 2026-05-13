@@ -1,4 +1,4 @@
-// Package lock provides distributed mutual exclusion using Redis.
+// Package redislock provides distributed mutual exclusion using Redis.
 //
 // # Limitations
 //

@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var _ slog.LogValuer = RabbitMQConfig{}
+var _ slog.LogValuer = Config{}
 
-func TestRabbitMQConfig_LogValue_Redacts(t *testing.T) {
-	cfg := RabbitMQConfig{URL: "amqp://token-user:rabbit-secret@tenant-rabbit.internal:5672/tenant-vhost?token=query-secret#frag"}
+func TestConfig_LogValue_Redacts(t *testing.T) {
+	cfg := Config{URL: "amqp://token-user:rabbit-secret@tenant-rabbit.internal:5672/tenant-vhost?token=query-secret#frag"}
 	val := cfg.LogValue()
 	s := val.String()
 	assert.NotContains(t, s, "token-user")
@@ -28,24 +28,24 @@ func TestRabbitMQConfig_LogValue_Redacts(t *testing.T) {
 	assert.Contains(t, s, "vhost_configured=true")
 }
 
-func TestRabbitMQConfig_LogValue_InvalidURL(t *testing.T) {
-	cfg := RabbitMQConfig{URL: "://invalid"}
+func TestConfig_LogValue_InvalidURL(t *testing.T) {
+	cfg := Config{URL: "://invalid"}
 	val := cfg.LogValue()
 	assert.Contains(t, val.String(), "url_valid=false")
 }
 
-func TestRabbitMQConfig_LogValue_NotConfigured(t *testing.T) {
-	cfg := RabbitMQConfig{}
+func TestConfig_LogValue_NotConfigured(t *testing.T) {
+	cfg := Config{}
 	assert.Contains(t, cfg.LogValue().String(), "url_configured=false")
 }
 
-func TestRabbitMQConfig_AMQPURL_FromURL(t *testing.T) {
-	cfg := RabbitMQConfig{URL: "amqp://user:pass@host:5672/vhost"}
+func TestConfig_AMQPURL_FromURL(t *testing.T) {
+	cfg := Config{URL: "amqp://user:pass@host:5672/vhost"}
 	assert.Equal(t, "amqp://user:pass@host:5672/vhost", cfg.AMQPURL())
 }
 
-func TestRabbitMQConfig_AMQPURL_URLTakesPrecedence(t *testing.T) {
-	cfg := RabbitMQConfig{
+func TestConfig_AMQPURL_URLTakesPrecedence(t *testing.T) {
+	cfg := Config{
 		URL:  "amqp://url-user:pass@url-host:5672/",
 		Host: "field-host",
 		User: "field-user",
@@ -53,8 +53,8 @@ func TestRabbitMQConfig_AMQPURL_URLTakesPrecedence(t *testing.T) {
 	assert.Equal(t, "amqp://url-user:pass@url-host:5672/", cfg.AMQPURL())
 }
 
-func TestRabbitMQConfig_AMQPURL_FromFields(t *testing.T) {
-	cfg := RabbitMQConfig{
+func TestConfig_AMQPURL_FromFields(t *testing.T) {
+	cfg := Config{
 		Host:     "rabbit",
 		Port:     5672,
 		User:     "admin",
@@ -73,49 +73,49 @@ func TestRabbitMQConfig_AMQPURL_FromFields(t *testing.T) {
 	assert.Equal(t, "/myapp", parsed.Path)
 }
 
-func TestRabbitMQConfig_AMQPURL_DefaultPort(t *testing.T) {
-	cfg := RabbitMQConfig{Host: "rabbit", User: "u", Password: "p"}
+func TestConfig_AMQPURL_DefaultPort(t *testing.T) {
+	cfg := Config{Host: "rabbit", User: "u", Password: "p"}
 	parsed, err := url.Parse(cfg.AMQPURL())
 	require.NoError(t, err)
 	assert.Equal(t, "5672", parsed.Port())
 }
 
-func TestRabbitMQConfig_AMQPURL_DefaultVHost(t *testing.T) {
-	cfg := RabbitMQConfig{Host: "rabbit", User: "u", Password: "p"}
+func TestConfig_AMQPURL_DefaultVHost(t *testing.T) {
+	cfg := Config{Host: "rabbit", User: "u", Password: "p"}
 	parsed, err := url.Parse(cfg.AMQPURL())
 	require.NoError(t, err)
 	assert.Equal(t, "/", parsed.Path)
 }
 
-func TestRabbitMQConfig_AMQPURL_SpecialCharsInPassword(t *testing.T) {
-	cfg := RabbitMQConfig{Host: "h", Port: 5672, User: "u", Password: "p@ss/word"}
+func TestConfig_AMQPURL_SpecialCharsInPassword(t *testing.T) {
+	cfg := Config{Host: "h", Port: 5672, User: "u", Password: "p@ss/word"}
 	parsed, err := url.Parse(cfg.AMQPURL())
 	require.NoError(t, err)
 	pw, _ := parsed.User.Password()
 	assert.Equal(t, "p@ss/word", pw)
 }
 
-func TestRabbitMQConfig_AMQPURL_EmptyHost(t *testing.T) {
-	cfg := RabbitMQConfig{}
+func TestConfig_AMQPURL_EmptyHost(t *testing.T) {
+	cfg := Config{}
 	assert.Empty(t, cfg.AMQPURL())
 }
 
-func TestLoadRabbitMQFields_URL(t *testing.T) {
+func TestLoadFields_URL(t *testing.T) {
 	t.Setenv("RABBITMQ_URL", "amqps://user:pass@rabbitmq:5671/")
 
-	f, err := LoadRabbitMQFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "amqps://user:pass@rabbitmq:5671/", f.RabbitMQ.AMQPURL())
 }
 
-func TestLoadRabbitMQFields_IndividualFields(t *testing.T) {
+func TestLoadFields_IndividualFields(t *testing.T) {
 	t.Setenv("RABBITMQ_HOST", "my-rabbit")
 	t.Setenv("RABBITMQ_PORT", "5673")
 	t.Setenv("RABBITMQ_USER", "admin")
 	t.Setenv("RABBITMQ_PASSWORD", "strongpass")
 	t.Setenv("RABBITMQ_VHOST", "/myapp")
 
-	f, err := LoadRabbitMQFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "my-rabbit", f.RabbitMQ.Host)
 	assert.Equal(t, 5673, f.RabbitMQ.Port)
@@ -124,42 +124,42 @@ func TestLoadRabbitMQFields_IndividualFields(t *testing.T) {
 	assert.Contains(t, f.RabbitMQ.AMQPURL(), "/myapp")
 }
 
-func TestLoadRabbitMQFields_URLPrecedence(t *testing.T) {
+func TestLoadFields_URLPrecedence(t *testing.T) {
 	t.Setenv("RABBITMQ_URL", "amqp://url-user:pass@url-host:5672/")
 	t.Setenv("RABBITMQ_HOST", "field-host")
 	t.Setenv("RABBITMQ_USER", "field-user")
 
-	f, err := LoadRabbitMQFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "amqp://url-user:pass@url-host:5672/", f.RabbitMQ.AMQPURL())
 }
 
-func TestLoadRabbitMQFields_Defaults(t *testing.T) {
+func TestLoadFields_Defaults(t *testing.T) {
 	t.Setenv("RABBITMQ_HOST", "rabbit")
 
-	f, err := LoadRabbitMQFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, 5672, f.RabbitMQ.Port)
 	assert.Equal(t, "guest", f.RabbitMQ.User)
 	assert.Equal(t, "/", f.RabbitMQ.VHost)
 }
 
-func TestRabbitMQFields_ValidateRabbitMQ(t *testing.T) {
+func TestFields_ValidateRabbitMQ(t *testing.T) {
 	// strong password — at least 12 chars, no obvious weak markers.
 	const strongPW = "S3cur3-P4ssw0rd!9KJZ"
 
 	t.Run("valid URL with strong password", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{URL: "amqps://user:" + strongPW + "@rabbitmq:5671/"}}
+		f := Fields{RabbitMQ: Config{URL: "amqps://user:" + strongPW + "@rabbitmq:5671/"}}
 		assert.NoError(t, f.ValidateRabbitMQ(""))
 	})
 
 	t.Run("valid fields with strong password", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{Host: "rabbit", User: "u", Password: strongPW}}
+		f := Fields{RabbitMQ: Config{Host: "rabbit", User: "u", Password: strongPW}}
 		assert.NoError(t, f.ValidateRabbitMQ(""))
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{}}
+		f := Fields{RabbitMQ: Config{}}
 		assert.Error(t, f.ValidateRabbitMQ(""))
 	})
 
@@ -169,7 +169,7 @@ func TestRabbitMQFields_ValidateRabbitMQ(t *testing.T) {
 	// the 12-char threshold. After the fix, the password component is
 	// extracted and checked.
 	t.Run("default guest password rejected", func(t *testing.T) {
-		f := RabbitMQFields{RabbitMQ: RabbitMQConfig{URL: "amqp://guest:guest@host:5672/"}}
+		f := Fields{RabbitMQ: Config{URL: "amqp://guest:guest@host:5672/"}}
 		err := f.ValidateRabbitMQ("")
 		assert.Error(t, err, "default guest:guest credentials must be rejected")
 	})

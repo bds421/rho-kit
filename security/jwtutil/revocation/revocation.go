@@ -4,12 +4,23 @@
 // concrete [data/cache.Cache] type satisfies it, but security/jwtutil does not
 // import the data module, so consumers that only need JWT verification do not
 // inherit cache implementation dependencies.
+//
+// # Audit logging
+//
+// Mutating operations (Revoke, RevokeID, ForgetID) modify token-lifecycle state
+// with real authorization consequences and so are auditable events. Wire either
+// [WithLogger] (slog) or [WithAuditSink] (an observability/auditlog-shaped
+// sink) and every revocation operation will emit a structured record with
+// fields {action, jti, issuer, actor, outcome, reason}. If neither is wired
+// the operations remain silent — this is the caller-must-cooperate contract
+// documented in docs/audit/THREAT_MODEL.md §4.7.
 package revocation
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -25,11 +36,25 @@ const (
 )
 
 var (
-	ErrInvalidStore   = errors.New("jwt revocation: store is not initialized")
-	ErrMissingToken   = errors.New("jwt revocation: token claims are missing")
+	// ErrInvalidStore is returned when a method is called on a zero-value
+	// Store or a Store whose cache/prefix has been zeroed out.
+	ErrInvalidStore = errors.New("jwt revocation: store is not initialized")
+	// ErrMissingToken is returned by Revoke / IsRevoked when the caller
+	// passes a nil [*jwtutil.Claims].
+	ErrMissingToken = errors.New("jwt revocation: token claims are missing")
+	// ErrMissingTokenID is returned when a token has no JTI claim. It
+	// aliases [jwtutil.ErrMissingTokenID] so callers can match either
+	// sentinel with errors.Is.
 	ErrMissingTokenID = jwtutil.ErrMissingTokenID
-	ErrInvalidExpiry  = errors.New("jwt revocation: token expiration must be in the future")
-	ErrInvalidKey     = errors.New("jwt revocation: key contains invalid data")
+	// ErrInvalidExpiry is returned when Revoke is called with a token
+	// whose expiration is at or before the configured clock. Writing a
+	// zero or negative TTL would race the cache backend into a no-op
+	// (or worse, a permanent entry on some backends).
+	ErrInvalidExpiry = errors.New("jwt revocation: token expiration must be in the future")
+	// ErrInvalidKey is returned when the issuer or token ID contains
+	// unsafe runes or when the assembled cache key exceeds the
+	// per-implementation length budget.
+	ErrInvalidKey = errors.New("jwt revocation: key contains invalid data")
 )
 
 // Cache is the minimal backend contract needed by Store. data/cache.Cache
@@ -41,11 +66,41 @@ type Cache interface {
 	Exists(ctx context.Context, key string) (bool, error)
 }
 
+// AuditEvent is the cross-package field set emitted for one revocation
+// mutation. It mirrors the standard audit-log envelope used elsewhere in
+// rho-kit so a single sink can decode events from any source — see the
+// "Cross-cutting field set" note in docs/audit/THREAT_MODEL.md.
+type AuditEvent struct {
+	Action   string // dot-namespaced verb: "jwt.revoke", "jwt.revoke.forget"
+	Actor    string // principal performing the operation, derived from ctx
+	Resource string // canonical revocation key (length-prefixed issuer/jti)
+	Issuer   string // token issuer; may be empty
+	JTI      string // token id (jti); already validated for log safety
+	Outcome  string // "success" | "error"
+	Reason   string // short error-class for failed operations; empty on success
+}
+
+// AuditSink consumes structured revocation events. The shape matches the
+// minimum surface of observability/auditlog.Logger so production callers wire
+// the concrete Logger here without revocation importing the observability
+// module. Implementations must be safe for concurrent use.
+type AuditSink interface {
+	LogRevocation(ctx context.Context, event AuditEvent)
+}
+
+// ActorFromContext extracts the acting principal from ctx. The function runs
+// on every mutating call; it must be cheap and side-effect-free.
+type ActorFromContext func(ctx context.Context) string
+
 // Store records revoked JWT IDs until the token's natural expiration.
 type Store struct {
-	cache  Cache
-	prefix string
-	clock  func() time.Time
+	cache    Cache
+	prefix   string
+	clock    func() time.Time
+	logger   *slog.Logger
+	audit    AuditSink
+	actorFn  ActorFromContext
+	verbose  bool
 }
 
 // Option configures Store.
@@ -66,6 +121,54 @@ func WithClock(fn func() time.Time) Option {
 		panic("jwt revocation: WithClock requires a non-nil time source")
 	}
 	return func(s *Store) { s.clock = fn }
+}
+
+// WithLogger wires a slog.Logger that receives a structured record on every
+// mutating call (Revoke, RevokeID, ForgetID). Success records are emitted at
+// info level; failures at error. If both [WithLogger] and [WithAuditSink] are
+// wired both receive the same event — slog is intended for operator-visible
+// triage and AuditSink for tamper-evident retention.
+//
+// Panics on nil to fail fast at wiring time.
+func WithLogger(l *slog.Logger) Option {
+	if l == nil {
+		panic("jwt revocation: WithLogger requires a non-nil logger")
+	}
+	return func(s *Store) { s.logger = l }
+}
+
+// WithAuditSink wires an [AuditSink] that receives an [AuditEvent] for every
+// mutating call. The concrete observability/auditlog.Logger satisfies this
+// surface; revocation does not depend on the observability module so consumers
+// pay no extra dep cost when the sink is not wired.
+//
+// Panics on nil to fail fast at wiring time.
+func WithAuditSink(sink AuditSink) Option {
+	if sink == nil {
+		panic("jwt revocation: WithAuditSink requires a non-nil sink")
+	}
+	return func(s *Store) { s.audit = sink }
+}
+
+// WithActorFromContext registers a function that extracts the acting principal
+// from the request context. The returned value is stamped on every audit
+// record as "actor"; an empty string is rendered as "unknown".
+//
+// Panics on nil to fail fast at wiring time.
+func WithActorFromContext(fn ActorFromContext) Option {
+	if fn == nil {
+		panic("jwt revocation: WithActorFromContext requires a non-nil function")
+	}
+	return func(s *Store) { s.actorFn = fn }
+}
+
+// WithVerboseAuditFields opts into emitting the raw jti / issuer in audit
+// records instead of length-redacted placeholders. Use only when the audit
+// sink is itself sensitive-safe (e.g. tamper-evident log with restricted
+// access). Off by default — revocation is conservative because jti values can
+// be guessable identifiers and issuer URLs can leak topology.
+func WithVerboseAuditFields() Option {
+	return func(s *Store) { s.verbose = true }
 }
 
 // New creates a cache-backed revocation store. Panics on nil cache or nil
@@ -101,6 +204,12 @@ func (s *Store) Revoke(ctx context.Context, claims *jwtutil.Claims) error {
 // present; the key encoding length-prefixes issuer and id so delimiters cannot
 // collide.
 func (s *Store) RevokeID(ctx context.Context, issuer, id string, expiresAt time.Time) error {
+	err := s.revokeID(ctx, issuer, id, expiresAt)
+	s.emit(ctx, "jwt.revoke", issuer, id, err)
+	return err
+}
+
+func (s *Store) revokeID(ctx context.Context, issuer, id string, expiresAt time.Time) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -141,6 +250,12 @@ func (s *Store) IsRevokedID(ctx context.Context, issuer, id string) (bool, error
 // ForgetID removes a revocation marker. It is mostly useful for tests and
 // administrative repair after an accidental revocation.
 func (s *Store) ForgetID(ctx context.Context, issuer, id string) error {
+	err := s.forgetID(ctx, issuer, id)
+	s.emit(ctx, "jwt.revoke.forget", issuer, id, err)
+	return err
+}
+
+func (s *Store) forgetID(ctx context.Context, issuer, id string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -149,6 +264,114 @@ func (s *Store) ForgetID(ctx context.Context, issuer, id string) error {
 		return err
 	}
 	return s.cache.Delete(ctx, key)
+}
+
+// emit writes a single audit record for a mutating revocation operation. It is
+// a no-op when neither WithLogger nor WithAuditSink is configured so default
+// stores stay silent (the historical behaviour). Field naming matches the
+// cross-package audit shape so a single sink can decode events from any
+// rho-kit source — see AuditEvent.
+func (s *Store) emit(ctx context.Context, action, issuer, id string, err error) {
+	if s == nil || (s.logger == nil && s.audit == nil) {
+		return
+	}
+	outcome := "success"
+	reason := ""
+	if err != nil {
+		outcome = "error"
+		// Reason carries the error class only — never the wrapped Error()
+		// string, which can include backend topology / message text. Callers
+		// who need the full chain inspect the returned error.
+		reason = errorClass(err)
+	}
+	actor := s.actor(ctx)
+	jtiField, issuerField := s.encodeIdentifiers(issuer, id)
+	resource := identifierResource(issuer, id)
+
+	if s.logger != nil {
+		s.logger.Info("jwt revocation",
+			slog.String("action", action),
+			slog.String("actor", actor),
+			slog.String("resource", resource),
+			slog.String("issuer", issuerField),
+			slog.String("jti", jtiField),
+			slog.String("outcome", outcome),
+			slog.String("reason", reason),
+		)
+	}
+	if s.audit != nil {
+		s.audit.LogRevocation(ctx, AuditEvent{
+			Action:   action,
+			Actor:    actor,
+			Resource: resource,
+			Issuer:   issuerField,
+			JTI:      jtiField,
+			Outcome:  outcome,
+			Reason:   reason,
+		})
+	}
+}
+
+func (s *Store) actor(ctx context.Context) string {
+	if s == nil || s.actorFn == nil {
+		return "unknown"
+	}
+	if actor := s.actorFn(ctx); actor != "" {
+		return actor
+	}
+	return "unknown"
+}
+
+// encodeIdentifiers redacts jti / issuer unless the operator opted into
+// verbose audit fields. Even in verbose mode an oversized issuer or invalid
+// id is collapsed to the length-only form to keep audit records bounded.
+func (s *Store) encodeIdentifiers(issuer, id string) (jtiField, issuerField string) {
+	if s.verbose && validPart(id) {
+		jtiField = id
+	} else {
+		jtiField = redactedLen(id)
+	}
+	if s.verbose && validPart(issuer) {
+		issuerField = issuer
+	} else {
+		issuerField = redactedLen(issuer)
+	}
+	return jtiField, issuerField
+}
+
+// identifierResource returns a stable, log-safe identifier for the revocation
+// record. It never exposes the raw jti / issuer; consumers correlate via the
+// per-record audit ID + the action verb.
+func identifierResource(issuer, id string) string {
+	return fmt.Sprintf("jwt:%s/%s", redactedLen(issuer), redactedLen(id))
+}
+
+func redactedLen(value string) string {
+	if value == "" {
+		return "<empty>"
+	}
+	return fmt.Sprintf("<redacted %d bytes>", len(value))
+}
+
+// errorClass returns the canonical kit sentinel an error wraps, or "unknown"
+// for unrecognised infrastructure failures. The audit record carries the
+// class, not the wrapped Error() string, so log scrapers cannot leak backend
+// topology / cache error text.
+func errorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrInvalidStore):
+		return "invalid_store"
+	case errors.Is(err, ErrMissingToken):
+		return "missing_token"
+	case errors.Is(err, ErrMissingTokenID):
+		return "missing_token_id"
+	case errors.Is(err, ErrInvalidExpiry):
+		return "invalid_expiry"
+	case errors.Is(err, ErrInvalidKey):
+		return "invalid_key"
+	default:
+		return "backend_error"
+	}
 }
 
 func (s *Store) ready() error {

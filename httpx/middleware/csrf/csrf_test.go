@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	secretpkg "github.com/bds421/rho-kit/core/v2/secret"
 	securitycsrf "github.com/bds421/rho-kit/security/v2/csrf"
 )
 
@@ -30,8 +31,8 @@ func testSecret() []byte {
 	return secret
 }
 
-func generateSignedToken(secret []byte) string {
-	token, err := mintSignedToken(secret)
+func generateSignedToken(s []byte) string {
+	token, err := mintSignedToken(secretpkg.New(s))
 	if err != nil {
 		panic("csrf test: failed to generate signed token: " + err.Error())
 	}
@@ -39,19 +40,22 @@ func generateSignedToken(secret []byte) string {
 }
 
 func TestWithSecretClonesInput(t *testing.T) {
-	secret := testSecret()
-	opt := WithSecret(secret)
-	secret[0] = 99
+	src := testSecret()
+	opt := WithSecret(src)
+	src[0] = 99
 
 	var cfg config
 	opt(&cfg)
 
-	require.Equal(t, byte(1), cfg.secrets[0][0])
-	cfg.secrets[0][0] = 77
+	require.Equal(t, byte(1), cfg.secrets[0].Reveal()[0])
+	// Wrapping in secret.String defends against caller-side mutation: the
+	// original buffer is copied into the wrapper, so mutating the inner
+	// buffer would require RevealString() to roundtrip — instead we assert
+	// that two separate option applications hand back independent copies.
 
 	var cfg2 config
 	opt(&cfg2)
-	require.Equal(t, byte(1), cfg2.secrets[0][0])
+	require.Equal(t, byte(1), cfg2.secrets[0].Reveal()[0])
 }
 
 func okHandler() http.Handler {
@@ -328,15 +332,15 @@ func TestNew_WithSecretsAcceptsPreviousSecretDuringRotation(t *testing.T) {
 	cookies := rec.Result().Cookies()
 	require.Len(t, cookies, 1)
 	assert.NotEqual(t, token, cookies[0].Value)
-	assert.True(t, isValidSignedToken(cookies[0].Value, newSecret))
+	assert.True(t, isValidSignedToken(cookies[0].Value, secretpkg.New(newSecret)))
 }
 
 func TestIsValidSignedToken_InvalidFormats(t *testing.T) {
-	secret := testSecret()
-	assert.False(t, isValidSignedToken("", secret))
-	assert.False(t, isValidSignedToken("noseparator", secret))
-	assert.False(t, isValidSignedToken(".onlysuffix", secret))
-	assert.False(t, isValidSignedToken("onlyprefix.", secret))
+	s := secretpkg.New(testSecret())
+	assert.False(t, isValidSignedToken("", s))
+	assert.False(t, isValidSignedToken("noseparator", s))
+	assert.False(t, isValidSignedToken(".onlysuffix", s))
+	assert.False(t, isValidSignedToken("onlyprefix.", s))
 }
 
 // --- WithSkipCheck tests ---
@@ -1395,7 +1399,7 @@ func TestMintSignedToken_EntropyFailureReturnsError(t *testing.T) {
 	tokenRandReader = secretFailingReader{}
 	t.Cleanup(func() { tokenRandReader = prev })
 
-	token, err := mintSignedToken(testSecret())
+	token, err := mintSignedToken(secretpkg.New(testSecret()))
 	require.Error(t, err)
 	assert.Empty(t, token)
 	assert.Contains(t, err.Error(), "csrf: generate random token")

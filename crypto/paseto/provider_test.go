@@ -47,12 +47,16 @@ func TestNewProvider_RejectsZeroInterval(t *testing.T) {
 
 func TestNewProvider_RejectsNilOption(t *testing.T) {
 	pub, _ := mustGenKey(t)
-	_, err := NewProvider(context.Background(),
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_, _ = NewProvider(context.Background(),
 		func(_ context.Context) ([]ed25519.PublicKey, error) { return []ed25519.PublicKey{pub}, nil },
 		time.Second,
 		nil,
 	)
-	require.Error(t, err)
 }
 
 func TestWithVerifyOptionsCopiesCallerSlice(t *testing.T) {

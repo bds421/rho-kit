@@ -31,6 +31,9 @@ type config struct {
 	hsts              string
 	cacheControl      string
 	csp               string
+	coop              string // Cross-Origin-Opener-Policy
+	coep              string // Cross-Origin-Embedder-Policy
+	corp              string // Cross-Origin-Resource-Policy
 	trustedProxies    []*net.IPNet // for X-Forwarded-Proto trust
 	forceHSTS         bool
 }
@@ -125,6 +128,92 @@ func WithContentSecurityPolicy(policy string) Option {
 	return func(c *config) { c.csp = policy }
 }
 
+// WithCrossOriginOpenerPolicy sets the Cross-Origin-Opener-Policy
+// header value. Default: "same-origin" — isolates this origin's
+// browsing-context group so cross-origin window references (the
+// classic "tab-napping" / Spectre side-channel surface) are severed.
+// Set to empty to suppress the header.
+//
+// Valid values: "unsafe-none", "same-origin-allow-popups", "same-origin".
+// The middleware does not enforce the enum at runtime; consult
+// MDN for the value matrix before deviating from the default.
+func WithCrossOriginOpenerPolicy(value string) Option {
+	validateHeaderValue("Cross-Origin-Opener-Policy", value)
+	return func(c *config) { c.coop = value }
+}
+
+// WithoutCrossOriginOpener disables the Cross-Origin-Opener-Policy
+// header. Use ONLY for services that intentionally rely on
+// cross-origin window.opener access (legacy OAuth popup flows,
+// embedded payment iframes) — the default isolates same-origin
+// browsing contexts and breaking that isolation re-opens the
+// Spectre / cross-origin window-reference attack surface.
+func WithoutCrossOriginOpener() Option {
+	return func(c *config) { c.coop = "" }
+}
+
+// WithCrossOriginEmbedderPolicy sets the Cross-Origin-Embedder-Policy
+// header value. Default: "require-corp" — every cross-origin
+// subresource (images, scripts, fonts) must explicitly opt in via a
+// matching Cross-Origin-Resource-Policy / CORS response.
+//
+// COEP=require-corp is the gate for cross-origin isolation (the
+// browser's SharedArrayBuffer / high-resolution timer API set). The
+// trade-off is real: a single embedded resource lacking a CORP /
+// CORS allowance fails to load. Audit every third-party JS SDK,
+// font CDN, and analytics tag before enabling this in production —
+// or opt out per-service via [WithoutCrossOriginEmbedder].
+//
+// Valid values: "unsafe-none", "require-corp", "credentialless".
+func WithCrossOriginEmbedderPolicy(value string) Option {
+	validateHeaderValue("Cross-Origin-Embedder-Policy", value)
+	return func(c *config) { c.coep = value }
+}
+
+// WithoutCrossOriginEmbedder disables the Cross-Origin-Embedder-Policy
+// header. The right opt-out for iframe-heavy services that cannot
+// require every embedded resource to carry CORP — most marketing
+// sites and admin dashboards with third-party widgets fall into
+// this bucket.
+func WithoutCrossOriginEmbedder() Option {
+	return func(c *config) { c.coep = "" }
+}
+
+// WithCrossOriginResourcePolicy sets the Cross-Origin-Resource-Policy
+// header value. Default: "same-origin" — this service's responses
+// can only be loaded by same-origin documents, preventing
+// cross-origin embedding (Spectre-style read primitives, hotlinking,
+// resource hijack).
+//
+// Valid values: "same-site", "same-origin", "cross-origin".
+func WithCrossOriginResourcePolicy(value string) Option {
+	validateHeaderValue("Cross-Origin-Resource-Policy", value)
+	return func(c *config) { c.corp = value }
+}
+
+// WithoutCrossOriginResource disables the Cross-Origin-Resource-Policy
+// header. Use when responses must be embeddable cross-origin (CDN
+// origins, public asset hosts).
+func WithoutCrossOriginResource() Option {
+	return func(c *config) { c.corp = "" }
+}
+
+// WithoutCrossOriginPolicies disables all three Cross-Origin-* policy
+// headers at once. The right escape hatch for iframe-heavy services
+// (legacy admin UIs, dashboards embedding third-party content) where
+// the default isolation breaks the embed contract.
+//
+// Prefer the per-header opt-outs when only one policy needs to
+// relax — turning all three off re-opens the Spectre / window-
+// reference attack surface and should be a deliberate decision.
+func WithoutCrossOriginPolicies() Option {
+	return func(c *config) {
+		c.coop = ""
+		c.coep = ""
+		c.corp = ""
+	}
+}
+
 // New returns middleware that sets security response headers.
 //
 // With no options, it sets:
@@ -135,11 +224,27 @@ func WithContentSecurityPolicy(policy string) Option {
 //   - Strict-Transport-Security: max-age=63072000; includeSubDomains
 //   - Cache-Control: no-store
 //   - Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+//   - Cross-Origin-Opener-Policy: same-origin
+//   - Cross-Origin-Embedder-Policy: require-corp
+//   - Cross-Origin-Resource-Policy: same-origin
 //
 // HSTS is only sent when the request arrived over TLS (r.TLS != nil),
 // per RFC 6797 §7.2. No configuration needed for mixed environments.
 // For services that serve HTML, override [WithContentSecurityPolicy] and
 // [WithCacheControl] as needed.
+//
+// The Cross-Origin-* trio (COOP/COEP/CORP) defaults to the
+// cross-origin-isolation set. Services that legitimately rely on
+// embedded third-party widgets, OAuth popup flows, or public asset
+// distribution must opt out via [WithoutCrossOriginEmbedder] /
+// [WithoutCrossOriginOpener] / [WithoutCrossOriginResource] (or
+// disable all three with [WithoutCrossOriginPolicies]).
+//
+// Operators MUST audit their third-party SDKs and CDN dependencies
+// before deploying with COEP=require-corp: every cross-origin
+// subresource — JS bundles, fonts, analytics tags, image hosts —
+// has to opt in via its own Cross-Origin-Resource-Policy or CORS
+// response, or the resource fails to load.
 func New(opts ...Option) func(http.Handler) http.Handler {
 	cfg := config{
 		frameOption:       Deny,
@@ -149,6 +254,9 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		hsts:              "max-age=63072000; includeSubDomains",
 		cacheControl:      "no-store",
 		csp:               "default-src 'none'; frame-ancestors 'none'",
+		coop:              "same-origin",
+		coep:              "require-corp",
+		corp:              "same-origin",
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -180,6 +288,15 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			}
 			if cfg.csp != "" {
 				h.Set("Content-Security-Policy", cfg.csp)
+			}
+			if cfg.coop != "" {
+				h.Set("Cross-Origin-Opener-Policy", cfg.coop)
+			}
+			if cfg.coep != "" {
+				h.Set("Cross-Origin-Embedder-Policy", cfg.coep)
+			}
+			if cfg.corp != "" {
+				h.Set("Cross-Origin-Resource-Policy", cfg.corp)
 			}
 			next.ServeHTTP(w, r)
 		})

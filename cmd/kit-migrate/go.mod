@@ -19,7 +19,7 @@ require (
 require (
 	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/jackc/pgx/v5 v5.9.2 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
 
 replace github.com/bds421/rho-kit/data/v2 => ../../data

@@ -1,0 +1,61 @@
+# Transitive license verification for the workspace.
+#
+# Companion to vuln.yml: vuln.yml gates on CVE severity, this workflow
+# gates on license category. Both run on PRs to main, on pushes to main,
+# and on a weekly schedule so a quietly-bumped transitive dep can never
+# slip past the allowlist between releases.
+#
+# The implementation lives in tools/check-licenses.sh; this workflow is
+# the CI-side wrapper. The script enumerates workspace modules from
+# go.work, runs go-licenses per module, and asserts each declared license
+# is on the SUPPLY_CHAIN.md §8.1 allowlist.
+#
+# Failure threshold: hard fail on any license outside the allowlist. There
+# is no LOW / MEDIUM / HIGH bucketing because a license violation is a
+# distribution-time problem, not a runtime severity question.
+
+name: Licenses
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 06:00 UTC. Offset from vuln.yml (00:00 Monday) so
+    # the two scheduled scans do not contend for the runner pool.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  GOWORK: ${{ github.workspace }}/go.work
+  GOPRIVATE: github.com/bds421/*
+  GONOSUMDB: github.com/bds421/*
+
+jobs:
+  check-licenses:
+    name: check-licenses
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.2"
+          cache-dependency-path: "**/go.sum"
+
+      - name: Configure git for private modules
+        env:
+          TOKEN: ${{ github.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Check transitive licenses against SUPPLY_CHAIN.md section 8.1 allowlist
+        run: bash tools/check-licenses.sh

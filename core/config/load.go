@@ -1,13 +1,16 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -155,7 +158,7 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 		defaultVal := field.Tag.Get("default")
 		isSecret := field.Tag.Get("secret") == "true"
 
-		val, fromEnv, resolveErr := resolveWithSource(envName, isSecret)
+		val, valBytes, fromEnv, resolveErr := resolveWithSource(envName, isSecret)
 		if resolveErr != nil {
 			return false, resolveErr
 		}
@@ -167,19 +170,35 @@ func loadWithEnvTracking(v reflect.Value) (envRead bool, _ error) {
 		// default is for the unset case, not for "operator overrode it with
 		// nothing" — that's the misconfig the required flag is meant to catch.
 		if required && fromEnv && val == "" {
+			if valBytes != nil {
+				zeroBytes(valBytes)
+			}
 			return false, fmt.Errorf("config: required environment variable %s is set but empty", envName)
 		}
 		if val == "" {
 			val = defaultVal
 		}
 		if val == "" && required {
+			if valBytes != nil {
+				zeroBytes(valBytes)
+			}
 			return false, fmt.Errorf("config: required environment variable %s is not set", envName)
 		}
 		if val == "" {
+			if valBytes != nil {
+				zeroBytes(valBytes)
+			}
 			continue
 		}
 
-		if err := setField(fv, val, envName, isSecret); err != nil {
+		err := setField(fv, val, envName, isSecret)
+		if valBytes != nil {
+			// Zero the originating bytes regardless of setField outcome;
+			// the value has either been copied (string fields) or
+			// parsed into a typed field by this point.
+			zeroBytes(valBytes)
+		}
+		if err != nil {
 			return false, err
 		}
 	}
@@ -215,55 +234,138 @@ func parseEnvTag(tag, fieldName string) (envName string, required bool, _ error)
 // This is a fundamental limitation of file-based secret injection (Docker
 // secrets, Kubernetes volume mounts) and is accepted as-is. Kubernetes secret
 // volumes use atomic symlink swaps that make the race window negligible.
-func resolveWithSource(envName string, isSecret bool) (val string, fromEnv bool, _ error) {
+//
+// For _FILE-sourced secrets, the on-disk bytes are read into a []byte that
+// is zeroed inside setField after the value has been parsed / copied into
+// its final destination. This bounds the heap lifetime of the raw secret
+// bytes (Lens F A.9).
+func resolveWithSource(envName string, isSecret bool) (val string, valBytes []byte, fromEnv bool, _ error) {
 	if isSecret {
 		filePath := os.Getenv(envName + "_FILE")
 		if filePath != "" {
-			val, err := readSecretFile(filePath)
+			b, err := readSecretFile(filePath)
 			if err != nil {
-				return "", false, fmt.Errorf("config: failed to read secret file for %s: %w", envName, err)
+				return "", nil, false, fmt.Errorf("config: failed to read secret file for %s: %w", envName, err)
 			}
-			return val, true, nil
+			return string(b), b, true, nil
 		}
 	}
 
-	val, found := os.LookupEnv(envName)
-	if found && val != "" {
-		return val, true, nil
+	v, found := os.LookupEnv(envName)
+	if found && v != "" {
+		return v, nil, true, nil
 	}
 	if found {
 		// Env var is set but empty — treat as "explicitly set" for
 		// nil-means-disabled tracking even though the value is empty.
-		return "", true, nil
+		return "", nil, true, nil
 	}
 	if !isSecret {
-		return "", false, nil
+		return "", nil, false, nil
 	}
-	return "", false, nil
+	return "", nil, false, nil
 }
 
-func readSecretFile(filePath string) (string, error) {
+// zeroBytes overwrites the slice with zeros. Inlines the same body as
+// crypto/encrypt to keep core/config dependency-free.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// readSecretFile reads a _FILE-sourced secret as []byte so the
+// originating buffer can be zeroed after the value is parsed. Errors
+// are wrapped so callers can use errors.Is against [fs.ErrPermission],
+// [fs.ErrNotExist], and [fs.ErrInvalid] to distinguish typo vs
+// permissions vs unreadable target — the file path itself is never
+// included in the returned error (Lens F A.16).
+func readSecretFile(filePath string) ([]byte, error) {
 	// FR-039 [MED]: cap the read at maxSecretFileSize so a
 	// misconfigured _FILE path (e.g. pointing at /var/log/system.log)
 	// cannot pull arbitrary bytes into memory at startup.
 	f, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("open failed")
+		// Wrap the os-level cause so callers can errors.Is against
+		// fs.ErrPermission / fs.ErrNotExist; the path is REDACTED
+		// from the message so secrets directories don't leak.
+		return nil, classifyOpenError(err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxSecretFileSize+1))
 	if err != nil {
-		return "", fmt.Errorf("read failed")
+		// Use classifyOpenError so the resulting error is errors.Is-comparable
+		// against fs sentinels (a directory read raises EISDIR which surfaces
+		// as fs.ErrInvalid). The path is REDACTED.
+		return nil, classifyReadError(err)
 	}
 	if int64(len(data)) > maxSecretFileSize {
-		return "", fmt.Errorf("exceeds maximum size")
+		// Zero the over-large buffer before returning — operators
+		// expect secret material in the file even if it's mis-sized.
+		zeroBytes(data)
+		return nil, fmt.Errorf("exceeds maximum size: %w", fs.ErrInvalid)
 	}
 	// Trim only trailing line terminators that secret-mounting tools add
 	// (Docker, Kubernetes, Vault all append a single \n). strings.TrimSpace
 	// would also strip meaningful interior/leading whitespace from a base64
 	// secret or a password that legitimately ends in spaces — silent
 	// corruption that's hard to debug.
-	return strings.TrimRight(string(data), "\r\n"), nil
+	trimmed := trimTrailingLineEndings(data)
+	if len(trimmed) < len(data) {
+		// Zero the bytes we trimmed off so no fragment lingers.
+		zeroBytes(data[len(trimmed):])
+	}
+	return trimmed, nil
+}
+
+// trimTrailingLineEndings returns a sub-slice of b with trailing CR/LF
+// bytes removed. The returned slice aliases b so callers that zero the
+// returned slice also zero the originating storage for those bytes.
+func trimTrailingLineEndings(b []byte) []byte {
+	end := len(b)
+	for end > 0 && (b[end-1] == '\n' || b[end-1] == '\r') {
+		end--
+	}
+	return b[:end]
+}
+
+// classifyOpenError maps os.Open errors into a wrapped form that
+// preserves errors.Is against the standard fs sentinels while keeping
+// the file path REDACTED.
+func classifyOpenError(err error) error {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("open failed: %w", fs.ErrPermission)
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("open failed: %w", fs.ErrNotExist)
+	case errors.Is(err, fs.ErrInvalid):
+		return fmt.Errorf("open failed: %w", fs.ErrInvalid)
+	default:
+		// Unknown causes are flattened to a generic message; the path
+		// must never leak into the surfaced error.
+		return errors.New("open failed")
+	}
+}
+
+// classifyReadError maps io.ReadAll errors into the same redacted
+// form as classifyOpenError. Reading a directory raises EISDIR which
+// is platform-specific (a syscall.Errno on Unix); we normalise that
+// — and any other invalid-target read — onto fs.ErrInvalid so callers
+// can use a single sentinel.
+func classifyReadError(err error) error {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("read failed: %w", fs.ErrPermission)
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("read failed: %w", fs.ErrNotExist)
+	case errors.Is(err, fs.ErrInvalid), errors.Is(err, syscall.EISDIR):
+		return fmt.Errorf("read failed: %w", fs.ErrInvalid)
+	default:
+		// Generic read error — strip the path / unwrapped cause so
+		// neither the operator's filesystem layout nor any internal
+		// errno detail rides along.
+		return errors.New("read failed")
+	}
 }
 
 func setField(fv reflect.Value, val, envName string, isSecret bool) error {

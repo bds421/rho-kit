@@ -11,6 +11,7 @@ import (
 {{- end}}
 	"log/slog"
 	"net/http"
+	"time"
 
 	kitapp "github.com/bds421/rho-kit/app/v2"
 {{- if .Tenant}}
@@ -143,7 +144,7 @@ func Run(_ *slog.Logger) error {
 		return err
 	}
 {{- if .Tenant}}
-	redisFields, err := kitredis.LoadRedisFields()
+	redisFields, err := kitredis.LoadFields()
 	if err != nil {
 		return err
 	}
@@ -153,7 +154,14 @@ func Run(_ *slog.Logger) error {
 	}
 {{- end}}
 
-	b := kitapp.New("{{.ServiceName}}", "", cfg)
+	// WithIPRateLimit is required by the Builder's always-on
+	// rate-limit gate (Lens F A.5): every service must affirmatively
+	// declare a rate-limit policy. Replace with WithKeyedRateLimit for
+	// API-key throttling, or WithoutRateLimit when traffic is bounded
+	// by mTLS / an upstream gateway. The baseline below is intentionally
+	// conservative — tune for the expected QPS once the service ships.
+	b := kitapp.New("{{.ServiceName}}", "", cfg).
+		WithIPRateLimit(100, time.Minute)
 {{- if .Postgres}}
 
 	// Postgres + sqlc + goose is the canonical data path. The pgx pool

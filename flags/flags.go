@@ -36,9 +36,18 @@ const (
 )
 
 var (
-	ErrInvalidClient  = errors.New("flags: client is not initialized")
+	// ErrInvalidClient is returned when a method is called on a Client
+	// whose inner OpenFeature client is nil (typically a zero-value
+	// Client that bypassed [New]).
+	ErrInvalidClient = errors.New("flags: client is not initialized")
+	// ErrInvalidContext is returned when a nil context is passed to an
+	// evaluation method.
 	ErrInvalidContext = errors.New("flags: context is nil")
-	ErrInvalidKey     = errors.New("flags: key is invalid")
+	// ErrInvalidKey is returned when a flag key is empty, too long,
+	// non-UTF-8, or contains whitespace/control characters.
+	ErrInvalidKey = errors.New("flags: key is invalid")
+	// ErrInvalidUserKey is returned when a [WithUserKey] value violates
+	// the same shape constraints as a flag key.
 	ErrInvalidUserKey = errors.New("flags: user key is invalid")
 )
 

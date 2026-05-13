@@ -91,6 +91,16 @@ type InternalHandlerWrapper interface {
 	WrapInternalHandler(base http.Handler, checker *health.Checker) http.Handler
 }
 
+// InternalServerConfigurator is the optional capability for adapter modules
+// that need to mutate the internal-ops [*http.Server] after construction —
+// for example, enabling unencrypted HTTP/2 (h2c) when the adapter layers a
+// gRPC service onto the internal listener. The Builder invokes
+// ConfigureInternalServer once, after the internal server is built and
+// before ListenAndServe runs.
+type InternalServerConfigurator interface {
+	ConfigureInternalServer(srv *http.Server)
+}
+
 // RunnerAttacher is the optional capability for adapter modules that own a
 // long-running component which must be registered with the lifecycle Runner
 // (e.g., the public gRPC server's Start/Stop loop in app/grpc). The Builder

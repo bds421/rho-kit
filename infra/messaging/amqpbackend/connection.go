@@ -3,6 +3,7 @@ package amqpbackend
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -295,6 +296,9 @@ func normalizeDialURL(rawURL string, tlsConfigured, allowPlaintext bool) (string
 func cloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
 	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			panic("amqpbackend: TLS InsecureSkipVerify=true is not permitted")
+		}
 		panic("amqpbackend: TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned

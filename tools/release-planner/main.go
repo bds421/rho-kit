@@ -1,3 +1,10 @@
+// Command release-planner inspects the rho-kit Go workspace and prints the
+// per-module release plan for a target version. It walks `go.work`, computes
+// which modules have changed since their previous tag (or selects all in
+// `-mode=all`), groups them by dependency level, and emits the result as
+// text, TSV, or a ready-to-pipe list of git tags. The Makefile's
+// `release-plan` target wraps it and is the supported invocation; the
+// command is run from outside CI to dry-run a release tagging pass.
 package main
 
 import (

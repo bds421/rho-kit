@@ -13,8 +13,6 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/http/httpguts"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -40,9 +38,14 @@ type moduleConfig struct {
 // WithServerOption appends a [grpcx.ServerOption] to the underlying server
 // builder. Server options stack — pass multiple times to configure
 // interceptors, keepalive, message size limits.
+//
+// The variadic slice is defensively copied so callers cannot mutate the
+// captured options after construction (matches the canonical Option
+// shape used elsewhere in the kit — see app/redis.WithConn).
 func WithServerOption(opts ...grpcx.ServerOption) Option {
+	captured := append([]grpcx.ServerOption(nil), opts...)
 	return func(c *moduleConfig) {
-		c.opts = append(c.opts, opts...)
+		c.opts = append(c.opts, captured...)
 	}
 }
 
@@ -140,6 +143,25 @@ func (m *grpcModule) AttachToRunner(runner *lifecycle.Runner) {
 // as HTTP /ready, so internal callers can probe either protocol.
 func (m *grpcModule) WrapInternalHandler(base http.Handler, checker *health.Checker) http.Handler {
 	return withInternalGRPCHealth(base, checker)
+}
+
+// ConfigureInternalServer implements [app.InternalServerConfigurator]. The
+// gRPC health service rides the kit's internal-ops listener as cleartext
+// HTTP/2 (h2c) so internal probes can dial either HTTP /ready or the gRPC
+// Health.Check RPC on the same port. Go 1.24 introduced http.Server.Protocols
+// as the supported way to opt into unencrypted HTTP/2; this replaces the
+// previous h2c.NewHandler wrapper (deprecated in Go 1.26).
+func (m *grpcModule) ConfigureInternalServer(srv *http.Server) {
+	if srv == nil {
+		return
+	}
+	protocols := srv.Protocols
+	if protocols == nil {
+		protocols = &http.Protocols{}
+	}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Protocols = protocols
 }
 
 func (m *grpcModule) Init(_ context.Context, mc app.ModuleContext) error {
@@ -258,6 +280,13 @@ func (m *grpcModule) serve() error {
 // withInternalGRPCHealth layers the gRPC health-checking protocol over h2c
 // onto the kit's internal-ops listener so callers may probe via either
 // HTTP /ready or the gRPC Health.Check RPC.
+//
+// The h2c surface is opted-in on the *http.Server itself via
+// [grpcModule.ConfigureInternalServer] (http.Server.Protocols replaced the
+// deprecated h2c.NewHandler wrapper in Go 1.24+). This function returns a
+// plain handler that dispatches gRPC requests (recognized by the
+// application/grpc Content-Type) to the gRPC mux and everything else to
+// the base /ready handler.
 func withInternalGRPCHealth(base http.Handler, checker *health.Checker) http.Handler {
 	if base == nil {
 		panic("grpc: internal handler must not be nil")
@@ -269,13 +298,13 @@ func withInternalGRPCHealth(base http.Handler, checker *health.Checker) http.Han
 	grpcHealth := grpc.NewServer()
 	healthpb.RegisterHealthServer(grpcHealth, grpcx.NewHealthServer(checker))
 
-	return h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if internalGRPCHealthRequest(r) {
 			grpcHealth.ServeHTTP(w, r)
 			return
 		}
 		base.ServeHTTP(w, r)
-	}), &http2.Server{})
+	})
 }
 
 func internalGRPCHealthRequest(r *http.Request) bool {

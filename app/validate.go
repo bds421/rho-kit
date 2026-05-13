@@ -144,6 +144,18 @@ func (b *Builder) validateProductionSafety() error {
 		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
+	// Lens F A.5: a Builder.Run() call that declares no rate limiter at
+	// all is a silent foot-gun: every other Builder security control
+	// (TLS, JWT issuer / audience, internal-host loopback) fails-loud
+	// when unconfigured, but the rate limiter used to default to "none"
+	// and let a single hostile client saturate the public listener.
+	// Pin the affirmative-declaration contract here: callers must pick
+	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
+	// WithoutRateLimit opt-out for traffic-bounded services.
+	if b.ipRateRequests <= 0 && len(b.keyedLimiters) == 0 && !b.allowNoRateLimit {
+		return fmt.Errorf("rate limiting must be declared explicitly: call WithIPRateLimit / WithKeyedRateLimit, or WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
+	}
+
 	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,
 	// /healthz, /ready without authentication. Pre-fix, the validator
 	// only rejected wildcard binds (0.0.0.0, [::]), so any specific

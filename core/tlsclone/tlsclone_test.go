@@ -92,3 +92,72 @@ func TestConfigOrEmptyWithFloor_NilCreatesConfig(t *testing.T) {
 		t.Fatalf("cfg = %+v, want TLS 1.2 floor", cfg)
 	}
 }
+
+func TestConfigWithFloor_ForcesRenegotiateNever(t *testing.T) {
+	// Each enum below is a renegotiation policy that pre-Go-1.13 code
+	// or unaware adapters might leave on a caller-provided tls.Config.
+	// The clone must reset all of them to RenegotiateNever — the kit
+	// never renegotiates, and the legacy "OnceAsClient" / "FreelyAsClient"
+	// modes are the credential-confusion / MITM vectors from CVE-2009-3555
+	// et al.
+	for _, mode := range []tls.RenegotiationSupport{
+		tls.RenegotiateOnceAsClient,
+		tls.RenegotiateFreelyAsClient,
+	} {
+		cfg := &tls.Config{Renegotiation: mode}
+		cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12)
+		if err != nil {
+			t.Fatalf("ConfigWithFloor(mode=%d): %v", mode, err)
+		}
+		if cloned.Renegotiation != tls.RenegotiateNever {
+			t.Fatalf("Renegotiation = %d, want RenegotiateNever — kit must not inherit %d", cloned.Renegotiation, mode)
+		}
+	}
+}
+
+func TestConfigWithFloor_DropsDeprecatedNameToCertificate(t *testing.T) {
+	// NameToCertificate is deprecated since Go 1.14 and is shadowed by
+	// GetCertificate on a modern config. Carrying a stale SNI map into
+	// a kit-owned config would silently override certificate selection
+	// after the kit applied its TLS floor — drop it so the kit config
+	// has a single, unambiguous resolution path.
+	cfg := &tls.Config{
+		//nolint:staticcheck // Intentionally populate the deprecated field to assert it is dropped.
+		NameToCertificate: map[string]*tls.Certificate{
+			"example.com": {Certificate: [][]byte{{1, 2, 3}}},
+		},
+	}
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12)
+	if err != nil {
+		t.Fatalf("ConfigWithFloor: %v", err)
+	}
+	//nolint:staticcheck // Reading the deprecated field for the assertion.
+	if cloned.NameToCertificate != nil {
+		t.Fatalf("NameToCertificate = %+v, want nil — kit must not inherit the deprecated SNI map", cloned.NameToCertificate)
+	}
+}
+
+func TestConfigWithFloor_RejectsInsecureSkipVerifyByDefault(t *testing.T) {
+	_, err := ConfigWithFloor(&tls.Config{InsecureSkipVerify: true}, tls.VersionTLS12)
+	if !errors.Is(err, ErrInsecureSkipVerifyNotPermitted) {
+		t.Fatalf("err = %v, want ErrInsecureSkipVerifyNotPermitted — silent InsecureSkipVerify inheritance disables every certificate check", err)
+	}
+}
+
+func TestConfigWithFloor_AllowInsecureSkipVerifyOptIn(t *testing.T) {
+	cfg := &tls.Config{InsecureSkipVerify: true}
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12, AllowInsecureSkipVerify())
+	if err != nil {
+		t.Fatalf("ConfigWithFloor with AllowInsecureSkipVerify: %v", err)
+	}
+	if !cloned.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify=false on clone, want true — explicit opt-in must preserve the caller's choice")
+	}
+}
+
+func TestConfigOrEmptyWithFloor_RejectsInsecureSkipVerifyByDefault(t *testing.T) {
+	_, err := ConfigOrEmptyWithFloor(&tls.Config{InsecureSkipVerify: true}, tls.VersionTLS12)
+	if !errors.Is(err, ErrInsecureSkipVerifyNotPermitted) {
+		t.Fatalf("err = %v, want ErrInsecureSkipVerifyNotPermitted", err)
+	}
+}

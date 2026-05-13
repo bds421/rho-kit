@@ -11,7 +11,7 @@ import (
 type ProgressFunc = progress.ProgressFunc
 
 // NewProgressReader wraps an io.Reader and calls fn after every Read.
-// Delegates to [progress.NewProgressReader].
+// Delegates to [progress.NewReader].
 //
 // Usage:
 //
@@ -20,5 +20,5 @@ type ProgressFunc = progress.ProgressFunc
 //	})
 //	backend.Put(ctx, key, pr, meta)
 func NewProgressReader(r io.Reader, totalBytes int64, fn ProgressFunc) io.Reader {
-	return progress.NewProgressReader(r, totalBytes, fn)
+	return progress.NewReader(r, totalBytes, fn)
 }

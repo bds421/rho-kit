@@ -25,6 +25,15 @@
 // [ErrInvalidCursor]. Both keys are required (≥32 bytes); [New] panics
 // fast at startup if either is missing.
 //
+// # Key memory hygiene
+//
+// Both the chain key and the cursor key are wrapped in
+// [secret.String], with reveals bounded to a single HMAC compute via
+// [secret.String.Use]. Call [Logger.Close] during graceful shutdown
+// to zero both wrappers; subsequent [Logger.LogE] / [Logger.Query] /
+// [Logger.VerifyChain] calls return [ErrLoggerClosed]. Memory dumps
+// taken after Close find zeroes in place of the key bytes.
+//
 // See docs/audit/THREAT_MODEL.md §5.4 for the canonical claims.
 //
 // # HTTP Middleware

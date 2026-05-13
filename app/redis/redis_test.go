@@ -23,7 +23,7 @@ func TestModule_PanicsOnNilOpts(t *testing.T) {
 }
 
 func TestModule_Name(t *testing.T) {
-	m := ModuleWithOptions(&goredis.Options{Addr: "localhost:6379"}, WithoutTLS())
+	m := Module(&goredis.Options{Addr: "localhost:6379"}, WithoutTLS())
 	assert.Equal(t, "redis", m.Name())
 }
 
@@ -32,7 +32,7 @@ func TestModule_ClonesOptionsAndConnOptions(t *testing.T) {
 	opts := &goredis.Options{Addr: "localhost:6379", TLSConfig: tlsConfig}
 	connOpts := []kitredis.ConnOption{kitredis.WithInstance("primary")}
 
-	m := Module(opts, connOpts...).(*redisModule)
+	m := Module(opts, WithConn(connOpts...)).(*redisModule)
 	opts.Addr = "mutated:6379"
 	tlsConfig.ServerName = "after.example"
 	tlsConfig.NextProtos[0] = "http/1.1"
@@ -102,7 +102,7 @@ func TestModule_AllowsLoopbackWithoutTLS(t *testing.T) {
 
 func TestModule_AllowsPlaintextWithOptOut(t *testing.T) {
 	assert.NotPanics(t, func() {
-		_ = ModuleWithOptions(&goredis.Options{Addr: "redis.example.com:6379"}, WithoutTLS())
+		_ = Module(&goredis.Options{Addr: "redis.example.com:6379"}, WithoutTLS())
 	})
 }
 
@@ -130,7 +130,7 @@ func TestModule_TransportSafety_Table(t *testing.T) {
 			opts := &goredis.Options{Addr: tc.addr, TLSConfig: tc.tlsConfig, Password: tc.password}
 			fn := func() {
 				if tc.allowPlaintext {
-					_ = ModuleWithOptions(opts, WithoutTLS())
+					_ = Module(opts, WithoutTLS())
 				} else {
 					_ = Module(opts)
 				}

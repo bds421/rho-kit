@@ -262,6 +262,9 @@ func (c Config) validateAuth(serverURL *url.URL) error {
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
 	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			return nil, errors.New("natsbackend: TLS InsecureSkipVerify=true is not permitted")
+		}
 		return nil, errors.New("natsbackend: TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned, nil

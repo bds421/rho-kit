@@ -240,7 +240,7 @@ and typed `<Resource>(infra)` getter:
 | Sub-module                        | Module entry point              | Getter                       |
 | --------------------------------- | ------------------------------- | ---------------------------- |
 | `app/postgres/v2`                 | `postgres.Module(cfg, opts…)`   | `postgres.Pool(infra)`       |
-| `app/redis/v2`                    | `redis.Module(opts, connOpts…)` | `redis.Connection(infra)`    |
+| `app/redis/v2`                    | `redis.Module(opts, mopts…)`    | `redis.Connection(infra)`    |
 | `app/amqp/v2`                     | `amqp.Module(url, opts…)`       | `amqp.Connection/Publisher/Consumer(infra)` |
 | `app/nats/v2`                     | `nats.Module(cfg, opts…)`       | `nats.Connection/Publisher(infra)` |
 | `app/tracing/v2`                  | `tracing.Module(cfg)`           | (auto-wires HTTP client)     |

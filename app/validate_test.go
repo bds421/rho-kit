@@ -12,12 +12,14 @@ import (
 var _ slog.LogValuer = BaseConfig{}
 
 // newTestBuilder constructs a Builder with the always-on
-// production-safety validator's TLS / audience checks opted out so
-// individual tests can focus on the configuration knob they care about.
+// production-safety validator's TLS / audience / rate-limit checks
+// opted out so individual tests can focus on the configuration knob
+// they care about.
 func newTestBuilder() *Builder {
 	return New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 }
 
 // validBaseConfig returns a BaseConfig with valid server / internal
@@ -135,7 +137,8 @@ func TestValidate_InvalidServerPort(t *testing.T) {
 	cfg.Server.Port = 0
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
 		t.Fatal("expected error for invalid server port")
@@ -150,7 +153,8 @@ func TestValidate_InvalidInternalPort(t *testing.T) {
 	cfg.Internal.Port = 70000
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
 		t.Fatal("expected error for invalid internal port")
@@ -166,8 +170,63 @@ func TestValidate_ValidPorts(t *testing.T) {
 	cfg.Internal.Port = 65535
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("expected no error for valid ports, got: %v", err)
+	}
+}
+
+// TestValidate_NoRateLimitDeclarationRejected pins Lens F A.5: a Builder
+// that declares no rate limiter at all must fail at Validate() with an
+// actionable error naming all three options.
+func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
+	b := New("test-svc", "v0.1.0", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience()
+	err := b.Validate()
+	if err == nil {
+		t.Fatal("expected error when no rate-limit declaration is present")
+	}
+	for _, want := range []string{"WithIPRateLimit", "WithKeyedRateLimit", "WithoutRateLimit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rate-limit error must name %q (got: %v)", want, err)
+		}
+	}
+}
+
+// TestValidate_WithIPRateLimitSatisfiesGate confirms WithIPRateLimit is
+// one of the three accepted declarations.
+func TestValidate_WithIPRateLimitSatisfiesGate(t *testing.T) {
+	b := New("test-svc", "v0.1.0", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithIPRateLimit(100, time.Minute)
+	if err := b.Validate(); err != nil {
+		t.Fatalf("WithIPRateLimit must satisfy the rate-limit gate, got: %v", err)
+	}
+}
+
+// TestValidate_WithKeyedRateLimitSatisfiesGate confirms a single keyed
+// limiter is sufficient — services may rate-limit by API key alone.
+func TestValidate_WithKeyedRateLimitSatisfiesGate(t *testing.T) {
+	b := New("test-svc", "v0.1.0", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithKeyedRateLimit("api", 10, time.Minute)
+	if err := b.Validate(); err != nil {
+		t.Fatalf("WithKeyedRateLimit must satisfy the rate-limit gate, got: %v", err)
+	}
+}
+
+// TestValidate_WithoutRateLimitSatisfiesGate confirms the explicit
+// opt-out is honored for traffic-bounded services.
+func TestValidate_WithoutRateLimitSatisfiesGate(t *testing.T) {
+	b := New("test-svc", "v0.1.0", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithoutRateLimit()
+	if err := b.Validate(); err != nil {
+		t.Fatalf("WithoutRateLimit must satisfy the rate-limit gate, got: %v", err)
 	}
 }

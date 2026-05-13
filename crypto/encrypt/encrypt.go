@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // encryptedV3Prefix is the current write format. Plain ASCII so the
@@ -51,6 +52,47 @@ const legacyEncryptedV2Prefix = "\x00enc:v2:"
 //	plain, err := enc.DecryptWithContext(encrypted, aad)
 type FieldEncryptor struct {
 	aead AEAD
+
+	// encryptOps and decryptOps count successful operations per key
+	// for [FieldEncryptor.OpsCount]. The counts let operators sanity-
+	// check usage against the AES-GCM 2^32 random-IV ceiling
+	// documented in doc.go without forcing crypto/encrypt to take a
+	// hard dependency on a metrics library; consumers wire the counts
+	// to Prometheus / OpenTelemetry on their side via
+	// [FieldEncryptor.RegisterMetrics] or by polling OpsCount.
+	encryptOps atomic.Uint64
+	decryptOps atomic.Uint64
+
+	// onOp is an optional callback fired after every successful Encrypt
+	// / Decrypt. Set via [FieldEncryptor.RegisterMetrics] so consumers
+	// can route counts to a metrics backend without forcing this
+	// package to import prometheus.
+	onOp func(op Operation)
+}
+
+// Operation identifies a FieldEncryptor call kind for metric hooks.
+type Operation int
+
+const (
+	// OperationEncrypt is reported on every successful Encrypt /
+	// EncryptWithContext call.
+	OperationEncrypt Operation = iota + 1
+	// OperationDecrypt is reported on every successful Decrypt /
+	// DecryptWithContext call.
+	OperationDecrypt
+)
+
+// String renders the operation as the lowercased label expected by
+// kit-canonical metric naming ("encrypt" / "decrypt").
+func (o Operation) String() string {
+	switch o {
+	case OperationEncrypt:
+		return "encrypt"
+	case OperationDecrypt:
+		return "decrypt"
+	default:
+		return "unknown"
+	}
 }
 
 // NewFieldEncryptor creates a FieldEncryptor from a 32-byte key.
@@ -63,6 +105,55 @@ func NewFieldEncryptor(key []byte) (*FieldEncryptor, error) {
 		return nil, err
 	}
 	return &FieldEncryptor{aead: a}, nil
+}
+
+// RegisterMetrics installs a metrics callback fired after every
+// successful Encrypt / Decrypt. The callback runs in the calling
+// goroutine; keep it fast (a single counter increment) and never
+// panic — panics propagate to the caller of Encrypt / Decrypt.
+//
+// Consumers typically bridge to Prometheus like so:
+//
+//	counter := prometheus.NewCounterVec(prometheus.CounterOpts{
+//	    Name: "field_encryptor_ops_total",
+//	    Help: "FieldEncryptor operation count per key.",
+//	}, []string{"key_id", "operation"})
+//	reg.MustRegister(counter)
+//	enc.RegisterMetrics(func(op encrypt.Operation) {
+//	    counter.WithLabelValues("primary", op.String()).Inc()
+//	})
+//
+// Passing nil clears any previously-installed callback. The internal
+// atomic counts surfaced by [FieldEncryptor.OpsCount] are always
+// maintained regardless of whether a callback is installed.
+func (e *FieldEncryptor) RegisterMetrics(fn func(op Operation)) {
+	if e == nil {
+		return
+	}
+	e.onOp = fn
+}
+
+// OpsCount returns the running totals of successful encrypt and
+// decrypt operations performed by this encryptor. Operators can poll
+// the counts to compare against the 2^32 random-IV ceiling documented
+// in doc.go.
+func (e *FieldEncryptor) OpsCount() (encrypts, decrypts uint64) {
+	if e == nil {
+		return 0, 0
+	}
+	return e.encryptOps.Load(), e.decryptOps.Load()
+}
+
+func (e *FieldEncryptor) recordOp(op Operation) {
+	switch op {
+	case OperationEncrypt:
+		e.encryptOps.Add(1)
+	case OperationDecrypt:
+		e.decryptOps.Add(1)
+	}
+	if e.onOp != nil {
+		e.onOp(op)
+	}
 }
 
 // ErrPlaintextNotAllowed is returned by Decrypt when a value does not
@@ -111,6 +202,7 @@ func (e *FieldEncryptor) EncryptWithContext(plaintext string, aad []byte) (strin
 	if err != nil {
 		return "", err
 	}
+	e.recordOp(OperationEncrypt)
 	return encryptedV3Prefix + base64.StdEncoding.EncodeToString(sealed), nil
 }
 
@@ -211,6 +303,7 @@ func (e *FieldEncryptor) DecryptWithContext(ciphertext string, aad []byte) (stri
 		return "", err
 	}
 
+	e.recordOp(OperationDecrypt)
 	return string(plaintext), nil
 }
 

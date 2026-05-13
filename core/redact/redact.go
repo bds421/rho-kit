@@ -1,5 +1,27 @@
-// Package redact provides shared helpers for rendering sensitive values safely
-// in logs and errors.
+// Package redact provides shared helpers for rendering sensitive values
+// safely in logs and errors.
+//
+// The kit's logging convention is: never put attacker-controlled or
+// tenant-controlled strings into a log record verbatim. This package
+// replaces the value with a fixed-shape stamp (length, "redacted",
+// empty marker) so operators can still distinguish "configured but
+// empty" from "configured with content" without leaking topology,
+// credentials, PII, or attacker-supplied content.
+//
+// Key entry points:
+//
+//   - [StringValue] / [String] — redact a string and return either the
+//     scalar or a [log/slog.Attr].
+//   - [ErrorValue] / [Error] — collapse an error into a sentinel-aware
+//     summary; recognised kit sentinels keep their identity, everything
+//     else loses its message.
+//   - [Panic] / [PanicValue] — turn a recovered panic value into a safe
+//     slog attribute and printable string.
+//
+// Compare with [crypto/masking], which keeps a structural prefix (the
+// scheme/host of a URL, the first few runes of a token). Use redact
+// when even structure is unsafe; use masking when partial visibility
+// is debugging-useful.
 package redact
 
 import (

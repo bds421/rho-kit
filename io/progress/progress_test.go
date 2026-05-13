@@ -16,7 +16,7 @@ func TestProgressReader(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), 1024)
 	var reports []int64
 
-	pr := NewProgressReader(bytes.NewReader(data), 1024, func(bytesRead, totalBytes int64) {
+	pr := NewReader(bytes.NewReader(data), 1024, func(bytesRead, totalBytes int64) {
 		reports = append(reports, bytesRead)
 		assert.Equal(t, int64(1024), totalBytes)
 	})
@@ -34,7 +34,7 @@ func TestProgressReader_NilFunc(t *testing.T) {
 	t.Parallel()
 
 	data := []byte("hello")
-	r := NewProgressReader(bytes.NewReader(data), 5, nil)
+	r := NewReader(bytes.NewReader(data), 5, nil)
 
 	got, err := io.ReadAll(r)
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestProgressReader_PanicsOnNilOption(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		NewProgressReader(bytes.NewReader(nil), 0, func(_, _ int64) {}, nil)
+		NewReader(bytes.NewReader(nil), 0, func(_, _ int64) {}, nil)
 	})
 }
 
@@ -53,7 +53,7 @@ func TestProgressReader_UnknownTotal(t *testing.T) {
 	t.Parallel()
 
 	var lastTotal int64 = -999
-	pr := NewProgressReader(bytes.NewReader([]byte("abc")), -1, func(_, total int64) {
+	pr := NewReader(bytes.NewReader([]byte("abc")), -1, func(_, total int64) {
 		lastTotal = total
 	})
 
@@ -65,7 +65,7 @@ func TestProgressReader_UnknownTotal(t *testing.T) {
 func TestProgressReader_WithMinDelta_CoalescesCallbacks(t *testing.T) {
 	src := bytes.Repeat([]byte("x"), 1024)
 	var fires int
-	pr := NewProgressReader(bytes.NewReader(src), int64(len(src)), func(_, _ int64) {
+	pr := NewReader(bytes.NewReader(src), int64(len(src)), func(_, _ int64) {
 		fires++
 	}, WithMinDelta(256))
 
@@ -89,7 +89,7 @@ func TestProgressReader_WithMinDelta_CoalescesCallbacks(t *testing.T) {
 func TestProgressReader_WithThrottle_FinalCallbackOnEOF(t *testing.T) {
 	src := bytes.Repeat([]byte("y"), 64)
 	var lastN int64
-	pr := NewProgressReader(bytes.NewReader(src), int64(len(src)), func(n, _ int64) {
+	pr := NewReader(bytes.NewReader(src), int64(len(src)), func(n, _ int64) {
 		lastN = n
 	}, WithThrottle(time.Hour)) // throttle so aggressive that only first + EOF fire
 
@@ -126,7 +126,7 @@ func TestProgressReader_FinalCallbackOnZeroEOF(t *testing.T) {
 	// terminal Read should still fire the EOF callback. Trace through the
 	// fire logic to confirm.
 	var fires []int64
-	pr := NewProgressReader(&zeroEOFReader{}, 8, func(n, _ int64) {
+	pr := NewReader(&zeroEOFReader{}, 8, func(n, _ int64) {
 		fires = append(fires, n)
 	})
 

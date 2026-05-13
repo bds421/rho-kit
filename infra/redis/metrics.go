@@ -12,8 +12,8 @@ import (
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 )
 
-// RedisMetrics holds all Prometheus collectors for Redis command and connection monitoring.
-type RedisMetrics struct {
+// Metrics holds all Prometheus collectors for Redis command and connection monitoring.
+type Metrics struct {
 	commandDuration        *prometheus.HistogramVec
 	commandErrors          *prometheus.CounterVec
 	connectionPoolHits     *prometheus.GaugeVec
@@ -27,14 +27,14 @@ type RedisMetrics struct {
 	connectionHealthy      *prometheus.GaugeVec
 }
 
-// NewRedisMetrics creates and registers Redis metrics with the given registerer.
+// NewMetrics creates and registers Redis metrics with the given registerer.
 // If reg is nil, prometheus.DefaultRegisterer is used.
-func NewRedisMetrics(reg prometheus.Registerer) *RedisMetrics {
+func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
 	}
 
-	m := &RedisMetrics{
+	m := &Metrics{
 		commandDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "redis",
@@ -142,7 +142,7 @@ func NewRedisMetrics(reg prometheus.Registerer) *RedisMetrics {
 }
 
 // defaultMetrics is the package-level metrics instance for backward compatibility.
-var defaultMetrics = NewRedisMetrics(nil)
+var defaultMetrics = NewMetrics(nil)
 
 // knownCommands is an allowlist of Redis command names used as Prometheus
 // label values. Commands not in this set are bucketed as "other" to prevent
@@ -192,7 +192,7 @@ func safeCommandName(name string) string {
 // metricsHook implements redis.Hook to record command latency and errors.
 type metricsHook struct {
 	instance string
-	metrics  *RedisMetrics
+	metrics  *Metrics
 }
 
 var _ redis.Hook = (*metricsHook)(nil)
@@ -248,7 +248,7 @@ func CollectPoolMetrics(client redis.UniversalClient, instance string) {
 	collectPoolMetrics(defaultMetrics, client, instance)
 }
 
-func collectPoolMetrics(m *RedisMetrics, client redis.UniversalClient, instance string) {
+func collectPoolMetrics(m *Metrics, client redis.UniversalClient, instance string) {
 	if err := ValidateName(instance, "instance"); err != nil {
 		panic("redis: invalid instance name")
 	}
@@ -272,14 +272,14 @@ func collectPoolMetrics(m *RedisMetrics, client redis.UniversalClient, instance 
 type PoolCollectorOption func(*poolCollectorConfig)
 
 type poolCollectorConfig struct {
-	metrics *RedisMetrics
+	metrics *Metrics
 }
 
-// WithPoolMetrics uses a custom RedisMetrics instance for pool metrics
+// WithPoolMetrics uses a custom Metrics instance for pool metrics
 // collection instead of the default global metrics. Use this when the
 // Connection was created with WithRegisterer to ensure pool metrics are
 // emitted to the same registerer.
-func WithPoolMetrics(m *RedisMetrics) PoolCollectorOption {
+func WithPoolMetrics(m *Metrics) PoolCollectorOption {
 	return func(c *poolCollectorConfig) { c.metrics = m }
 }
 

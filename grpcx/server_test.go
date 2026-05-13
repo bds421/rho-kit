@@ -60,6 +60,15 @@ func TestWithMaxRecvMsgSize_PanicsOnZero(t *testing.T) {
 	})
 }
 
+func TestWithMaxConcurrentStreams_PanicsOnZero(t *testing.T) {
+	// 0 means "unlimited" in the gRPC framework — exactly the GAP-03
+	// regression the option exists to prevent. Reject loudly at the call
+	// site rather than silently turning hardening off.
+	assert.Panics(t, func() {
+		grpcx.WithMaxConcurrentStreams(0)
+	})
+}
+
 func TestWithMaxRecvMsgSize_PanicsOnNegative(t *testing.T) {
 	assert.Panics(t, func() {
 		grpcx.WithMaxRecvMsgSize(-1)
@@ -159,4 +168,119 @@ func TestNewServer_WithoutRecovery_NonPanickingRPCStillWorks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, codes.Unimplemented, st.Code(),
 		"WithoutRecovery removes the recovery interceptor only — the rest of the chain stays functional")
+}
+
+// blockingWatchHealth keeps each Watch RPC parked on the server until the
+// client cancels its context, which lets the stream-cap test hold N
+// concurrent streams open against a single connection.
+type blockingWatchHealth struct {
+	healthpb.UnimplementedHealthServer
+	started chan struct{}
+}
+
+func (b *blockingWatchHealth) Watch(_ *healthpb.HealthCheckRequest, srv healthpb.Health_WatchServer) error {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-srv.Context().Done()
+	return status.Error(codes.Canceled, "client cancelled")
+}
+
+func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
+	// Build a server capped at 2 concurrent streams per connection, hold
+	// 2 streams open, then start a 3rd Watch — it must block in transport
+	// pending a slot. Releasing one open stream lets the 3rd proceed,
+	// proving the cap (and not some unrelated client serialisation)
+	// gates new streams.
+	const bufSize = 1024 * 1024
+	const streamCap = 2
+
+	lis := bufconn.Listen(bufSize)
+	health := &blockingWatchHealth{started: make(chan struct{}, streamCap+1)}
+
+	srv := grpcx.NewServer(
+		grpcx.WithMaxConcurrentStreams(streamCap),
+		// The 30s default-deadline interceptor would race the test if
+		// the test machine is heavily loaded; disabling it keeps the
+		// only timeout the test's own client-side contexts.
+		grpcx.WithoutDefaultDeadline(),
+	)
+	healthpb.RegisterHealthServer(srv, health)
+
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(lis)
+	}()
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+
+	// Track every client-side cancel so the test always returns the
+	// server to a quiescent state — GracefulStop below blocks on any
+	// stream that is still parked in the handler.
+	var allCancels []context.CancelFunc
+	t.Cleanup(func() {
+		for _, c := range allCancels {
+			c()
+		}
+		_ = conn.Close()
+		// Force a hard Stop on shutdown — GracefulStop would deadlock
+		// if a handler cancel race left a stream parked. Stop is the
+		// correct shutdown semantic for a test that intentionally
+		// holds streams open.
+		srv.Stop()
+		<-serveDone
+	})
+
+	client := healthpb.NewHealthClient(conn)
+
+	// Open `streamCap` long-running Watch streams and confirm each
+	// reaches its handler.
+	for i := 0; i < streamCap; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+		require.NoError(t, err)
+		allCancels = append(allCancels, cancel)
+		select {
+		case <-health.started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Watch #%d did not start on the server", i+1)
+		}
+	}
+
+	// The (streamCap+1)th stream must block in the client transport
+	// (`http2Client.NewStream` waits for a slot when the server's
+	// SETTINGS_MAX_CONCURRENT_STREAMS budget is saturated) and must NOT
+	// reach the server handler.
+	thirdCtx, thirdCancel := context.WithCancel(context.Background())
+	allCancels = append(allCancels, thirdCancel)
+	thirdOpened := make(chan struct{})
+	go func() {
+		defer close(thirdOpened)
+		_, _ = client.Watch(thirdCtx, &healthpb.HealthCheckRequest{})
+	}()
+
+	select {
+	case <-health.started:
+		t.Fatal("MaxConcurrentStreams=2 did not gate the 3rd stream — handler started while 2 streams were already in flight")
+	case <-thirdOpened:
+		t.Fatal("MaxConcurrentStreams=2 did not gate the 3rd stream — client.Watch returned while 2 streams were already in flight")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: the 3rd stream is queued at the transport layer.
+	}
+
+	// Release one stream; the 3rd should now make it past the
+	// transport and reach the handler.
+	allCancels[0]()
+	select {
+	case <-health.started:
+		// Expected.
+	case <-time.After(2 * time.Second):
+		t.Fatal("3rd Watch never started after freeing a slot — cap may be too tight or release did not propagate")
+	}
 }

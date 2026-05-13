@@ -135,9 +135,10 @@ type Builder struct {
 	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
 
 	// Rate limiters
-	ipRateRequests int
-	ipRateWindow   time.Duration
-	keyedLimiters  []keyedLimiterSpec
+	ipRateRequests   int
+	ipRateWindow     time.Duration
+	keyedLimiters    []keyedLimiterSpec
+	allowNoRateLimit bool // explicit opt-out from the mandatory rate-limit declaration
 
 	// Storage
 	storageBackend storage.Storage
@@ -546,6 +547,27 @@ func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
 	return b
 }
 
+// WithoutRateLimit acknowledges that the public HTTP server will run
+// without any kit-managed rate limiter (neither [Builder.WithIPRateLimit]
+// nor [Builder.WithKeyedRateLimit]). Without this opt-in, [Builder.Build]
+// rejects any configuration that does not declare at least one rate-limit
+// option, because an un-rate-limited public listener is a silent
+// foot-gun: a single hostile client can saturate the request budget,
+// exhaust DB pools, or DoS the service.
+//
+// Use this only for services with a genuine traffic bound that does not
+// need application-level throttling — e.g. an internal cron worker
+// reachable only through mTLS from a fixed peer set, an admin tool
+// behind a VPN, or a service whose upstream gateway already applies a
+// stricter limit. The check is unconditional — there is no KIT_ENV
+// escape hatch. Mirrors the [WithoutTLS] / [WithoutJWTAudience] shape
+// so every always-on security tightening has the same affirmative
+// declaration shape.
+func (b *Builder) WithoutRateLimit() *Builder {
+	b.allowNoRateLimit = true
+	return b
+}
+
 // WithKeyedRateLimit adds a named keyed rate limiter. The limiter is accessible
 // via Infrastructure.KeyedLimiters[name].
 func (b *Builder) WithKeyedRateLimit(name string, requests int, window time.Duration) *Builder {
@@ -745,9 +767,15 @@ func (b *Builder) WithoutDefaultStack() *Builder {
 	return b
 }
 
-// Background registers a managed goroutine that starts before the router.
-// If fn returns a non-nil error, the entire service shuts down.
-func (b *Builder) Background(name string, fn func(ctx context.Context) error) *Builder {
+// WithBackground registers a managed goroutine that starts before the
+// router. If fn returns a non-nil error, the entire service shuts down.
+//
+// v2.0.0 rename: this method was previously `Builder.Background`. The
+// `With*` prefix matches every other registration method on the Builder
+// (`WithJWT`, `WithStorage`, `WithAuditLog`, `WithIPRateLimit`, ...) so
+// IDE autocomplete on `app.New(...).With` reliably surfaces the
+// background-worker primitive.
+func (b *Builder) WithBackground(name string, fn func(ctx context.Context) error) *Builder {
 	validateBackgroundSpec(name, fn)
 	b.earlyBgs = append(b.earlyBgs, bgSpec{name: name, fn: fn})
 	return b
@@ -1176,6 +1204,15 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	}
 	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, serverErrorLogOpt)
+	// Adapter modules may mutate the internal server post-construction
+	// (e.g., app/grpc enables UnencryptedHTTP2 so the gRPC health
+	// service rides the same listener without the deprecated
+	// h2c.NewHandler wrapper).
+	for _, m := range allModules {
+		if cfg, ok := m.(InternalServerConfigurator); ok {
+			cfg.ConfigureInternalServer(internalSrv)
+		}
+	}
 	internalErrCh := make(chan error, 1)
 	go func() {
 		if srvErr := internalSrv.ListenAndServe(); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {

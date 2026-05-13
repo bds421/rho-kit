@@ -443,7 +443,7 @@ func TestScaffold_TenantFlag_WiresTenantWrappers(t *testing.T) {
 	wireBody, err := os.ReadFile(filepath.Join(out, "internal/app/wire.go"))
 	require.NoError(t, err)
 	wire := string(wireBody)
-	assert.Contains(t, wire, "kitredis.LoadRedisFields()",
+	assert.Contains(t, wire, "kitredis.LoadFields()",
 		"tenant scaffold must load Redis settings through the kit")
 	assert.Contains(t, wire, "WithMultiTenant(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"), true)",
 		"tenant scaffold must enable strict tenant extraction")

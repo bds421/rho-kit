@@ -1,4 +1,4 @@
-// Package queue provides a Redis LIST-based FIFO queue.
+// Package redisqueue provides a Redis LIST-based FIFO queue.
 //
 // Prometheus metrics are exposed under the `redis_queue_` prefix and
 // share a single `queue` label. Default collectors include:

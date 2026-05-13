@@ -293,3 +293,38 @@ func TestBuildResult_singleItem(t *testing.T) {
 		t.Errorf("NextCursor = %q, want empty when HasMore=false", result.NextCursor)
 	}
 }
+
+func TestCursorSigner_Close_ZeroesSecret(t *testing.T) {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	signer, err := NewCursorSigner(secret)
+	if err != nil {
+		t.Fatalf("NewCursorSigner: %v", err)
+	}
+	// Sanity: encoding produces a non-empty cursor before Close.
+	if signer.Encode("payload") == "" {
+		t.Fatal("expected non-empty cursor before Close")
+	}
+	if err := signer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := signer.Encode("payload"); got != "" {
+		t.Fatalf("Encode after Close = %q, want \"\"", got)
+	}
+	if _, err := signer.Decode("AaBb.AaBb"); !errors.Is(err, ErrCursorInvalid) {
+		t.Fatalf("Decode after Close = %v, want ErrCursorInvalid", err)
+	}
+	// Idempotent.
+	if err := signer.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestCursorSigner_Close_NilReceiver(t *testing.T) {
+	var s *CursorSigner
+	if err := s.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+}

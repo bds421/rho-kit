@@ -10,7 +10,7 @@ import (
 // totalBytes is the expected total, or -1 if unknown.
 type ProgressFunc func(bytesRead int64, totalBytes int64)
 
-// ReaderOption configures a [NewProgressReader].
+// ReaderOption configures a [NewReader].
 type ReaderOption func(*readerConfig)
 
 type readerConfig struct {
@@ -41,7 +41,7 @@ func WithMinDelta(bytes int64) ReaderOption {
 	return func(c *readerConfig) { c.minDelta = bytes }
 }
 
-// NewProgressReader wraps an io.Reader and calls fn after every Read.
+// NewReader wraps an io.Reader and calls fn after every Read.
 // If fn is nil, the original reader is returned unwrapped (no-op passthrough)
 // to avoid unnecessary allocation and indirection.
 //
@@ -56,11 +56,11 @@ func WithMinDelta(bytes int64) ReaderOption {
 //
 // Usage:
 //
-//	pr := progress.NewProgressReader(reader, totalSize, func(n, total int64) {
+//	pr := progress.NewReader(reader, totalSize, func(n, total int64) {
 //	    fmt.Printf("%.0f%%\n", float64(n)/float64(total)*100)
 //	}, progress.WithThrottle(100*time.Millisecond))
 //	io.Copy(dst, pr)
-func NewProgressReader(r io.Reader, totalBytes int64, fn ProgressFunc, opts ...ReaderOption) io.Reader {
+func NewReader(r io.Reader, totalBytes int64, fn ProgressFunc, opts ...ReaderOption) io.Reader {
 	if fn == nil {
 		return r
 	}

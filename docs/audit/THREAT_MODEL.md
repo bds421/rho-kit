@@ -239,6 +239,26 @@ top of [docs/ai/security.md](../ai/security.md).
 
 ## 4. Attack surface per kit area
 
+Each per-area table carries a **Mitigation type** column so the
+kit-enforced vs caller-cooperative split is explicit on every row:
+
+- **kit-enforced** — defended by code paths the kit always runs (no
+  service opt-in required).
+- **kit-enforced via panic** — refuse-to-misconfigure invariant: the
+  kit refuses to start when the threat is reachable.
+- **caller-must-cooperate** — kit ships the primitive; the service
+  author has to wire it (e.g. call a helper, choose a mode,
+  rotate keys via deploy).
+- **operator-must-configure** — kit assumes the deployment provides
+  the protection (network policy, TLS terminator, KMS, secret
+  store), and the kit refuses to ship without the configuration
+  surface to receive it.
+
+The column reflects the *primary* type. Most rows are layered
+defences with secondary contributions from the other types;
+"kit-enforced" wins when the kit's enforcement is load-bearing
+independent of caller action.
+
 ### 4.1 HTTP entrypoint (`httpx`, `httpx/middleware`)
 
 **Default stack.** Services must use
@@ -260,27 +280,39 @@ and is not reachable via a default option.
 
 #### Threats and mitigations
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| H-01 | Panic in handler kills the entire HTTP server | A1 | `recover` middleware unconditionally prepended; logs + emits 500 | [httpx/middleware/recover/recover.go](../../httpx/middleware/recover/recover.go) |
-| H-02 | Slowloris / oversized requests exhaust file descriptors | A1 | `httpx.NewServer` sets ReadHeaderTimeout, ReadTimeout, MaxHeaderBytes; `maxbody` middleware caps body | [httpx/httpx.go](../../httpx/httpx.go), [httpx/middleware/maxbody/maxbody.go](../../httpx/middleware/maxbody/maxbody.go) |
-| H-03 | Unbounded request handlers — long-running requests pin connections | A1 | `timeout` middleware in `stack.Default` with 30s default and 1 MiB buffer cap | [httpx/middleware/timeout/timeout.go](../../httpx/middleware/timeout/timeout.go) |
-| H-04 | Cross-site request forgery against authenticated browser sessions | A1 + browser | Session-bound CSRF (double-submit + HMAC binding); construction panics if no `WithSecret`/`WithSecrets` HMAC material is supplied and `WithDevSecret` has not been opted into — the kit ships no allow-list of forbidden specific values, so deployments must ensure the configured secret is not a documented placeholder | [httpx/middleware/csrf/csrf.go](../../httpx/middleware/csrf/csrf.go), [security/csrf/csrf.go](../../security/csrf/csrf.go) |
-| H-05 | Missing security headers permit clickjacking, mixed content, MIME sniffing | A1 + browser | `secheaders` middleware sets HSTS (when behind trusted proxy), CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy | [httpx/middleware/secheaders/secheaders.go](../../httpx/middleware/secheaders/secheaders.go) |
-| H-06 | XSS via inline scripts | A1 + browser | `cspnonce` middleware emits a per-request nonce that the secheaders CSP refers to | [httpx/middleware/cspnonce](../../httpx/middleware/cspnonce/) |
-| H-07 | Spoofed `X-Forwarded-For` allows rate-limit bypass / log poisoning | A1 | `clientip` defaults to loopback-only trust; `clientip.ParseTrustedProxiesStrict` fails-fast on bad config | [httpx/middleware/clientip/clientip.go](../../httpx/middleware/clientip/clientip.go) |
-| H-08 | CORS misconfiguration leaks data to attacker origin | A1 | `cors` middleware has no `*` default for credentials; explicit allowlist required | [httpx/middleware/cors/cors.go](../../httpx/middleware/cors/cors.go) |
-| H-09 | Unauthenticated access to authenticated routes | A1 | `auth` middleware verifies JWT/PASETO; service composes `auth.RequireScope` for finer checks | [httpx/middleware/auth/auth.go](../../httpx/middleware/auth/auth.go), [httpx/middleware/auth/scope.go](../../httpx/middleware/auth/scope.go) |
-| H-10 | Information disclosure via verbose errors | A1 | `httpx.WriteServiceError` / `WriteServiceProblem` map `core/apperror` codes to safe HTTP status + RFC 7807 — never returns wrapped error strings | [httpx/error_handler.go](../../httpx/error_handler.go), [httpx/problemdetails](../../httpx/problemdetails/) |
-| H-11 | Request smuggling via duplicate Content-Length | A1 | Go stdlib server rejects ambiguous CL/TE — relied on, not reimplemented |
-| H-12 | Open redirect via attacker-controlled URL params | A1 | `httpx.SafeRedirect` validates untrusted redirect targets, rejects scheme-relative / encoded scheme-relative targets, userinfo, non-HTTP schemes, control bytes, and absolute hosts outside an explicit allowlist | [httpx/redirect.go](../../httpx/redirect.go) |
-| H-13 | Log injection via crafted headers | A1 | Structured logging (`slog`) — fields are key/value, not formatted; `secret.String` redacts credential fields | [observability/logging](../../observability/logging/), [core/secret](../../core/secret/) |
-| H-14 | Mass-assignment via permissive JSON decoding | A2 | The `httpx` typed-handler JSON decoder enables `DisallowUnknownFields`, rejecting any payload field not present in the destination struct; this is the load-bearing mass-assignment defence. Services that decode JSON via custom paths bypass this and must apply equivalent strictness. | [httpx/httpx.go](../../httpx/httpx.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| H-01 | Panic in handler kills the entire HTTP server | A1 | `recover` middleware unconditionally prepended; logs + emits 500 | kit-enforced | [httpx/middleware/recover/recover.go](../../httpx/middleware/recover/recover.go) |
+| H-02 | Slowloris / oversized requests exhaust file descriptors | A1 | `httpx.NewServer` sets ReadHeaderTimeout, ReadTimeout, MaxHeaderBytes; `maxbody` middleware caps body | kit-enforced | [httpx/httpx.go](../../httpx/httpx.go), [httpx/middleware/maxbody/maxbody.go](../../httpx/middleware/maxbody/maxbody.go) |
+| H-03 | Unbounded request handlers — long-running requests pin connections | A1 | `timeout` middleware in `stack.Default` with 30s default and 1 MiB buffer cap | kit-enforced | [httpx/middleware/timeout/timeout.go](../../httpx/middleware/timeout/timeout.go) |
+| H-04 | Cross-site request forgery against authenticated browser sessions | A1 + browser | Session-bound CSRF (double-submit + HMAC binding); construction panics if no `WithSecret`/`WithSecrets` HMAC material is supplied and `WithDevSecret` has not been opted into — the kit ships no allow-list of forbidden specific values, so deployments must ensure the configured secret is not a documented placeholder | kit-enforced via panic | [httpx/middleware/csrf/csrf.go](../../httpx/middleware/csrf/csrf.go), [security/csrf/csrf.go](../../security/csrf/csrf.go) |
+| H-05 | Missing security headers permit clickjacking, mixed content, MIME sniffing | A1 + browser | `secheaders` middleware sets HSTS (when behind trusted proxy), CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy | kit-enforced | [httpx/middleware/secheaders/secheaders.go](../../httpx/middleware/secheaders/secheaders.go) |
+| H-06 | XSS via inline scripts | A1 + browser | `cspnonce` middleware emits a per-request nonce that the secheaders CSP refers to | kit-enforced | [httpx/middleware/cspnonce](../../httpx/middleware/cspnonce/) |
+| H-07 | Spoofed `X-Forwarded-For` allows rate-limit bypass / log poisoning | A1 | `clientip` defaults to loopback-only trust; `clientip.ParseTrustedProxiesStrict` fails-fast on bad config | kit-enforced | [httpx/middleware/clientip/clientip.go](../../httpx/middleware/clientip/clientip.go) |
+| H-08 | CORS misconfiguration leaks data to attacker origin | A1 | `cors` middleware has no `*` default for credentials; explicit allowlist required | kit-enforced | [httpx/middleware/cors/cors.go](../../httpx/middleware/cors/cors.go) |
+| H-09 | Unauthenticated access to authenticated routes | A1 | `auth` middleware verifies JWT/PASETO; service composes `auth.RequireScope` for finer checks | caller-must-cooperate | [httpx/middleware/auth/auth.go](../../httpx/middleware/auth/auth.go), [httpx/middleware/auth/scope.go](../../httpx/middleware/auth/scope.go) |
+| H-10 | Information disclosure via verbose errors | A1 | `httpx.WriteServiceError` / `WriteServiceProblem` map `core/apperror` codes to safe HTTP status + RFC 7807 — never returns wrapped error strings | kit-enforced | [httpx/error_handler.go](../../httpx/error_handler.go), [httpx/problemdetails](../../httpx/problemdetails/) |
+| H-11 | Request smuggling via duplicate Content-Length | A1 | Go stdlib server rejects ambiguous CL/TE — relied on, not reimplemented | kit-enforced |  |
+| H-12 | Open redirect via attacker-controlled URL params | A1 | `httpx.SafeRedirect` validates untrusted redirect targets, rejects scheme-relative / encoded scheme-relative targets, userinfo, non-HTTP schemes, control bytes, and absolute hosts outside an explicit allowlist | caller-must-cooperate | [httpx/redirect.go](../../httpx/redirect.go) |
+| H-13 | Log injection via crafted headers | A1 | Structured logging (`slog`) — fields are key/value, not formatted; `secret.String` redacts credential fields | kit-enforced | [observability/logging](../../observability/logging/), [core/secret](../../core/secret/) |
+| H-14 | Mass-assignment via permissive JSON decoding | A2 | The `httpx` typed-handler JSON decoder enables `DisallowUnknownFields`, rejecting any payload field not present in the destination struct; this is the load-bearing mass-assignment defence. Services that decode JSON via custom paths bypass this and must apply equivalent strictness. | kit-enforced | [httpx/httpx.go](../../httpx/httpx.go) |
 
 **Important interaction:** `recover` MUST run before `metrics` in the
 chain so panic responses are still counted; `stack.Default` enforces
 this ordering and there is no exposed setter that lets the service
 reorder it.
+
+**Audit-trail wiring (Lens F A.3, A.10).** Authorization denials log
+via `authz.Logged` wired with `authz.WithLogger` and/or
+`authz.WithAuditSink`; the default `app.Builder` pipes a logger
+automatically so Builder-built services capture every `authz.deny`
+without extra wiring. Raw `httpx.Middleware` users must wrap their
+`Decider` themselves. The audit-log HTTP middleware
+(`httpx/middleware/auditlog.Middleware`) is intentionally NOT included
+in `stack.Default` — chain / cursor keys and the store are
+service-specific. Pass `stack.WithAuditLog(logger, ...)` to inject it
+at the canonical innermost position so each entry captures the
+authenticated actor, the request path, and the final response status.
 
 ### 4.2 gRPC entrypoint (`grpcx`)
 
@@ -288,13 +320,13 @@ The threat surface is similar to §4.1, with TLS and binary framing
 removing some categories (no CSRF, no header smuggling) and adding
 others (interceptor ordering, streaming exhaustion).
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| G-01 | Panic in unary/streaming handler kills server | A1 | Recovery interceptor (unary + stream) prepended by `grpcx.NewServer`; `WithoutRecovery` is opt-out, not default | [grpcx/server.go](../../grpcx/server.go), [grpcx/interceptor](../../grpcx/interceptor/) |
-| G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app.WithJWT`/`WithPASETO`; rejects requests without a valid token | [app/jwt_module.go](../../app/jwt_module.go), [app/paseto_module.go](../../app/paseto_module.go) |
-| G-03 | Streaming flood — client opens N streams and never sends | A1 | gRPC's max-concurrent-streams + per-stream deadline; service authors must set per-RPC timeouts. **Listed as gap if defaults are not set.** |
-| G-04 | Error message leakage via gRPC status messages | A1 | `grpcx/apperror_status.go` maps `core/apperror` codes to gRPC codes + safe messages — never returns the underlying `error.Error()` | [grpcx/apperror_status.go](../../grpcx/apperror_status.go) |
-| G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `WithPublicGRPCHealth()` | [app/builder.go](../../app/builder.go), [app/internal_grpc_health.go](../../app/internal_grpc_health.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| G-01 | Panic in unary/streaming handler kills server | A1 | Recovery interceptor (unary + stream) prepended by `grpcx.NewServer`; `WithoutRecovery` is opt-out, not default | kit-enforced | [grpcx/server.go](../../grpcx/server.go), [grpcx/interceptor](../../grpcx/interceptor/) |
+| G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app.WithJWT`/`WithPASETO`; rejects requests without a valid token | caller-must-cooperate | [app/jwt_module.go](../../app/jwt_module.go), [app/paseto_module.go](../../app/paseto_module.go) |
+| G-03 | Streaming flood — client opens N streams and never sends | A1 | `grpcx.NewServer` pins `grpc.MaxConcurrentStreams` to 1000 per connection by default (Go gRPC default is `math.MaxUint32`) plus the per-RPC default-deadline interceptor; operators override the cap via `grpcx.WithMaxConcurrentStreams` | kit-enforced | [grpcx/server.go](../../grpcx/server.go) |
+| G-04 | Error message leakage via gRPC status messages | A1 | `grpcx/apperror_status.go` maps `core/apperror` codes to gRPC codes + safe messages — never returns the underlying `error.Error()` | kit-enforced | [grpcx/apperror_status.go](../../grpcx/apperror_status.go) |
+| G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `WithPublicGRPCHealth()` | kit-enforced | [app/builder.go](../../app/builder.go), [app/internal_grpc_health.go](../../app/internal_grpc_health.go) |
 
 ### 4.3 Message broker (`infra/messaging`)
 
@@ -303,16 +335,16 @@ The kit supports AMQP (`amqpbackend`), Redis Streams
 test broker (`membroker`). All four implement the same `Publisher`
 and `Consumer` interfaces.
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| M-01 | Unroutable message silently dropped (AMQP) | A1, A4, A5 | AMQP publisher sets `mandatory=true` and listens on `NotifyReturn`; returned messages surface as a publish error, not a silent drop | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/) |
-| M-02 | Message-payload schema drift between producer/consumer leads to silent corruption | A4, A5 | `messaging.Schema` + `VersionedHandler` verify a JSON Schema before invoking the handler | [infra/messaging/schema.go](../../infra/messaging/schema.go), [infra/messaging/versioned_handler.go](../../infra/messaging/versioned_handler.go) |
-| M-03 | Consumer ACKs on transient error → message lost | A1 | Convention: handlers return `error` (kit re-queues); `apperror.NewPermanent` is the only way to signal "do not retry, send to DLQ" | [infra/messaging/delivery.go](../../infra/messaging/delivery.go) |
-| M-04 | DLQ poison-pill exhausts consumer retry budget | A1 | DLQ topology + retry-with-backoff handler in [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/) (`Retry`, `RetryIfNotPermanent`) |
-| M-05 | Producer outage drops events that should reach the broker | A1 (DoS) | `messaging.BufferedPublisher` with an optional state file persists pending messages across restarts; **state file path validated against directory traversal** | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
-| M-06 | Internal `debughttp` Publish/Consume HTTP endpoints expose broker to attacker | A1 | `debughttp` requires a `Guard` middleware + Authenticator — refuses to mount otherwise | [infra/messaging/amqpbackend/debughttp/guard.go](../../infra/messaging/amqpbackend/debughttp/guard.go) |
-| M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme; pure `amqp://` is rejected by the always-on `app.Builder` production-safety validator | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
-| M-08 | Oversized messages exhaust broker/client memory or poison the buffered retry state file | A1, A4 | `messaging.MessageSizeLimiter` defaults to 1 MiB, supports exact route overrides, and is wired into AMQP, NATS, Redis Streams, `membroker`, and `BufferedPublisher`; Builder exposes `WithMaxMessageBytes` and `WithRouteMaxMessageBytes` for golden-path services | [infra/messaging/size_limit.go](../../infra/messaging/size_limit.go), [app/builder.go](../../app/builder.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| M-01 | Unroutable message silently dropped (AMQP) | A1, A4, A5 | AMQP publisher sets `mandatory=true` and listens on `NotifyReturn`; returned messages surface as a publish error, not a silent drop | kit-enforced | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/) |
+| M-02 | Message-payload schema drift between producer/consumer leads to silent corruption | A4, A5 | `messaging.Schema` + `VersionedHandler` verify a JSON Schema before invoking the handler | caller-must-cooperate | [infra/messaging/schema.go](../../infra/messaging/schema.go), [infra/messaging/versioned_handler.go](../../infra/messaging/versioned_handler.go) |
+| M-03 | Consumer ACKs on transient error → message lost | A1 | Convention: handlers return `error` (kit re-queues); `apperror.NewPermanent` is the only way to signal "do not retry, send to DLQ" | caller-must-cooperate | [infra/messaging/delivery.go](../../infra/messaging/delivery.go) |
+| M-04 | DLQ poison-pill exhausts consumer retry budget | A1 | DLQ topology + retry-with-backoff handler in [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/) (`Retry`, `RetryIfNotPermanent`) | caller-must-cooperate |  |
+| M-05 | Producer outage drops events that should reach the broker | A1 (DoS) | `messaging.BufferedPublisher` with an optional state file persists pending messages across restarts; **state file path validated against directory traversal** | caller-must-cooperate | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
+| M-06 | Internal `debughttp` Publish/Consume HTTP endpoints expose broker to attacker | A1 | `debughttp` requires a `Guard` middleware + Authenticator — refuses to mount otherwise | kit-enforced via panic | [infra/messaging/amqpbackend/debughttp/guard.go](../../infra/messaging/amqpbackend/debughttp/guard.go) |
+| M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme; pure `amqp://` is rejected by the always-on `app.Builder` production-safety validator | kit-enforced via panic | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
+| M-08 | Oversized messages exhaust broker/client memory or poison the buffered retry state file | A1, A4 | `messaging.MessageSizeLimiter` defaults to 1 MiB, supports exact route overrides, and is wired into AMQP, NATS, Redis Streams, `membroker`, and `BufferedPublisher`; Builder exposes `WithMaxMessageBytes` and `WithRouteMaxMessageBytes` for golden-path services | kit-enforced | [infra/messaging/size_limit.go](../../infra/messaging/size_limit.go), [app/builder.go](../../app/builder.go) |
 
 **Note:** `BufferedPublisher` is **not** a transactional outbox.
 Where strict at-most-once / exactly-once is required, services use
@@ -321,14 +353,14 @@ patterns.
 
 ### 4.4 Relational database (`infra/sqldb`)
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; the always-on `app.Builder` validator rejects `disable`/`prefer`/`allow` and requires one of `require`/`verify-ca`/`verify-full`. The `pgx.Config.AllowPlaintextLoopbackForTests` field is the only relaxation, gated on every host (and every multi-host fallback) resolving to loopback | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go) |
-| D-02 | SQL injection via string concatenation | A1, A2 | Kit runtime DB path is pgx/sqlc-style parameterized queries; no string-concat query helper in the kit's surface area |
-| D-03 | DB credential leakage via process logs | A6 | `sqldb.Config` / `pgxbackend.Config` implement safe `LogValue` renderers and `_FILE` secret loading avoids embedding password material in config errors; `pgxbackend.Config.PasswordProvider` supports rotating credentials without logging returned values | [infra/sqldb/config.go](../../infra/sqldb/config.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go), [core/config](../../core/config/) |
-| D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpenConns` is set by `DefaultPool()` to 100 (services that need a different ceiling override it explicitly); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
-| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
-| D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | [docs/ai/sqldb.md](../ai/sqldb.md) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; the always-on `app.Builder` validator rejects `disable`/`prefer`/`allow` and requires one of `require`/`verify-ca`/`verify-full`. The `pgx.Config.AllowPlaintextLoopbackForTests` field is the only relaxation, gated on every host (and every multi-host fallback) resolving to loopback | kit-enforced via panic | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go) |
+| D-02 | SQL injection via string concatenation | A1, A2 | Kit runtime DB path is pgx/sqlc-style parameterized queries; no string-concat query helper in the kit's surface area | kit-enforced |  |
+| D-03 | DB credential leakage via process logs | A6 | `sqldb.Config` / `pgxbackend.Config` implement safe `LogValue` renderers and `_FILE` secret loading avoids embedding password material in config errors; `pgxbackend.Config.PasswordProvider` supports rotating credentials without logging returned values | kit-enforced | [infra/sqldb/config.go](../../infra/sqldb/config.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go), [core/config](../../core/config/) |
+| D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpenConns` is set by `DefaultPool()` to 100 (services that need a different ceiling override it explicitly); `WithDBMetrics` exposes saturation | kit-enforced | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
+| D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | caller-must-cooperate | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
+| D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | caller-must-cooperate | [docs/ai/sqldb.md](../ai/sqldb.md) |
 
 ### 4.5 Redis (`infra/redis`, `data/*`)
 
@@ -339,62 +371,69 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 `data/ratelimit/tokenbucket`), event streams
 (`data/stream/redisstream`), and queues (`data/queue/redisqueue`).
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| R-01 | Cross-tenant key collision (tenant A reads tenant B's cached value) | A2 | `core/tenant.Key(ctx, parts...)` builds length-prefixed scoped keys, `data/cache/tenant.Wrap` / `data/idempotency/tenant.Wrap` use the same encoder, `cmd/kit-new -tenant` scaffolds those wrappers, and `kit-doctor` flags hand-written `tenant:` key prefixes. | [core/tenant](../../core/tenant/), [data/cache/tenant](../../data/cache/tenant/), [data/idempotency/tenant](../../data/idempotency/tenant/), [cmd/kit-new](../../cmd/kit-new/), [cmd/kit-doctor](../../cmd/kit-doctor/) |
-| R-02 | Lock split-brain (two holders for the same name) | A1, A3 (clock skew) | `redislock.Locker.Acquire` returns a per-call `Lock` handle with a fencing token; `Unlock` checks owner; `Acquire` twice without `Release` returns an error | [data/lock/redislock](../../data/lock/redislock/), [data/lock/lock.go](../../data/lock/lock.go) |
-| R-03 | Idempotency replay across instances → two writes | A1 | Redis store uses Lua to atomically claim key + owner token; `Unlock` requires matching owner | [data/idempotency/redisstore/store.go](../../data/idempotency/redisstore/store.go) |
-| R-04 | Idempotency permanent lock (TTL=0) wedges further requests | A1 (induced) | `WithTTL(0)` on the middleware panics at construction; backends return `ErrInvalidTTL` | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
-| R-05 | Queue race — one consumer steals another's in-flight message | A1 (load-induced) | Per-consumer `:processing` list; Lua `removeByID` + LRANGE peek + dispatch-failure preserves message | [data/queue/redisqueue](../../data/queue/redisqueue/) |
-| R-06 | Redis `KEYS *` exposed via debug endpoint allows enumeration | A1 | Kit ships no debug-KEYS endpoint; `health` checks use `PING` only | [observability/health/health.go](../../observability/health/health.go) |
-| R-07 | TLS-less Redis on private network | A1 (observer), A3 | `redis.Config.Validate` rejects plaintext `redis://` URLs unless the deployment opts in via `redis.Config.AllowPlaintext` (env `REDIS_ALLOW_PLAINTEXT`); URLs carrying `skip_verify=` are rejected outright because the kit refuses to disable TLS verification | [infra/redis/config.go](../../infra/redis/config.go) |
-| R-08 | Rate-limit fixed-window allows burst at boundary | A1 | Sliding-window primitives `data/ratelimit/gcra`, `data/ratelimit/tokenbucket` available; service author chooses; old fixed-window implementation retained for back-compat with documented caveats | [data/ratelimit/ratelimit.go](../../data/ratelimit/ratelimit.go) |
-| R-09 | `MemoryCache` unbounded growth → OOM | A1 | Default 64 MiB cost cap; `WithMaxSize` / `WithMaxCost` are the only configuration knobs and both panic at construction if given a non-positive value, so a misconfigured cap fails fast instead of degenerating into an unbounded cache | [data/cache/memory_cache.go](../../data/cache/memory_cache.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| R-01 | Cross-tenant key collision (tenant A reads tenant B's cached value) | A2 | `core/tenant.Key(ctx, parts...)` builds length-prefixed scoped keys, `data/cache/tenant.Wrap` / `data/idempotency/tenant.Wrap` use the same encoder, `cmd/kit-new -tenant` scaffolds those wrappers, and `kit-doctor` flags hand-written `tenant:` key prefixes. | caller-must-cooperate | [core/tenant](../../core/tenant/), [data/cache/tenant](../../data/cache/tenant/), [data/idempotency/tenant](../../data/idempotency/tenant/), [cmd/kit-new](../../cmd/kit-new/), [cmd/kit-doctor](../../cmd/kit-doctor/) |
+| R-02 | Lock split-brain (two holders for the same name) | A1, A3 (clock skew) | `redislock.Locker.Acquire` returns a per-call `Lock` handle with a fencing token; `Unlock` checks owner; `Acquire` twice without `Release` returns an error | kit-enforced | [data/lock/redislock](../../data/lock/redislock/), [data/lock/lock.go](../../data/lock/lock.go) |
+| R-03 | Idempotency replay across instances → two writes | A1 | Redis store uses Lua to atomically claim key + owner token; `Unlock` requires matching owner | kit-enforced | [data/idempotency/redisstore/store.go](../../data/idempotency/redisstore/store.go) |
+| R-04 | Idempotency permanent lock (TTL=0) wedges further requests | A1 (induced) | `WithTTL(0)` on the middleware panics at construction; backends return `ErrInvalidTTL` | kit-enforced via panic | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
+| R-05 | Queue race — one consumer steals another's in-flight message | A1 (load-induced) | Per-consumer `:processing` list; Lua `removeByID` + LRANGE peek + dispatch-failure preserves message | kit-enforced | [data/queue/redisqueue](../../data/queue/redisqueue/) |
+| R-06 | Redis `KEYS *` exposed via debug endpoint allows enumeration | A1 | Kit ships no debug-KEYS endpoint; `health` checks use `PING` only | kit-enforced | [observability/health/health.go](../../observability/health/health.go) |
+| R-07 | TLS-less Redis on private network | A1 (observer), A3 | `redis.Config.Validate` rejects plaintext `redis://` URLs unless the deployment opts in via `redis.Config.AllowPlaintext` (env `REDIS_ALLOW_PLAINTEXT`); URLs carrying `skip_verify=` are rejected outright because the kit refuses to disable TLS verification | kit-enforced | [infra/redis/config.go](../../infra/redis/config.go) |
+| R-08 | Rate-limit fixed-window allows burst at boundary | A1 | Sliding-window primitives `data/ratelimit/gcra`, `data/ratelimit/tokenbucket` available; service author chooses; old fixed-window implementation retained for back-compat with documented caveats | caller-must-cooperate | [data/ratelimit/ratelimit.go](../../data/ratelimit/ratelimit.go) |
+| R-09 | `MemoryCache` unbounded growth → OOM | A1 | Default 64 MiB cost cap; `WithMaxSize` / `WithMaxCost` are the only configuration knobs and both panic at construction if given a non-positive value, so a misconfigured cap fails fast instead of degenerating into an unbounded cache | kit-enforced via panic | [data/cache/memory_cache.go](../../data/cache/memory_cache.go) |
 
 ### 4.6 Object/file storage (`infra/storage`, `infra/storage/storagehttp`)
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| S-01 | Path traversal via attacker-controlled key | A1 | `storagehttp.UUIDKeyFunc` recommended; raw client filenames as keys are explicitly disallowed by AGENTS.md "Never use raw client filenames as storage keys" | [infra/storage/storagehttp/keyfunc.go](../../infra/storage/storagehttp/keyfunc.go) |
-| S-02 | Local backend replaces a file but doesn't fsync parent dir → corruption on crash | A1 (DoS) | Local backend fsyncs parent directory after rename | [infra/storage/localbackend](../../infra/storage/localbackend/) |
-| S-03 | Server-side encryption keys leaked in logs | A6 | `storage/encryption` uses `crypto/envelope` KEKs; KEK material wrapped in `core/secret.String` | [infra/storage/encryption](../../infra/storage/encryption/) |
-| S-04 | Upload bypasses content-type/size limits | A1 | `storagehttp/uploadsec` provides MIME sniffing, size limits, dimension limits, and a generic malware scanner contract; `infra/storage/storagehttp/uploadsec/clamav` ships a ClamAV adapter that also exposes a `storage.Validator` bridge for `storagehttp.ParseAndStore`. | [infra/storage/storagehttp/uploadsec](../../infra/storage/storagehttp/uploadsec/), [infra/storage/storagehttp/uploadsec/clamav](../../infra/storage/storagehttp/uploadsec/clamav/) |
-| S-05 | SSRF via "fetch from URL" feature when service supports remote ingestion | A1 | `security/netutil.SSRFSafeTransport` resolves and rejects RFC1918, link-local, multicast destinations; documented "do not store SSRFSafeTransport long-term" anti-pattern | [security/netutil/ssrf.go](../../security/netutil/ssrf.go) |
-| S-06 | Cross-tenant file disclosure via guessable key | A2 | UUIDKeyFunc + tenant-prefixed namespace in `storage.Manager` policy; service-author responsibility documented in [docs/ai/storage.md](../ai/storage.md) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| S-01 | Path traversal via attacker-controlled key | A1 | `storagehttp.UUIDKeyFunc` recommended; raw client filenames as keys are explicitly disallowed by AGENTS.md "Never use raw client filenames as storage keys" | caller-must-cooperate | [infra/storage/storagehttp/keyfunc.go](../../infra/storage/storagehttp/keyfunc.go) |
+| S-02 | Local backend replaces a file but doesn't fsync parent dir → corruption on crash | A1 (DoS) | Local backend fsyncs parent directory after rename | kit-enforced | [infra/storage/localbackend](../../infra/storage/localbackend/) |
+| S-03 | Server-side encryption keys leaked in logs | A6 | `storage/encryption` uses `crypto/envelope` KEKs; KEK material wrapped in `core/secret.String` | kit-enforced | [infra/storage/encryption](../../infra/storage/encryption/) |
+| S-04 | Upload bypasses content-type/size limits | A1 | `storagehttp/uploadsec` provides MIME sniffing, size limits, dimension limits, and a generic malware scanner contract; `infra/storage/storagehttp/uploadsec/clamav` ships a ClamAV adapter that also exposes a `storage.Validator` bridge for `storagehttp.ParseAndStore`. | caller-must-cooperate | [infra/storage/storagehttp/uploadsec](../../infra/storage/storagehttp/uploadsec/), [infra/storage/storagehttp/uploadsec/clamav](../../infra/storage/storagehttp/uploadsec/clamav/) |
+| S-05 | SSRF via "fetch from URL" feature when service supports remote ingestion | A1 | `security/netutil.SSRFSafeTransport` resolves and rejects RFC1918, link-local, multicast destinations; documented "do not store SSRFSafeTransport long-term" anti-pattern | caller-must-cooperate | [security/netutil/ssrf.go](../../security/netutil/ssrf.go) |
+| S-06 | Cross-tenant file disclosure via guessable key | A2 | UUIDKeyFunc + tenant-prefixed namespace in `storage.Manager` policy; service-author responsibility documented in [docs/ai/storage.md](../ai/storage.md) | caller-must-cooperate |  |
 
 ### 4.7 JWT / PASETO verification (`security/jwtutil`, `crypto/paseto`)
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
-| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` (pin the expected `iss`) or the explicit opt-out `WithoutJWTIssuer`; the always-on `app.Builder` validator fails `Build()` if neither is set, so a service cannot ship with an unpinned issuer by accident. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | [app/jwt_module.go](../../app/jwt_module.go), [app/validate.go](../../app/validate.go) |
-| T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval |
-| T-04 | JWT replay after logout (no revocation) | A1 | `security/jwtutil/revocation` stores revoked `jti` values until token expiry over any cache-compatible backend; `jwtutil.Provider` can fail closed through `WithRevocationChecker`. | [security/jwtutil](../../security/jwtutil/), [security/jwtutil/revocation](../../security/jwtutil/revocation/) |
-| T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
-| T-06 | PASETO key in environment variable visible to `ps` / `/proc/<pid>/environ` | A6 | All PASETO keys go through `core/secret.String`; the kit's config loader supports `_FILE` suffix to mount keys from disk | [core/secret/secret.go](../../core/secret/secret.go), [core/config](../../core/config/) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | kit-enforced | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
+| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` (pin the expected `iss`) or the explicit opt-out `WithoutJWTIssuer`; the always-on `app.Builder` validator fails `Build()` if neither is set, so a service cannot ship with an unpinned issuer by accident. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | kit-enforced via panic | [app/jwt_module.go](../../app/jwt_module.go), [app/validate.go](../../app/validate.go) |
+| T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval | kit-enforced |  |
+| T-04 | JWT replay after logout (no revocation) | A1 | `security/jwtutil/revocation` stores revoked `jti` values until token expiry over any cache-compatible backend; `jwtutil.Provider` can fail closed through `WithRevocationChecker`. | caller-must-cooperate | [security/jwtutil](../../security/jwtutil/), [security/jwtutil/revocation](../../security/jwtutil/revocation/) |
+| T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | kit-enforced | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
+| T-06 | PASETO key in environment variable visible to `ps` / `/proc/<pid>/environ` | A6 | PASETO keys are loaded through `core/secret.String` (and the config loader's `_FILE` suffix mounts them from disk); runtime key material lives in `V4PublicSigner` / `V4PublicVerifier` for the construct's lifetime, so rotation requires a deploy and is caller-must-cooperate by design | caller-must-cooperate | [core/secret/secret.go](../../core/secret/secret.go), [core/config](../../core/config/), [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
+
+**Audit-trail wiring (Lens F A.2).** Revocation operations log via
+`revocation.WithLogger` / `revocation.WithAuditSink`; if neither is wired,
+revocation is unaudited (caller-must-cooperate). The audit record carries
+`{action, actor, resource, issuer, jti, outcome, reason}` — the same shape
+used by `authz` so a single sink decodes events from any source. See
+[security/jwtutil/revocation/revocation.go](../../security/jwtutil/revocation/revocation.go).
 
 ### 4.8 Signed-request middleware (`httpx/middleware/signedrequest`)
 
 Used for machine-to-machine endpoints (webhooks, internal RPC over
 HTTP) where JWT is overkill or impossible.
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| W-01 | Replay of a captured signed request | A1 | Nonce store with TTL; `signedrequest.NonceStore` interface implemented over Redis (`data/idempotency/redisstore`-style) — duplicate nonce rejected | [httpx/middleware/signedrequest/noncestore.go](../../httpx/middleware/signedrequest/noncestore.go) |
-| W-02 | Header-strip attack — attacker removes signed headers and resigns | A1 | The signature input includes the canonical sorted list of signed-headers; receiver computes the same list and rejects mismatches | [httpx/middleware/signedrequest/signedrequest.go](../../httpx/middleware/signedrequest/signedrequest.go) |
-| W-03 | Clock-skew bypass of timestamp window | A1 | Configurable max-clock-skew with a default in single-digit minutes; rejection on stale or future-dated requests |
-| W-04 | HMAC key reuse across services | A5 | Convention: per-service keys; `app.WithSignedRequests` accepts a key reference, not a key string | [app/signedrequest_module.go](../../app/signedrequest_module.go) |
-| W-05 | Signing key in source control | A5, A6 | `core/secret.String` wrapping; signing-key access flagged in code review by grepping for `SecretString.Reveal` |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| W-01 | Replay of a captured signed request | A1 | Nonce store with TTL; `signedrequest.NonceStore` interface implemented over Redis (`data/idempotency/redisstore`-style) — duplicate nonce rejected | kit-enforced via panic | [httpx/middleware/signedrequest/noncestore.go](../../httpx/middleware/signedrequest/noncestore.go) |
+| W-02 | Header-strip attack — attacker removes signed headers and resigns | A1 | The signature input includes the canonical sorted list of signed-headers; receiver computes the same list and rejects mismatches | kit-enforced | [httpx/middleware/signedrequest/signedrequest.go](../../httpx/middleware/signedrequest/signedrequest.go) |
+| W-03 | Clock-skew bypass of timestamp window | A1 | Configurable max-clock-skew with a default in single-digit minutes; rejection on stale or future-dated requests | kit-enforced |  |
+| W-04 | HMAC key reuse across services | A5 | Convention: per-service keys; `app.WithSignedRequests` accepts a key reference, not a key string | caller-must-cooperate | [app/signedrequest_module.go](../../app/signedrequest_module.go) |
+| W-05 | Signing key in source control | A5, A6 | `core/secret.String` wrapping; signing-key access flagged in code review by grepping for `SecretString.Reveal` | caller-must-cooperate |  |
 
 ### 4.9 Idempotency replay defence (`data/idempotency`, `httpx/middleware/idempotency`)
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| I-01 | Client retries POST → write happens twice | A1 (or honest retry) | `Idempotency-Key` header + request-fingerprint match; second match returns the cached response | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
-| I-02 | Different request body, same key → cached response leaks across calls | A1 | Middleware computes a fingerprint over `(method, path, body-hash)` and compares it to the stored fingerprint; mismatch returns 422 | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
-| I-03 | TTL=0 wedges all subsequent requests | A1 (DoS) | Middleware panics at construction with TTL=0; backends return `ErrInvalidTTL` | [data/idempotency/idempotency.go](../../data/idempotency/idempotency.go) |
-| I-04 | pgstore Unlock without owner check → split brain | A1 | pgstore migration adds `owner_token`; `Unlock` requires matching token | [data/idempotency/pgstore/store.go](../../data/idempotency/pgstore/store.go) |
-| I-05 | Memory store used in production → no cross-instance protection | A5 | AGENTS.md explicitly forbids `idempotency.NewMemoryStore` in prod; `kit-doctor` flags it | [cmd/kit-doctor](../../cmd/kit-doctor/) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| I-01 | Client retries POST → write happens twice | A1 (or honest retry) | `Idempotency-Key` header + request-fingerprint match; second match returns the cached response | kit-enforced | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
+| I-02 | Different request body, same key → cached response leaks across calls | A1 | Middleware computes a fingerprint over `(method, path, body-hash)` and compares it to the stored fingerprint; mismatch returns 422 | kit-enforced | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
+| I-03 | TTL=0 wedges all subsequent requests | A1 (DoS) | Middleware panics at construction with TTL=0; backends return `ErrInvalidTTL` | kit-enforced via panic | [data/idempotency/idempotency.go](../../data/idempotency/idempotency.go) |
+| I-04 | pgstore Unlock without owner check → split brain | A1 | pgstore migration adds `owner_token`; `Unlock` requires matching token | kit-enforced | [data/idempotency/pgstore/store.go](../../data/idempotency/pgstore/store.go) |
+| I-05 | Memory store used in production → no cross-instance protection | A5 | AGENTS.md explicitly forbids `idempotency.NewMemoryStore` in prod; `kit-doctor` flags it | caller-must-cooperate | [cmd/kit-doctor](../../cmd/kit-doctor/) |
 
 ### 4.10 LLM-cost / runaway-work exhaustion
 
@@ -402,33 +441,33 @@ This section covers the asset class "external API budgets" (asset
 [7]) that becomes critical when services proxy to paid LLM
 backends or other expensive operations.
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `WithTenantBudget` | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
-| L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.Required` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
-| L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | [runtime/concurrency](../../runtime/concurrency/) |
-| L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
-| L-05 | `BufferedPublisher` queue grows unboundedly while broker is down → OOM | A1 (DoS) | `defaultBufferedMaxSize = 10_000`; once exceeded, the publisher returns a `"buffered publisher: buffer full, message dropped"` error rather than evicting silently; state-file path validated | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `WithTenantBudget` | caller-must-cooperate | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
+| L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.Required` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | caller-must-cooperate | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
+| L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | kit-enforced | [runtime/concurrency](../../runtime/concurrency/) |
+| L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | caller-must-cooperate | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
+| L-05 | `BufferedPublisher` queue grows unboundedly while broker is down → OOM | A1 (DoS) | `defaultBufferedMaxSize = 10_000`; once exceeded, the publisher returns a `"buffered publisher: buffer full, message dropped"` error rather than evicting silently; state-file path validated | kit-enforced | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 
 ### 4.11 Outbox + transactional integrity (`infra/outbox`)
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` can require an ambient transaction via `WithRequireTransaction`; relay reads, publishes, and marks processing rows through the store contract | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
-| O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; exhausted rows move to failed state for dead-letter inspection | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
-| O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | Atomic `UPDATE … WHERE claimed_at IS NULL` claim pattern; `updated_at` used for stale-claim detection | [infra/outbox/gormstore](../../infra/outbox/gormstore/) |
-| O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay` cleans old published rows and old failed rows on startup and periodic ticks; `WithRetention` and `WithFailedRetention` tune the windows | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` can require an ambient transaction via `WithRequireTransaction`; relay reads, publishes, and marks processing rows through the store contract | kit-enforced | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; exhausted rows move to failed state for dead-letter inspection | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | Atomic `UPDATE … WHERE claimed_at IS NULL` claim pattern; `updated_at` used for stale-claim detection | kit-enforced | [infra/outbox/gormstore](../../infra/outbox/gormstore/) |
+| O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay` cleans old published rows and old failed rows on startup and periodic ticks; `WithRetention` and `WithFailedRetention` tune the windows | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 
 ### 4.12 Internal observability port
 
 The kit binds `/ready`, `/metrics`, `/debug/pprof`, and the SLO
 handler on a separate internal port (default `:9090`).
 
-| ID | Threat | Adversary | Mitigation | Where |
-|---|---|---|---|---|
-| P-01 | Public exposure of `/debug/pprof` allows arbitrary heap dump | A1 | The kit's internal port is intended to be cluster-internal only; deployment manifests must not expose it. The `pprof` handler is mounted via `observability/pprof` opt-in, not on by default | [observability/pprof](../../observability/pprof/) |
-| P-02 | Public `/metrics` discloses internal cardinality | A1 | Same as P-01 — internal port; AGENTS.md "Never embed user IDs or request IDs in Redis/Prometheus metric names" prevents per-user metric label cardinality | [observability/promutil](../../observability/promutil/) |
-| P-03 | Health check leaks dependency credentials in error message | A1 | `health` checks return safe error strings; underlying error chain logged but not surfaced | [observability/health/health.go](../../observability/health/health.go) |
+| ID | Threat | Adversary | Mitigation | Mitigation type | Where |
+|---|---|---|---|---|---|
+| P-01 | Public exposure of `/debug/pprof` allows arbitrary heap dump | A1 | The kit's internal port is intended to be cluster-internal only; deployment manifests must not expose it. The `pprof` handler is mounted via `observability/pprof` opt-in, not on by default | operator-must-configure | [observability/pprof](../../observability/pprof/) |
+| P-02 | Public `/metrics` discloses internal cardinality | A1 | Same as P-01 — internal port; AGENTS.md "Never embed user IDs or request IDs in Redis/Prometheus metric names" prevents per-user metric label cardinality | operator-must-configure | [observability/promutil](../../observability/promutil/) |
+| P-03 | Health check leaks dependency credentials in error message | A1 | `health` checks return safe error strings; underlying error chain logged but not surfaced | kit-enforced | [observability/health/health.go](../../observability/health/health.go) |
 
 ---
 
@@ -470,7 +509,7 @@ hatch in any kit code path. Per-feature relaxations are explicit
 opt-outs the operator declares consciously: `WithoutTLS`,
 `WithInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`.
 
-### 5.2 Refuse-to-print secrets
+### 5.2 Refuse-to-print secrets and memory hygiene
 
 [`core/secret.String`](../../core/secret/secret.go) refuses to render
 through:
@@ -483,10 +522,15 @@ through:
   redaction marker, never the underlying bytes.
 
 Intentional access is via `s.RevealString()` / `s.Reveal()`, which
-are greppable for audit. Not every integration config stores credentials as
-`core/secret.String`; URL/DSN and SDK-provider based fields instead implement
-safe `LogValue` renderers, stable errors, `_FILE` loading, or provider
-callbacks. Current high-risk credential surfaces are covered by:
+are greppable for audit. For cryptographic hot paths (HMAC compute,
+AEAD seal/open), prefer `s.Use(func(b []byte) {...})`: the wrapper
+hands the closure a freshly-allocated copy of the bytes and zeroes
+that copy on return, bounding the lifetime of in-heap plaintext to
+the single call site that needs it. Not every integration config
+stores credentials as `core/secret.String`; URL/DSN and SDK-provider
+based fields instead implement safe `LogValue` renderers, stable
+errors, `_FILE` loading, or provider callbacks. Current high-risk
+credential surfaces are covered by:
 
 - DB/Redis/AMQP/NATS config log redaction plus DB/Redis/AMQP/NATS provider
   hooks for rotation.
@@ -495,6 +539,76 @@ callbacks. Current high-risk credential surfaces are covered by:
 - JWT/PASETO/HMAC signing keys through JWKS refresh, caller-supplied PASETO
   providers, CSRF secret rings, and signed-request key stores.
 - Envelope KEK material through KMS/Vault provider SDKs and recorded KEK IDs.
+
+**Long-lived HMAC keys (Lens F A.7 closeout).** Long-lived HMAC keys
+are wrapped in `secret.String` so memory-dump attacks (core file,
+`/proc/<pid>/mem`, swap inspection) recover only zeroes after a
+graceful shutdown. The following types expose a `Close()` (or
+equivalent) that zeroes the wrapped key:
+
+- `observability/auditlog.Logger.Close()` — zeroes chain key and
+  cursor signer key. Subsequent `LogE` / `Query` / `VerifyChain`
+  return `ErrLoggerClosed`.
+- `crypto/signing.StaticKeyStore.Close()` — zeroes every wrapped
+  key in the rotation ring; lookups subsequently report missing.
+- `httpx/middleware/csrf` wraps the HMAC secret ring at the
+  middleware level. Reveals on the request hot path use
+  `secret.String.Use` so plaintext bytes have per-MAC lifetime.
+- `httpx/pagination.CursorSigner.Close()` — zeroes the cursor
+  signer secret; subsequent `Encode` returns `""` and `Decode`
+  returns `ErrCursorInvalid`.
+- `httpx/middleware/signedrequest` resolves the HMAC secret
+  per-request and `defer`-zeroes the local copy after MAC
+  comparison, bounding the per-request key lifetime to a single
+  `verify()` call.
+
+**PASETO signer key (Lens F A.6 closeout).**
+`crypto/paseto.V4PublicSigner.Close()` overwrites the Ed25519
+private-key bytes in place via the upstream
+`aidanwoods.dev/go-paseto` library's `ExportBytes()` slice handle,
+which returns the underlying `[]byte` without copying. Subsequent
+`Sign` calls return `ErrSignerClosed`. This depends on upstream
+implementation detail; if a future release introduces a defensive
+copy at `ExportBytes`, the closed flag still fails `Sign` closed but
+the bytes themselves remain in memory and this closeout will need to
+be revisited. T-06 in §4.7 tracks the residual risk.
+
+**Secret-file lifetime (Lens F A.9 closeout).**
+`core/config.readSecretFile` now returns `[]byte` (was `string`,
+which is immutable and unzeroable). `config.Load` zeroes the
+originating slice immediately after the value is parsed / copied
+into the destination field, so secret-file material does not
+linger on the heap as an immutable string after `LoadConfig`
+returns. `config.GetSecret` applies the same hygiene at its API
+boundary.
+
+**Secret-file error classification (Lens F A.16 closeout).**
+`readSecretFile` wraps the underlying os error so callers can use
+`errors.Is(err, fs.ErrPermission)`, `errors.Is(err, fs.ErrNotExist)`,
+and `errors.Is(err, fs.ErrInvalid)` to distinguish typo / permission
+/ unreadable-target failure modes. The file path itself is REDACTED
+from the surfaced error so log streams do not leak the operator's
+secret-store layout.
+
+**AES-GCM random-IV ceiling (Lens F A.8 closeout).**
+`crypto/encrypt.FieldEncryptor` tracks per-encryptor encrypt /
+decrypt counts via atomics surfaced through `OpsCount()` and an
+optional `RegisterMetrics(func(Operation))` hook that bridges to
+Prometheus / OpenTelemetry. Operators should track the count against
+the 2^32 random-IV birthday-bound ceiling documented in
+`crypto/encrypt/doc.go`: single-key `FieldEncryptor` is appropriate
+for deployments under ~10^9 ops/key/year; above that, switch to
+`crypto/envelope` with per-DEK rotation.
+
+**Cross-Origin-Isolation defaults (Lens F A.11 closeout).**
+`httpx/middleware/secheaders` now emits `Cross-Origin-Opener-Policy:
+same-origin`, `Cross-Origin-Embedder-Policy: require-corp`, and
+`Cross-Origin-Resource-Policy: same-origin` by default. The trio
+closes the Spectre / cross-origin window-reference leak surface.
+Services that legitimately embed cross-origin resources must audit
+their third-party origins and opt out via `WithoutCrossOriginOpener`
+/ `WithoutCrossOriginEmbedder` / `WithoutCrossOriginResource` (or
+`WithoutCrossOriginPolicies` for the full trio).
 
 ### 5.3 Tenant scoping
 
@@ -913,6 +1027,7 @@ considered through every STRIDE lens.
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
 | 2026-05 | Theme 6+ hardening | GAP-01, GAP-02, GAP-03, GAP-04, GAP-05, GAP-06, GAP-07, GAP-08, GAP-09, and GAP-10 closed by cost-budget primitives, `httpx.SafeRedirect`, `grpcx` default deadlines, internal-only gRPC health, `cmd/kit-new -tenant`, `jwtutil` revocation checks, cross-backend message-size limits, `uploadsec/clamav`, outbox self-managed retention cleanup, direct dependency allowlist CI, and heavy optional SDK boundary CI. |
 | 2026-05 | Audit round 4 doc-fidelity sweep | Aligned §4.1 H-04, §4.1 H-14, §4.4 D-04, §4.5 R-07, §4.5 R-09, §4.7 T-02, §4.10 L-05, §5.1, §5.2, §5.3, §5.5, and §6.1 prose with the implementing code (function names, struct fields, opt-out shapes); filed GAP-11 (`auditlog` first-class tenant field), GAP-12 (export `ErrBufferFull`), and GAP-13 (secret `BinaryMarshaler`) as LOW-severity follow-ups. |
+| 2026-05 | External-auditor reclassification | Added the "Mitigation type" column to every §4 table (kit-enforced / kit-enforced via panic / caller-must-cooperate / operator-must-configure) so the kit-enforced vs caller-cooperative split is explicit on every row; reworded §4.7 T-06 to reflect that runtime PASETO key material lives in `V4PublicSigner`/`V4PublicVerifier` for the construct's lifetime (rotation is caller-must-cooperate by design). |
 
 Future updates: amend this table whenever §4 acquires a new threat
 ID, §6 acquires a new walk-through, or §8 closes a gap. The

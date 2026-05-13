@@ -33,6 +33,20 @@ func TestWithUnaryInterceptorsClonesInput(t *testing.T) {
 	require.Equal(t, []string{"original"}, calls)
 }
 
+func TestWithMaxConcurrentStreamsConfigures(t *testing.T) {
+	var cfg serverConfig
+	WithMaxConcurrentStreams(7)(&cfg)
+	require.Equal(t, uint32(7), cfg.maxConcurrentStreams,
+		"WithMaxConcurrentStreams must write through to the config field")
+}
+
+func TestDefaultMaxConcurrentStreamsPinned(t *testing.T) {
+	// The default must be a small, finite number — the gRPC framework
+	// default of math.MaxUint32 is the GAP-03 streaming-flood vector.
+	require.Equal(t, uint32(1000), defaultMaxConcurrentStreams,
+		"defaultMaxConcurrentStreams must stay pinned at 1000 — a regression to math.MaxUint32 reopens GAP-03")
+}
+
 func TestWithStreamInterceptorsClonesInput(t *testing.T) {
 	var calls []string
 	interceptors := []grpc.StreamServerInterceptor{

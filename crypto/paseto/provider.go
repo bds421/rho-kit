@@ -111,7 +111,13 @@ func WithVerifyOptions(opts ...Option) ProviderOption {
 // this callback). The Provider keeps serving the previous key set
 // when refreshes fail, so the callback is the only signal that
 // rotation has stalled — wire it to a metric or alert.
+//
+// Panics if fn is nil: silently swallowing the callback would hide a
+// wiring bug and mask the only signal of stalled rotation.
 func WithOnRefreshError(fn func(error)) ProviderOption {
+	if fn == nil {
+		panic("paseto: WithOnRefreshError requires a non-nil callback")
+	}
 	return func(p *Provider) { p.onRefreshErr = fn }
 }
 
@@ -147,7 +153,7 @@ func NewProvider(ctx context.Context, src PublicKeySource, interval time.Duratio
 	}
 	for _, o := range opts {
 		if o == nil {
-			return nil, errors.New("paseto: provider option must not be nil")
+			panic("paseto: provider option must not be nil")
 		}
 		o(p)
 	}

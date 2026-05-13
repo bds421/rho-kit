@@ -22,6 +22,7 @@ import (
 
 	coreconfig "github.com/bds421/rho-kit/core/v2/config"
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/secret"
 	"github.com/bds421/rho-kit/httpx/v2"
 	securitycsrf "github.com/bds421/rho-kit/security/v2/csrf"
 )
@@ -52,9 +53,13 @@ type config struct {
 	// (when secureSet is false) is TRUE — see [New]. WithSecure
 	// flips secureSet so callers can explicitly opt out for local
 	// plain-HTTP development.
-	secure           bool
-	secureSet        bool
-	secrets          [][]byte // HMAC keys: current first, previous verification-only keys after
+	secure    bool
+	secureSet bool
+	// secrets are HMAC keys (current first, previous verification-only
+	// keys after) wrapped in [secret.String] so the raw bytes can be
+	// zeroed at middleware shutdown. Reveals on the hot path happen
+	// inside [secret.String.Use] closures.
+	secrets          []*secret.String
 	sameSite         http.SameSite
 	path             string
 	skipCheck        func(*http.Request) bool
@@ -110,47 +115,49 @@ func WithSecret(secret []byte) Option {
 // current. Existing cookies signed by previous secrets continue to verify until
 // callers remove those secrets after the cookie/token overlap window.
 func WithSecrets(current []byte, previous ...[]byte) Option {
-	secrets, err := cloneSecretRing(current, previous...)
-	if err != nil {
+	// Validate eagerly so misconfigurations fail at startup.
+	if _, err := cloneSecretRing(current, previous...); err != nil {
 		panic(err.Error())
 	}
+	currentCopy := append([]byte(nil), current...)
+	previousCopy := make([][]byte, len(previous))
+	for i, p := range previous {
+		previousCopy[i] = append([]byte(nil), p...)
+	}
 	return func(c *config) {
-		c.secrets = cloneSecretRingMust(secrets...)
+		// Always materialise the ring fresh per option-apply so two
+		// configs do not share wrapped secret pointers (the same
+		// behaviour as the pre-secret.String cloneSecretRingMust).
+		s, err := cloneSecretRing(currentCopy, previousCopy...)
+		if err != nil {
+			panic(err.Error())
+		}
+		c.secrets = s
 	}
 }
 
-func cloneSecretRing(current []byte, previous ...[]byte) ([][]byte, error) {
+func cloneSecretRing(current []byte, previous ...[]byte) ([]*secret.String, error) {
 	if len(current) < 32 {
 		return nil, fmt.Errorf("csrf: HMAC secret must be at least 32 bytes")
 	}
-	secrets := make([][]byte, 0, 1+len(previous))
-	secrets = append(secrets, append([]byte(nil), current...))
-	for _, secret := range previous {
-		if len(secret) < 32 {
+	secrets := make([]*secret.String, 0, 1+len(previous))
+	secrets = append(secrets, secret.New(current))
+	for _, s := range previous {
+		if len(s) < 32 {
 			return nil, fmt.Errorf("csrf: HMAC secret must be at least 32 bytes")
 		}
-		secrets = append(secrets, append([]byte(nil), secret...))
+		secrets = append(secrets, secret.New(s))
 	}
 	return secrets, nil
 }
 
-func cloneSecretRingMust(secrets ...[]byte) [][]byte {
-	cloned := make([][]byte, 0, len(secrets))
-	for _, secret := range secrets {
-		cloned = append(cloned, append([]byte(nil), secret...))
-	}
-	return cloned
-}
-
-func activeSecret(secrets [][]byte) []byte {
-	if len(secrets) == 0 {
+// activeSecretBytes returns a defensive copy of the current (head) secret.
+// Caller must zero the slice once done.
+func activeSecretBytes(secrets []*secret.String) []byte {
+	if len(secrets) == 0 || secrets[0] == nil {
 		return nil
 	}
-	return secrets[0]
-}
-
-func acceptedSecrets(secrets [][]byte) [][]byte {
-	return secrets
+	return secrets[0].Reveal()
 }
 
 // WithDevSecret opts in to per-process random secret generation. Use this
@@ -345,11 +352,17 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		if !cfg.allowDevSecret {
 			panic("csrf: no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 		}
-		secret := make([]byte, 32)
-		if _, err := io.ReadFull(tokenRandReader, secret); err != nil {
+		raw := make([]byte, 32)
+		if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
 			panic("csrf: failed to generate HMAC secret")
 		}
-		cfg.secrets = [][]byte{secret}
+		cfg.secrets = []*secret.String{secret.New(raw)}
+		// secret.New copied the bytes; wipe the local stack-allocated
+		// copy so the dev-mode key has the same one-place-only memory
+		// footprint as production secrets.
+		for i := range raw {
+			raw[i] = 0
+		}
 	}
 
 	// SameSite=None requires Secure: every modern browser rejects a cookie
@@ -367,8 +380,24 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 		if cfg.sessionTTL > 0 {
 			issuerOpts = append(issuerOpts, securitycsrf.WithTTL(cfg.sessionTTL))
 		}
-		issuer := securitycsrf.MustNewIssuerWithSecrets(activeSecret(cfg.secrets), acceptedSecrets(cfg.secrets)[1:], issuerOpts...)
-		currentIssuer := securitycsrf.MustNewIssuer(activeSecret(cfg.secrets), issuerOpts...)
+		// Reveal the wrapped secrets only for the duration of Issuer
+		// construction. The Issuer keeps its own copy of the bytes so
+		// the locals zero cleanly afterwards.
+		current := activeSecretBytes(cfg.secrets)
+		previous := make([][]byte, 0, len(cfg.secrets)-1)
+		for _, s := range cfg.secrets[1:] {
+			previous = append(previous, s.Reveal())
+		}
+		issuer := securitycsrf.MustNewIssuerWithSecrets(current, previous, issuerOpts...)
+		currentIssuer := securitycsrf.MustNewIssuer(current, issuerOpts...)
+		for i := range current {
+			current[i] = 0
+		}
+		for _, p := range previous {
+			for i := range p {
+				p[i] = 0
+			}
+		}
 		return sessionBoundMiddleware(&cfg, issuer, currentIssuer)
 	}
 
@@ -379,7 +408,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 			cookieRegenerated := false
 			if err != nil || !isValidSignedTokenAny(cookie.Value, cfg.secrets) {
 				// Generate a new token and set it as a cookie.
-				token, err := mintSignedToken(activeSecret(cfg.secrets))
+				token, err := mintSignedToken(cfg.secrets[0])
 				if err != nil {
 					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
 					return
@@ -399,12 +428,12 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 				// request that just received a new cookie.
 				cookie = &http.Cookie{Name: cfg.cookieName, Value: token}
 				cookieRegenerated = true
-			} else if !isValidSignedToken(cookie.Value, activeSecret(cfg.secrets)) {
+			} else if !isValidSignedToken(cookie.Value, cfg.secrets[0]) {
 				// Previous-secret token accepted during rotation. Reissue a
 				// current-secret cookie for the next request, but keep the
 				// incoming cookie as the value to compare against this request's
 				// header.
-				token, err := mintSignedToken(activeSecret(cfg.secrets))
+				token, err := mintSignedToken(cfg.secrets[0])
 				if err != nil {
 					httpx.WriteError(w, http.StatusInternalServerError, "csrf: token mint failed")
 					return
@@ -719,41 +748,46 @@ func canonicalOrigin(raw string, allowPath bool) (string, error) {
 // mintSignedToken creates a random token with an HMAC signature.
 // Format: "<random_hex>.<hmac_hex>". The middleware handler converts a
 // crypto/rand failure into HTTP 500 rather than crashing the request goroutine.
-func mintSignedToken(secret []byte) (string, error) {
+func mintSignedToken(s *secret.String) (string, error) {
 	raw := make([]byte, tokenLength)
 	if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
 		return "", fmt.Errorf("csrf: generate random token: %w", err)
 	}
 	tokenHex := hex.EncodeToString(raw)
-	sig := computeHMAC(tokenHex, secret)
+	sig := computeHMACWithSecret(tokenHex, s)
 	return tokenHex + "." + sig, nil
 }
 
 // isValidSignedToken verifies that the token was signed by the server.
-func isValidSignedToken(token string, secret []byte) bool {
+func isValidSignedToken(token string, s *secret.String) bool {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return false
 	}
-	expectedSig := computeHMAC(parts[0], secret)
+	expectedSig := computeHMACWithSecret(parts[0], s)
 	return hmac.Equal([]byte(parts[1]), []byte(expectedSig))
 }
 
-func isValidSignedTokenAny(token string, secrets [][]byte) bool {
+func isValidSignedTokenAny(token string, secrets []*secret.String) bool {
 	valid := false
-	for _, secret := range secrets {
-		if isValidSignedToken(token, secret) {
+	for _, s := range secrets {
+		if isValidSignedToken(token, s) {
 			valid = true
 		}
 	}
 	return valid
 }
 
-// computeHMAC returns the hex-encoded HMAC-SHA256 of data using the given key.
-func computeHMAC(data string, key []byte) string {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(data))
-	return hex.EncodeToString(mac.Sum(nil))
+// computeHMACWithSecret reveals the wrapped key inside a [secret.String.Use]
+// closure so the bytes have lifetime bounded to the HMAC compute.
+func computeHMACWithSecret(data string, s *secret.String) string {
+	var sum []byte
+	s.Use(func(k []byte) {
+		mac := hmac.New(sha256.New, k)
+		mac.Write([]byte(data))
+		sum = mac.Sum(nil)
+	})
+	return hex.EncodeToString(sum)
 }
 
 // HasBearerToken returns true if the request has an Authorization header

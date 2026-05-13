@@ -339,8 +339,23 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrSignatureInvalid
 	}
 	if len(secret) < minSecretLen {
+		// Wipe the over-short secret before returning — the resolver
+		// may have leaked the operator's actual key material into a
+		// new []byte and we should not let it linger on the heap any
+		// longer than necessary.
+		for i := range secret {
+			secret[i] = 0
+		}
 		return ErrSecretTooShort
 	}
+	// Ensure the per-request copy of the HMAC key is zeroed before
+	// verify() returns — bounds the lifetime of plaintext key bytes
+	// to the duration of a single MAC compute (Lens F A.7).
+	defer func() {
+		for i := range secret {
+			secret[i] = 0
+		}
+	}()
 
 	// Stream the body through a SHA-256 hasher so we have the body hash
 	// for the canonical string without buffering. Bound by bodyMaxSize.
@@ -367,10 +382,6 @@ func verify(r *http.Request, cfg *config) error {
 		return ErrNonceReplayed
 	}
 	return nil
-}
-
-func timestampWithinSkew(tsUnix int64, now time.Time, skew time.Duration) bool {
-	return classifyTimestampSkew(tsUnix, now, skew) == 0
 }
 
 // classifyTimestampSkew returns 0 when the timestamp is within

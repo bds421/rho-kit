@@ -112,7 +112,7 @@ func NewRedisCache(client goredis.UniversalClient, name string, opts ...CacheOpt
 	}
 	for _, o := range opts {
 		if o == nil {
-			return nil, fmt.Errorf("rediscache: NewRedisCache option must not be nil")
+			panic("rediscache: NewRedisCache option must not be nil")
 		}
 		o(rc)
 	}

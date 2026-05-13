@@ -2,6 +2,7 @@ package redis
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,12 +17,12 @@ import (
 
 const minimumTLSVersion = tls.VersionTLS12
 
-// RedisConfig holds Redis connection settings.
+// Config holds Redis connection settings.
 //
 // Configure via URL directly, or via individual fields (Host, Port, Password, DB)
 // which are assembled into a Redis URL. When URL is non-empty it takes
 // precedence over individual fields.
-type RedisConfig struct {
+type Config struct {
 	URL      string
 	Host     string
 	Port     int
@@ -37,7 +38,7 @@ type RedisConfig struct {
 // RedisURL returns the resolved Redis connection URL. If URL is set directly,
 // it is returned as-is. Otherwise, the URL is built from individual fields.
 // Returns an empty string if neither URL nor Host is configured.
-func (c RedisConfig) RedisURL() string {
+func (c Config) RedisURL() string {
 	if c.URL != "" {
 		return c.URL
 	}
@@ -60,9 +61,9 @@ func (c RedisConfig) RedisURL() string {
 }
 
 // Options returns go-redis Options parsed from the resolved URL or built from
-// individual fields. This is the primary way to convert a RedisConfig into
+// individual fields. This is the primary way to convert a Config into
 // the *redis.Options that Connect() and the Builder expect.
-func (c RedisConfig) Options() (*goredis.Options, error) {
+func (c Config) Options() (*goredis.Options, error) {
 	resolved := c.RedisURL()
 	if resolved == "" {
 		return nil, fmt.Errorf("redis: neither URL nor Host is configured")
@@ -86,6 +87,9 @@ func (c RedisConfig) Options() (*goredis.Options, error) {
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
 	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			return nil, fmt.Errorf("redis: TLS InsecureSkipVerify=true is not permitted")
+		}
 		return nil, fmt.Errorf("redis: TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned, nil
@@ -93,7 +97,7 @@ func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
 
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials
 // or topology embedded in the Redis URL.
-func (c RedisConfig) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	urlValid, urlHostConfigured, urlUserinfoConfigured := redisURLLogState(c.URL)
 	return slog.GroupValue(
 		slog.Bool("url_configured", c.URL != ""),
@@ -117,13 +121,13 @@ func redisURLLogState(rawURL string) (valid, hostConfigured, userinfoConfigured 
 	return true, u.Host != "", u.User != nil
 }
 
-// RedisFields holds Redis connection configuration.
+// Fields holds Redis connection configuration.
 // Embed this in service configs that use Redis.
-type RedisFields struct {
-	Redis RedisConfig
+type Fields struct {
+	Redis Config
 }
 
-// LoadRedisFields reads the Redis connection config from environment variables.
+// LoadFields reads the Redis connection config from environment variables.
 //
 // If REDIS_URL is set, it is used directly. Otherwise, the connection is
 // built from individual fields:
@@ -131,16 +135,16 @@ type RedisFields struct {
 //   - REDIS_PORT (default: 6379)
 //   - REDIS_PASSWORD (secret, default: empty)
 //   - REDIS_DB (default: 0)
-func LoadRedisFields() (RedisFields, error) {
+func LoadFields() (Fields, error) {
 	allowPlaintext, err := config.GetBool("REDIS_ALLOW_PLAINTEXT", false)
 	if err != nil {
-		return RedisFields{}, err
+		return Fields{}, err
 	}
 
 	// REDIS_URL takes precedence.
 	if rawURL := config.MustGetSecret("REDIS_URL", ""); rawURL != "" {
-		return RedisFields{
-			Redis: RedisConfig{URL: rawURL, AllowPlaintext: allowPlaintext},
+		return Fields{
+			Redis: Config{URL: rawURL, AllowPlaintext: allowPlaintext},
 		}, nil
 	}
 
@@ -149,11 +153,11 @@ func LoadRedisFields() (RedisFields, error) {
 	port := p.Int("REDIS_PORT", 6379)
 	db := p.Int("REDIS_DB", 0)
 	if err := p.Err(); err != nil {
-		return RedisFields{}, err
+		return Fields{}, err
 	}
 
-	return RedisFields{
-		Redis: RedisConfig{
+	return Fields{
+		Redis: Config{
 			Host:           config.Get("REDIS_HOST", ""),
 			Port:           port,
 			Password:       config.MustGetSecret("REDIS_PASSWORD", ""),
@@ -176,7 +180,7 @@ func LoadRedisFields() (RedisFields, error) {
 // must use `rediss://` and supply a credential; the explicit opt-out
 // keeps local-dev fixtures working while making the unsafe path
 // loud.
-func (f RedisFields) ValidateRedis(environment string) error {
+func (f Fields) ValidateRedis(environment string) error {
 	_ = environment // accepted for API compatibility; not consulted
 	resolved := f.Redis.RedisURL()
 	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {

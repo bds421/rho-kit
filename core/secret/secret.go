@@ -127,6 +127,45 @@ func (s *String) IsEmpty() bool {
 	return len(s.inner.buf) == 0
 }
 
+// Use grants temporary access to a copy of the underlying bytes
+// scoped to the lifetime of fn. The slice passed to fn is fresh
+// storage that does NOT alias the internal buffer; it is overwritten
+// with zeroes after fn returns (even when fn panics), so callers must
+// not retain the slice or any sub-slice beyond fn's return.
+//
+// Compared to [String.Reveal], Use bounds the lifetime of the
+// plaintext copy in heap memory — the temporary slice exists only
+// for the call site that needs it and is wiped immediately
+// afterwards. Use this for hot paths that compute an HMAC, AEAD
+// key, or other cryptographic operation against the secret and have
+// no reason to keep plaintext around afterwards.
+//
+// No-op on a nil receiver or an empty / zeroed String; fn is called
+// with a nil slice in that case so callers can treat the closure
+// uniformly.
+func (s *String) Use(fn func(b []byte)) {
+	if fn == nil {
+		return
+	}
+	if s == nil || s.inner == nil {
+		fn(nil)
+		return
+	}
+	s.inner.mu.RLock()
+	var local []byte
+	if len(s.inner.buf) > 0 {
+		local = make([]byte, len(s.inner.buf))
+		copy(local, s.inner.buf)
+	}
+	s.inner.mu.RUnlock()
+	defer func() {
+		for i := range local {
+			local[i] = 0
+		}
+	}()
+	fn(local)
+}
+
 // Zero overwrites the internal buffer with zeroes. Subsequent
 // [String.Reveal] calls return nil. Idempotent. No-op on a nil
 // receiver or uninitialised String.

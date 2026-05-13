@@ -10,12 +10,12 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// RabbitMQConfig holds AMQP connection settings.
+// Config holds AMQP connection settings.
 //
 // Configure via URL directly, or via individual fields (Host, Port, User,
 // Password, VHost) which are assembled into an AMQP URL. When URL is non-empty
 // it takes precedence over individual fields.
-type RabbitMQConfig struct {
+type Config struct {
 	URL      string
 	Host     string
 	Port     int
@@ -27,7 +27,7 @@ type RabbitMQConfig struct {
 // AMQPURL returns the resolved AMQP connection URL. If URL is set directly,
 // it is returned as-is. Otherwise, the URL is built from individual fields.
 // Returns an empty string if neither URL nor Host is configured.
-func (c RabbitMQConfig) AMQPURL() string {
+func (c Config) AMQPURL() string {
 	if c.URL != "" {
 		return c.URL
 	}
@@ -55,7 +55,7 @@ func (c RabbitMQConfig) AMQPURL() string {
 
 // LogValue implements slog.LogValuer to prevent accidental logging of credentials
 // or topology embedded in the AMQP URL.
-func (c RabbitMQConfig) LogValue() slog.Value {
+func (c Config) LogValue() slog.Value {
 	urlValid, urlHostConfigured, urlUserConfigured, urlPasswordConfigured, urlVHostConfigured := amqpURLLogState(c.URL)
 	return slog.GroupValue(
 		slog.Bool("url_configured", c.URL != ""),
@@ -83,13 +83,13 @@ func amqpURLLogState(rawURL string) (valid, hostConfigured, userConfigured, pass
 	return true, u.Host != "", u.User != nil && u.User.Username() != "", passwordConfigured, u.EscapedPath() != ""
 }
 
-// RabbitMQFields holds RabbitMQ connection configuration.
+// Fields holds RabbitMQ connection configuration.
 // Embed this in service configs that use RabbitMQ.
-type RabbitMQFields struct {
-	RabbitMQ RabbitMQConfig
+type Fields struct {
+	RabbitMQ Config
 }
 
-// LoadRabbitMQFields reads the RabbitMQ connection config from environment variables.
+// LoadFields reads the RabbitMQ connection config from environment variables.
 //
 // If RABBITMQ_URL is set, it is used directly. Otherwise, the connection is
 // built from individual fields:
@@ -98,11 +98,11 @@ type RabbitMQFields struct {
 //   - RABBITMQ_USER (default: guest)
 //   - RABBITMQ_PASSWORD (secret, default: guest)
 //   - RABBITMQ_VHOST (default: /)
-func LoadRabbitMQFields() (RabbitMQFields, error) {
+func LoadFields() (Fields, error) {
 	// RABBITMQ_URL takes precedence.
 	if rawURL := config.MustGetSecret("RABBITMQ_URL", ""); rawURL != "" {
-		return RabbitMQFields{
-			RabbitMQ: RabbitMQConfig{URL: rawURL},
+		return Fields{
+			RabbitMQ: Config{URL: rawURL},
 		}, nil
 	}
 
@@ -110,11 +110,11 @@ func LoadRabbitMQFields() (RabbitMQFields, error) {
 	p := &config.Parser{}
 	port := p.Int("RABBITMQ_PORT", 5672)
 	if err := p.Err(); err != nil {
-		return RabbitMQFields{}, err
+		return Fields{}, err
 	}
 
-	return RabbitMQFields{
-		RabbitMQ: RabbitMQConfig{
+	return Fields{
+		RabbitMQ: Config{
 			Host:     config.Get("RABBITMQ_HOST", ""),
 			Port:     port,
 			User:     config.Get("RABBITMQ_USER", "guest"),
@@ -136,7 +136,7 @@ func LoadRabbitMQFields() (RabbitMQFields, error) {
 // because the URL is longer than the weak-credential length cap and
 // does not contain "changeme" — defeating the check (audit finding
 // N-5).
-func (f RabbitMQFields) ValidateRabbitMQ(environment string) error {
+func (f Fields) ValidateRabbitMQ(environment string) error {
 	_ = environment // accepted for API compatibility; no longer consulted
 	resolved := f.RabbitMQ.AMQPURL()
 	if err := ValidateAMQPURL("RABBITMQ_URL", resolved); err != nil {

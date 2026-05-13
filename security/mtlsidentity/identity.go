@@ -10,24 +10,46 @@ import (
 )
 
 var (
-	ErrInvalidSAN    = errors.New("mtlsidentity: invalid SAN")
+	// ErrInvalidSAN is returned when a SAN entry contains unsafe runes
+	// (whitespace, control characters, NUL, or non-UTF-8 bytes) that an
+	// allowlist comparison must not see.
+	ErrInvalidSAN = errors.New("mtlsidentity: invalid SAN")
+	// ErrInvalidURISAN is returned when a SAN value looks like a URI but
+	// fails to parse, lacks a scheme/host, or carries forbidden parts
+	// (userinfo, query, fragment).
 	ErrInvalidURISAN = errors.New("mtlsidentity: invalid URI SAN")
+	// ErrInvalidDNSSAN is returned when a SAN value is meant to be a DNS
+	// name but violates RFC 1035 label rules.
 	ErrInvalidDNSSAN = errors.New("mtlsidentity: invalid DNS SAN")
-	ErrInvalidCN     = errors.New("mtlsidentity: invalid CN")
+	// ErrInvalidCN is returned when a Common Name contains unsafe runes
+	// (whitespace, control characters, NUL, or non-UTF-8 bytes).
+	ErrInvalidCN = errors.New("mtlsidentity: invalid CN")
 )
 
+// SANKind identifies the form of a Subject Alternative Name entry.
 type SANKind int
 
 const (
+	// SANDNS marks a DNS-form SAN value (e.g. "svc.cluster.local").
 	SANDNS SANKind = iota + 1
+	// SANURI marks a URI-form SAN value (e.g. "spiffe://trust/ns/team/sa/svc").
 	SANURI
 )
 
+// SAN is a normalized Subject Alternative Name entry suitable for
+// allowlist comparison. The zero value represents "absent" — see the
+// `ok` return from [NormalizeSAN].
 type SAN struct {
 	Kind  SANKind
 	Value string
 }
 
+// NormalizeSAN parses an allowlist entry into a [SAN] value. Whitespace
+// is trimmed; URI entries (containing "://") are validated and returned
+// as [SANURI]; everything else is treated as a DNS name, lower-cased,
+// and returned as [SANDNS]. The bool return is false for empty input
+// and true for a usable allowlist entry; errors signal a malformed
+// entry that must be rejected at config-load time.
 func NormalizeSAN(input string) (SAN, bool, error) {
 	raw := strings.TrimSpace(input)
 	if raw == "" {
@@ -49,6 +71,10 @@ func NormalizeSAN(input string) (SAN, bool, error) {
 	return SAN{Kind: SANDNS, Value: strings.ToLower(raw)}, true, nil
 }
 
+// NormalizeCN validates and trims a Common Name allowlist entry.
+// The bool return is false for an empty trimmed value and true for a
+// usable entry; errors signal a malformed CN that must be rejected at
+// config-load time.
 func NormalizeCN(input string) (string, bool, error) {
 	cn := strings.TrimSpace(input)
 	if cn == "" {

@@ -162,7 +162,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	mc := &MemoryCache{metricsEnabled: true}
 	for _, o := range opts {
 		if o == nil {
-			return nil, fmt.Errorf("cache: NewMemoryCache option must not be nil")
+			panic("cache: NewMemoryCache option must not be nil")
 		}
 		o(mc)
 	}

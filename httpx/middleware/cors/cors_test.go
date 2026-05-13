@@ -12,7 +12,7 @@ import (
 func TestCORS_AllowAll(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{AllowedOrigins: []string{"*"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("*"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -28,14 +28,15 @@ func TestCORS_AllowAll(t *testing.T) {
 func TestCORS_PanicsWithoutExplicitAllowedOrigins(t *testing.T) {
 	t.Parallel()
 
-	for _, opts := range []Options{
-		{},
-		{AllowedOrigins: []string{}},
-		{AllowedOrigins: []string{"", " \t "}},
-	} {
+	cases := [][]Option{
+		nil,
+		{WithAllowedOrigins()},
+		{WithAllowedOrigins("", " \t ")},
+	}
+	for _, opts := range cases {
 		opts := opts
 		assert.Panics(t, func() {
-			New(opts)
+			New(opts...)
 		})
 	}
 }
@@ -43,7 +44,7 @@ func TestCORS_PanicsWithoutExplicitAllowedOrigins(t *testing.T) {
 func TestCORS_SpecificOrigin(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -68,7 +69,7 @@ func TestCORS_SpecificOrigin(t *testing.T) {
 func TestCORS_Preflight(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called for preflight")
 	}))
 
@@ -89,7 +90,7 @@ func TestCORS_NoOriginHeader(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -107,7 +108,7 @@ func TestCORS_RejectsDuplicateOriginHeaders(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -128,7 +129,7 @@ func TestCORS_RejectsBlankOriginHeader(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -147,7 +148,7 @@ func TestCORS_RejectsInjectedOriginHeader(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -167,7 +168,7 @@ func TestCORS_RejectsInvalidOriginHeaderValue(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -186,7 +187,7 @@ func TestCORS_RejectsInjectedPreflightRequestHeaders(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -208,7 +209,7 @@ func TestCORS_RejectsDuplicatePreflightMethodHeaders(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -230,7 +231,7 @@ func TestCORS_RejectsDuplicatePreflightRequestHeaders(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -253,7 +254,7 @@ func TestCORS_RejectsBlankPreflightRequestHeaders(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	handler := New(Options{AllowedOrigins: []string{"https://example.com"}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -274,10 +275,10 @@ func TestCORS_RejectsBlankPreflightRequestHeaders(t *testing.T) {
 func TestCORS_AllowCredentials(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{
-		AllowedOrigins:   []string{"https://example.com"},
-		AllowCredentials: true,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(
+		WithAllowedOrigins("https://example.com"),
+		WithCredentials(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -293,10 +294,7 @@ func TestCORS_WildcardWithCredentials_Panics(t *testing.T) {
 	t.Parallel()
 
 	assert.PanicsWithValue(t, "cors: invalid configuration", func() {
-		New(Options{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: true,
-		})
+		New(WithAllowedOrigins("*"), WithCredentials())
 	})
 }
 
@@ -304,20 +302,17 @@ func TestCORS_MixedWildcardWithCredentials_Panics(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		New(Options{
-			AllowedOrigins:   []string{"https://example.com", "*"},
-			AllowCredentials: true,
-		})
+		New(WithAllowedOrigins("https://example.com", "*"), WithCredentials())
 	})
 }
 
 func TestCORS_ExposedHeaders(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{
-		AllowedOrigins: []string{"https://example.com"},
-		ExposedHeaders: []string{"X-Request-Id", "X-Trace-Id"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(
+		WithAllowedOrigins("https://example.com"),
+		WithExposedHeaders("X-Request-Id", "X-Trace-Id"),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -338,12 +333,12 @@ func TestCORS_OptionsSlicesAreDetached(t *testing.T) {
 	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	requestHeaders := []string{"X-Allowed"}
 	exposedHeaders := []string{"X-Expose"}
-	handler := New(Options{
-		AllowedOrigins: origins,
-		AllowedMethods: methods,
-		AllowedHeaders: requestHeaders,
-		ExposedHeaders: exposedHeaders,
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(
+		WithAllowedOrigins(origins...),
+		WithAllowedMethods(methods...),
+		WithAllowedHeaders(requestHeaders...),
+		WithExposedHeaders(exposedHeaders...),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -390,9 +385,7 @@ func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 func TestCORS_SubdomainWildcard(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{
-		AllowedOrigins: []string{"https://*.example.com"},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := New(WithAllowedOrigins("https://*.example.com"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

@@ -11,8 +11,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
+
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // CursorParams holds cursor-based pagination parameters.
@@ -168,19 +171,24 @@ var ErrCursorInvalid = errors.New("pagination: invalid or tampered cursor")
 // Wire across processes: every replica that issues or accepts cursors
 // must share the same secret. Use [config.MustGetSecret] or your KMS of
 // choice; never let each pod mint its own random secret.
+//
+// CursorSigner wraps its HMAC secret in [secret.String] so the raw bytes
+// can be zeroed at shutdown via [CursorSigner.Close]. The cryptographic
+// hot path reveals into a stack-local copy via [secret.String.Use] so
+// no long-lived []byte aliases the key.
 type CursorSigner struct {
-	secret []byte
+	secret    *secret.String
+	secretLen int
+	closed    atomic.Bool
 }
 
 // NewCursorSigner creates a CursorSigner. The secret must be at least 32
 // bytes; shorter inputs are rejected.
-func NewCursorSigner(secret []byte) (*CursorSigner, error) {
-	if len(secret) < minCursorSignerSecretLen {
+func NewCursorSigner(s []byte) (*CursorSigner, error) {
+	if len(s) < minCursorSignerSecretLen {
 		return nil, fmt.Errorf("pagination: cursor signer secret must be at least 32 bytes")
 	}
-	cp := make([]byte, len(secret))
-	copy(cp, secret)
-	return &CursorSigner{secret: cp}, nil
+	return &CursorSigner{secret: secret.New(s), secretLen: len(s)}, nil
 }
 
 // MustNewCursorSigner panics on construction error. Use in startup paths.
@@ -193,7 +201,22 @@ func MustNewCursorSigner(secret []byte) *CursorSigner {
 }
 
 func (s *CursorSigner) ready() bool {
-	return s != nil && len(s.secret) >= minCursorSignerSecretLen
+	return s != nil && !s.closed.Load() && s.secretLen >= minCursorSignerSecretLen && s.secret != nil && !s.secret.IsEmpty()
+}
+
+// Close zeroes the wrapped HMAC secret. Subsequent Encode calls return
+// "" and Decode returns [ErrCursorInvalid]. Idempotent.
+func (s *CursorSigner) Close() error {
+	if s == nil {
+		return nil
+	}
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if s.secret != nil {
+		s.secret.Zero()
+	}
+	return nil
 }
 
 // Encode signs the raw cursor payload (typically a UUID or other PK string).
@@ -203,10 +226,14 @@ func (s *CursorSigner) Encode(payload string) string {
 	if payload == "" || !s.ready() {
 		return ""
 	}
-	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte(payload))
+	var sum []byte
+	s.secret.Use(func(k []byte) {
+		mac := hmac.New(sha256.New, k)
+		mac.Write([]byte(payload))
+		sum = mac.Sum(nil)
+	})
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
-		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		base64.RawURLEncoding.EncodeToString(sum)
 }
 
 // Decode verifies and decodes a signed cursor produced by [CursorSigner.Encode].
@@ -235,9 +262,13 @@ func (s *CursorSigner) Decode(cursor string) (string, error) {
 	if err != nil {
 		return "", ErrCursorInvalid
 	}
-	expected := hmac.New(sha256.New, s.secret)
-	expected.Write(payload)
-	if subtle.ConstantTimeCompare(sig, expected.Sum(nil)) != 1 {
+	var match bool
+	s.secret.Use(func(k []byte) {
+		expected := hmac.New(sha256.New, k)
+		expected.Write(payload)
+		match = subtle.ConstantTimeCompare(sig, expected.Sum(nil)) == 1
+	})
+	if !match {
 		return "", ErrCursorInvalid
 	}
 	return string(payload), nil

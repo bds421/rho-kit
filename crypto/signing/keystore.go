@@ -3,8 +3,11 @@ package signing
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
@@ -39,13 +42,20 @@ const NilKeyStoreMsg = "signing: KeyStore must not be nil"
 
 // StaticKeyStore holds a fixed set of keys. Multiple keys support rotation:
 // sign with current, verify against any.
+//
+// Each key is wrapped in [secret.String] so the raw bytes can be zeroed at
+// shutdown via [StaticKeyStore.Close]. Memory dumps (core file,
+// /proc/<pid>/mem on Linux, swap inspection) recover only zeroes after a
+// successful Close.
 type StaticKeyStore struct {
 	// keys is a defensively copied map set once in NewStaticKeyStore and never
-	// modified afterward. Read-only access from Key and CurrentKeyID is safe
-	// for concurrent use without a mutex.
-	keys map[string][]byte
+	// modified afterward (the map shape; the wrapped secrets themselves can
+	// be zeroed via Close). Read-only access from Key and CurrentKeyID is
+	// safe for concurrent use without a mutex.
+	keys map[string]*secret.String
 	// currentID is set once in NewStaticKeyStore and never modified afterward.
 	currentID string
+	closed    atomic.Bool
 }
 
 // NewStaticKeyStore creates a StaticKeyStore with the given keys and
@@ -77,11 +87,9 @@ func NewStaticKeyStore(keys map[string][]byte, currentID string) (*StaticKeyStor
 		}
 	}
 
-	copied := make(map[string][]byte, len(keys))
+	copied := make(map[string]*secret.String, len(keys))
 	for id, k := range keys {
-		dst := make([]byte, len(k))
-		copy(dst, k)
-		copied[id] = dst
+		copied[id] = secret.New(k)
 	}
 
 	return &StaticKeyStore{
@@ -108,50 +116,76 @@ func MustNewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyS
 
 // Key returns the secret for the given key ID. Returns nil, false if not found.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
+//
+// Returns nil, false after [StaticKeyStore.Close] has zeroed the wrapped
+// secrets — callers downstream must treat that as the key store being
+// shut down.
 func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
-	if s == nil || s.keys == nil {
+	if s == nil || s.keys == nil || s.closed.Load() {
 		return nil, false
 	}
 	k, ok := s.keys[keyID]
-	if !ok {
+	if !ok || k == nil || k.IsEmpty() {
 		return nil, false
 	}
-	dst := make([]byte, len(k))
-	copy(dst, k)
-	return dst, true
+	return k.Reveal(), true
 }
 
-// KeyUnsafe returns the internal key slice without copying. This avoids
-// allocation on the hot path for internal sign/verify operations where the
-// caller does not expose the slice. The returned slice MUST NOT be mutated
-// or retained beyond the calling function's scope.
+// KeyUnsafe is retained for API compatibility with v1 callers but now
+// returns a defensive copy — the wrapped [secret.String] does not expose
+// a non-copying view. The historic "MUST NOT be mutated or retained"
+// contract still applies.
 func (s *StaticKeyStore) KeyUnsafe(keyID string) ([]byte, bool) {
-	if s == nil || s.keys == nil {
-		return nil, false
-	}
-	k, ok := s.keys[keyID]
-	return k, ok
+	return s.Key(keyID)
 }
 
-// CurrentKeyUnsafe returns the active signing key ID and internal secret
-// slice without copying. Same safety constraints as KeyUnsafe apply.
+// CurrentKeyUnsafe returns the active signing key ID and a defensive copy
+// of the key bytes. See [StaticKeyStore.KeyUnsafe] for the historical
+// "Unsafe" contract.
 func (s *StaticKeyStore) CurrentKeyUnsafe() (string, []byte) {
-	if s == nil || s.keys == nil {
+	if s == nil || s.keys == nil || s.closed.Load() {
 		return "", nil
 	}
-	return s.currentID, s.keys[s.currentID]
+	k, ok := s.keys[s.currentID]
+	if !ok || k == nil || k.IsEmpty() {
+		return s.currentID, nil
+	}
+	return s.currentID, k.Reveal()
 }
 
 // CurrentKeyID returns the active signing key ID and secret.
 // The returned slice is a defensive copy; callers cannot mutate internal state.
 func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
-	if s == nil || s.keys == nil {
+	if s == nil || s.keys == nil || s.closed.Load() {
 		return "", nil
 	}
-	k := s.keys[s.currentID]
-	dst := make([]byte, len(k))
-	copy(dst, k)
-	return s.currentID, dst
+	k, ok := s.keys[s.currentID]
+	if !ok || k == nil || k.IsEmpty() {
+		return s.currentID, nil
+	}
+	return s.currentID, k.Reveal()
+}
+
+// Close zeroes every wrapped key in the store. Subsequent Key /
+// CurrentKeyID / KeyUnsafe / CurrentKeyUnsafe calls return empty
+// values. Idempotent — calling Close on an already-closed store is
+// a no-op.
+//
+// Close is intended for graceful shutdown paths where the kit owns
+// the key material's lifecycle (typically alongside server.Close()).
+func (s *StaticKeyStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	for _, k := range s.keys {
+		if k != nil {
+			k.Zero()
+		}
+	}
+	return nil
 }
 
 func validateKeyID(keyID string) error {

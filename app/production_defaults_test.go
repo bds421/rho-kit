@@ -20,13 +20,14 @@ import (
 )
 
 // newSafeBuilder returns a Builder with the always-on production-safety
-// validator armed and the TLS / audience opt-outs applied. The TLS,
-// internal-host, and audience checks have dedicated tests below; the
-// helper isolates each remaining test to a single concern.
+// validator armed and the TLS / audience / rate-limit opt-outs applied.
+// The TLS, internal-host, audience, and rate-limit checks have dedicated
+// tests below; the helper isolates each remaining test to a single concern.
 func newSafeBuilder() *Builder {
 	return New("test", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 }
 
 func TestBuilder_Validates_NoOpWithoutJWT(t *testing.T) {
@@ -86,7 +87,8 @@ func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	err := b.Validate()
 	require.Error(t, err, "exposed internal port must fail validation")
 	assert.Contains(t, err.Error(), "Internal.Host")
@@ -101,7 +103,8 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 	}
 	b := New("svc", "v1", cfg).
 		WithInternalNonLoopback().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
 }
@@ -121,7 +124,7 @@ func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
 			err := b.Validate()
 			require.Errorf(t, err, "Internal.Host=%q must be rejected without WithInternalNonLoopback", host)
 			assert.Contains(t, err.Error(), "not loopback")
@@ -140,7 +143,7 @@ func TestBuilder_Validates_AcceptsLoopbackVariants(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
 			err := b.Validate()
 			require.NoErrorf(t, err, "Internal.Host=%q is loopback and must pass", host)
 		})
@@ -160,7 +163,7 @@ func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
 			err := b.Validate()
 			require.Error(t, err, "IPv6 wildcard %q must fail validation", host)
 			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
@@ -220,7 +223,7 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience()
+			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
 			err := b.Validate()
 			require.Error(t, err, "IPv4 zero form %q must fail validation", host)
 			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
@@ -232,7 +235,8 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 
 func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 	b := New("svc", "v1", validBaseConfig()).
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	err := b.Validate()
 	require.Error(t, err, "validator must reject empty TLS config")
 	assert.Contains(t, err.Error(), "TLS")
@@ -242,7 +246,8 @@ func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 	b := New("svc", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutJWTAudience().
+		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"WithoutTLS must allow empty TLS config")
 }
@@ -251,6 +256,9 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 
 func TestBudget_RequiresMultiTenant(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
+		WithoutTLS().
+		WithoutJWTAudience().
+		WithoutRateLimit().
 		WithTenantBudget(&stubBudget{})
 	err := b.Validate()
 	require.Error(t, err, "WithTenantBudget without WithMultiTenant must fail")
@@ -261,6 +269,7 @@ func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutJWTAudience().
+		WithoutRateLimit().
 		WithMultiTenant(nil, true).
 		WithTenantBudget(&stubBudget{})
 	require.NoError(t, b.Validate(),
@@ -273,6 +282,7 @@ func TestBuilder_Validates_RequiresJWTAudience(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.TLS = validTLSForTest(t)
 	b := New("svc", "v1", cfg).
+		WithoutRateLimit().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com")
 	err := b.Validate()
@@ -284,6 +294,7 @@ func TestBuilder_Validates_AcceptsJWTAudience(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.TLS = validTLSForTest(t)
 	b := New("svc", "v1", cfg).
+		WithoutRateLimit().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
 		WithJWTAudience("svc")
@@ -295,6 +306,7 @@ func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.TLS = validTLSForTest(t)
 	b := New("svc", "v1", cfg).
+		WithoutRateLimit().
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com").
 		WithoutJWTAudience()
@@ -313,7 +325,7 @@ func TestBuilder_PublicTLSDefaultsToMutualAuth(t *testing.T) {
 	tlsCfg := realTLSForTest(t)
 	cfg := validBaseConfig()
 	cfg.TLS = tlsCfg
-	b := New("svc", "v1", cfg).WithoutJWTAudience()
+	b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
 
 	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
 	require.NoError(t, err)
@@ -330,6 +342,7 @@ func TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven(t *tes
 	cfg.TLS = tlsCfg
 	b := New("svc", "v1", cfg).
 		WithoutJWTAudience().
+		WithoutRateLimit().
 		WithOptionalClientCertificates()
 
 	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)

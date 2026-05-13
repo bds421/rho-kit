@@ -457,3 +457,82 @@ func TestFieldEncryptor_InvalidReceiverReturnsError(t *testing.T) {
 		})
 	}
 }
+
+func TestFieldEncryptor_OpsCountIncrementsPerCall(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	if e, d := enc.OpsCount(); e != 0 || d != 0 {
+		t.Fatalf("initial OpsCount = (%d, %d), want (0, 0)", e, d)
+	}
+
+	for range 5 {
+		if _, err := enc.Encrypt("hello"); err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+	}
+	ct, err := enc.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	for range 3 {
+		if _, err := enc.Decrypt(ct); err != nil {
+			t.Fatalf("decrypt: %v", err)
+		}
+	}
+
+	enc.encryptOps.Add(0) // ensure no false visibility issue when reading
+	enc.decryptOps.Add(0)
+	if e, d := enc.OpsCount(); e != 6 || d != 3 {
+		t.Fatalf("OpsCount = (%d, %d), want (6, 3)", e, d)
+	}
+}
+
+func TestFieldEncryptor_RegisterMetricsCallback(t *testing.T) {
+	enc, err := NewFieldEncryptor(testKey(t))
+	if err != nil {
+		t.Fatalf("new encryptor: %v", err)
+	}
+	var encrypts, decrypts int
+	enc.RegisterMetrics(func(op Operation) {
+		switch op {
+		case OperationEncrypt:
+			encrypts++
+		case OperationDecrypt:
+			decrypts++
+		}
+	})
+
+	ct, err := enc.Encrypt("payload")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if _, err := enc.Decrypt(ct); err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if encrypts != 1 || decrypts != 1 {
+		t.Fatalf("encrypts=%d decrypts=%d, want both 1", encrypts, decrypts)
+	}
+
+	// Nil clears the callback.
+	enc.RegisterMetrics(nil)
+	if _, err := enc.Encrypt("payload"); err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if encrypts != 1 {
+		t.Fatalf("encrypts after nil callback = %d, want 1 (callback should not fire)", encrypts)
+	}
+}
+
+func TestOperation_String(t *testing.T) {
+	if got := OperationEncrypt.String(); got != "encrypt" {
+		t.Fatalf("OperationEncrypt = %q, want encrypt", got)
+	}
+	if got := OperationDecrypt.String(); got != "decrypt" {
+		t.Fatalf("OperationDecrypt = %q, want decrypt", got)
+	}
+	if got := Operation(99).String(); got != "unknown" {
+		t.Fatalf("Operation(99) = %q, want unknown", got)
+	}
+}

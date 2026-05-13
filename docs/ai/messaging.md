@@ -478,7 +478,7 @@ Configure via URL (takes precedence) or individual fields:
 
 *Either `RABBITMQ_URL` or `RABBITMQ_HOST` must be set.
 
-Loaded via `amqpbackend.LoadRabbitMQFields()`. Use `cfg.RabbitMQ.AMQPURL()` to get the resolved URL. Credentials are redacted in logs.
+Loaded via `amqpbackend.LoadFields()`. Use `cfg.RabbitMQ.AMQPURL()` to get the resolved URL. Credentials are redacted in logs.
 
 ## Anti-Patterns
 

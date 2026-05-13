@@ -45,6 +45,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"aidanwoods.dev/go-paseto"
@@ -64,6 +65,10 @@ var (
 	ErrNoExpiration      = errors.New("paseto: ExpiresAt is required (use WithDefaultLifetime to derive it, or WithoutExpiration to opt out)")
 	ErrMultiAudience     = errors.New("paseto: PASETO v4 supports a single audience; pass at most one Audience entry")
 	ErrInvalidVerifier   = errors.New("paseto: verifier is not initialized")
+
+	// ErrSignerClosed is returned by [V4PublicSigner.Sign] after the
+	// signer has been [V4PublicSigner.Close]-zeroed.
+	ErrSignerClosed = errors.New("paseto: signer is closed")
 )
 
 // reservedClaims are the names of standard registered claims that
@@ -170,7 +175,7 @@ func buildConfig(opts []Option) (config, error) {
 	cfg := config{requireExp: true}
 	for _, o := range opts {
 		if o == nil {
-			return cfg, errors.New("paseto: option must not be nil")
+			panic("paseto: option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -246,10 +251,15 @@ func (v *V4PublicVerifier) Verify(token string, now time.Time) (*Claims, error) 
 // [NewV4PublicSigner] with the Ed25519 private key. Issuance and
 // verification are split into distinct types so a service that only
 // verifies tokens cannot accidentally come to hold the private key.
+//
+// Call [V4PublicSigner.Close] at process shutdown to overwrite the
+// underlying Ed25519 private-key bytes; subsequent [V4PublicSigner.Sign]
+// calls return [ErrSignerClosed].
 type V4PublicSigner struct {
 	cfg         config
 	priv        paseto.V4AsymmetricSecretKey
 	initialized bool
+	closed      atomic.Bool
 }
 
 // NewV4PublicSigner constructs a signer for v4.public tokens. The
@@ -273,11 +283,44 @@ func (s *V4PublicSigner) Sign(claims Claims) (string, error) {
 	if s == nil || !s.initialized {
 		return "", ErrInvalidVerifier
 	}
+	if s.closed.Load() {
+		return "", ErrSignerClosed
+	}
 	tok, err := buildToken(claims, s.cfg)
 	if err != nil {
 		return "", err
 	}
 	return tok.V4Sign(s.priv, nil), nil
+}
+
+// Close overwrites the wrapped Ed25519 private-key bytes with zeroes.
+// Subsequent [V4PublicSigner.Sign] calls return [ErrSignerClosed].
+// Idempotent.
+//
+// The upstream `aidanwoods.dev/go-paseto` library does not expose a
+// zeroize/release entry, but its [paseto.V4AsymmetricSecretKey.ExportBytes]
+// returns the underlying [crypto/ed25519.PrivateKey] slice without
+// copying (see v4_keys.go in the upstream source). Writing zeroes
+// through the returned slice therefore wipes the in-memory key
+// material in place. If a future upstream release changes ExportBytes
+// to defensive-copy, this method becomes a no-op for the actual
+// private-key bytes — the closed flag still trips Sign — and we will
+// need to update the implementation.
+func (s *V4PublicSigner) Close() error {
+	if s == nil {
+		return nil
+	}
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if !s.initialized {
+		return nil
+	}
+	raw := s.priv.ExportBytes()
+	for i := range raw {
+		raw[i] = 0
+	}
+	return nil
 }
 
 // V4Local verifies and seals v4.local tokens (XChaCha20-Poly1305).

@@ -5,8 +5,11 @@
 // # Server construction
 //
 //   - [NewServer] returns an [http.Server] with production-grade timeouts
-//     (read/header/idle), a bounded MaxHeaderBytes, and a slog-backed
-//     ErrorLog so connection-level errors land in structured logs.
+//     (read/header/idle), a bounded MaxHeaderBytes, a slog-backed
+//     ErrorLog so connection-level errors land in structured logs, and
+//     HTTP/2 frame-size + concurrent-stream limits pinned via
+//     `http2.ConfigureServer` to bound per-peer goroutine and buffer
+//     footprints (THREAT_MODEL.md §4.2 G-03).
 //   - [WithTLSConfig], [WithWriteTimeout], [WithErrorLog] configure the
 //     server without re-implementing the timeout matrix.
 //

@@ -140,15 +140,17 @@ return fresh `Policy` values. Use `retry.DefaultPolicy()` or
 `retry.WorkerPolicy()` before applying options or calling `DoWith`; process-wide
 retry defaults can no longer be mutated by importers.
 
-### CORS requires explicit origins
+### CORS requires explicit origins (functional Option shape)
 
-`httpx/middleware/cors.New(cors.Options{})` now panics. Previously, an empty
-origin list inherited the underlying CORS library's wildcard behaviour. Install
-the middleware only on browser cross-origin APIs and set
-`AllowedOrigins: []string{"https://app.example.com"}` or `[]string{"*"}` when
-the wildcard is intentional.
-Option slices are copied during middleware construction, so later caller
-mutation cannot change the active CORS policy.
+`httpx/middleware/cors` adopts the kit-canonical functional-Option API.
+`cors.New()` with no origins panics. Construct the middleware with
+`cors.New(cors.WithAllowedOrigins("https://app.example.com"))` —
+or `cors.WithAllowedOrigins("*")` when the wildcard is intentional —
+plus `WithAllowedMethods`, `WithAllowedHeaders`, `WithExposedHeaders`,
+`WithMaxAge`, and `WithCredentials` for further tuning. Option slices are
+copied during middleware construction, so later caller mutation cannot
+change the active CORS policy. The previous `cors.Options` struct is no
+longer exported.
 
 ### Browser policy headers reject padded values
 

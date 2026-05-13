@@ -318,9 +318,7 @@ maxbody.MaxBodySize(10 << 20) // 10 MiB
 
 // CORS: install only on browser cross-origin APIs, with explicit origins.
 // Omit the middleware entirely when no CORS API is exposed.
-cors.New(cors.Options{
-    AllowedOrigins: []string{"https://app.example.com"},
-})
+cors.New(cors.WithAllowedOrigins("https://app.example.com"))
 
 // Client IP (proxy-aware, for rate limiting):
 ip := clientip.ClientIP(r) // trusts X-Real-IP, X-Forwarded-For from loopback peers only

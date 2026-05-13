@@ -2,13 +2,16 @@ package stack
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	mwauditlog "github.com/bds421/rho-kit/httpx/v2/middleware/auditlog"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
+	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
 func TestDefault_OrderWithOuterInner(t *testing.T) {
@@ -347,6 +350,173 @@ func TestWithTimeoutPanicsOnNonPositiveDuration(t *testing.T) {
 			WithTimeout(d)
 		})
 	}
+}
+
+// auditRecordingStore captures audit events emitted by the middleware.
+type auditRecordingStore struct {
+	events []auditlog.Event
+}
+
+func (s *auditRecordingStore) Append(_ context.Context, e auditlog.Event) error {
+	s.events = append(s.events, e)
+	return nil
+}
+
+func (s *auditRecordingStore) Query(_ context.Context, _ auditlog.Filter, _ string, _ int) ([]auditlog.Event, string, error) {
+	return nil, "", nil
+}
+
+func (s *auditRecordingStore) LastHMAC(_ context.Context) ([]byte, error) {
+	if len(s.events) == 0 {
+		return nil, nil
+	}
+	return s.events[len(s.events)-1].HMAC, nil
+}
+
+func newAuditLogger() (*auditRecordingStore, *auditlog.Logger) {
+	store := &auditRecordingStore{}
+	key := bytes.Repeat([]byte{0xab}, 32)
+	return store, auditlog.New(store,
+		auditlog.WithChainKey(key),
+		auditlog.WithCursorKey(key),
+	)
+}
+
+func TestDefault_WithAuditLog_EmitsEventPerRequest(t *testing.T) {
+	store, l := newAuditLogger()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+		WithAuditLog(l, mwauditlog.WithActorExtractor(func(_ *http.Request) string { return "alice@example.com" })),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/widgets", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(store.events))
+	}
+	ev := store.events[0]
+	if ev.Actor != "alice@example.com" {
+		t.Errorf("Actor = %q, want alice@example.com", ev.Actor)
+	}
+	if ev.Action != http.MethodGet {
+		t.Errorf("Action = %q, want %s", ev.Action, http.MethodGet)
+	}
+	if ev.Resource != "/api/widgets" {
+		t.Errorf("Resource = %q, want /api/widgets", ev.Resource)
+	}
+	if ev.Status != "success" {
+		t.Errorf("Status = %q, want success", ev.Status)
+	}
+}
+
+func TestDefault_WithoutAuditLog_NoEvents(t *testing.T) {
+	// Sanity-check the omission documented in the godoc: Default does NOT
+	// wire the audit-log middleware on its own. A test that constructed an
+	// audit logger but never passed WithAuditLog must produce zero events.
+	store, _ := newAuditLogger()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/widgets", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if len(store.events) != 0 {
+		t.Fatalf("audit events = %d, want 0 (Default must not wire auditlog)", len(store.events))
+	}
+}
+
+func TestDefault_WithAuditLog_InnerWrapsAudit(t *testing.T) {
+	// Stack ordering invariant: WithInner middleware (typically auth) must run
+	// OUTSIDE the audit middleware so the audit entry captures the
+	// authenticated actor. The recorded order should be: inner enters →
+	// audit enters → handler runs → audit exits → inner exits.
+	store, l := newAuditLogger()
+	var order []string
+	innerMW := func(name string) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, name+":enter")
+				next.ServeHTTP(w, r)
+				order = append(order, name+":exit")
+			})
+		}
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		order = append(order, "handler")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	stacked := Default(handler, slog.Default(),
+		WithoutMetrics(),
+		WithoutRequestID(),
+		WithoutCorrelationID(),
+		WithoutTracing(),
+		WithoutLogging(),
+		WithoutRequestLogger(),
+		WithoutSecHeaders(),
+		WithoutTimeout(),
+		WithInner(innerMW("auth")),
+		WithAuditLog(l),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/widgets", nil)
+	rec := httptest.NewRecorder()
+	stacked.ServeHTTP(rec, req)
+
+	if len(order) < 3 {
+		t.Fatalf("order = %v, want at least 3 entries", order)
+	}
+	if order[0] != "auth:enter" {
+		t.Errorf("first entry = %q, want auth:enter (inner must wrap audit)", order[0])
+	}
+	if order[len(order)-1] != "auth:exit" {
+		t.Errorf("last entry = %q, want auth:exit", order[len(order)-1])
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(store.events))
+	}
+}
+
+func TestWithAuditLog_PanicsOnNilLogger(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected WithAuditLog to panic on nil logger")
+		}
+	}()
+	WithAuditLog(nil)
 }
 
 func TestDefault_WithoutCorrelationID(t *testing.T) {

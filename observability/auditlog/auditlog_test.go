@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
 // testChainKey and testCursorKey are fixed 32-byte test keys. Real
@@ -831,7 +833,8 @@ func TestQuery_RejectsCursorSignedWithDifferentKey(t *testing.T) {
 	}
 
 	// Attacker signs "page-2" with a different key.
-	attackerSigner := signedCursor{key: bytes.Repeat([]byte("z"), MinCursorKeyLen)}
+	attackerKey := bytes.Repeat([]byte("z"), MinCursorKeyLen)
+	attackerSigner := signedCursor{key: secret.New(attackerKey), keyLen: len(attackerKey)}
 	forged := attackerSigner.encodeCursor("some-real-event-id")
 	require.NotEmpty(t, forged, "attacker should be able to produce a well-formed cursor")
 
@@ -940,3 +943,41 @@ func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time
 	}
 	return 0, nil
 }
+
+func TestClose_ZeroesKeysAndRejectsSubsequentUse(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	// Append a record so a chain HMAC is computed under the live key.
+	require.NoError(t, l.LogE(ctx, Event{Actor: "alice", Action: "create", Resource: "x", Status: StatusSuccess}))
+
+	// Close zeroes the chainKey and cursors.key.
+	require.NoError(t, l.Close())
+
+	// Verify the wrapped secrets were zeroed.
+	assert.True(t, l.chainKey.IsEmpty(), "chainKey must be zeroed after Close")
+	assert.True(t, l.cursors.key.IsEmpty(), "cursor key must be zeroed after Close")
+
+	// Subsequent LogE / Query / VerifyChain all return ErrLoggerClosed.
+	err := l.LogE(ctx, Event{Actor: "alice", Action: "create", Resource: "y", Status: StatusSuccess})
+	assert.ErrorIs(t, err, ErrLoggerClosed)
+
+	_, _, err = l.Query(ctx, Filter{}, "", 10)
+	assert.ErrorIs(t, err, ErrLoggerClosed)
+
+	err = l.VerifyChain(ctx)
+	assert.ErrorIs(t, err, ErrLoggerClosed)
+
+	// Idempotent.
+	require.NoError(t, l.Close())
+}
+
+func TestClose_NilReceiverIsSafe(t *testing.T) {
+	var l *Logger
+	assert.NoError(t, l.Close())
+}
+
+// Reference secret to keep the unused-import linter quiet — secret.New is
+// used in the cursor-forgery test above.
+var _ = secret.New

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/contextutil"
+	mwauditlog "github.com/bds421/rho-kit/httpx/v2/middleware/auditlog"
 	mwcorrelationid "github.com/bds421/rho-kit/httpx/v2/middleware/correlationid"
 	mwlogging "github.com/bds421/rho-kit/httpx/v2/middleware/logging"
 	mwmetrics "github.com/bds421/rho-kit/httpx/v2/middleware/metrics"
@@ -14,6 +15,7 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/secheaders"
 	mwtimeout "github.com/bds421/rho-kit/httpx/v2/middleware/timeout"
 	mwtracing "github.com/bds421/rho-kit/httpx/v2/middleware/tracing"
+	"github.com/bds421/rho-kit/observability/v2/auditlog"
 )
 
 // Config controls the default middleware stack.
@@ -40,13 +42,21 @@ type Config struct {
 	SecHeadersOptions []secheaders.Option
 	Outer             []func(http.Handler) http.Handler
 	Inner             []func(http.Handler) http.Handler
+	// AuditLogger holds the audit-log sink wired through [WithAuditLog].
+	// Default is nil: the audit-log middleware is intentionally omitted from
+	// the canonical chain because the sink is service-specific (chain key,
+	// cursor key, store). Services that need a tamper-evident audit trail
+	// pass [WithAuditLog] explicitly. See docs/audit/THREAT_MODEL.md §4.1.
+	AuditLogger *auditlog.Logger
+	// AuditLogOptions forwards arbitrary options to the audit-log middleware.
+	AuditLogOptions []mwauditlog.Option
 }
 
 // Option mutates the Config.
 type Option func(*Config)
 
 // Default builds the recommended middleware chain:
-// recover -> outer -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> handler.
+// recover -> outer -> security headers -> metrics -> request ID -> correlation ID -> tracing -> logging -> timeout -> request logger -> inner -> auditlog -> handler.
 // Additional outer middleware wraps the standard observability/security chain
 // but remains inside recover so panics in custom boundary middleware get the
 // same JSON 500 response, logging, and panic metrics as handler panics.
@@ -60,6 +70,18 @@ type Option func(*Config)
 // Timeout sits inside logging so 503 timeout responses still appear in access
 // logs, and outside the request logger so the handler running under the
 // deadline still has the scoped logger.
+//
+// # Audit logging is NOT wired by default
+//
+// The tamper-evident audit-log middleware ([middleware/auditlog.Middleware])
+// is intentionally omitted from the canonical chain because the underlying
+// [auditlog.Logger] requires service-specific chain / cursor keys and a
+// concrete store — there is no sensible default. Services that need a
+// SOC2-class audit trail pass [WithAuditLog] explicitly; the middleware is
+// then inserted at the canonical position (innermost — after inner-wedge
+// auth runs and immediately before the handler) so each event captures
+// the authenticated actor and the final response status. See
+// docs/audit/THREAT_MODEL.md §4.1.
 func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Handler {
 	cfg := Config{
 		Logger:              logger,
@@ -87,6 +109,16 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 
 	h := handler
+
+	// Audit-log middleware is the innermost stack-managed wrapper: applied
+	// before Inner so the Inner wedge (typically auth) runs OUTSIDE it, and
+	// the audit entry captures the authenticated actor + response status
+	// the handler emitted. Services that prefer audit to sit elsewhere
+	// (e.g. before authz) can omit WithAuditLog and add the middleware via
+	// WithInner at the position they want.
+	if cfg.AuditLogger != nil {
+		h = mwauditlog.Middleware(cfg.AuditLogger, cfg.AuditLogOptions...)(h)
+	}
 
 	for i := len(cfg.Inner) - 1; i >= 0; i-- {
 		h = cfg.Inner[i](h)
@@ -274,4 +306,28 @@ func WithOuter(mw ...func(http.Handler) http.Handler) Option {
 func WithInner(mw ...func(http.Handler) http.Handler) Option {
 	copied := append([]func(http.Handler) http.Handler(nil), mw...)
 	return func(cfg *Config) { cfg.Inner = append(cfg.Inner, copied...) }
+}
+
+// WithAuditLog wires the tamper-evident audit-log middleware into the chain
+// at the canonical innermost position — after the Inner-wedge auth middleware
+// runs and immediately before the handler. Each request produces a single
+// [auditlog.Event] capturing actor, method, path, response status, and trace
+// correlation; panics are recorded as failures so audit / access-log entries
+// stay aligned (see [middleware/auditlog.Middleware]).
+//
+// Audit logging is intentionally NOT enabled by [Default] because the
+// underlying [auditlog.Logger] requires service-specific chain / cursor keys
+// and a concrete store. Services that need a SOC2-class audit trail must
+// pass this option explicitly. Lens F A.10.
+//
+// Panics on nil to fail fast at wiring time.
+func WithAuditLog(logger *auditlog.Logger, opts ...mwauditlog.Option) Option {
+	if logger == nil {
+		panic("stack: WithAuditLog requires a non-nil *auditlog.Logger")
+	}
+	copied := append([]mwauditlog.Option(nil), opts...)
+	return func(cfg *Config) {
+		cfg.AuditLogger = logger
+		cfg.AuditLogOptions = append(cfg.AuditLogOptions, copied...)
+	}
 }

@@ -1,0 +1,14 @@
+rho-kit
+Copyright 2026 BDS421
+
+This product includes software developed at BDS421.
+
+This product depends on third-party Go modules whose copyright and license
+terms are preserved in their respective upstream repositories. Refer to the
+project's CycloneDX SBOM (published with each release tag — see
+docs/audit/SUPPLY_CHAIN.md §5) for the authoritative dependency manifest
+and license declarations.
+
+For the rho-kit license, see LICENSE.md. For the supply-chain policy
+including license review and vulnerability response, see
+docs/audit/SUPPLY_CHAIN.md.

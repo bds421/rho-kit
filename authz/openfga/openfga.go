@@ -236,6 +236,9 @@ func cloneDefaultTransport() *http.Transport {
 func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, minimumHTTPClientTLSVersion)
 	if err != nil {
+		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+			panic("openfga: HTTP client TLS InsecureSkipVerify=true is not permitted")
+		}
 		panic("openfga: default HTTP client TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned

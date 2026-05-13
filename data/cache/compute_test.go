@@ -49,9 +49,12 @@ func TestComputeOptions_PanicOnInvalidDurations(t *testing.T) {
 func TestNewComputeCache_RejectsNilOption(t *testing.T) {
 	backend := newTestBackend(t)
 
-	_, err := NewComputeCache[string](backend, "nilopt:", nil)
-
-	assert.Error(t, err)
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_, _ = NewComputeCache[string](backend, "nilopt:", nil)
 }
 
 func TestComputeCache_InvalidReceiverReturnsError(t *testing.T) {

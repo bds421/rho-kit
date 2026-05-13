@@ -71,5 +71,6 @@ func Registered() []Rule {
 		defaultHTTPClientRule{},
 		httpServerMissingErrorLogRule{},
 		httpServerDirectConstructionRule{},
+		rateLimitOmissionRule{},
 	}
 }

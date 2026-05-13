@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -55,28 +56,18 @@ func WithoutTLS() Option {
 // fixtures (the check is unconditional otherwise — there is no KIT_ENV
 // escape hatch).
 //
-// Panics if opts is nil.
-func Module(opts *goredis.Options, connOpts ...kitredis.ConnOption) app.Module {
+// Connection-level tuning goes through [WithConn] so a single Option-tail
+// covers both kit-level safety knobs and the underlying kitredis
+// connection options:
+//
+//	redis.Module(opts)
+//	redis.Module(opts, redis.WithoutTLS())
+//	redis.Module(opts, redis.WithConn(kitredis.WithInstance("primary")))
+//
+// Panics if opts is nil or any option is nil.
+func Module(opts *goredis.Options, mopts ...Option) app.Module {
 	if opts == nil {
 		panic("redis: Module requires non-nil options")
-	}
-	for _, opt := range connOpts {
-		if opt == nil {
-			panic("redis: connection option must not be nil")
-		}
-	}
-	return moduleWithOptions(opts, false, connOpts...)
-}
-
-// ModuleWithOptions is [Module] with the variadic [Option] tail so the
-// transport-safety opt-out and other future knobs can be set in the same call:
-//
-//	redis.ModuleWithOptions(opts, redis.WithoutTLS(), redis.WithConn(kitredis.WithInstance("primary")))
-//
-// For the common case ([Module]) the variadic connOpts pass through unchanged.
-func ModuleWithOptions(opts *goredis.Options, mopts ...Option) app.Module {
-	if opts == nil {
-		panic("redis: ModuleWithOptions requires non-nil options")
 	}
 	mc := moduleConfig{}
 	for _, opt := range mopts {
@@ -235,6 +226,9 @@ func cloneOptions(opts *goredis.Options) *goredis.Options {
 	if optsCopy.TLSConfig != nil {
 		tlsConfig, err := tlsclone.ConfigWithFloor(optsCopy.TLSConfig, tls.VersionTLS12)
 		if err != nil {
+			if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
+				panic("redis: TLS InsecureSkipVerify=true is not permitted")
+			}
 			panic("redis: TLS MaxVersion must allow TLS 1.2 or newer")
 		}
 		optsCopy.TLSConfig = tlsConfig

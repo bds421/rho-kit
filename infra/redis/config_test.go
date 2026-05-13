@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var _ slog.LogValuer = RedisConfig{}
+var _ slog.LogValuer = Config{}
 
 func TestRedisConfig_LogValue_Redacts(t *testing.T) {
-	cfg := RedisConfig{URL: "redis://token-user:secret@tenant-redis.internal:6379/0?token=query-secret#frag"}
+	cfg := Config{URL: "redis://token-user:secret@tenant-redis.internal:6379/0?token=query-secret#frag"}
 	val := cfg.LogValue()
 	s := val.String()
 	assert.NotContains(t, s, "token-user")
@@ -27,23 +27,23 @@ func TestRedisConfig_LogValue_Redacts(t *testing.T) {
 }
 
 func TestRedisConfig_LogValue_InvalidURL(t *testing.T) {
-	cfg := RedisConfig{URL: "://invalid"}
+	cfg := Config{URL: "://invalid"}
 	val := cfg.LogValue()
 	assert.Contains(t, val.String(), "url_valid=false")
 }
 
 func TestRedisConfig_LogValue_NotConfigured(t *testing.T) {
-	cfg := RedisConfig{}
+	cfg := Config{}
 	assert.Contains(t, cfg.LogValue().String(), "url_configured=false")
 }
 
 func TestRedisConfig_RedisURL_FromURL(t *testing.T) {
-	cfg := RedisConfig{URL: "redis://user:pass@host:6379/0"}
+	cfg := Config{URL: "redis://user:pass@host:6379/0"}
 	assert.Equal(t, "redis://user:pass@host:6379/0", cfg.RedisURL())
 }
 
 func TestRedisConfig_RedisURL_URLTakesPrecedence(t *testing.T) {
-	cfg := RedisConfig{
+	cfg := Config{
 		URL:  "redis://:pass@url-host:6379/0",
 		Host: "field-host",
 	}
@@ -51,7 +51,7 @@ func TestRedisConfig_RedisURL_URLTakesPrecedence(t *testing.T) {
 }
 
 func TestRedisConfig_RedisURL_FromFields(t *testing.T) {
-	cfg := RedisConfig{Host: "myredis", Port: 6380, Password: "secret", DB: 2}
+	cfg := Config{Host: "myredis", Port: 6380, Password: "secret", DB: 2}
 	u := cfg.RedisURL()
 	parsed, err := url.Parse(u)
 	require.NoError(t, err)
@@ -64,19 +64,19 @@ func TestRedisConfig_RedisURL_FromFields(t *testing.T) {
 }
 
 func TestRedisConfig_RedisURL_DefaultPort(t *testing.T) {
-	cfg := RedisConfig{Host: "redis"}
+	cfg := Config{Host: "redis"}
 	parsed, err := url.Parse(cfg.RedisURL())
 	require.NoError(t, err)
 	assert.Equal(t, "6379", parsed.Port())
 }
 
 func TestRedisConfig_RedisURL_EmptyHost(t *testing.T) {
-	cfg := RedisConfig{}
+	cfg := Config{}
 	assert.Empty(t, cfg.RedisURL())
 }
 
 func TestRedisConfig_RedisURL_NoPassword(t *testing.T) {
-	cfg := RedisConfig{Host: "redis"}
+	cfg := Config{Host: "redis"}
 	u := cfg.RedisURL()
 	parsed, err := url.Parse(u)
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestRedisConfig_RedisURL_NoPassword(t *testing.T) {
 }
 
 func TestRedisConfig_Options_FromURL(t *testing.T) {
-	cfg := RedisConfig{URL: "redis://:secret@localhost:6379/2"}
+	cfg := Config{URL: "redis://:secret@localhost:6379/2"}
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	assert.Equal(t, "localhost:6379", opts.Addr)
@@ -93,7 +93,7 @@ func TestRedisConfig_Options_FromURL(t *testing.T) {
 }
 
 func TestRedisConfig_Options_RedissEnforcesTLSFloor(t *testing.T) {
-	cfg := RedisConfig{URL: "rediss://:secret@localhost:6380/2"}
+	cfg := Config{URL: "rediss://:secret@localhost:6380/2"}
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	require.NotNil(t, opts.TLSConfig)
@@ -102,7 +102,7 @@ func TestRedisConfig_Options_RedissEnforcesTLSFloor(t *testing.T) {
 }
 
 func TestRedisConfig_Options_RejectsSkipVerify(t *testing.T) {
-	cfg := RedisConfig{URL: "rediss://:secret@localhost:6380/2?skip_verify=true"}
+	cfg := Config{URL: "rediss://:secret@localhost:6380/2?skip_verify=true"}
 	_, err := cfg.Options()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skip_verify")
@@ -128,7 +128,7 @@ func TestCloneTLSConfigWithFloor_RejectsMaxVersionBelowFloor(t *testing.T) {
 }
 
 func TestRedisConfig_Options_FromFields(t *testing.T) {
-	cfg := RedisConfig{Host: "myredis", Port: 6380, Password: "pass", DB: 3}
+	cfg := Config{Host: "myredis", Port: 6380, Password: "pass", DB: 3}
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	assert.Equal(t, "myredis:6380", opts.Addr)
@@ -137,7 +137,7 @@ func TestRedisConfig_Options_FromFields(t *testing.T) {
 }
 
 func TestRedisConfig_Options_NotConfigured(t *testing.T) {
-	cfg := RedisConfig{}
+	cfg := Config{}
 	_, err := cfg.Options()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "neither URL nor Host")
@@ -146,7 +146,7 @@ func TestRedisConfig_Options_NotConfigured(t *testing.T) {
 func TestLoadRedisFields_URL(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://:pass@redis-host:6379/0")
 
-	f, err := LoadRedisFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "redis://:pass@redis-host:6379/0", f.Redis.RedisURL())
 }
@@ -155,7 +155,7 @@ func TestLoadRedisFields_URLReadsAllowPlaintext(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://:pass@redis-host:6379/0")
 	t.Setenv("REDIS_ALLOW_PLAINTEXT", "true")
 
-	f, err := LoadRedisFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.True(t, f.Redis.AllowPlaintext)
 }
@@ -167,7 +167,7 @@ func TestLoadRedisFields_IndividualFields(t *testing.T) {
 	t.Setenv("REDIS_DB", "3")
 	t.Setenv("REDIS_ALLOW_PLAINTEXT", "true")
 
-	f, err := LoadRedisFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "my-redis", f.Redis.Host)
 	assert.Equal(t, 6380, f.Redis.Port)
@@ -182,7 +182,7 @@ func TestLoadRedisFields_URLPrecedence(t *testing.T) {
 	t.Setenv("REDIS_HOST", "field-host")
 	t.Setenv("REDIS_PASSWORD", "field-pass")
 
-	f, err := LoadRedisFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, "redis://:urlpass@url-host:6379/0", f.Redis.RedisURL())
 }
@@ -190,7 +190,7 @@ func TestLoadRedisFields_URLPrecedence(t *testing.T) {
 func TestLoadRedisFields_Defaults(t *testing.T) {
 	t.Setenv("REDIS_HOST", "redis")
 
-	f, err := LoadRedisFields()
+	f, err := LoadFields()
 	require.NoError(t, err)
 	assert.Equal(t, 6379, f.Redis.Port)
 	assert.Equal(t, 0, f.Redis.DB)
@@ -201,7 +201,7 @@ func TestLoadRedisFields_InvalidAllowPlaintext(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://:pass@redis-host:6379/0")
 	t.Setenv("REDIS_ALLOW_PLAINTEXT", "not-bool")
 
-	_, err := LoadRedisFields()
+	_, err := LoadFields()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "REDIS_ALLOW_PLAINTEXT")
 }
@@ -255,7 +255,7 @@ func TestValidateRedisURL_UnsupportedSchemeDoesNotEchoValue(t *testing.T) {
 }
 
 func TestRedisFields_ValidateRedis_RejectsCredentiallessRedissWithoutPanic(t *testing.T) {
-	fields := RedisFields{Redis: RedisConfig{URL: "rediss://localhost:6380/0"}}
+	fields := Fields{Redis: Config{URL: "rediss://localhost:6380/0"}}
 
 	require.NotPanics(t, func() {
 		err := fields.ValidateRedis("")
@@ -265,7 +265,7 @@ func TestRedisFields_ValidateRedis_RejectsCredentiallessRedissWithoutPanic(t *te
 }
 
 func TestRedisFields_ValidateRedis_AllowsRedissWithPasswordOnlyURL(t *testing.T) {
-	fields := RedisFields{Redis: RedisConfig{URL: "rediss://:secret@localhost:6380/0"}}
+	fields := Fields{Redis: Config{URL: "rediss://:secret@localhost:6380/0"}}
 
 	require.NoError(t, fields.ValidateRedis(""))
 }

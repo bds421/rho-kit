@@ -46,7 +46,7 @@ type Connection struct {
 	onReconnectTimeout   time.Duration
 	onReconnect          func(context.Context, *Connection) error
 
-	metrics *RedisMetrics
+	metrics *Metrics
 }
 
 // ConnOption configures a Connection.
@@ -139,7 +139,7 @@ func WithOnReconnectTimeout(d time.Duration) ConnOption {
 // If not set, prometheus.DefaultRegisterer is used.
 func WithRegisterer(reg prometheus.Registerer) ConnOption {
 	return func(c *Connection) {
-		c.metrics = NewRedisMetrics(reg)
+		c.metrics = NewMetrics(reg)
 	}
 }
 

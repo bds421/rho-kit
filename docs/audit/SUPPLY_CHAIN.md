@@ -656,29 +656,31 @@ and transitive deps:
 | Proprietary (any) | ❌ forbidden as transitive | Direct deps under proprietary license require an explicit kit-level decision |
 | Unknown / unspecified | ❌ forbidden | Treated as proprietary until verified |
 
-### 8.2 Enforcement (planned)
+### 8.2 Enforcement
 
-Today, license verification is a manual review step on Dependabot
-PRs (the PR body shows the dep's license). The intent is to land a
-CI rule that:
+License verification is enforced by
+[`tools/check-licenses.sh`](../../tools/check-licenses.sh) and the
+[`.github/workflows/licenses.yml`](../../.github/workflows/licenses.yml)
+workflow. The script walks every workspace module declared in `go.work`,
+runs [`go-licenses`](https://github.com/google/go-licenses) (pinned to
+`v1.6.0`) over each module's transitive dep graph, and fails the gate if
+any declared license is not on the §8.1 allowlist.
 
-- Walks the workspace's transitive dep graph (`go list -m
-  -mod=mod -json all`).
-- Cross-references each dep's license against the allowed list.
-- Fails the PR if a dep's license is forbidden or unknown.
-
-The implementation will likely use
-[`fossa-cli`](https://fossa.com) or
-[`go-licenses`](https://github.com/google/go-licenses) — selection
-is open. Until it lands, this section is policy without
-automation; treat it accordingly when reviewing Dependabot PRs.
+The same checks run via `make check-licenses` locally and as a scheduled
+weekly job on `main` so a quietly-bumped transitive dep cannot slip past
+the allowlist between Dependabot batches. Adding a new license category
+requires updating §8.1, `tools/check-licenses.sh`, and a security review
+in the same PR.
 
 ### 8.3 Per-module license declarations
 
 Each kit module is published under the same `LICENSE.md` (the kit
 is proprietary). The CycloneDX SBOM emitted by `sbom.yml` carries
 each direct/transitive dep's license string in the `licenses` field
-of the corresponding component.
+of the corresponding component. The repository's
+[`NOTICE`](../../NOTICE) file points readers at the SBOM as the
+authoritative dependency manifest and license declaration source
+required by Apache 2.0 §4(d) for any deps that ship NOTICE files.
 
 ---
 
@@ -734,6 +736,7 @@ they can downgrade a dep version. Mitigation:
 
 | Date | Author | Change |
 |---|---|---|
+| 2026-05 | External-auditor follow-up | Landed `tools/check-licenses.sh`, the `make check-licenses` target, and the `licenses.yml` workflow so §8.1 is CI-enforced rather than policy-only; added the repository-level `NOTICE` file and pointed §8.3 at it. |
 | 2026-05 | Round-4 follow-up | Shipped the `make release-bin` / `release-bin-all` targets and `tools/verify-reproducible-build.sh`, and refined §4.1/§4.3 prose so it matches the flag set actually built (CGO_ENABLED=0, SOURCE_DATE_EPOCH=git commit-time, `-X main.commit`/`main.date`). |
 | 2026-05 | Release-excellence review | Removed placeholder GPG material, clarified v2.0.0 release provenance, and aligned the policy with the actual release/SBOM workflows. |
 | 2026-05 | Theme-6+ hardening | Added heavy optional SDK boundary enforcement through `make check-dependency-boundaries`. |

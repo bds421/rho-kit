@@ -244,6 +244,8 @@ by package.
 |---|---|
 | `app.Module.Close` | Renamed to `app.Module.Stop`. Any service implementing custom modules must rename the method. |
 | `app.Builder.WithRedis` | Production safety enforces TLS on Redis URIs. Opt out per-builder via `WithoutRedisTLS` only on a reviewed private boundary. |
+| `app.Builder.Background` | Renamed to `app.Builder.WithBackground` to match the `With*` registration convention used by every other Builder method (`WithJWT`, `WithStorage`, `WithAuditLog`, ...). Service wiring: replace `b.Background(name, fn)` with `b.WithBackground(name, fn)`. The runtime callback `Infrastructure.Background` (registered late from inside `RouterFunc`) is unchanged. |
+| `app.Builder` rate-limit gate | `Builder.Run()` now requires an affirmative rate-limit declaration. Chain exactly one of `WithIPRateLimit(n, window)`, `WithKeyedRateLimit(name, n, window)`, or the explicit `WithoutRateLimit()` opt-out. Pre-v2.0.0 a Builder with no rate-limit option silently defaulted to "no limit"; that contradicted the fail-loud contract every other Builder safety control (TLS, JWT issuer / audience, internal-host loopback) already obeys. `kit-doctor` flags the omission pre-build via the `rate-limit-omission` rule for editor integration. |
 
 ### `infra/messaging`
 
@@ -252,6 +254,21 @@ by package.
 | `MessagePublisher` / `MessageConsumer` | Renamed to `Publisher` / `Consumer`. Update all interface references and embeds. |
 | `Connector.Close` | Renamed to `Connector.Stop(ctx) error`. The new signature takes a `context.Context` so shutdown can be bounded. |
 | `BufferedPublisher` options | Destuttered. `WithBufferedMaxSize` → `WithMaxSize`, `WithBufferedStateFile` → `WithStateFile`, `WithBufferedMaxMessageBytes` → `WithMaxMessageBytes`, `WithBufferedFinalDrainTimeout` → `WithFinalDrainTimeout`. |
+
+### `infra/redis`
+
+| Area | Migration |
+|---|---|
+| `redis.RedisConfig` | Renamed to `redis.Config`. The kit no longer stutters the package name in exported type names. Field shape and JSON tags are unchanged. |
+| `redis.RedisFields` | Renamed to `redis.Fields`. Service configs that embed `Redis RedisConfig` now embed `Redis Config`; the env-loader contract is unchanged. |
+| `redis.LoadRedisFields` | Renamed to `redis.LoadFields`. The `kit-new` scaffold's `wire.go.tmpl` is updated to the new name; downstream wirings should follow. |
+| `redis.RedisMetrics` / `redis.NewRedisMetrics` | Renamed to `redis.Metrics` / `redis.NewMetrics`. Consumers passing the metrics struct to `redis.WithPoolMetrics(...)` only need the type rename; behaviour is unchanged. |
+
+### `io/progress`
+
+| Area | Migration |
+|---|---|
+| `progress.NewProgressReader` | Renamed to `progress.NewReader`. The kit-level `storage.NewProgressReader` wrapper keeps its name (multiple backend packages dot-import side-by-side) but now delegates to `progress.NewReader`. |
 
 ### `infra/storage`
 
@@ -431,7 +448,7 @@ app.New("svc", "v1", cfg).
 | `WithPostgres(cfg)`               | `With(postgres.Module(cfg))`                             |
 | `WithMigrations(fs)`              | `postgres.WithMigrations(fs)` option on the module       |
 | `WithRedis(opts, …)`              | `With(redis.Module(opts, …))`                            |
-| `WithoutRedisTLS()`               | `redis.ModuleWithOptions(opts, redis.WithoutTLS())`      |
+| `WithoutRedisTLS()`               | `redis.Module(opts, redis.WithoutTLS())`                 |
 | `WithRabbitMQ(url)`               | `With(amqp.Module(url))`                                 |
 | `WithRabbitMQURLProvider(fn)`     | `With(amqp.Module("", amqp.WithURLProvider(fn)))`        |
 | `WithCriticalBroker()`            | `amqp.WithCriticalBroker()` option                       |

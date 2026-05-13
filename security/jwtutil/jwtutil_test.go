@@ -2135,15 +2135,13 @@ func TestVerify_RejectsHS256SignedWithECPublicKeyBytes(t *testing.T) {
 	// SEC1 uncompressed point: 0x04 || X || Y. This is the shape jwx
 	// would surface as "the raw key material" for an EC public key
 	// and the one most likely to be re-borrowed as an HMAC secret.
-	curveByteLen := (key.PublicKey.Curve.Params().BitSize + 7) / 8
-	pubPoint := make([]byte, 0, 1+2*curveByteLen)
-	pubPoint = append(pubPoint, 0x04)
-	xBytes := key.PublicKey.X.Bytes()
-	yBytes := key.PublicKey.Y.Bytes()
-	pubPoint = append(pubPoint, make([]byte, curveByteLen-len(xBytes))...)
-	pubPoint = append(pubPoint, xBytes...)
-	pubPoint = append(pubPoint, make([]byte, curveByteLen-len(yBytes))...)
-	pubPoint = append(pubPoint, yBytes...)
+	// ecdsa.PublicKey.Bytes (Go 1.25+) returns the SEC1 uncompressed
+	// encoding directly — the prior raw-coordinate route via
+	// PublicKey.X/Y was deprecated in Go 1.26.
+	pubPoint, err := key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("PublicKey.Bytes: %v", err)
+	}
 
 	pubJWK, err := jwk.Import(key.PublicKey)
 	if err != nil {

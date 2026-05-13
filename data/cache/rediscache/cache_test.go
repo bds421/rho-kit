@@ -43,8 +43,12 @@ func TestNewRedisCache_RejectsNilOption(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	_, err := NewRedisCache(client, "test", nil)
-	assert.Error(t, err)
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("expected panic on nil option")
+		}
+	}()
+	_, _ = NewRedisCache(client, "test", nil)
 }
 
 func TestRedisCache_InvalidReceiverReturnsError(t *testing.T) {
