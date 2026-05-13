@@ -1,13 +1,11 @@
 package app
 
 import (
-	"io/fs"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
@@ -68,23 +66,6 @@ func TestValidate_NilBuilder(t *testing.T) {
 
 func TestValidate_EmptyBuilder(t *testing.T) {
 	b := newTestBuilder()
-	if err := b.Validate(); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-}
-
-func TestValidate_CriticalBrokerWithoutURL(t *testing.T) {
-	b := newTestBuilder()
-	b.criticalBroker = true
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for critical broker without URL")
-	}
-}
-
-func TestValidate_CriticalBrokerWithURL(t *testing.T) {
-	b := newTestBuilder()
-	b.criticalBroker = true
-	b.mqURL = "amqp://localhost"
 	if err := b.Validate(); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -190,29 +171,3 @@ func TestValidate_ValidPorts(t *testing.T) {
 		t.Fatalf("expected no error for valid ports, got: %v", err)
 	}
 }
-
-func TestValidate_PostgresWithMigrations(t *testing.T) {
-	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
-		WithoutJWTAudience().
-		WithPostgres(pgxbackend.Config{DSN: "postgres://u:p@h/db?sslmode=require"}).
-		WithMigrations(emptyFS{})
-	if err := b.Validate(); err != nil {
-		t.Fatalf("expected postgres + migrations to validate, got: %v", err)
-	}
-}
-
-func TestValidate_MigrationsWithoutDB(t *testing.T) {
-	b := newTestBuilder().WithMigrations(emptyFS{})
-	err := b.Validate()
-	if err == nil {
-		t.Fatal("expected error for migrations without a configured database")
-	}
-	if !strings.Contains(err.Error(), "WithPostgres") {
-		t.Fatalf("expected WithPostgres mentioned in migrations error, got: %v", err)
-	}
-}
-
-type emptyFS struct{}
-
-func (emptyFS) Open(_ string) (fs.File, error) { return nil, fs.ErrNotExist }

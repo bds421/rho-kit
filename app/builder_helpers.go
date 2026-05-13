@@ -101,24 +101,24 @@ func validateDependencyChecks(checks []health.DependencyCheck, where string) {
 	}
 }
 
-// buildIntegrationModules converts builder config from the With*() methods
-// (WithPostgres, WithRedis, WithRabbitMQ, WithTracing, WithJWT) into
-// internal modules. The With*() methods are the primary public API;
-// modules are the internal implementation. These modules are prepended
-// to user-registered modules so built-in infrastructure initializes first.
+// buildIntegrationModules assembles the built-in modules the Builder always
+// runs: HTTP client (tracing-aware when an app/tracing module is registered),
+// JWT verifier (when WithJWT is set), PASETO provider (when WithPASETO is
+// set), and the leader-election driver (when WithLeaderElection is set).
 //
-// Registration order matters: tracing -> httpclient -> jwt, because each
-// module depends on the previous one during Init.
+// Adapter modules (postgres, redis, amqp, nats, tracing, grpc) are NOT built
+// here — they live in sub-packages and are registered by the caller via
+// [Builder.With]. The Builder discovers them as ordinary entries in
+// b.modules.
+//
+// Registration order: jwt depends on the httpclient module's resolved
+// *http.Client, so httpclient must initialize first.
 func (b *Builder) buildIntegrationModules() []Module {
 	var modules []Module
 
-	// Tracing must come first -- httpClientModule reads its Active() state.
-	if b.tracingCfg != nil {
-		modules = append(modules, newTracingModule(*b.tracingCfg))
-	}
+	tracingActive := b.hasTracingModule()
 
-	// HTTP client is always created -- other modules and infra need it.
-	modules = append(modules, newHTTPClientModule(b.tracingCfg != nil))
+	modules = append(modules, newHTTPClientModule(tracingActive))
 
 	if b.jwksURL != "" {
 		modules = append(modules, newJWTModule(jwtModuleConfig{
@@ -133,37 +133,37 @@ func (b *Builder) buildIntegrationModules() []Module {
 		modules = append(modules, newPasetoModule(b.pasetoProvider))
 	}
 
-	if b.pgxCfg != nil {
-		modules = append(modules, newPgxModule(*b.pgxCfg, b.migrationsDir))
-	}
-
-	if b.redisOpts != nil {
-		modules = append(modules, newRedisModule(b.redisOpts, b.allowPlaintextRedis, b.redisConnOpts...))
-	}
-
-	if b.mqURL != "" || b.mqURLProvider != nil {
-		var m *messagingModule
-		if b.mqURLProvider != nil {
-			m = newMessagingModuleWithURLProvider(b.mqURLProvider)
-		} else {
-			m = newMessagingModule(b.mqURL)
-		}
-		m.criticalBroker = b.criticalBroker
-		m.messageSizeLimiter = b.messageSizeLimiter
-		modules = append(modules, m)
-	}
-
-	if b.natsCfg != nil {
-		m := newNatsModule(*b.natsCfg)
-		m.messageSizeLimiter = b.messageSizeLimiter
-		modules = append(modules, m)
-	}
-
 	if b.leaderElector != nil {
 		modules = append(modules, newLeaderModule(b.leaderElector))
 	}
 
 	return modules
+}
+
+// hasTracingModule reports whether the user has registered an OTel tracing
+// adapter module (typically via app/tracing.Module()). The httpclient module
+// queries this to decide whether to wrap its transport in OTel instrumentation.
+// app/tracing modules expose a TracingProvider marker so app/v2 can detect
+// them without importing OTel.
+func (b *Builder) hasTracingModule() bool {
+	for _, m := range b.modules {
+		if _, ok := m.(TracingProvider); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TracingProvider is implemented by tracing adapter modules (typically
+// app/tracing). The HTTP-client module uses the type to detect that tracing
+// is configured without app/v2 importing OTel directly.
+type TracingProvider interface {
+	// TracingActive reports whether tracing was successfully initialized.
+	// Tracing modules that failed to connect to the OTel collector but kept
+	// running with a degraded health check return false here, so the HTTP
+	// client transport is not wrapped in instrumentation that would never
+	// flush.
+	TracingActive() bool
 }
 
 // buildStorageManager creates a Manager from the named storage specs.

@@ -79,12 +79,6 @@ func (b *Builder) Validate() error {
 		return err
 	}
 
-	if b.migrationsDir != nil && b.pgxCfg == nil {
-		return fmt.Errorf("WithMigrations requires WithPostgres — migrations need a configured database")
-	}
-	if b.criticalBroker && b.mqURL == "" && b.mqURLProvider == nil {
-		return fmt.Errorf("critical broker requires a RabbitMQ URL")
-	}
 	if b.ipRateRequests > 0 && b.ipRateWindow <= 0 {
 		return fmt.Errorf("IP rate limit window must be > 0 when rate limiting is enabled")
 	}
@@ -167,15 +161,9 @@ func (b *Builder) validateProductionSafety() error {
 	// does not pre-parse the DSN here because pgx is the single source
 	// of truth for what counts as a hardened TLS configuration.
 
-	// Tracing: full sampling is a collector-cost foot-gun.
-	if b.tracingCfg != nil {
-		if err := b.tracingCfg.Validate(); err != nil {
-			return err
-		}
-		if b.tracingCfg.SampleRate > 0.1 {
-			return fmt.Errorf("tracing SampleRate=%.2f exceeds 0.1; lower the rate and override per-trace via the OTel SDK if you need bursts", b.tracingCfg.SampleRate)
-		}
-	}
+	// Tracing sample-rate validation lives in app/tracing.Module's
+	// constructor. The Builder no longer holds tracing config directly,
+	// so the always-on rate cap is enforced at adapter construction time.
 
 	return nil
 }

@@ -295,6 +295,12 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 	// listed below.
 	internal := []string{
 		"app",
+		"app/amqp",
+		"app/grpc",
+		"app/nats",
+		"app/postgres",
+		"app/redis",
+		"app/tracing",
 		"authz",
 		"core",
 		"crypto",
@@ -310,9 +316,11 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"resilience",
 		"runtime",
 		"security",
-		// Adapter modules pulled transitively by app's WithRabbitMQ /
-		// WithNATS / WithRedis / WithPostgres wirings. They're optional at
-		// runtime but the import graph reaches them at build time.
+		// v2.0.0 lazy-adapter sub-modules: app/postgres, app/redis, app/amqp,
+		// app/nats, app/tracing, app/grpc each own their heavy dep (pgx,
+		// go-redis, amqp091, nats.go, otel, grpc-go) and re-export thin
+		// Module() constructors. They appear above so the resolver can
+		// satisfy build-time imports against the local checkout.
 		"infra/messaging/amqpbackend",
 		"infra/messaging/natsbackend",
 		"infra/redis",

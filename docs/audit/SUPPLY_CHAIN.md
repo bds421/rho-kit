@@ -314,24 +314,56 @@ artefacts (modulo signature timestamps).
 
 ### 4.1 Build flags
 
-Every binary in `cmd/kit-*` is built with:
+Every binary in `cmd/kit-*` is built through `make release-bin BIN=<name>`,
+which invokes `go build` with:
 
 ```bash
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+CGO_ENABLED=0 \
 go build \
-  -trimpath \                              # strip filesystem paths
-  -ldflags="-s -w -buildid= \              # strip symtab, debug, build-id
-            -X main.Version=$VERSION \     # injected by release build
-            -X main.Commit=$GITHUB_SHA \   # injected by CI
-            -X main.BuildDate=$SOURCE_DATE_EPOCH"
+  -trimpath \                                # strip filesystem paths
+  -ldflags="-s -w -buildid= \                # strip symtab, debug, build-id
+            -X main.commit=$(git rev-parse HEAD) \
+            -X main.date=$(git log -1 --format=%cI)" \
+  -o dist/cmd/<name>/<name> \
+  .
 ```
 
-`-trimpath` ensures `/home/runner/work/...` paths are not embedded
-in panics or stack traces — those would diverge between runners.
-`-buildid=` removes Go's internal build ID, which embeds a
-non-deterministic salt by default.
+The flag set, in order:
 
-`SOURCE_DATE_EPOCH` is set from the tagged commit's author date so
-two builds of the same tag produce the same `BuildDate` string.
+- `-trimpath` rewrites embedded source paths (e.g. `/home/runner/work/...`)
+  to module-relative form so panics, stack traces, and DWARF debug info
+  do not diverge between build hosts.
+- `-ldflags="-s -w"` strips the symbol table and DWARF debug sections.
+- `-ldflags="-buildid="` zeroes Go's internal per-build ID, which would
+  otherwise embed a non-deterministic salt.
+- `CGO_ENABLED=0` keeps the build pure-Go. CGo embeds toolchain and
+  platform paths into the binary; none of the `cmd/kit-*` binaries
+  currently use CGo, so disabling it is safe and removes an entire
+  class of non-determinism. If a future binary requires CGo (e.g. a
+  sqlite tool), the target must be split out and the exception
+  documented here in the same change.
+- `SOURCE_DATE_EPOCH` is the **commit time** (`git log -1 --format=%ct`,
+  Unix seconds, timezone-agnostic) of the build's HEAD. Two builds from
+  the same commit produce the same `SOURCE_DATE_EPOCH` regardless of
+  when or where they ran. `%cI` is used for the human-readable
+  `main.date` value so it sorts lexicographically.
+- `-X main.commit=$(git rev-parse HEAD)` and `-X main.date=...` pin
+  build metadata when the cmd binary exposes those variables. Go
+  silently ignores `-X` for symbols that are not declared, so adding
+  the flags is harmless for binaries that do not expose them.
+
+Output is written to `dist/cmd/<name>/<name>`, which is ignored by
+`.gitignore`. The Make target prints the resulting `sha256` for spot
+verification; the rehearse-release CI job in
+[`release.yml`](../../.github/workflows/release.yml) captures a
+sample build as evidence (currently `kit-doctor`).
+
+To build every cmd binary in one shot:
+
+```bash
+make release-bin-all
+```
 
 ### 4.2 Toolchain pinning
 
@@ -354,9 +386,24 @@ git checkout cmd/kit-doctor/v0.3.0
 make release-bin BIN=kit-doctor
 
 # Compare against the published artefact:
-sha256sum dist/kit-doctor-linux-amd64
+sha256sum dist/cmd/kit-doctor/kit-doctor
 # Expected:  <the value in the GitHub release notes>
 ```
+
+To convince yourself that two independent builds of the *same source
+tree* produce byte-identical artefacts (the property the §4.1 flag set
+exists to deliver), the repository ships an opt-in helper:
+
+```bash
+bash tools/verify-reproducible-build.sh kit-doctor
+# OK: reproducible build of kit-doctor sha256=<hash>
+```
+
+The script copies the repository into two temp directories, builds the
+named binary in each, and compares hashes. The `cp -R` is intentionally
+expensive across the workspace — it is a developer-side spot check
+before a Go toolchain bump, an ldflags edit, or any change with
+plausible determinism impact, not a per-PR gate.
 
 The kit has not yet automated this verification (no Reproducible
 Builds Project membership). The intent is to add automated binary
@@ -687,6 +734,7 @@ they can downgrade a dep version. Mitigation:
 
 | Date | Author | Change |
 |---|---|---|
+| 2026-05 | Round-4 follow-up | Shipped the `make release-bin` / `release-bin-all` targets and `tools/verify-reproducible-build.sh`, and refined §4.1/§4.3 prose so it matches the flag set actually built (CGO_ENABLED=0, SOURCE_DATE_EPOCH=git commit-time, `-X main.commit`/`main.date`). |
 | 2026-05 | Release-excellence review | Removed placeholder GPG material, clarified v2.0.0 release provenance, and aligned the policy with the actual release/SBOM workflows. |
 | 2026-05 | Theme-6+ hardening | Added heavy optional SDK boundary enforcement through `make check-dependency-boundaries`. |
 | 2026-05 | Theme-6+ hardening | Added exact direct Go dependency source allowlist and CI enforcement through `make check-dependency-allowlist`. |

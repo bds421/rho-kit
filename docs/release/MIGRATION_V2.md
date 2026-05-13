@@ -345,33 +345,114 @@ go vet ./...
 If the service uses kit infrastructure helpers, also run its Docker-backed
 integration tests with the service's normal `integration` tag.
 
-## 8. Adopter Onboarding And The v2.1 Lazy-Adapter Plan
+## 8. Adopter Onboarding And The Lazy-Adapter Architecture (shipped in v2.0.0)
 
 The downstream onboarding flow (minimum `go.mod`, the smallest compilable
 program, common first-mistake checklist) lives in
 [../ai/adoption.md](../ai/adoption.md). New services should start there
 before touching individual `With*()` methods.
 
-Known v2.0.0 cost — and the v2.1 plan to remove it:
+**v2.0.0 ships the lazy-adapter architecture.** Heavy adapter wiring lives
+in per-adapter sub-modules under `app/`:
 
-- The `app/v2` module transitively imports every adapter sub-module
-  (`amqpbackend`, `natsbackend`, `redisbackend`, `pgx`, `redis`,
-  `leaderelection`, storage backends, etc.). This is intentional for
-  v2.0.0 so the Builder stays a single fluent API with no compile-time
-  selection ceremony. A service that only uses HTTP + Redis still pays
-  the build-time cost of `amqp091`, `nats.go`, and `pgx`.
-- A v2.1 "lazy adapter" architecture is planned. Adapter wiring will
-  move into per-adapter sub-packages (`app/postgres`, `app/amqp`,
-  `app/nats`, `app/redis`, …) under the existing `app/v2` module path,
-  so a service composes only the adapters it actually uses
-  (`b.With(postgres.Module(cfg))`, `b.With(amqp.Module(url))`). The
-  existing `b.WithPostgres(...)` / `b.WithRabbitMQ(...)` methods will
-  remain as backwards-compatible shims that route through the new
-  sub-packages.
-- This is documented as a known migration cost; it is NOT a v2.0.0
-  blocker. Services that adopt v2.0.0 today will get a mechanical
-  refactor path when v2.1 lands — the Builder, Infrastructure struct,
-  module lifecycle, and per-adapter option types are all stable.
+- `github.com/bds421/rho-kit/app/postgres/v2` — pgx-native Postgres pool
+- `github.com/bds421/rho-kit/app/redis/v2` — go-redis connection
+- `github.com/bds421/rho-kit/app/amqp/v2` — RabbitMQ connection (with AMQP TLS enforcement)
+- `github.com/bds421/rho-kit/app/nats/v2` — NATS JetStream connection
+- `github.com/bds421/rho-kit/app/tracing/v2` — OpenTelemetry TracerProvider
+- `github.com/bds421/rho-kit/app/grpc/v2` — public gRPC server + internal gRPC health
+
+Importing `app/v2` alone no longer pulls pgx, go-redis, amqp091, nats.go,
+otelgrpc, or grpc-go into the binary. Services declare each adapter they
+actually need via `Builder.With`:
+
+### Before (v1 / pre-refactor v2)
+
+```go
+import (
+    "github.com/bds421/rho-kit/app/v2"
+    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+    goredis "github.com/redis/go-redis/v9"
+)
+
+app.New("svc", "v1", cfg).
+    WithPostgres(pgxbackend.Config{DSN: dsn}).
+    WithMigrations(migrationsFS).
+    WithRedis(&goredis.Options{Addr: addr}).
+    WithRabbitMQ(brokerURL).
+    WithNATS(natsCfg).
+    WithTracing(tracingCfg).
+    WithModule(app.NewGRPCModule(register, ":50051")).
+    Router(func(infra app.Infrastructure) http.Handler {
+        _ = infra.DB         // *pgxbackend.Pool
+        _ = infra.Redis      // *kitredis.Connection
+        _ = infra.Publisher  // amqp publisher
+        return mux
+    }).
+    Run()
+```
+
+### After (v2.0.0)
+
+```go
+import (
+    "github.com/bds421/rho-kit/app/v2"
+    "github.com/bds421/rho-kit/app/postgres/v2"
+    "github.com/bds421/rho-kit/app/redis/v2"
+    "github.com/bds421/rho-kit/app/amqp/v2"
+    "github.com/bds421/rho-kit/app/nats/v2"
+    "github.com/bds421/rho-kit/app/tracing/v2"
+    "github.com/bds421/rho-kit/app/grpc/v2"
+    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+    natsbackend "github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
+    goredis "github.com/redis/go-redis/v9"
+)
+
+app.New("svc", "v1", cfg).
+    With(postgres.Module(pgxbackend.Config{DSN: dsn}, postgres.WithMigrations(migrationsFS))).
+    With(redis.Module(&goredis.Options{Addr: addr})).
+    With(amqp.Module(brokerURL)).
+    With(nats.Module(natsbackend.Config{URL: natsURL})).
+    With(tracing.Module(tracingCfg)).
+    With(grpc.Module(register, ":50051")).
+    Router(func(infra app.Infrastructure) http.Handler {
+        _ = postgres.Pool(infra)        // *pgxbackend.Pool
+        _ = redis.Connection(infra)     // *kitredis.Connection
+        _ = amqp.Publisher(infra)       // messaging.Publisher
+        return mux
+    }).
+    Run()
+```
+
+### Mechanical mapping
+
+| Removed Builder method            | New adapter Module                                       |
+| --------------------------------- | -------------------------------------------------------- |
+| `WithPostgres(cfg)`               | `With(postgres.Module(cfg))`                             |
+| `WithMigrations(fs)`              | `postgres.WithMigrations(fs)` option on the module       |
+| `WithRedis(opts, …)`              | `With(redis.Module(opts, …))`                            |
+| `WithoutRedisTLS()`               | `redis.ModuleWithOptions(opts, redis.WithoutTLS())`      |
+| `WithRabbitMQ(url)`               | `With(amqp.Module(url))`                                 |
+| `WithRabbitMQURLProvider(fn)`     | `With(amqp.Module("", amqp.WithURLProvider(fn)))`        |
+| `WithCriticalBroker()`            | `amqp.WithCriticalBroker()` option                       |
+| `WithMaxMessageBytes(n)`          | `amqp.WithMessageSizeLimiter(...)` / `nats.WithMessageSizeLimiter(...)` |
+| `WithRouteMaxMessageBytes(…)`     | combine on the limiter passed to the adapter option      |
+| `WithNATS(cfg)`                   | `With(nats.Module(cfg))`                                 |
+| `WithTracing(cfg)`                | `With(tracing.Module(cfg))`                              |
+| `app.NewGRPCModule(reg, addr, …)` | `grpc.Module(reg, addr, …)`                              |
+| `WithPublicGRPCHealth()`          | `grpc.WithPublicHealth()` option                         |
+| `infra.DB`                        | `postgres.Pool(infra)`                                   |
+| `infra.Redis`                     | `redis.Connection(infra)`                                |
+| `infra.Broker` / `.Publisher` / `.Consumer` | `amqp.Connection(infra)` / `amqp.Publisher(infra)` / `amqp.Consumer(infra)` |
+| `infra.NATS` / `.NATSPublisher`   | `nats.Connection(infra)` / `nats.Publisher(infra)`       |
+| `infra.GRPCServer`                | `grpc.Server(infra)`                                     |
+
+### New: AMQP TLS enforcement
+
+`amqp.Module` panics at construction time if the URL scheme is `amqp://`
+and the host is non-loopback. This mirrors the existing Redis transport-
+safety check. Use `amqps://` for production brokers, or opt out for
+local-dev fixtures with `amqp.WithoutTLS()`.
 
 ## 9. Things Not Migrated In v2.0.0
 

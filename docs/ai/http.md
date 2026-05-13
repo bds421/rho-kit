@@ -257,7 +257,7 @@ client := httpx.NewTracingHTTPClient(10*time.Second, tlsConfig) // with OpenTele
 client := httpx.NewHTTPClient(10*time.Second, tlsConfig, httpx.WithFollowRedirects(3)) // explicit redirect opt-in
 client := httpx.NewResilientHTTPClient(httpx.WithResilientIdleConnTimeout(30*time.Second)) // circuit breaker + kit transport defaults
 
-// infra.HTTPClient is pre-configured (tracing-aware if WithTracing used)
+// infra.HTTPClient is pre-configured (tracing-aware if app/tracing.Module is registered)
 ```
 
 Kit-created outbound HTTP clients block redirects by default and return

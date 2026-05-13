@@ -5,9 +5,8 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
-
-	"google.golang.org/grpc"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
@@ -17,11 +16,7 @@ import (
 	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/httpx/v2"
 	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
-	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
-	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
-	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -37,7 +32,14 @@ type RouterFunc func(infra Infrastructure) http.Handler
 
 // Infrastructure is the collection of initialized infrastructure components
 // passed to the RouterFunc. Nil fields indicate the corresponding With*()
-// method was not called.
+// method (or sub-package Module) was not registered.
+//
+// v2.0.0 lazy-adapter refactor: adapter-typed fields (Postgres pool, Redis
+// client, AMQP/NATS connections, gRPC server) moved out of this struct into
+// per-adapter sub-packages (app/postgres, app/redis, app/amqp, app/nats,
+// app/grpc). Sub-packages publish their resources via [Infrastructure.Resources]
+// and expose typed `Get(infra)` helpers so app/v2 no longer transitively pulls
+// pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
 //
 // The callback fields (Background, SetCustomReadiness, AddHealthCheck) are
 // only valid during the synchronous execution of RouterFunc. Calling them
@@ -50,17 +52,6 @@ type Infrastructure struct {
 	Logger    *slog.Logger
 	ClientTLS *tls.Config
 	ServerTLS *tls.Config
-
-	// DB is the canonical Postgres pool. v2 dropped MySQL/MariaDB and
-	// GORM; pgx is the only supported driver. Configured via WithPostgres.
-	DB *pgxbackend.Pool
-
-	Broker    messaging.Connector // nil if no WithRabbitMQ
-	Publisher messaging.Publisher // nil if no WithRabbitMQ
-	Consumer  messaging.Consumer  // nil if no WithRabbitMQ
-
-	NATS          *natsbackend.Connection // nil if no WithNATS
-	NATSPublisher *natsbackend.Publisher  // nil if no WithNATS
 
 	JWT    *jwtutil.Provider // nil if no WithJWT
 	PASETO *paseto.Provider  // nil if no WithPASETO
@@ -76,17 +67,28 @@ type Infrastructure struct {
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit
 
-	Redis *kitredis.Connection // nil if no WithRedis
-
 	Storage        storage.Storage    // nil if no WithStorage
 	StorageManager *storage.Manager   // nil if no WithNamedStorage
 	Cron           *kitcron.Scheduler // nil if no WithCron
 	AuditLog       *auditlog.Logger   // nil if no WithAuditLog
 	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
-	GRPCServer     *grpc.Server       // nil if no NewGRPCModule
 
 	HTTPClient *http.Client
 	Config     BaseConfig
+
+	// resources holds adapter-published handles indexed by a sub-package key.
+	// Adapter modules in app/postgres, app/redis, app/amqp, app/nats, and
+	// app/grpc populate this map via [Infrastructure.SetResource]; consumers
+	// retrieve their typed handle via the sub-package's getter (e.g.,
+	// postgres.Pool(infra), redis.Connection(infra)). The any-typed storage
+	// keeps app/v2 free of pgx, go-redis, amqp, nats, grpc, and otelgrpc
+	// imports.
+	//
+	// The map lives behind a pointer + mutex pair so Infrastructure stays
+	// safe to copy by value (the RouterFunc signature takes Infrastructure
+	// by value; adapter Populate calls share state with consumer Get
+	// calls through the pointer).
+	resources *resourceStore
 
 	// Background registers a managed goroutine that runs until the worker
 	// context is cancelled. If the function returns a non-nil error, the
@@ -103,6 +105,55 @@ type Infrastructure struct {
 	// Call this inside RouterFunc when health checks depend on infrastructure
 	// created within the router (e.g., transport-specific checks).
 	AddHealthCheck func(check health.DependencyCheck)
+}
+
+// resourceStore is the shared backing map for [Infrastructure.SetResource]
+// and [Infrastructure.Resource]. Lives behind a pointer on Infrastructure so
+// the surrounding struct stays copy-safe (the RouterFunc takes Infrastructure
+// by value).
+type resourceStore struct {
+	mu sync.RWMutex
+	m  map[string]any
+}
+
+func newResourceStore() *resourceStore {
+	return &resourceStore{m: make(map[string]any)}
+}
+
+// SetResource publishes an adapter-owned handle under key so the matching
+// sub-package's typed getter can hand it back to consumer code. Modules call
+// this from [Module.Populate]; double-registration under the same key panics
+// at startup because the resource keyspace is meant to be exclusive
+// per-adapter (postgres, redis, amqp, nats, grpc).
+//
+// Keys are sub-package-defined string constants; use only the constants
+// exported by the relevant adapter (e.g., postgres.ResourceKey).
+func (i *Infrastructure) SetResource(key string, value any) {
+	if key == "" {
+		panic("app: SetResource requires a non-empty key")
+	}
+	if i.resources == nil {
+		i.resources = newResourceStore()
+	}
+	i.resources.mu.Lock()
+	defer i.resources.mu.Unlock()
+	if _, exists := i.resources.m[key]; exists {
+		panic("app: duplicate resource key — adapter modules must not double-register")
+	}
+	i.resources.m[key] = value
+}
+
+// Resource returns the adapter handle published under key. Sub-package
+// getters use this to retrieve their typed value; ok=false means the
+// matching adapter module was not registered with the Builder.
+func (i *Infrastructure) Resource(key string) (any, bool) {
+	if i == nil || i.resources == nil {
+		return nil, false
+	}
+	i.resources.mu.RLock()
+	defer i.resources.mu.RUnlock()
+	v, ok := i.resources.m[key]
+	return v, ok
 }
 
 // TestInfrastructure returns an Infrastructure with safe no-op defaults for

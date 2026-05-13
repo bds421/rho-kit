@@ -46,7 +46,7 @@ allowed_for_boundary_dep() {
     case "$dep" in
         github.com/redis/go-redis/v9|github.com/alicebob/miniredis/v2|github.com/bds421/rho-kit/infra/redis/v2|github.com/bds421/rho-kit/infra/redis/redistest/v2)
             case "$gomod" in
-                app/go.mod|\
+                app/redis/go.mod|\
                 data/budget/redis/go.mod|\
                 data/cache/rediscache/go.mod|\
                 data/idempotency/redisstore/go.mod|\
@@ -68,7 +68,7 @@ allowed_for_boundary_dep() {
 
         github.com/jackc/pgx/v5|github.com/lib/pq|github.com/bds421/rho-kit/infra/sqldb/pgx/v2|github.com/bds421/rho-kit/infra/sqldb/dbtest/v2)
             case "$gomod" in
-                app/go.mod|\
+                app/postgres/go.mod|\
                 cmd/kit-migrate/go.mod|\
                 data/actionlog/postgres/go.mod|\
                 data/approval/postgres/go.mod|\
@@ -97,7 +97,7 @@ allowed_for_boundary_dep() {
 
         github.com/rabbitmq/amqp091-go|github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2)
             case "$gomod" in
-                app/go.mod|\
+                app/amqp/go.mod|\
                 infra/messaging/amqpbackend/go.mod|\
                 infra/messaging/amqpbackend/integrationtest/go.mod)
                     return 0
@@ -108,7 +108,7 @@ allowed_for_boundary_dep() {
 
         github.com/nats-io/nats.go|github.com/bds421/rho-kit/infra/messaging/natsbackend/v2)
             case "$gomod" in
-                app/go.mod|\
+                app/nats/go.mod|\
                 infra/messaging/natsbackend/go.mod|\
                 infra/messaging/natsbackend/integrationtest/go.mod)
                     return 0
@@ -119,7 +119,7 @@ allowed_for_boundary_dep() {
 
         github.com/bds421/rho-kit/infra/messaging/redisbackend/v2)
             case "$gomod" in
-                app/go.mod|infra/messaging/redisbackend/go.mod|*/integrationtest/go.mod)
+                infra/messaging/redisbackend/go.mod|*/integrationtest/go.mod)
                     return 0
                     ;;
             esac

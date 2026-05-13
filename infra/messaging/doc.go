@@ -25,4 +25,16 @@
 //   - `buffered_publisher_state_writes_total{publisher, outcome}` — state-file writes.
 //   - `buffered_publisher_pending{publisher}` — current buffer depth.
 //   - `buffered_publisher_buffered_bytes{publisher}` — approximate bytes pending.
+//
+// State-file persistence (THREAT_MODEL §4.3 M-05) is configured with
+// two cooperating options:
+//
+//   - [WithStateDirectory] sets the absolute directory the state file
+//     must live in.
+//   - [WithStateFile] names the file relative to that directory.
+//
+// The constructor rejects absolute paths, `..` traversal, and any
+// resolved location outside the configured directory so a hostile or
+// buggy STATE_FILE env value cannot write outside the operator-chosen
+// area. Calling [WithStateFile] without [WithStateDirectory] panics.
 package messaging

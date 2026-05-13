@@ -220,6 +220,127 @@ func wire() {
 		"_test.go must not be flagged for idempotency-user-extractor, got %+v", findings)
 }
 
+// TestScan_FlagsIdempotencyMemoryStoreInProduction pins THREAT_MODEL
+// §4.9 I-05 / AGENTS.md anti-pattern: a production call to
+// idempotency.NewMemoryStore must be flagged as critical so a
+// multi-instance deployment with non-shared idempotency state never
+// ships.
+func TestScan_FlagsIdempotencyMemoryStoreInProduction(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/data/v2/idempotency"
+
+func wire() {
+	_ = idempotency.NewMemoryStore()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "idempotency-memory-store"),
+		"production NewMemoryStore call must be flagged, got %+v", findings)
+	for _, f := range findings {
+		if f.Rule == "idempotency-memory-store" {
+			assert.Equal(t, rules.Critical, f.Severity,
+				"idempotency-memory-store must be critical severity")
+		}
+	}
+}
+
+// TestScan_FlagsIdempotencyMemoryStore_AliasedImport verifies the
+// rule resolves through an import alias so smuggling it past as
+// `idem.NewMemoryStore` still fails the check.
+func TestScan_FlagsIdempotencyMemoryStore_AliasedImport(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import idem "github.com/bds421/rho-kit/data/v2/idempotency"
+
+func wire() {
+	_ = idem.NewMemoryStore()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "idempotency-memory-store"),
+		"aliased import must still trigger rule, got %+v", findings)
+}
+
+// TestScan_IdempotencyMemoryStoreSkipsTestFiles confirms _test.go
+// is treated as the test surface AGENTS.md sanctions for memory
+// stores. The rule must stay silent there.
+func TestScan_IdempotencyMemoryStoreSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire_test.go", `package svc
+
+import "github.com/bds421/rho-kit/data/v2/idempotency"
+
+func wire() {
+	_ = idempotency.NewMemoryStore()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "idempotency-memory-store"),
+		"_test.go usage must not be flagged, got %+v", findings)
+}
+
+// TestScan_IdempotencyMemoryStoreRespectsInlineSuppression confirms
+// the standard `kit-doctor:allow` marker silences the rule for
+// internal tooling that deliberately wires a memory store.
+func TestScan_IdempotencyMemoryStoreRespectsInlineSuppression(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/data/v2/idempotency"
+
+func wire() {
+	_ = idempotency.NewMemoryStore() // kit-doctor:allow idempotency-memory-store reason="single-instance CLI"
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "idempotency-memory-store"),
+		"inline suppression must skip finding, got %+v", findings)
+}
+
+// TestScan_IdempotencyMemoryStoreDoesNotFlagOtherMemoryStores
+// verifies the rule is package-scoped: an unrelated NewMemoryStore
+// (e.g. an audit-log backend) must not be flagged.
+func TestScan_IdempotencyMemoryStoreDoesNotFlagOtherMemoryStores(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import "github.com/bds421/rho-kit/observability/v2/auditlog"
+
+func wire() {
+	_ = auditlog.NewMemoryStore()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "idempotency-memory-store"),
+		"unrelated NewMemoryStore must not be flagged, got %+v", findings)
+}
+
+// TestScan_IdempotencyMemoryStoreIgnoresLocalShadow verifies the
+// rule never fires on a local variable named `idempotency` — the
+// rule must be tied to the actual import path, not a substring match.
+func TestScan_IdempotencyMemoryStoreIgnoresLocalShadow(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+func wire() {
+	idempotency := struct{ NewMemoryStore func() any }{}
+	_ = idempotency.NewMemoryStore()
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "idempotency-memory-store"),
+		"shadowed local variable must not trigger rule, got %+v", findings)
+}
+
 func TestScan_FlagsTenantKeyPrefixFormatString(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "keys.go", `package svc

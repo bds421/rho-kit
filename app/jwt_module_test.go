@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/v2/tracing"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
@@ -137,20 +136,14 @@ func TestJWTModuleLogsDoNotExposeIdentityURLs(t *testing.T) {
 
 func TestBuildIntegrationModules_FullChain(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithTracing(tracing.Config{ServiceName: "test"}).
 		WithJWT("https://example.com/.well-known/jwks.json").
 		WithJWTIssuer("https://issuer.example.com")
 
 	modules := b.buildIntegrationModules()
 	names := moduleNames(modules)
-	// Order: tracing -> httpclient -> jwt
-	assert.Equal(t, []string{"tracing", "httpclient", "jwt"}, names)
-}
-
-// tracingConfigForTest returns a tracing.Config suitable for unit tests.
-// Uses an empty endpoint so a noop provider is created (no network calls).
-func tracingConfigForTest() tracing.Config {
-	return tracing.Config{ServiceName: "test"}
+	// Order: httpclient -> jwt. Tracing is now an opt-in adapter module
+	// registered via app/tracing.Module and tested in that package.
+	assert.Equal(t, []string{"httpclient", "jwt"}, names)
 }
 
 // TestJWTModule_RegistersJWKSMetricsCollector verifies the module wires the

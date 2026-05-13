@@ -2,17 +2,21 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Module is a self-contained unit of infrastructure that can be registered
-// with the Builder via [Builder.WithModule]. Modules are initialized in
-// registration order during [Builder.Run], before the RouterFunc is called.
+// with the Builder via [Builder.With] or [Builder.WithModule]. Modules are
+// initialized in registration order during [Builder.Run], before the
+// RouterFunc is called.
 //
 // Each module follows a four-phase lifecycle:
 //  1. Init — connect to external services, validate config, register background
@@ -52,6 +56,49 @@ type Module interface {
 	// HealthChecks returns dependency checks to add to the readiness probe.
 	// Return nil or an empty slice if the module has no health checks.
 	HealthChecks() []health.DependencyCheck
+}
+
+// ServerTLSReceiver is the optional capability that adapter modules implement
+// when they need the Builder's resolved server-side *tls.Config (mirroring the
+// public HTTP listener's TLS surface). [Builder.Run] hands the resolved config
+// to every module implementing this interface before [Module.Init] runs, so
+// the adapter can wire matching credentials onto its own listener
+// (e.g., grpc.Creds for the public gRPC server in app/grpc).
+//
+// Modules without TLS-aware listeners leave this interface unimplemented and
+// the Builder ignores them.
+type ServerTLSReceiver interface {
+	SetServerTLS(cfg *tls.Config)
+}
+
+// HealthCheckerReceiver is the optional capability for adapter modules that
+// need a reference to the Builder's [health.Checker] (e.g., app/grpc registers
+// the gRPC health-checking service on its grpc.Server using the same checker
+// that powers the HTTP readiness probe). The Builder calls SetHealthChecker
+// after collecting every module's health checks and before starting the
+// public/internal listeners.
+type HealthCheckerReceiver interface {
+	SetHealthChecker(checker *health.Checker)
+}
+
+// InternalHandlerWrapper is the optional capability for adapter modules that
+// wrap the kit's internal-ops HTTP handler to add a transport-specific
+// endpoint (e.g., app/grpc layers the gRPC health-checking service over h2c
+// on the same internal listener so internal callers can probe via either
+// protocol). The Builder invokes WrapInternalHandler exactly once, after the
+// HTTP-level internal handler is assembled.
+type InternalHandlerWrapper interface {
+	WrapInternalHandler(base http.Handler, checker *health.Checker) http.Handler
+}
+
+// RunnerAttacher is the optional capability for adapter modules that own a
+// long-running component which must be registered with the lifecycle Runner
+// (e.g., the public gRPC server's Start/Stop loop in app/grpc). The Builder
+// calls AttachToRunner after module Init succeeds and before the public HTTP
+// server is registered, so reverse-order shutdown drains the HTTP server
+// first.
+type RunnerAttacher interface {
+	AttachToRunner(runner *lifecycle.Runner)
 }
 
 // BaseModule provides no-op defaults for optional Module methods. Embed it in
@@ -118,6 +165,23 @@ func (mc ModuleContext) Module(name string) Module {
 	return m
 }
 
+// serverTLSOptions returns the netutil.ServerTLSOption set the
+// builder will apply when constructing the public server's
+// *tls.Config. FR-014 [HIGH]: the default is mTLS
+// (tls.RequireAndVerifyClientCert) so the kit's "TLS env enables
+// global mTLS" convention holds. [Builder.WithOptionalClientCertificates]
+// flips this back to VerifyClientCertIfGiven for services fronted by
+// an external TLS terminator.
+//
+// Exposed (lowercase) for the unit test that pins the contract; not
+// part of the public Builder surface.
+func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
+	if b.tlsOptionalClientCert {
+		return []netutil.ServerTLSOption{netutil.WithOptionalClientCert()}
+	}
+	return nil
+}
+
 // initModules initializes all registered modules in order and returns a
 // cleanup function that closes them in reverse order. The cleanup function
 // logs but does not return close errors — it is intended for use with defer.
@@ -131,7 +195,7 @@ func initModules(
 	// Validate name uniqueness across all modules (builtin + user-registered).
 	// WithModule only checks user-registered modules; this catches collisions
 	// between builtin integration modules and user modules (e.g., a user module
-	// named "database" when WithPostgres was also called).
+	// named "database" when a postgres adapter module was also registered).
 	seen := make(map[string]bool, len(modules))
 	for _, m := range modules {
 		if seen[m.Name()] {

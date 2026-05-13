@@ -109,7 +109,7 @@ assumed beyond it.
   privileges within their tenant, exhaust shared infrastructure
   (cache key namespace collisions, rate-limit avoidance).
 - Primary defences: `core/tenant` propagation, tenant-scoped Redis
-  keys, mandatory `tenant.RequireID` at storage boundaries,
+  keys, mandatory `tenant.Required` at storage boundaries,
   multi-tenant CSRF binding, RBAC via `httpx/authz`.
 
 ### A3. Compromised dependency
@@ -251,8 +251,12 @@ recover -> metrics -> requestID -> tracing -> logging -> timeout -> handler
 
 with optional `outer` (CSRF, content-type pinning) and `inner`
 (auth, rate-limiting, idempotency) wedges. Every middleware below is
-positioned in the chain by `stack.Default`; the kit intentionally
-gives the author no way to remove `recover`.
+positioned in the chain by `stack.Default`; the kit defaults to a
+panic-catching `recover` middleware in every constructed stack.
+[`stack.WithoutRecover()`](../../httpx/middleware/stack/stack.go) is
+the only way to remove it and requires an explicit acknowledgement in
+the service author's wiring — it is documented as strongly discouraged
+and is not reachable via a default option.
 
 #### Threats and mitigations
 
@@ -261,7 +265,7 @@ gives the author no way to remove `recover`.
 | H-01 | Panic in handler kills the entire HTTP server | A1 | `recover` middleware unconditionally prepended; logs + emits 500 | [httpx/middleware/recover/recover.go](../../httpx/middleware/recover/recover.go) |
 | H-02 | Slowloris / oversized requests exhaust file descriptors | A1 | `httpx.NewServer` sets ReadHeaderTimeout, ReadTimeout, MaxHeaderBytes; `maxbody` middleware caps body | [httpx/httpx.go](../../httpx/httpx.go), [httpx/middleware/maxbody/maxbody.go](../../httpx/middleware/maxbody/maxbody.go) |
 | H-03 | Unbounded request handlers — long-running requests pin connections | A1 | `timeout` middleware in `stack.Default` with 30s default and 1 MiB buffer cap | [httpx/middleware/timeout/timeout.go](../../httpx/middleware/timeout/timeout.go) |
-| H-04 | Cross-site request forgery against authenticated browser sessions | A1 + browser | Session-bound CSRF (double-submit + HMAC binding) — refuses to start with the legacy hard-coded secret outside dev | [httpx/middleware/csrf/csrf.go](../../httpx/middleware/csrf/csrf.go), [security/csrf/csrf.go](../../security/csrf/csrf.go) |
+| H-04 | Cross-site request forgery against authenticated browser sessions | A1 + browser | Session-bound CSRF (double-submit + HMAC binding); construction panics if no `WithSecret`/`WithSecrets` HMAC material is supplied and `WithDevSecret` has not been opted into — the kit ships no allow-list of forbidden specific values, so deployments must ensure the configured secret is not a documented placeholder | [httpx/middleware/csrf/csrf.go](../../httpx/middleware/csrf/csrf.go), [security/csrf/csrf.go](../../security/csrf/csrf.go) |
 | H-05 | Missing security headers permit clickjacking, mixed content, MIME sniffing | A1 + browser | `secheaders` middleware sets HSTS (when behind trusted proxy), CSP, X-Content-Type-Options, X-Frame-Options, Referrer-Policy | [httpx/middleware/secheaders/secheaders.go](../../httpx/middleware/secheaders/secheaders.go) |
 | H-06 | XSS via inline scripts | A1 + browser | `cspnonce` middleware emits a per-request nonce that the secheaders CSP refers to | [httpx/middleware/cspnonce](../../httpx/middleware/cspnonce/) |
 | H-07 | Spoofed `X-Forwarded-For` allows rate-limit bypass / log poisoning | A1 | `clientip` defaults to loopback-only trust; `clientip.ParseTrustedProxiesStrict` fails-fast on bad config | [httpx/middleware/clientip/clientip.go](../../httpx/middleware/clientip/clientip.go) |
@@ -271,7 +275,7 @@ gives the author no way to remove `recover`.
 | H-11 | Request smuggling via duplicate Content-Length | A1 | Go stdlib server rejects ambiguous CL/TE — relied on, not reimplemented |
 | H-12 | Open redirect via attacker-controlled URL params | A1 | `httpx.SafeRedirect` validates untrusted redirect targets, rejects scheme-relative / encoded scheme-relative targets, userinfo, non-HTTP schemes, control bytes, and absolute hosts outside an explicit allowlist | [httpx/redirect.go](../../httpx/redirect.go) |
 | H-13 | Log injection via crafted headers | A1 | Structured logging (`slog`) — fields are key/value, not formatted; `secret.String` redacts credential fields | [observability/logging](../../observability/logging/), [core/secret](../../core/secret/) |
-| H-14 | Mass-assignment via permissive JSON decoding | A2 | `core/validate.Struct` rejects unknown / extra fields when the struct uses `validate:"-"` on private fields; service authors must opt into strict mode | [core/validate/validate.go](../../core/validate/validate.go) |
+| H-14 | Mass-assignment via permissive JSON decoding | A2 | The `httpx` typed-handler JSON decoder enables `DisallowUnknownFields`, rejecting any payload field not present in the destination struct; this is the load-bearing mass-assignment defence. Services that decode JSON via custom paths bypass this and must apply equivalent strictness. | [httpx/httpx.go](../../httpx/httpx.go) |
 
 **Important interaction:** `recover` MUST run before `metrics` in the
 chain so panic responses are still counted; `stack.Default` enforces
@@ -322,7 +326,7 @@ patterns.
 | D-01 | Postgres connection in clear text on private network | A1 (network observer), A3 | `sslmode` defaults to `prefer`; the always-on `app.Builder` validator rejects `disable`/`prefer`/`allow` and requires one of `require`/`verify-ca`/`verify-full`. The `pgx.Config.AllowPlaintextLoopbackForTests` field is the only relaxation, gated on every host (and every multi-host fallback) resolving to loopback | [infra/sqldb/config.go](../../infra/sqldb/config.go), [app/validate.go](../../app/validate.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go) |
 | D-02 | SQL injection via string concatenation | A1, A2 | Kit runtime DB path is pgx/sqlc-style parameterized queries; no string-concat query helper in the kit's surface area |
 | D-03 | DB credential leakage via process logs | A6 | `sqldb.Config` / `pgxbackend.Config` implement safe `LogValue` renderers and `_FILE` secret loading avoids embedding password material in config errors; `pgxbackend.Config.PasswordProvider` supports rotating credentials without logging returned values | [infra/sqldb/config.go](../../infra/sqldb/config.go), [infra/sqldb/pgx/pgx.go](../../infra/sqldb/pgx/pgx.go), [core/config](../../core/config/) |
-| D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpen` is required (no zero default); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
+| D-04 | Connection-pool exhaustion DoS | A1 | `PoolConfig.MaxOpenConns` is set by `DefaultPool()` to 100 (services that need a different ceiling override it explicitly); `WithDBMetrics` exposes saturation | [infra/sqldb/config.go](../../infra/sqldb/config.go) |
 | D-05 | Stolen DB backup discloses encrypted-at-rest fields | A6 | `crypto/envelope` for envelope encryption with KMS/Vault-rotatable KEKs; field-level helpers in `crypto/encrypt` | [crypto/envelope/envelope.go](../../crypto/envelope/envelope.go), [crypto/envelope/awskms](../../crypto/envelope/awskms/), [crypto/envelope/azurekeyvault](../../crypto/envelope/azurekeyvault/), [crypto/envelope/gcpkms](../../crypto/envelope/gcpkms/), [crypto/envelope/vaulttransit](../../crypto/envelope/vaulttransit/), [crypto/encrypt](../../crypto/encrypt/) |
 | D-06 | Migration downgrade in prod (drop column) | A5 | Goose migrations are forward-only by convention; the kit ships no down-migration helper for prod use | [docs/ai/sqldb.md](../ai/sqldb.md) |
 
@@ -343,9 +347,9 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | R-04 | Idempotency permanent lock (TTL=0) wedges further requests | A1 (induced) | `WithTTL(0)` on the middleware panics at construction; backends return `ErrInvalidTTL` | [httpx/middleware/idempotency/idempotency.go](../../httpx/middleware/idempotency/idempotency.go) |
 | R-05 | Queue race — one consumer steals another's in-flight message | A1 (load-induced) | Per-consumer `:processing` list; Lua `removeByID` + LRANGE peek + dispatch-failure preserves message | [data/queue/redisqueue](../../data/queue/redisqueue/) |
 | R-06 | Redis `KEYS *` exposed via debug endpoint allows enumeration | A1 | Kit ships no debug-KEYS endpoint; `health` checks use `PING` only | [observability/health/health.go](../../observability/health/health.go) |
-| R-07 | TLS-less Redis on private network | A1 (observer), A3 | `redis.Config.TLS` strict-validated outside dev; `Validate` rejects empty TLS cert chain when `Insecure=false` | [infra/redis/config.go](../../infra/redis/config.go) |
+| R-07 | TLS-less Redis on private network | A1 (observer), A3 | `redis.Config.Validate` rejects plaintext `redis://` URLs unless the deployment opts in via `redis.Config.AllowPlaintext` (env `REDIS_ALLOW_PLAINTEXT`); URLs carrying `skip_verify=` are rejected outright because the kit refuses to disable TLS verification | [infra/redis/config.go](../../infra/redis/config.go) |
 | R-08 | Rate-limit fixed-window allows burst at boundary | A1 | Sliding-window primitives `data/ratelimit/gcra`, `data/ratelimit/tokenbucket` available; service author chooses; old fixed-window implementation retained for back-compat with documented caveats | [data/ratelimit/ratelimit.go](../../data/ratelimit/ratelimit.go) |
-| R-09 | `MemoryCache` unbounded growth → OOM | A1 | Default 64 MiB cap; opt-in unbounded only by explicit `WithUnbounded` | [data/cache/cache.go](../../data/cache/) |
+| R-09 | `MemoryCache` unbounded growth → OOM | A1 | Default 64 MiB cost cap; `WithMaxSize` / `WithMaxCost` are the only configuration knobs and both panic at construction if given a non-positive value, so a misconfigured cap fails fast instead of degenerating into an unbounded cache | [data/cache/memory_cache.go](../../data/cache/memory_cache.go) |
 
 ### 4.6 Object/file storage (`infra/storage`, `infra/storage/storagehttp`)
 
@@ -363,7 +367,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
 | T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
-| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` or the explicit opt-out `WithoutJWTIssuer`; the legacy `https://oathkeeper` default is rejected by the always-on `app.Builder` validator. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | [app/jwt_module.go](../../app/jwt_module.go) |
+| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` (pin the expected `iss`) or the explicit opt-out `WithoutJWTIssuer`; the always-on `app.Builder` validator fails `Build()` if neither is set, so a service cannot ship with an unpinned issuer by accident. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | [app/jwt_module.go](../../app/jwt_module.go), [app/validate.go](../../app/validate.go) |
 | T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval |
 | T-04 | JWT replay after logout (no revocation) | A1 | `security/jwtutil/revocation` stores revoked `jti` values until token expiry over any cache-compatible backend; `jwtutil.Provider` can fail closed through `WithRevocationChecker`. | [security/jwtutil](../../security/jwtutil/), [security/jwtutil/revocation](../../security/jwtutil/revocation/) |
 | T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
@@ -401,10 +405,10 @@ backends or other expensive operations.
 | ID | Threat | Adversary | Mitigation | Where |
 |---|---|---|---|---|
 | L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `WithTenantBudget` | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
-| L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.RequireID` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
+| L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.Required` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
 | L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | [runtime/concurrency](../../runtime/concurrency/) |
 | L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
-| L-05 | `BufferedPublisher` queue grows unboundedly while broker is down → OOM | A1 (DoS) | `defaultBufferedMaxSize = 10_000`; once exceeded, the publisher returns `ErrBufferFull` rather than evicting silently; state-file path validated | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
+| L-05 | `BufferedPublisher` queue grows unboundedly while broker is down → OOM | A1 (DoS) | `defaultBufferedMaxSize = 10_000`; once exceeded, the publisher returns a `"buffered publisher: buffer full, message dropped"` error rather than evicting silently; state-file path validated | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 
 ### 4.11 Outbox + transactional integrity (`infra/outbox`)
 
@@ -446,15 +450,16 @@ following hold:
 - `idempotency.WithTTL(0)`.
 - `clientip` config that fails `ParseTrustedProxiesStrict`.
 - CSRF middleware constructed without a per-deployment shared
-  secret outside development (legacy hard-coded secret triggers a
-  panic).
+  secret and without the explicit `WithDevSecret` opt-in (the
+  constructor panics; no specific placeholder value is matched, so
+  operators must source the secret from a non-placeholder).
 - `signedrequest` middleware mounted without a nonce store.
 - `BufferedPublisher` configured with a state file path that
   escapes the configured directory.
 - Nil dependency to any constructor (the kit's "fail-fast nil-deps"
   cluster).
-- `MemoryCache` configured with both an explicit cap of 0 and
-  `WithUnbounded(false)`.
+- `MemoryCache` configured via `WithMaxSize` / `WithMaxCost` with a
+  zero or negative value (the option panics at construction).
 - Negative or zero values to `NewRateLimiter`, `NewKeyedRateLimiter`,
   `Timeout`, `MaxBodySize`.
 
@@ -470,10 +475,12 @@ opt-outs the operator declares consciously: `WithoutTLS`,
 [`core/secret.String`](../../core/secret/secret.go) refuses to render
 through:
 
-- `fmt.Sprintf("%v", s)` and other verbs.
+- `fmt.Sprintf("%v", s)` and other verbs (via `fmt.Formatter` + `fmt.Stringer`).
 - `slog.Info("...", "key", s)` (via `LogValue`).
-- `json.Marshal` / `json.Unmarshal`.
-- `encoding/text` and `encoding/binary`.
+- `json.Marshal` (via `json.Marshaler`).
+- Any encoder that consults `encoding.TextMarshaler` (yaml.v3,
+  TOML, and similar serialisers); `MarshalText` returns the
+  redaction marker, never the underlying bytes.
 
 Intentional access is via `s.RevealString()` / `s.Reveal()`, which
 are greppable for audit. Not every integration config stores credentials as
@@ -494,7 +501,7 @@ callbacks. Current high-risk credential surfaces are covered by:
 `core/tenant` propagates a tenant ID through `context.Context`. Two
 helpers enforce it:
 
-- `tenant.RequireID(ctx)` — returns the ID or an error if absent.
+- `tenant.Required(ctx)` — returns the ID or an error if absent.
 - `tenant.WithID(ctx, id)` — adds an ID; refuses to overwrite an
   existing one in the same context (prevents a downstream caller
   from "re-stamping" the request as another tenant).
@@ -580,8 +587,12 @@ The kit's `httpx.NewResilientHTTPClient` and
 `httpx.NewHTTPClient` set:
 
 - A non-zero connect/read/write timeout.
-- A non-default transport (so changes to `http.DefaultTransport`
-  in dependencies cannot affect the kit's HTTP behaviour).
+- A transport constructed by cloning `http.DefaultTransport` at HTTP
+  client construction time; the resulting transport is owned by the
+  kit and the global `http.DefaultTransport` is never referenced
+  thereafter, so mutations *after* the client is built are isolated.
+  Mutations *before* construction are inherited — services should
+  avoid mutating `http.DefaultTransport` from any package `init()`.
 - A `core/secret.String`-aware logger that redacts auth headers.
 
 `security/netutil.SSRFSafeTransport` wraps the default transport
@@ -643,11 +654,11 @@ Request lifecycle and threat coverage:
 | 10 | `timeout` middleware (30s default) | H-03 |
 | 11 | `auth.Required` (JWT verify, issuer + audience checked) | T-01, T-02, H-09 |
 | 12 | `idempotency.Middleware` (Redis-backed) | I-01, I-02, I-04 |
-| 13 | `tenant.RequireID` (called by handler from JWT claim) | A2 cross-tenant prevention |
+| 13 | `tenant.Required` (called by handler from JWT claim) | A2 cross-tenant prevention |
 | 14 | `core/validate.Struct` on decoded body | H-14 |
 | 15 | `infra/sqldb` Tx with TLS-enforced connection | D-01, D-02, D-03 |
 | 16 | `crypto/envelope` for sensitive fields | D-05 |
-| 17 | `observability/auditlog.Append` (HMAC-chained, tenant-scoped) | (forensic trail per asset [6]) |
+| 17 | `observability/auditlog.Append` (HMAC-chained) — the auditlog layer is not tenant-aware; the service is expected to encode tenant identity in the Actor or Metadata fields of the `Event` before calling `Log` so the forensic trail carries the upstream tenant context | (forensic trail per asset [6]) |
 
 If any single mitigation in steps 3–13 fails (panic, bad token,
 replayed Idempotency-Key, missing CSRF, tenant ID absent), the
@@ -699,7 +710,7 @@ Threats and the mitigation chain:
 
 | Step | Component | Threats defused / status |
 |---|---|---|
-| 1 | `tenant.RequireID(ctx)` returns error if context is unscoped | R-01 (precondition) |
+| 1 | `tenant.Required(ctx)` returns error if context is unscoped | R-01 (precondition) |
 | 2 | `tenant.Key(ctx, ...)` length-prefixes tenant and key parts | R-01 |
 | 3 | `data/cache/rediscache.Get` reads from Redis with TLS | R-07 |
 | 4 | Cache miss → upstream fetch with same tenant scope | R-01 transitive |
@@ -779,12 +790,16 @@ GAP-08 (`storagehttp/uploadsec` AV adapter), GAP-09 (outbox retention
 cleanup), and GAP-10 (dependency allowlist plus heavy SDK boundary
 gate) are closed in v2.0.0.
 
-There are no known in-kit mitigation gaps at this revision. New gaps
-belong in the table below with severity and owner before they are
-worked.
+New gaps belong in the table below with severity and owner before
+they are worked. Items below are doc-fidelity follow-ups surfaced by
+audit round 4 (Agent J): the runtime mitigations are in place, but a
+small code-level enhancement would strengthen the surface area.
 
 | ID | Gap | Severity | Owner / next step |
 |---|---|---|---|
+| GAP-11 | `observability/auditlog.Event` has no first-class `Tenant` field; tenant identity is encoded by callers into `Actor` / `Metadata`. Consider promoting it to a typed field so `ValidateEvent` and queries can reason about tenant scope. | LOW | auditlog maintainer / next audit pass |
+| GAP-12 | `infra/messaging/buffered_publisher.go` returns a plain `fmt.Errorf` for buffer-full back-pressure. Exporting an `ErrBufferFull` sentinel would let services match the condition with `errors.Is` without string comparisons. | LOW | messaging maintainer / next audit pass |
+| GAP-13 | `core/secret.String` implements `encoding.TextMarshaler` but not `encoding.BinaryMarshaler`. Adding the binary marshaler would close the (small) hole where a serialiser consults the binary contract before falling back to text. | LOW | core/secret maintainer / next audit pass |
 
 ---
 
@@ -897,6 +912,7 @@ considered through every STRIDE lens.
 | 2026-04 | (pre-Theme-5 audit) | Original audit landed as per-package implementation notes; threat surface implicit, no consolidated doc. |
 | 2026-05 | Theme 5 | This document created. STRIDE coverage matrix populated from §4. Initial gap list (GAP-01..GAP-10) filed. |
 | 2026-05 | Theme 6+ hardening | GAP-01, GAP-02, GAP-03, GAP-04, GAP-05, GAP-06, GAP-07, GAP-08, GAP-09, and GAP-10 closed by cost-budget primitives, `httpx.SafeRedirect`, `grpcx` default deadlines, internal-only gRPC health, `cmd/kit-new -tenant`, `jwtutil` revocation checks, cross-backend message-size limits, `uploadsec/clamav`, outbox self-managed retention cleanup, direct dependency allowlist CI, and heavy optional SDK boundary CI. |
+| 2026-05 | Audit round 4 doc-fidelity sweep | Aligned §4.1 H-04, §4.1 H-14, §4.4 D-04, §4.5 R-07, §4.5 R-09, §4.7 T-02, §4.10 L-05, §5.1, §5.2, §5.3, §5.5, and §6.1 prose with the implementing code (function names, struct fields, opt-out shapes); filed GAP-11 (`auditlog` first-class tenant field), GAP-12 (export `ErrBufferFull`), and GAP-13 (secret `BinaryMarshaler`) as LOW-severity follow-ups. |
 
 Future updates: amend this table whenever §4 acquires a new threat
 ID, §6 acquires a new walk-through, or §8 closes a gap. The

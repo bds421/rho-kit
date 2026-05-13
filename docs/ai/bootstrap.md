@@ -15,14 +15,21 @@ Use `runtime/lifecycle.Runner` directly only when a service has custom transport
 ## Quick Start
 
 ```go
+import (
+    "github.com/bds421/rho-kit/app/v2"
+    "github.com/bds421/rho-kit/app/amqp/v2"
+    "github.com/bds421/rho-kit/app/postgres/v2"
+    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+)
+
 func main() {
     app.Main("my-service", version, func(logger *slog.Logger) error {
         base, err := app.LoadBaseConfig(8080)
         if err != nil { return err }
 
         return app.New("my-service", version, base).
-            WithPostgres(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")}).
-            WithRabbitMQ(os.Getenv("RABBITMQ_URL")).
+            With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
+            With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
             WithJWT(os.Getenv("JWKS_URL")).
             WithJWTAudience("my-service").
             WithIPRateLimit(100, time.Minute).
@@ -30,7 +37,7 @@ func main() {
                 mux := http.NewServeMux()
                 mux.Handle("GET /users", httpx.JSONNoBody[UserListResponse](
                     logger,
-                    listUsers(infra.DB.Pool()),
+                    listUsers(postgres.Pool(infra).Pool()),
                 ))
                 return stack.Default(mux, infra.Logger)
             }).
@@ -38,6 +45,15 @@ func main() {
     })
 }
 ```
+
+**Lazy-adapter (v2.0.0).** Heavy adapter wiring (Postgres, Redis,
+RabbitMQ, NATS, tracing, public gRPC) lives in `app/postgres`,
+`app/redis`, `app/amqp`, `app/nats`, `app/tracing`, `app/grpc`. Each
+sub-package exports `Module(...) app.Module` and a typed accessor
+(`postgres.Pool(infra)`, `redis.Connection(infra)`, etc.) so consumer
+code keeps the ergonomic shape from before the refactor. Importing
+`app/v2` alone no longer pulls pgx, go-redis, amqp091, nats.go,
+otelgrpc, or grpc-go.
 
 `app.LoadBaseConfig(defaultServerPort int) (app.BaseConfig, error)` reads
 `SERVER_PORT`, `SERVER_HOST`, `INTERNAL_PORT`, `ENVIRONMENT`,
@@ -91,16 +107,26 @@ func LoadConfig() (Config, error) {
 
 ## Builder Methods
 
+The Builder hosts the HTTP-level cross-cutting primitives. Adapter wiring
+lives in per-adapter sub-modules under `app/` and is registered via
+[`Builder.With`](#adapter-modules).
+
+### Adapter modules
+
+| Sub-package | Module constructor | Getter | Notes |
+|---|---|---|---|
+| `app/postgres/v2` | `postgres.Module(cfg, opts…)` | `postgres.Pool(infra)` | `postgres.WithMigrations(fs)` runs goose SQL migrations on startup |
+| `app/redis/v2` | `redis.Module(opts, connOpts…)` | `redis.Connection(infra)` | `redis.ModuleWithOptions(opts, redis.WithoutTLS())` opts out of FR-077 |
+| `app/amqp/v2` | `amqp.Module(url, opts…)` | `amqp.Connection/Publisher/Consumer(infra)` | Non-loopback `amqp://` panics; use `amqps://` or `amqp.WithoutTLS()`. `amqp.WithURLProvider(fn)` rotates credentials; `amqp.WithCriticalBroker()` flips health to 503 |
+| `app/nats/v2` | `nats.Module(cfg, opts…)` | `nats.Connection/Publisher(infra)` | `nats.WithMessageSizeLimiter(...)` caps publisher payloads |
+| `app/tracing/v2` | `tracing.Module(cfg)` | (auto-wires the HTTP client) | `cfg.SampleRate > 0.1` panics at construction |
+| `app/grpc/v2` | `grpc.Module(reg, addr, opts…)` | `grpc.Server(infra)` | Auto-wires kit server TLS, adds internal gRPC health over h2c, `grpc.WithPublicHealth()` exposes public health |
+
+### Builder methods (HTTP + cross-cutting)
+
 | Method | What it enables | Requires |
 |---|---|---|
-| `WithPostgres(cfg)` | pgx-backed PostgreSQL pool and readiness check | `cfg.DSN` |
-| `WithMigrations(dir)` | Goose SQL migrations on startup | `WithPostgres` |
-| `WithRedis(opts, connOpts...)` | Redis connection and pool metrics | - |
-| `WithRabbitMQ(url)` | Lazy AMQP connection plus pre-wired Publisher and Consumer | - |
-| `WithRabbitMQURLProvider(provider)` | RabbitMQ URL fetched before each dial/reconnect for credential rotation | - |
-| `WithCriticalBroker()` | Broker health failure returns HTTP 503 | `WithRabbitMQ` / `WithRabbitMQURLProvider` |
-| `WithNATS(cfg)` | NATS connection plus default JetStream publisher and publish metrics | - |
-| `WithMaxMessageBytes(n)` / `WithRouteMaxMessageBytes(exchange, routingKey, n)` | Serialized message-size limits for Builder-created RabbitMQ and NATS publishers | `WithRabbitMQ` / `WithNATS` |
+| `With(m)` / `WithModule(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor | - |
 | `WithJWT(jwksURL)` | Background JWKS key cache | - |
 | `WithJWTAudience(aud)` | Required JWT audience | `WithJWT` |
 | `WithPASETO(provider)` | PASETO token provider | - |
@@ -118,7 +144,6 @@ func LoadConfig() (Config, error) {
 | `WithAuditLog(store, opts...)` | Audit logger | - |
 | `WithCron(opts...)` | Lifecycle-managed cron scheduler | - |
 | `WithLeaderElection(elector)` | Leader election handle | - |
-| `WithTracing(cfg)` | OpenTelemetry tracing; endpoint must be `host[:port]`, service name required when exporting | - |
 | `WithServerOption(opt)` | Custom public server option | - |
 | `WithStackOptions(opts...)` | Extra default-stack options | - |
 | `WithoutDefaultStack()` | Use router handler without `stack.Default` wrapping | - |
@@ -189,7 +214,7 @@ use bounded detached cleanup contexts. Cleanup survives parent cancellation whil
 preserving context values such as tenant, trace, and logger metadata for modules
 and instrumentation wrappers.
 
-Migrations are goose SQL migrations. They run whenever `WithMigrations` is configured, regardless of environment.
+Migrations are goose SQL migrations. They run whenever `postgres.Module` is constructed with `postgres.WithMigrations(fs)`, regardless of environment.
 
 ## Environment Variables
 
@@ -245,8 +270,7 @@ func main() {
 var migrationsFS embed.FS
 
 app.New("my-svc", version, cfg.BaseConfig).
-    WithPostgres(cfg.Postgres).
-    WithMigrations(migrationsFS).
+    With(postgres.Module(cfg.Postgres, postgres.WithMigrations(migrationsFS))).
     Router(routerFn).
     Run()
 ```
@@ -262,10 +286,11 @@ Workflow for schema changes:
 
 ```go
 app.New("my-svc", version, cfg.BaseConfig).
+    With(postgres.Module(cfg.Postgres)).
     WithCron().
     Router(func(infra app.Infrastructure) http.Handler {
         infra.Cron.Add("cleanup", "0 2 * * *", func(ctx context.Context) error {
-            return cleanupOldRecords(ctx, infra.DB.Pool())
+            return cleanupOldRecords(ctx, postgres.Pool(infra).Pool())
         })
         return buildRouter(infra)
     }).

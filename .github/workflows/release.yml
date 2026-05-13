@@ -57,6 +57,12 @@ jobs:
       - name: Run release-candidate gates
         run: make release-candidate
 
+      - name: Reproducible build sample
+        # Evidence-gathering: not a gate. Produces dist/cmd/kit-doctor/kit-doctor
+        # with the flag set documented in docs/audit/SUPPLY_CHAIN.md §4.1 and
+        # prints its sha256 so the release rehearsal log captures it.
+        run: make release-bin BIN=kit-doctor
+
       - name: Verify no v2 tags exist yet
         run: |
           set -euo pipefail

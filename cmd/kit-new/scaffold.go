@@ -53,14 +53,16 @@ type Params struct {
 	GoVersion string
 	// Postgres scaffolds the sqlc + pgx golden path: sqlc.yaml,
 	// db/queries/*.sql, db/sqlc/ output dir, Makefile generate target,
-	// wire.go.tmpl picks up app.Builder.WithPostgres + WithMigrations.
+	// wire.go.tmpl picks up the app/postgres adapter Module + migrations.
 	// v2 made this the canonical data path; the kit no longer ships a
-	// GORM scaffold.
+	// GORM scaffold. v2.0.0 moved Postgres wiring out of app/v2 into the
+	// app/postgres sub-module so HTTP-only services don't pull in pgx.
 	Postgres bool
 	// Tenant scaffolds the multi-tenant Redis path: Redis config loading,
-	// Builder.WithRedis + WithMultiTenant, and tenant-wrapped Redis cache
-	// and idempotency stores so new services start from the shared scoped-key
-	// encoder instead of hand-rolled prefixes.
+	// Builder.With(redis.Module(...)) + WithMultiTenant, and tenant-wrapped
+	// Redis cache and idempotency stores so new services start from the
+	// shared scoped-key encoder instead of hand-rolled prefixes. v2.0.0
+	// moved Redis wiring out of app/v2 into app/redis.
 	Tenant bool
 }
 

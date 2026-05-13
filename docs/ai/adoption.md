@@ -12,12 +12,15 @@ HEAD. Shell blocks are runnable from a downstream service checkout.
 ## 1. Module Setup
 
 Until `v2.0.0` is tagged, downstream consumers using a local rho-kit
-checkout must replace every transitively-required rho-kit module. The
-v2 `app/v2` module pulls in adapter sub-modules (amqpbackend,
-natsbackend, pgx, redis, etc.) so the Builder API can stay fluent
-without import-time selection — see the
-[forward-looking note](#7-forward-looking-v21-lazy-adapters) below
-for why this is intentional and short-lived.
+checkout must replace every transitively-required rho-kit module.
+
+v2.0.0 ships the **lazy-adapter** architecture: importing `app/v2`
+alone no longer pulls pgx, go-redis, amqp091, nats.go, otelgrpc, or
+grpc-go. Adapter wiring lives in per-adapter sub-modules under `app/`:
+`app/postgres`, `app/redis`, `app/amqp`, `app/nats`, `app/tracing`,
+`app/grpc`. Services declare each adapter they need via
+[`Builder.With`](#3-builder-recipes-by-adapter); only those adapter
+modules pull in the matching SDK.
 
 Minimal downstream `go.mod` for a Builder-based service that uses
 Postgres + Redis + RabbitMQ + JWT:
@@ -227,21 +230,25 @@ sub-packages have no upward dependency on `app/v2` and can be composed
 independently. See
 [bootstrap.md → Manual Wiring](bootstrap.md#manual-wiring).
 
-## 7. Forward-Looking: v2.1 Lazy Adapters
+## 7. Lazy Adapters (shipped in v2.0.0)
 
-In v2.0.0 the `app/v2` module transitively imports every adapter
-sub-module (`amqpbackend`, `natsbackend`, `pgx`, `redis`,
-`leaderelection`, etc.) so the Builder can keep a single fluent API
-with no compile-time selection. A service that only uses HTTP + Redis
-still pays the build-time cost of `amqp091`, `nats.go`, and `pgx`.
+v2.0.0 ships per-adapter sub-modules so HTTP-only services do not pay
+the build-time cost of pgx, go-redis, amqp091, nats.go, otelgrpc, or
+grpc-go. Each adapter exports a `Module(cfg) app.Module` constructor
+and typed `<Resource>(infra)` getter:
 
-A v2.1 "lazy adapter" architecture is planned where adapter wiring
-moves into per-adapter sub-packages (`github.com/bds421/rho-kit/app/postgres/v2`,
-`app/amqp/v2`, `app/nats/v2`, …). Downstream services will compose
-only the adapters they actually use, e.g.
+| Sub-module                        | Module entry point              | Getter                       |
+| --------------------------------- | ------------------------------- | ---------------------------- |
+| `app/postgres/v2`                 | `postgres.Module(cfg, opts…)`   | `postgres.Pool(infra)`       |
+| `app/redis/v2`                    | `redis.Module(opts, connOpts…)` | `redis.Connection(infra)`    |
+| `app/amqp/v2`                     | `amqp.Module(url, opts…)`       | `amqp.Connection/Publisher/Consumer(infra)` |
+| `app/nats/v2`                     | `nats.Module(cfg, opts…)`       | `nats.Connection/Publisher(infra)` |
+| `app/tracing/v2`                  | `tracing.Module(cfg)`           | (auto-wires HTTP client)     |
+| `app/grpc/v2`                     | `grpc.Module(reg, addr, opts…)` | `grpc.Server(infra)`         |
+
+Compose the service from only the adapters it actually needs:
 
 ```go
-// Planned v2.1 shape — illustrative.
 app.New("my-service", version, base).
     With(postgres.Module(pgxbackend.Config{DSN: dsn})).
     With(amqp.Module("amqps://broker.internal")).
@@ -249,6 +256,6 @@ app.New("my-service", version, base).
     Run()
 ```
 
-This is documented as a known migration cost; it is **not** a blocker
-for adopting v2.0.0. Services that adopt v2.0.0 today will get a
-mechanical refactor path when v2.1 lands.
+A service that imports only `app/v2` + `httpx/v2` and registers no
+adapter modules does NOT pull pgx, go-redis, amqp091, nats.go,
+otelgrpc, or grpc-go transitively.

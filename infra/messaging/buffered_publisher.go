@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,8 +34,10 @@ type pendingMessage struct {
 // with FIFO ordering when the broker is temporarily unreachable. When the
 // broker is reachable AND no buffered messages are pending, messages are
 // published directly. Otherwise they are appended to an in-memory buffer
-// and drained in order by the background loop. With [WithStateFile],
-// the buffer is persisted to disk to survive process restarts.
+// and drained in order by the background loop. With [WithStateDirectory]
+// plus [WithStateFile], the buffer is persisted to disk to survive process
+// restarts; state files are constrained to the configured directory so a
+// hostile or buggy STATE_FILE env cannot escape it (THREAT_MODEL §4.3 M-05).
 //
 // IMPORTANT: This is NOT a transactional outbox. It does not solve the
 // dual-write problem — if your application writes to a database and then
@@ -65,9 +69,28 @@ type BufferedPublisher struct {
 	// and the drain loop skips to avoid racing with the in-flight publish.
 	directInFlight bool
 
-	// stateFile is the path to the persistent state file. If empty,
-	// the publisher operates in memory-only mode (not crash-safe).
+	// stateFile is the absolute path to the persistent state file
+	// after path containment is enforced at construction time. If
+	// empty, the publisher operates in memory-only mode (not
+	// crash-safe). Service code never sets this directly — it is
+	// derived from stateDir + the relative path passed to
+	// [WithStateFile] so a hostile or buggy STATE_FILE env cannot
+	// escape the configured directory.
 	stateFile string
+
+	// stateDir is the directory inside which the state file must
+	// live. Set by [WithStateDirectory]. Empty means no state-file
+	// persistence (the constructor rejects [WithStateFile] without
+	// it). Stored as the cleaned absolute path so containment
+	// checks compare like-for-like.
+	stateDir string
+
+	// stateFileRel is the caller-supplied relative path passed to
+	// [WithStateFile]. The constructor combines it with stateDir to
+	// produce stateFile. Stored separately so the constructor can
+	// validate after every option is applied without depending on
+	// option order.
+	stateFileRel string
 
 	// publishFn and healthyFn are the actual implementations.
 	// In production these delegate to Publisher and Connection;
@@ -158,10 +181,55 @@ func WithUnlimitedBuffer() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.maxSize = -1 }
 }
 
-// WithStateFile enables persistent storage. Messages are written to
-// this file atomically (write-temp + rename) so they survive process crashes.
+// WithStateDirectory sets the directory inside which the buffered
+// publisher's state file must live. The directory is the only
+// containment boundary for paths passed to [WithStateFile] — a
+// caller-supplied relative path that resolves outside this directory
+// causes [NewBufferedPublisher] to panic.
+//
+// The path is cleaned at option time so callers see the same
+// containment regardless of trailing slashes or `./` components, but
+// must be an absolute path: relative state directories pick up the
+// process's working directory at construction time, which is rarely
+// the operator's intent and complicates the symlink-traversal review
+// in THREAT_MODEL §4.3 M-05.
+//
+// Panics when dir is empty or relative. Use [WithEphemeralBuffer] for
+// memory-only operation; do not pass an empty string here.
+func WithStateDirectory(dir string) BufferedPublisherOption {
+	if dir == "" {
+		panic("messaging: WithStateDirectory requires a non-empty directory")
+	}
+	cleaned := filepath.Clean(dir)
+	if !filepath.IsAbs(cleaned) {
+		panic("messaging: WithStateDirectory requires an absolute path")
+	}
+	return func(o *BufferedPublisher) { o.stateDir = cleaned }
+}
+
+// WithStateFile names the state file inside the directory configured
+// by [WithStateDirectory]. Messages are written to this file
+// atomically (write-temp + rename) so they survive process crashes.
+//
+// Path containment (THREAT_MODEL §4.3 M-05): the argument MUST be a
+// relative path that resolves inside the configured state directory
+// after [filepath.Clean]. Absolute paths and paths whose cleaned form
+// escapes the directory via `..` segments are rejected at
+// construction time with a panic. Calling [WithStateFile] without a
+// prior [WithStateDirectory] also panics — the option pair must be
+// used together so a hostile or buggy STATE_FILE env value cannot
+// write outside the operator-chosen directory.
+//
+// The relative path may include nested components (e.g.
+// `"shard-1/state.json"`), in which case the parent directories must
+// already exist or be creatable by the calling process; the kit does
+// not auto-create the tree to keep filesystem-side effects out of
+// constructor code.
 func WithStateFile(path string) BufferedPublisherOption {
-	return func(o *BufferedPublisher) { o.stateFile = path }
+	if path == "" {
+		panic("messaging: WithStateFile requires a non-empty path")
+	}
+	return func(o *BufferedPublisher) { o.stateFileRel = path }
 }
 
 // WithMetrics sets the metrics callbacks for the buffered publisher.
@@ -275,6 +343,21 @@ func NewBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger, 
 			panic("messaging: BufferedPublisher option must not be nil")
 		}
 		opt(o)
+	}
+
+	// Resolve the state file inside the configured directory. The
+	// check runs after every option has been applied so the
+	// containment guarantee does not depend on whether the caller
+	// passed WithStateDirectory before or after WithStateFile.
+	if o.stateFileRel != "" {
+		if o.stateDir == "" {
+			panic("messaging: WithStateFile requires WithStateDirectory — without a configured directory, a hostile or buggy file path can write outside the intended location")
+		}
+		resolved, err := resolveStateFilePath(o.stateDir, o.stateFileRel)
+		if err != nil {
+			panic(fmt.Sprintf("messaging: WithStateFile rejected: %v", err))
+		}
+		o.stateFile = resolved
 	}
 
 	if o.stateFile == "" && !o.allowEphemeralBuffer {
@@ -718,6 +801,46 @@ func (o *BufferedPublisher) onSaveError(err error) {
 	o.callMetric("OnSaveError", func() {
 		o.metrics.OnSaveError(err)
 	})
+}
+
+// resolveStateFilePath enforces directory containment for a state
+// file path supplied via [WithStateFile]. The caller-supplied path
+// must be relative and, after [filepath.Clean], resolve to a
+// location inside stateDir. Absolute paths and paths whose cleaned
+// form escapes stateDir via `..` segments are rejected.
+//
+// The error messages intentionally identify the offending input
+// (absolute / traversal / escape) without echoing the resolved
+// absolute path back to the caller; doing so would print the
+// operator-private state directory into panic output and tests that
+// pin those messages.
+func resolveStateFilePath(stateDir, relPath string) (string, error) {
+	if relPath == "" {
+		return "", errors.New("path must not be empty")
+	}
+	if filepath.IsAbs(relPath) {
+		return "", errors.New("path must be relative to the configured state directory; got an absolute path")
+	}
+	cleanedDir := filepath.Clean(stateDir)
+	cleanedRel := filepath.Clean(relPath)
+	// Clean preserves any leading "..": if it returns "." or starts
+	// with ".." (after splitting on the OS separator), the path
+	// escapes the configured directory.
+	if cleanedRel == ".." || strings.HasPrefix(cleanedRel, ".."+string(filepath.Separator)) {
+		return "", errors.New("path escapes the configured state directory via parent (\"..\") segments")
+	}
+	joined := filepath.Join(cleanedDir, cleanedRel)
+	rel, err := filepath.Rel(cleanedDir, joined)
+	if err != nil {
+		return "", fmt.Errorf("path is not reachable from the configured state directory: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("path escapes the configured state directory")
+	}
+	if rel == "." {
+		return "", errors.New("path resolves to the state directory itself, not a file inside it")
+	}
+	return joined, nil
 }
 
 // pendingBytesLocked returns the approximate in-memory byte cost of the

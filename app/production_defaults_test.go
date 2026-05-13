@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/v2/tracing"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
@@ -57,32 +56,14 @@ func TestBuilder_Validates_AcceptsJWTWithoutJWTIssuer(t *testing.T) {
 	require.NoError(t, b.Validate())
 }
 
-// Postgres TLS validation is now enforced inside the pgx package's
-// Connect — by the time Builder.Run reaches WithPostgres, the DSN is
-// passed through. The validator no longer pre-parses the DSN, so the
+// Tracing validation moved into app/tracing.Module: SampleRate>0.1 and
+// invalid endpoint URLs panic at construction time. Tests for that
+// behavior live in app/tracing.
+
+// Postgres TLS validation is enforced inside the pgx package's
+// Connect — by the time the postgres adapter module reaches Connect, the
+// DSN is passed through. The validator no longer pre-parses the DSN, so the
 // equivalent test belongs in infra/sqldb/pgx, not here.
-
-func TestBuilder_Validates_TracingSampleRateCapped(t *testing.T) {
-	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 1.0})
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SampleRate")
-}
-
-func TestBuilder_Validates_TracingAcceptsLowSampleRate(t *testing.T) {
-	b := newSafeBuilder().WithTracing(tracing.Config{ServiceName: "test", SampleRate: 0.05})
-	require.NoError(t, b.Validate())
-}
-
-func TestBuilder_Validates_TracingConfig(t *testing.T) {
-	b := newSafeBuilder().WithTracing(tracing.Config{
-		ServiceName: "test",
-		Endpoint:    "https://collector.example.com:4317",
-	})
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Endpoint")
-}
 
 // --- C-1: internal ops port must default to loopback ---
 

@@ -121,7 +121,7 @@ func TestPrometheusBufferedPublisherMetrics_StateWriteSuccess(t *testing.T) {
 	stateFile := filepath.Join(t.TempDir(), "buffered.json")
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, false,
-		WithStateFile(stateFile),
+		withStateFileAbsoluteForTest(stateFile),
 		WithMetrics(pm.Hooks()),
 	)
 
@@ -150,7 +150,7 @@ func TestPrometheusBufferedPublisherMetrics_StateWriteError(t *testing.T) {
 	fp := &fakePublisher{}
 	var healthy atomic.Bool
 	pub := testBufferedPublisherWithHealthPtr(fp, &healthy,
-		WithStateFile(stateFile),
+		withStateFileAbsoluteForTest(stateFile),
 		WithMetrics(pm.Hooks()),
 	)
 
@@ -182,7 +182,7 @@ func TestPrometheusBufferedPublisherMetrics_WithPrometheusMetrics(t *testing.T) 
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, false,
 		WithMaxSize(1),
-		WithStateFile(stateFile),
+		withStateFileAbsoluteForTest(stateFile),
 		WithPrometheusMetrics(reg, "convenience"),
 	)
 	if pub.metrics == nil {

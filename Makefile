@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-operational-readiness
+.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-operational-readiness
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -152,3 +152,33 @@ check-operational-readiness:
 ## check-release-team: Verify the @bds421/security team and branch protection exist before tagging.
 check-release-team:
 	@bash tools/check-release-team.sh
+
+## release-bin: Build a single cmd binary with reproducibility flags (BIN=<name>).
+# Produces dist/cmd/$(BIN)/$(BIN) using `-trimpath`, stripped symbol/debug tables,
+# zeroed Go build-id, CGO disabled, and SOURCE_DATE_EPOCH pinned to the HEAD
+# commit time (%ct — Unix seconds, timezone-agnostic). Two builds from the same
+# commit produce byte-identical artefacts; verify with
+# `tools/verify-reproducible-build.sh`.
+BIN ?=
+release-bin:
+	@if [ -z "$(BIN)" ]; then echo "BIN= is required, e.g. make release-bin BIN=kit-doctor"; exit 1; fi
+	@if [ ! -d "cmd/$(BIN)" ]; then echo "cmd/$(BIN) does not exist"; exit 1; fi
+	@mkdir -p dist/cmd/$(BIN)
+	@cd cmd/$(BIN) && \
+		SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) \
+		CGO_ENABLED=0 \
+		go build \
+			-trimpath \
+			-ldflags="-s -w -buildid= -X main.commit=$$(git rev-parse HEAD) -X main.date=$$(git log -1 --format=%cI)" \
+			-o ../../dist/cmd/$(BIN)/$(BIN) \
+			.
+	@echo "built dist/cmd/$(BIN)/$(BIN)"
+	@sha256sum dist/cmd/$(BIN)/$(BIN) 2>/dev/null || shasum -a 256 dist/cmd/$(BIN)/$(BIN)
+
+## release-bin-all: Build every cmd/<name> binary with reproducibility flags.
+release-bin-all:
+	@for d in cmd/*/; do \
+		name=$$(basename $$d); \
+		echo "==> Building $$name"; \
+		$(MAKE) release-bin BIN=$$name || exit 1; \
+	done

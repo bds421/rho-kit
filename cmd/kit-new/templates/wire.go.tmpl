@@ -14,6 +14,7 @@ import (
 
 	kitapp "github.com/bds421/rho-kit/app/v2"
 {{- if .Tenant}}
+	kitredisadapter "github.com/bds421/rho-kit/app/redis/v2"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	rediscache "github.com/bds421/rho-kit/data/cache/rediscache/v2"
 	redisstore "github.com/bds421/rho-kit/data/idempotency/redisstore/v2"
@@ -35,6 +36,7 @@ import (
 {{- end}}
 {{- if .Postgres}}
 
+	kitpostgres "github.com/bds421/rho-kit/app/postgres/v2"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 
 	"{{.ModulePath}}/db/migrations"
@@ -123,13 +125,15 @@ func tenantIDForIdempotency(r *http.Request) string {
 //
 {{- if .Tenant}}
 // The router-only skeleton below starts with tenant Redis/cache/idempotency
-// already wired. Add messaging modules with the matching Builder methods
-// (WithRabbitMQ, WithNATS, ...). The Builder composes the middleware chain
-// so adding modules does not change router code.
+// already wired. Add messaging modules with the matching adapter Module
+// returned by app/amqp.Module / app/nats.Module (registered via
+// Builder.With). The Builder composes the middleware chain so adding
+// modules does not change router code.
 {{- else}}
 // The router-only skeleton below mounts a single readiness handler.
-// Add Redis / messaging / cache modules with the matching Builder
-// methods (WithRedis, WithRabbitMQ, WithNATS, ...). The Builder
+// Add Redis / messaging / Postgres adapters by importing the matching
+// app/<adapter> sub-package and calling Builder.With(redis.Module(...))
+// / .With(amqp.Module(...)) / .With(postgres.Module(...)). The Builder
 // composes the middleware chain so adding modules does not change
 // router code.
 {{- end}}
@@ -153,22 +157,23 @@ func Run(_ *slog.Logger) error {
 {{- if .Postgres}}
 
 	// Postgres + sqlc + goose is the canonical data path. The pgx pool
-	// surfaces on infra.DB inside the router; query that pool through
-	// the sqlc-generated code in db/sqlc/.
+	// is published on Infrastructure.Resources by app/postgres; access
+	// it inside the router via postgres.Pool(infra).
 	dsn := config.MustGetSecret("DATABASE_URL", "")
-	b = b.WithPostgres(pgxbackend.Config{DSN: dsn}).WithMigrations(migrations.FS)
+	b = b.
+		With(kitpostgres.Module(pgxbackend.Config{DSN: dsn}, kitpostgres.WithMigrations(migrations.FS)))
 {{- end}}
 {{- if .Tenant}}
 
 	b = b.
-		WithRedis(redisOpts).
+		With(kitredisadapter.Module(redisOpts)).
 		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"), true)
 {{- end}}
 
 	return b.
 		Router(func(infra kitapp.Infrastructure) http.Handler {
 {{- if .Tenant}}
-			tenantDeps, err := newTenantResources(infra.Redis)
+			tenantDeps, err := newTenantResources(kitredisadapter.Connection(infra))
 			if err != nil {
 				panic("tenant resources: " + err.Error())
 			}

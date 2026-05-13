@@ -1,12 +1,9 @@
 package awskms
 
 import (
-	"context"
 	"errors"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/smithy-go"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
@@ -91,26 +88,6 @@ func TestClassifyAWSError_Nil(t *testing.T) {
 	}
 }
 
-// fakeKMSClient drives Wrap/Unwrap through a custom Encrypt/Decrypt path so
-// we can return controlled smithy.APIError values.
-type fakeKMSClient struct {
-	encryptErr error
-	decryptErr error
-}
-
-func (f *fakeKMSClient) Encrypt(_ context.Context, _ *kms.EncryptInput, _ ...func(*kms.Options)) (*kms.EncryptOutput, error) {
-	if f.encryptErr != nil {
-		return nil, f.encryptErr
-	}
-	return &kms.EncryptOutput{KeyId: aws.String("alias/test")}, nil
-}
-
-func (f *fakeKMSClient) Decrypt(_ context.Context, _ *kms.DecryptInput, _ ...func(*kms.Options)) (*kms.DecryptOutput, error) {
-	if f.decryptErr != nil {
-		return nil, f.decryptErr
-	}
-	return &kms.DecryptOutput{Plaintext: []byte("dek")}, nil
-}
 
 // kekWithClient builds a KEK whose Encrypt/Decrypt delegate to a fake.
 // We bypass NewKEK because the real constructor requires a *kms.Client. The

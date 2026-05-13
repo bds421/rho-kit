@@ -11,13 +11,14 @@ import (
 )
 
 // httpClientModule implements the Module interface for creating an HTTP client.
-// It reads the tracing state from the tracing module (when present) to decide
-// whether to create a tracing-instrumented or plain HTTP client.
+// It reads the tracing state from a registered [TracingProvider] (when present)
+// to decide whether to create a tracing-instrumented or plain HTTP client.
 type httpClientModule struct {
 	BaseModule
 
 	// tracingConfigured indicates that a tracing module was registered.
-	// When true, Init reads the tracing module's Active() state.
+	// When true, Init looks up the registered [TracingProvider] and asks
+	// whether tracing initialized successfully.
 	tracingConfigured bool
 
 	// initialized during Init
@@ -27,7 +28,7 @@ type httpClientModule struct {
 
 // newHTTPClientModule creates an HTTP client module.
 // tracingConfigured should be true when a tracing module is registered
-// (so the httpClient module can query its Active state during Init).
+// (so the httpClient module can query its TracingActive state during Init).
 func newHTTPClientModule(tracingConfigured bool) *httpClientModule {
 	return &httpClientModule{
 		BaseModule:        NewBaseModule("httpclient"),
@@ -44,11 +45,15 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 
 	tracingActive := false
 	if m.tracingConfigured {
-		tm, ok := mc.Module("tracing").(*tracingModule)
-		if !ok {
-			return fmt.Errorf("httpclient module: tracing module has unexpected type")
+		// Find the tracing provider module by interface satisfaction.
+		// app/tracing.Module() returns a Module whose value implements
+		// TracingProvider; app/v2 does not import OTel directly.
+		for _, mod := range mc.modules {
+			if tp, ok := mod.(TracingProvider); ok {
+				tracingActive = tp.TracingActive()
+				break
+			}
 		}
-		tracingActive = tm.Active()
 	}
 
 	if tracingActive {

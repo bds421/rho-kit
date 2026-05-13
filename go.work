@@ -4,6 +4,12 @@ toolchain go1.26.2
 
 use (
 	./app
+	./app/amqp
+	./app/grpc
+	./app/nats
+	./app/postgres
+	./app/redis
+	./app/tracing
 	./authz
 	./authz/openfga
 	./cmd/kit-bench-gate

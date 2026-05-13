@@ -6,6 +6,24 @@ shipped the security and operational guardrails that any production
 service needs; v2.0.0 adds the agentic-specific primitives that every
 agentic service was hand-rolling and getting wrong.
 
+## v2.0.0 lazy-adapter architecture
+
+Heavy adapter wiring (Postgres, Redis, RabbitMQ, NATS, OTel tracing,
+public gRPC) moved out of `app/v2` into per-adapter sub-modules under
+`app/`:
+
+- `github.com/bds421/rho-kit/app/postgres/v2`
+- `github.com/bds421/rho-kit/app/redis/v2`
+- `github.com/bds421/rho-kit/app/amqp/v2` (non-loopback `amqp://` panics; mirrors FR-077)
+- `github.com/bds421/rho-kit/app/nats/v2`
+- `github.com/bds421/rho-kit/app/tracing/v2`
+- `github.com/bds421/rho-kit/app/grpc/v2`
+
+`app/v2` no longer transitively pulls pgx, go-redis, amqp091, nats.go,
+otelgrpc, or grpc-go. Services declare each adapter they need via
+`Builder.With(<adapter>.Module(...))`. See `docs/release/MIGRATION_V2.md`
+§8 for the complete `Before → After` migration table.
+
 Snippet status: code blocks in these release notes are illustrative migration
 fragments unless explicitly introduced as commands. Buildable golden-path
 evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.

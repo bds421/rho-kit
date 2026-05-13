@@ -56,9 +56,9 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
     }
 
     return app.New("backend", handler.Version, base).
-        WithPostgres(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")}).
-        WithRedis(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"}).
-        WithRabbitMQ(os.Getenv("RABBITMQ_URL")).
+        With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
+        With(redis.Module(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"})).
+        With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
         WithJWT(os.Getenv("JWKS_URL")).
         WithJWTAudience("backend").
         WithIPRateLimit(100, time.Minute).
@@ -70,7 +70,14 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
 ```
 
 Use `app.LoadBaseConfig`, `sqldb.LoadFields`, and package-specific loaders for
-env-backed settings. Pass a hardened `pgxbackend.Config` to `WithPostgres`.
+env-backed settings. Pass a hardened `pgxbackend.Config` to `postgres.Module`.
+
+**v2.0.0 lazy-adapter architecture.** Heavy adapter wiring (Postgres, Redis,
+RabbitMQ, NATS, OTel tracing, public gRPC) lives in per-adapter sub-modules
+under `app/`: `app/postgres`, `app/redis`, `app/amqp`, `app/nats`,
+`app/tracing`, `app/grpc`. Importing `app/v2` alone no longer pulls pgx,
+go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
+
 For credential rotation, prefer provider hooks over static secrets: pgx
 `PasswordProvider`, go-redis credential providers, AMQP/NATS auth providers,
 cloud SDK default credentials, CSRF `WithSecrets`, and signed-request

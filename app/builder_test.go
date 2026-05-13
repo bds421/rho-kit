@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,17 +16,12 @@ import (
 	"testing"
 	"time"
 
-	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
 
-	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
-	"github.com/bds421/rho-kit/observability/v2/tracing"
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 )
 
@@ -39,10 +33,9 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		WithKeyedRateLimit("api", 50, time.Minute).
 		WithStorage(membackend.New()).
 		WithNamedStorage("local", membackend.New()).
-		WithTracing(tracing.Config{}).
 		WithCron().
 		WithEventBusPool(4).
-		WithModule(NewGRPCModule(func(_ *grpc.Server) {}, ":50051")).
+		WithModule(NewBaseModule("svc-extra")).
 		WithServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).
@@ -76,55 +69,6 @@ func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
 		}
 	}()
 	New("test-svc", "v0.1.0", BaseConfig{}).WithEventBusPool(-1)
-}
-
-func TestBuilder_WithRedis(t *testing.T) {
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS10, NextProtos: []string{"h2"}, ServerName: "before.example"}
-	opts := &goredis.Options{Addr: "localhost:6379", TLSConfig: tlsConfig}
-	connOpts := []kitredis.ConnOption{kitredis.WithInstance("primary")}
-	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithRedis(opts, connOpts...)
-	opts.Addr = "mutated:6379"
-	tlsConfig.ServerName = "after.example"
-	tlsConfig.NextProtos[0] = "http/1.1"
-	connOpts[0] = nil
-
-	if b.redisOpts == nil {
-		t.Fatal("redisOpts should be set")
-	}
-	assert.Equal(t, "localhost:6379", b.redisOpts.Addr)
-	require.NotNil(t, b.redisOpts.TLSConfig)
-	assert.Equal(t, uint16(tls.VersionTLS12), b.redisOpts.TLSConfig.MinVersion)
-	assert.Equal(t, []string{"h2"}, b.redisOpts.TLSConfig.NextProtos)
-	assert.Equal(t, "before.example", b.redisOpts.TLSConfig.ServerName)
-	assert.NotSame(t, tlsConfig, b.redisOpts.TLSConfig)
-	require.Len(t, b.redisConnOpts, 1)
-	assert.NotNil(t, b.redisConnOpts[0])
-}
-
-func TestBuilder_WithRedisPanicsOnNil(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil redis options")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithRedis(nil)
-}
-
-func TestBuilder_WithRedisPanicsOnNilConnOption(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).
-			WithRedis(&goredis.Options{Addr: "localhost:6379"}, nil)
-	})
-}
-
-func TestBuilder_WithRedisPanicsOnTLSMaxVersionBelowFloor(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithRedis(&goredis.Options{
-			Addr:      "localhost:6379",
-			TLSConfig: &tls.Config{MaxVersion: tls.VersionTLS11},
-		})
-	})
 }
 
 func TestBuilder_WithAuditLogClonesOptions(t *testing.T) {
@@ -337,20 +281,11 @@ func TestBuilder_RunContextReturnsCanceledBeforeStartup(t *testing.T) {
 	assert.False(t, b.ran, "pre-canceled context should not consume the one-shot builder")
 }
 
-func TestBuilder_WithPostgres(t *testing.T) {
-	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithPostgres(pgxbackend.Config{DSN: "postgres://user:pass@localhost:5432/db?sslmode=require"})
-	if b.pgxCfg == nil {
-		t.Fatal("pgx config should be set")
-	}
-}
-
-func TestBuilder_WithPostgres_PanicsOnEmptyDSN(t *testing.T) {
-	defer func() {
-		r := recover()
-		require.NotNil(t, r, "expected panic for empty DSN")
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithPostgres(pgxbackend.Config{})
+func TestBuilder_WithIsAliasForWithModule(t *testing.T) {
+	m := NewBaseModule("alias-mod")
+	b := New("test", "v1", BaseConfig{}).With(m)
+	require.Len(t, b.modules, 1)
+	assert.Equal(t, "alias-mod", b.modules[0].Name())
 }
 
 func TestTestInfrastructure(t *testing.T) {

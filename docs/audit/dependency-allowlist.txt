@@ -3,6 +3,11 @@
 # One exact module path per line. Internal rho-kit modules are allowed
 # implicitly. Additions to this file are dependency-source approvals and
 # should be reviewed with the same care as the go.mod change that needs them.
+#
+# v2.0.0 lazy-adapter split: the app/postgres, app/redis, app/amqp,
+# app/nats, app/tracing, and app/grpc sub-modules own the heavy SDK deps
+# (pgx, go-redis, amqp091-go, nats.go, otelgrpc, google.golang.org/grpc).
+# Consumers that import only app/v2 no longer pull those in transitively.
 
 # Core crypto / token / validation primitives.
 aidanwoods.dev/go-paseto
@@ -56,6 +61,7 @@ github.com/aws/aws-sdk-go-v2/config
 github.com/aws/aws-sdk-go-v2/credentials
 github.com/aws/aws-sdk-go-v2/service/kms
 github.com/aws/aws-sdk-go-v2/service/s3
+github.com/aws/smithy-go
 github.com/hashicorp/vault/api
 google.golang.org/api
 

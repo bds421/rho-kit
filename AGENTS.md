@@ -52,6 +52,9 @@ import (
     goredis "github.com/redis/go-redis/v9"
 
     "github.com/bds421/rho-kit/app/v2"
+    "github.com/bds421/rho-kit/app/amqp/v2"
+    "github.com/bds421/rho-kit/app/postgres/v2"
+    "github.com/bds421/rho-kit/app/redis/v2"
     "github.com/bds421/rho-kit/httpx/v2/middleware/stack"
     pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 )
@@ -66,15 +69,16 @@ func main() {
         }
 
         return app.New("my-service", version, base).
-            WithPostgres(pgxbackend.Config{DSN: "postgres://localhost/my-service"}).
-            WithRedis(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"}).
-            WithRabbitMQ("amqps://broker.internal").
+            With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
+            With(redis.Module(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"})).
+            With(amqp.Module("amqps://broker.internal")).
             WithJWT("https://issuer.example.com/.well-known/jwks.json").
             WithJWTAudience("my-service").
             WithIPRateLimit(100, time.Minute).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
-                // Register routes using infra.DB, infra.Publisher, etc.
+                // Register routes using postgres.Pool(infra), redis.Connection(infra),
+                // amqp.Publisher(infra), etc.
                 return stack.Default(mux, infra.Logger)
             }).
             Run()
@@ -88,9 +92,17 @@ Notes:
   environment; pass the per-service default port.
 - `BaseConfig` lives in package `app`, not `core/config`.
 - `app.New(name, version, cfg)` returns a `*Builder`; methods chain.
+- Adapter wiring (Postgres, Redis, RabbitMQ, NATS, OTel tracing, public
+  gRPC) lives in per-adapter sub-modules under `app/`. Register each via
+  `Builder.With(<adapter>.Module(...))`. Importing only `app/v2` no
+  longer pulls pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go.
 - Non-loopback Redis MUST set `TLSConfig` (or a `rediss://` URL) and a
-  non-empty `Password` — `Builder.Run` rejects plaintext URIs (FR-077)
-  unless you opt out with `WithoutRedisTLS()` on a reviewed boundary.
+  non-empty `Password` — `redis.Module` rejects plaintext URIs (FR-077)
+  unless you opt out with `redis.ModuleWithOptions(..., redis.WithoutTLS())`
+  on a reviewed boundary.
+- Non-loopback AMQP MUST use `amqps://` — `amqp.Module` rejects
+  plaintext `amqp://` URLs (mirrors FR-077) unless you opt out with
+  `amqp.WithoutTLS()` on a reviewed boundary.
 
 For services that outgrow the Builder (custom transports, non-standard shutdown ordering), use `lifecycle.Runner` + `config.Load` directly. See the "Manual Wiring" section in [docs/ai/bootstrap.md](docs/ai/bootstrap.md). New downstream services should also read [docs/ai/adoption.md](docs/ai/adoption.md) for the `go.mod` and common-mistakes checklist.
 
@@ -119,7 +131,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Publish/consume AMQP messages | `infra/messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Redis Streams | `infra/messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Buffered message delivery | `messaging.BufferedPublisher` | [messaging](docs/ai/messaging.md) |
-| Bound message size per route | `messaging.MessageSizeLimiter`, Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes` | [messaging](docs/ai/messaging.md) |
+| Bound message size per route | `messaging.MessageSizeLimiter`, `amqp.WithMessageSizeLimiter` / `nats.WithMessageSizeLimiter` | [messaging](docs/ai/messaging.md) |
 | Cache data (single instance) | `data/cache` (MemoryCache) | [utilities](docs/ai/utilities.md) |
 | Cache data (shared/distributed) | `data/cache/rediscache` | [redis](docs/ai/redis.md) |
 | Event streaming (fan-out) | `data/stream/redisstream` | [redis](docs/ai/redis.md) |

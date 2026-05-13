@@ -1,4 +1,4 @@
-package app
+package tracing
 
 import (
 	"context"
@@ -6,35 +6,47 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/tracing"
 )
 
+// Module returns an [app.Module] that initializes an OpenTelemetry
+// TracerProvider for the service. Pass to [app.Builder.With].
+//
+// The Module always-on validates the configuration: an OTel sample rate
+// above 0.1 panics because full sampling is a collector-cost foot-gun in
+// production. To override use [tracing.Config.SampleRate]<=0.1.
+func Module(cfg tracing.Config) app.Module {
+	if err := cfg.Validate(); err != nil {
+		panic(fmt.Sprintf("tracing: invalid config: %v", err))
+	}
+	if cfg.SampleRate > 0.1 {
+		panic(fmt.Sprintf("tracing: SampleRate=%.2f exceeds 0.1; lower the rate and override per-trace via the OTel SDK if you need bursts", cfg.SampleRate))
+	}
+	return &tracingModule{cfg: cfg}
+}
+
 // tracingModule implements the Module interface for OpenTelemetry tracing.
-// It initializes the TracerProvider and exposes whether tracing is active
-// so downstream modules (e.g., httpClientModule) can configure instrumented
-// transports.
 type tracingModule struct {
-	BaseModule
+	app.BaseModule
 
 	cfg tracing.Config
 
-	// initialized during Init
 	provider      *tracing.Provider
 	active        bool
 	healthChecks_ []health.DependencyCheck
 	logger        *slog.Logger
 }
 
-// newTracingModule creates a tracing module from the given config.
-func newTracingModule(cfg tracing.Config) *tracingModule {
-	return &tracingModule{
-		BaseModule: NewBaseModule("tracing"),
-		cfg:        cfg,
-	}
-}
+func (m *tracingModule) Name() string { return "tracing" }
 
-func (m *tracingModule) Init(ctx context.Context, mc ModuleContext) error {
+// TracingActive implements [app.TracingProvider]. The app/v2 HTTP-client
+// module queries this to decide whether to install OTel instrumentation
+// on its transport.
+func (m *tracingModule) TracingActive() bool { return m.active }
+
+func (m *tracingModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
 
 	tp, err := tracing.Init(ctx, m.cfg)
@@ -79,7 +91,9 @@ func (m *tracingModule) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Active reports whether tracing was successfully initialized.
-func (m *tracingModule) Active() bool {
-	return m.active
+func detachedTimeoutContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }

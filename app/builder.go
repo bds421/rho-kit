@@ -4,13 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
-
-	goredis "github.com/redis/go-redis/v9"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
@@ -26,36 +23,39 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
-	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
-	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
-	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
-	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
 	"github.com/bds421/rho-kit/observability/v2/slo"
-	"github.com/bds421/rho-kit/observability/v2/tracing"
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
-	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
 //
-// Import cost: The app package imports database, redis, messaging, and storage
-// modules. Services that only need HTTP+Redis still pull in pgx and AMQP as
-// transitive dependencies. This is acceptable for monorepo services that
-// typically use most infrastructure. For lightweight services (e.g., a pure
-// HTTP proxy), use the individual packages directly with lifecycle.Runner
-// instead of the Builder — the kit's sub-packages have no upward dependency
-// on app and can be composed independently.
+// v2.0.0 lazy-adapter refactor: adapter-specific wiring (Postgres, Redis,
+// RabbitMQ, NATS, OTel tracing, public gRPC) moved out of this package into
+// per-adapter sub-packages so importing app/v2 no longer transitively pulls
+// pgx, go-redis, amqp091, nats.go, otelgrpc, or grpc-go. Register adapters
+// via [Builder.With]:
 //
-// Design note: Builder intentionally consolidates all infrastructure concerns
-// (DB, Redis, MQ, JWT, storage, tracing, health, rate limiting) into a single
-// struct. This is a deliberate tradeoff:
+//	app.New("svc", "v1", base).
+//	    With(postgres.Module(pgxbackend.Config{DSN: dsn})).
+//	    With(redis.Module(&goredis.Options{Addr: addr})).
+//	    With(amqp.Module(rabbitURL)).
+//	    Router(...).
+//	    Run()
+//
+// Lighter primitives (JWT/PASETO, signed requests, multi-tenant middleware,
+// rate limiting, storage, audit log, cron, leader election, feature flags,
+// SLO, action log, approval store, authz decider) stay on the Builder
+// directly because their dep weight is bounded.
+//
+// Design note: Builder intentionally consolidates HTTP-level cross-cutting
+// concerns into a single struct. This is a deliberate tradeoff:
 //
 //   - PRO: Services have a single, discoverable entry point with consistent
 //     lifecycle management. New developers can read one file to understand
@@ -63,44 +63,23 @@ import (
 //   - PRO: Cross-cutting concerns (TLS, health checks, shutdown hooks) are
 //     automatically wired — services cannot forget to register a health check
 //     for a database they enabled.
-//   - CON: The struct has many fields (20+), which violates SRP in the
+//   - CON: The struct still has many fields, which violates SRP in the
 //     traditional sense. However, the Builder is a composition root — its
 //     job IS to compose infrastructure. Splitting into sub-builders would
 //     distribute lifecycle logic across files, making the shutdown sequence
 //     harder to reason about.
 //
-// If a service needs only a subset (e.g., Redis + HTTP without DB/MQ),
-// simply omit the With*() calls — unused infrastructure has zero cost
-// at runtime. The Builder only initializes what is configured.
-//
-// Failure semantics: [Builder.Build] (and the panicking With*() helpers)
+// Failure semantics: [Builder.Run] (and the panicking With*() helpers)
 // must be treated as fatal. Builder does not roll back partially-acquired
-// resources on failure — if WithPostgres opens a pool and WithRedis then
-// panics, the pool is leaked. Callers must let the process exit; do NOT
-// catch the panic and retry. The Builder is a composition root, not a
-// reusable factory.
+// resources on failure — if one adapter module opens a pool and a later
+// adapter then panics, the pool is leaked. Callers must let the process
+// exit; do NOT catch the panic and retry. The Builder is a composition
+// root, not a reusable factory.
 type Builder struct {
 	name    string
 	version string
 	cfg     BaseConfig
 	logger  *slog.Logger
-
-	// Postgres (pgx-native). v2 dropped GORM and MySQL/MariaDB; pgx is
-	// the single supported driver.
-	pgxCfg *pgxbackend.Config
-
-	// Redis
-	redisOpts     *goredis.Options
-	redisConnOpts []kitredis.ConnOption
-
-	// RabbitMQ
-	mqURL              string
-	mqURLProvider      func(context.Context) (string, error)
-	criticalBroker     bool
-	messageSizeLimiter messaging.MessageSizeLimiter
-
-	// NATS JetStream — independent of RabbitMQ; both may coexist.
-	natsCfg *natsbackend.Config
 
 	// JWT
 	jwksURL           string
@@ -154,7 +133,6 @@ type Builder struct {
 	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
 	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
 	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
-	allowPlaintextRedis      bool // FR-077: lets WithRedis pass plaintext for non-loopback addrs.
 
 	// Rate limiters
 	ipRateRequests int
@@ -176,19 +154,8 @@ type Builder struct {
 	cronOpts    []kitcron.Option
 	cronEnabled bool
 
-	// Migrations applied during pgxModule Init via goose. Optional —
-	// services that manage migrations out-of-band leave this nil.
-	migrationsDir fs.FS
-
-	// Tracing
-	tracingCfg *tracing.Config
-
 	// Server options
 	serverOpts []httpx.ServerOption
-
-	// Public gRPC health is off by default. Internal readiness is served on the
-	// internal ops listener, including the gRPC Health Checking Protocol.
-	publicGRPCHealth bool
 
 	// Public-mux default stack
 	disableDefaultStack bool
@@ -210,7 +177,11 @@ type Builder struct {
 	// boot dependencies (e.g. Postgres warmup, KMS key fetch).
 	startupTimeout time.Duration
 
-	// Modules
+	// Modules — populated by [Builder.With] / [Builder.WithModule]. Adapter
+	// sub-packages (app/postgres, app/redis, app/amqp, app/nats, app/tracing,
+	// app/grpc) all surface as modules registered through this list, plus the
+	// jwt/paseto/httpclient/leader/slo built-ins assembled in
+	// [Builder.buildIntegrationModules].
 	modules []Module
 
 	// Router
@@ -261,23 +232,6 @@ func (b *Builder) WithoutTLS() *Builder {
 	return b
 }
 
-// serverTLSOptions returns the netutil.ServerTLSOption set the
-// builder will apply when constructing the public server's
-// *tls.Config. FR-014 [HIGH]: the default is mTLS
-// (tls.RequireAndVerifyClientCert) so the kit's "TLS env enables
-// global mTLS" convention holds. [Builder.WithOptionalClientCertificates]
-// flips this back to VerifyClientCertIfGiven for services fronted by
-// an external TLS terminator.
-//
-// Exposed (lowercase) for the unit test that pins the contract; not
-// part of the public Builder surface.
-func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
-	if b.tlsOptionalClientCert {
-		return []netutil.ServerTLSOption{netutil.WithOptionalClientCert()}
-	}
-	return nil
-}
-
 // WithOptionalClientCertificates opts the public TLS server out of
 // the kit's default of requiring a client certificate from every
 // caller (mTLS). After this call the listener verifies any presented
@@ -312,145 +266,6 @@ func (b *Builder) WithOptionalClientCertificates() *Builder {
 // is unconditional — there is no KIT_ENV escape hatch.
 func (b *Builder) WithoutJWTAudience() *Builder {
 	b.jwtAllowAnyAudience = true
-	return b
-}
-
-// WithPostgres configures a pgx-native PostgreSQL pool. v2 dropped
-// MySQL/MariaDB and GORM — pgx is the single supported driver, with
-// LISTEN/NOTIFY, COPY, and pipelined queries available natively.
-//
-// Use [WithMigrations] to attach goose-managed migrations.
-//
-// Panics if cfg.DSN is empty. In non-dev, sslmode must be
-// require/verify-ca/verify-full (enforced inside the pgx package's
-// Connect).
-func (b *Builder) WithPostgres(cfg pgxbackend.Config) *Builder {
-	if cfg.DSN == "" {
-		panic("app: WithPostgres requires a non-empty DSN")
-	}
-	b.pgxCfg = &cfg
-	return b
-}
-
-// WithRedis configures a Redis connection with health checks and pool metrics.
-// The connection uses lazy connect by default so the service can start accepting
-// requests while Redis is still connecting. The connection is available via
-// infra.Redis in the RouterFunc.
-//
-// Additional ConnOption values are appended after the builder's defaults
-// (WithLogger, WithLazyConnect). Pass WithInstance to label metrics when
-// multiple Redis connections exist.
-//
-// Transport safety (FR-077): non-loopback addresses MUST set
-// [goredis.Options.TLSConfig] and a non-empty Password. Use
-// [Builder.WithoutRedisTLS] to acknowledge plaintext for local-dev fixtures
-// (the check is unconditional otherwise — there is no KIT_ENV escape hatch).
-// The safety check runs at [Builder.Run] time when the redis module is built
-// so that opt-out ordering does not matter.
-func (b *Builder) WithRedis(opts *goredis.Options, connOpts ...kitredis.ConnOption) *Builder {
-	if opts == nil {
-		panic("app: redis options must not be nil")
-	}
-	for _, opt := range connOpts {
-		if opt == nil {
-			panic("app: WithRedis connection option must not be nil")
-		}
-	}
-	b.redisOpts = cloneRedisOptions(opts)
-	b.redisConnOpts = append([]kitredis.ConnOption(nil), connOpts...)
-	return b
-}
-
-// WithoutRedisTLS opts out of the FR-077 transport-safety check that
-// [Builder.WithRedis] applies. Without this opt-in, [Builder.Run] refuses to
-// build a connection to a non-loopback Redis without TLSConfig and a
-// non-empty Password, because plaintext Redis credentials on the wire are a
-// known foot-gun and silent downgrade is unacceptable in v2.
-//
-// Use this only for local-development fixtures where the Redis instance is
-// confirmed to be unreachable from outside the host (Docker host-only
-// network, ephemeral sidecar). The check is unconditional otherwise —
-// there is no KIT_ENV escape hatch.
-func (b *Builder) WithoutRedisTLS() *Builder {
-	b.allowPlaintextRedis = true
-	return b
-}
-
-// WithRabbitMQ configures a RabbitMQ connection with lazy connect.
-// The broker health check defaults to non-critical (degraded, not 503).
-// Panics if url is empty — use environment variables to conditionally skip.
-func (b *Builder) WithRabbitMQ(url string) *Builder {
-	if url == "" {
-		panic("app: WithRabbitMQ requires a non-empty URL")
-	}
-	b.mqURL = url
-	b.mqURLProvider = nil
-	return b
-}
-
-// WithRabbitMQURLProvider configures RabbitMQ with a dynamic URL source. The
-// provider is evaluated before each AMQP dial/reconnect, so rotated broker
-// passwords are picked up without rebuilding the service.
-func (b *Builder) WithRabbitMQURLProvider(provider func(context.Context) (string, error)) *Builder {
-	if provider == nil {
-		panic("app: WithRabbitMQURLProvider requires a non-nil provider")
-	}
-	b.mqURL = ""
-	b.mqURLProvider = provider
-	return b
-}
-
-// WithCriticalBroker makes the RabbitMQ health check critical (503 on failure).
-func (b *Builder) WithCriticalBroker() *Builder {
-	b.criticalBroker = true
-	return b
-}
-
-// WithMaxMessageBytes sets the default serialized message-size limit for
-// Builder-created RabbitMQ and NATS publishers. The default is
-// messaging.DefaultMaxMessageBytes.
-func (b *Builder) WithMaxMessageBytes(maxBytes int) *Builder {
-	b.messageSizeLimiter = b.messageSizeLimiter.WithDefaultMaxBytes(maxBytes)
-	return b
-}
-
-// WithoutMessageSizeLimit disables the default size limit for Builder-created
-// publishers. Route-specific limits configured with WithRouteMaxMessageBytes
-// still apply.
-func (b *Builder) WithoutMessageSizeLimit() *Builder {
-	b.messageSizeLimiter = b.messageSizeLimiter.WithoutDefaultMaxBytes()
-	return b
-}
-
-// WithRouteMaxMessageBytes overrides the serialized message-size limit for one
-// exact exchange+routing-key pair on Builder-created RabbitMQ and NATS
-// publishers. routingKey may be empty for fanout-style routes.
-func (b *Builder) WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) *Builder {
-	b.messageSizeLimiter = b.messageSizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
-	return b
-}
-
-// WithNATS registers a NATS JetStream broker. The kit exposes the
-// connection plus a default Publisher via Infrastructure.NATS and
-// Infrastructure.NATSPublisher. The default Publisher is wired with
-// NATS Prometheus metrics; stream/consumer declarations remain caller-driven
-// so the Builder doesn't impose a specific topology.
-//
-// WithNATS is independent of [Builder.WithRabbitMQ] — both can be
-// configured simultaneously when a service publishes to one broker
-// and consumes from another. Each is exposed via dedicated
-// Infrastructure fields.
-//
-// Panics if cfg.URL is empty.
-func (b *Builder) WithNATS(cfg natsbackend.Config) *Builder {
-	if cfg.URL == "" {
-		panic("app: WithNATS requires a non-empty URL")
-	}
-	if err := natsbackend.ValidateURL(cfg.URL); err != nil {
-		panic("app: WithNATS requires a valid URL")
-	}
-	cfg = mustCloneNATSConfig(cfg)
-	b.natsCfg = &cfg
 	return b
 }
 
@@ -864,26 +679,6 @@ func (b *Builder) WithEventBusPool(size int) *Builder {
 	return b
 }
 
-// WithMigrations configures goose SQL migrations. Requires WithPostgres
-// — the migrations run via the pgx pool inside the pgx module's Init.
-//
-// Migrations always run regardless of environment. This ensures dev,
-// staging, and production use the same schema migration path.
-func (b *Builder) WithMigrations(dir fs.FS) *Builder {
-	if dir == nil {
-		panic("app: WithMigrations requires a non-nil fs.FS")
-	}
-	b.migrationsDir = dir
-	return b
-}
-
-// WithTracing enables OpenTelemetry distributed tracing. If the config's
-// Endpoint is empty, a noop provider is used (zero overhead).
-func (b *Builder) WithTracing(cfg tracing.Config) *Builder {
-	b.tracingCfg = &cfg
-	return b
-}
-
 // WithLogger sets the logger used during infrastructure setup and runtime.
 // When not set, slog.Default() is used.
 func (b *Builder) WithLogger(l *slog.Logger) *Builder {
@@ -989,18 +784,6 @@ func (b *Builder) WithStartupTimeout(d time.Duration) *Builder {
 	return b
 }
 
-// WithPublicGRPCHealth also registers the gRPC Health Checking Protocol on
-// the public gRPC listener.
-//
-// By default, Builder exposes health on the internal ops listener only:
-// HTTP /ready plus gRPC health over h2c on the same internal address. Use this
-// opt-in only when the public gRPC listener is protected by network policy or
-// the health service is intentionally part of the public contract.
-func (b *Builder) WithPublicGRPCHealth() *Builder {
-	b.publicGRPCHealth = true
-	return b
-}
-
 func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	if fn == nil {
 		// FR-012 [LOW]: a nil hook would otherwise panic at shutdown
@@ -1013,9 +796,23 @@ func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	return b
 }
 
+// With registers an adapter module returned by a sub-package's Module
+// constructor (e.g., postgres.Module(...), redis.Module(...), amqp.Module(...),
+// nats.Module(...), tracing.Module(...), grpc.Module(...)). It is the v2.0.0
+// successor to the removed builder methods (WithPostgres, WithRedis,
+// WithRabbitMQ, WithNATS, WithTracing, NewGRPCModule) — using sub-package
+// modules keeps app/v2 free of pgx, go-redis, amqp091, nats.go, otelgrpc, and
+// grpc-go imports for services that do not need them.
+//
+// With is an alias for [Builder.WithModule]; both behave identically. Prefer
+// With for the fluent adapter-registration style at the call site.
+func (b *Builder) With(m Module) *Builder {
+	return b.WithModule(m)
+}
+
 // WithModule registers a module for initialization during Run(). Modules are
-// initialized in registration order, after all built-in infrastructure (DB,
-// Redis, MQ, etc.) but before the RouterFunc is called.
+// initialized in registration order, after all built-in infrastructure (JWT,
+// HTTP client, etc.) but before the RouterFunc is called.
 //
 // Panics if module is nil or if a module with the same name is already registered.
 // This is a startup-time configuration error.
@@ -1056,7 +853,7 @@ func (b *Builder) Router(fn RouterFunc) *Builder {
 // serve HTTP, wait for shutdown signal, drain workers, close connections.
 //
 // All long-running goroutines are managed via lifecycle.Runner. Resource cleanup
-// (DB, MQ, tracing) uses defers. The internal health server is started outside
+// (adapters, tracing) uses defers. The internal health server is started outside
 // the Runner so it outlives workers during drain.
 func (b *Builder) Run() error {
 	return b.RunContext(context.Background())
@@ -1174,17 +971,15 @@ func (b *Builder) RunContext(ctx context.Context) error {
 
 	// 8. Modules — initialize in registration order, close in reverse on shutdown.
 	//
-	// Pre-Init pass: inject the kit-level serverTLS into the gRPC
-	// module so its grpc.Server is constructed with the same TLS
-	// surface as the HTTP server. Without this, services that set
-	// TLS_CERT/TLS_KEY would silently run plaintext gRPC alongside
-	// TLS HTTP — an authentication bypass for any service relying on
-	// "if I'm in mTLS mode, peers are authenticated".
+	// Pre-Init hook: adapter modules that need the kit-level serverTLS
+	// (e.g., app/grpc) implement ServerTLSReceiver and are handed the
+	// resolved *tls.Config before Init runs. This lets them auto-wire
+	// the same TLS surface as the HTTP server without app/v2 importing
+	// the adapter packages.
 	if serverTLS != nil {
 		for _, m := range allModules {
-			if gm, ok := m.(*grpcModule); ok {
-				gm.setTLSConfig(serverTLS)
-				break
+			if recv, ok := m.(ServerTLSReceiver); ok {
+				recv.SetServerTLS(serverTLS)
 			}
 		}
 	}
@@ -1346,15 +1141,14 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		Checks:  b.healthChecks,
 	}
 
-	// gRPC health is internal by default. Public registration is an
-	// explicit opt-in because the public gRPC listener may be reachable by
-	// untrusted clients even when the internal ops listener is not.
-	if b.publicGRPCHealth {
-		for _, m := range allModules {
-			if gm, ok := m.(*grpcModule); ok {
-				gm.RegisterHealth(healthChecker)
-				break
-			}
+	// Adapter modules that participate in health-checker wiring (e.g., the
+	// public gRPC server's RegisterHealth path used by app/grpc) implement
+	// HealthCheckerReceiver. The Builder hands them the resolved checker
+	// before assembling internal handlers so the adapter can register
+	// the gRPC health service on its own grpc.Server when configured.
+	for _, m := range allModules {
+		if recv, ok := m.(HealthCheckerReceiver); ok {
+			recv.SetHealthChecker(healthChecker)
 		}
 	}
 
@@ -1373,7 +1167,14 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 	serverErrorLogOpt := serverErrorLogOption(logger)
 	internalHandler := healthhttp.NewInternalHandler(b.version, readiness, internalOpts...)
-	internalHandler = withInternalGRPCHealth(internalHandler, healthChecker)
+	// Adapter modules can wrap the internal handler to add transport-specific
+	// endpoints (e.g., gRPC health over h2c when app/grpc is registered).
+	// This avoids importing grpc-go from app/v2 just to serve internal health.
+	for _, m := range allModules {
+		if wrap, ok := m.(InternalHandlerWrapper); ok {
+			internalHandler = wrap.WrapInternalHandler(internalHandler, healthChecker)
+		}
+	}
 	internalSrv := httpx.NewServer(b.cfg.Internal.Addr(), internalHandler, serverErrorLogOpt)
 	internalErrCh := make(chan error, 1)
 	go func() {
@@ -1409,18 +1210,15 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	})
 
-	// 12. Shutdown hooks fire from the Runner's BeforeStop callback (wired in
-	// step 2) — synchronously after ctx cancels but BEFORE any component
-	// Stop runs. Hooks see live DB / broker / cache connections; the
-	// previous design ran them concurrently with stopAll which silently
-	// observed closed connections.
-
-	// 13. gRPC server — added before the public HTTP server so it is
-	// stopped after HTTP during graceful shutdown (reverse order).
+	// 13. Adapter-owned long-running components (e.g., the public gRPC
+	// server in app/grpc) implement [lifecycle.Component] and register
+	// themselves with the Runner via [Module.AttachToRunner]. Calling
+	// AttachToRunner here — before public-server registration — means
+	// the gRPC server is stopped AFTER the public HTTP server (reverse
+	// registration order).
 	for _, m := range allModules {
-		if gm, ok := m.(*grpcModule); ok {
-			runner.Add("grpc-server", gm)
-			break
+		if attacher, ok := m.(RunnerAttacher); ok {
+			attacher.AttachToRunner(runner)
 		}
 	}
 

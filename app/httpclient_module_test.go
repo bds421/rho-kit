@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 )
 
@@ -26,24 +27,32 @@ func TestHTTPClientModule_InitWithoutTracing(t *testing.T) {
 	assert.NotNil(t, m.Client(), "client should be initialized")
 }
 
+// stubTracingProvider implements [TracingProvider] for httpclient testing
+// without pulling app/tracing into app/v2.
+type stubTracingProvider struct {
+	BaseModule
+	active bool
+}
+
+func (s *stubTracingProvider) TracingActive() bool { return s.active }
+
+var _ TracingProvider = (*stubTracingProvider)(nil)
+var _ Module = (*stubTracingProvider)(nil)
+
 func TestHTTPClientModule_InitWithTracingModule(t *testing.T) {
-	tm := newTracingModule(tracingConfigForTest())
+	tracing := &stubTracingProvider{BaseModule: NewBaseModule("tracing"), active: true}
 	hcm := newHTTPClientModule(true)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	runner := lifecycle.NewRunner(logger)
 
-	// Init tracing first.
 	mc := ModuleContext{
 		Logger:  logger,
 		Runner:  runner,
 		Config:  BaseConfig{},
-		modules: map[string]Module{},
+		modules: map[string]Module{"tracing": tracing},
 	}
-	require.NoError(t, tm.Init(context.Background(), mc))
-	mc.modules["tracing"] = tm
 
-	// Init httpclient with tracing available.
 	require.NoError(t, hcm.Init(context.Background(), mc))
 	assert.NotNil(t, hcm.Client())
 }
@@ -82,3 +91,6 @@ func testModuleContext(t *testing.T) ModuleContext {
 		modules: map[string]Module{},
 	}
 }
+
+// Re-export to silence unused import in this file.
+var _ = health.StatusHealthy
