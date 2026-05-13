@@ -28,6 +28,7 @@ type Connection struct {
 
 	mu                  sync.RWMutex
 	healthy             bool
+	readOnly            bool
 	consecutiveFailures int
 	reconnecting        bool
 	closed              chan struct{}
@@ -274,13 +275,54 @@ func (c *Connection) Client() redis.UniversalClient {
 
 // Healthy reports whether the connection is currently healthy. This is used
 // by health check integrations (health.DependencyCheck).
+//
+// A connection that is reachable but has flipped to READONLY (failover in
+// progress, primary demoted to replica) is reported as unhealthy: writes
+// will fail until a replica is promoted. Read-only callers can still call
+// [Connection.Client] directly when [Connection.ReadOnly] is true.
 func (c *Connection) Healthy() bool {
 	if c == nil {
 		return false
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.healthy
+	return c.healthy && !c.readOnly
+}
+
+// ReadOnly reports whether the connection has observed a READONLY reply from
+// the server since the last successful write probe. When true, write commands
+// are expected to fail with [ErrPrimaryReadOnly] until a Sentinel/Cluster
+// failover completes (or an operator promotes a replica).
+func (c *Connection) ReadOnly() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.readOnly
+}
+
+// MarkReadOnly records that a command surfaced a READONLY reply. This is
+// called by command hooks and may be invoked by callers that detect a
+// READONLY response on their own pipeline. The flag is cleared on the next
+// successful health probe.
+func (c *Connection) MarkReadOnly() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	wasReadOnly := c.readOnly
+	c.readOnly = true
+	c.healthy = false
+	c.mu.Unlock()
+	if !wasReadOnly {
+		if c.metrics != nil {
+			c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(0)
+		}
+		if c.logger != nil {
+			c.logger.Warn("redis primary is read-only — failover in progress", "instance", c.instance)
+		}
+	}
 }
 
 // WasConnected reports whether the connection has ever been successfully
@@ -379,19 +421,37 @@ func (c *Connection) checkHealth() {
 
 	err := c.client.Ping(ctx).Err()
 
+	// A READONLY reply on ping is unusual but possible when a node has
+	// just been demoted: treat it as the master being unavailable for
+	// writes. The dedicated readOnly bit lets callers branch on it.
+	if err != nil && IsReadOnlyError(err) {
+		c.MarkReadOnly()
+		// Fall through: still report this probe as failed so health
+		// metrics and consecutiveFailures advance.
+	}
+
 	c.mu.Lock()
 	wasHealthy := c.healthy
 	c.healthy = err == nil
 
 	if err == nil {
 		c.consecutiveFailures = 0
+		// A clean PING also clears any sticky READONLY flag — the
+		// node is responding normally to commands again. Sentinel
+		// will have routed us to a fresh primary at this point.
+		wasReadOnly := c.readOnly
+		c.readOnly = false
 		c.mu.Unlock()
 
 		c.metrics.connectionHealthy.WithLabelValues(c.instance).Set(1)
 		c.connectedOnce.Do(func() { close(c.connected) })
 
-		if !wasHealthy {
-			c.logger.Info("redis connection established")
+		if !wasHealthy || wasReadOnly {
+			if wasReadOnly {
+				c.logger.Info("redis primary writable again", "instance", c.instance)
+			} else {
+				c.logger.Info("redis connection established")
+			}
 			c.metrics.reconnectSuccesses.WithLabelValues(c.instance).Inc()
 			c.fireOnReconnect()
 		}

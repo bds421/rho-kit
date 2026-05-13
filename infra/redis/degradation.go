@@ -23,6 +23,17 @@ type DegradationPolicy interface {
 	OnUnavailable(ctx context.Context) error
 }
 
+// ReadOnlyAware is implemented by [DegradationPolicy] values that distinguish
+// "Redis is unreachable" from "Redis is reachable but read-only" (failover in
+// progress). Callers can use this to keep serving reads while writes return
+// [ErrPrimaryReadOnly].
+type ReadOnlyAware interface {
+	// OnReadOnly is invoked when the connection is reachable but the
+	// server reported a READONLY reply for the most recent probe. Returning
+	// nil tells the caller to continue (read-only paths are still safe).
+	OnReadOnly(ctx context.Context) error
+}
+
 // PassthroughPolicy returns nil on unavailability, allowing the caller to
 // fall back to its own default behavior (e.g. cache miss, in-memory fallback).
 // This is appropriate for features where missing data is acceptable.
@@ -43,6 +54,12 @@ func (FailFastPolicy) Name() string { return "fail-fast" }
 
 // OnUnavailable returns ErrUnavailable.
 func (FailFastPolicy) OnUnavailable(_ context.Context) error { return ErrUnavailable }
+
+// OnReadOnly returns [ErrPrimaryReadOnly]. Write-dependent features will see
+// this sentinel and can surface it to clients (mapped to 503 / Retry-After
+// by HTTP adapters). Read-only callers can compare against the sentinel and
+// keep serving reads on the same client.
+func (FailFastPolicy) OnReadOnly(_ context.Context) error { return ErrPrimaryReadOnly }
 
 // CustomPolicy wraps a user-supplied function as a DegradationPolicy.
 // The name must be a valid health check name (lowercase alphanumeric with hyphens/underscores).

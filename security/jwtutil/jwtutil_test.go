@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
@@ -2064,6 +2067,163 @@ func TestProvider_Verify_KeySetUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrKeySetUnavailable) {
 		t.Fatalf("expected ErrKeySetUnavailable when keyset is stale; got %v", err)
 	}
+}
+
+// TestVerify_RejectsHS256SignedWithECPublicKeyBytes is the adversarial
+// alg-confusion test for the classic HS-vs-asymmetric attack:
+//
+//  1. A trusted JWKS publishes an EC P-256 public key with alg=ES256.
+//  2. An attacker who reads that JWKS (or any public consumer of the
+//     verifier's signer endpoint) crafts a JWT with header
+//     `{"alg":"HS256","kid":"<the kid>"}` and signs the
+//     `header.payload` half with HMAC-SHA256, using the public key
+//     bytes as the HMAC secret. If the verifier blindly hands its
+//     stored key bytes to whatever algorithm the token header asks
+//     for, the forgery verifies.
+//
+// The kit's mitigation is layered:
+//
+//   - ParseKeySet filters out symmetric (oct) JWKS entries up front
+//     and calls k.PublicKey() so only public material is retained.
+//   - The verifier uses jws.WithInferAlgorithmFromKey(true), so the
+//     algorithm is derived from the *stored key*, not from the token
+//     header. An EC public key infers ES256/ES384/ES512 and never
+//     HS*.
+//
+// This test forges three plausible HS256-signed-with-pubkey shapes
+// (raw uncompressed EC point, DER-encoded SubjectPublicKeyInfo, and
+// the marshalled JWK JSON) and asserts Provider.Verify rejects all of
+// them. Any non-nil error is acceptable — the security property is
+// "did not succeed". We additionally assert no Claims object is
+// returned, since a non-nil claims with an error would be a
+// fail-open bug.
+func TestVerify_RejectsHS256SignedWithECPublicKeyBytes(t *testing.T) {
+	const kid = "alg-confusion-victim"
+	const issuer = "https://issuer.example.com"
+	const audience = "alg-confusion-svc"
+
+	key := testKey(t)
+	jwksData := testJWKS(t, key, kid)
+
+	ks, err := ParseKeySet(jwksData)
+	if err != nil {
+		t.Fatalf("ParseKeySet: %v", err)
+	}
+	provider := NewProviderWithKeySet(ks,
+		WithExpectedIssuer(issuer),
+		WithExpectedAudience(audience),
+	)
+
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	claims := map[string]any{
+		"sub": "550e8400-e29b-41d4-a716-446655440000",
+		"iss": issuer,
+		"aud": audience,
+		"exp": now.Add(5 * time.Minute).Unix(),
+		"iat": now.Unix(),
+	}
+
+	// Three attacker-controlled shapes for "the public key as a
+	// symmetric HMAC secret". A verifier with even one path of
+	// alg-confusion exposure would accept exactly one of these; the
+	// kit must reject all three.
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+
+	// SEC1 uncompressed point: 0x04 || X || Y. This is the shape jwx
+	// would surface as "the raw key material" for an EC public key
+	// and the one most likely to be re-borrowed as an HMAC secret.
+	curveByteLen := (key.PublicKey.Curve.Params().BitSize + 7) / 8
+	pubPoint := make([]byte, 0, 1+2*curveByteLen)
+	pubPoint = append(pubPoint, 0x04)
+	xBytes := key.PublicKey.X.Bytes()
+	yBytes := key.PublicKey.Y.Bytes()
+	pubPoint = append(pubPoint, make([]byte, curveByteLen-len(xBytes))...)
+	pubPoint = append(pubPoint, xBytes...)
+	pubPoint = append(pubPoint, make([]byte, curveByteLen-len(yBytes))...)
+	pubPoint = append(pubPoint, yBytes...)
+
+	pubJWK, err := jwk.Import(key.PublicKey)
+	if err != nil {
+		t.Fatalf("jwk.Import: %v", err)
+	}
+	_ = pubJWK.Set(jwk.KeyIDKey, kid)
+	pubJWKJSON, err := json.Marshal(pubJWK)
+	if err != nil {
+		t.Fatalf("marshal pub JWK: %v", err)
+	}
+
+	shapes := map[string][]byte{
+		"DER-SubjectPublicKeyInfo":  pubDER,
+		"SEC1-uncompressed-point":   pubPoint,
+		"JWK-JSON":                  pubJWKJSON,
+		"PEM":                       ecdsaPublicKeyPEM(t, &key.PublicKey),
+		"base64url-of-uncompressed": []byte(base64.RawURLEncoding.EncodeToString(pubPoint)),
+	}
+
+	for shapeName, hmacSecret := range shapes {
+		t.Run(shapeName, func(t *testing.T) {
+			forged := forgeHS256Token(t, kid, hmacSecret, claims)
+
+			// Sanity: the forged token actually verifies under
+			// HMAC-with-pubkey-bytes when treated naively. Without this
+			// check, a passing test could mean "we forged garbage that
+			// nobody would accept" rather than "the kit's defence held".
+			//
+			// We verify this by parsing+verifying with jws directly,
+			// using the same hmacSecret as the symmetric key. If THIS
+			// fails, the forge helper is broken and the test below
+			// would pass trivially.
+			if _, verr := jws.Verify([]byte(forged), jws.WithKey(jwa.HS256(), hmacSecret)); verr != nil {
+				t.Fatalf("self-check failed: forged HS256 token does not verify under its own HMAC secret: %v", verr)
+			}
+
+			gotClaims, err := provider.Verify(forged, now)
+			if err == nil {
+				t.Fatalf("alg-confusion attack succeeded: Provider.Verify returned nil error for forged HS256 token (shape=%s)", shapeName)
+			}
+			if gotClaims != nil {
+				t.Fatalf("alg-confusion attack: Provider.Verify returned non-nil claims alongside error %v (shape=%s)", err, shapeName)
+			}
+			// Sanity-check the error chain: it should not be the
+			// "key set unavailable" sentinel (which would mean we
+			// never reached the verifier at all).
+			if errors.Is(err, ErrKeySetUnavailable) {
+				t.Fatalf("alg-confusion test never reached verifier: ErrKeySetUnavailable (shape=%s)", shapeName)
+			}
+		})
+	}
+}
+
+// forgeHS256Token builds a compact-serialized JWT with header
+// `{"alg":"HS256","kid":kid,"typ":"JWT"}`, a JSON body of claims, and
+// an HMAC-SHA256 signature over the `header.payload` half computed
+// under hmacSecret. The output is the shape a real attacker mounting
+// an alg-confusion attack would put on the wire.
+//
+// Implemented by hand rather than through jws.Sign so the test does
+// not depend on the high-level library agreeing that HMAC-with-arbitrary-
+// bytes is a sensible thing to do — that is precisely the agreement the
+// kit refuses to honour.
+func forgeHS256Token(t *testing.T, kid string, hmacSecret []byte, claims map[string]any) string {
+	t.Helper()
+	header := map[string]any{"alg": "HS256", "kid": kid, "typ": "JWT"}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(payloadJSON)
+	mac := hmac.New(sha256.New, hmacSecret)
+	mac.Write([]byte(signingInput))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return signingInput + "." + sig
 }
 
 func nilContextForTest() context.Context { return nil }

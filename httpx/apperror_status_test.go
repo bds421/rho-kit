@@ -27,6 +27,8 @@ func TestHTTPStatus(t *testing.T) {
 		{"Unavailable_NoDep_503", apperror.NewUnavailable("not ready"), 503},
 		{"Unavailable_WithCause_NoDep_503", apperror.NewUnavailableWithCause("not ready", errors.New("cause")), 503},
 		{"DependencyUnavailable_502", apperror.NewDependencyUnavailable("redis", "redis down", nil), 502},
+		{"StorageFull_507", apperror.NewStorageFull("disk full"), 507},
+		{"StorageFullWithCause_507", apperror.NewStorageFullWithCause("disk full", errors.New("ENOSPC")), 507},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

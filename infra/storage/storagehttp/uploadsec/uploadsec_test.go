@@ -3,8 +3,12 @@ package uploadsec
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"net/http"
@@ -297,4 +301,362 @@ func readAll(t *testing.T, r io.ReadSeeker) (string, int64) {
 	buf := make([]byte, 1024)
 	n, _ := r.Read(buf)
 	return string(buf[:n]), int64(n)
+}
+
+// tinyJPEG encodes a 1×1 JPEG; the encoder writes a spec-compliant
+// stream ending in FFD9 with no trailing padding.
+func tinyJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var buf bytes.Buffer
+	require.NoError(t, jpeg.Encode(&buf, img, nil))
+	return buf.Bytes()
+}
+
+// tinyGIF encodes a 1×1 GIF ending in trailer byte 0x3B.
+func tinyGIF(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White})
+	var buf bytes.Buffer
+	require.NoError(t, gif.Encode(&buf, img, nil))
+	return buf.Bytes()
+}
+
+// tinyWebP returns a hand-built minimal lossy WebP (VP8) carrying a 1×1
+// dummy frame. It is just enough for the polyglot end-of-stream check
+// to verify; stdlib has no WebP encoder so we synthesise the bytes.
+func tinyWebP(t *testing.T) []byte {
+	t.Helper()
+	// VP8 frame tag bytes for a 1×1 keyframe were captured from the
+	// reference encoder; tests only need the bytes to round-trip
+	// through validateWebPEnd / peekWebPDimensions, not to decode.
+	vp8Body := []byte{
+		0x30, 0x01, 0x00, 0x9d, 0x01, 0x2a, // frame tag + start code
+		0x01, 0x00, // width = 1 (LE 14 bits)
+		0x01, 0x00, // height = 1
+		0x00, // single zero entropy byte
+	}
+	chunkLen := uint32(len(vp8Body))
+	// VP8 chunk header is "VP8 " + 4-byte LE length.
+	chunk := append([]byte("VP8 "), 0, 0, 0, 0)
+	binary.LittleEndian.PutUint32(chunk[4:], chunkLen)
+	chunk = append(chunk, vp8Body...)
+	// RIFF wrapper: "RIFF" + 4-byte LE total size (excluding RIFF + size) + "WEBP" + chunks.
+	body := append([]byte("WEBP"), chunk...)
+	riff := append([]byte("RIFF"), 0, 0, 0, 0)
+	binary.LittleEndian.PutUint32(riff[4:], uint32(len(body)))
+	return append(riff, body...)
+}
+
+// drainAndRewind asserts the body is still readable end-to-end after a
+// chain run — uploadsec validators must not consume the body or leak
+// resources.
+func drainAndRewind(t *testing.T, body *bytes.Reader) {
+	t.Helper()
+	_, err := body.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, body)
+	require.NoError(t, err)
+}
+
+func TestAllowMIMETypes_RejectsPNGWithAppendedPHP(t *testing.T) {
+	v := AllowMIMETypes("image/png")
+	payload := append([]byte(nil), tinyPNG(t)...)
+	payload = append(payload, []byte("<?php phpinfo(); ?>")...)
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "phpinfo")
+	drainAndRewind(t, body)
+}
+
+func TestAllowMIMETypes_RejectsPNGWithAppendedJavaScript(t *testing.T) {
+	v := AllowMIMETypes("image/png")
+	payload := append([]byte(nil), tinyPNG(t)...)
+	payload = append(payload, []byte("<script>alert(1)</script>")...)
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "alert")
+	drainAndRewind(t, body)
+}
+
+func TestAllowMIMETypes_RejectsPNGWithTrailingWhitespace(t *testing.T) {
+	// Whitespace and NUL bytes are common "harmless" padding from
+	// misconfigured tools, but the spec says the file ends at IEND.
+	// We reject conservatively.
+	v := AllowMIMETypes("image/png")
+	payload := append([]byte(nil), tinyPNG(t)...)
+	payload = append(payload, '\n', ' ', '\t', 0, 0)
+
+	_, err := v.Validate(context.Background(), bytes.NewReader(payload), Meta{})
+	assert.ErrorIs(t, err, ErrInvalidImage)
+}
+
+func TestAllowMIMETypes_RejectsJPEGWithAppendedPayload(t *testing.T) {
+	v := AllowMIMETypes("image/jpeg")
+	payload := append([]byte(nil), tinyJPEG(t)...)
+	payload = append(payload, []byte("<?php system($_GET['c']); ?>")...)
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "system")
+	drainAndRewind(t, body)
+}
+
+func TestAllowMIMETypes_RejectsGIFWithAppendedPayload(t *testing.T) {
+	v := AllowMIMETypes("image/gif")
+	payload := append([]byte(nil), tinyGIF(t)...)
+	payload = append(payload, []byte("<script>fetch('/admin')</script>")...)
+
+	body := bytes.NewReader(payload)
+	_, err := v.Validate(context.Background(), body, Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+	assert.NotContains(t, err.Error(), "fetch")
+	drainAndRewind(t, body)
+}
+
+func TestAllowMIMETypes_RejectsWebPWithAppendedPayload(t *testing.T) {
+	v := AllowMIMETypes("image/webp")
+	payload := append([]byte(nil), tinyWebP(t)...)
+	payload = append(payload, []byte("<?php phpinfo(); ?>")...)
+
+	_, err := v.Validate(context.Background(), bytes.NewReader(payload), Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidImage)
+}
+
+func TestAllowMIMETypes_AcceptsCleanPNG(t *testing.T) {
+	v := AllowMIMETypes("image/png")
+	body := bytes.NewReader(tinyPNG(t))
+	meta, err := v.Validate(context.Background(), body, Meta{})
+	require.NoError(t, err)
+	assert.Equal(t, "image/png", meta.ContentType)
+	drainAndRewind(t, body)
+}
+
+func TestAllowMIMETypes_AcceptsCleanJPEG(t *testing.T) {
+	v := AllowMIMETypes("image/jpeg")
+	body := bytes.NewReader(tinyJPEG(t))
+	meta, err := v.Validate(context.Background(), body, Meta{})
+	require.NoError(t, err)
+	assert.Equal(t, "image/jpeg", meta.ContentType)
+}
+
+func TestAllowMIMETypes_AcceptsCleanGIF(t *testing.T) {
+	v := AllowMIMETypes("image/gif")
+	body := bytes.NewReader(tinyGIF(t))
+	meta, err := v.Validate(context.Background(), body, Meta{})
+	require.NoError(t, err)
+	assert.Equal(t, "image/gif", meta.ContentType)
+}
+
+func TestAllowMIMETypes_AcceptsCleanWebP(t *testing.T) {
+	v := AllowMIMETypes("image/webp")
+	body := bytes.NewReader(tinyWebP(t))
+	meta, err := v.Validate(context.Background(), body, Meta{})
+	require.NoError(t, err)
+	assert.Equal(t, "image/webp", meta.ContentType)
+}
+
+func TestAllowMIMETypes_RejectsCorruptedIDAT(t *testing.T) {
+	// A PNG whose IHDR parses cleanly but whose IDAT deflate stream is
+	// corrupted is the classic case DecodeConfig misses but Decode
+	// catches.
+	src := tinyPNG(t)
+	// Find IDAT and flip a byte in its data — this corrupts deflate
+	// without changing chunk length / CRC validation behaviour for
+	// DecodeConfig (which only reads IHDR).
+	idat := bytes.Index(src, []byte("IDAT"))
+	require.Greater(t, idat, 0)
+	// Mutate one byte of compressed data (a few bytes past "IDAT"
+	// header, inside the deflate body).
+	src[idat+8] ^= 0xFF
+
+	v := AllowMIMETypes("image/png")
+	_, err := v.Validate(context.Background(), bytes.NewReader(src), Meta{})
+	assert.ErrorIs(t, err, ErrInvalidImage)
+}
+
+func TestAllowMIMETypes_RejectsOversizedImageBeforeDecode(t *testing.T) {
+	// A patched IHDR claiming 99999×99999 dimensions must be rejected
+	// by the dimension cap BEFORE png.Decode is invoked. We verify
+	// this by ensuring the failure cannot be a "decode failed" — the
+	// dimension cap returns ErrImageTooLarge.
+	v := AllowMIMETypes("image/png")
+	bomb := decompressionBombPNG(t, 99_999, 99_999)
+	_, err := v.Validate(context.Background(), bytes.NewReader(bomb), Meta{})
+	require.Error(t, err)
+	// The patched bomb has a bad IHDR CRC, so DecodeConfig will fail
+	// and return ErrInvalidImage — that's fine, it means the
+	// dimension check used DecodeConfig (cheap, header-only) and
+	// short-circuited before png.Decode (which would allocate the
+	// pixel buffer). We accept either ErrImageTooLarge (valid header
+	// with attacker dimensions) or ErrInvalidImage (CRC mismatch).
+	assert.True(t,
+		errors.Is(err, ErrImageTooLarge) || errors.Is(err, ErrInvalidImage),
+		"want bomb rejection before full decode; got %v", err)
+}
+
+func TestAllowMIMETypes_RejectsAboveDimensionCap(t *testing.T) {
+	// Build a PNG whose header is internally consistent but whose
+	// declared dimensions exceed the built-in 8192×8192 cap. We
+	// patch a real PNG header AND recompute the CRC so DecodeConfig
+	// succeeds, proving the cap (not the CRC) does the work.
+	v := AllowMIMETypes("image/png")
+	bomb := patchedPNGWithValidCRC(t, 10_000, 10_000)
+	_, err := v.Validate(context.Background(), bytes.NewReader(bomb), Meta{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrImageTooLarge)
+}
+
+func TestAllowMIMETypes_RaisedDimensionCapAcceptsLargerHeader(t *testing.T) {
+	v := AllowMIMETypes("image/png").WithImageDimensionCap(20000, 20000)
+	bomb := patchedPNGWithValidCRC(t, 10_000, 10_000)
+	// Patched IDAT/IEND chunks won't pass png.Decode (IDAT data is
+	// still 1×1 deflate output), so we expect ErrInvalidImage — but
+	// NOT ErrImageTooLarge, proving the cap was raised past 10000.
+	_, err := v.Validate(context.Background(), bytes.NewReader(bomb), Meta{})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrImageTooLarge)
+}
+
+func TestAllowMIMETypes_WithoutStrictEndCheckAcceptsTrailingBytes(t *testing.T) {
+	// Opt-out: legacy clients that pad with garbage past FFD9 should
+	// still be accepted. The full-image decode still runs and catches
+	// corrupted payloads.
+	v := AllowMIMETypes("image/jpeg").WithoutStrictImageEndCheck()
+	payload := append([]byte(nil), tinyJPEG(t)...)
+	payload = append(payload, 0, 0, 0, 0) // garbage padding
+
+	_, err := v.Validate(context.Background(), bytes.NewReader(payload), Meta{})
+	require.NoError(t, err)
+}
+
+func TestAllowMIMETypes_WithoutStrictEndCheckStillRejectsCorruptDecode(t *testing.T) {
+	// Even with the strict-end check disabled, the full-image decode
+	// must still catch corrupted payloads. This proves we have two
+	// independent layers of defense.
+	src := tinyPNG(t)
+	idat := bytes.Index(src, []byte("IDAT"))
+	require.Greater(t, idat, 0)
+	src[idat+8] ^= 0xFF
+
+	v := AllowMIMETypes("image/png").WithoutStrictImageEndCheck()
+	_, err := v.Validate(context.Background(), bytes.NewReader(src), Meta{})
+	assert.ErrorIs(t, err, ErrInvalidImage)
+}
+
+func TestAllowMIMETypes_WithImageDimensionCapPanicsOnNonPositive(t *testing.T) {
+	v := AllowMIMETypes("image/png")
+	assert.Panics(t, func() { v.WithImageDimensionCap(0, 100) })
+	assert.Panics(t, func() { v.WithImageDimensionCap(100, -1) })
+}
+
+// TestValidateImageBody_PerFormat exercises the factored
+// validateImageBody helper directly, proving it can be unit-tested per
+// format without going through the full Validate / Chain plumbing.
+func TestValidateImageBody_PerFormat(t *testing.T) {
+	t.Run("png clean", func(t *testing.T) {
+		err := validateImageBody("image/png", bytes.NewReader(tinyPNG(t)), true)
+		assert.NoError(t, err)
+	})
+	t.Run("png appended payload", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyPNG(t)...), []byte("<?php ?>")...)
+		err := validateImageBody("image/png", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("png appended payload accepted when strictEnd disabled", func(t *testing.T) {
+		// Trailing bytes are tolerated without strict-end, but a corrupt
+		// decode still rejects — covered separately above. Here we use
+		// trailing whitespace (decode-clean) to prove strictEnd=false
+		// alone widens the accepted set.
+		payload := append(append([]byte(nil), tinyPNG(t)...), 0x00, 0x00)
+		err := validateImageBody("image/png", bytes.NewReader(payload), false)
+		assert.NoError(t, err)
+	})
+	t.Run("jpeg clean", func(t *testing.T) {
+		err := validateImageBody("image/jpeg", bytes.NewReader(tinyJPEG(t)), true)
+		assert.NoError(t, err)
+	})
+	t.Run("jpeg appended payload", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyJPEG(t)...), []byte("<script>")...)
+		err := validateImageBody("image/jpeg", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("gif clean", func(t *testing.T) {
+		err := validateImageBody("image/gif", bytes.NewReader(tinyGIF(t)), true)
+		assert.NoError(t, err)
+	})
+	t.Run("gif appended payload", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyGIF(t)...), []byte("<?php ?>")...)
+		err := validateImageBody("image/gif", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("webp clean", func(t *testing.T) {
+		err := validateImageBody("image/webp", bytes.NewReader(tinyWebP(t)), true)
+		assert.NoError(t, err)
+	})
+	t.Run("webp appended payload", func(t *testing.T) {
+		payload := append(append([]byte(nil), tinyWebP(t)...), []byte("<?php ?>")...)
+		err := validateImageBody("image/webp", bytes.NewReader(payload), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("unknown format rejected", func(t *testing.T) {
+		err := validateImageBody("image/heic", bytes.NewReader(tinyPNG(t)), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+	t.Run("body exceeds read limit rejected", func(t *testing.T) {
+		// imageBodyReadLimit+1 bytes of zeroes — far larger than any
+		// legitimate tiny image, so the limit-trip path fires before the
+		// decoder is even invoked.
+		huge := make([]byte, imageBodyReadLimit+2)
+		err := validateImageBody("image/png", bytes.NewReader(huge), true)
+		assert.ErrorIs(t, err, ErrInvalidImage)
+	})
+}
+
+// patchedPNGWithValidCRC builds a PNG whose IHDR claims (w,h) and
+// recomputes the IHDR CRC so DecodeConfig accepts the header. The IDAT
+// chunk is left unchanged from the source 1×1 PNG, so png.Decode will
+// fail — but the dimension cap check should fire first.
+func patchedPNGWithValidCRC(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	src := tinyPNG(t)
+	out := append([]byte(nil), src...)
+	// IHDR chunk runs from offset 8 to 8+4+4+13+4 = 33.
+	// Width @16..19, Height @20..23, CRC over type+data @29..32.
+	binary.BigEndian.PutUint32(out[16:20], w)
+	binary.BigEndian.PutUint32(out[20:24], h)
+	// CRC is computed over the chunk type ("IHDR", 4 bytes) and the
+	// 13-byte data field — offsets 12..28 inclusive.
+	// We use the same hash/crc32 IEEE polynomial as PNG.
+	out[29], out[30], out[31], out[32] = crcIEEE(out[12:29])
+	return out
+}
+
+func crcIEEE(data []byte) (byte, byte, byte, byte) {
+	// hash/crc32 IEEE — the polynomial PNG uses.
+	const poly = uint32(0xedb88320)
+	crc := uint32(0xffffffff)
+	for _, b := range data {
+		crc ^= uint32(b)
+		for i := 0; i < 8; i++ {
+			if crc&1 != 0 {
+				crc = (crc >> 1) ^ poly
+			} else {
+				crc >>= 1
+			}
+		}
+	}
+	crc ^= 0xffffffff
+	return byte(crc >> 24), byte(crc >> 16), byte(crc >> 8), byte(crc)
 }

@@ -247,6 +247,32 @@ func TestAsUnavailable_NotUnavailable(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestStorageFullError(t *testing.T) {
+	err := NewStorageFull("bucket quota exceeded")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "bucket quota exceeded")
+	assert.True(t, IsStorageFull(err))
+	assert.False(t, IsUnavailable(err))
+	assert.False(t, IsNotFound(err))
+
+	var sfe *StorageFullError
+	assert.True(t, errors.As(err, &sfe))
+	assert.Equal(t, CodeStorageFull, sfe.ErrorCode())
+	assert.True(t, sfe.Retryable())
+	assert.Nil(t, sfe.Unwrap())
+}
+
+func TestStorageFullErrorWithCause(t *testing.T) {
+	cause := errors.New("no space left on device")
+	err := NewStorageFullWithCause("write failed", cause)
+	assert.True(t, IsStorageFull(err))
+	assert.True(t, errors.Is(err, cause))
+
+	var sfe *StorageFullError
+	assert.True(t, errors.As(err, &sfe))
+	assert.Equal(t, cause, sfe.Unwrap())
+}
+
 func TestRetryable(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -265,6 +291,7 @@ func TestRetryable(t *testing.T) {
 		{"OperationFailed", NewOperationFailed("fail"), false},
 		{"Unavailable", NewUnavailable("down"), true},
 		{"DependencyUnavailable", NewDependencyUnavailable("redis", "down", nil), true},
+		{"StorageFull", NewStorageFull("disk full"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

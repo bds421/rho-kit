@@ -149,6 +149,14 @@ type ComputeCache[T any] struct {
 	// not the goroutines waiting on its result; without this map a
 	// hot stale key could spawn a goroutine on every stale hit.
 	refreshing sync.Map // map[string]struct{}
+
+	// inflight tracks which singleflight keys are currently being
+	// computed in the foreground so a caller can tell whether it is
+	// the leader (first to claim the key) or a follower (joining an
+	// existing leader). singleflight does not expose this directly —
+	// counting at this layer keeps the metric semantics precise
+	// without changing the deduplication contract.
+	inflight sync.Map // map[string]struct{}
 }
 
 // NewComputeCache creates a ComputeCache that wraps the given backend.
@@ -335,10 +343,25 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	computeCtx, cancelCompute := computeContext(cc.bgCtx, ctx, cc.cfg.computeTimeout)
 	defer cancelCompute()
 
+	// Leader/follower classification for observability: the first caller
+	// to claim the key becomes the leader; concurrent callers that see
+	// the key already in `inflight` are followers waiting on the leader.
+	// singleflight itself does not expose this distinction.
+	_, isFollower := cc.inflight.LoadOrStore(full, struct{}{})
+	waitStart := time.Now()
+	if isFollower {
+		cc.recordSingleflightFollower()
+	}
+
 	// FR-048 [MED]: use DoChan + select on ctx so a short-deadline
 	// follower can exit promptly instead of waiting for the leader's
 	// long compute to finish.
 	resCh := cc.group.DoChan(full, func() (interface{}, error) {
+		// The function only runs in the leader. Track inflight gauge
+		// for the duration of the actual compute.
+		cc.recordSingleflightInflightInc()
+		defer cc.recordSingleflightInflightDec()
+		defer cc.inflight.Delete(full)
 		val, execErr := cc.executeCompute(computeCtx, full, fn)
 		if execErr != nil {
 			cc.recordError()
@@ -351,16 +374,25 @@ func (cc *ComputeCache[T]) computeAndStore(ctx context.Context, full string, fn 
 	)
 	select {
 	case res := <-resCh:
+		if isFollower {
+			cc.observeSingleflightWait(time.Since(waitStart))
+		}
 		result, err = res.Val, res.Err
 	case <-ctx.Done():
 		// Follower aborted — leader continues. Surface the caller's
 		// cancel reason so the request boundary maps to a 499/context
 		// error rather than a generic "cache compute" error.
+		if isFollower {
+			cc.observeSingleflightWait(time.Since(waitStart))
+		}
 		return zero, ctx.Err()
 	case <-cc.bgCtx.Done():
 		// Cache closed mid-flight. The leader's computeCtx is anchored
 		// on bgCtx so it will also unwind; surface ErrCacheClosed to
 		// the follower so callers stop retrying.
+		if isFollower {
+			cc.observeSingleflightWait(time.Since(waitStart))
+		}
 		return zero, ErrCacheClosed
 	}
 	if err != nil {
@@ -544,6 +576,42 @@ func (cc *ComputeCache[T]) recordStaleServe() {
 func (cc *ComputeCache[T]) recordError() {
 	if cc.cfg.metrics != nil {
 		cc.cfg.metrics.errors.WithLabelValues(cc.cfg.name).Inc()
+	}
+}
+
+// recordSingleflightInflightInc increments the in-flight leader gauge.
+// Called by the singleflight leader (the goroutine actually executing
+// the compute function), not by followers.
+func (cc *ComputeCache[T]) recordSingleflightInflightInc() {
+	if cc.cfg.metrics != nil {
+		cc.cfg.metrics.singleflightInflight.WithLabelValues(cc.cfg.name).Inc()
+	}
+}
+
+// recordSingleflightInflightDec decrements the in-flight leader gauge.
+// Paired with recordSingleflightInflightInc via defer in the leader closure.
+func (cc *ComputeCache[T]) recordSingleflightInflightDec() {
+	if cc.cfg.metrics != nil {
+		cc.cfg.metrics.singleflightInflight.WithLabelValues(cc.cfg.name).Dec()
+	}
+}
+
+// recordSingleflightFollower counts a caller that joined an in-flight
+// singleflight leader rather than starting a new compute. Together with
+// the wait histogram, operators can distinguish "thundering herd
+// dedup'd" from "compute is slow per call".
+func (cc *ComputeCache[T]) recordSingleflightFollower() {
+	if cc.cfg.metrics != nil {
+		cc.cfg.metrics.singleflightFollowers.WithLabelValues(cc.cfg.name).Inc()
+	}
+}
+
+// observeSingleflightWait records how long a follower waited for the
+// leader's result. Only meaningful for followers — leaders observe zero
+// wait because they execute the compute inline.
+func (cc *ComputeCache[T]) observeSingleflightWait(d time.Duration) {
+	if cc.cfg.metrics != nil {
+		cc.cfg.metrics.singleflightWait.WithLabelValues(cc.cfg.name).Observe(d.Seconds())
 	}
 }
 

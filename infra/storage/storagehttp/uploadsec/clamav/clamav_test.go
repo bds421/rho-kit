@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/infra/v2/storage/storagehttp/uploadsec"
 )
@@ -129,6 +132,173 @@ func TestOptionPanics(t *testing.T) {
 	assertPanic(t, func() { StorageValidator(nil) })
 	assertPanic(t, func() { StorageValidator(fakeScanner{}, nil) })
 	assertPanic(t, func() { WithMaxSpoolBytes(0) })
+	assertPanic(t, func() { WithMetrics(nil) })
+	assertPanic(t, func() { WithMetricsValidatorName("") })
+	assertPanic(t, func() { WithMetricsValidatorName("   ") })
+}
+
+// TestScannerMetricsCleanScan asserts the duration histogram observes a
+// sample and clamav_scans_total{outcome="clean"} increments after a
+// successful scan. A fresh prometheus.NewRegistry() is used so the
+// values are guaranteed not to be polluted by other tests in this file
+// or by the default registry.
+func TestScannerMetricsCleanScan(t *testing.T) {
+	seen := make(chan clamdRequest, 1)
+	addr := startClamd(t, "stream: OK\x00", seen)
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	err := New(addr,
+		WithScanTimeout(time.Second),
+		WithMetrics(m),
+	).Scan(context.Background(), strings.NewReader("hello"), uploadsec.Meta{})
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	<-seen
+
+	assertHistogramCount(t, m.scanDuration, map[string]string{"validator": "clamav"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "clean"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "infected"}, 0)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "error"}, 0)
+}
+
+// TestScannerMetricsInfectedScan locks in the infected outcome label so
+// alert rules keyed on outcome="infected" cannot silently flip to
+// outcome="error" if a future refactor reclassifies malware as an
+// error. The two outcomes drive different on-call responses.
+func TestScannerMetricsInfectedScan(t *testing.T) {
+	seen := make(chan clamdRequest, 1)
+	addr := startClamd(t, "stream: Eicar-Test-Signature FOUND\x00", seen)
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	err := New(addr,
+		WithScanTimeout(time.Second),
+		WithMetrics(m),
+	).Scan(context.Background(), strings.NewReader("bad"), uploadsec.Meta{})
+	if !errors.Is(err, uploadsec.ErrMalwareDetected) {
+		t.Fatalf("Scan error = %v, want ErrMalwareDetected", err)
+	}
+	<-seen
+
+	assertHistogramCount(t, m.scanDuration, map[string]string{"validator": "clamav"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "infected"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "clean"}, 0)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "error"}, 0)
+}
+
+// TestScannerMetricsErrorOutcome asserts that scanner unavailability
+// (a dial failure here) records outcome="error", distinct from
+// "infected". These are separate metrics so they can drive separate
+// alerts: a dial-error burst is a clamd outage that fails closed; an
+// infected burst can be a coordinated upload attack.
+func TestScannerMetricsErrorOutcome(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	errDial := errors.New("dial blocked")
+	err := New("clamd.invalid:3310",
+		WithDialer(func(context.Context, string, string) (net.Conn, error) {
+			return nil, errDial
+		}),
+		WithScanTimeout(time.Second),
+		WithMetrics(m),
+	).Scan(context.Background(), strings.NewReader("x"), uploadsec.Meta{})
+	if !errors.Is(err, uploadsec.ErrScannerUnavailable) {
+		t.Fatalf("Scan error = %v, want ErrScannerUnavailable", err)
+	}
+
+	assertHistogramCount(t, m.scanDuration, map[string]string{"validator": "clamav"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "error"}, 1)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "clean"}, 0)
+	assertCounter(t, m.scansTotal, map[string]string{"validator": "clamav", "outcome": "infected"}, 0)
+}
+
+// TestScannerMetricsValidatorLabel verifies the validator label is
+// honoured so dashboards with multiple side-by-side scanners can
+// split them.
+func TestScannerMetricsValidatorLabel(t *testing.T) {
+	seen := make(chan clamdRequest, 1)
+	addr := startClamd(t, "stream: OK\x00", seen)
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	err := New(addr,
+		WithScanTimeout(time.Second),
+		WithMetrics(m),
+		WithMetricsValidatorName("primary-clamav"),
+	).Scan(context.Background(), strings.NewReader("hello"), uploadsec.Meta{})
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	<-seen
+
+	assertCounter(t, m.scansTotal,
+		map[string]string{"validator": "primary-clamav", "outcome": "clean"}, 1)
+	// Default label must NOT have been touched.
+	assertCounter(t, m.scansTotal,
+		map[string]string{"validator": "clamav", "outcome": "clean"}, 0)
+}
+
+// TestScannerMetricsOptOutDefault confirms that a Scanner without
+// WithMetrics is a no-op for instrumentation. Otherwise services that
+// don't yet care about clamav metrics would still be forced to register
+// the collectors against the default registry, polluting their /metrics
+// output with empty series.
+func TestScannerMetricsOptOutDefault(t *testing.T) {
+	seen := make(chan clamdRequest, 1)
+	addr := startClamd(t, "stream: OK\x00", seen)
+
+	// No WithMetrics — must be safe and emit nothing.
+	err := New(addr, WithScanTimeout(time.Second)).Scan(
+		context.Background(), strings.NewReader("hi"), uploadsec.Meta{},
+	)
+	if err != nil {
+		t.Fatalf("Scan without metrics returned error: %v", err)
+	}
+	<-seen
+}
+
+// assertCounter checks a labelled CounterVec value, panicking when the
+// label set does not match the declared label names so a typo in the
+// test surfaces fast.
+func assertCounter(t *testing.T, cv *prometheus.CounterVec, labels map[string]string, want float64) {
+	t.Helper()
+	c, err := cv.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith(%v): %v", labels, err)
+	}
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("Write counter %v: %v", labels, err)
+	}
+	if got := m.GetCounter().GetValue(); got != want {
+		t.Fatalf("counter %v = %v, want %v", labels, got, want)
+	}
+}
+
+// assertHistogramCount checks a labelled HistogramVec sample count.
+func assertHistogramCount(t *testing.T, hv *prometheus.HistogramVec, labels map[string]string, want uint64) {
+	t.Helper()
+	o, err := hv.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith(%v): %v", labels, err)
+	}
+	h, ok := o.(prometheus.Histogram)
+	if !ok {
+		t.Fatalf("metric %v is not a Histogram: %T", labels, o)
+	}
+	var m dto.Metric
+	if err := h.Write(&m); err != nil {
+		t.Fatalf("Write histogram %v: %v", labels, err)
+	}
+	if got := m.GetHistogram().GetSampleCount(); got != want {
+		t.Fatalf("histogram %v sample count = %d, want %d", labels, got, want)
+	}
 }
 
 func TestStorageValidatorScansAndReplaysCleanBody(t *testing.T) {

@@ -23,6 +23,11 @@ const (
 	CodeOperationFailed Code = "OPERATION_FAILED"
 	CodeForbidden       Code = "FORBIDDEN"
 	CodeUnavailable     Code = "UNAVAILABLE"
+	// CodeStorageFull indicates the backing store cannot accept the write
+	// because capacity (disk, quota, partition limit) is exhausted. The
+	// error is retryable: capacity may free up after some operator-managed
+	// interval. Transport adapters map it to HTTP 507 Insufficient Storage.
+	CodeStorageFull Code = "STORAGE_FULL"
 )
 
 // FieldError represents a single field-level validation error.
@@ -154,6 +159,22 @@ func (e *OperationFailedError) Unwrap() error   { return e.cause }
 func (e *OperationFailedError) ErrorCode() Code { return CodeOperationFailed }
 func (e *OperationFailedError) Retryable() bool { return false }
 
+// StorageFullError indicates a write failed because the backing store is at
+// capacity (filesystem ENOSPC, object-store quota, cloud-provider request
+// rejected for size). The error is retryable: operators may free space or
+// expand quota, and a later retry can succeed without caller-side changes.
+//
+// Transport adapters map this to HTTP 507 Insufficient Storage.
+type StorageFullError struct {
+	Message string
+	cause   error
+}
+
+func (e *StorageFullError) Error() string   { return e.Message }
+func (e *StorageFullError) Unwrap() error   { return e.cause }
+func (e *StorageFullError) ErrorCode() Code { return CodeStorageFull }
+func (e *StorageFullError) Retryable() bool { return true }
+
 // UnavailableError indicates an upstream dependency is unreachable or not ready.
 // Use this when a service cannot fulfill a request because a dependency it relies
 // on is down, overloaded, or not responding.
@@ -254,6 +275,20 @@ func NewOperationFailedWithCause(msg string, cause error) error {
 	return &OperationFailedError{Message: msg, cause: cause}
 }
 
+// NewStorageFull creates a StorageFullError with a client-safe message.
+// Use this when a backend write fails because the underlying medium has
+// no remaining capacity (disk full, bucket quota exhausted, partition
+// limit reached). The error is retryable.
+func NewStorageFull(msg string) error {
+	return &StorageFullError{Message: msg}
+}
+
+// NewStorageFullWithCause creates a StorageFullError that wraps an
+// underlying cause (typically the raw provider/syscall error).
+func NewStorageFullWithCause(msg string, cause error) error {
+	return &StorageFullError{Message: msg, cause: cause}
+}
+
 // NewUnavailable creates an UnavailableError with a client-safe message.
 func NewUnavailable(msg string) error {
 	return &UnavailableError{Message: msg}
@@ -342,6 +377,12 @@ func IsOperationFailed(err error) bool {
 // IsUnavailable reports whether err contains an UnavailableError.
 func IsUnavailable(err error) bool {
 	var target *UnavailableError
+	return errors.As(err, &target)
+}
+
+// IsStorageFull reports whether err contains a StorageFullError.
+func IsStorageFull(err error) bool {
+	var target *StorageFullError
 	return errors.As(err, &target)
 }
 

@@ -67,12 +67,20 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 	return func(rl *KeyedRateLimiter) { rl.now = fn }
 }
 
-// WithKeyedMetrics attaches Prometheus metrics to the keyed rate limiter.
+// WithKeyedMetrics attaches Prometheus metrics to the keyed rate
+// limiter. The limiter also registers itself with the metrics'
+// active-keys collector so a misconfigured key extractor that explodes
+// the per-shard LRU surfaces as
+// `http_ratelimit_keyed_limiter_active_keys{limiter}` before it pages
+// on memory.
 func WithKeyedMetrics(m *Metrics) KeyedOption {
 	if m == nil {
 		panic("ratelimit: WithKeyedMetrics requires non-nil metrics")
 	}
-	return func(rl *KeyedRateLimiter) { rl.metrics = m }
+	return func(rl *KeyedRateLimiter) {
+		rl.metrics = m
+		m.trackKeyedLimiter(rl)
+	}
 }
 
 // WithKeyedLimiterName sets the low-cardinality limiter label used by

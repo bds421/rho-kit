@@ -58,6 +58,13 @@ type Connection struct {
 	reconnecting         atomic.Bool   // prevents overlapping reconnect goroutines
 	reconnectSignal      chan struct{} // buffered(1); queues a reconnect when loop is finishing
 
+	// metrics, brokerLabel are observability hooks set via WithConnectionMetrics.
+	// When metrics is non-nil, dial success/failure flip connection_up and
+	// increment reconnect_attempts_total{broker,outcome}; consecutive failures
+	// accumulate in consecutive_reconnect_failures.
+	metrics     *Metrics
+	brokerLabel string
+
 	// onReconnect is called after a successful reconnect. Typically used
 	// to re-declare topology. Best-effort: failures are logged but do not
 	// prevent the connection from being used.
@@ -150,6 +157,28 @@ func WithURLProviderTimeout(d time.Duration) DialOption {
 	}
 }
 
+// WithConnectionMetrics wires Prometheus reconnect/lifecycle observability into
+// the connection. The metrics object is reused for publish/consume samples too,
+// so callers typically construct one [Metrics] per service and pass the same
+// instance to [WithConnectionMetrics], [WithPublisherMetrics], and
+// [WithConsumerMetrics].
+//
+// broker labels every connection sample so a single registry can host more
+// than one AMQP connection (publish-only + consume-only, primary + DR).
+// Empty broker resolves to the bounded fallback "default" — pass an explicit
+// value when more than one connection registers against the same registry.
+//
+// Panics if m is nil; pass an explicit Metrics or omit the option entirely.
+func WithConnectionMetrics(m *Metrics, broker string) DialOption {
+	if m == nil {
+		panic("amqpbackend: WithConnectionMetrics requires a non-nil Metrics")
+	}
+	return func(c *Connection) {
+		c.metrics = m
+		c.brokerLabel = broker
+	}
+}
+
 // Dial establishes a new AMQP connection and starts monitoring for disconnects.
 // By default, reconnection retries are unlimited. Use WithMaxReconnectAttempts
 // to set a finite limit (Dead() fires when exhausted).
@@ -200,6 +229,7 @@ func Dial(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connection, 
 	c.conn = conn
 	c.generation = 1
 	c.connectedOnce.Do(func() { close(c.connected) })
+	c.metrics.observeConnectionUp(c.brokerLabel, true)
 
 	go c.watchConnection(conn, 1)
 
@@ -433,7 +463,12 @@ func (c *Connection) watchConnection(conn *amqp.Connection, gen uint64) {
 // to prevent overlapping reconnect loops. If a reconnect is already in
 // progress, a signal is queued so the loop retries after completing its
 // current attempt (preventing lost reconnect signals from R7-46).
+//
+// connection_up flips to 0 here unconditionally — even when the gate
+// rejects this caller, an earlier startReconnect spawned the loop that
+// dropped the connection, so reporting "down" is correct.
 func (c *Connection) startReconnect() {
+	c.metrics.observeConnectionUp(c.brokerLabel, false)
 	if !c.reconnecting.CompareAndSwap(false, true) {
 		// Reconnect already running — queue a signal so it retries
 		// if it was about to exit.
@@ -479,6 +514,7 @@ func (c *Connection) reconnect() {
 		if err != nil {
 			c.logger.Error("amqp reconnect failed",
 				redact.Error(err), "attempt", attempts+1, "url_configured", c.urlConfigured())
+			c.metrics.observeReconnectAttempt(c.brokerLabel, amqpReconnectOutcomeFailed)
 			attempts++
 			continue
 		}
@@ -499,6 +535,8 @@ func (c *Connection) reconnect() {
 
 		c.logger.Info("amqp connected successfully", "attempts", attempts+1)
 		c.connectedOnce.Do(func() { close(c.connected) })
+		c.metrics.observeReconnectAttempt(c.brokerLabel, amqpReconnectOutcomeSuccess)
+		c.metrics.observeConnectionUp(c.brokerLabel, true)
 		// Reset backoff and attempt counter after a successful connection
 		// so the full budget is available if the connection drops again.
 		bo.Reset()

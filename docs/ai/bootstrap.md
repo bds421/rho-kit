@@ -17,23 +17,34 @@ Use `runtime/lifecycle.Runner` directly only when a service has custom transport
 ```go
 func main() {
     app.Main("my-service", version, func(logger *slog.Logger) error {
-        cfg, err := LoadConfig()
+        base, err := app.LoadBaseConfig(8080)
         if err != nil { return err }
 
-        return app.New("my-service", version, cfg.BaseConfig).
-            WithPostgres(cfg.Postgres).
-            WithRabbitMQ(cfg.AMQPURL).
-            WithJWT(cfg.JWKSURL).
+        return app.New("my-service", version, base).
+            WithPostgres(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")}).
+            WithRabbitMQ(os.Getenv("RABBITMQ_URL")).
+            WithJWT(os.Getenv("JWKS_URL")).
+            WithJWTAudience("my-service").
             WithIPRateLimit(100, time.Minute).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
-                mux.Handle("GET /users", httpx.JSONNoBody(logger, listUsers(infra.DB.Pool())))
-                return stack.Default(mux, logger)
+                mux.Handle("GET /users", httpx.JSONNoBody[UserListResponse](
+                    logger,
+                    listUsers(infra.DB.Pool()),
+                ))
+                return stack.Default(mux, infra.Logger)
             }).
             Run()
     })
 }
 ```
+
+`app.LoadBaseConfig(defaultServerPort int) (app.BaseConfig, error)` reads
+`SERVER_PORT`, `SERVER_HOST`, `INTERNAL_PORT`, `ENVIRONMENT`,
+`LOG_LEVEL`, and `TLS_*` from the environment. `BaseConfig` lives in
+package `app`, not `core/config`. See
+[adoption.md](adoption.md) for the minimum downstream `go.mod` and the
+common first-mistake checklist.
 
 ## Scaffold a Service
 

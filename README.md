@@ -17,6 +17,16 @@ the public API freeze, migration guide, and RC evidence checklist.
   notes, including the enumeration of breaking changes.
 - [CHANGELOG.md](CHANGELOG.md) — per-release summary.
 
+## Adoption
+
+New downstream services should start with
+[docs/ai/adoption.md](docs/ai/adoption.md): minimum `go.mod` (including
+the `replace` block needed until v2.0.0 is on the module proxy), the
+smallest compilable `main.go`, where each capability lives in the
+decision tree, and the common first-mistake checklist. The package
+decision tree in [AGENTS.md](AGENTS.md#package-decision-tree) is the
+canonical "I need to X, what do I import?" reference.
+
 Snippet status: Go blocks in this README are illustrative fragments. The shell
 commands are executable from a downstream module. Golden-path evidence lives in
 `examples/agentic-service` and the `cmd/kit-new` scaffold tests.
@@ -40,17 +50,17 @@ RabbitMQ, and JWT verification.
 
 ```go
 app.Main("backend", handler.Version, func(logger *slog.Logger) error {
-    cfg, err := LoadConfig()
+    base, err := app.LoadBaseConfig(8080)
     if err != nil {
         return err
     }
 
-    return app.New("backend", handler.Version, cfg.BaseConfig).
-        WithPostgres(cfg.Postgres).
-        WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
-        WithRabbitMQ(cfg.AMQPURL).
+    return app.New("backend", handler.Version, base).
+        WithPostgres(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")}).
+        WithRedis(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"}).
+        WithRabbitMQ(os.Getenv("RABBITMQ_URL")).
+        WithJWT(os.Getenv("JWKS_URL")).
         WithJWTAudience("backend").
-        WithJWT(cfg.JWKSURL).
         WithIPRateLimit(100, time.Minute).
         Router(func(infra app.Infrastructure) http.Handler {
             return router.New(infra, logger)

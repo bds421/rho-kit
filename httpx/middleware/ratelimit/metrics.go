@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/observability/v2/promutil"
@@ -30,6 +32,14 @@ const (
 type Metrics struct {
 	decisions  *prometheus.CounterVec
 	retryAfter *prometheus.HistogramVec
+
+	// activeKeys is a custom Collector that walks each registered
+	// KeyedRateLimiter's shards on demand at scrape time. A
+	// misconfigured key extractor that explodes the per-shard LRU
+	// surfaces as `http_ratelimit_keyed_limiter_active_keys{limiter}`
+	// before it pages on memory. Limiters are attached lazily via
+	// [WithKeyedMetrics] (or [Metrics.trackKeyedLimiter] directly).
+	activeKeys *keyedActiveKeysCollector
 }
 
 // MetricsOption configures rate-limit metrics construction.
@@ -76,7 +86,93 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	}
 	m.decisions = promutil.MustRegisterOrGet(cfg.registerer, m.decisions)
 	m.retryAfter = promutil.MustRegisterOrGet(cfg.registerer, m.retryAfter)
+
+	m.activeKeys = &keyedActiveKeysCollector{
+		desc: prometheus.NewDesc(
+			"http_ratelimit_keyed_limiter_active_keys",
+			"Approximate number of tracked keys per keyed rate limiter, summed across all internal shards. Collected on-demand at scrape time so a misconfigured key extractor that explodes the LRU surfaces before it pages on memory.",
+			[]string{"limiter"},
+			nil,
+		),
+	}
+	// Use MustRegisterOrGet to fold idempotent re-registration onto the
+	// same collector instance — duplicate NewMetrics calls against the
+	// same registerer share the limiter list rather than fighting over
+	// two collectors that emit conflicting series.
+	m.activeKeys = promutil.MustRegisterOrGet(cfg.registerer, m.activeKeys)
 	return m
+}
+
+// trackKeyedLimiter wires the limiter into the active-keys collector
+// so its per-shard sizes appear in the next scrape. Idempotent.
+func (m *Metrics) trackKeyedLimiter(rl *KeyedRateLimiter) {
+	if m == nil || m.activeKeys == nil {
+		return
+	}
+	m.activeKeys.add(rl)
+}
+
+// keyedActiveKeysCollector is a [prometheus.Collector] that walks each
+// registered [KeyedRateLimiter]'s shards on demand and emits a single
+// `keyed_limiter_active_keys{limiter}` sample per scrape. Implementing
+// Collector instead of a GaugeVec avoids polling overhead between
+// scrapes — len(shards[i]) is only computed when Prometheus actually
+// asks for it.
+type keyedActiveKeysCollector struct {
+	desc *prometheus.Desc
+
+	mu       sync.RWMutex
+	limiters []*KeyedRateLimiter
+}
+
+// Describe implements [prometheus.Collector].
+func (c *keyedActiveKeysCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+// Collect implements [prometheus.Collector]. Walks each registered
+// limiter's shards under each shard's mutex (matching the read path).
+// A misconfigured key extractor that explodes the LRU surfaces as a
+// rising sample value before it pages on memory.
+func (c *keyedActiveKeysCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.RLock()
+	limiters := append([]*KeyedRateLimiter(nil), c.limiters...)
+	c.mu.RUnlock()
+
+	for _, rl := range limiters {
+		if rl == nil {
+			continue
+		}
+		total := 0
+		for i := range rl.shards {
+			s := &rl.shards[i]
+			s.mu.Lock()
+			if s.entries != nil {
+				total += s.entries.Len()
+			}
+			s.mu.Unlock()
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.desc,
+			prometheus.GaugeValue,
+			float64(total),
+			rl.Name(),
+		)
+	}
+}
+
+func (c *keyedActiveKeysCollector) add(rl *KeyedRateLimiter) {
+	if rl == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, existing := range c.limiters {
+		if existing == rl {
+			return
+		}
+	}
+	c.limiters = append(c.limiters, rl)
 }
 
 func (m *Metrics) observeDecision(limiter, kind, outcome string) {

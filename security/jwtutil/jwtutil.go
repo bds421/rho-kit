@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
@@ -355,7 +356,27 @@ type Provider struct {
 	lastSuccessfulFetch time.Time
 	runMu               sync.Mutex
 	started             bool
+
+	// Fetch failure counters keyed by reason. Updated by fetch() and the
+	// stale-rejection path in keySetWithReason. Atomic uint64 so the
+	// observability collector can read them at scrape time without
+	// contending on Provider.mu.
+	fetchFailHTTP          atomic.Uint64
+	fetchFailParse         atomic.Uint64
+	fetchFailStaleRejected atomic.Uint64
 }
+
+// JWKSFetchFailureReason classifies the cause of a JWKS fetch failure for
+// metric labelling. The set is closed and bounded — new categories must
+// be added explicitly so dashboards / alert rules do not silently absorb
+// novel failure modes.
+type jwksFetchFailureReason string
+
+const (
+	jwksFailReasonHTTP          jwksFetchFailureReason = "http"
+	jwksFailReasonParse         jwksFetchFailureReason = "parse"
+	jwksFailReasonStaleRejected jwksFetchFailureReason = "stale-rejected"
+)
 
 // ProviderOption configures optional Provider behaviour.
 type ProviderOption func(*Provider)
@@ -838,14 +859,26 @@ func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
 // downstream verifier (httpx auth middleware, grpcx auth interceptor)
 // already treats nil-keyset as "fail the request closed", so the
 // staleness check participates in that contract automatically.
+//
+// Callers that need to distinguish "not ready" from "stale" should use
+// [Provider.keySetWithReason] (private) via [Provider.Verify], which
+// returns [ErrKeySetNotReady] or [ErrKeySetStale].
 func (p *Provider) KeySet() *KeySet {
+	ks, _ := p.keySetWithReason()
+	return ks
+}
+
+// keySetWithReason returns the current keyset along with the typed reason
+// when it is unavailable. Returns (ks, nil) when the keyset is usable.
+// Errors wrap [ErrKeySetUnavailable] so legacy errors.Is keeps matching.
+func (p *Provider) keySetWithReason() (*KeySet, error) {
 	if p == nil {
-		return nil
+		return nil, ErrKeySetNotReady
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.keyset == nil {
-		return nil
+		return nil, ErrKeySetNotReady
 	}
 	if p.maxStale > 0 && !p.lastSuccessfulFetch.IsZero() {
 		clock := p.clock
@@ -853,10 +886,11 @@ func (p *Provider) KeySet() *KeySet {
 			clock = time.Now
 		}
 		if clock().Sub(p.lastSuccessfulFetch) > p.maxStale {
-			return nil
+			p.fetchFailStaleRejected.Add(1)
+			return nil, ErrKeySetStale
 		}
 	}
-	return p.keyset
+	return p.keyset, nil
 }
 
 // LastSuccessfulFetch returns the timestamp of the most recent successful
@@ -907,16 +941,20 @@ func (p *Provider) Verify(token string, now time.Time) (*Claims, error) {
 // optional revocation check. Request handlers should prefer this method so a
 // Redis/cache-backed revocation lookup observes request cancellation and
 // deadlines.
+//
+// On JWKS unavailability the typed error is one of [ErrKeySetNotReady] or
+// [ErrKeySetStale]; both wrap [ErrKeySetUnavailable] so legacy
+// errors.Is(err, ErrKeySetUnavailable) callers keep matching unchanged.
 func (p *Provider) VerifyContext(ctx context.Context, token string, now time.Time) (*Claims, error) {
 	if p == nil {
-		return nil, ErrKeySetUnavailable
+		return nil, ErrKeySetNotReady
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ks := p.KeySet()
-	if ks == nil {
-		return nil, ErrKeySetUnavailable
+	ks, ksErr := p.keySetWithReason()
+	if ksErr != nil {
+		return nil, ksErr
 	}
 	claims, err := verifyToken(ks.set, token, now, p.expectedIssuer, p.expectedAudience)
 	if err != nil {
@@ -938,10 +976,32 @@ func (p *Provider) VerifyContext(ctx context.Context, token string, now time.Tim
 	return claims, nil
 }
 
-// ErrKeySetUnavailable is returned by [Provider.Verify] and
-// [Provider.VerifyContext] when the JWKS has not been fetched yet or has gone
-// stale past the max-stale window.
+// ErrKeySetUnavailable is the umbrella sentinel returned by [Provider.Verify]
+// and [Provider.VerifyContext] when the JWKS has not been fetched yet or has
+// gone stale past the max-stale window. Existing callers using
+// errors.Is(err, ErrKeySetUnavailable) keep matching for both subcases — the
+// typed variants below wrap this sentinel so the contract holds.
+//
+// New code that needs to distinguish "Provider never fetched" from
+// "Provider's last fetch is too old" should check
+// [ErrKeySetNotReady] / [ErrKeySetStale] instead.
 var ErrKeySetUnavailable = errors.New("jwtutil: key set unavailable")
+
+// ErrKeySetNotReady signals that the Provider has not yet completed its first
+// successful JWKS fetch. Returned during early service warmup (Run goroutine
+// still retrying) or for a hand-constructed Provider that was never started.
+//
+// Wraps [ErrKeySetUnavailable] so legacy errors.Is checks keep matching.
+var ErrKeySetNotReady = fmt.Errorf("%w: not ready (no successful fetch yet)", ErrKeySetUnavailable)
+
+// ErrKeySetStale signals that the Provider's last successful JWKS fetch is
+// older than the configured max-stale window (default 1h; override with
+// [WithMaxStale]). A streak of refresh failures is the typical cause.
+//
+// Wraps [ErrKeySetUnavailable] so legacy errors.Is checks keep matching.
+// Operators reading dashboards should treat ErrKeySetStale as a JWKS-side
+// outage signal and ErrKeySetNotReady as a warmup signal.
+var ErrKeySetStale = fmt.Errorf("%w: stale (last fetch exceeded max-stale window)", ErrKeySetUnavailable)
 
 // ErrJWKSRedirectBlocked is returned by JWKS HTTP clients without an explicit
 // redirect policy when a JWKS endpoint attempts to redirect. Fetches must go
@@ -952,6 +1012,7 @@ var ErrJWKSRedirectBlocked = errors.New("jwtutil: JWKS redirects are disabled by
 func (p *Provider) fetch(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
+		p.fetchFailHTTP.Add(1)
 		return err
 	}
 	// Tell the JWKS endpoint we expect JSON. Servers behind captive portals
@@ -962,20 +1023,24 @@ func (p *Provider) fetch(ctx context.Context) error {
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		p.fetchFailHTTP.Add(1)
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		p.fetchFailHTTP.Add(1)
 		return fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
 	}
 
 	// Reject non-JSON content types — e.g. captive-portal HTML responses.
 	ct, err := singletonContentType(resp.Header)
 	if err != nil {
+		p.fetchFailHTTP.Add(1)
 		return err
 	}
 	if ct != "" && !isJSONContentType(ct) {
+		p.fetchFailHTTP.Add(1)
 		return fmt.Errorf("jwks endpoint returned unexpected content-type")
 	}
 
@@ -984,14 +1049,17 @@ func (p *Provider) fetch(ctx context.Context) error {
 	const maxJWKSBytes = 64 << 10
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
 	if err != nil {
+		p.fetchFailHTTP.Add(1)
 		return err
 	}
 	if len(body) > maxJWKSBytes {
+		p.fetchFailHTTP.Add(1)
 		return fmt.Errorf("jwks body exceeds maximum size")
 	}
 
 	ks, err := ParseKeySet(body)
 	if err != nil {
+		p.fetchFailParse.Add(1)
 		return err
 	}
 

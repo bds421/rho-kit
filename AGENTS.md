@@ -37,34 +37,62 @@ go test -tags integration ./...
 
 ## Golden Path
 
-Every service follows this pattern:
+Every service follows this pattern. The snippet below is a complete
+`package main` that compiles against the v2 API at HEAD; copy-paste and
+fill in `cfg.JWKSURL` etc. with the env-loaded values from your service.
 
 ```go
-app.Main("my-service", version, func(logger *slog.Logger) error {
-    cfg, err := LoadConfig()
-    if err != nil { return err }
-    return app.New("my-service", version, cfg.BaseConfig).
-        WithPostgres(cfg.Postgres).
-        WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
-        WithRabbitMQ(cfg.AMQPURL).
-        WithJWTAudience("my-service").
-        WithJWT(cfg.JWKSURL).
-        WithIPRateLimit(100, time.Minute).
-        WithTracing(tracingCfg).
-        Router(func(infra app.Infrastructure) http.Handler {
-            // Auto-migrate / register repositories using infra.DB here.
-            mux := http.NewServeMux()
-            // register routes using infra.DB, infra.Publisher, etc.
-            csrfMW := csrf.New(csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...))
-            return stack.Default(mux, logger,
-                stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
-            )
-        }).
-        Run()
-})
+package main
+
+import (
+    "log/slog"
+    "net/http"
+    "time"
+
+    goredis "github.com/redis/go-redis/v9"
+
+    "github.com/bds421/rho-kit/app/v2"
+    "github.com/bds421/rho-kit/httpx/v2/middleware/stack"
+    pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
+)
+
+var version = "" // set via -ldflags
+
+func main() {
+    app.Main("my-service", version, func(_ *slog.Logger) error {
+        base, err := app.LoadBaseConfig(8080)
+        if err != nil {
+            return err
+        }
+
+        return app.New("my-service", version, base).
+            WithPostgres(pgxbackend.Config{DSN: "postgres://localhost/my-service"}).
+            WithRedis(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"}).
+            WithRabbitMQ("amqps://broker.internal").
+            WithJWT("https://issuer.example.com/.well-known/jwks.json").
+            WithJWTAudience("my-service").
+            WithIPRateLimit(100, time.Minute).
+            Router(func(infra app.Infrastructure) http.Handler {
+                mux := http.NewServeMux()
+                // Register routes using infra.DB, infra.Publisher, etc.
+                return stack.Default(mux, infra.Logger)
+            }).
+            Run()
+    })
+}
 ```
 
-For services that outgrow the Builder (custom transports, non-standard shutdown ordering), use `lifecycle.Runner` + `config.Load` directly. See the "Manual Wiring" section in [docs/ai/bootstrap.md](docs/ai/bootstrap.md).
+Notes:
+- `app.LoadBaseConfig(8080)` reads `SERVER_PORT`, `SERVER_HOST`,
+  `INTERNAL_PORT`, `ENVIRONMENT`, `LOG_LEVEL`, and `TLS_*` from the
+  environment; pass the per-service default port.
+- `BaseConfig` lives in package `app`, not `core/config`.
+- `app.New(name, version, cfg)` returns a `*Builder`; methods chain.
+- Non-loopback Redis MUST set `TLSConfig` (or a `rediss://` URL) and a
+  non-empty `Password` — `Builder.Run` rejects plaintext URIs (FR-077)
+  unless you opt out with `WithoutRedisTLS()` on a reviewed boundary.
+
+For services that outgrow the Builder (custom transports, non-standard shutdown ordering), use `lifecycle.Runner` + `config.Load` directly. See the "Manual Wiring" section in [docs/ai/bootstrap.md](docs/ai/bootstrap.md). New downstream services should also read [docs/ai/adoption.md](docs/ai/adoption.md) for the `go.mod` and common-mistakes checklist.
 
 ## Package Decision Tree
 
@@ -76,7 +104,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Serve HTTP with middleware | `httpx`, `httpx/middleware/stack` | [http](docs/ai/http.md) |
 | Authenticate requests (JWT) | `httpx/middleware/auth`, `security/jwtutil` | [http](docs/ai/http.md) |
 | Rate-limit requests | `httpx/middleware/ratelimit` | [http](docs/ai/http.md) |
-| Typed HTTP handlers (reduce boilerplate) | `httpx` (JSON, JSONNoBody, JSONStatus, NoContent) | [http](docs/ai/http.md) |
+| Typed HTTP handlers (reduce boilerplate) | `httpx.JSON[Req,Resp](logger, func(ctx, *http.Request, Req) (Resp, error))`; siblings `JSONNoBody[Resp](logger, func(ctx, *http.Request) (Resp, error))`, `JSONStatus[Req,Resp](logger, func(ctx, *http.Request, Req) (int, Resp, error))`, `JSONNoBodyStatus[Resp](logger, func(ctx, *http.Request) (int, Resp, error))`, `NoContent(logger, func(ctx, *http.Request) error)`. Mux-bound wrappers: `httpx.Handle/HandleNoBody/HandleStatus/HandleNoBodyStatus`. | [http](docs/ai/http.md) |
 | Idempotent HTTP requests | `httpx/middleware/idempotency` | [http](docs/ai/http.md) |
 | Distributed locking | `data/lock/redislock` | [redis](docs/ai/redis.md) |
 | Fan-out N tasks concurrently | `runtime/concurrency` (FanOut, FanOutSettled) | [utilities](docs/ai/utilities.md) |

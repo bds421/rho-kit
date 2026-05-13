@@ -115,6 +115,12 @@ type BufferedPublisherMetrics struct {
 	OnDrop func()
 	// OnPendingGauge is called with the current buffer depth after changes.
 	OnPendingGauge func(count int)
+	// OnBufferedBytesGauge is called with the approximate in-memory bytes
+	// pending after each buffer mutation. The figure sums Message.Payload
+	// lengths and is used by [PrometheusBufferedPublisherMetrics] to expose a
+	// silent-overflow gauge — operators can alert before backpressure forces
+	// a drop.
+	OnBufferedBytesGauge func(bytes int)
 	// OnSaveError fires when a state-file save fails. Audit FR-068:
 	// drain previously discarded the save-error from saveLocked, so a
 	// disk-full / EROFS / quota condition could go unnoticed and cause
@@ -123,6 +129,10 @@ type BufferedPublisherMetrics struct {
 	// the broker). Wire this hook to a Prometheus counter / alert so
 	// such conditions surface before the next crash.
 	OnSaveError func(err error)
+	// OnStateWrite fires after every state-file save attempt. The boolean
+	// reports whether the underlying atomic write succeeded so a single
+	// counter can track {success, error} outcomes side-by-side.
+	OnStateWrite func(success bool)
 }
 
 // BufferedPublisherOption configures a BufferedPublisher.
@@ -372,9 +382,10 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 			return fmt.Errorf("buffered publisher: persist message after direct publish failure: %w", saveErr)
 		}
 		pending := len(o.pending)
+		bytes := o.pendingBytesLocked()
 		o.mu.Unlock()
 
-		o.reportPending(pending)
+		o.reportPending(pending, bytes)
 		o.onBuffer()
 		o.logger.Info("message buffered",
 			redact.String("exchange", exchange),
@@ -424,9 +435,10 @@ func (o *BufferedPublisher) Publish(ctx context.Context, exchange, routingKey st
 		return fmt.Errorf("buffered publisher: persist buffered message: %w", saveErr)
 	}
 	pending := len(o.pending)
+	bytes := o.pendingBytesLocked()
 	o.mu.Unlock()
 
-	o.reportPending(pending)
+	o.reportPending(pending, bytes)
 	o.onBuffer()
 
 	o.logger.Info("message buffered",
@@ -562,6 +574,7 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 
 	var saveErr error
 	pending := -1
+	bytes := 0
 	if published > 0 {
 		// Compact the slice to allow the backing array to be GC'd.
 		// Without this, o.pending[published:] retains the original array
@@ -578,11 +591,12 @@ func (o *BufferedPublisher) drain(ctx context.Context) {
 		// metrics-side hook that pages someone before the next crash.
 		saveErr = o.saveLocked()
 		pending = len(o.pending)
+		bytes = o.pendingBytesLocked()
 	}
 	o.mu.Unlock()
 
 	if pending >= 0 {
-		o.reportPending(pending)
+		o.reportPending(pending, bytes)
 	}
 	if saveErr != nil {
 		o.logger.Error("buffered publisher state save failed AFTER successful broker publishes; restart-replay risk until next save succeeds",
@@ -620,9 +634,11 @@ func (o *BufferedPublisher) saveLocked() error {
 	if err := atomicfile.Save(o.stateFile, o.pending); err != nil {
 		o.logger.Error("failed to save buffered publisher state", redact.Error(err), redact.String("file", o.stateFile))
 		o.lastSaveErr.Store(&err)
+		o.onStateWrite(false)
 		return err
 	}
 	o.lastSaveErr.Store(nil)
+	o.onStateWrite(true)
 	return nil
 }
 
@@ -677,6 +693,24 @@ func (o *BufferedPublisher) onPendingGauge(count int) {
 	})
 }
 
+func (o *BufferedPublisher) onBufferedBytesGauge(bytes int) {
+	if o.metrics == nil || o.metrics.OnBufferedBytesGauge == nil {
+		return
+	}
+	o.callMetric("OnBufferedBytesGauge", func() {
+		o.metrics.OnBufferedBytesGauge(bytes)
+	})
+}
+
+func (o *BufferedPublisher) onStateWrite(success bool) {
+	if o.metrics == nil || o.metrics.OnStateWrite == nil {
+		return
+	}
+	o.callMetric("OnStateWrite", func() {
+		o.metrics.OnStateWrite(success)
+	})
+}
+
 func (o *BufferedPublisher) onSaveError(err error) {
 	if o.metrics == nil || o.metrics.OnSaveError == nil {
 		return
@@ -686,8 +720,23 @@ func (o *BufferedPublisher) onSaveError(err error) {
 	})
 }
 
-func (o *BufferedPublisher) reportPending(count int) {
+// pendingBytesLocked returns the approximate in-memory byte cost of the
+// currently-buffered messages. Must be called with o.mu held. The figure
+// sums [Message.Payload] lengths only — headers, IDs, types, and JSON
+// scaffolding are excluded because payload bytes dominate by orders of
+// magnitude in realistic workloads, and computing the exact serialized
+// size would require re-marshalling every entry on every gauge update.
+func (o *BufferedPublisher) pendingBytesLocked() int {
+	bytes := 0
+	for i := range o.pending {
+		bytes += len(o.pending[i].Msg.Payload)
+	}
+	return bytes
+}
+
+func (o *BufferedPublisher) reportPending(count, bytes int) {
 	o.onPendingGauge(count)
+	o.onBufferedBytesGauge(bytes)
 }
 
 func (o *BufferedPublisher) callMetric(name string, fn func()) {

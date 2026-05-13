@@ -47,13 +47,24 @@ end
 return 0
 `)
 
-func (q *Queue) updateProcessingDepth(ctx context.Context, queue, processingQ string) {
+// updateProcessingDepth polls LLEN for the processing list, the main
+// queue, and the dead-letter queue, updating all three gauges in a
+// single pass. Kept on the existing depth-poller goroutine so a DLQ
+// gauge does not pay for an additional poll loop. Errors are
+// intentionally swallowed — depth is a best-effort signal and the
+// surrounding loop already retries.
+func (q *Queue) updateProcessingDepth(ctx context.Context, queue, processingQ, deadQ string) {
 	label := queueMetricLabel(queue)
 	if n, err := q.client.LLen(ctx, processingQ).Result(); err == nil {
 		q.metrics.processingDepth.WithLabelValues(label).Set(float64(n))
 	}
 	if n, err := q.client.LLen(ctx, queue).Result(); err == nil {
 		q.metrics.queueDepth.WithLabelValues(label).Set(float64(n))
+	}
+	if deadQ != "" {
+		if n, err := q.client.LLen(ctx, deadQ).Result(); err == nil {
+			q.metrics.dlqDepth.WithLabelValues(label).Set(float64(n))
+		}
 	}
 }
 

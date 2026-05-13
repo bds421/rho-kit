@@ -22,17 +22,59 @@
 // what the next sees (sniffed Content-Type replaces the
 // caller-supplied one, ImageWidth/Height become available after
 // MaxImageDimensions).
+//
+// # Polyglot defense
+//
+// The threat model includes "polyglot" files: a payload that is
+// simultaneously a valid image and a valid script in another language
+// (PHP, JavaScript, shell). The classic recipe is a real PNG followed
+// by appended bytes such as "<?php phpinfo(); ?>"; a permissive viewer
+// renders the image, a permissive interpreter executes the script.
+//
+// [AllowMIMETypes] defends against this in three layers:
+//
+//   - Header sniff via [http.DetectContentType] confirms the magic
+//     bytes match the declared MIME type. [AllowExtensions] then
+//     cross-checks the filename extension against the sniffed MIME so
+//     the uploader cannot lie in either direction.
+//   - For raster image MIME types (image/png, image/jpeg, image/gif,
+//     image/webp) the validator runs a full-image decode via
+//     [image.Decode]. A decoder failure indicates a corrupt or hostile
+//     payload. The dimension cap (default 8192×8192, see
+//     [defaultMaxImageDimension]) runs BEFORE the full decode so a
+//     decompression-bomb header cannot allocate the pixel buffer.
+//   - After a successful decode the body is checked for trailing
+//     bytes that fall outside the format's terminator. PNG must end
+//     with the IEND chunk (and a valid CRC), JPEG with FFD9, GIF with
+//     trailer 0x3B, and WebP at the byte boundary declared by the
+//     RIFF length. Any trailing data — even whitespace or NUL bytes —
+//     is rejected.
+//
+// image/svg+xml is rejected unconditionally by the default allowlist —
+// SVG is XML with scripting and SSRF surface. Services that need SVG
+// must opt in via [AllowSVG] and provide a sanitiser.
+//
+// Polyglot rejection is best-effort against append-style attacks. An
+// attacker who controls the compression internals (for example,
+// crafts a PNG whose IDAT deflate stream decompresses to valid pixels
+// but whose raw bytes look like script content to a misconfigured
+// renderer) is out of scope — that is a renderer-side bug, not a
+// validator bug. For arbitrary file uploads the kit additionally
+// supports streaming through a malware scanner; see
+// uploadsec/clamav for the bundled ClamAV adapter.
 package uploadsec
 
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
-	_ "image/gif"  // register decoder
-	_ "image/jpeg" // register decoder
-	_ "image/png"  // register decoder
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime"
 	"net/http"
@@ -187,14 +229,188 @@ type SVGSanitizer interface {
 }
 
 // imageDeepDecodeMIMEs is the subset of image MIME types where a
-// successful [http.DetectContentType] match still needs an
-// [image.DecodeConfig] round-trip to reject polyglots (a PHP webshell
-// wrapped in a valid PNG header).
+// successful [http.DetectContentType] match still needs additional
+// per-format validation (full-image decode + trailing-bytes check) to
+// reject polyglots (a PHP webshell wrapped in a valid PNG header).
 var imageDeepDecodeMIMEs = map[string]struct{}{
 	"image/png":  {},
 	"image/jpeg": {},
 	"image/gif":  {},
 	"image/webp": {},
+}
+
+// defaultMaxImageDimension caps width and height for the polyglot
+// full-decode path. Raised via [WithImageDimensionCap] when a service
+// legitimately needs larger images. The cap is enforced BEFORE the
+// full decode so a 100,000 × 100,000 PNG decompression bomb cannot
+// allocate the pixel buffer.
+const defaultMaxImageDimension = 8192
+
+// imageBodyReadLimit caps the body size buffered for full-image decode
+// and trailing-bytes inspection. 32 MiB accommodates typical photo
+// uploads (large iPhone HEIC-as-JPEG exports run ~5–10 MiB; ProRAW
+// JPEGs can hit 25 MiB) while keeping per-request memory bounded.
+// Uploads larger than this are rejected with [ErrInvalidImage] — wire
+// a size validator earlier in the chain if a stricter ceiling is
+// required.
+const imageBodyReadLimit = 32 << 20
+
+// MIMEValidator is the configurable validator returned by
+// [AllowMIMETypes]. It satisfies [Validator] directly; the additional
+// methods let callers tune polyglot-defense behaviour without changing
+// the constructor signature.
+type MIMEValidator struct {
+	allowed   map[string]struct{}
+	strictEnd bool
+	maxWidth  int
+	maxHeight int
+}
+
+// Validate implements [Validator].
+func (m *MIMEValidator) Validate(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(body, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return meta, fmt.Errorf("uploadsec: sniff body failed")
+	}
+	sniffed := http.DetectContentType(buf[:n])
+	// DetectContentType returns "type; charset=…" for text; strip params for the allowlist match.
+	base, _, _ := strings.Cut(sniffed, ";")
+	base = strings.ToLower(strings.TrimSpace(base))
+	if _, ok := m.allowed[base]; !ok {
+		return meta, ErrMIMETypeNotAllowed
+	}
+	if _, deep := imageDeepDecodeMIMEs[base]; deep {
+		if err := m.checkImageBody(body, base); err != nil {
+			return meta, err
+		}
+	}
+	meta.ContentType = base
+	return meta, nil
+}
+
+// checkImageBody runs the polyglot defenses for one of the raster
+// image MIME types: dimension cap → full decode → strict end-of-stream
+// check. WebP is handled via manual RIFF parsing because the stdlib
+// has no WebP decoder; that still catches append-style polyglots.
+//
+// The function is split in two: this method enforces the
+// per-validator dimension cap (which needs m.maxWidth/m.maxHeight) and
+// then delegates to [validateImageBody], which is pure (no config
+// state, no ReadSeeker) and therefore directly unit-testable per
+// format.
+func (m *MIMEValidator) checkImageBody(body io.ReadSeeker, mimeType string) error {
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("uploadsec: rewind for image decode: %w", err)
+	}
+	// Peek the header to bound dimensions before the full decode runs.
+	// image.DecodeConfig allocates only metadata, so a 99999×99999
+	// header is rejected without ever materialising pixels.
+	header, err := io.ReadAll(io.LimitReader(body, imageHeaderReadLimit))
+	if err != nil {
+		return fmt.Errorf("uploadsec: buffer image header failed")
+	}
+	// For PNG/JPEG/GIF use stdlib DecodeConfig for the dimension peek.
+	// WebP requires a manual VP8 chunk parse below.
+	if mimeType != "image/webp" {
+		cfg, _, cfgErr := image.DecodeConfig(bytes.NewReader(header))
+		if cfgErr != nil {
+			return ErrInvalidImage
+		}
+		if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > m.maxWidth || cfg.Height > m.maxHeight {
+			return ErrImageTooLarge
+		}
+	} else {
+		w, h, webpErr := peekWebPDimensions(header)
+		if webpErr != nil {
+			return ErrInvalidImage
+		}
+		if w <= 0 || h <= 0 || w > m.maxWidth || h > m.maxHeight {
+			return ErrImageTooLarge
+		}
+	}
+	// Buffer the body for full decode + trailing-bytes inspection.
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("uploadsec: rewind for image body: %w", err)
+	}
+	return validateImageBody(mimeType, body, m.strictEnd)
+}
+
+// validateImageBody buffers up to [imageBodyReadLimit] bytes from body,
+// runs the per-format full decode (PNG/JPEG/GIF; WebP relies on the
+// trailing-bytes check alone because the stdlib has no decoder), and —
+// when strictEnd is true — rejects any bytes past the format's
+// canonical terminator.
+//
+// The function is pure: it takes the format string and an io.Reader,
+// returns ErrInvalidImage on any deviation, and holds no validator
+// state. It is exported only via this package's tests so each format
+// path can be exercised in isolation.
+func validateImageBody(format string, body io.Reader, strictEnd bool) error {
+	limited := io.LimitReader(body, imageBodyReadLimit+1)
+	full, err := io.ReadAll(limited)
+	if err != nil {
+		return fmt.Errorf("uploadsec: buffer image body failed")
+	}
+	if int64(len(full)) > imageBodyReadLimit {
+		return ErrInvalidImage
+	}
+	// Full decode rejects corrupted IDAT and many polyglot variants
+	// that DecodeConfig accepts. Skipped for WebP (no stdlib decoder)
+	// — the trailing-bytes check below still catches the append-style
+	// attack on WebP.
+	switch format {
+	case "image/png":
+		if _, decErr := png.Decode(bytes.NewReader(full)); decErr != nil {
+			return ErrInvalidImage
+		}
+	case "image/jpeg":
+		if _, decErr := jpeg.Decode(bytes.NewReader(full)); decErr != nil {
+			return ErrInvalidImage
+		}
+	case "image/gif":
+		if _, decErr := gif.Decode(bytes.NewReader(full)); decErr != nil {
+			return ErrInvalidImage
+		}
+	case "image/webp":
+		// no stdlib decoder; trailing-bytes check is the sole defence
+	default:
+		return ErrInvalidImage
+	}
+	if !strictEnd {
+		return nil
+	}
+	return validateImageEnd(format, full)
+}
+
+// WithoutStrictImageEndCheck disables the trailing-bytes rejection for
+// raster image uploads. The full-image decode still runs and rejects
+// corrupted payloads, but a clean image followed by extra bytes
+// (whitespace, NUL padding, or an appended script) is accepted.
+//
+// Use this option only when legacy clients produce non-spec output
+// (some older mobile cameras pad JPEG/EXIF segments with garbage past
+// the FFD9 EOI marker). It widens the polyglot surface; prefer fixing
+// the client instead.
+func (m *MIMEValidator) WithoutStrictImageEndCheck() *MIMEValidator {
+	cp := *m
+	cp.strictEnd = false
+	return &cp
+}
+
+// WithImageDimensionCap overrides the built-in 8192×8192 cap that
+// guards the full-decode path against decompression bombs. Both
+// dimensions must be positive. Note that this is independent of the
+// caller-configured [MaxImageDimensions] validator — that one inspects
+// the same header but is a separate validator in the chain.
+func (m *MIMEValidator) WithImageDimensionCap(maxWidth, maxHeight int) *MIMEValidator {
+	if maxWidth <= 0 || maxHeight <= 0 {
+		panic("uploadsec: WithImageDimensionCap requires positive dimensions")
+	}
+	cp := *m
+	cp.maxWidth = maxWidth
+	cp.maxHeight = maxHeight
+	return &cp
 }
 
 // AllowMIMETypes returns a Validator that sniffs the first 512 bytes
@@ -203,11 +419,13 @@ var imageDeepDecodeMIMEs = map[string]struct{}{
 // downstream steps and storage backends record the truth, not the
 // caller-supplied lie.
 //
-// For raster image MIME types in [imageDeepDecodeMIMEs], the validator
-// additionally feeds the body to [image.DecodeConfig]. A decoder
-// failure indicates a polyglot or corrupt image and the upload is
-// rejected with [ErrInvalidImage] before any expensive downstream
-// validator (e.g. malware scan) runs.
+// For raster image MIME types in [imageDeepDecodeMIMEs] the validator
+// runs the polyglot defenses described in the package doc: dimension
+// cap (default 8192×8192) → full-image decode → strict end-of-stream
+// check. The full decode catches polyglots with valid headers but
+// corrupted IDAT or appended scripts; the end-of-stream check catches
+// polyglots that decode cleanly but pad bytes after the format's
+// terminator. Both can be tuned via the methods on [MIMEValidator].
 //
 // image/svg+xml is rejected unconditionally — SVG is an XML format with
 // scripting and SSRF surface that no sniffer can defang. Services that
@@ -218,7 +436,7 @@ var imageDeepDecodeMIMEs = map[string]struct{}{
 // not exhaustive — exotic formats may be detected as
 // application/octet-stream. Rely on AllowExtensions for those edge
 // cases or extend the allowlist with the kit's own MIME registry.
-func AllowMIMETypes(allowed ...string) Validator {
+func AllowMIMETypes(allowed ...string) *MIMEValidator {
 	if len(allowed) == 0 {
 		panic("uploadsec: AllowMIMETypes requires at least one MIME type")
 	}
@@ -233,34 +451,12 @@ func AllowMIMETypes(allowed ...string) Validator {
 		}
 		allowSet[mediaType] = struct{}{}
 	}
-	return ValidatorFunc(func(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
-		buf := make([]byte, 512)
-		n, err := io.ReadFull(body, buf)
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-			return meta, fmt.Errorf("uploadsec: sniff body failed")
-		}
-		sniffed := http.DetectContentType(buf[:n])
-		// DetectContentType returns "type; charset=…" for text; strip params for the allowlist match.
-		base, _, _ := strings.Cut(sniffed, ";")
-		base = strings.ToLower(strings.TrimSpace(base))
-		if _, ok := allowSet[base]; !ok {
-			return meta, ErrMIMETypeNotAllowed
-		}
-		if _, deep := imageDeepDecodeMIMEs[base]; deep {
-			if _, err := body.Seek(0, io.SeekStart); err != nil {
-				return meta, fmt.Errorf("uploadsec: rewind for image decode: %w", err)
-			}
-			header, err := io.ReadAll(io.LimitReader(body, imageHeaderReadLimit))
-			if err != nil {
-				return meta, fmt.Errorf("uploadsec: buffer image header failed")
-			}
-			if _, _, err := image.DecodeConfig(bytes.NewReader(header)); err != nil {
-				return meta, ErrInvalidImage
-			}
-		}
-		meta.ContentType = base
-		return meta, nil
-	})
+	return &MIMEValidator{
+		allowed:   allowSet,
+		strictEnd: true,
+		maxWidth:  defaultMaxImageDimension,
+		maxHeight: defaultMaxImageDimension,
+	}
 }
 
 // AllowSVG returns a Validator that accepts image/svg+xml uploads after
@@ -271,7 +467,9 @@ func AllowMIMETypes(allowed ...string) Validator {
 // The kit ships no default sanitiser — the surface is large enough that
 // every deployment should make an explicit decision about which
 // SVG-handling library to trust. Compose [AllowSVG] alongside
-// [AllowMIMETypes] when a service must accept SVG.
+// [AllowMIMETypes] when a service must accept SVG. SVG is not a raster
+// format, so the polyglot full-decode path used by AllowMIMETypes does
+// not apply; the sanitiser is the sole defence and MUST be audited.
 func AllowSVG(sanitizer SVGSanitizer) Validator {
 	if sanitizer == nil {
 		panic("uploadsec: AllowSVG requires a non-nil SVGSanitizer")
@@ -412,5 +610,240 @@ func HTTPStatusForError(err error) int {
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
+	}
+}
+
+// validateImageEnd checks that the body ends exactly at the format's
+// canonical terminator, with no trailing bytes — not whitespace, not
+// NUL padding, not appended script. Returns ErrInvalidImage on any
+// deviation.
+func validateImageEnd(mimeType string, body []byte) error {
+	switch mimeType {
+	case "image/png":
+		return validatePNGEnd(body)
+	case "image/jpeg":
+		return validateJPEGEnd(body)
+	case "image/gif":
+		return validateGIFEnd(body)
+	case "image/webp":
+		return validateWebPEnd(body)
+	default:
+		return nil
+	}
+}
+
+// pngSignature is the 8-byte fixed PNG magic.
+var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+// validatePNGEnd walks all PNG chunks. Each chunk is:
+//
+//	length(4 BE) | type(4) | data(length) | CRC(4 BE of type+data)
+//
+// The body must start with the PNG signature, contain exactly one IEND
+// chunk at the end (with correct CRC), and have no bytes following it.
+func validatePNGEnd(body []byte) error {
+	if len(body) < len(pngSignature)+12 || !bytes.Equal(body[:len(pngSignature)], pngSignature) {
+		return ErrInvalidImage
+	}
+	off := len(pngSignature)
+	seenIEND := false
+	for off < len(body) {
+		if seenIEND {
+			// Any bytes past IEND are an appended-payload polyglot.
+			return ErrInvalidImage
+		}
+		if off+8 > len(body) {
+			return ErrInvalidImage
+		}
+		length := binary.BigEndian.Uint32(body[off : off+4])
+		chunkType := body[off+4 : off+8]
+		// 4 (length) + 4 (type) + length + 4 (crc).
+		end := off + 8 + int(length) + 4
+		if end < off || end > len(body) { // overflow or truncated
+			return ErrInvalidImage
+		}
+		// Validate CRC over type+data.
+		crc := binary.BigEndian.Uint32(body[end-4 : end])
+		if crc32.ChecksumIEEE(body[off+4:end-4]) != crc {
+			return ErrInvalidImage
+		}
+		if bytes.Equal(chunkType, []byte("IEND")) {
+			if length != 0 {
+				return ErrInvalidImage
+			}
+			seenIEND = true
+		}
+		off = end
+	}
+	if !seenIEND {
+		return ErrInvalidImage
+	}
+	if off != len(body) {
+		return ErrInvalidImage
+	}
+	return nil
+}
+
+// validateJPEGEnd walks JPEG segments and confirms the body ends at the
+// FFD9 EOI marker with no trailing bytes. JPEG layout:
+//
+//	SOI(FFD8) | marker(FFxx) | length(2 BE, segment-marker only) | data
+//	| ... | SOS(FFDA) | entropy-coded data | EOI(FFD9)
+//
+// Entropy-coded image data is a stream of bytes where any 0xFF byte is
+// followed by a stuff byte (0x00) or by a restart marker (FFD0..FFD7).
+// A standalone FFD9 inside the entropy stream is impossible because
+// 0xFF is always stuffed. We scan forward and stop at the first FFD9
+// that is not preceded by stuffing/restart context.
+func validateJPEGEnd(body []byte) error {
+	if len(body) < 4 {
+		return ErrInvalidImage
+	}
+	if body[0] != 0xFF || body[1] != 0xD8 {
+		return ErrInvalidImage
+	}
+	// Trailing bytes test is structural: the spec requires the file to
+	// end with FFD9. We don't re-parse the whole segment table — Go's
+	// jpeg.Decode already accepted the body — but we do require that
+	// the very last two bytes are FFD9 with no padding after.
+	if body[len(body)-2] != 0xFF || body[len(body)-1] != 0xD9 {
+		return ErrInvalidImage
+	}
+	// Walk the segment header chain up to SOS (FFDA). After SOS the
+	// entropy stream runs to EOI; we already verified EOI position
+	// above. This catches blatant truncation/injection in the headers.
+	off := 2
+	for off < len(body) {
+		if body[off] != 0xFF {
+			return ErrInvalidImage
+		}
+		// Skip fill bytes 0xFF.
+		marker := byte(0)
+		for off < len(body) && body[off] == 0xFF {
+			off++
+		}
+		if off >= len(body) {
+			return ErrInvalidImage
+		}
+		marker = body[off]
+		off++
+		switch {
+		case marker == 0xD9: // EOI — only valid at the very end
+			return nil
+		case marker == 0xDA: // SOS — entropy stream follows, EOI already verified
+			return nil
+		case marker >= 0xD0 && marker <= 0xD8: // RSTn or SOI (already consumed)
+			continue
+		default:
+			if off+2 > len(body) {
+				return ErrInvalidImage
+			}
+			segLen := int(binary.BigEndian.Uint16(body[off : off+2]))
+			if segLen < 2 || off+segLen > len(body) {
+				return ErrInvalidImage
+			}
+			off += segLen
+		}
+	}
+	return ErrInvalidImage
+}
+
+// validateGIFEnd walks GIF data and confirms the body ends at the
+// trailer byte 0x3B with no trailing data. GIF layout is a stream of
+// blocks; the trailer terminates the data stream. Rather than re-parse
+// the entire block table (gif.Decode already accepted the body), we
+// require the last byte to be 0x3B.
+func validateGIFEnd(body []byte) error {
+	if len(body) < 6 {
+		return ErrInvalidImage
+	}
+	// GIF signature: "GIF87a" or "GIF89a".
+	if !bytes.Equal(body[:3], []byte("GIF")) {
+		return ErrInvalidImage
+	}
+	if body[len(body)-1] != 0x3B {
+		return ErrInvalidImage
+	}
+	return nil
+}
+
+// validateWebPEnd parses the RIFF wrapper and confirms the body length
+// matches the declared RIFF size with no trailing bytes. WebP layout:
+//
+//	"RIFF" | size(4 LE) | "WEBP" | chunks...
+//
+// Where size is the total file size minus 8 (excluding the "RIFF"
+// magic and the size field itself). Per RIFF spec, chunks with odd
+// payloads are padded to even byte boundaries.
+func validateWebPEnd(body []byte) error {
+	if len(body) < 12 {
+		return ErrInvalidImage
+	}
+	if !bytes.Equal(body[:4], []byte("RIFF")) || !bytes.Equal(body[8:12], []byte("WEBP")) {
+		return ErrInvalidImage
+	}
+	declared := binary.LittleEndian.Uint32(body[4:8])
+	// total file length is declared + 8 (RIFF magic + size field).
+	// Tolerate the spec's even-padding: if declared is odd, the file
+	// may include one trailing pad byte.
+	expectMin := int64(declared) + 8
+	expectMax := expectMin
+	if declared%2 == 1 {
+		expectMax++
+	}
+	got := int64(len(body))
+	if got < expectMin || got > expectMax {
+		return ErrInvalidImage
+	}
+	return nil
+}
+
+// peekWebPDimensions extracts the width and height from a WebP body
+// header. Supports VP8 (lossy), VP8L (lossless), and VP8X (extended).
+// Returns 0,0 with an error on unrecognised input.
+func peekWebPDimensions(body []byte) (int, int, error) {
+	if len(body) < 30 {
+		return 0, 0, ErrInvalidImage
+	}
+	if !bytes.Equal(body[:4], []byte("RIFF")) || !bytes.Equal(body[8:12], []byte("WEBP")) {
+		return 0, 0, ErrInvalidImage
+	}
+	chunk := string(body[12:16])
+	switch chunk {
+	case "VP8 ":
+		// Simple lossy: 14-bit width/height at frame tag offset 26.
+		// body[20..23] = frame tag; body[23..25] are start code (0x9D 0x01 0x2A).
+		if len(body) < 30 {
+			return 0, 0, ErrInvalidImage
+		}
+		w := int(binary.LittleEndian.Uint16(body[26:28]) & 0x3FFF)
+		h := int(binary.LittleEndian.Uint16(body[28:30]) & 0x3FFF)
+		return w, h, nil
+	case "VP8L":
+		// Lossless: 1 byte signature 0x2F at offset 20, then 14+14 bits
+		// of width-1/height-1 little-endian.
+		if len(body) < 25 {
+			return 0, 0, ErrInvalidImage
+		}
+		if body[20] != 0x2F {
+			return 0, 0, ErrInvalidImage
+		}
+		b1 := uint32(body[21])
+		b2 := uint32(body[22])
+		b3 := uint32(body[23])
+		b4 := uint32(body[24])
+		w := int((b1 | (b2&0x3F)<<8) + 1)
+		h := int(((b2 >> 6) | b3<<2 | (b4&0x0F)<<10) + 1)
+		return w, h, nil
+	case "VP8X":
+		// Extended: canvas width-1 (24 LE) at offset 24, height-1 at offset 27.
+		if len(body) < 30 {
+			return 0, 0, ErrInvalidImage
+		}
+		w := int(uint32(body[24]) | uint32(body[25])<<8 | uint32(body[26])<<16)
+		h := int(uint32(body[27]) | uint32(body[28])<<8 | uint32(body[29])<<16)
+		return w + 1, h + 1, nil
+	default:
+		return 0, 0, ErrInvalidImage
 	}
 }

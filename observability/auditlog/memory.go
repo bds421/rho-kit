@@ -28,6 +28,23 @@ func (m *MemoryStore) Append(_ context.Context, event Event) error {
 	return nil
 }
 
+// LastHMAC returns the HMAC of the most recently appended event, or nil if
+// the store is empty. Logger.LogE uses this value as the PrevHMAC for the
+// next event so the tamper-evident chain is preserved across restarts and
+// across multiple Logger instances sharing the same store.
+func (m *MemoryStore) LastHMAC(_ context.Context) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.events) == 0 {
+		return nil, nil
+	}
+	tail := m.events[len(m.events)-1].HMAC
+	if len(tail) == 0 {
+		return nil, nil
+	}
+	return append([]byte(nil), tail...), nil
+}
+
 // Query returns events matching the filter with cursor-based pagination.
 // Events are returned in reverse insertion order (newest first).
 func (m *MemoryStore) Query(_ context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {

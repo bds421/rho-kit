@@ -161,6 +161,7 @@ type config struct {
 	requiredHeaders []string
 	bodyMaxSize     int64
 	now             func() time.Time
+	metrics         *Metrics
 }
 
 // WithMaxClockSkew sets the tolerance window. Tokens with timestamps
@@ -220,6 +221,18 @@ func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
 }
 
+// WithMetrics attaches a [Metrics] instance to the middleware so each
+// verification failure increments the matching reason counter.
+//
+// Panics if m is nil — a silent no-op would defeat the purpose of an
+// "observability enabled" toggle. Omit the option entirely to opt out.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("signedrequest: WithMetrics requires non-nil metrics (omit the option for no metrics)")
+	}
+	return func(c *config) { c.metrics = m }
+}
+
 // Middleware constructs the verification middleware.
 //
 // resolver is called once per request to obtain the secret keyed by
@@ -250,6 +263,7 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := verify(r, &cfg); err != nil {
+				cfg.metrics.observeVerifyFailure(classifyVerifyFailure(err))
 				writeError(w, err)
 				return
 			}
@@ -300,8 +314,15 @@ func verify(r *http.Request, cfg *config) error {
 	if err != nil {
 		return ErrTimestampInvalid
 	}
-	if !timestampWithinSkew(tsUnix, cfg.now(), cfg.maxClockSkew) {
-		return ErrTimestampInvalid
+	if direction := classifyTimestampSkew(tsUnix, cfg.now(), cfg.maxClockSkew); direction != 0 {
+		// Both branches still satisfy errors.Is(_, ErrTimestampInvalid),
+		// so writeError keeps returning 400 unchanged; the wrappers
+		// exist so the metrics layer can split "future-skew" from
+		// "past-maxAge" without re-deriving the direction.
+		if direction > 0 {
+			return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampClockSkew)
+		}
+		return fmt.Errorf("%w: %w", ErrTimestampInvalid, errTimestampExpired)
 	}
 
 	gotMAC, err := decodeSignatureMAC(sig)
@@ -349,11 +370,26 @@ func verify(r *http.Request, cfg *config) error {
 }
 
 func timestampWithinSkew(tsUnix int64, now time.Time, skew time.Duration) bool {
+	return classifyTimestampSkew(tsUnix, now, skew) == 0
+}
+
+// classifyTimestampSkew returns 0 when the timestamp is within
+// [now-skew, now+skew]. A positive return means the timestamp is too
+// far in the future (clock-skew); a negative return means it is too
+// far in the past (expired). Splitting the direction lets metrics
+// distinguish the two without changing the writeError behaviour.
+func classifyTimestampSkew(tsUnix int64, now time.Time, skew time.Duration) int {
 	ts := time.Unix(tsUnix, 0)
 	if ts.After(now) {
-		return ts.Sub(now) <= skew
+		if ts.Sub(now) <= skew {
+			return 0
+		}
+		return 1
 	}
-	return now.Sub(ts) <= skew
+	if now.Sub(ts) <= skew {
+		return 0
+	}
+	return -1
 }
 
 func decodeSignatureMAC(sig string) ([]byte, error) {

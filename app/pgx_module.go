@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus"
 
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
@@ -19,6 +20,8 @@ type pgxModule struct {
 
 	cfg           pgxbackend.Config
 	migrationsDir fs.FS
+	registerer    prometheus.Registerer
+	instance      string
 	pool          *pgxbackend.Pool
 	log           *slog.Logger
 }
@@ -31,6 +34,7 @@ func newPgxModule(cfg pgxbackend.Config, migrationsDir fs.FS) *pgxModule {
 		BaseModule:    NewBaseModule("pgx"),
 		cfg:           cfg,
 		migrationsDir: migrationsDir,
+		instance:      "primary",
 	}
 }
 
@@ -42,6 +46,16 @@ func (m *pgxModule) Init(ctx context.Context, mc ModuleContext) error {
 	}
 	m.pool = pool
 	mc.Logger.Info("pgx pool configured")
+
+	// Wire the pgxpool stat collector to Prometheus. The collector reads
+	// pool.Stat() at scrape time, so there is no background goroutine to
+	// manage. Failure to register is non-fatal: pool capacity dashboards
+	// degrade, but the service itself runs.
+	if _, err := pgxbackend.NewPoolStatsCollector(pool.Pool(), m.registerer, m.instance); err != nil {
+		mc.Logger.Warn("pgx pool stats collector not registered",
+			slog.Any("error", err),
+		)
+	}
 
 	if m.migrationsDir != nil {
 		if err := m.runMigrations(ctx); err != nil {

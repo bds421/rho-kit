@@ -53,7 +53,16 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 		return fmt.Errorf("rabbitmq module: build client TLS: %w", err)
 	}
 
-	mqOpts := []amqpbackend.DialOption{amqpbackend.WithLazyConnect()}
+	// Construct metrics up front so the Dial path can observe connection_up
+	// and reconnect attempts. The same Metrics instance is shared with the
+	// publisher and consumer so a single registry sees publish/consume +
+	// connection-lifecycle samples without name collisions.
+	metrics := amqpbackend.NewMetrics(nil)
+
+	mqOpts := []amqpbackend.DialOption{
+		amqpbackend.WithLazyConnect(),
+		amqpbackend.WithConnectionMetrics(metrics, "default"),
+	}
 	if clientTLS != nil {
 		mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
 	}
@@ -67,7 +76,6 @@ func (m *messagingModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	m.conn = conn
 
-	metrics := amqpbackend.NewMetrics(nil)
 	pub := amqpbackend.NewPublisher(conn, mc.Logger,
 		amqpbackend.WithMessageSizeLimiter(m.messageSizeLimiter),
 		amqpbackend.WithPublisherMetrics(metrics),

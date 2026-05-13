@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -243,9 +244,47 @@ func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, meta stora
 	b.metrics.observeOp(b.instance, "put", start, putErr)
 
 	if putErr != nil {
+		if translated := translateS3Capacity(putErr, meta.Size); translated != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(translated))
+			return translated
+		}
 		opErr := storage.WrapSafe("s3backend: put failed", putErr)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
+	}
+	return nil
+}
+
+// translateS3Capacity translates an S3 PutObject error into
+// [storage.ErrInsufficientCapacity] when the underlying smithy.APIError
+// indicates the upload exceeded the bucket / request size budget. Returns
+// nil when the error is not a capacity failure so the caller can fall
+// back to the generic translation.
+//
+// EntityTooLarge — the object exceeded the per-object cap (5 GiB single
+// PUT, 5 TiB multipart). InvalidRequest with a large declared size is
+// the S3 response when a request-body length header overflows the
+// streaming limit. ServiceUnavailable + a non-trivial size usually
+// indicates the bucket has been throttled because it is nearing capacity.
+func translateS3Capacity(err error, size int64) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return nil
+	}
+	switch apiErr.ErrorCode() {
+	case "EntityTooLarge":
+		return fmt.Errorf("s3backend: object exceeds bucket size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	case "InvalidRequest":
+		if size > 0 {
+			return fmt.Errorf("s3backend: request rejected for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		}
+	case "ServiceUnavailable":
+		if size > 0 {
+			return fmt.Errorf("s3backend: bucket reported unavailable for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		}
 	}
 	return nil
 }

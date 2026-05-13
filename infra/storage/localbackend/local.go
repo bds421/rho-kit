@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
@@ -103,11 +104,17 @@ func (b *LocalBackend) Put(ctx context.Context, key string, r io.Reader, meta st
 	if _, err := io.Copy(tmp, validated); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
+		if errors.Is(err, syscall.ENOSPC) {
+			return wrapInsufficientCapacity("write object", err)
+		}
 		return localFileError("write object", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
+		if errors.Is(err, syscall.ENOSPC) {
+			return wrapInsufficientCapacity("sync object", err)
+		}
 		return localFileError("sync object", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -321,4 +328,12 @@ func localFileError(op string, err error) error {
 
 func localPathError(op string) error {
 	return fmt.Errorf("localbackend: %s failed", op)
+}
+
+// wrapInsufficientCapacity wraps an ENOSPC-bearing error so callers can
+// match both the kit-level sentinel ([storage.ErrInsufficientCapacity],
+// which carries the 507 code) and the original syscall.ENOSPC via
+// errors.Is. Two %w arguments preserve both targets in the error chain.
+func wrapInsufficientCapacity(op string, cause error) error {
+	return fmt.Errorf("localbackend: %s: %w (cause: %w)", op, storage.ErrInsufficientCapacity, cause)
 }

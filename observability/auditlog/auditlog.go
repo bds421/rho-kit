@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -22,6 +23,17 @@ import (
 )
 
 // Event represents a single audit log entry.
+//
+// PrevHMAC and HMAC implement the tamper-evident chain documented in
+// docs/audit/THREAT_MODEL.md §5.4. Both fields are populated by
+// [Logger.LogE]; callers should leave them zero on input. The HMAC is
+// computed over a canonical encoding of the event (see chain.go) keyed
+// by the per-Logger chain key. PrevHMAC points at the previous record's
+// HMAC, forming an append-only chain that [VerifyChain] (and
+// [Logger.VerifyChain]) can validate.
+//
+// JSON: HMAC byte slices marshal to base64 by default. Callers reading
+// audit records over the wire should decode accordingly.
 type Event struct {
 	ID        string          `json:"id"`
 	Timestamp time.Time       `json:"timestamp"`
@@ -32,6 +44,13 @@ type Event struct {
 	IPAddress string          `json:"ip_address,omitempty"` // client IP for compliance/security
 	Metadata  json.RawMessage `json:"metadata,omitempty"`   // arbitrary context
 	TraceID   string          `json:"trace_id,omitempty"`   // OpenTelemetry trace correlation
+
+	// PrevHMAC links this record to the previous chain entry. The first
+	// event in a chain has a nil / all-zero PrevHMAC.
+	PrevHMAC []byte `json:"prev_hmac,omitempty"`
+	// HMAC is the tamper-evident tag computed at Append time. Mutation
+	// of any field invalidates this tag; see [VerifyChain].
+	HMAC []byte `json:"hmac,omitempty"`
 }
 
 const (
@@ -65,6 +84,12 @@ var ErrInvalidEvent = errors.New("auditlog: invalid event")
 func cloneEvent(event Event) Event {
 	if event.Metadata != nil {
 		event.Metadata = append(json.RawMessage(nil), event.Metadata...)
+	}
+	if event.PrevHMAC != nil {
+		event.PrevHMAC = append([]byte(nil), event.PrevHMAC...)
+	}
+	if event.HMAC != nil {
+		event.HMAC = append([]byte(nil), event.HMAC...)
 	}
 	return event
 }
@@ -133,7 +158,15 @@ type Store interface {
 
 	// Query returns events matching the filter, ordered by timestamp descending.
 	// Returns the next cursor for pagination (empty string if no more results).
+	// The cursor returned here is a raw store-level cursor; [Logger.Query]
+	// wraps it with a signed envelope before exposing it to callers.
 	Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error)
+
+	// LastHMAC returns the HMAC of the most recently appended event, or an
+	// empty / all-zero slice if the store is empty. [Logger.LogE] uses this
+	// to compute the next event's PrevHMAC. Implementations must be safe for
+	// concurrent reads.
+	LastHMAC(ctx context.Context) ([]byte, error)
 }
 
 // Filter controls which events are returned by Query.
@@ -146,13 +179,29 @@ type Filter struct {
 	IPAddress string
 }
 
-// Logger wraps a Store with convenience methods and automatic field population.
+// Logger wraps a Store with convenience methods and automatic field
+// population. Each Logger holds two HMAC keys:
+//
+//   - chainKey signs each event into the append-only chain. Mutation of
+//     any persisted field breaks the chain and is detectable via
+//     [Logger.VerifyChain] / [VerifyChain].
+//   - cursorKey signs pagination cursors handed to callers. An attacker
+//     cannot forge a cursor to skip events without the key.
+//
+// Both keys are required (≥32 bytes); [New] panics if either is missing.
+// Logger.LogE serialises the read-prev-HMAC / compute-new-HMAC / Append
+// sequence through appendMu so two concurrent appenders never read the
+// same PrevHMAC and produce a chain fork.
 type Logger struct {
 	store     Store
 	logger    *slog.Logger
 	dropped   prometheus.Counter
 	dropTotal atomic.Uint64
 	onDrop    func(ctx context.Context, event Event, err error)
+
+	chainKey []byte
+	cursors  signedCursor
+	appendMu sync.Mutex
 }
 
 var newAuditID = uuid.NewV7
@@ -196,7 +245,41 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithChainKey configures the HMAC key used to build the tamper-evident
+// chain. The key must be at least [MinChainKeyLen] (32) bytes; [New]
+// panics if no key (or a too-short key) is supplied. Rotating the chain
+// key invalidates [VerifyChain] for previously-appended events — operate
+// the chain on a single long-lived key for the chain's lifetime, and
+// archive the key alongside the records.
+//
+// Wire across processes: every replica that appends to the same store
+// must share the same chainKey. Source it from KMS / config secrets;
+// never let each pod mint its own random key.
+func WithChainKey(key []byte) Option {
+	return func(a *Logger) {
+		a.chainKey = append([]byte(nil), key...)
+	}
+}
+
+// WithCursorKey configures the HMAC key used to sign pagination cursors
+// returned by [Logger.Query]. The key must be at least [MinCursorKeyLen]
+// (32) bytes; [New] panics if no key (or a too-short key) is supplied.
+//
+// Cursors are signed so an attacker cannot guess / forge cursors to skip
+// records or enumerate IDs. The cursor key is independent of the chain
+// key so the two can be rotated separately.
+func WithCursorKey(key []byte) Option {
+	return func(a *Logger) {
+		a.cursors = signedCursor{key: append([]byte(nil), key...)}
+	}
+}
+
 // New creates an audit Logger backed by the given Store.
+//
+// Both [WithChainKey] and [WithCursorKey] are required. New panics
+// (fail-fast at startup, per AGENTS.md) if either key is missing or
+// shorter than 32 bytes; this prevents silently shipping an audit log
+// without tamper-evidence or with forgeable cursors.
 func New(store Store, opts ...Option) *Logger {
 	if store == nil {
 		panic("auditlog: store must not be nil")
@@ -210,6 +293,12 @@ func New(store Store, opts ...Option) *Logger {
 			panic("auditlog: option must not be nil")
 		}
 		o(l)
+	}
+	if len(l.chainKey) < MinChainKeyLen {
+		panic(fmt.Sprintf("auditlog: chain key must be at least %d bytes — pass WithChainKey", MinChainKeyLen))
+	}
+	if len(l.cursors.key) < MinCursorKeyLen {
+		panic(fmt.Sprintf("auditlog: cursor key must be at least %d bytes — pass WithCursorKey", MinCursorKeyLen))
 	}
 	return l
 }
@@ -231,6 +320,12 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 // criterion — e.g. financial / compliance events that must not
 // silently drop. The drop hook + counter still fire on failure so
 // monitoring stays in place.
+//
+// The read-prev-HMAC / compute-new-HMAC / Append sequence is serialised
+// through an internal mutex: two concurrent callers cannot observe the
+// same previous HMAC and produce a forked chain. Caller-supplied
+// PrevHMAC / HMAC fields on the input event are ignored — they are
+// always recomputed from the store's current tail.
 func (l *Logger) LogE(ctx context.Context, event Event) error {
 	if event.ID == "" {
 		id, err := newAuditID()
@@ -249,6 +344,30 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 		event.TraceID = extractTraceID(ctx)
 	}
 	event = cloneEvent(event)
+	// Discard any caller-supplied chain fields; the Logger is the sole
+	// authority on chain HMACs.
+	event.PrevHMAC = nil
+	event.HMAC = nil
+
+	// Serialise the read-prev / compute-hmac / Append window so
+	// concurrent appenders cannot observe the same PrevHMAC.
+	l.appendMu.Lock()
+	defer l.appendMu.Unlock()
+
+	prev, err := l.store.LastHMAC(ctx)
+	if err != nil {
+		err = fmt.Errorf("auditlog: read previous HMAC: %w", err)
+		l.logger.Error("auditlog: failed to read previous HMAC",
+			redact.Error(err),
+			redact.String("event_id", event.ID),
+		)
+		l.recordDrop(ctx, event, err)
+		return err
+	}
+	if len(prev) > 0 {
+		event.PrevHMAC = append([]byte(nil), prev...)
+	}
+	event.HMAC = computeHMAC(l.chainKey, event.PrevHMAC, event)
 
 	if err := ValidateEvent(event); err != nil {
 		l.logger.Error("auditlog: invalid event", redact.Error(err))
@@ -311,13 +430,78 @@ func (l *Logger) LogAction(ctx context.Context, actor, action, resource, status 
 	})
 }
 
-// Query delegates to the underlying Store.
+// Query returns events matching the filter using HMAC-signed cursors.
+//
+// The cursor argument must be either empty (first page) or a value produced
+// by a previous Query call against this logger. Forged, truncated, or
+// foreign-signed cursors are rejected before the underlying Store is
+// consulted; the returned error wraps [ErrInvalidCursor] so callers can
+// distinguish tamper attempts from Store I/O failures.
+//
+// The returned next-page cursor is itself signed with the Logger's cursor
+// key, so an attacker who captures a cursor cannot mint adjacent ones to
+// skip records or enumerate IDs.
 func (l *Logger) Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
-	events, next, err := l.store.Query(ctx, filter, cursor, limit)
+	rawCursor, err := l.cursors.decodeCursor(cursor)
 	if err != nil {
-		return nil, next, err
+		return nil, "", err
 	}
-	return cloneEvents(events), next, nil
+	events, next, err := l.store.Query(ctx, filter, rawCursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	signed := l.cursors.encodeCursor(next)
+	return cloneEvents(events), signed, nil
+}
+
+// VerifyChain re-reads every event from the underlying store and validates
+// the tamper-evident HMAC chain end-to-end. It returns nil for an empty
+// store (degenerate-valid chain).
+//
+// Implementation note: VerifyChain pages through the store in ascending
+// time order using the store's native cursor (bypassing signed-cursor
+// envelopes since this is an in-process audit). The page size is fixed at
+// [verifyChainPageSize] so very large chains stream rather than buffer the
+// entire ledger in memory.
+//
+// VerifyChain returns a wrapped [ErrChainBroken] at the first tamper site
+// it detects, or any underlying Store I/O error. Successful return means
+// every record's HMAC matches its content AND every record's PrevHMAC
+// links to the previous record's HMAC.
+func (l *Logger) VerifyChain(ctx context.Context) error {
+	all, err := l.collectAllEventsAscending(ctx)
+	if err != nil {
+		return err
+	}
+	return VerifyChain(all, l.chainKey)
+}
+
+// verifyChainPageSize bounds the per-page batch for VerifyChain. Tuned to
+// keep memory bounded for very large stores while still amortising the
+// per-page round-trip cost.
+const verifyChainPageSize = 500
+
+func (l *Logger) collectAllEventsAscending(ctx context.Context) ([]Event, error) {
+	// Store.Query returns events newest-first; we accumulate everything,
+	// then reverse so VerifyChain sees chain-order (oldest first).
+	var newestFirst []Event
+	cursor := ""
+	for {
+		page, next, err := l.store.Query(ctx, Filter{}, cursor, verifyChainPageSize)
+		if err != nil {
+			return nil, fmt.Errorf("auditlog: verify chain: read page: %w", err)
+		}
+		newestFirst = append(newestFirst, page...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	out := make([]Event, len(newestFirst))
+	for i := range newestFirst {
+		out[len(newestFirst)-1-i] = newestFirst[i]
+	}
+	return out, nil
 }
 
 // extractTraceID returns the OpenTelemetry trace ID from the context, or "".

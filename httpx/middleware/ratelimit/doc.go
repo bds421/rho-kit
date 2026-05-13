@@ -17,4 +17,15 @@
 // [DegradationHandler], the middleware checks dependency health before
 // enforcing rate limits. This is designed to work with [redis.Connection]
 // and [redis.DegradationPolicy] without importing infra/redis directly.
+//
+// # Observability
+//
+// Default metrics are namespaced under `http_ratelimit_`:
+//
+//   - `http_ratelimit_decisions_total{limiter, kind, outcome}` — per-decision counter.
+//   - `http_ratelimit_retry_after_seconds{limiter, kind}` — Retry-After histogram.
+//   - `http_ratelimit_keyed_limiter_active_keys{limiter}` — gauge collected on
+//     demand at scrape time by walking each shard's LRU. A misconfigured key
+//     extractor that explodes the per-shard cache surfaces here before it
+//     pages the service on memory; attach via [WithKeyedMetrics].
 package ratelimit

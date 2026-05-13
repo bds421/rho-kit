@@ -29,6 +29,14 @@ var ErrValidation = apperror.NewValidation("storage: validation failed")
 // — the input cannot succeed without caller changes.
 var ErrBatchTooLarge = apperror.NewValidation("storage: batch operation exceeds maximum item count")
 
+// ErrInsufficientCapacity is returned when a backend write fails because the
+// underlying medium is at capacity — disk full (ENOSPC), bucket quota
+// exhausted, partition limit reached, or the cloud provider rejected the
+// upload for size. It is an [apperror.StorageFullError]; transport adapters
+// map it to HTTP 507 Insufficient Storage. The error is retryable: once
+// operators free space the same request can succeed.
+var ErrInsufficientCapacity = apperror.NewStorageFull("storage: insufficient capacity")
+
 // MaxKeyLen is the maximum allowed length for storage keys.
 const MaxKeyLen = 1024
 

@@ -123,7 +123,7 @@ func TestVerify_ExpiredSignature(t *testing.T) {
 	oldTimestamp := time.Now().Add(-10 * time.Minute).Unix()
 	sigExpired, _ := signWithTimestamp(body, secret, oldTimestamp)
 	ok, err := Verify(secret, body, oldTimestamp, sigExpired, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrExpiredSignature)
+	assert.ErrorIs(t, err, ErrSignatureExpired)
 	assert.False(t, ok, "expired signature should fail verification")
 }
 
@@ -134,7 +134,7 @@ func TestVerify_FutureTimestamp(t *testing.T) {
 	futureTS := time.Now().Add(10 * time.Minute).Unix()
 	sig, _ := signWithTimestamp(body, secret, futureTS)
 	ok, err := Verify(secret, body, futureTS, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrExpiredSignature)
+	assert.ErrorIs(t, err, ErrSignatureClockSkew)
 	assert.False(t, ok, "future timestamp should fail verification")
 }
 
@@ -189,7 +189,7 @@ func TestSigner_Verify_ExpiredWithClock(t *testing.T) {
 	require.NoError(t, err)
 
 	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrExpiredSignature)
+	assert.ErrorIs(t, err, ErrSignatureExpired)
 	assert.False(t, ok, "expired signature should fail with deterministic clock")
 }
 
@@ -208,7 +208,7 @@ func TestSigner_Verify_FutureWithClock(t *testing.T) {
 	require.NoError(t, err)
 
 	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrExpiredSignature)
+	assert.ErrorIs(t, err, ErrSignatureClockSkew)
 	assert.False(t, ok, "future timestamp beyond skew should fail")
 }
 
@@ -229,7 +229,7 @@ func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
 	}
 
 	_, err = verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrExpiredSignature)
+	assert.ErrorIs(t, err, ErrSignatureClockSkew)
 }
 
 func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
@@ -333,6 +333,50 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 		}
 	}()
 	_ = WithClock(nil)
+}
+
+func TestVerify_FutureTimestampReturnsClockSkew(t *testing.T) {
+	// Spec contract: signing with a timestamp beyond now+maxAge must
+	// return ErrSignatureClockSkew so operators can alert separately on
+	// "producer clock is wrong" vs "consumer is slow / replay window
+	// missed".
+	body := []byte(`{"event":"deploy"}`)
+	maxAge := 5 * time.Minute
+
+	verifier := NewSigner()
+	// Skew the signer two maxAge windows into the future relative to
+	// the verifier — this is well beyond the default futureSkew so the
+	// future-side guard must trip.
+	signClock := time.Now().Add(2 * maxAge)
+	signer := NewSigner(WithClock(func() time.Time { return signClock }))
+
+	sig, ts, err := signer.Sign(testSecret, body)
+	require.NoError(t, err)
+
+	ok, err := verifier.Verify(testSecret, body, ts, sig, maxAge)
+	assert.ErrorIs(t, err, ErrSignatureClockSkew)
+	assert.NotErrorIs(t, err, ErrSignatureExpired)
+	assert.False(t, ok)
+}
+
+func TestVerify_PastMaxAgeReturnsExpired(t *testing.T) {
+	// Spec contract: signing with a timestamp older than maxAge must
+	// return ErrSignatureExpired (not ErrSignatureClockSkew). Tests
+	// the "past" branch of the renamed sentinel.
+	body := []byte(`{"event":"deploy"}`)
+	maxAge := 5 * time.Minute
+
+	verifier := NewSigner()
+	signClock := time.Now().Add(-2 * maxAge)
+	signer := NewSigner(WithClock(func() time.Time { return signClock }))
+
+	sig, ts, err := signer.Sign(testSecret, body)
+	require.NoError(t, err)
+
+	ok, err := verifier.Verify(testSecret, body, ts, sig, maxAge)
+	assert.ErrorIs(t, err, ErrSignatureExpired)
+	assert.NotErrorIs(t, err, ErrSignatureClockSkew)
+	assert.False(t, ok)
 }
 
 // signWithTimestamp is a test helper that signs with an explicit timestamp.

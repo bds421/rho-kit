@@ -43,6 +43,17 @@ func TestWriteServiceError_NilLogger_OperationFailedError(t *testing.T) {
 	}
 }
 
+func TestWriteServiceError_StorageFull_507(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/upload", nil)
+
+	WriteServiceError(rec, req, nil, apperror.NewStorageFull("disk full"))
+
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInsufficientStorage)
+	}
+}
+
 func TestWriteServiceError_NilRequest_UnhandledError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	WriteServiceError(rec, nil, nil, errors.New("boom"))

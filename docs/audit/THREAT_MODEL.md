@@ -513,11 +513,66 @@ appends HMAC-chained audit records. Each record carries:
 - Action verb (taken from a service-defined enum).
 - Object (typed reference; the auditlog package does not serialise
   the object itself).
-- Tamper-evident HMAC — each record's HMAC includes the previous
-  record's HMAC, forming an append-only chain.
+- `PrevHMAC` — the HMAC of the previous chain entry. The first
+  event in a chain has an empty `PrevHMAC`.
+- `HMAC` — the tamper-evident tag for this entry.
 
-Cursors for paginated reads are HMAC-signed so an attacker cannot guess /
-forge cursors to skip records.
+**Chain key (asset [5]).** `auditlog.New` requires
+`WithChainKey(...)` with a ≥32-byte secret (`auditlog.MinChainKeyLen`).
+Missing / short keys fail fast at constructor time — operators cannot
+silently ship the package without tamper-evidence. The key must be
+shared across every replica that appends to the same store; source it
+from KMS / config secrets, never from per-pod random material. Rotating
+the chain key invalidates `VerifyChain` for all previously-appended
+records, so operate the chain on a single long-lived key for the
+chain's lifetime and archive the key alongside the records.
+
+**Canonical encoding.**
+[`canonicalEvent`](../../observability/auditlog/chain.go) serialises
+every wire-relevant event field — `prev_hmac`, `id`, `timestamp` (as
+fixed-width UnixNano), `actor`, `action`, `resource`, `status`,
+`ip_address`, `trace_id`, `metadata`, and `prev_hmac` again as a
+position-sensitive tail — as `uint32 length || bytes` blocks. Length
+prefixing prevents adjacent-field confusion (e.g. `actor="a\0action=b"`
+colliding with `actor="a", action="b"`). The `HMAC` field is excluded
+from the canonical form because it is the value being computed.
+
+**Append serialisation.** `Logger.LogE` holds an internal mutex across
+the read-prev-HMAC / compute / `Store.Append` window so two concurrent
+appenders cannot read the same predecessor HMAC and fork the chain.
+`Store.LastHMAC(ctx) ([]byte, error)` is the persistence-layer
+contract that feeds the chain tail back to the Logger — bundled
+`MemoryStore` and downstream stores must implement it. Caller-supplied
+`PrevHMAC` / `HMAC` fields on the input event are discarded; the
+Logger is the sole authority on chain HMACs.
+
+**Verify entry points.** `auditlog.VerifyChain(events, chainKey)`
+validates a slice of events in chain order (oldest first), wrapping
+[`ErrChainBroken`](../../observability/auditlog/chain.go) at the
+offending index for the first mismatch. `Logger.VerifyChain(ctx)`
+streams every event from the underlying store (paging in batches of
+`verifyChainPageSize`) and runs the same validation, so on-call
+operators can verify the live ledger without hand-rolling a Query
+loop. HMAC comparison is constant-time to prevent timing oracles.
+Empty chains are valid by definition.
+
+**Signed cursors (asset [6]).** `Logger.Query` rejects forged
+cursors via [`signedCursor`](../../observability/auditlog/cursor.go).
+Cursors handed to clients are
+`base64url(payload) "." base64url(HMAC-SHA256(cursorKey, payload))`
+— the same envelope as `httpx/pagination.CursorSigner`, replicated
+inline because the `observability` module cannot import `httpx`. A
+≥32-byte `WithCursorKey(...)` is required at constructor time;
+missing / short keys panic so the audit log cannot ship with
+forgeable cursors. Malformed, truncated, or foreign-signed cursors
+return a wrapped `ErrInvalidCursor` that callers can match with
+`errors.Is` to map to 400 Bad Request at the HTTP boundary. The
+cursor key is independent of the chain key so the two can be
+rotated separately.
+
+Threats defused: **A1 / A6 forge a future cursor to skip records or
+enumerate IDs**; **A6 tamper with a stored record after the fact**;
+**A5 silently strip middle records before retention runs**.
 
 ### 5.5 Outbound HTTP discipline
 

@@ -724,6 +724,7 @@ func TestHttpStatusToCode(t *testing.T) {
 		{http.StatusForbidden, string(apperror.CodeForbidden)},
 		{http.StatusBadGateway, "BAD_GATEWAY"},
 		{http.StatusServiceUnavailable, string(apperror.CodeUnavailable)},
+		{http.StatusInsufficientStorage, string(apperror.CodeStorageFull)},
 		{http.StatusTeapot, "INTERNAL"},
 		{999, "INTERNAL"},
 	}

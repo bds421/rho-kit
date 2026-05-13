@@ -25,6 +25,74 @@ func TestAMQPMetrics_ReusesCollectors(t *testing.T) {
 	assert.Same(t, m1.publishDuration, m2.publishDuration)
 	assert.Same(t, m1.consumed, m2.consumed)
 	assert.Same(t, m1.handlerDuration, m2.handlerDuration)
+	assert.Same(t, m1.connectionUp, m2.connectionUp)
+	assert.Same(t, m1.reconnectAttempts, m2.reconnectAttempts)
+	assert.Same(t, m1.consecutiveReconnectFailures, m2.consecutiveReconnectFailures)
+}
+
+// TestAMQPMetrics_ConnectionUp_FlipsOnUpAndDown pins the gauge semantics —
+// successful dial sets the gauge to 1, startReconnect sets it to 0. The
+// /healthz alert rules on this gauge directly so the transitions must be
+// observable from a Prometheus scrape, not derived from logs.
+func TestAMQPMetrics_ConnectionUp_FlipsOnUpAndDown(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	m.observeConnectionUp("primary", true)
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.connectionUp.WithLabelValues("primary")))
+
+	m.observeConnectionUp("primary", false)
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.connectionUp.WithLabelValues("primary")))
+}
+
+// TestAMQPMetrics_ReconnectAttempts_TracksOutcomes confirms the counter
+// splits by outcome and that the consecutive-failures gauge resets on
+// the first success after a streak of failures (so dashboards do not
+// alert forever after recovery).
+func TestAMQPMetrics_ReconnectAttempts_TracksOutcomes(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
+	m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
+	m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
+
+	assert.Equal(t, 3.0, testutil.ToFloat64(m.reconnectAttempts.WithLabelValues("primary", amqpReconnectOutcomeFailed)))
+	assert.Equal(t, 3.0, testutil.ToFloat64(m.consecutiveReconnectFailures.WithLabelValues("primary")))
+
+	m.observeReconnectAttempt("primary", amqpReconnectOutcomeSuccess)
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.reconnectAttempts.WithLabelValues("primary", amqpReconnectOutcomeSuccess)))
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.consecutiveReconnectFailures.WithLabelValues("primary")))
+}
+
+// TestAMQPMetrics_ReconnectAttempts_EmptyBrokerFallsBack proves the
+// bounded-label safety net: a connection that observes metrics without
+// an explicit broker label resolves to "default" so cardinality stays
+// predictable.
+func TestAMQPMetrics_ReconnectAttempts_EmptyBrokerFallsBack(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	m.observeReconnectAttempt("", amqpReconnectOutcomeFailed)
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.reconnectAttempts.WithLabelValues("default", amqpReconnectOutcomeFailed)))
+}
+
+// TestAMQPMetrics_NilSafe documents the no-op contract: methods on a nil
+// *Metrics never panic, so a Connection without WithConnectionMetrics is
+// free of nil-deref hazards.
+func TestAMQPMetrics_NilSafe(t *testing.T) {
+	var m *Metrics
+	require.NotPanics(t, func() {
+		m.observeConnectionUp("primary", true)
+		m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
+	})
+}
+
+// TestWithConnectionMetrics_NilPanics — fail fast at construction so a
+// misconfigured DialOption surfaces at Dial() rather than at first
+// metric observation.
+func TestWithConnectionMetrics_NilPanics(t *testing.T) {
+	assert.Panics(t, func() { WithConnectionMetrics(nil, "primary") })
 }
 
 func TestAMQPMetrics_Contract(t *testing.T) {

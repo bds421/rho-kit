@@ -1,16 +1,22 @@
 package pgadvisory
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
 type releaseContextKey struct{}
@@ -184,4 +190,83 @@ func TestLeaderReleaseContextPreservesValuesAfterCancellation(t *testing.T) {
 
 	require.Equal(t, "trace-123", releaseCtx.Value(releaseContextKey{}))
 	require.NoError(t, releaseCtx.Err())
+}
+
+func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithMetricsRegisterer(reg))
+
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	e := &Elector{
+		key:           "tenant-sweeper",
+		healthCheck:   5 * time.Millisecond,
+		drainWarnTick: 10 * time.Millisecond,
+		logger:        logger,
+		metrics:       metrics,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false) // force loss path so cancel + awaitCallbackDrain runs
+
+	released := make(chan struct{})
+	cb := leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done()
+			<-released
+		},
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		result <- e.holdLeadership(context.Background(), handle, cb)
+	}()
+
+	// Wait long enough for multiple warn ticks to fire on a stuck callback.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(metrics.drainWarns.WithLabelValues("tenant-sweeper")) >= 2
+	}, time.Second, 5*time.Millisecond, "expected drain warn metric to increment at least twice")
+
+	require.Contains(t, logBuf.String(), "OnAcquired callback still draining")
+	// `key` is logged via redact.String — verify it shows up as a
+	// redacted attribute rather than asserting on the raw key string.
+	require.Contains(t, logBuf.String(), "key=")
+
+	close(released)
+
+	select {
+	case err := <-result:
+		require.ErrorContains(t, err, "handle reports lost")
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("holdLeadership did not return after callback drained")
+	}
+
+	// Terminal drained observation must also be recorded so the
+	// drained-state histogram is non-empty for SLO dashboards.
+	drainedHistogramHasObservation := func() bool {
+		ch := make(chan prometheus.Metric, 16)
+		metrics.drainDuration.Collect(ch)
+		close(ch)
+		for m := range ch {
+			out := &dto.Metric{}
+			if err := m.Write(out); err != nil {
+				continue
+			}
+			var key, state string
+			for _, lp := range out.Label {
+				switch lp.GetName() {
+				case "key":
+					key = lp.GetValue()
+				case "state":
+					state = lp.GetValue()
+				}
+			}
+			if key == "tenant-sweeper" && state == drainStateDrained && out.Histogram != nil && out.Histogram.GetSampleCount() > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	require.True(t, drainedHistogramHasObservation(), "drained histogram must record terminal observation")
+	require.True(t, strings.Contains(logBuf.String(), "elapsed"))
 }

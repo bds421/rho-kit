@@ -34,4 +34,14 @@
 // A second SIGINT during shutdown cancels the in-flight Stop calls so the
 // process can exit quickly even when a misbehaving component refuses to
 // release its resources.
+//
+// # Shutdown logs
+//
+// For each component the Runner emits a "stopping component" log
+// immediately before invoking Stop, followed by "component stopped" on
+// success or "component stop error" on failure (with the elapsed time
+// on the error path). The pre-Stop log is essential when a Stop hangs:
+// without it the operator sees only "shutting down components" and
+// must wait for the per-component deadline before learning which
+// component is unresponsive.
 package lifecycle

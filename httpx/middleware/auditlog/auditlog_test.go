@@ -2,6 +2,7 @@ package auditlog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -29,9 +30,23 @@ func (s *recordingStore) Query(_ context.Context, _ auditlog.Filter, _ string, _
 	return nil, "", nil
 }
 
+func (s *recordingStore) LastHMAC(_ context.Context) ([]byte, error) {
+	if len(s.events) == 0 {
+		return nil, nil
+	}
+	return s.events[len(s.events)-1].HMAC, nil
+}
+
+// testAuditKey is a deterministic 32-byte key for unit tests; production
+// services source chain/cursor keys from KMS or config secrets.
+var testAuditKey = bytes.Repeat([]byte{0xab}, 32)
+
 func newLogger() (*recordingStore, *auditlog.Logger) {
 	store := &recordingStore{}
-	return store, auditlog.New(store)
+	return store, auditlog.New(store,
+		auditlog.WithChainKey(testAuditKey),
+		auditlog.WithCursorKey(testAuditKey),
+	)
 }
 
 func TestAuditlog_DefaultClientIPNoTrustedProxies(t *testing.T) {

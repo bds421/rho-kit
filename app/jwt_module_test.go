@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -150,4 +151,46 @@ func TestBuildIntegrationModules_FullChain(t *testing.T) {
 // Uses an empty endpoint so a noop provider is created (no network calls).
 func tracingConfigForTest() tracing.Config {
 	return tracing.Config{ServiceName: "test"}
+}
+
+// TestJWTModule_RegistersJWKSMetricsCollector verifies the module wires the
+// JWKS observability collector into the configured registerer at Init time.
+// Failure to register must NOT block startup (the module still wires the
+// verifier) — only the dashboards degrade.
+func TestJWTModule_RegistersJWKSMetricsCollector(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	httpClient := newHTTPClientModule(false)
+	require.NoError(t, httpClient.Init(context.Background(), ModuleContext{
+		Logger: slog.Default(),
+		Config: BaseConfig{},
+	}))
+
+	m := newJWTModule(jwtModuleConfig{
+		jwksURL:        "https://identity.example.com/jwks.json",
+		expectedIssuer: "https://issuer.example.com",
+		audience:       "svc",
+	})
+	m.registerer = reg
+
+	require.NoError(t, m.Init(context.Background(), ModuleContext{
+		Logger: slog.Default(),
+		Runner: lifecycle.NewRunner(slog.Default()),
+		Config: BaseConfig{},
+		modules: map[string]Module{
+			"httpclient": httpClient,
+		},
+	}))
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	names := make(map[string]bool, len(families))
+	for _, mf := range families {
+		names[mf.GetName()] = true
+	}
+	assert.True(t, names["jwks_last_successful_fetch_timestamp_seconds"],
+		"jwks_last_successful_fetch_timestamp_seconds missing")
+	assert.True(t, names["jwks_fetch_failures_total"],
+		"jwks_fetch_failures_total missing")
+	assert.True(t, names["jwks_staleness_seconds"],
+		"jwks_staleness_seconds missing")
 }

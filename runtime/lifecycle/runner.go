@@ -332,6 +332,13 @@ func (r *Runner) stopAll(parent context.Context) error {
 // context. A force-quit cancels parent, which immediately cancels the stop
 // timeout. Both the context cancel and panic recovery are deferred to prevent
 // a panicking Stop from crashing the entire shutdown sequence.
+//
+// A "stopping component" log line is emitted BEFORE invoking Stop so an
+// operator watching logs during a hung shutdown can immediately tell
+// which component the runner is waiting on. The component name is
+// operator-facing routing metadata (the same value the operator passed
+// to Add), not user input — emit it as a plain slog.String rather than
+// running it through redact so the log carries a usable signal.
 func (r *Runner) stopOne(parent context.Context, nc namedComponent) (retErr error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -344,10 +351,14 @@ func (r *Runner) stopOne(parent context.Context, nc namedComponent) (retErr erro
 		}
 	}()
 
+	r.logger.Info("stopping component", slog.String("component", nc.name))
+	stopStart := time.Now()
+
 	if err := nc.component.Stop(parent); err != nil {
 		r.logger.Error("component stop error",
 			logattr.Component(nc.name),
 			logattr.Error(err),
+			slog.Duration("elapsed", time.Since(stopStart)),
 		)
 		return err
 	}

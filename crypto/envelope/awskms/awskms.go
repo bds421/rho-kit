@@ -98,6 +98,12 @@ func (k *KEK) KeyID() string {
 
 // Wrap implements [envelope.KEK]. Calls KMS Encrypt and returns the
 // version-qualified KeyId for embedding in the envelope.
+//
+// Errors from AWS KMS are routed through [classifyAWSError] so retryable
+// failures (Throttling, KMSInternalException) become
+// [apperror.UnavailableError] and permanent failures (KeyUnavailable,
+// Disabled, AccessDenied) become [apperror.PermanentError]. The raw AWS
+// error is preserved as the wrapped cause.
 func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 	if err := k.validate(ctx); err != nil {
 		return "", nil, err
@@ -108,6 +114,10 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 		EncryptionContext: k.context,
 	})
 	if err != nil {
+		classified := classifyAWSError("wrap", err)
+		if classified != err {
+			return "", nil, classified
+		}
 		return "", nil, fmt.Errorf("awskms: encrypt: %w", err)
 	}
 	if out.KeyId == nil {
@@ -139,6 +149,10 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		EncryptionContext: k.context,
 	})
 	if err != nil {
+		classified := classifyAWSError("unwrap", err)
+		if classified != err {
+			return nil, classified
+		}
 		return nil, fmt.Errorf("awskms: decrypt: %w", err)
 	}
 	return out.Plaintext, nil

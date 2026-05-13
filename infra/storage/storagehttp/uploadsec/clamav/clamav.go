@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	defaultNetwork     = "tcp"
-	defaultChunkSize   = 32 << 10
-	maxChunkSize       = 1 << 20
-	defaultScanTimeout = 30 * time.Second
-	defaultMaxSpool    = 256 << 20
-	maxResponseBytes   = 4 << 10
+	defaultNetwork          = "tcp"
+	defaultChunkSize        = 32 << 10
+	maxChunkSize            = 1 << 20
+	defaultScanTimeout      = 30 * time.Second
+	defaultMaxSpool         = 256 << 20
+	maxResponseBytes        = 4 << 10
+	defaultMetricsValidator = "clamav"
 )
 
 // DialContextFunc dials a clamd endpoint.
@@ -36,6 +37,15 @@ type Scanner struct {
 	dial        DialContextFunc
 	chunkSize   int
 	scanTimeout time.Duration
+
+	// metrics is the optional Prometheus collector set. nil means
+	// observability is disabled (the default). When set, every Scan
+	// call records duration and outcome via metrics.observeScan.
+	metrics *Metrics
+	// metricsValidator is the label value used for the "validator"
+	// dimension on clamav_* metrics. Defaults to "clamav" so a
+	// single scanner shows up under a stable, predictable label.
+	metricsValidator string
 }
 
 // Option configures a Scanner.
@@ -49,11 +59,12 @@ func New(address string, opts ...Option) *Scanner {
 	}
 	dialer := &net.Dialer{}
 	s := &Scanner{
-		network:     defaultNetwork,
-		address:     address,
-		dial:        dialer.DialContext,
-		chunkSize:   defaultChunkSize,
-		scanTimeout: defaultScanTimeout,
+		network:          defaultNetwork,
+		address:          address,
+		dial:             dialer.DialContext,
+		chunkSize:        defaultChunkSize,
+		scanTimeout:      defaultScanTimeout,
+		metricsValidator: defaultMetricsValidator,
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -106,6 +117,37 @@ func WithScanTimeout(d time.Duration) Option {
 	}
 	return func(s *Scanner) {
 		s.scanTimeout = d
+	}
+}
+
+// WithMetrics enables Prometheus instrumentation on the Scanner. Each
+// Scan records latency to clamav_scan_duration_seconds and increments
+// clamav_scans_total with the outcome (clean | infected | error). Pass
+// nil to disable (the default state). m must come from NewMetrics so
+// the collectors share one registerer with the rest of the kit.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("clamav: WithMetrics requires non-nil metrics")
+	}
+	return func(s *Scanner) {
+		s.metrics = m
+	}
+}
+
+// WithMetricsValidatorName sets the "validator" label value attached to
+// every clamav_* metric emitted by this Scanner. Default is "clamav".
+// Use a different label when multiple validators run side-by-side so
+// dashboards can split them (e.g. "primary-clamav", "shadow-clamav").
+//
+// The value is rejected if it is empty or contains characters Prometheus
+// would refuse as a label value at scrape time.
+func WithMetricsValidatorName(name string) Option {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		panic("clamav: WithMetricsValidatorName requires a non-empty name")
+	}
+	return func(s *Scanner) {
+		s.metricsValidator = name
 	}
 }
 
@@ -202,7 +244,7 @@ func WithMaxSpoolBytes(n int64) StorageValidatorOption {
 }
 
 // Scan implements uploadsec.Scanner.
-func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) error {
+func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) (retErr error) {
 	if s == nil || s.dial == nil || s.address == "" || s.network == "" || s.chunkSize <= 0 {
 		return fmt.Errorf("%w: clamav scanner is not initialized", uploadsec.ErrScannerUnavailable)
 	}
@@ -212,6 +254,16 @@ func (s *Scanner) Scan(ctx context.Context, body io.Reader, _ uploadsec.Meta) er
 	if body == nil {
 		return fmt.Errorf("%w: nil upload body", uploadsec.ErrScannerUnavailable)
 	}
+
+	// Metrics span the whole exchange — dial, INSTREAM write, response
+	// read — so the duration histogram captures everything the operator
+	// can blame on the scanner. Wrap the rest of Scan in a deferred
+	// observer rather than recording from every error site to keep the
+	// outcome classification in one place (classifyScanOutcome).
+	started := time.Now()
+	defer func() {
+		s.metrics.observeScan(s.metricsValidator, started, retErr)
+	}()
 
 	ctx, cancel := context.WithTimeout(ctx, s.scanTimeout)
 	defer cancel()

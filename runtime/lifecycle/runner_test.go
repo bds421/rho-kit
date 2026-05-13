@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -477,4 +478,151 @@ func TestRunner_BeforeStopPanicReturnedAsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BeforeStop panicked")
 	assert.True(t, c.stopped.Load(), "component teardown must still run after hook panic")
+}
+
+// observableStopComponent records when Stop is called and lets the test
+// observe the log output emitted BEFORE Stop runs. The signalStarted
+// channel closes when the component is reached by stopAll; stopUntil
+// blocks Stop until the test closes it. Without that pause the runner
+// would emit "stopping component" and "component stopped" back-to-back
+// and the ordering assertion would be too tight to be useful.
+type observableStopComponent struct {
+	stopCalled    chan struct{}
+	releaseStop   chan struct{}
+	logAtStopOnce sync.Once
+	logSnapshot   []byte
+	logSrc        *bytes.Buffer
+	logMu         *sync.Mutex
+}
+
+func (c *observableStopComponent) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (c *observableStopComponent) Stop(_ context.Context) error {
+	c.logAtStopOnce.Do(func() {
+		c.logMu.Lock()
+		c.logSnapshot = append([]byte(nil), c.logSrc.Bytes()...)
+		c.logMu.Unlock()
+		close(c.stopCalled)
+	})
+	<-c.releaseStop
+	return nil
+}
+
+// TestRunner_StopEmitsStoppingLogBeforeStop verifies that "stopping
+// component" is logged BEFORE the component's Stop method runs, so a
+// hung Stop produces a usable diagnostic. The previous behaviour logged
+// only "component stopped" AFTER Stop returned — useless when Stop
+// itself was the problem.
+func TestRunner_StopEmitsStoppingLogBeforeStop(t *testing.T) {
+	var logMu sync.Mutex
+	buf := &bytes.Buffer{}
+	// Lock around every write so the snapshot inside Stop is race-free
+	// — slog handlers can buffer internally and a parallel write would
+	// otherwise interleave bytes between the snapshot and the assertion.
+	syncBuf := &lockedWriter{w: buf, mu: &logMu}
+	logger := slog.New(slog.NewTextHandler(syncBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r := NewRunner(logger)
+
+	c := &observableStopComponent{
+		stopCalled:  make(chan struct{}),
+		releaseStop: make(chan struct{}),
+		logSrc:      buf,
+		logMu:       &logMu,
+	}
+	r.Add("payment-worker", c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Wait for component to be in its Start blocking select, then trigger shutdown.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-c.stopCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop was never invoked")
+	}
+
+	// The "stopping component" message must already be in the log at
+	// the moment Stop is entered — that is the whole point of the new
+	// log line.
+	snapshot := string(c.logSnapshot)
+	if !strings.Contains(snapshot, "stopping component") {
+		t.Fatalf("log at Stop entry missing %q line; got:\n%s", "stopping component", snapshot)
+	}
+	if !strings.Contains(snapshot, "component=payment-worker") {
+		t.Fatalf("log at Stop entry missing component name; got:\n%s", snapshot)
+	}
+
+	close(c.releaseStop)
+	require.NoError(t, <-done)
+
+	logMu.Lock()
+	final := buf.String()
+	logMu.Unlock()
+
+	// And the runner must still emit the existing "component stopped"
+	// confirmation on the success path — the new log supplements, not
+	// replaces, the existing terminal signal.
+	if !strings.Contains(final, "component stopped") {
+		t.Fatalf("final log missing %q; got:\n%s", "component stopped", final)
+	}
+}
+
+// lockedWriter serialises writes to an underlying buffer so the test
+// can snapshot it from another goroutine safely. bytes.Buffer is not
+// safe for concurrent Read/Write.
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// TestRunner_StopErrorLogIncludesElapsed verifies that the existing
+// "component stop error" log gains an elapsed duration attribute. The
+// elapsed field is the only signal the operator has for how long the
+// failing Stop ran before giving up — without it, a Stop that fails
+// after 100ms looks identical to one that fails after 29s.
+func TestRunner_StopErrorLogIncludesElapsed(t *testing.T) {
+	var logMu sync.Mutex
+	buf := &bytes.Buffer{}
+	syncBuf := &lockedWriter{w: buf, mu: &logMu}
+	logger := slog.New(slog.NewTextHandler(syncBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r := NewRunner(logger)
+	c := newTestComponent()
+	c.stopErr = errors.New("teardown rejected")
+	r.Add("worker", c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	err := <-done
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "teardown rejected")
+
+	logMu.Lock()
+	final := buf.String()
+	logMu.Unlock()
+	if !strings.Contains(final, "component stop error") {
+		t.Fatalf("log missing %q; got:\n%s", "component stop error", final)
+	}
+	if !strings.Contains(final, "elapsed=") {
+		t.Fatalf("log missing elapsed= attribute; got:\n%s", final)
+	}
 }

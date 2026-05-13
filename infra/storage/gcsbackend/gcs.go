@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
@@ -172,6 +174,10 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 		// ignore its error because the upload is intentionally aborted.
 		_ = w.Close()
 		b.metrics.observeOp(b.instance, "put", start, err)
+		if capacity := translateGCSCapacity(err); capacity != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
+			return capacity
+		}
 		opErr := storage.WrapSafe("gcsbackend: put write failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
@@ -180,6 +186,10 @@ func (b *GCSBackend) Put(ctx context.Context, key string, r io.Reader, meta stor
 	if err := w.Close(); err != nil {
 		cancelWriter()
 		b.metrics.observeOp(b.instance, "put", start, err)
+		if capacity := translateGCSCapacity(err); capacity != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
+			return capacity
+		}
 		opErr := storage.WrapSafe("gcsbackend: put close failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
@@ -301,6 +311,37 @@ func gcsMetricErr(err error) error {
 		return nil
 	}
 	return err
+}
+
+// translateGCSCapacity inspects a GCS write error and returns
+// [storage.ErrInsufficientCapacity] when the response indicates the
+// bucket has hit a quota or storage-class limit. Returns nil for
+// non-capacity errors so the caller can fall back to its generic
+// translation.
+//
+// GCS surfaces capacity-related failures via *googleapi.Error with
+// status 507 Insufficient Storage (bucket-level storage quota) or
+// 413 Request Entity Too Large with a body referencing "quota" or
+// "storage". The "quota" substring guard avoids classifying generic
+// 413 / 507 responses unrelated to capacity (e.g. metadata cap).
+func translateGCSCapacity(err error) error {
+	if err == nil {
+		return nil
+	}
+	var gerr *googleapi.Error
+	if !errors.As(err, &gerr) {
+		return nil
+	}
+	switch gerr.Code {
+	case 507:
+		return fmt.Errorf("gcsbackend: bucket insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	case 413:
+		msg := strings.ToLower(gerr.Message)
+		if strings.Contains(msg, "quota") || strings.Contains(msg, "storage") {
+			return fmt.Errorf("gcsbackend: quota exhausted: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying GCS client.

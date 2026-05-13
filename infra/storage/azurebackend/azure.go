@@ -2,6 +2,7 @@ package azurebackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -223,9 +224,43 @@ func (b *AzureBackend) Put(ctx context.Context, key string, r io.Reader, meta st
 	_, err = b.client.UploadStream(ctx, key, validated, opts)
 	b.metrics.observeOp(b.instance, "put", start, err)
 	if err != nil {
+		if capacity := translateAzureCapacity(err); capacity != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
+			return capacity
+		}
 		opErr := storage.WrapSafe("azurebackend: put failed", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
+	}
+	return nil
+}
+
+// translateAzureCapacity inspects an Azure Blob upload error and returns
+// [storage.ErrInsufficientCapacity] when the service rejected the upload
+// because the storage account / container is at capacity. Returns nil for
+// non-capacity errors so the caller can fall back to its generic mapping.
+//
+// Azure Storage returns HTTP 507 "InsufficientStorage" when an account is
+// full (rare; usually surfaces via quota policies) and HTTP 413
+// "RequestBodyTooLarge" when a single PUT exceeds the per-blob limit. The
+// generic *azcore.ResponseError carries both the status code and the
+// service-supplied error code so we can pattern-match safely.
+func translateAzureCapacity(err error) error {
+	if err == nil {
+		return nil
+	}
+	var respErr *azcore.ResponseError
+	if !errors.As(err, &respErr) {
+		return nil
+	}
+	switch respErr.ErrorCode {
+	case "InsufficientStorage", "InsufficientAccountPermissions":
+		return fmt.Errorf("azurebackend: account out of capacity: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	case "RequestBodyTooLarge":
+		return fmt.Errorf("azurebackend: blob exceeds size limit: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	}
+	if respErr.StatusCode == 507 || respErr.StatusCode == 413 {
+		return fmt.Errorf("azurebackend: insufficient storage: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
 	}
 	return nil
 }

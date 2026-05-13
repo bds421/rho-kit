@@ -1,8 +1,10 @@
 package envelope_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -507,6 +509,98 @@ func TestEncrypt_ConsistentUnderConcurrentRotation(t *testing.T) {
 	for e := range errs {
 		t.Fatalf("concurrent encrypt/decrypt failed: %v", e)
 	}
+}
+
+// TestEncrypt_SamePlaintextDistinctCiphertexts is the adversarial DEK
+// uniqueness test. Two Encrypt calls on byte-identical plaintext + AAD
+// must produce byte-distinct blobs, and decryption of both must
+// round-trip to the original plaintext. The deeper assertion — that the
+// per-blob GCM nonces also differ — pins the property end users actually
+// care about: nonce reuse under a single DEK breaks AES-GCM
+// confidentiality and authenticity outright, and even with per-blob
+// fresh DEKs we want to verify the nonce path is not silently
+// deterministic.
+//
+// The blob layout (v3) is:
+//
+//	magic(3) | version(1) | uint16(kL) | keyID(kL) | uint16(wL) | wrapped(wL) | nonce(12) | ciphertext+tag(>=16)
+//
+// We re-parse the header by hand rather than reaching into the package
+// internals so the test acts as a black-box check on the layout
+// guarantee.
+func TestEncrypt_SamePlaintextDistinctCiphertexts(t *testing.T) {
+	k := newKEK(t, "v1")
+	enc := envelope.NewEncryptor(k)
+
+	pt := []byte("same-plaintext")
+
+	blob1, err := enc.Encrypt(context.Background(), pt, nil)
+	require.NoError(t, err)
+	blob2, err := enc.Encrypt(context.Background(), pt, nil)
+	require.NoError(t, err)
+
+	// Whole-blob inequality is the user-observable surface: two writes
+	// of "the same secret" must not produce the same ciphertext on
+	// disk (otherwise equal-plaintext detection via byte compare leaks
+	// information).
+	assert.False(t, bytes.Equal(blob1, blob2),
+		"two Encrypt calls on identical plaintext returned byte-equal blobs")
+
+	// Both must still round-trip.
+	got1, err := enc.Decrypt(context.Background(), blob1, nil)
+	require.NoError(t, err)
+	assert.Equal(t, pt, got1)
+	got2, err := enc.Decrypt(context.Background(), blob2, nil)
+	require.NoError(t, err)
+	assert.Equal(t, pt, got2)
+
+	// The deeper invariant: the GCM nonces in the two bodies must
+	// differ. Equal nonces under a fresh DEK is fine cryptographically
+	// (a different key means a fresh nonce space), but equal nonces
+	// would also mean a deterministic nonce derivation path — exactly
+	// the bug that bites callers who later swap the KEK for one whose
+	// Wrap is deterministic and re-uses a DEK across writes.
+	nonce1 := extractGCMNonce(t, blob1)
+	nonce2 := extractGCMNonce(t, blob2)
+	assert.False(t, bytes.Equal(nonce1, nonce2),
+		"two Encrypt calls returned identical GCM nonces: nonce1=%x nonce2=%x", nonce1, nonce2)
+}
+
+// extractGCMNonce parses a v3 envelope blob and returns the first 12
+// bytes of the body segment — the AES-GCM nonce. It deliberately
+// re-implements the parse so the test does not delegate the property
+// it is asserting on to the same code path that produced the blob.
+//
+// Layout (v3):
+//
+//	[0:3]   magic "ENV"
+//	[3]     version (must be 3)
+//	[4:6]   uint16 BE keyID length (kL)
+//	[6:6+kL] keyID
+//	[6+kL : 6+kL+2] uint16 BE wrapped DEK length (wL)
+//	[6+kL+2 : 6+kL+2+wL] wrapped DEK
+//	[6+kL+2+wL : +12] GCM nonce
+//	[...]   ciphertext + 16-byte tag
+func extractGCMNonce(t *testing.T, blob []byte) []byte {
+	t.Helper()
+	require.GreaterOrEqual(t, len(blob), 6, "blob too short for v3 header preamble")
+	require.Equal(t, byte('E'), blob[0], "bad magic byte 0")
+	require.Equal(t, byte('N'), blob[1], "bad magic byte 1")
+	require.Equal(t, byte('V'), blob[2], "bad magic byte 2")
+	require.Equal(t, byte(3), blob[3], "expected v3 blob version, got %d", blob[3])
+
+	kL := int(binary.BigEndian.Uint16(blob[4:6]))
+	off := 6 + kL
+	require.GreaterOrEqual(t, len(blob), off+2, "blob truncated before wrapped-DEK length")
+
+	wL := int(binary.BigEndian.Uint16(blob[off : off+2]))
+	off += 2 + wL
+	require.GreaterOrEqual(t, len(blob), off+12, "blob truncated before GCM nonce")
+
+	// Return a copy so callers cannot accidentally mutate the blob.
+	nonce := make([]byte, 12)
+	copy(nonce, blob[off:off+12])
+	return nonce
 }
 
 func assertEqualErr(want, got []byte) error {

@@ -83,6 +83,18 @@ func WriteServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		}
 		WriteError(w, status, msg)
 
+	case apperror.IsStorageFull(err):
+		logger.Error("storage capacity exhausted",
+			logattr.Error(err),
+			logattr.RequestID(contextutil.RequestID(ctx)),
+			logattr.Method(method),
+			logattr.Path(path),
+		)
+		// 507 Insufficient Storage: the request was well-formed but
+		// the server cannot store the representation needed to
+		// complete it. Do not leak the underlying provider error.
+		WriteError(w, HTTPStatus(err), "insufficient storage")
+
 	case apperror.IsOperationFailed(err):
 		logger.Error("operation failed",
 			logattr.Error(err),

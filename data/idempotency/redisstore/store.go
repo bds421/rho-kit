@@ -201,6 +201,9 @@ func (s *RedisStore) Get(ctx context.Context, key string, fingerprint []byte) (*
 		if errors.Is(err, goredis.Nil) {
 			return nil, false, nil
 		}
+		if translated := translateUnavailable(err); translated != err {
+			return nil, false, translated
+		}
 		return nil, false, fmt.Errorf("idempotencystore: get: %w", err)
 	}
 	// Distinguish between a lock value (in-flight) and a response envelope.
@@ -254,6 +257,9 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 
 	ok, err := s.client.SetNX(ctx, s.k(key), value, ttlRoundUp(ttl)).Result()
 	if err != nil {
+		if translated := translateUnavailable(err); translated != err {
+			return "", false, false, translated
+		}
 		return "", false, false, fmt.Errorf("idempotencystore: lock: %w", err)
 	}
 	if ok {
@@ -267,6 +273,9 @@ func (s *RedisStore) TryLock(ctx context.Context, key string, fingerprint []byte
 		if errors.Is(err, goredis.Nil) {
 			// Race: TTL expired between SETNX and GET. Caller will retry.
 			return "", false, false, nil
+		}
+		if translated := translateUnavailable(err); translated != err {
+			return "", false, false, translated
 		}
 		return "", false, false, fmt.Errorf("idempotencystore: inspect: %w", err)
 	}
@@ -318,6 +327,9 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 		if errors.Is(err, goredis.Nil) {
 			return idempotency.ErrLockLost
 		}
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
 		return fmt.Errorf("idempotencystore: read lock: %w", err)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
@@ -342,6 +354,9 @@ func (s *RedisStore) Set(ctx context.Context, key, token string, resp idempotenc
 		ttlMillisRoundUp(ttl),
 	).Text()
 	if err != nil {
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
 		return fmt.Errorf("idempotencystore: set: %w", err)
 	}
 	if result != "OK" {
@@ -366,6 +381,9 @@ func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
 		if errors.Is(err, goredis.Nil) {
 			return nil
 		}
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
 		return fmt.Errorf("idempotencystore: read lock: %w", err)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
@@ -376,6 +394,9 @@ func (s *RedisStore) Unlock(ctx context.Context, key, token string) error {
 	}
 	expectedLockValue := encodeLockValue(token, fp)
 	if _, err := unlockIfOwnerScript.Run(ctx, s.client, []string{s.k(key)}, expectedLockValue).Result(); err != nil && !errors.Is(err, goredis.Nil) {
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
 		return fmt.Errorf("idempotencystore: unlock: %w", err)
 	}
 	return nil

@@ -16,9 +16,20 @@ var ErrEmptySecret = errors.New("signing: secret must be at least 32 bytes")
 // minSecretLen is the minimum secret length for HMAC-SHA256 (matches hash output size).
 const minSecretLen = 32
 
-// ErrExpiredSignature is returned by Verify when the signature timestamp
-// exceeds maxAge or is too far in the future (beyond the allowed skew).
-var ErrExpiredSignature = errors.New("signing: signature expired or clock skew too large")
+// ErrSignatureExpired is returned by Verify when the signature
+// timestamp is older than maxAge — i.e. the producer's clock is behind
+// the verifier's or the message has been sitting around past the
+// replay window.
+var ErrSignatureExpired = errors.New("signing: signature timestamp older than maxAge")
+
+// ErrSignatureClockSkew is returned by Verify when the signature
+// timestamp is too far in the future of the verifier's clock — beyond
+// the allowed [WithFutureSkew] tolerance. Distinguishing this from
+// [ErrSignatureExpired] lets operators alert separately on the two
+// failure modes: an expired signature usually means a slow consumer
+// or a replay attack; a clock-skew rejection usually means the
+// producer's NTP is broken.
+var ErrSignatureClockSkew = errors.New("signing: signature timestamp too far in the future")
 
 // ErrInvalidSigner is returned when a nil or zero-value Signer is used.
 var ErrInvalidSigner = errors.New("signing: invalid signer")
@@ -231,8 +242,11 @@ func (s *Signer) VerifyContext(ctx CanonicalContext, secret Secret, body []byte,
 		return false, err
 	}
 	age := s.clock().Sub(time.Unix(timestamp, 0))
-	if age < -s.futureSkew || age > maxAge {
-		return false, ErrExpiredSignature
+	if age < -s.futureSkew {
+		return false, ErrSignatureClockSkew
+	}
+	if age > maxAge {
+		return false, ErrSignatureExpired
 	}
 
 	payload := buildSignedPayload(ctx, timestamp, body)

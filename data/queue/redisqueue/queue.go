@@ -124,6 +124,7 @@ type Metrics struct {
 	ackNotFound          *prometheus.CounterVec
 	processingDepth      *prometheus.GaugeVec
 	queueDepth           *prometheus.GaugeVec
+	dlqDepth             *prometheus.GaugeVec
 }
 
 // NewMetrics creates and registers queue metrics with the given registerer.
@@ -216,6 +217,15 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"queue"},
 		),
+		dlqDepth: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "redis",
+				Subsystem: "queue",
+				Name:      "dlq_depth",
+				Help:      "Number of messages currently in the dead-letter queue. Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller.",
+			},
+			[]string{"queue"},
+		),
 	}
 
 	m.messagesEnqueued = promutil.MustRegisterOrGet(reg, m.messagesEnqueued)
@@ -227,6 +237,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m.ackNotFound = promutil.MustRegisterOrGet(reg, m.ackNotFound)
 	m.processingDepth = promutil.MustRegisterOrGet(reg, m.processingDepth)
 	m.queueDepth = promutil.MustRegisterOrGet(reg, m.queueDepth)
+	m.dlqDepth = promutil.MustRegisterOrGet(reg, m.dlqDepth)
 
 	return m
 }
@@ -771,7 +782,7 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 	}
 
 	// Initial depth snapshot before entering the processing loop.
-	q.updateProcessingDepth(ctx, queue, processingQ)
+	q.updateProcessingDepth(ctx, queue, processingQ, deadQ)
 
 	// recoveryInterval interleaves recovery passes with new-message reads so
 	// a permanent processing-list backlog doesn't head-of-line-block normal
@@ -797,7 +808,7 @@ func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ strin
 				// Timeout with no messages — good time to update the depth gauge.
 				// This throttles the LLen call to at most once per blockTimeout
 				// instead of once per message, reducing Redis round-trips.
-				q.updateProcessingDepth(ctx, queue, processingQ)
+				q.updateProcessingDepth(ctx, queue, processingQ, deadQ)
 				continue
 			}
 			if ctx.Err() != nil {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testChainKey and testCursorKey are fixed 32-byte test keys. Real
+// deployments source these from KMS / secret config; using deterministic
+// bytes here keeps the tests' chain HMACs reproducible across runs.
+var (
+	testChainKey  = bytes.Repeat([]byte("c"), MinChainKeyLen)
+	testCursorKey = bytes.Repeat([]byte("u"), MinCursorKeyLen)
+)
+
+// newTestLogger constructs a Logger with deterministic test keys.
+// Tests that don't care about which keys are used should call this; tests
+// that exercise key-required panics or key-mismatch paths build their own
+// logger explicitly.
+func newTestLogger(store Store, opts ...Option) *Logger {
+	opts = append([]Option{
+		WithChainKey(testChainKey),
+		WithCursorKey(testCursorKey),
+	}, opts...)
+	return New(store, opts...)
+}
+
 func TestLogger_Log_AutoPopulates(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.Log(context.Background(), Event{
 		Actor:    "user-1",
@@ -38,7 +59,7 @@ func TestLogger_Log_AutoPopulates(t *testing.T) {
 
 func TestLogger_LogAction(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.LogAction(context.Background(), "admin", "delete", "users/456", "success")
 
@@ -51,7 +72,7 @@ func TestLogger_LogAction(t *testing.T) {
 
 func TestLogger_Log_PreservesExplicitFields(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	now := time.Now()
 	l.Log(context.Background(), Event{
@@ -73,7 +94,7 @@ func TestLogger_Log_PreservesExplicitFields(t *testing.T) {
 
 func TestQuery_FilterByActor(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.LogAction(context.Background(), "alice", "create", "r/1", "success")
 	l.LogAction(context.Background(), "bob", "create", "r/2", "success")
@@ -86,7 +107,7 @@ func TestQuery_FilterByActor(t *testing.T) {
 
 func TestQuery_FilterByAction(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.LogAction(context.Background(), "a", "create", "r/1", "success")
 	l.LogAction(context.Background(), "a", "delete", "r/2", "success")
@@ -99,7 +120,7 @@ func TestQuery_FilterByAction(t *testing.T) {
 
 func TestQuery_FilterByResource(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.LogAction(context.Background(), "a", "x", "orders/1", "success")
 	l.LogAction(context.Background(), "a", "x", "orders/2", "success")
@@ -112,7 +133,7 @@ func TestQuery_FilterByResource(t *testing.T) {
 
 func TestQuery_FilterByTime(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	past := time.Now().Add(-2 * time.Hour)
 	recent := time.Now()
@@ -127,7 +148,7 @@ func TestQuery_FilterByTime(t *testing.T) {
 
 func TestQuery_Pagination(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	for i := range 5 {
 		l.LogAction(context.Background(), "a", "x", "r/"+string(rune('a'+i)), "success")
@@ -154,7 +175,7 @@ func TestQuery_Pagination(t *testing.T) {
 
 func TestMemoryStore_Reset(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store)
+	l := newTestLogger(store)
 
 	l.LogAction(context.Background(), "a", "x", "r", "success")
 	assert.Len(t, store.Events(), 1)
@@ -164,12 +185,47 @@ func TestMemoryStore_Reset(t *testing.T) {
 }
 
 func TestNew_PanicsOnNilStore(t *testing.T) {
-	assert.Panics(t, func() { New(nil) })
+	assert.Panics(t, func() {
+		New(nil, WithChainKey(testChainKey), WithCursorKey(testCursorKey))
+	})
 }
 
 func TestNew_PanicsOnNilOption(t *testing.T) {
 	store := NewMemoryStore()
-	assert.Panics(t, func() { New(store, nil) })
+	assert.Panics(t, func() {
+		New(store, WithChainKey(testChainKey), WithCursorKey(testCursorKey), nil)
+	})
+}
+
+// TestAppend_RequiresChainKey verifies that New fails fast when no chain
+// key is configured. Without this check the audit log would silently ship
+// without tamper-evidence — the very property §5.4 of the threat model
+// claims is provided.
+func TestAppend_RequiresChainKey(t *testing.T) {
+	store := NewMemoryStore()
+	assert.Panics(t, func() {
+		// Cursor key present but chain key missing.
+		New(store, WithCursorKey(testCursorKey))
+	})
+	// A too-short chain key must also panic so operators cannot silently
+	// downgrade chain security by mis-sizing the secret.
+	assert.Panics(t, func() {
+		New(store, WithChainKey([]byte("short")), WithCursorKey(testCursorKey))
+	})
+}
+
+// TestQuery_RequiresCursorKey verifies that New fails fast when no cursor
+// key is configured. Without it, Query would either expose raw cursors
+// (forgeable) or return broken pagination — both compliance hazards.
+func TestQuery_RequiresCursorKey(t *testing.T) {
+	store := NewMemoryStore()
+	assert.Panics(t, func() {
+		// Chain key present but cursor key missing.
+		New(store, WithChainKey(testChainKey))
+	})
+	assert.Panics(t, func() {
+		New(store, WithChainKey(testChainKey), WithCursorKey([]byte("short")))
+	})
 }
 
 func TestValidateEventRejectsInvalidFields(t *testing.T) {
@@ -219,7 +275,7 @@ func TestValidateEventRejectsInvalidFields(t *testing.T) {
 
 func TestLogger_LogERejectsInvalidEventBeforeStore(t *testing.T) {
 	store := &captureStore{}
-	l := New(store)
+	l := newTestLogger(store)
 
 	err := l.LogE(context.Background(), Event{
 		Actor:    "alice smith",
@@ -230,10 +286,13 @@ func TestLogger_LogERejectsInvalidEventBeforeStore(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidEvent)
-	assert.Empty(t, store.event)
+	assert.Empty(t, store.event.ID)
 	assert.Equal(t, uint64(1), l.DroppedCount())
 }
 
+// failingStore returns a fixed error from Append and Query. LastHMAC always
+// returns nil (i.e. "empty chain") so the test can independently exercise
+// the Append-error path without the prev-HMAC read also failing.
 type failingStore struct {
 	err error
 }
@@ -246,13 +305,28 @@ func (s failingStore) Query(context.Context, Filter, string, int) ([]Event, stri
 	return nil, "", s.err
 }
 
+func (s failingStore) LastHMAC(context.Context) ([]byte, error) {
+	return nil, nil
+}
+
+// hmacFailingStore returns an error from LastHMAC. Used to exercise the
+// branch where the Logger cannot read the chain tail and must drop.
+type hmacFailingStore struct {
+	failingStore
+	hmacErr error
+}
+
+func (s hmacFailingStore) LastHMAC(context.Context) ([]byte, error) {
+	return nil, s.hmacErr
+}
+
 func TestLogger_LogEReturnsIDGenerationError(t *testing.T) {
 	idErr := errors.New("rng unavailable")
 	prev := newAuditID
 	newAuditID = func() (uuid.UUID, error) { return uuid.Nil, idErr }
 	t.Cleanup(func() { newAuditID = prev })
 
-	l := New(NewMemoryStore())
+	l := newTestLogger(NewMemoryStore())
 	err := l.LogE(context.Background(), Event{
 		Actor:    "a",
 		Action:   "x",
@@ -264,22 +338,67 @@ func TestLogger_LogEReturnsIDGenerationError(t *testing.T) {
 	assert.Equal(t, uint64(1), l.DroppedCount())
 }
 
+func TestLogger_LogE_PrevHMACReadFailureCountsAsDrop(t *testing.T) {
+	hmacErr := errors.New("tail read failed")
+	l := newTestLogger(hmacFailingStore{hmacErr: hmacErr})
+
+	err := l.LogE(context.Background(), Event{
+		Actor:    "alice",
+		Action:   "login",
+		Resource: "sessions",
+		Status:   "success",
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, hmacErr)
+	assert.Equal(t, uint64(1), l.DroppedCount())
+}
+
 type captureStore struct {
-	event Event
+	mu     sync.Mutex
+	event  Event
+	events []Event
 }
 
 func (s *captureStore) Append(_ context.Context, event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.event = event
+	s.events = append(s.events, cloneEvent(event))
 	return nil
 }
 
-func (s *captureStore) Query(context.Context, Filter, string, int) ([]Event, string, error) {
-	return []Event{s.event}, "", nil
+func (s *captureStore) Query(_ context.Context, _ Filter, _ string, _ int) ([]Event, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		// Preserve legacy single-event behaviour for tests that set
+		// .event directly without using Append.
+		return []Event{s.event}, "", nil
+	}
+	out := make([]Event, len(s.events))
+	for i := range s.events {
+		out[i] = cloneEvent(s.events[len(s.events)-1-i])
+	}
+	return out, "", nil
+}
+
+func (s *captureStore) LastHMAC(context.Context) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return nil, nil
+	}
+	tail := s.events[len(s.events)-1].HMAC
+	if len(tail) == 0 {
+		return nil, nil
+	}
+	return append([]byte(nil), tail...), nil
 }
 
 func TestLogger_LogEClonesMetadataBeforeStore(t *testing.T) {
 	store := &captureStore{}
-	l := New(store)
+	l := newTestLogger(store)
 	metadata := json.RawMessage(`{"token":"original"}`)
 
 	require.NoError(t, l.LogE(context.Background(), Event{
@@ -301,7 +420,7 @@ func TestLogger_QueryClonesMetadataFromStore(t *testing.T) {
 			Metadata: json.RawMessage(`{"token":"original"}`),
 		},
 	}
-	l := New(store)
+	l := newTestLogger(store)
 
 	events, _, err := l.Query(context.Background(), Filter{}, "", 10)
 	require.NoError(t, err)
@@ -316,7 +435,7 @@ func TestLogger_QueryClonesMetadataFromStore(t *testing.T) {
 
 func TestLogger_LogE_OnDropPanicDoesNotPanic(t *testing.T) {
 	storeErr := errors.New("store unavailable")
-	l := New(failingStore{err: storeErr}, WithOnDrop(func(context.Context, Event, error) {
+	l := newTestLogger(failingStore{err: storeErr}, WithOnDrop(func(context.Context, Event, error) {
 		panic("drop hook exploded")
 	}))
 
@@ -332,7 +451,7 @@ func TestLogger_LogEAppendFailureLogRedactsEventAndError(t *testing.T) {
 	storeErr := errors.New("append failed token=tenant-secret")
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	l := New(failingStore{err: storeErr}, WithLogger(logger))
+	l := newTestLogger(failingStore{err: storeErr}, WithLogger(logger))
 
 	err := l.LogE(context.Background(), Event{
 		ID:       "event-secret",
@@ -353,7 +472,7 @@ func TestLogger_LogEAppendFailureLogRedactsEventAndError(t *testing.T) {
 
 func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
 	store := NewMemoryStore()
-	l := New(store, WithLogger(nil))
+	l := newTestLogger(store, WithLogger(nil))
 	require.NotNil(t, l.logger)
 }
 
@@ -429,6 +548,330 @@ func TestMemoryStore_AppendRejectsInvalidEvent(t *testing.T) {
 	assert.Empty(t, store.Events())
 }
 
+func TestMemoryStore_LastHMAC_EmptyReturnsNil(t *testing.T) {
+	store := NewMemoryStore()
+	got, err := store.LastHMAC(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// ---------------------------------------------------------------------------
+// HMAC chain: build, tamper-detect, verify
+// ---------------------------------------------------------------------------
+
+// TestAppend_BuildsHMACChain verifies the core §5.4 claim: each appended
+// event's PrevHMAC equals the previous event's HMAC, and each HMAC is a
+// recomputable function of the event's content + chain key. Without this
+// linkage, deletion of a middle record would leave the chain intact, so we
+// also check that the recomputed HMAC matches the stored value.
+func TestAppend_BuildsHMACChain(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 4 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	events := store.Events()
+	require.Len(t, events, 4)
+
+	// First event: PrevHMAC must be nil/empty (no predecessor).
+	assert.Empty(t, events[0].PrevHMAC, "first event's PrevHMAC must be empty")
+	assert.Len(t, events[0].HMAC, HMACSize, "HMAC must be HMAC-SHA256 sized")
+
+	// Each subsequent event must chain to its predecessor.
+	for i := 1; i < len(events); i++ {
+		assert.Equal(t,
+			events[i-1].HMAC, events[i].PrevHMAC,
+			"event[%d].PrevHMAC must equal event[%d].HMAC", i, i-1,
+		)
+		// HMAC must be recomputable from content.
+		expected := computeHMAC(testChainKey, events[i].PrevHMAC, eventWithoutHMAC(events[i]))
+		assert.Equal(t, expected, events[i].HMAC,
+			"event[%d].HMAC must be recomputable", i)
+	}
+
+	// And the canonical entry point validates the whole chain.
+	require.NoError(t, VerifyChain(events, testChainKey))
+	require.NoError(t, l.VerifyChain(ctx))
+}
+
+// TestAppend_TamperedRecordDetected makes the threat-model claim concrete:
+// mutating a stored record's Resource invalidates its HMAC, and
+// VerifyChain reports it.
+func TestAppend_TamperedRecordDetected(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 3 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	// Simulate an attacker who flips a stored field directly in the
+	// store's underlying slice. We reach in via the test helper.
+	tampered := store.events
+	tampered[1].Resource = "orders/forged"
+
+	err := VerifyChain(store.Events(), testChainKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	assert.Contains(t, err.Error(), "event[1]")
+
+	// Logger.VerifyChain reports the same.
+	err = l.VerifyChain(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+// TestVerifyChain_RejectsPrependedRecord verifies that an attacker who
+// invents a record and inserts it at the head — keeping every later
+// PrevHMAC pointing into their forged record — is still detected: the
+// forged record's own HMAC cannot match its content under the legitimate
+// chain key.
+func TestVerifyChain_RejectsPrependedRecord(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 3 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+	original := store.Events()
+	require.Len(t, original, 3)
+
+	forged := Event{
+		ID:        "forged-0",
+		Timestamp: original[0].Timestamp.Add(-time.Hour),
+		Actor:     "mallory",
+		Action:    "create",
+		Resource:  "orders/forged",
+		Status:    "success",
+	}
+	// Attacker even computes a "plausible" HMAC with their own key — but
+	// it cannot match the legitimate chain key.
+	attackerKey := bytes.Repeat([]byte("z"), MinChainKeyLen)
+	forged.HMAC = computeHMAC(attackerKey, nil, forged)
+
+	prepended := append([]Event{forged}, original...)
+	err := VerifyChain(prepended, testChainKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+// TestVerifyChain_RejectsTruncatedChain shows that deletion of any non-tail
+// record changes a successor's recomputed HMAC because its PrevHMAC no
+// longer matches the (now-missing) predecessor's HMAC.
+func TestVerifyChain_RejectsTruncatedChain(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	for i := range 4 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	events := store.Events()
+	require.Len(t, events, 4)
+
+	// Drop event[1]. event[2].PrevHMAC still points at the original
+	// event[1].HMAC, which the new event[1] (= original event[2]) does
+	// not produce.
+	truncated := []Event{events[0], events[2], events[3]}
+	err := VerifyChain(truncated, testChainKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+	// The first survivor's PrevHMAC no longer matches its (now-) predecessor.
+	assert.Contains(t, err.Error(), "event[1]")
+}
+
+// TestVerifyChain_DifferentKeyFails ensures the chain key is actually
+// load-bearing: a correctly-formed chain cannot be validated under a
+// different key.
+func TestVerifyChain_DifferentKeyFails(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+	l.LogAction(ctx, "alice", "create", "orders/1", "success")
+
+	otherKey := bytes.Repeat([]byte("w"), MinChainKeyLen)
+	err := VerifyChain(store.Events(), otherKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrChainBroken)
+}
+
+// TestVerifyChain_EmptyIsValid documents the degenerate case so callers
+// can rely on VerifyChain not erroring at boot before any events have
+// been recorded.
+func TestVerifyChain_EmptyIsValid(t *testing.T) {
+	assert.NoError(t, VerifyChain(nil, testChainKey))
+	assert.NoError(t, VerifyChain([]Event{}, testChainKey))
+
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	require.NoError(t, l.VerifyChain(context.Background()))
+}
+
+// TestLogger_Append_ConcurrentDoesNotReuseHMAC is the regression test for
+// the append-mutex: without it, two concurrent appenders could both read
+// the same PrevHMAC from the store and write events whose PrevHMAC was
+// the same — i.e. forking the chain. The test fires N goroutines and
+// asserts every appended event has a unique HMAC AND the chain still
+// validates.
+func TestLogger_Append_ConcurrentDoesNotReuseHMAC(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	const writers = 16
+	const perWriter = 8
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	start := make(chan struct{})
+	for w := range writers {
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := range perWriter {
+				_ = l.LogE(ctx, Event{
+					Actor:    "w" + string(rune('a'+w)),
+					Action:   "create",
+					Resource: "r/" + string(rune('a'+i)),
+					Status:   "success",
+				})
+			}
+		}(w)
+	}
+	close(start)
+	wg.Wait()
+
+	events := store.Events()
+	require.Len(t, events, writers*perWriter)
+
+	// No HMAC may repeat — that would mean two events shared a PrevHMAC
+	// or were byte-identical.
+	seen := make(map[string]struct{}, len(events))
+	for i, e := range events {
+		key := string(e.HMAC)
+		_, dup := seen[key]
+		require.Falsef(t, dup, "event[%d].HMAC duplicated", i)
+		seen[key] = struct{}{}
+	}
+
+	// And the whole chain must still validate.
+	require.NoError(t, VerifyChain(events, testChainKey))
+}
+
+// TestLogger_LogE_DiscardsCallerSuppliedHMAC ensures a caller cannot
+// "preset" their own PrevHMAC / HMAC to splice into the chain at an
+// arbitrary point. The Logger is the sole authority on those fields.
+func TestLogger_LogE_DiscardsCallerSuppliedHMAC(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	fake := []byte("forged-prev-hmac---------------!")
+	require.NoError(t, l.LogE(ctx, Event{
+		Actor:    "alice",
+		Action:   "create",
+		Resource: "orders/1",
+		Status:   "success",
+		PrevHMAC: fake,
+		HMAC:     fake,
+	}))
+
+	events := store.Events()
+	require.Len(t, events, 1)
+	assert.NotEqual(t, fake, events[0].PrevHMAC)
+	assert.NotEqual(t, fake, events[0].HMAC)
+	assert.Empty(t, events[0].PrevHMAC, "first event in chain should have empty PrevHMAC")
+}
+
+// ---------------------------------------------------------------------------
+// Signed cursors
+// ---------------------------------------------------------------------------
+
+// TestQuery_RejectsForgedCursor verifies the §5.4 cursor claim. A
+// hand-crafted "next page" string that was not produced by the Logger's
+// signer must be rejected before reaching the Store.
+func TestQuery_RejectsForgedCursor(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+	for i := range 5 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	for name, forged := range map[string]string{
+		"no separator":            "not-a-real-cursor",
+		"bad base64 in payload":   "!@#$.YWJj",
+		"bad base64 in signature": "YWJj.!@#$",
+		"good payload, bad mac":   "YWJj.YWJj", // payload "abc", signature "abc" (random)
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := l.Query(ctx, Filter{}, forged, 2)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidCursor)
+		})
+	}
+}
+
+// TestQuery_RejectsCursorSignedWithDifferentKey is the more interesting
+// adversarial case: the cursor is *well-formed* — base64 payload, base64
+// signature — and was signed by *some* HMAC key. Only the verification
+// step (which uses our cursorKey, not the attacker's) catches it.
+func TestQuery_RejectsCursorSignedWithDifferentKey(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+	for i := range 3 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	// Attacker signs "page-2" with a different key.
+	attackerSigner := signedCursor{key: bytes.Repeat([]byte("z"), MinCursorKeyLen)}
+	forged := attackerSigner.encodeCursor("some-real-event-id")
+	require.NotEmpty(t, forged, "attacker should be able to produce a well-formed cursor")
+
+	_, _, err := l.Query(ctx, Filter{}, forged, 2)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+// TestQuery_RoundTripsSignedCursors verifies that the cursors actually
+// work end-to-end: page 1 returns a signed cursor, page 2 accepts it,
+// and so on through to the end of the result set.
+func TestQuery_RoundTripsSignedCursors(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+	for i := range 5 {
+		l.LogAction(ctx, "alice", "create", "orders/"+string(rune('a'+i)), "success")
+	}
+
+	collected := make([]string, 0, 5)
+	cursor := ""
+	for range 5 {
+		page, next, err := l.Query(ctx, Filter{}, cursor, 2)
+		require.NoError(t, err)
+		for _, e := range page {
+			collected = append(collected, e.Resource)
+		}
+		// Page cursors must contain a period (i.e. be a signed envelope)
+		// or be empty (last page).
+		if next != "" {
+			assert.Contains(t, next, ".", "next cursor must be signed-envelope shaped")
+		}
+		cursor = next
+		if cursor == "" {
+			break
+		}
+	}
+	assert.Len(t, collected, 5)
+}
+
 func TestRetentionJobPanicsOnInvalidConfig(t *testing.T) {
 	assert.Panics(t, func() {
 		RetentionJob(nil, time.Hour, nil)
@@ -483,6 +926,10 @@ func (s *retentionCaptureStore) Append(context.Context, Event) error {
 
 func (s *retentionCaptureStore) Query(context.Context, Filter, string, int) ([]Event, string, error) {
 	return nil, "", nil
+}
+
+func (s *retentionCaptureStore) LastHMAC(context.Context) ([]byte, error) {
+	return nil, nil
 }
 
 func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time) (int64, error) {

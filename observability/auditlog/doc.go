@@ -13,6 +13,20 @@
 // should call [ValidateEvent] in Append to keep the same contract as the bundled
 // memory store.
 //
+// # Tamper-evidence
+//
+// Every appended event carries an HMAC over a canonical encoding of its
+// fields plus the previous event's HMAC, forming an append-only chain
+// keyed by [WithChainKey]. [VerifyChain] (and the streaming
+// [Logger.VerifyChain]) returns wrapped [ErrChainBroken] if any record
+// has been modified, deleted, or inserted. Pagination cursors returned by
+// [Logger.Query] are HMAC-signed with [WithCursorKey] so attackers cannot
+// guess / forge cursors to skip records; forged cursors return wrapped
+// [ErrInvalidCursor]. Both keys are required (≥32 bytes); [New] panics
+// fast at startup if either is missing.
+//
+// See docs/audit/THREAT_MODEL.md §5.4 for the canonical claims.
+//
 // # HTTP Middleware
 //
 // Use the httpx/middleware/auditlog package to automatically audit HTTP

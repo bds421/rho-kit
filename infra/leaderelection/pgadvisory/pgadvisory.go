@@ -38,7 +38,9 @@ type Elector struct {
 	key           string
 	retryInterval time.Duration
 	healthCheck   time.Duration
+	drainWarnTick time.Duration
 	logger        *slog.Logger
+	metrics       callbackDrainMetrics
 
 	leader atomic.Bool
 }
@@ -77,6 +79,36 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithMetrics enables Prometheus observability for the callback-drain
+// watchdog. The elector validates [Elector] key against
+// [promutil.ValidateStaticLabelValue] when this option is set, so a
+// misconfigured key fails fast at construction rather than producing
+// silent metric label injection.
+//
+// Passing nil panics so that "metrics enabled but unwired" never
+// degrades into a silent no-op — omit the option entirely to opt out.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("leaderelection/pgadvisory: WithMetrics requires non-nil metrics (omit the option for no metrics)")
+	}
+	return func(e *Elector) { e.metrics = m }
+}
+
+// WithCallbackDrainWarnInterval overrides the cadence at which the
+// elector logs a warning and records a pending-drain metric while
+// waiting for [leaderelection.Callbacks.OnAcquired] to return after
+// leadership ended. Default: 30 seconds.
+//
+// Tests use shorter intervals to exercise the warn path; production
+// callers should leave the default unless their on-call rotation has
+// a different escalation cadence.
+func WithCallbackDrainWarnInterval(d time.Duration) Option {
+	if d <= 0 {
+		panic("leaderelection/pgadvisory: WithCallbackDrainWarnInterval requires a positive duration")
+	}
+	return func(e *Elector) { e.drainWarnTick = d }
+}
+
 // New constructs an Elector that competes for `key` against every
 // other replica using `db`.
 func New(db *sql.DB, key string, opts ...Option) *Elector {
@@ -88,6 +120,7 @@ func New(db *sql.DB, key string, opts ...Option) *Elector {
 		key:           key,
 		retryInterval: 5 * time.Second,
 		healthCheck:   time.Second,
+		drainWarnTick: 30 * time.Second,
 		logger:        slog.Default(),
 	}
 	for _, o := range opts {
@@ -95,6 +128,9 @@ func New(db *sql.DB, key string, opts ...Option) *Elector {
 			panic("leaderelection/pgadvisory: option must not be nil")
 		}
 		o(e)
+	}
+	if e.metrics != nil {
+		validateMetricKeyLabel(e.key)
 	}
 	return e
 }
@@ -208,16 +244,26 @@ func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
+// callbackResult is the value sent on cbDone when the OnAcquired
+// goroutine exits — either normally (zero value) or via panic
+// (panicValue captures recover()).
+type callbackResult struct {
+	panicValue any
+}
+
 // holdLeadership runs the OnAcquired callback while a sub-goroutine
 // pings the connection to detect loss. Returns only after the callback
 // has exited, so a retry cannot overlap with leader work from the
 // previous term inside this process. A callback that ignores cancellation
 // stalls this elector rather than letting the same process enter leadership
 // twice.
+//
+// The drain watchdog logs a warning and records a pending-drain
+// observation every [Elector.drainWarnTick] (default 30s) while
+// waiting on a stalled OnAcquired — round-3 removed the hard drain
+// timeout, so this is the only operator-visible signal that a buggy
+// callback is pinning the elector.
 func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb leaderelection.Callbacks) error {
-	type callbackResult struct {
-		panicValue any
-	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -239,7 +285,7 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 	defer healthTicker.Stop()
 
 	awaitCallback := func() callbackResult {
-		return <-cbDone
+		return e.awaitCallbackDrain(cbDone)
 	}
 
 	for {
@@ -273,6 +319,44 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
 				}
 				return termErr
+			}
+		}
+	}
+}
+
+// awaitCallbackDrain blocks until the OnAcquired goroutine has
+// signalled completion via cbDone. While waiting it emits a warn log
+// and (if metrics are configured) records a pending-drain observation
+// every drainWarnTick so a stalled callback is operator-visible. The
+// terminal duration is always recorded with state="drained".
+func (e *Elector) awaitCallbackDrain(cbDone <-chan callbackResult) callbackResult {
+	start := time.Now()
+	tick := e.drainWarnTick
+	if tick <= 0 {
+		tick = 30 * time.Second
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case result := <-cbDone:
+			if e.metrics != nil {
+				e.metrics.observeDrainDuration(time.Since(start), e.key, drainStateDrained)
+			}
+			return result
+		case <-ticker.C:
+			elapsed := time.Since(start)
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("leader-election: OnAcquired callback still draining",
+				redact.String("key", e.key),
+				slog.Duration("elapsed", elapsed),
+			)
+			if e.metrics != nil {
+				e.metrics.observeDrainDuration(elapsed, e.key, drainStatePending)
+				e.metrics.observeDrainWarn(e.key)
 			}
 		}
 	}

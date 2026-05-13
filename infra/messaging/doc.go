@@ -15,4 +15,14 @@
 // [Message.WithHeader], or call [ValidateMessage] for manually-constructed
 // messages, so IDs, types, payloads, and headers stay portable across AMQP,
 // NATS, Redis, and the in-memory broker.
+//
+// Observability for [BufferedPublisher] is opt-in via
+// [NewPrometheusMetrics] (or [WithPrometheusMetrics]). The default
+// collectors are namespaced under `buffered_publisher_` and labelled by
+// publisher name:
+//
+//   - `buffered_publisher_dropped_total{publisher, reason}` — back-pressure drops.
+//   - `buffered_publisher_state_writes_total{publisher, outcome}` — state-file writes.
+//   - `buffered_publisher_pending{publisher}` — current buffer depth.
+//   - `buffered_publisher_buffered_bytes{publisher}` — approximate bytes pending.
 package messaging

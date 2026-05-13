@@ -772,3 +772,119 @@ func TestComputeCache_ForegroundComputeIsolatesCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled, "cancelled caller must return ctx.Err()")
 	<-computed // compute still runs for the next caller
 }
+
+// gatherGaugeValue reads the current value of a GaugeVec label.
+func gatherGaugeValue(t *testing.T, gv *prometheus.GaugeVec, label string) float64 {
+	t.Helper()
+	g, err := gv.GetMetricWithLabelValues(label)
+	require.NoError(t, err)
+	var m dto.Metric
+	require.NoError(t, g.Write(&m))
+	return m.GetGauge().GetValue()
+}
+
+// gatherHistogramSampleCount reads the total sample count of a HistogramVec label.
+func gatherHistogramSampleCount(t *testing.T, hv *prometheus.HistogramVec, label string) uint64 {
+	t.Helper()
+	o, err := hv.GetMetricWithLabelValues(label)
+	require.NoError(t, err)
+	h, ok := o.(prometheus.Histogram)
+	require.True(t, ok, "expected prometheus.Histogram, got %T", o)
+	var m dto.Metric
+	require.NoError(t, h.Write(&m))
+	return m.GetHistogram().GetSampleCount()
+}
+
+// TestComputeCache_SingleflightFollowerMetrics verifies the three new
+// singleflight collectors fire correctly when concurrent callers race
+// on the same key: one leader runs the compute (inflight observed > 0
+// during the call); N-1 followers join, get counted, and have their
+// wait observed.
+func TestComputeCache_SingleflightFollowerMetrics(t *testing.T) {
+	backend := newTestBackend(t)
+	reg := prometheus.NewRegistry()
+	metrics := NewComputeMetrics(reg)
+
+	cc, err := NewComputeCache[string](backend, "sf:",
+		WithComputeMetricsRegisterer(metrics),
+		WithComputeName("sf_cache"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	release := make(chan struct{})
+	// inflightDuringCompute is recorded inside the leader's compute while
+	// the gauge is incremented. Reading the gauge here proves the gauge
+	// is observable while the singleflight leader is still running, not
+	// just before/after.
+	var inflightDuringCompute float64
+	var sampled atomic.Bool
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		// Only sample once — every concurrent goroutine routes through the
+		// same singleflight leader so this closure runs once.
+		if sampled.CompareAndSwap(false, true) {
+			inflightDuringCompute = gatherGaugeValue(t, metrics.singleflightInflight, "sf_cache")
+		}
+		<-release
+		return "result", time.Minute, nil
+	}
+
+	const goroutines = 5
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			_, _ = cc.GetOrCompute(context.Background(), "k", fn)
+		}()
+	}
+
+	// Give followers time to join the singleflight group, then release.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	assert.EqualValues(t, 1, inflightDuringCompute,
+		"gauge must read 1 while the single leader's compute is running")
+	assert.EqualValues(t, 0, gatherGaugeValue(t, metrics.singleflightInflight, "sf_cache"),
+		"gauge must decrement back to 0 once the leader's compute completes")
+	// Followers = total callers - leader (the first goroutine to claim the key).
+	assertCounterValue(t, metrics.singleflightFollowers, "sf_cache", float64(goroutines-1))
+	// Every follower (and only followers) records exactly one wait observation.
+	assert.Equal(t, uint64(goroutines-1),
+		gatherHistogramSampleCount(t, metrics.singleflightWait, "sf_cache"),
+		"wait histogram must record one sample per follower (not per leader)")
+}
+
+// TestComputeCache_SingleflightSoloCallerNotFollower verifies that a
+// caller that wins the singleflight race solo (no concurrent peers)
+// is NOT counted as a follower and does NOT record a wait sample.
+// Without this guard the metric would conflate "compute happened" with
+// "follower joined a leader" — the latter being the only signal of
+// useful dedup.
+func TestComputeCache_SingleflightSoloCallerNotFollower(t *testing.T) {
+	backend := newTestBackend(t)
+	reg := prometheus.NewRegistry()
+	metrics := NewComputeMetrics(reg)
+
+	cc, err := NewComputeCache[string](backend, "solo:",
+		WithComputeMetricsRegisterer(metrics),
+		WithComputeName("solo_cache"),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	fn := func(context.Context) (string, time.Duration, error) {
+		return "val", time.Minute, nil
+	}
+
+	_, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.NoError(t, err)
+
+	assertCounterValue(t, metrics.singleflightFollowers, "solo_cache", 0)
+	assert.Equal(t, uint64(0),
+		gatherHistogramSampleCount(t, metrics.singleflightWait, "solo_cache"),
+		"solo caller must not produce a wait sample")
+	assert.EqualValues(t, 0, gatherGaugeValue(t, metrics.singleflightInflight, "solo_cache"),
+		"inflight gauge must be 0 after solo compute completes")
+}

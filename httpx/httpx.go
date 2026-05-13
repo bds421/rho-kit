@@ -437,6 +437,8 @@ func httpStatusToCode(status int) string {
 		return "BAD_GATEWAY"
 	case http.StatusServiceUnavailable:
 		return string(apperror.CodeUnavailable)
+	case http.StatusInsufficientStorage:
+		return string(apperror.CodeStorageFull)
 	default:
 		return "INTERNAL"
 	}

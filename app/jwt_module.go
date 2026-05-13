@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
@@ -21,7 +24,9 @@ type jwtModuleConfig struct {
 type jwtModule struct {
 	BaseModule
 
-	cfg jwtModuleConfig
+	cfg        jwtModuleConfig
+	registerer prometheus.Registerer
+	instance   string
 
 	// initialized during Init
 	provider *jwtutil.Provider
@@ -41,6 +46,7 @@ func newJWTModule(cfg jwtModuleConfig) *jwtModule {
 	return &jwtModule{
 		BaseModule: NewBaseModule("jwt"),
 		cfg:        cfg,
+		instance:   "primary",
 	}
 }
 
@@ -90,6 +96,15 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 		jwtutil.CacheTTL(),
 		opts...,
 	)
+
+	// Register the JWKS observability collector. Failures degrade the
+	// dashboard but never block service startup — the verifier itself is
+	// untouched by registration errors.
+	if _, err := jwtutil.NewJWKSMetricsCollector(m.provider, m.registerer, m.instance); err != nil {
+		mc.Logger.Warn("jwks metrics collector not registered",
+			slog.Any("error", err),
+		)
+	}
 
 	mc.Runner.AddFunc("jwt-provider", func(ctx context.Context) error {
 		return m.provider.Run(ctx)

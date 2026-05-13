@@ -108,6 +108,124 @@ func TestRateLimiterMetrics_RejectUnsafeLimiterNames(t *testing.T) {
 	assertPanic(t, func() { WithKeyedMetrics(nil) })
 }
 
+func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+	rl := NewKeyedRateLimiter(100, time.Minute,
+		WithKeyedMetrics(metrics),
+		WithKeyedLimiterName("api_key"),
+	)
+
+	// No traffic yet — gauge should be 0.
+	if got := activeKeysSample(t, reg, "api_key"); got != 0 {
+		t.Fatalf("initial active-keys = %v, want 0", got)
+	}
+
+	// Three distinct keys map to up to 3 shards; sum across all shards
+	// must equal the number of distinct keys regardless of FNV bucket.
+	for _, key := range []string{"tenant-a", "tenant-b", "tenant-c"} {
+		if allowed, _, err := rl.AllowKey(key); err != nil || !allowed {
+			t.Fatalf("AllowKey(%q) = allowed %v, err %v", key, allowed, err)
+		}
+	}
+
+	if got := activeKeysSample(t, reg, "api_key"); got != 3 {
+		t.Fatalf("active-keys = %v, want 3", got)
+	}
+
+	// Repeated AllowKey for an existing key must NOT grow the gauge.
+	for range 5 {
+		_, _, _ = rl.AllowKey("tenant-a")
+	}
+	if got := activeKeysSample(t, reg, "api_key"); got != 3 {
+		t.Fatalf("after duplicates active-keys = %v, want 3", got)
+	}
+}
+
+func TestKeyedActiveKeysGauge_TracksMultipleLimitersDistinctNames(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(WithRegisterer(reg))
+
+	rlA := NewKeyedRateLimiter(100, time.Minute,
+		WithKeyedMetrics(metrics),
+		WithKeyedLimiterName("api_key"),
+	)
+	rlB := NewKeyedRateLimiter(100, time.Minute,
+		WithKeyedMetrics(metrics),
+		WithKeyedLimiterName("login"),
+	)
+
+	_, _, _ = rlA.AllowKey("tenant-a")
+	_, _, _ = rlA.AllowKey("tenant-b")
+	_, _, _ = rlB.AllowKey("user-1")
+
+	if got := activeKeysSample(t, reg, "api_key"); got != 2 {
+		t.Fatalf("api_key active-keys = %v, want 2", got)
+	}
+	if got := activeKeysSample(t, reg, "login"); got != 1 {
+		t.Fatalf("login active-keys = %v, want 1", got)
+	}
+}
+
+func TestKeyedActiveKeysGauge_NotEmittedWithoutLimiters(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_ = NewMetrics(WithRegisterer(reg))
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() == "http_ratelimit_keyed_limiter_active_keys" {
+			if len(mf.GetMetric()) != 0 {
+				t.Fatalf("expected no samples with zero limiters, got %d", len(mf.GetMetric()))
+			}
+		}
+	}
+}
+
+func TestKeyedActiveKeysGauge_IdempotentRegistration(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
+
+	if m1.activeKeys != m2.activeKeys {
+		t.Fatal("duplicate NewMetrics on same registerer must share the active-keys collector")
+	}
+
+	// A limiter registered through m1's hooks must also surface in m2's view.
+	rl := NewKeyedRateLimiter(10, time.Minute,
+		WithKeyedMetrics(m1),
+		WithKeyedLimiterName("shared"),
+	)
+	_, _, _ = rl.AllowKey("k1")
+
+	if got := activeKeysSample(t, reg, "shared"); got != 1 {
+		t.Fatalf("active-keys = %v, want 1", got)
+	}
+}
+
+func activeKeysSample(t *testing.T, reg *prometheus.Registry, limiter string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != "http_ratelimit_keyed_limiter_active_keys" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "limiter" && lbl.GetValue() == limiter {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func assertDecision(t *testing.T, m *Metrics, limiter, kind, outcome string, want float64) {
 	t.Helper()
 	got := testutil.ToFloat64(m.decisions.WithLabelValues(limiter, kind, outcome))

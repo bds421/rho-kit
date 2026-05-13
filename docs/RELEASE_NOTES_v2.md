@@ -37,6 +37,17 @@ Release-candidate artifacts are maintained under `docs/release/`: the
 module-level public API freeze, the operational migration guide, and the
 RC evidence checklist.
 
+Downstream onboarding (minimum `go.mod`, the smallest compilable program,
+and the common first-mistake checklist) lives in
+[ai/adoption.md](ai/adoption.md). Note: the v2.0.0 `app/v2` module
+transitively imports every adapter sub-module (`amqpbackend`,
+`natsbackend`, `pgx`, `redis`, storage backends, …) so the Builder can
+stay fluent without compile-time adapter selection; a v2.1 "lazy
+adapter" split into per-adapter sub-packages
+(`app/postgres`, `app/amqp`, `app/nats`, …) is planned and documented in
+[release/MIGRATION_V2.md §8](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-v21-lazy-adapter-plan).
+This is a known migration cost, not a v2.0.0 blocker.
+
 ## Breaking changes
 
 Runtime and API behaviour changes include the `httpx/middleware/auth`

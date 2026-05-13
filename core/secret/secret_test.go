@@ -193,6 +193,97 @@ func TestValueTypedUsage_StillRedacts(t *testing.T) {
 	assert.Equal(t, redactedValue, fmt.Sprintf("%+v", zero))
 }
 
+// TestString_RedactsAcrossAllRenderVerbs is the adversarial render-matrix
+// test: it exercises every standard rendering path the package promises to
+// redact and asserts the raw plaintext never appears in the output, AND
+// that the redaction marker IS present. The matrix is deliberately
+// exhaustive — fmt verbs, json.Marshal, slog, encoding.TextMarshaler,
+// slice/map/pointer wrappers — because each path dispatches through a
+// different interface (fmt.Formatter vs fmt.Stringer vs json.Marshaler vs
+// encoding.TextMarshaler vs slog.LogValuer) and an interface that quietly
+// disappears from the method set (the H-1 value-receiver regression) would
+// silently leak through exactly one of these without breaking the others.
+func TestString_RedactsAcrossAllRenderVerbs(t *testing.T) {
+	const literal = "hunter2"
+	s := NewFromString(literal)
+
+	assertRedacted := func(t *testing.T, name, rendered string) {
+		t.Helper()
+		assert.NotContainsf(t, rendered, literal,
+			"%s rendered the plaintext: %q", name, rendered)
+		assert.Containsf(t, rendered, redactedValue,
+			"%s missing redaction marker %q in output: %q",
+			name, redactedValue, rendered)
+	}
+
+	// fmt verbs against *String.
+	assertRedacted(t, "%v", fmt.Sprintf("%v", s))
+	assertRedacted(t, "%s", fmt.Sprintf("%s", s))
+	assertRedacted(t, "%q", fmt.Sprintf("%q", s))
+	assertRedacted(t, "%+v", fmt.Sprintf("%+v", s))
+	assertRedacted(t, "%#v", fmt.Sprintf("%#v", s))
+
+	// fmt against a pointer-to-value-String — the value redaction
+	// methods promote into the pointer method set, so taking the
+	// address of a value-typed String must still route through Format
+	// rather than reflectively dumping the underlying buffer. (Taking
+	// &(*String) yields a **String whose default fmt rendering is the
+	// pointer address, which leaks nothing but also is not a sensible
+	// API surface to assert on.)
+	sValue := *s
+	assertRedacted(t, "%v (&sValue)", fmt.Sprintf("%v", &sValue))
+	assertRedacted(t, "%+v (&sValue)", fmt.Sprintf("%+v", &sValue))
+
+	// json.Marshal — the literal "<redacted>" gets HTML-escaped to
+	// "<redacted>" in the encoded bytes. Decode and assert
+	// on the decoded string so escaping cannot hide a leak in either
+	// direction (and so a future encoder that disables HTML escaping
+	// doesn't silently break this test).
+	jb, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.NotContains(t, string(jb), literal, "json.Marshal leaked plaintext: %s", jb)
+	var decoded string
+	require.NoError(t, json.Unmarshal(jb, &decoded))
+	assert.Equal(t, redactedValue, decoded,
+		"json.Marshal must decode back to the redaction marker; got %q", decoded)
+
+	// slog with a JSON handler — the structured-log path most likely to
+	// be deployed in production.
+	var buf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logger.Info("event", "secret", s)
+	logOut := buf.String()
+	assert.NotContains(t, logOut, literal, "slog leaked plaintext: %s", logOut)
+	assert.True(t,
+		strings.Contains(logOut, redactedValue) ||
+			strings.Contains(logOut, `<redacted>`),
+		"slog output missing redaction marker: %s", logOut)
+
+	// encoding.TextMarshaler — yaml.v3 / TOML / similar serialisers
+	// dispatch through this.
+	tb, err := s.MarshalText()
+	require.NoError(t, err)
+	assertRedacted(t, "MarshalText", string(tb))
+
+	// Slice containing the secret — fmt reaches into the element and
+	// must call String.Format / String.String per element rather than
+	// printing the buf field.
+	slice := []*String{s, s}
+	assertRedacted(t, "%v ([]*String)", fmt.Sprintf("%v", slice))
+
+	// Map containing the secret — same reach-through risk as the slice
+	// but exercises map-value formatting.
+	m := map[string]*String{"k": s}
+	assertRedacted(t, "%v (map[string]*String)", fmt.Sprintf("%v", m))
+
+	// Value-typed slice / map exercise the value-receiver method set
+	// directly (the H-1 regression surface).
+	sliceVal := []String{*s, *s}
+	assertRedacted(t, "%v ([]String)", fmt.Sprintf("%v", sliceVal))
+	mVal := map[string]String{"k": *s}
+	assertRedacted(t, "%v (map[string]String)", fmt.Sprintf("%v", mVal))
+}
+
 func TestConcurrentReadsAreSafe(t *testing.T) {
 	s := NewFromString(plain)
 	done := make(chan struct{})

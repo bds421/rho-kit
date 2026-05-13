@@ -175,6 +175,7 @@ by package.
 |---|---|
 | `signing.Sign` / `signing.Verify` | Argument order is now `Sign(secret, body)` / `Verify(secret, body, ...)` (was `Sign(body, secret)`). The secret parameter is the named type `signing.Secret`; use `signing.NewSecret(secretBytes)` or an explicit `signing.Secret(...)` conversion so body/secret swaps fail at compile time. |
 | `signing.NewStaticKeyStore` | Now returns `(*StaticKeyStore, error)`. The old panic-on-error form is `signing.MustNewStaticKeyStore`. |
+| `signing.ErrExpiredSignature` | Split into `signing.ErrSignatureExpired` (timestamp older than `maxAge`) and `signing.ErrSignatureClockSkew` (timestamp too far in the future of the verifier's clock). Callers that branched on the single sentinel must now check both — or use `errors.Is(err, signing.ErrSignatureExpired) \|\| errors.Is(err, signing.ErrSignatureClockSkew)` for the merged behaviour. Splitting them lets dashboards alert separately on "consumer is slow / replay window missed" vs "producer's clock is wrong". |
 
 ### `crypto/passhash`
 
@@ -216,6 +217,7 @@ by package.
 |---|---|
 | `httpx.WriteJSON` | Signature is now `WriteJSON(w, r, status, v)`. `httpx.WriteJSONCtx` is removed. |
 | `httpx.WriteValidationError` and `httpStatusToCode` | Wire format now emits `apperror.Code*` string values. 401 returns `"AUTH_REQUIRED"` (was `"UNAUTHORIZED"`), 422 returns `"PERMANENT"` (was `"UNPROCESSABLE_ENTITY"`), 429 returns `"RATE_LIMIT"` (was `"RATE_LIMITED"`), 503 returns `"UNAVAILABLE"` (was `"SERVICE_UNAVAILABLE"`). Clients that parse the `code` field in error JSON must update. |
+| `apperror.CodeStorageFull` / HTTP 507 | New in v2: storage backends that exhaust capacity (S3 `EntityTooLarge`, GCS quota 507/413, Azure `RequestBodyTooLarge`/`InsufficientStorage`, SFTP/local `ENOSPC`) return [`storage.ErrInsufficientCapacity`](../../infra/storage/storage.go) which carries `apperror.CodeStorageFull`. `httpx.WriteServiceError`, `httpx.HTTPStatus`, and `httpStatusToCode` map this to HTTP 507 Insufficient Storage with wire code `"STORAGE_FULL"`. Clients should treat this status as retryable after operator action. |
 | `httpx.SetIfNotNil` | Removed; use `core/maputil.SetIfNotNil`. |
 | `httpx.NewTracingHTTPClient` | Consolidated into a single variadic-options constructor accepting `TracingClientOption`. The old `NewTracingHTTPClientWithOptions` is removed. |
 | `httpx/reqsign` package | Removed. Use `httpx/sign` with `httpx/middleware/signedrequest` instead. The two formats intentionally froze separate canonical strings and key-ID header spellings. |
@@ -263,6 +265,7 @@ by package.
 | Area | Migration |
 |---|---|
 | `WithCallbackDrainTimeout` | Option removed. `holdLeadership` now blocks until `Callbacks.OnAcquired` returns, so the same process cannot run two overlapping leadership terms. The cancelled `OnAcquired` context is the only signal — your callback MUST observe `ctx.Done()` and return promptly. If you need a hard upper bound, wrap the callback body with your own `context.WithTimeout`. See `TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains` in each adapter. |
+| Callback-drain visibility | Both adapters now expose `NewMetrics`, `WithMetrics`, and `WithCallbackDrainWarnInterval` so a stalled `OnAcquired` callback is operator-visible. The watchdog logs a warn and increments `leaderelection_callback_drain_warn_total{key}` every 30 seconds (override via `WithCallbackDrainWarnInterval`), and the terminal drain duration lands in `leaderelection_callback_drain_seconds{state="drained",key=...}` with `state="pending"` snapshots on each warn tick. Buckets: `[1, 5, 10, 30, 60, 120, 300]` seconds. |
 
 ### `data/budget/memory`, `data/ratelimit/gcra`, `data/ratelimit/tokenbucket`
 
@@ -342,7 +345,35 @@ go vet ./...
 If the service uses kit infrastructure helpers, also run its Docker-backed
 integration tests with the service's normal `integration` tag.
 
-## 8. Things Not Migrated In v2.0.0
+## 8. Adopter Onboarding And The v2.1 Lazy-Adapter Plan
+
+The downstream onboarding flow (minimum `go.mod`, the smallest compilable
+program, common first-mistake checklist) lives in
+[../ai/adoption.md](../ai/adoption.md). New services should start there
+before touching individual `With*()` methods.
+
+Known v2.0.0 cost — and the v2.1 plan to remove it:
+
+- The `app/v2` module transitively imports every adapter sub-module
+  (`amqpbackend`, `natsbackend`, `redisbackend`, `pgx`, `redis`,
+  `leaderelection`, storage backends, etc.). This is intentional for
+  v2.0.0 so the Builder stays a single fluent API with no compile-time
+  selection ceremony. A service that only uses HTTP + Redis still pays
+  the build-time cost of `amqp091`, `nats.go`, and `pgx`.
+- A v2.1 "lazy adapter" architecture is planned. Adapter wiring will
+  move into per-adapter sub-packages (`app/postgres`, `app/amqp`,
+  `app/nats`, `app/redis`, …) under the existing `app/v2` module path,
+  so a service composes only the adapters it actually uses
+  (`b.With(postgres.Module(cfg))`, `b.With(amqp.Module(url))`). The
+  existing `b.WithPostgres(...)` / `b.WithRabbitMQ(...)` methods will
+  remain as backwards-compatible shims that route through the new
+  sub-packages.
+- This is documented as a known migration cost; it is NOT a v2.0.0
+  blocker. Services that adopt v2.0.0 today will get a mechanical
+  refactor path when v2.1 lands — the Builder, Infrastructure struct,
+  module lifecycle, and per-adapter option types are all stable.
+
+## 9. Things Not Migrated In v2.0.0
 
 The following remain out of scope for v2.0.0 and should not block adoption:
 
@@ -350,3 +381,4 @@ The following remain out of scope for v2.0.0 and should not block adoption:
 - Kafka backend.
 - Additional managed-KMS adapters beyond the currently frozen AWS KMS, Azure
   Key Vault, Google Cloud KMS, and HashiCorp Vault Transit adapter modules.
+- The v2.1 lazy-adapter split (per §8).

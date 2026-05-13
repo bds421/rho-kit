@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -450,6 +451,25 @@ func sftpRemoteError(op string, err error) error {
 	return fmt.Errorf("sftpbackend: %s failed", op)
 }
 
+// translateSFTPCapacity inspects a write error from the SFTP server and
+// returns [storage.ErrInsufficientCapacity] when the remote filesystem
+// signaled ENOSPC. The kit's underlying sftp client surfaces the server's
+// SSH_FX_FAILURE response with the originating syscall.Errno on Unix
+// peers; some servers also return a sftp.StatusCode == "Failure" with an
+// error message containing "no space".
+func translateSFTPCapacity(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	}
+	if msg := err.Error(); strings.Contains(strings.ToLower(msg), "no space left") {
+		return fmt.Errorf("sftpbackend: remote disk full: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
+	}
+	return nil
+}
+
 // Put writes content from r to the remote path. Validators run before upload.
 func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
 	_, span := otel.Tracer(tracerName).Start(ctx, "sftp.Put")
@@ -527,6 +547,10 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 		_ = f.Close()
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
+		if capacity := translateSFTPCapacity(err); capacity != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
+			return capacity
+		}
 		opErr := sftpRemoteError("write", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
@@ -535,6 +559,10 @@ func (b *SFTPBackend) Put(ctx context.Context, key string, r io.Reader, meta sto
 	if err := f.Close(); err != nil {
 		_ = client.Remove(tmpPath)
 		b.metrics.observeOp(b.instance, "put", start, err)
+		if capacity := translateSFTPCapacity(err); capacity != nil {
+			span.SetStatus(codes.Error, storage.SpanErrorDescription(capacity))
+			return capacity
+		}
 		opErr := sftpRemoteError("close", err)
 		span.SetStatus(codes.Error, storage.SpanErrorDescription(opErr))
 		return opErr
