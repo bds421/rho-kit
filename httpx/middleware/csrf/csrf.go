@@ -114,6 +114,11 @@ func WithSecret(secret []byte) Option {
 // secrets for zero-downtime rotation. Newly issued cookies are signed with
 // current. Existing cookies signed by previous secrets continue to verify until
 // callers remove those secrets after the cookie/token overlap window.
+//
+// Panics if current or any previous secret is shorter than 32 bytes
+// — HMAC-SHA256 requires at least the hash output size for its
+// security guarantees. Validation runs eagerly so misconfiguration
+// fails at startup, not at first request.
 func WithSecrets(current []byte, previous ...[]byte) Option {
 	// Validate eagerly so misconfigurations fail at startup.
 	if _, err := cloneSecretRing(current, previous...); err != nil {

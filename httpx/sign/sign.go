@@ -150,6 +150,10 @@ func WithNonceFn(fn func() string) Option {
 // secret is the HMAC key; keyID is sent verbatim in
 // X-Signature-Key-Id so the verifier can pick the right key from its
 // resolver.
+//
+// Panics if secret is shorter than 32 bytes, keyID is empty or
+// exceeds the keyID length cap, or any option is nil — all
+// programmer-side wiring mistakes caught at construction.
 func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) http.RoundTripper {
 	return wrap(base, staticKeyStore{keyID: keyID, secret: append([]byte(nil), secret...)}, opts...)
 }
@@ -158,6 +162,9 @@ func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) h
 // key from keys for every request. Use this with a reloading key store so new
 // outbound requests move to the new key immediately while verifiers still keep
 // the previous key in their resolver during the overlap window.
+//
+// Panics if keys is nil, its current key fails validation, or any
+// option is nil. Use Wrap when a single static key is sufficient.
 func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
 	if keys == nil {
 		panic("sign: KeyStore must not be nil")

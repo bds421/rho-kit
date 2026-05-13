@@ -32,7 +32,9 @@ type StaticKeyProvider struct {
 }
 
 // StaticKey creates a KeyProvider that always returns the given key.
-// The key must be exactly 32 bytes (AES-256).
+// The key must be exactly 32 bytes (AES-256); StaticKey panics on
+// any other length so a misconfigured wiring never reaches the first
+// encrypt operation.
 func StaticKey(key []byte) KeyProvider {
 	if len(key) != 32 {
 		panic("encryption: key must be 32 bytes")

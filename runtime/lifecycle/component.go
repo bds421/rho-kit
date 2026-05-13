@@ -23,7 +23,10 @@ type httpServerComponent struct {
 // HTTPServer adapts an *http.Server to a Component.
 // Start calls ListenAndServe (or ListenAndServeTLS if TLSConfig is set).
 // Stop calls Shutdown for graceful draining.
-// Panics if srv is nil.
+//
+// Panics if srv is nil, srv.Addr is empty, srv.Handler is nil, or
+// srv.ReadHeaderTimeout is zero — all wiring mistakes caught at
+// construction so a misconfigured server never reaches Start.
 func HTTPServer(srv *http.Server) Component {
 	if srv == nil {
 		panic("lifecycle: HTTPServer requires a non-nil *http.Server")

@@ -126,6 +126,11 @@ func (b *Broker) Publish(ctx context.Context, exchange, routingKey string, msg m
 // and routing key. Use "*" for either to match all. Returns a
 // [SubscriptionID] that callers can pass to [Broker.Unsubscribe] for
 // fine-grained teardown without dropping unrelated subscriptions.
+//
+// Panics if b or handler is nil, or the exchange/routing-key
+// arguments fail [messaging.ValidateExchangeName] /
+// [messaging.ValidateRoutingKey]. These are wiring mistakes that
+// should fail at startup, not silently route nothing.
 func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context.Context, d messaging.Delivery) error) SubscriptionID {
 	if b == nil {
 		panic("membroker: Subscribe requires a non-nil Broker")

@@ -148,7 +148,10 @@ func WithAsync() HandlerOption {
 }
 
 // WithName sets a human-readable name for the handler, used in logs
-// and error callbacks. Defaults to "anonymous".
+// and error callbacks. Defaults to "anonymous". Panics when name
+// fails Prometheus static-label validation — the name reaches metric
+// label values, so an invalid character would otherwise produce
+// silent metric drops downstream.
 func WithName(name string) HandlerOption {
 	return func(c *handlerConfig) {
 		if err := promutil.ValidateStaticLabelValue("handler name", name); err != nil {
