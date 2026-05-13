@@ -7,6 +7,9 @@ import (
 )
 
 // MemoryStore is an in-memory Store for testing. Not suitable for production.
+// Safe for concurrent use — the events slice is RWMutex-guarded; the
+// AppendChained / Append paths hold the write lock across the chain
+// extension so concurrent appenders cannot observe the same prev HMAC.
 type MemoryStore struct {
 	mu     sync.RWMutex
 	events []Event

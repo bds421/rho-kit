@@ -70,6 +70,8 @@ return {1, 0}
 `)
 
 // Limiter is a per-key Redis-backed GCRA [ratelimit.Limiter].
+// Safe for concurrent use — all per-call state lives in Redis; the
+// embedded goredis client is itself goroutine-safe.
 type Limiter struct {
 	client goredis.UniversalClient
 	prefix string

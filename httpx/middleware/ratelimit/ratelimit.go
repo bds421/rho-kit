@@ -42,6 +42,9 @@ const defaultMaxPerShard = 10_000
 // Sharding reduces mutex contention under high concurrency. The type
 // satisfies [lifecycle.Component] so callers can register it directly with
 // a lifecycle.Runner.
+//
+// Concurrency: Allow is safe for concurrent use. Start must be invoked
+// from a single goroutine — the lifecycle.Runner provides this contract.
 type RateLimiter struct {
 	shards         [numShards]shard
 	limit          int

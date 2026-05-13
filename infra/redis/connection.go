@@ -23,6 +23,9 @@ const (
 // go-redis handles per-command reconnection internally; this type provides a
 // health boolean for readiness probes and an onReconnect callback for
 // re-subscriptions or script re-registration.
+//
+// Safe for concurrent use — the embedded UniversalClient is goroutine-safe;
+// the health bool and reconnect state are RWMutex-guarded.
 type Connection struct {
 	client redis.UniversalClient
 

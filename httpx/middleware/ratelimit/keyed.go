@@ -36,6 +36,9 @@ type keyedShard struct {
 // matching the approach used by [RateLimiter]. The type satisfies
 // [lifecycle.Component] so callers can register it directly with a
 // lifecycle.Runner.
+//
+// Concurrency: AllowKey is safe for concurrent use. Start must only be
+// called once per instance (guarded by an internal started flag).
 type KeyedRateLimiter struct {
 	shards      [numShards]keyedShard
 	limit       int

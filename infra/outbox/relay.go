@@ -36,7 +36,11 @@ const (
 
 // Relay polls the outbox table and publishes pending entries via a Publisher.
 // It implements lifecycle.Component for integration with the service runner.
-// Safe for concurrent use -- multiple instances can run against the same table.
+//
+// Concurrency: multiple Relay instances are safe to run against the same
+// table — atomic SELECT FOR UPDATE on the FetchPending path prevents
+// duplicate claims. A given Relay may not have Start called more than
+// once; the started flag enforces this.
 type Relay struct {
 	store     Store
 	publisher Publisher

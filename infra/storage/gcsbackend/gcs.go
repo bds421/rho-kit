@@ -24,6 +24,8 @@ const tracerName = "kit/storage/gcs"
 var _ storage.Storage = (*Backend)(nil)
 
 // Backend implements [storage.Storage] using Google Cloud Storage.
+// Safe for concurrent use — all mutable state is owned by the upstream
+// *gcsstorage.Client which is itself goroutine-safe.
 type Backend struct {
 	client     *gcsstorage.Client
 	bucket     *gcsstorage.BucketHandle

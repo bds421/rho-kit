@@ -36,6 +36,9 @@ import (
 const defaultSweepInterval = 5 * time.Minute
 
 // Limiter is a per-key GCRA [ratelimit.Limiter].
+//
+// Safe for concurrent use — Allow takes the internal mutex; Close is
+// idempotent and joins the sweeper goroutine.
 type Limiter struct {
 	rate  time.Duration
 	burst int

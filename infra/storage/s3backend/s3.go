@@ -48,6 +48,8 @@ type Presigner interface {
 }
 
 // Backend implements [storage.Storage] using AWS S3 (or compatible endpoints).
+// Safe for concurrent use — all mutable state is owned by the upstream
+// AWS SDK client which is itself goroutine-safe.
 type Backend struct {
 	client     Client
 	presigner  Presigner

@@ -57,6 +57,10 @@ type Client interface {
 }
 
 // Backend implements [storage.Storage] using SFTP.
+//
+// Safe for concurrent use — connections are pooled, the per-Backend
+// RWMutex guards the close path, and live cleanup goroutines are
+// joined on Close via the internal WaitGroup.
 type Backend struct {
 	cfg        Config
 	instance   string

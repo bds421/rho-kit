@@ -376,6 +376,9 @@ func WithAsyncAuditTimeout(d time.Duration) ServerOption {
 //
 // Construct via [NewServer]. Register tools with [Register]. Mount
 // the [Server.HTTP] handler on the same mux as the REST API.
+//
+// Safe for concurrent use — the tool registry is RWMutex-guarded;
+// async audit workers join an internal WaitGroup on Shutdown.
 type Server struct {
 	cfg serverConfig
 

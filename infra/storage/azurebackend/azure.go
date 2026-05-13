@@ -40,6 +40,8 @@ type BlobPager interface {
 }
 
 // Backend implements [storage.Storage] using Azure Blob Storage.
+// Safe for concurrent use — all mutable state is owned by the upstream
+// Azure SDK BlobClient which is itself goroutine-safe.
 type Backend struct {
 	client     BlobClient
 	container  string

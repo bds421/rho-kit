@@ -269,9 +269,10 @@ func queueMetricLabel(queue string) string {
 // reaper that inspects abandoned per-consumer lists and re-enqueues their
 // contents to the main queue.
 //
-// Only one Process goroutine per queue name is allowed. Calling Process
-// concurrently on the same queue will panic — this prevents duplication
-// amplification during crash recovery.
+// Concurrency: Enqueue and Stats are safe for concurrent use. Process
+// is single-goroutine per queue name — calling Process concurrently on
+// the same queue will panic; the single-owner contract prevents
+// duplication amplification during crash recovery.
 type Queue struct {
 	client goredis.UniversalClient
 	logger *slog.Logger

@@ -163,6 +163,8 @@ func callOnStateChange(fn func(name string, from, to State), name string, from, 
 }
 
 // CircuitBreaker wraps a gobreaker instance with defaults.
+// Safe for concurrent use — the embedded gobreaker.CircuitBreaker
+// serialises state transitions and per-call counter updates internally.
 type CircuitBreaker struct {
 	cb *gobreaker.CircuitBreaker[any]
 }

@@ -358,6 +358,10 @@ func toStringSlice(v any) ([]string, error) {
 // Note: jwk.Cache exists but uses the same interval for retry and refresh,
 // making it unsuitable here — we need aggressive retry on startup (2s backoff)
 // but infrequent periodic refresh (5–10 min).
+//
+// Safe for concurrent use — Verify / VerifyContext can be called from
+// many goroutines; the internal key set is swapped atomically on each
+// successful refresh.
 type Provider struct {
 	url              string
 	httpClient       *http.Client

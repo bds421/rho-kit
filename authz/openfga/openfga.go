@@ -49,6 +49,9 @@ var ErrRedirectBlocked = errors.New("openfga: redirects are disabled by default"
 
 // Decider is the OpenFGA-backed [authz.Decider]. Construct via
 // [New] with a configured *client.OpenFgaClient.
+//
+// Safe for concurrent use — all state is immutable post-construction;
+// the embedded OpenFGA client is itself goroutine-safe.
 type Decider struct {
 	c       *client.OpenFgaClient
 	storeID string

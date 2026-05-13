@@ -55,6 +55,11 @@ type pendingMessage struct {
 // [Message.ID]. Wire [BufferedPublisherMetrics.OnSaveError] to a
 // Prometheus counter / alert so a stuck disk surfaces before the crash
 // — [LastSaveError] is the in-process probe for the same condition.
+//
+// Concurrency: Publish is safe for concurrent use — the in-flight /
+// pending state is mu-guarded and direct publishes serialise on
+// directInFlight. Run must be invoked from a single goroutine; the
+// runMu + started flag guard against accidental double-Run.
 type BufferedPublisher struct {
 	logger            *slog.Logger
 	mu                sync.Mutex

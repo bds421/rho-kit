@@ -38,6 +38,9 @@ const (
 // The bucket map grows as new keys arrive. Idle keys are evicted by a
 // background sweeper goroutine; disable it with [WithoutSweeper] only
 // when caller cardinality is already bounded.
+//
+// Safe for concurrent use — Allow takes a per-bucket mutex; Close is
+// idempotent and joins the sweeper goroutine.
 type Limiter struct {
 	capacity float64
 	refill   float64

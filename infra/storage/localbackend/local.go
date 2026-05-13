@@ -19,6 +19,10 @@ var _ storage.Storage = (*Backend)(nil)
 // Backend implements [storage.Storage] using the local filesystem.
 // Keys are converted to relative paths within the root directory.
 // Directory components are created automatically on Put.
+//
+// Safe for concurrent use — the OS-level filesystem syscalls used by
+// each method are goroutine-safe and the Backend itself holds no
+// mutable in-process state.
 type Backend struct {
 	root       string
 	validators []storage.Validator

@@ -212,6 +212,10 @@ type Filter struct {
 // holds its own per-store lock across the read-tail / compute-HMAC /
 // persist callback so two concurrent appenders cannot observe the same
 // PrevHMAC and produce a chain fork.
+//
+// Safe for concurrent use — Log / LogE / List / VerifyChain can be
+// called from many goroutines. Close races the chainKey wipe against
+// in-flight LogE callbacks via secret.String.Use's internal lock.
 type Logger struct {
 	store     Store
 	logger    *slog.Logger

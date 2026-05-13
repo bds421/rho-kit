@@ -33,6 +33,11 @@ import (
 
 // Elector is a [leaderelection.Elector] backed by a Postgres advisory
 // lock.
+//
+// Concurrency: [Elector.Run] must be invoked from a single goroutine —
+// two concurrent Runs on the same Elector would race the leader flag
+// and call user callbacks out of order. [Elector.IsLeader] is safe
+// for concurrent reads.
 type Elector struct {
 	locker        *pgalock.Locker
 	key           string
@@ -42,7 +47,8 @@ type Elector struct {
 	logger        *slog.Logger
 	metrics       callbackDrainMetrics
 
-	leader atomic.Bool
+	leader  atomic.Bool
+	started atomic.Bool
 }
 
 // Option configures the Elector.
@@ -145,9 +151,13 @@ func (e *Elector) IsLeader() bool {
 	return e.leader.Load()
 }
 
-// Run blocks while trying to acquire and hold leadership. See
-// [leaderelection.Elector.Run] for callback semantics.
+// Run blocks while trying to acquire and hold leadership. Single-goroutine
+// only — see [Elector] type docs. See [leaderelection.Elector.Run] for
+// callback semantics.
 func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
+	if !e.started.CompareAndSwap(false, true) {
+		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnLeader / OnRelinquish out of order")
+	}
 	if ctx == nil {
 		return errors.New("leader-election: Run requires a non-nil context")
 	}
