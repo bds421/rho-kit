@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/bds421/rho-kit/data/v2/budget"
 )
@@ -115,7 +116,10 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 		panic("budget/memory: clock must not be nil")
 	}
 	if b.sweepInterval > 0 {
-		go b.sweepLoop()
+		// Weak-ref sweeper: a forgotten Close cannot keep the goroutine
+		// alive past the Budget's reachability — same design rationale
+		// as data/ratelimit/tokenbucket.runSweeper.
+		go runSweeper(weak.Make(b), b.sweepInterval, b.stopCh, b.doneCh)
 	} else {
 		close(b.doneCh)
 	}
@@ -145,15 +149,22 @@ func (b *Budget) Close() error {
 	return nil
 }
 
-func (b *Budget) sweepLoop() {
-	defer close(b.doneCh)
-	t := time.NewTicker(b.sweepInterval)
+// runSweeper is a free function so the goroutine never holds a strong
+// reference to the Budget. See data/ratelimit/tokenbucket.runSweeper
+// for the design rationale.
+func runSweeper(weakB weak.Pointer[Budget], interval time.Duration, stopCh, doneCh chan struct{}) {
+	defer close(doneCh)
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
-		case <-b.stopCh:
+		case <-stopCh:
 			return
 		case <-t.C:
+			b := weakB.Value()
+			if b == nil {
+				return
+			}
 			b.sweep()
 		}
 	}

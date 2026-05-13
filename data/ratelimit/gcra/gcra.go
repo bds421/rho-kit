@@ -25,6 +25,7 @@ import (
 	"context"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
 )
@@ -113,7 +114,10 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 		o(l)
 	}
 	if l.sweepInterval > 0 {
-		go l.sweepLoop()
+		// Weak.Pointer-backed sweeper: a forgotten Close cannot keep
+		// the goroutine alive past the Limiter's reachability lifetime
+		// — see tokenbucket.runSweeper for the design rationale.
+		go runSweeper(weak.Make(l), l.sweepInterval, l.stopCh, l.doneCh)
 	} else {
 		close(l.doneCh)
 	}
@@ -142,15 +146,23 @@ func (l *Limiter) Close() error {
 	return nil
 }
 
-func (l *Limiter) sweepLoop() {
-	defer close(l.doneCh)
-	t := time.NewTicker(l.sweepInterval)
+// runSweeper is a free function so the goroutine never holds a strong
+// reference to the Limiter. The weak.Pointer upgrade fails once the
+// last caller drops their reference, at which point the sweeper exits
+// on its own — Close remains the synchronous shutdown path.
+func runSweeper(weakL weak.Pointer[Limiter], interval time.Duration, stopCh, doneCh chan struct{}) {
+	defer close(doneCh)
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
-		case <-l.stopCh:
+		case <-stopCh:
 			return
 		case <-t.C:
+			l := weakL.Value()
+			if l == nil {
+				return
+			}
 			l.sweep()
 		}
 	}

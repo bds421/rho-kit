@@ -7,6 +7,7 @@ import (
 	"math"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/dgraph-io/ristretto/v2"
 )
@@ -214,24 +215,35 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	}
 	mc.cache = cache
 	mc.stopSweeper = make(chan struct{})
-	go mc.sweepNXClaims()
+	// Weak-ref sweeper: if a caller forgets Close, the goroutine
+	// noticing weak.Value() == nil exits on its own — see
+	// data/ratelimit/tokenbucket.runSweeper for the design rationale.
+	go runNXClaimsSweeper(weak.Make(mc), mc.stopSweeper)
 
 	return mc, nil
 }
 
-// sweepNXClaims runs a periodic background pass over nxClaims, deleting
-// entries whose recorded expiry has passed. Without this, the map grows
-// unbounded for the process lifetime when callers churn through many
-// distinct SetNX keys (per-user idempotency keys, ephemeral feature
-// flags, etc.) — a slow leak the agent reviewer flagged.
-func (mc *MemoryCache) sweepNXClaims() {
+// runNXClaimsSweeper periodically drops nxClaims entries whose recorded
+// expiry has passed. Without this, the map grows unbounded for the
+// process lifetime when callers churn through many distinct SetNX keys
+// (per-user idempotency keys, ephemeral feature flags, etc.).
+//
+// The function is package-private and takes a [weak.Pointer] so the
+// goroutine never holds a strong reference to the MemoryCache — a
+// forgotten Close cannot keep this loop alive past the cache's
+// reachability lifetime.
+func runNXClaimsSweeper(weakCache weak.Pointer[MemoryCache], stop <-chan struct{}) {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for {
 		select {
-		case <-mc.stopSweeper:
+		case <-stop:
 			return
 		case now := <-t.C:
+			mc := weakCache.Value()
+			if mc == nil {
+				return
+			}
 			mc.nxClaims.Range(func(k, v any) bool {
 				c, ok := v.(nxClaim)
 				if !ok {
