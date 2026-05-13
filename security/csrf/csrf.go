@@ -64,6 +64,14 @@ const MaxSessionIDLen = 1024
 // 2^64 tokens to guess one.
 const nonceLen = 16
 
+// MaxTokenLen caps the encoded length of a CSRF token Verify will
+// accept. A valid token is exactly 4*ceil((8+8+16+32)/3) = 86 base64
+// characters; the 256-byte cap gives 3× headroom for any future field
+// addition while stopping a hostile caller from sending a multi-MB
+// header that would force a costly base64 decode allocation before
+// the length-mismatch check at line 199 ever runs.
+const MaxTokenLen = 256
+
 // sessionPrefixLen is the number of bytes of the session-ID hash
 // embedded in the token so [Issuer.Verify] can short-circuit on a
 // mismatched session before doing the HMAC compare.
@@ -191,6 +199,9 @@ func (i *Issuer) Issue(sessionID string) (Token, error) {
 func (i *Issuer) Verify(t Token, sessionID string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
+	}
+	if len(t) > MaxTokenLen {
+		return ErrTokenInvalid
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(string(t))
 	if err != nil {

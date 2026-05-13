@@ -14,6 +14,14 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
+// maxStreamHeadersBytes caps the raw bytes the headers JSON field is
+// allowed to occupy on the wire before parseMessage will reject a
+// delivery. 32 KiB comfortably accommodates the per-entry header caps
+// across MaxHeaderCount entries plus JSON structural overhead, while
+// stopping a hostile peer from sending a 500MB headers field that
+// OOMs the consumer at json.Unmarshal time.
+const maxStreamHeadersBytes = 32 * 1024
+
 // deadLetter moves a failed message to the dead-letter stream, then ACKs it.
 // Uses a pipeline for single round-trip, minimizing the crash window between
 // XADD and XACK that could cause DLQ duplicates.
@@ -263,6 +271,15 @@ func parseMessage(raw goredis.XMessage) (Message, error) {
 		return msg, fmt.Errorf("%w: timestamp field must be a string", ErrInvalidMessage)
 	}
 	if v, ok := raw.Values["headers"].(string); ok {
+		// Cap raw headers JSON bytes BEFORE unmarshal so a hostile or
+		// corrupt stream writer cannot OOM the consumer with a 500MB
+		// "headers" field. The cap (32 KiB) is comfortably above any
+		// realistic header set (MaxMessageHeaderValueBytes × 32 entries
+		// + JSON structural bytes); ValidateMessage applies the per-entry
+		// limits AFTER unmarshal so the parse cost stays bounded.
+		if len(v) > maxStreamHeadersBytes {
+			return msg, fmt.Errorf("%w: headers JSON exceeds %d bytes", ErrInvalidMessage, maxStreamHeadersBytes)
+		}
 		headers := make(map[string]string)
 		if err := json.Unmarshal([]byte(v), &headers); err != nil {
 			return msg, fmt.Errorf("%w: headers must be a JSON object: %w", ErrInvalidMessage, err)

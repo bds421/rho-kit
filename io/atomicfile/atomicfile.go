@@ -9,6 +9,15 @@ import (
 	"path/filepath"
 )
 
+// MaxLoadBytes caps the state file Load will read. State files are
+// operator-controlled, but a shared filesystem co-tenant could grow
+// one without bound; this cap stops a slow OOM cascade if that
+// happens. 16 MiB is comfortably above any realistic state file
+// (BufferedPublisher state, snapshots, persisted counters) while
+// orders-of-magnitude short of a host's swap budget. Override via
+// [LoadBounded] when the caller knows a different bound.
+const MaxLoadBytes = 16 * 1024 * 1024
+
 // Load reads a JSON-encoded value from path. Returns the zero value of T
 // if the file does not exist (first run). The existence flag lets
 // callers distinguish "file missing" from "file present and decoded as
@@ -27,6 +36,8 @@ func Load[T any](path string) (value T, exists bool, err error) {
 		return value, false, fileError("stat state file", statErr)
 	} else if info.Mode()&os.ModeSymlink != 0 {
 		return value, false, errors.New("refusing to read through symlink")
+	} else if info.Size() > MaxLoadBytes {
+		return value, false, fmt.Errorf("state file exceeds %d bytes (got %d)", MaxLoadBytes, info.Size())
 	}
 
 	data, readErr := os.ReadFile(path)

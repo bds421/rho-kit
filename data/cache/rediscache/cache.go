@@ -136,6 +136,14 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("redis cache get: %w", err)
 	}
+	// Read-side size enforcement: another process sharing this Redis
+	// instance (legacy app, migration tool, malicious co-tenant) may
+	// have stored a value much larger than rc.maxValueSize. Without
+	// this check, the .Bytes() above could allocate hundreds of MB of
+	// scratch and OOM the host before we ever see the value.
+	if rc.maxValueSize > 0 && len(val) > rc.maxValueSize {
+		return nil, fmt.Errorf("redis cache get: value exceeds maximum size")
+	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
 	return val, nil
 }
@@ -215,6 +223,14 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 		// goredis returns string for MGet results.
 		s, ok := v.(string)
 		if !ok {
+			continue
+		}
+		// Read-side size enforcement: see Get() for rationale. A foreign
+		// writer's oversized value silently drops out of the batch
+		// rather than failing the whole MGet, so a single poisoned
+		// entry doesn't take out the caller's whole request.
+		if rc.maxValueSize > 0 && len(s) > rc.maxValueSize {
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
 		rc.metrics.hits.WithLabelValues(rc.name).Inc()

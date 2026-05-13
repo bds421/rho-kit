@@ -162,6 +162,15 @@ type envelope struct {
 const lockMarker = "lock:"
 const respMarker = "resp"
 
+// maxStoredEntryBytes caps the size of a stored idempotency entry the
+// Store will accept on read. Set-side bounds via [Store.PutResponse]
+// reject oversized writes; this is the read-side defence so a foreign
+// writer (a legacy app sharing the Redis instance, a misuse, or an
+// attacker with key-write but not key-read access elsewhere) cannot
+// OOM the host by ballooning an existing entry. 8 MiB is comfortably
+// above any realistic cached response while a hard stop short of swap.
+const maxStoredEntryBytes = 8 * 1024 * 1024
+
 // encodeLockValue produces the value stored under the key while a lock is
 // held. Format: "lock:" + token + ":" + base64(fingerprint).
 func encodeLockValue(token string, fingerprint []byte) string {
@@ -205,6 +214,9 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 			return nil, false, translated
 		}
 		return nil, false, fmt.Errorf("idempotencystore: get: %w", err)
+	}
+	if len(data) > maxStoredEntryBytes {
+		return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 	// Distinguish between a lock value (in-flight) and a response envelope.
 	if strings.HasPrefix(string(data), lockMarker) {
@@ -277,6 +289,11 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 		if translated := translateUnavailable(err); translated != err {
 			return "", false, false, translated
 		}
+	}
+	if len(existing) > maxStoredEntryBytes {
+		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	}
+	if err != nil {
 		return "", false, false, fmt.Errorf("idempotencystore: inspect: %w", err)
 	}
 

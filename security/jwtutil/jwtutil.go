@@ -49,6 +49,7 @@ const (
 	defaultHTTPTimeout     = 5 * time.Second
 	defaultMaxStale        = 1 * time.Hour
 	minimumTLSVersion      = tls.VersionTLS12
+	maxJWTLen              = 16 * 1024
 )
 
 // Claims represents the verified JWT payload used by the kit auth middleware.
@@ -215,6 +216,15 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (*Claims, error) {
 	if set == nil || set.Len() == 0 {
 		return nil, ErrInvalidKeySet
+	}
+	// Cap token length before handing to jwt.Parse so a hostile caller
+	// of Provider.Verify cannot force a 100 MB parse allocation. The
+	// httpx auth middleware enforces an 8 KiB bearer cap upstream, but
+	// Provider.Verify is reachable from non-HTTP callers (grpc, MCP,
+	// background workers). 16 KiB is comfortably above any realistic
+	// JWT with custom claims while a hard stop short of a parse-cost DoS.
+	if len(tokenString) > maxJWTLen {
+		return nil, errors.New("jwtutil: token exceeds maximum length")
 	}
 	now = verificationTime(now)
 	parseOpts := []jwt.ParseOption{

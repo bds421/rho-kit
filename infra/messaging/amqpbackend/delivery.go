@@ -78,29 +78,63 @@ func extractStringHeaders(h amqp.Table) map[string]string {
 	return result
 }
 
+// Header parsing bounds. AMQP delivery headers are attacker-controllable
+// from any publisher with channel access, so a confused or hostile peer
+// could send a deeply-nested or wide [amqp.Table] that stack-overflows
+// the recursive walk or OOMs the consumer. We cap both axes — anything
+// past the limits is dropped and replaced with a sentinel string so the
+// consumer can still see the delivery for DLQ purposes without
+// duplicating its own size enforcement.
+const (
+	maxHeaderDepth = 8
+	maxHeaderNodes = 256
+)
+
+// truncatedHeaderValue is the placeholder substituted for headers that
+// exceed [maxHeaderDepth] or [maxHeaderNodes]. Operators alerting on
+// this string see exactly when a peer exceeded the bound.
+const truncatedHeaderValue = "<amqp-header-truncated>"
+
 func headerToMap(h amqp.Table) map[string]any {
 	if h == nil {
 		return nil
 	}
-	return deepCopyTable(h)
+	budget := maxHeaderNodes
+	return deepCopyTable(h, 0, &budget)
 }
 
-func deepCopyTable(src amqp.Table) map[string]any {
+func deepCopyTable(src amqp.Table, depth int, budget *int) map[string]any {
+	if depth >= maxHeaderDepth {
+		return map[string]any{"": truncatedHeaderValue}
+	}
 	result := make(map[string]any, len(src))
 	for k, v := range src {
-		result[k] = deepCopyValue(v)
+		if *budget <= 0 {
+			result[k] = truncatedHeaderValue
+			continue
+		}
+		*budget--
+		result[k] = deepCopyValue(v, depth+1, budget)
 	}
 	return result
 }
 
-func deepCopyValue(v any) any {
+func deepCopyValue(v any, depth int, budget *int) any {
 	switch val := v.(type) {
 	case amqp.Table:
-		return deepCopyTable(val)
+		return deepCopyTable(val, depth, budget)
 	case []any:
+		if depth >= maxHeaderDepth {
+			return truncatedHeaderValue
+		}
 		copied := make([]any, len(val))
 		for i, item := range val {
-			copied[i] = deepCopyValue(item)
+			if *budget <= 0 {
+				copied[i] = truncatedHeaderValue
+				continue
+			}
+			*budget--
+			copied[i] = deepCopyValue(item, depth+1, budget)
 		}
 		return copied
 	case []byte:

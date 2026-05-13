@@ -351,9 +351,21 @@ func (c *Consumer) invokeHandler(ctx context.Context, handler messaging.Handler,
 	return handler(ctx, d)
 }
 
+// maxConsumerDeliveryBytes caps the AMQP delivery body bytes the
+// consumer will hand to json.Unmarshal. The publisher-side
+// MessageSizeLimiter enforces this on writes, but a peer producer
+// bypassing the kit or a broker that delivers oversized messages
+// could OOM the consumer at parse time. 32 MiB matches the kit's
+// reasonable upper bound for any single message that should ever
+// travel through an AMQP path (matches NATS default max msg size).
+const maxConsumerDeliveryBytes = 32 * 1024 * 1024
+
 // unmarshal is a pure parse function — no I/O, no ACK, no side-effects.
 // The caller is responsible for deciding what to do with the delivery on error.
 func unmarshal(delivery amqp.Delivery) (messaging.Message, error) {
+	if len(delivery.Body) > maxConsumerDeliveryBytes {
+		return messaging.Message{}, fmt.Errorf("delivery body exceeds %d bytes", maxConsumerDeliveryBytes)
+	}
 	var msg messaging.Message
 	if err := json.Unmarshal(delivery.Body, &msg); err != nil {
 		return messaging.Message{}, fmt.Errorf("unmarshal delivery: %w", err)

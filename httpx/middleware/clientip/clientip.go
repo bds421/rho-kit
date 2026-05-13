@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+// maxForwardedForBytes / maxForwardedForParts cap the X-Forwarded-For
+// parsing surface. Any joined value past these limits causes the
+// handler to fall back to RemoteAddr — the assumption is that anything
+// past a 32-hop chain of full IPv6 addresses is a misconfigured proxy
+// or malicious input, not legitimate traffic.
+const (
+	maxForwardedForBytes = 8 * 1024
+	maxForwardedForParts = 32
+)
+
 // defaultTrustedProxyCIDRs lists ONLY loopback ranges. Internal RFC1918 /
 // ULA ranges are no longer trusted by default — they let any caller reaching
 // the service from inside the VPC, pod network, or Docker network spoof
@@ -64,7 +74,18 @@ func ClientIPWithTrustedProxies(r *http.Request, trusted []*net.IPNet) string {
 	}
 
 	if forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ","); forwarded != "" {
+		// Cap the joined XFF length and parts count so a misconfigured
+		// upstream proxy that forwards client XFFs verbatim cannot turn
+		// this into an unbounded-parse vector. The cap is generous: even
+		// a chain of 32 hops with full IPv6 addresses fits comfortably
+		// in 8 KiB.
+		if len(forwarded) > maxForwardedForBytes {
+			return remoteIPString(r.RemoteAddr)
+		}
 		parts := strings.Split(forwarded, ",")
+		if len(parts) > maxForwardedForParts {
+			return remoteIPString(r.RemoteAddr)
+		}
 		for i := len(parts) - 1; i >= 0; i-- {
 			candidate := strings.TrimSpace(parts[i])
 			if candidate == "" {

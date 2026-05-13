@@ -13,6 +13,13 @@ import (
 // restart the listing from the head.
 var ErrInvalidCursor = errors.New("actionlog: query cursor is invalid")
 
+// MaxCursorLen caps the encoded cursor length DecodeCursor will accept.
+// A valid cursor is RFC3339Nano timestamp (max 35 bytes) + "|" + UUID
+// (36 bytes) = 72 bytes raw → ~96 base64url chars. 4 KiB gives 40×
+// headroom while stopping a hostile caller from forcing a multi-MB
+// base64 decode allocation on every paginated read.
+const MaxCursorLen = 4096
+
 // EncodeCursor renders the keyset position (occurredAt, id) as an
 // opaque, URL-safe string. Stores call this when more results remain
 // past a returned page. Stable across implementations so callers that
@@ -28,6 +35,9 @@ func EncodeCursor(occurredAt time.Time, id string) string {
 func DecodeCursor(cursor string) (time.Time, string, error) {
 	if cursor == "" {
 		return time.Time{}, "", nil
+	}
+	if len(cursor) > MaxCursorLen {
+		return time.Time{}, "", ErrInvalidCursor
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {

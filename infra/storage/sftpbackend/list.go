@@ -59,7 +59,7 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 
 		start := now()
 		count := 0
-		walkErr := b.walkDir(ctx, client, b.cfg.RootPath, prefix, opts, &count, yield)
+		walkErr := b.walkDir(ctx, client, b.cfg.RootPath, prefix, opts, &count, yield, 0)
 
 		// Don't report the sentinel as a real error.
 		if errors.Is(walkErr, errIterStopped) {
@@ -73,8 +73,18 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 	}
 }
 
+// maxWalkDepth caps the recursion depth of the directory walk. A
+// confused or hostile SFTP server (or a filesystem with symlink loops
+// the kit has not yet rejected) could otherwise return a directory
+// tree thousands of levels deep and stack-overflow the listing
+// goroutine. 32 levels comfortably accommodates any realistic prefix
+// hierarchy while a hard stop short of stack exhaustion.
+const maxWalkDepth = 32
+
 // walkDir recursively walks a remote directory, yielding ObjectInfo for files
 // matching the prefix. Returns an error if iteration was aborted due to error.
+// depth tracks recursion level so an attacker-controlled tree cannot
+// exhaust the goroutine stack.
 func (b *Backend) walkDir(
 	ctx context.Context,
 	client Client,
@@ -83,9 +93,15 @@ func (b *Backend) walkDir(
 	opts storage.ListOptions,
 	count *int,
 	yield func(storage.ObjectInfo, error) bool,
+	depth int,
 ) error {
 	if ctx.Err() != nil {
 		return nil
+	}
+	if depth >= maxWalkDepth {
+		err := fmt.Errorf("sftpbackend: directory walk exceeded depth %d at %q", maxWalkDepth, dir)
+		yield(storage.ObjectInfo{}, err)
+		return err
 	}
 
 	entries, err := client.ReadDir(dir)
@@ -114,7 +130,7 @@ func (b *Backend) walkDir(
 			if prefix != "" && !strings.HasPrefix(dirKey, prefix) && !strings.HasPrefix(prefix, dirKey) {
 				continue
 			}
-			if err := b.walkDir(ctx, client, entryPath, prefix, opts, count, yield); err != nil {
+			if err := b.walkDir(ctx, client, entryPath, prefix, opts, count, yield, depth+1); err != nil {
 				return err
 			}
 			continue

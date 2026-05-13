@@ -65,6 +65,14 @@ const closeDrainTimeout = 5 * time.Second
 
 const minimumTLSVersion = tls.VersionTLS12
 
+// maxConsumerDeliveryBytes caps the JetStream-delivered message bytes
+// the consumer will hand to json.Unmarshal. NATS's broker-side
+// max_msg_size is the first defence, but a misconfigured stream or
+// a foreign-writer scenario could still surface oversized messages —
+// this cap stops a parse-cost OOM at the kit boundary. 32 MiB matches
+// the kit's general AMQP/NATS upper bound (mirrors amqpbackend.maxConsumerDeliveryBytes).
+const maxConsumerDeliveryBytes = 32 * 1024 * 1024
+
 // Config is the connection-level configuration. Stream/consumer
 // declarations live on [StreamConfig] and [ConsumerConfig] so a single
 // connection can serve multiple streams.
@@ -822,6 +830,22 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 	subject := jm.Subject()
 	exchange, routingKey := extractExchangeAndRoutingKey(jm)
 
+	// Cap delivery bytes before json.Unmarshal so a JetStream-side
+	// configuration that produces unusually large messages cannot OOM
+	// the consumer at parse time. NATS's own max_msg_size operates at
+	// the broker; this is the kit-side safety net.
+	if data := jm.Data(); len(data) > maxConsumerDeliveryBytes {
+		c.logger.Error("natsbackend: oversized message — discarding",
+			redact.String("subject", subject),
+			"size_bytes", len(data),
+		)
+		if err := jm.Term(); err != nil {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+		} else {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeDecodeError)
+		}
+		return
+	}
 	var msg messaging.Message
 	if err := json.Unmarshal(jm.Data(), &msg); err != nil {
 		c.logger.Error("natsbackend: malformed message — discarding",

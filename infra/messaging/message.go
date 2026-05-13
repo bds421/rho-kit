@@ -27,6 +27,13 @@ const (
 	MaxMessageHeaderNameBytes = 128
 	// MaxMessageHeaderValueBytes caps each transport header value.
 	MaxMessageHeaderValueBytes = 8 * 1024
+	// MaxMessageHeaders caps the per-message header-map entry count. The
+	// per-entry size caps above bound each header's bytes, but without a
+	// count cap a hostile peer can send 10^5 maximally-sized headers and
+	// allocate ~800 MB at validation time. 64 is generous for any realistic
+	// header set (tracing, correlation, tenant, content-type, etc.) and a
+	// hard stop short of a DoS budget.
+	MaxMessageHeaders = 64
 )
 
 // ErrInvalidMessage marks message metadata or payload that is not portable
@@ -151,6 +158,9 @@ func ValidateMessage(msg Message) error {
 // ValidateMessageHeaders rejects header metadata that cannot safely round-trip
 // across every message transport supported by the kit.
 func ValidateMessageHeaders(headers map[string]string) error {
+	if len(headers) > MaxMessageHeaders {
+		return fmt.Errorf("%w: header count exceeds %d", ErrInvalidMessageHeader, MaxMessageHeaders)
+	}
 	for name, value := range headers {
 		if err := ValidateMessageHeader(name, value); err != nil {
 			return err

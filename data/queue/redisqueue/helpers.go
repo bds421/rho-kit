@@ -13,6 +13,13 @@ import (
 	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
+// queueEnvelopeOverhead is the assumed JSON envelope size (headers,
+// type, ID, timestamp, structural bytes) added to Message.Payload when
+// computing the pre-unmarshal length cap. 8 KiB comfortably exceeds
+// the per-field caps imposed by [validateMessage] without permitting
+// a parse-cost DoS.
+const queueEnvelopeOverhead = 8 * 1024
+
 // removeByIDScript scans the processing list for an entry whose top-level
 // JSON `id` field equals the given message ID, then atomically replaces it
 // with a tombstone and LREMs the tombstone. This avoids LREM-by-payload
@@ -189,6 +196,17 @@ return 0
 // handler routing fails, the entry is left in the processing list and will
 // be retried on the next recovery scan.
 func (q *Queue) handleMessage(ctx context.Context, data string, processingQ, queue, deadQ string, handler Handler) {
+	// Pre-size check before json.Unmarshal so a foreign writer cannot
+	// allocate gigabytes of Go-side scratch parsing a hostile payload.
+	// maxPayloadSize bounds Message.Payload bytes; we add a generous
+	// envelope overhead estimate (8 KiB) for the JSON wrapper, headers,
+	// IDs, etc. — actual per-field caps are re-enforced by validateMessage
+	// after the unmarshal succeeds.
+	if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize+queueEnvelopeOverhead {
+		q.discardProcessingPayload(ctx, processingQ, queue, data, "queue message exceeds size budget, discarding",
+			fmt.Errorf("payload+envelope exceeds %d bytes", q.maxPayloadSize+queueEnvelopeOverhead))
+		return
+	}
 	var msg Message
 	if err := json.Unmarshal([]byte(data), &msg); err != nil {
 		q.discardProcessingPayload(ctx, processingQ, queue, data, "failed to unmarshal queue message, discarding", err)

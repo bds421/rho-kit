@@ -12,6 +12,10 @@ import (
 // the cursor and restart the listing from the head.
 var ErrInvalidCursor = errors.New("approval: query cursor is invalid")
 
+// MaxCursorLen caps the encoded cursor length DecodeCursor will accept.
+// Mirrors actionlog.MaxCursorLen — see that constant for rationale.
+const MaxCursorLen = 4096
+
 // EncodeCursor renders the keyset position (createdAt, id) as an
 // opaque, URL-safe string. Stores call this when more results remain
 // past a returned page. Stable across backend implementations so a
@@ -27,6 +31,9 @@ func EncodeCursor(createdAt time.Time, id string) string {
 func DecodeCursor(cursor string) (time.Time, string, error) {
 	if cursor == "" {
 		return time.Time{}, "", nil
+	}
+	if len(cursor) > MaxCursorLen {
+		return time.Time{}, "", ErrInvalidCursor
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
