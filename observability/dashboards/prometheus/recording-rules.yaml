@@ -220,6 +220,73 @@ groups:
             0.0001
           )
 
+  - name: rho-kit-nats-latency
+    interval: 30s
+    rules:
+      - record: nats_publish_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, exchange, routing_key, le)
+              (rate(nats_publish_duration_seconds_bucket[5m]))
+          )
+      - record: nats_publish_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, exchange, routing_key, le)
+              (rate(nats_publish_duration_seconds_bucket[5m]))
+          )
+      - record: nats_handler_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, stream, durable, le)
+              (rate(nats_handler_duration_seconds_bucket[5m]))
+          )
+      - record: nats_handler_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, stream, durable, le)
+              (rate(nats_handler_duration_seconds_bucket[5m]))
+          )
+      - record: nats_publish_error_ratio:5m
+        expr: |
+          sum by (namespace, service, exchange, routing_key)
+            (rate(nats_published_total{outcome!="success"}[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, exchange, routing_key)
+              (rate(nats_published_total[5m])),
+            0.0001
+          )
+
+  - name: rho-kit-redis-stream-latency
+    interval: 30s
+    rules:
+      - record: redis_stream_processing_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (namespace, service, stream, group, le)
+              (rate(redis_stream_processing_duration_seconds_bucket[5m]))
+          )
+      - record: redis_stream_processing_duration_seconds:p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (namespace, service, stream, group, le)
+              (rate(redis_stream_processing_duration_seconds_bucket[5m]))
+          )
+      - record: redis_stream_failure_ratio:5m
+        expr: |
+          sum by (namespace, service, stream, group)
+            (rate(redis_stream_messages_failed_total[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, stream, group)
+              (rate(redis_stream_messages_consumed_total[5m]))
+            +
+            sum by (namespace, service, stream, group)
+              (rate(redis_stream_messages_failed_total[5m])),
+            0.0001
+          )
+
   - name: rho-kit-ratelimit-rates
     interval: 30s
     rules:

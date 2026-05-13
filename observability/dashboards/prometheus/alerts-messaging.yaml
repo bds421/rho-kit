@@ -1,6 +1,4 @@
-# Messaging alerts for outbox relay and direct AMQP publishing/consuming.
-# NATS and Redis-stream direct backend metrics/dashboards are explicitly
-# deferred from the v2.0.0 Prometheus contract freeze.
+# Messaging alerts for outbox relay and direct messaging backends.
 groups:
   - name: rho-kit-messaging
     rules:
@@ -128,3 +126,125 @@ groups:
             after exceeding retry or dead-letter failure safety limits.
             Inspect the DLQ, consumer logs, and dead-letter exchange bindings.
           runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/amqp-messaging.md"
+
+      - alert: RhoKitNATSPublishFailuresHigh
+        # Includes broker failures, invalid messages, and message-size
+        # rejections. Route validation failures happen before metric recording
+        # because they are caller/configuration errors, not broker attempts.
+        expr: |
+          sum by (namespace, service, exchange, routing_key)
+            (rate(nats_published_total{outcome!="success"}[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, exchange, routing_key)
+              (rate(nats_published_total[5m])),
+            0.0001
+          )
+            > 0.05
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "NATS publish failures > 5% for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Direct NATS JetStream publish attempts are failing for exchange
+            {{ $labels.exchange }} / routing key {{ $labels.routing_key }}.
+            Check broker connectivity, stream subjects, auth, and route
+            message-size overrides.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/nats-messaging.md"
+
+      - alert: RhoKitNATSDeliveryFinalizationFailures
+        expr: |
+          sum by (namespace, service, stream, durable, outcome)
+            (rate(nats_consumed_total{outcome=~"ack_failed|nak_failed|term_failed"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "NATS delivery finalization failures for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            The NATS consumer could not Ack, Nak, or Term deliveries for
+            stream {{ $labels.stream }} / durable {{ $labels.durable }}.
+            Duplicate delivery or stuck poison-message handling is likely.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/nats-messaging.md"
+
+      - alert: RhoKitNATSHandlerPanics
+        expr: |
+          sum by (namespace, service, stream, durable)
+            (rate(nats_consumed_total{outcome="handler_panic"}[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "NATS handler panics for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            A NATS handler panicked for stream {{ $labels.stream }} /
+            durable {{ $labels.durable }}. The backend terminates those
+            messages to avoid burning MaxDeliver, so inspect the payload and
+            handler crash before replaying.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/nats-messaging.md"
+
+      - alert: RhoKitRedisStreamFailureRateHigh
+        expr: |
+          sum by (namespace, service, stream, group)
+            (rate(redis_stream_messages_failed_total[5m]))
+          /
+          clamp_min(
+            sum by (namespace, service, stream, group)
+              (rate(redis_stream_messages_consumed_total[5m]))
+            +
+            sum by (namespace, service, stream, group)
+              (rate(redis_stream_messages_failed_total[5m])),
+            0.0001
+          )
+            > 0.05
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Redis Stream handler failures > 5% for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Redis Stream handler failures exceed 5% for stream
+            {{ $labels.stream }} / group {{ $labels.group }}. Inspect
+            handler logs, retry/dead-letter movement, and upstream Redis
+            availability.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/redis-stream.md"
+
+      - alert: RhoKitRedisStreamDeadLetters
+        expr: |
+          sum by (namespace, service, stream, group)
+            (rate(redis_stream_messages_dead_lettered_total[5m]))
+            > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Redis Stream dead-letter traffic for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Messages are being moved to the Redis Stream dead-letter path for
+            stream {{ $labels.stream }} / group {{ $labels.group }}. Inspect
+            the dead-letter stream and consumer logs before acknowledging
+            incident recovery.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/redis-stream.md"
+
+      - alert: RhoKitRedisStreamPendingHigh
+        expr: |
+          redis_stream_pending_messages > 1000
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Redis Stream pending entries high for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Redis Stream pending entries have stayed above 1000 for stream
+            {{ $labels.stream }} / group {{ $labels.group }}. Consumers may
+            be slow, wedged, or repeatedly failing before ACK.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/redis-stream.md"

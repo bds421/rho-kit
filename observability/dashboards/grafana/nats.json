@@ -1,0 +1,275 @@
+{
+  "title": "rho-kit / NATS JetStream direct messaging",
+  "uid": "rhokit-nats",
+  "tags": [
+    "rho-kit",
+    "nats",
+    "messaging"
+  ],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"nats_(published|consumed)_total\"}, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"nats_(published|consumed)_total\", namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "exchange",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(nats_published_total{namespace=\"$namespace\", service=\"$service\"}, exchange)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "stream",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(nats_consumed_total{namespace=\"$namespace\", service=\"$service\"}, stream)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "durable",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(nats_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\"}, durable)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Publish rate by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (exchange, routing_key, outcome) (rate(nats_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m]))",
+          "legendFormat": "{{exchange}} / {{routing_key}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "title": "Publish failure ratio",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(nats_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\", outcome!=\"success\"}[5m])) / clamp_min(sum(rate(nats_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])), 0.0001)",
+          "legendFormat": "failures / attempts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "title": "Publish p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(nats_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(nats_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(nats_publish_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "title": "Consume rate by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (stream, durable, outcome) (rate(nats_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\"}[5m]))",
+          "legendFormat": "{{stream}} / {{durable}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      }
+    },
+    {
+      "title": "Handler p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(nats_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(nats_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(nats_handler_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "title": "Retry / terminal failure rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (stream, durable, outcome) (rate(nats_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\", outcome=~\"retry|nak_failed|ack_failed|term_failed|permanent|decode_error|handler_panic\"}[5m]))",
+          "legendFormat": "{{stream}} / {{durable}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      }
+    },
+    {
+      "title": "Oversized publishes (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(nats_published_total{namespace=\"$namespace\", service=\"$service\", exchange=~\"$exchange\", outcome=\"too_large\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "title": "Ack / Nak / Term failures (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(nats_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\", outcome=~\"ack_failed|nak_failed|term_failed\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 24
+      }
+    },
+    {
+      "title": "Permanent / decode / panic terminations (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(nats_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\", outcome=~\"permanent|decode_error|handler_panic\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 24
+      }
+    },
+    {
+      "title": "Handler panics (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(nats_handler_duration_seconds_count{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", durable=~\"$durable\", outcome=\"panic\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 24
+      }
+    }
+  ]
+}

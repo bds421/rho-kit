@@ -459,6 +459,7 @@ type Publisher struct {
 	conn        *Connection
 	wait        time.Duration
 	sizeLimiter messaging.MessageSizeLimiter
+	metrics     *Metrics
 }
 
 // PublisherOption configures a Publisher.
@@ -506,6 +507,14 @@ func WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) Publish
 	return func(p *Publisher) {
 		p.sizeLimiter = p.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
 	}
+}
+
+// WithPublisherMetrics attaches Prometheus metrics to the publisher.
+func WithPublisherMetrics(m *Metrics) PublisherOption {
+	if m == nil {
+		panic("natsbackend: WithPublisherMetrics requires non-nil metrics")
+	}
+	return func(p *Publisher) { p.metrics = m }
 }
 
 // defaultPublishAckWait is used when neither [Config.PublishAckWait] nor
@@ -578,15 +587,22 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	if err := messaging.ValidatePublishRoute(exchange, routingKey); err != nil {
 		return err
 	}
+	started := time.Now()
+	outcome := natsPublishOutcomeFailed
+	defer func() {
+		p.metrics.observePublish(exchange, routingKey, outcome, started)
+	}()
 	msg = msg.Clone()
 	subject := composeSubject(exchange, routingKey)
 	if subject == "" {
 		return errors.New("natsbackend: composed subject is empty")
 	}
 	if err := messaging.ValidateMessage(msg); err != nil {
+		outcome = natsPublishOutcomeInvalidMessage
 		return err
 	}
 	if err := p.sizeLimiter.Check(exchange, routingKey, msg); err != nil {
+		outcome = publishOutcomeForError(err)
 		return err
 	}
 	body, err := json.Marshal(msg)
@@ -616,6 +632,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	if err != nil {
 		return fmt.Errorf("natsbackend: publish: %w", err)
 	}
+	outcome = natsPublishOutcomeSuccess
 	return nil
 }
 
@@ -641,15 +658,27 @@ type ConsumerConfig struct {
 // dispatches them to a handler. One Consumer instance per
 // (stream, durable).
 type Consumer struct {
-	conn   *Connection
-	cfg    ConsumerConfig
-	logger *slog.Logger
+	conn    *Connection
+	cfg     ConsumerConfig
+	logger  *slog.Logger
+	metrics *Metrics
+}
+
+// ConsumerOption configures a Consumer.
+type ConsumerOption func(*Consumer)
+
+// WithConsumerMetrics attaches Prometheus metrics to the consumer.
+func WithConsumerMetrics(m *Metrics) ConsumerOption {
+	if m == nil {
+		panic("natsbackend: WithConsumerMetrics requires non-nil metrics")
+	}
+	return func(c *Consumer) { c.metrics = m }
 }
 
 // NewConsumer constructs a Consumer. The underlying durable consumer
 // is created lazily on the first [Consumer.Consume] call so callers
 // don't pay the round trip during DI wiring.
-func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger) *Consumer {
+func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger, opts ...ConsumerOption) *Consumer {
 	if conn == nil {
 		panic("natsbackend: Consumer requires a Connection")
 	}
@@ -674,7 +703,14 @@ func NewConsumer(conn *Connection, cfg ConsumerConfig, logger *slog.Logger) *Con
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Consumer{conn: conn, cfg: cfg, logger: logger}
+	c := &Consumer{conn: conn, cfg: cfg, logger: logger}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("natsbackend: Consumer option must not be nil")
+		}
+		opt(c)
+	}
+	return c
 }
 
 func (c *Consumer) ready() error {
@@ -740,13 +776,22 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 // Process-level reaction to handler panics should subscribe to the
 // "natsbackend: handler panicked" log line, not rely on a re-throw.
 func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messaging.Handler) {
+	var handlerStarted time.Time
+	var handlerStartedSet bool
 	defer func() {
 		if r := recover(); r != nil {
+			if handlerStartedSet {
+				c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomePanic, handlerStarted)
+			}
 			// Term, not Nak: a panic is a poison-pill — re-running the
 			// same payload through the same handler will panic again,
 			// burning the entire MaxDeliver budget for nothing. Term
 			// hands it straight to the JetStream DLQ.
-			_ = jm.Term()
+			if err := jm.Term(); err != nil {
+				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+			} else {
+				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeHandlerPanic)
+			}
 			c.logger.Error("natsbackend: handler panicked — terminating message",
 				redact.Panic(r),
 			)
@@ -762,7 +807,11 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 			redact.String("subject", subject),
 			redact.Error(err),
 		)
-		_ = jm.Term() // unrecoverable — Term tells JetStream not to redeliver
+		if err := jm.Term(); err != nil {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+		} else {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeDecodeError)
+		}
 		return
 	}
 
@@ -785,7 +834,10 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 		Headers:       headers,
 	}
 
+	handlerStarted = time.Now()
+	handlerStartedSet = true
 	if err := handler(ctx, delivery); err != nil {
+		c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomeError, handlerStarted)
 		// Permanent errors (apperror.PermanentError) get Term'd so
 		// JetStream stops redelivering immediately, mirroring the
 		// AMQP backend's poison-pill handling. Without this every
@@ -796,7 +848,11 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 				redact.String("msg_id", msg.ID),
 				redact.Error(err),
 			)
-			_ = jm.Term()
+			if err := jm.Term(); err != nil {
+				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeTermFailed)
+			} else {
+				c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomePermanent)
+			}
 			return
 		}
 		c.logger.Warn("natsbackend: handler returned error — nacking",
@@ -804,10 +860,26 @@ func (c *Consumer) dispatch(ctx context.Context, jm jetstream.Msg, handler messa
 			redact.String("msg_id", msg.ID),
 			redact.Error(err),
 		)
-		_ = jm.Nak()
+		if err := jm.Nak(); err != nil {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeNakFailed)
+		} else {
+			c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeRetry)
+		}
 		return
 	}
-	_ = jm.Ack()
+	c.metrics.observeHandler(c.cfg.Stream, c.cfg.Durable, natsHandlerOutcomeSuccess, handlerStarted)
+	if err := jm.Ack(); err != nil {
+		c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeAckFailed)
+		return
+	}
+	c.metrics.observeConsumed(c.cfg.Stream, c.cfg.Durable, natsConsumeOutcomeAcked)
+}
+
+func publishOutcomeForError(err error) string {
+	if errors.Is(err, messaging.ErrMessageTooLarge) {
+		return natsPublishOutcomeTooLarge
+	}
+	return natsPublishOutcomeFailed
 }
 
 func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {

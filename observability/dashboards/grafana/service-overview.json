@@ -65,7 +65,7 @@
       "type": "text",
       "options": {
         "mode": "markdown",
-        "content": "**RED & runtime**\n- [HTTP RED](/d/rhokit-http-red)\n- [gRPC RED](/d/rhokit-grpc-red)\n- [Go runtime](/d/rhokit-runtime-go)\n\n**Infrastructure**\n- [DB pool](/d/rhokit-db-pool) - Postgres/MySQL connection pool\n- [Redis](/d/rhokit-redis) - commands, pool, reconnects\n- [Storage overview](/d/rhokit-storage)\n- [Storage / S3](/d/rhokit-storage-s3)\n- [Storage / GCS](/d/rhokit-storage-gcs)\n- [Storage / Azure](/d/rhokit-storage-azure)\n- [Storage / SFTP](/d/rhokit-storage-sftp)\n- [Outbox relay](/d/rhokit-outbox)\n- [AMQP direct messaging](/d/rhokit-amqp)\n\n**Traffic protection**\n- [HTTP rate limits](/d/rhokit-ratelimit)"
+        "content": "**RED & runtime**\n- [HTTP RED](/d/rhokit-http-red)\n- [gRPC RED](/d/rhokit-grpc-red)\n- [Go runtime](/d/rhokit-runtime-go)\n\n**Infrastructure**\n- [DB pool](/d/rhokit-db-pool) - Postgres/MySQL connection pool\n- [Redis](/d/rhokit-redis) - commands, pool, reconnects\n- [Storage overview](/d/rhokit-storage)\n- [Storage / S3](/d/rhokit-storage-s3)\n- [Storage / GCS](/d/rhokit-storage-gcs)\n- [Storage / Azure](/d/rhokit-storage-azure)\n- [Storage / SFTP](/d/rhokit-storage-sftp)\n- [Outbox relay](/d/rhokit-outbox)\n- [AMQP direct messaging](/d/rhokit-amqp)\n- [NATS JetStream messaging](/d/rhokit-nats)\n- [Redis Streams messaging](/d/rhokit-redis-stream)\n\n**Traffic protection**\n- [HTTP rate limits](/d/rhokit-ratelimit)"
       },
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 4 }
     }

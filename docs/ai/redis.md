@@ -279,7 +279,12 @@ err := locker.WithLock(ctx, "my-resource", func(ctx context.Context) error {
 All sub-packages register Prometheus metrics. Each accepts `prometheus.Registerer` via `WithRegisterer()` / `WithXxxRegisterer()` options for test isolation. Defaults to `prometheus.DefaultRegisterer`:
 - Connection: `redis_command_duration_seconds`, `redis_pool_*`, `redis_connection_healthy`
 - Cache: `redis_cache_hits_total`, `redis_cache_misses_total`
-- Stream: `redis_stream_messages_produced_total`, `redis_stream_messages_consumed_total`, `redis_stream_pending_messages`
+- Stream: `redis_stream_messages_produced_total`,
+  `redis_stream_messages_consumed_total`,
+  `redis_stream_messages_failed_total`,
+  `redis_stream_messages_dead_lettered_total`,
+  `redis_stream_processing_duration_seconds`,
+  `redis_stream_pending_messages`
 - Queue: `redis_queue_messages_enqueued_total`, `redis_queue_messages_processed_total`, `redis_queue_processing_depth`
 
 Queue and stream metric labels use stable opaque values (`queue-<hash>`,

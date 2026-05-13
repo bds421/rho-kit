@@ -87,7 +87,7 @@ func LoadConfig() (Config, error) {
 | `WithRedis(opts, connOpts...)` | Redis connection and pool metrics | - |
 | `WithRabbitMQ(url)` | Lazy AMQP connection plus pre-wired Publisher and Consumer | - |
 | `WithCriticalBroker()` | Broker health failure returns HTTP 503 | `WithRabbitMQ` |
-| `WithNATS(cfg)` | NATS connection plus default JetStream publisher | - |
+| `WithNATS(cfg)` | NATS connection plus default JetStream publisher and publish metrics | - |
 | `WithMaxMessageBytes(n)` / `WithRouteMaxMessageBytes(exchange, routingKey, n)` | Serialized message-size limits for Builder-created RabbitMQ and NATS publishers | `WithRabbitMQ` / `WithNATS` |
 | `WithJWT(jwksURL)` | Background JWKS key cache | - |
 | `WithJWTAudience(aud)` | Required JWT audience | `WithJWT` |

@@ -18,14 +18,19 @@ same change.
 The v2.0.0 Prometheus contract freeze covers the dashboarded metric families
 listed in `observability/dashboards/README.md`: HTTP RED, gRPC RED, Go runtime,
 database pools, Redis client health, storage S3/GCS/Azure/SFTP, outbox, direct
-AMQP messaging, and HTTP rate limiting.
+AMQP messaging, direct NATS JetStream messaging, direct Redis Streams
+messaging, and HTTP rate limiting.
 
-NATS JetStream (`infra/messaging/natsbackend`) and Redis Streams direct
-messaging (`infra/messaging/redisbackend` / `data/stream/redisstream`) remain
-API-frozen as Go packages, but their provider-specific Prometheus metric
-contracts and dashboards are explicitly not part of the v2.0.0 metrics freeze.
-Adding or freezing those metric names later requires a dashboard, alert/runbook,
-and migration note in the same change.
+NATS JetStream (`infra/messaging/natsbackend`) freezes
+`nats_published_total`, `nats_publish_duration_seconds`,
+`nats_consumed_total`, and `nats_handler_duration_seconds` with labels
+`exchange`, `routing_key`, `stream`, `durable`, and `outcome`. Redis Streams
+direct messaging (`infra/messaging/redisbackend` / `data/stream/redisstream`)
+freezes `redis_stream_messages_produced_total`,
+`redis_stream_messages_consumed_total`, `redis_stream_messages_failed_total`,
+`redis_stream_messages_dead_lettered_total`,
+`redis_stream_processing_duration_seconds`, and
+`redis_stream_pending_messages` with opaque `stream` and `group` labels.
 
 ## Core Service Surface
 

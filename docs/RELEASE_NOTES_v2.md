@@ -20,7 +20,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 4 | MCP helpers — typed handlers as JSON-RPC tools, schema auto-generation | Expose any kit handler as an MCP tool with the kit's full middleware stack reused |
 | 5 | SBOM (CycloneDX), `govulncheck` + `osv-scanner` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md`, `SUPPLY_CHAIN.md` | "Trusted library" claim is auditable, not marketing |
 | 6 | Builder integrations for every new primitive + the deferred Phase A items | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
-| 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 9 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
+| 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 11 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
 | 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters + v2 benchmark baselines | Production encryption and performance gates are concrete before the API freeze |
 
 Plus: `WithDefaultDeadline` for gRPC (closes threat-model GAP-03),
@@ -1151,14 +1151,12 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
   scanner, threat, size, or image dimension details.
 
 ### Dashboards & runbooks
-- 11 new Grafana dashboards (gRPC RED, DB pool, Redis, Outbox, AMQP, Rate-limit, Storage overview, S3, GCS, Azure, SFTP)
+- 13 new Grafana dashboards (gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, SFTP)
 - New Prometheus rules (recording, storage-provider latency, saturation, messaging, rate-limit)
-- 9 runbooks under `docs/ai/runbooks/` matching every alert's `runbook_url`
+- 11 runbooks under `docs/ai/runbooks/` matching every alert's `runbook_url`
 - `promtool check rules` in CI
-- The v2.0.0 Prometheus contract freeze covers the dashboarded families above.
-  Provider-specific NATS JetStream and Redis-stream direct messaging metrics
-  remain deferred until their names, labels, dashboards, alerts, and runbooks
-  can be introduced together.
+- The v2.0.0 Prometheus contract freeze covers the dashboarded families above,
+  including direct NATS JetStream and Redis Streams messaging metrics.
 
 ### Benchmark baselines
 - `make bench-baseline` captures raw `go test -run=^$ -bench=. -benchmem -count=5 ./...` outputs for every current benchmarked workspace module.
@@ -1188,6 +1186,14 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `infra/messaging/amqpbackend.NewMetrics` plus `WithPublisherMetrics` and
   `WithConsumerMetrics` freeze direct AMQP Prometheus contracts for publish
   outcomes, consume outcomes, publish duration, and handler duration.
+- `infra/messaging/natsbackend.NewMetrics` plus `WithPublisherMetrics` and
+  `WithConsumerMetrics` freeze direct NATS JetStream Prometheus contracts for
+  publish outcomes, consume outcomes, publish duration, and handler duration.
+- `data/stream/redisstream.NewProducerMetrics`, `NewConsumerMetrics`,
+  `WithProducerRegisterer`, and `WithConsumerRegisterer` freeze direct Redis
+  Stream Prometheus contracts for produce, consume, failure, dead-letter,
+  processing-duration, and pending-depth metrics. `infra/messaging/redisbackend`
+  inherits those metrics through the stream wrapper.
 - Redis queue and Redis Stream handler grace windows, ACKs, retries, and
   dead-letter cleanup now use bounded detached contexts. Cleanup survives
   shutdown/caller cancellation without dropping tenant, trace, logger, or other

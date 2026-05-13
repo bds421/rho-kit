@@ -1,0 +1,207 @@
+{
+  "title": "rho-kit / Redis Streams direct messaging",
+  "uid": "rhokit-redis-stream",
+  "tags": [
+    "rho-kit",
+    "redis-stream",
+    "messaging"
+  ],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"redis_stream_messages_(produced|consumed|failed|dead_lettered)_total\"}, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"redis_stream_messages_(produced|consumed|failed|dead_lettered)_total\", namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "stream",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redis_stream_messages_consumed_total{namespace=\"$namespace\", service=\"$service\"}, stream)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      },
+      {
+        "name": "group",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redis_stream_messages_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\"}, group)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Produced rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (stream) (rate(redis_stream_messages_produced_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\"}[5m]))",
+          "legendFormat": "{{stream}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "title": "Consumed / failed / dead-lettered rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (stream, group) (rate(redis_stream_messages_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m]))",
+          "legendFormat": "{{stream}} / {{group}} consumed"
+        },
+        {
+          "expr": "sum by (stream, group) (rate(redis_stream_messages_failed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m]))",
+          "legendFormat": "{{stream}} / {{group}} failed"
+        },
+        {
+          "expr": "sum by (stream, group) (rate(redis_stream_messages_dead_lettered_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m]))",
+          "legendFormat": "{{stream}} / {{group}} dead-lettered"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "title": "Failure ratio",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(redis_stream_messages_failed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])) / clamp_min(sum(rate(redis_stream_messages_consumed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])) + sum(rate(redis_stream_messages_failed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])), 0.0001)",
+          "legendFormat": "failed / handled"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "title": "Processing p50 / p95 / p99 (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(redis_stream_processing_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(redis_stream_processing_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(redis_stream_processing_duration_seconds_bucket{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      }
+    },
+    {
+      "title": "Pending messages",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (stream, group) (redis_stream_pending_messages{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"})",
+          "legendFormat": "{{stream}} / {{group}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "title": "Dead-lettered messages (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(redis_stream_messages_dead_lettered_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 16
+      }
+    },
+    {
+      "title": "Failed messages (5m)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(redis_stream_messages_failed_total{namespace=\"$namespace\", service=\"$service\", stream=~\"$stream\", group=~\"$group\"}[5m]))"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 16
+      }
+    }
+  ]
+}

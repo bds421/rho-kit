@@ -59,7 +59,11 @@ func (m *natsModule) Init(ctx context.Context, mc ModuleContext) error {
 		return fmt.Errorf("nats module: %w", err)
 	}
 	m.conn = conn
-	m.publisher = conn.NewPublisher(natsbackend.WithMessageSizeLimiter(m.messageSizeLimiter))
+	metrics := natsbackend.NewMetrics(nil)
+	m.publisher = conn.NewPublisher(
+		natsbackend.WithMessageSizeLimiter(m.messageSizeLimiter),
+		natsbackend.WithPublisherMetrics(metrics),
+	)
 
 	mc.Logger.Info("nats connection configured", "config", m.cfg)
 	return nil

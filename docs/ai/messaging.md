@@ -281,6 +281,67 @@ Publish outcomes are `success`, `failed`, `invalid_message`, `too_large`, and
 never encode tenants, users, request IDs, or payload values into exchange,
 routing-key, or queue names.
 
+## NATS Prometheus Metrics
+
+Builder-created NATS publishers are wired with these metrics automatically.
+Manual publishers and consumers expose the same stable Prometheus collectors:
+
+```go
+metrics := natsbackend.NewMetrics(prometheus.DefaultRegisterer)
+
+pub := natsbackend.NewPublisher(conn,
+    natsbackend.WithPublisherMetrics(metrics),
+)
+consumer := natsbackend.NewConsumer(conn, natsbackend.ConsumerConfig{
+    Stream:  "EVENTS",
+    Durable: "orders",
+}, logger,
+    natsbackend.WithConsumerMetrics(metrics),
+)
+```
+
+Metric contract:
+
+- `nats_published_total{exchange,routing_key,outcome}`
+- `nats_publish_duration_seconds{exchange,routing_key,outcome}`
+- `nats_consumed_total{stream,durable,outcome}`
+- `nats_handler_duration_seconds{stream,durable,outcome}`
+
+Publish outcomes are `success`, `failed`, `invalid_message`, and `too_large`.
+Consume outcomes are `acked`, `ack_failed`, `retry`, `nak_failed`,
+`permanent`, `decode_error`, `handler_panic`, and `term_failed`. Handler
+duration outcomes are `success`, `error`, and `panic`. Keep NATS stream,
+durable, exchange, and routing-key names static and low-cardinality; never
+encode tenants, users, request IDs, or payload values into NATS topology names.
+
+## Redis Stream Prometheus Metrics
+
+`infra/messaging/redisbackend` delegates to `data/stream/redisstream`, so direct
+Redis Stream messaging emits the stream package metrics. Use custom registerers
+for test isolation or multi-registry setups:
+
+```go
+producer := redisstream.NewProducer(redisClient,
+    redisstream.WithProducerRegisterer(prometheus.DefaultRegisterer),
+)
+consumer, err := redisstream.NewConsumer(redisClient, "orders",
+    redisstream.WithConsumerRegisterer(prometheus.DefaultRegisterer),
+)
+```
+
+Metric contract:
+
+- `redis_stream_messages_produced_total{stream}`
+- `redis_stream_messages_consumed_total{stream,group}`
+- `redis_stream_messages_failed_total{stream,group}`
+- `redis_stream_messages_dead_lettered_total{stream,group}`
+- `redis_stream_processing_duration_seconds{stream,group}`
+- `redis_stream_pending_messages{stream,group}`
+
+`stream` and `group` label values are opaque stable labels generated with
+`promutil.OpaqueLabelValue`, so dashboards can group by stream/group without
+exposing raw Redis topology names.
+
 ## StartConsumers (Convenience)
 
 ```go

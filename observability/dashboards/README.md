@@ -5,12 +5,8 @@ the metric names emitted by the rho-kit's various packages
 (`observability/redmetrics`, `observability/runtimemetrics`,
 `grpcx`, `infra/sqldb`, `infra/redis`, `infra/storage`,
 `infra/outbox`, `infra/messaging/amqpbackend`,
+`infra/messaging/natsbackend`, `data/stream/redisstream`,
 `httpx/middleware/ratelimit`).
-
-NATS JetStream and Redis-stream direct messaging packages are not part of the
-v2.0.0 Prometheus contract freeze. Their Go APIs are release candidates, but
-provider-specific metric names, labels, dashboards, and alerts remain deferred
-until they can be introduced as a complete contract.
 
 The dashboards parameterize on `{service, namespace}` Grafana
 variables so a single JSON file serves every consuming service. The
@@ -42,19 +38,24 @@ grafana/
                          #   error ratio, p50/p95/p99 relay latency
   amqp.json              # Direct AMQP: publish/consume outcomes,
                          #   latency, retry/DLQ/discard rates
+  nats.json              # Direct NATS JetStream: publish/consume outcomes,
+                         #   latency, retry/termination/finalization rates
+  redis-stream.json      # Direct Redis Streams: produced/consumed rates,
+                         #   failure/dead-letter rates, pending depth,
+                         #   p50/p95/p99 processing latency
   ratelimit.json         # HTTP rate limits: decisions, limited ratio,
                          #   Retry-After distribution, degradation
 
 prometheus/
   recording-rules.yaml      # pre-aggregated p50/p95/p99 for HTTP, gRPC,
-                            #   Redis, storage, outbox, AMQP histograms
-                            #   plus rate-limit ratios
+                            #   Redis, storage, outbox, AMQP, NATS, and
+                            #   Redis Stream histograms plus rate-limit ratios
   alerts-availability.yaml  # 5xx ratio, 4xx ratio
   alerts-latency.yaml       # HTTP p99 thresholds
   alerts-saturation.yaml    # DB pool waits/near-exhaustion, outbox
                             #   backlog growth, Redis pool timeouts
   alerts-messaging.yaml     # outbox error rate, no-progress, relay p99,
-                            #   AMQP publish/DLQ/force-discard alerts
+                            #   AMQP, NATS, and Redis Stream alerts
   alerts-ratelimit.yaml     # rate-limit spikes, degradation, unavailable
   slo-templates.yaml        # multi-window multi-burn-rate SLO rules
 ```
@@ -92,6 +93,18 @@ Dashboards depend on the stable metric names emitted by:
   `amqp_publish_duration_seconds`, `amqp_consumed_total`,
   `amqp_handler_duration_seconds`. Labels are limited to
   `exchange`, `routing_key`, `queue`, and `outcome`.
+- `infra/messaging/natsbackend`: `nats_published_total`,
+  `nats_publish_duration_seconds`, `nats_consumed_total`,
+  `nats_handler_duration_seconds`. Labels are limited to
+  `exchange`, `routing_key`, `stream`, `durable`, and `outcome`.
+- `data/stream/redisstream` and `infra/messaging/redisbackend`:
+  `redis_stream_messages_produced_total`,
+  `redis_stream_messages_consumed_total`,
+  `redis_stream_messages_failed_total`,
+  `redis_stream_messages_dead_lettered_total`,
+  `redis_stream_processing_duration_seconds`,
+  `redis_stream_pending_messages`. Labels are `stream` and `group`,
+  rendered as opaque stable values instead of raw Redis names.
 - `httpx/middleware/ratelimit`: `http_ratelimit_decisions_total`
   and `http_ratelimit_retry_after_seconds`. Labels are `limiter`,
   `kind`, and `outcome`; raw keys, IPs, tenants, users, and paths are
@@ -154,6 +167,10 @@ travel with the alerts:
 - `redis-pool.md` — `RhoKitRedisPoolTimeouts`
 - `amqp-messaging.md` — `RhoKitAMQPPublishFailuresHigh`,
   `RhoKitAMQPDLQPublishFailures`, `RhoKitAMQPForceDiscard`
+- `nats-messaging.md` — `RhoKitNATSPublishFailuresHigh`,
+  `RhoKitNATSDeliveryFinalizationFailures`, `RhoKitNATSHandlerPanics`
+- `redis-stream.md` — `RhoKitRedisStreamFailureRateHigh`,
+  `RhoKitRedisStreamDeadLetters`, `RhoKitRedisStreamPendingHigh`
 - `ratelimit.md` — `RhoKitRateLimitSpike`,
   `RhoKitRateLimitDegraded`, `RhoKitRateLimitUnavailable`
 
@@ -183,7 +200,8 @@ canonical validator and will run on PRs.
 
 This pack covers HTTP RED, gRPC RED, Go runtime, service overview,
 DB pool, Redis, Storage (S3/GCS/Azure/SFTP overview and provider
-dashboards), Outbox, direct AMQP messaging, and HTTP rate-limit dashboards plus
-the matching alerts
+dashboards), Outbox, direct AMQP messaging, direct NATS JetStream messaging,
+direct Redis Streams messaging, and HTTP rate-limit dashboards plus the matching
+alerts
 (availability, latency, saturation, messaging, rate-limit, SLO
 multi-burn-rate).

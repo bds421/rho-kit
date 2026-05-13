@@ -97,16 +97,12 @@ so caller-side slice mutation cannot alter registered histograms.
 The v2 dashboard bundle lives under `observability/dashboards/` and is
 validated by `.github/workflows/dashboards.yml`. Grafana JSON dashboards cover
 HTTP RED, gRPC RED, DB pool, Redis, Outbox, direct AMQP, HTTP rate limits,
-Storage overview, provider-specific S3/GCS/Azure/SFTP storage panels, Go
-runtime, and service overview. Prometheus rules cover latency, availability,
-saturation, messaging, rate limiting, recording rules, and SLO templates. Alert
-`runbook_url` annotations point to the matching pages under
+direct NATS JetStream, direct Redis Streams, Storage overview,
+provider-specific S3/GCS/Azure/SFTP storage panels, Go runtime, and service
+overview. Prometheus rules cover latency, availability, saturation, messaging,
+rate limiting, recording rules, and SLO templates. Alert `runbook_url`
+annotations point to the matching pages under
 `docs/ai/runbooks/`.
-
-The v2.0.0 Prometheus contract freeze does not include provider-specific NATS
-JetStream or Redis-stream direct messaging metrics. Those packages remain
-stable Go APIs, but their metric names, labels, dashboards, and alerts must be
-introduced and frozen together in a later release.
 
 Keep dashboard changes paired with the metric contract they depend on. A new
 collector or label dimension should update the dashboard, runbook, and alert

@@ -418,8 +418,9 @@ func (b *Builder) WithRouteMaxMessageBytes(exchange, routingKey string, maxBytes
 
 // WithNATS registers a NATS JetStream broker. The kit exposes the
 // connection plus a default Publisher via Infrastructure.NATS and
-// Infrastructure.NATSPublisher; stream/consumer declarations are
-// caller-driven so the Builder doesn't impose a specific topology.
+// Infrastructure.NATSPublisher. The default Publisher is wired with
+// NATS Prometheus metrics; stream/consumer declarations remain caller-driven
+// so the Builder doesn't impose a specific topology.
 //
 // WithNATS is independent of [Builder.WithRabbitMQ] — both can be
 // configured simultaneously when a service publishes to one broker
