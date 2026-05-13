@@ -11,6 +11,15 @@
 //   - There is no audit trail.
 //   - There is no enforced rotation cadence.
 //
+// AES-GCM random-IV ceiling: each KEK uses 96-bit random nonces, so the
+// NIST SP 800-38D §8.3 birthday bound caps safe wraps at ≈ 2^32 per
+// distinct master key before nonce-reuse probability becomes non-trivial.
+// In practice every released DEK wraps a single envelope, so a service
+// writing 100 envelopes/sec would only approach the ceiling after ≈ 1.4
+// years on a single un-rotated key. Rotate before then, or use a managed
+// KEK adapter (awskms/azurekeyvault/gcpkms/vaulttransit) that handles
+// rotation operationally.
+//
 // Use kekstatic for unit tests, integration tests with deterministic fixtures,
 // and local-dev workflows.
 package kekstatic
@@ -115,6 +124,28 @@ func (k *KEK) RemoveKey(keyID string) error {
 	}
 	zeroBytes(k.keys[keyID])
 	delete(k.keys, keyID)
+	return nil
+}
+
+// Close zeroes every registered master key and clears the keyset.
+// Subsequent Wrap / Unwrap / Rotate calls report "no active key" or
+// "unknown keyID" — the KEK fails closed once closed. Idempotent;
+// calling Close on an already-closed KEK is a no-op.
+//
+// Mirrors paseto.V4PublicSigner.Close so that test wiring which
+// registers + zeros key material across the kit has a consistent
+// shutdown surface.
+func (k *KEK) Close() error {
+	if k == nil {
+		return nil
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for id, master := range k.keys {
+		zeroBytes(master)
+		delete(k.keys, id)
+	}
+	k.current = ""
 	return nil
 }
 

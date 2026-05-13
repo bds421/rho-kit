@@ -49,4 +49,16 @@
 // v3 also closes a collision in the v2 AAD derivation: two callers
 // could craft AADs whose concatenated MAC pre-image was identical
 // once the v2 suffix was appended. v3's length prefix removes that.
+//
+// KMS EncryptionContext vs caller AAD: KMS-backed KEK adapters
+// (awskms, azurekeyvault, gcpkms, vaulttransit) treat the
+// adapter-level EncryptionContext as a constant audit attribute
+// reported by the cloud provider's KMS logs — it is NOT bound to the
+// caller's per-row AAD. The per-envelope binding lives in the body
+// GCM AAD (caller AAD + length-prefixed keyID), so a ciphertext
+// copy-pasted into a different row fails authentication regardless
+// of how the KEK adapter is configured. Operators reading KMS logs
+// will therefore see a single static EncryptionContext value for all
+// envelopes — that is expected; do not over-load EncryptionContext
+// with per-row identifiers.
 package envelope

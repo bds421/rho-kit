@@ -235,6 +235,16 @@ func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer,
 		return nil, err
 	}
 
+	// Defence-in-depth header check: jwx accepts any `typ` header.
+	// RFC 9068 §4 and JWT BCP recommend pinning typ to "JWT" or
+	// "at+jwt" so a federated issuer that mints both id-tokens and
+	// access-tokens with the same key cannot cross-substitute one for
+	// the other. Empty typ stays accepted — many issuers omit it on
+	// vanilla JWTs.
+	if err := requireExpectedJWTType(tokenString); err != nil {
+		return nil, err
+	}
+
 	exp, hasExp := tok.Expiration()
 	if !hasExp || exp.IsZero() {
 		// Belt-and-braces: WithRequiredClaim already enforces this, but
@@ -1096,4 +1106,47 @@ func singletonContentType(h http.Header) (string, error) {
 		return "", fmt.Errorf("jwks endpoint returned multiple content-type headers")
 	}
 	return strings.TrimSpace(values[0]), nil
+}
+
+// requireExpectedJWTType inspects the protected JOSE header's `typ`
+// field on a parsed token. Empty `typ` is accepted (many issuers omit
+// it for vanilla JWTs). When present, the value must be one of "JWT"
+// or "at+jwt" (RFC 9068 access tokens); anything else — including
+// "JWE", "OAuth2 cookie", or a future custom type — is rejected as
+// ErrSignatureInvalid-shaped error so a cross-token-type confusion
+// attack cannot reuse a same-key-signed non-access-token.
+func requireExpectedJWTType(tokenString string) error {
+	msg, err := jws.Parse([]byte(tokenString))
+	if err != nil {
+		// jwt.Parse already passed, so this should not fail. Treat
+		// re-parse failure as a verification failure rather than a
+		// programmer-visible panic.
+		return fmt.Errorf("jwtutil: re-parse header for typ check: %w", err)
+	}
+	sigs := msg.Signatures()
+	if len(sigs) == 0 {
+		return errors.New("jwtutil: missing JWS signature")
+	}
+	for _, s := range sigs {
+		ph := s.ProtectedHeaders()
+		if ph == nil {
+			continue
+		}
+		raw, ok := ph.Type()
+		if !ok {
+			continue
+		}
+		typ := strings.TrimSpace(raw)
+		if typ == "" {
+			continue
+		}
+		// Compare case-insensitively per RFC 7519 §5.1.
+		switch strings.ToLower(typ) {
+		case "jwt", "at+jwt":
+			// OK
+		default:
+			return fmt.Errorf("jwtutil: unexpected JOSE header typ %q (want JWT or at+jwt)", typ)
+		}
+	}
+	return nil
 }
