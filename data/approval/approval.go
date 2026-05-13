@@ -128,7 +128,18 @@ var (
 	// privileged callers cannot accidentally hide a wiring bug behind
 	// store-specific filter precedence.
 	ErrQueryScopeConflict = errors.New("approval: query must not set both TenantID and AllTenants=true")
+
+	// ErrLimitTooLarge is returned by [Store.List] / [Query.Validate]
+	// when [Query.Limit] exceeds [MaxPageLimit]. See [actionlog.MaxPageLimit]
+	// for the rationale — large positive limits force pathological
+	// SQL LIMIT and slice preallocation.
+	ErrLimitTooLarge = errors.New("approval: query limit exceeds MaxPageLimit")
 )
+
+// MaxPageLimit caps the per-page entries [Query.Limit] may request.
+// Mirrors [actionlog.MaxPageLimit] — callers needing more must page
+// via [Query.Cursor].
+const MaxPageLimit = 10_000
 
 // Query controls which requests [Store.List] returns. Filters compose
 // with AND semantics; an empty filter field is unconstrained. The
@@ -179,6 +190,9 @@ func (q Query) Validate() error {
 	}
 	if q.TenantID == "" && !q.AllTenants {
 		return ErrQueryTenantRequired
+	}
+	if q.Limit > MaxPageLimit {
+		return ErrLimitTooLarge
 	}
 	return nil
 }

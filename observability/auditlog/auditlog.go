@@ -87,6 +87,16 @@ var ErrInvalidEvent = errors.New("auditlog: invalid event")
 // records.
 var ErrLoggerClosed = errors.New("auditlog: logger is closed")
 
+// MaxPageLimit caps the per-page limit accepted by [Logger.List]. A
+// caller mapping `?limit=1000000000` from a URL parameter would
+// otherwise force the store to allocate huge slices and emit a giant
+// LIMIT. Callers needing more must page using the signed cursor.
+const MaxPageLimit = 10_000
+
+// ErrLimitTooLarge is returned by [Logger.List] when the limit
+// argument exceeds [MaxPageLimit].
+var ErrLimitTooLarge = errors.New("auditlog: list limit exceeds MaxPageLimit")
+
 func cloneEvent(event Event) Event {
 	if event.Metadata != nil {
 		event.Metadata = append(json.RawMessage(nil), event.Metadata...)
@@ -516,6 +526,9 @@ func (l *Logger) LogAction(ctx context.Context, actor, action, resource, status 
 func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
 	if l.closed.Load() {
 		return nil, "", ErrLoggerClosed
+	}
+	if limit > MaxPageLimit {
+		return nil, "", ErrLimitTooLarge
 	}
 	rawCursor, err := l.cursors.decodeCursor(cursor)
 	if err != nil {

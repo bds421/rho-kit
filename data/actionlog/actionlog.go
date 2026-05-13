@@ -96,7 +96,21 @@ var (
 	// privileged callers cannot accidentally hide a wiring bug behind
 	// store-specific filter precedence.
 	ErrQueryScopeConflict = errors.New("actionlog: query must not set both TenantID and AllTenants=true")
+
+	// ErrLimitTooLarge is returned by [Logger.List] / [Query.Validate]
+	// when [Query.Limit] exceeds [MaxPageLimit]. Callers that need
+	// more than [MaxPageLimit] entries must follow [Query.Cursor]
+	// across pages.
+	ErrLimitTooLarge = errors.New("actionlog: query limit exceeds MaxPageLimit")
 )
+
+// MaxPageLimit caps the per-page entries [Query.Limit] may request.
+// An admin handler that maps `?limit=1000000000` from a URL parameter
+// straight into the query would otherwise force the store to allocate
+// huge slices and (for Postgres) emit a giant LIMIT — both wasteful
+// and a denial-of-service vector. Callers needing more than this in
+// total must page using [Query.Cursor].
+const MaxPageLimit = 10_000
 
 // Entry records one agent-attributed action.
 //
@@ -236,6 +250,9 @@ func (q Query) Validate() error {
 	}
 	if q.TenantID == "" && !q.AllTenants {
 		return ErrQueryTenantRequired
+	}
+	if q.Limit > MaxPageLimit {
+		return ErrLimitTooLarge
 	}
 	return nil
 }
