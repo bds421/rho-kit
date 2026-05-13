@@ -567,6 +567,10 @@ func (b *Bus) Start(ctx context.Context) error {
 // If the context has a deadline, Stop returns ctx.Err() if the deadline is
 // reached before all workers finish draining.
 //
+// Idempotent and safe for concurrent callers — the worker-pool teardown
+// runs exactly once; subsequent calls return nil immediately. Subsequent
+// [Publish] calls return [ErrStopped].
+//
 // If Stop returns ctx.Err(), the pool goroutine and its workers may still be
 // running. This is an inherent limitation of Go's lack of goroutine preemption.
 // Ensure handler functions respect context cancellation to minimize drain time.
@@ -577,8 +581,12 @@ func (b *Bus) Stop(ctx context.Context) error {
 		return errors.New("eventbus: Stop requires a non-nil context")
 	}
 	b.startMu.Lock()
+	alreadyStopped := b.stopped
 	b.stopped = true
 	b.startMu.Unlock()
+	if alreadyStopped {
+		return nil
+	}
 
 	if b.pool == nil {
 		return nil

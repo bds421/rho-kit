@@ -102,7 +102,7 @@ func TestQuery_FilterByActor(t *testing.T) {
 	l.LogAction(context.Background(), "bob", "create", "r/2", "success")
 	l.LogAction(context.Background(), "alice", "update", "r/1", "success")
 
-	events, _, err := l.Query(context.Background(), Filter{Actor: "alice"}, "", 10)
+	events, _, err := l.List(context.Background(), Filter{Actor: "alice"}, "", 10)
 	require.NoError(t, err)
 	assert.Len(t, events, 2)
 }
@@ -114,7 +114,7 @@ func TestQuery_FilterByAction(t *testing.T) {
 	l.LogAction(context.Background(), "a", "create", "r/1", "success")
 	l.LogAction(context.Background(), "a", "delete", "r/2", "success")
 
-	events, _, err := l.Query(context.Background(), Filter{Action: "delete"}, "", 10)
+	events, _, err := l.List(context.Background(), Filter{Action: "delete"}, "", 10)
 	require.NoError(t, err)
 	assert.Len(t, events, 1)
 	assert.Equal(t, "delete", events[0].Action)
@@ -128,7 +128,7 @@ func TestQuery_FilterByResource(t *testing.T) {
 	l.LogAction(context.Background(), "a", "x", "orders/2", "success")
 	l.LogAction(context.Background(), "a", "x", "users/1", "success")
 
-	events, _, err := l.Query(context.Background(), Filter{Resource: "orders"}, "", 10)
+	events, _, err := l.List(context.Background(), Filter{Resource: "orders"}, "", 10)
 	require.NoError(t, err)
 	assert.Len(t, events, 2)
 }
@@ -143,7 +143,7 @@ func TestQuery_FilterByTime(t *testing.T) {
 	l.Log(context.Background(), Event{Actor: "a", Action: "x", Resource: "r", Status: "success", Timestamp: past})
 	l.Log(context.Background(), Event{Actor: "a", Action: "x", Resource: "r", Status: "success", Timestamp: recent})
 
-	events, _, err := l.Query(context.Background(), Filter{Since: time.Now().Add(-1 * time.Hour)}, "", 10)
+	events, _, err := l.List(context.Background(), Filter{Since: time.Now().Add(-1 * time.Hour)}, "", 10)
 	require.NoError(t, err)
 	assert.Len(t, events, 1)
 }
@@ -157,19 +157,19 @@ func TestQuery_Pagination(t *testing.T) {
 	}
 
 	// Page 1: 2 events.
-	page1, cursor1, err := l.Query(context.Background(), Filter{}, "", 2)
+	page1, cursor1, err := l.List(context.Background(), Filter{}, "", 2)
 	require.NoError(t, err)
 	assert.Len(t, page1, 2)
 	assert.NotEmpty(t, cursor1)
 
 	// Page 2: 2 events.
-	page2, cursor2, err := l.Query(context.Background(), Filter{}, cursor1, 2)
+	page2, cursor2, err := l.List(context.Background(), Filter{}, cursor1, 2)
 	require.NoError(t, err)
 	assert.Len(t, page2, 2)
 	assert.NotEmpty(t, cursor2)
 
 	// Page 3: 1 event (last page).
-	page3, cursor3, err := l.Query(context.Background(), Filter{}, cursor2, 2)
+	page3, cursor3, err := l.List(context.Background(), Filter{}, cursor2, 2)
 	require.NoError(t, err)
 	assert.Len(t, page3, 1)
 	assert.Empty(t, cursor3)
@@ -424,12 +424,12 @@ func TestLogger_QueryClonesMetadataFromStore(t *testing.T) {
 	}
 	l := newTestLogger(store)
 
-	events, _, err := l.Query(context.Background(), Filter{}, "", 10)
+	events, _, err := l.List(context.Background(), Filter{}, "", 10)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	events[0].Metadata[10] = 'X'
 
-	again, _, err := l.Query(context.Background(), Filter{}, "", 10)
+	again, _, err := l.List(context.Background(), Filter{}, "", 10)
 	require.NoError(t, err)
 	require.Len(t, again, 1)
 	assert.JSONEq(t, `{"token":"original"}`, string(again[0].Metadata))
@@ -813,7 +813,7 @@ func TestQuery_RejectsForgedCursor(t *testing.T) {
 		"good payload, bad mac":   "YWJj.YWJj", // payload "abc", signature "abc" (random)
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := l.Query(ctx, Filter{}, forged, 2)
+			_, _, err := l.List(ctx, Filter{}, forged, 2)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrInvalidCursor)
 		})
@@ -838,7 +838,7 @@ func TestQuery_RejectsCursorSignedWithDifferentKey(t *testing.T) {
 	forged := attackerSigner.encodeCursor("some-real-event-id")
 	require.NotEmpty(t, forged, "attacker should be able to produce a well-formed cursor")
 
-	_, _, err := l.Query(ctx, Filter{}, forged, 2)
+	_, _, err := l.List(ctx, Filter{}, forged, 2)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
@@ -857,7 +857,7 @@ func TestQuery_RoundTripsSignedCursors(t *testing.T) {
 	collected := make([]string, 0, 5)
 	cursor := ""
 	for range 5 {
-		page, next, err := l.Query(ctx, Filter{}, cursor, 2)
+		page, next, err := l.List(ctx, Filter{}, cursor, 2)
 		require.NoError(t, err)
 		for _, e := range page {
 			collected = append(collected, e.Resource)
@@ -963,7 +963,7 @@ func TestClose_ZeroesKeysAndRejectsSubsequentUse(t *testing.T) {
 	err := l.LogE(ctx, Event{Actor: "alice", Action: "create", Resource: "y", Status: StatusSuccess})
 	assert.ErrorIs(t, err, ErrLoggerClosed)
 
-	_, _, err = l.Query(ctx, Filter{}, "", 10)
+	_, _, err = l.List(ctx, Filter{}, "", 10)
 	assert.ErrorIs(t, err, ErrLoggerClosed)
 
 	err = l.VerifyChain(ctx)

@@ -40,6 +40,14 @@ var ErrInvalidMaxAge = errors.New("signing: maxAge must be positive")
 // ErrInvalidContext is returned when canonical context fields cannot be safely encoded.
 var ErrInvalidContext = errors.New("signing: invalid canonical context")
 
+// ErrInvalidSignature is returned by [Signer.Verify] and [Signer.VerifyContext]
+// when the supplied signature does not match the secret/body/timestamp tuple.
+// The error-only return shape (replacing the prior (bool, error) signature)
+// prevents callers from writing `ok, _ := Verify(...); if ok { ... }`, which
+// silently treated configuration errors as "signature invalid" — a class of
+// security regression.
+var ErrInvalidSignature = errors.New("signing: signature does not match")
+
 // Secret marks bytes intended for the HMAC key position. It is a distinct type
 // so Sign/Verify call sites cannot accidentally swap body and secret byte
 // slices without an explicit conversion.
@@ -220,33 +228,41 @@ var fallbackMAC [sha256.Size]byte
 // A small future clock skew (30s) is tolerated for NTP jitter.
 // Use DefaultSignatureMaxAge for a reasonable default.
 //
-// Returns [ErrEmptySecret] if secret is empty.
-func (s *Signer) Verify(secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+// Returns nil on a valid signature; [ErrInvalidSignature] on a well-formed
+// but mismatched signature; or one of [ErrEmptySecret], [ErrInvalidSigner],
+// [ErrInvalidMaxAge], [ErrInvalidContext], [ErrSignatureClockSkew],
+// [ErrSignatureExpired] when the verification could not be performed.
+// Callers can distinguish "signature is bad" from "configuration is bad"
+// via [errors.Is].
+func (s *Signer) Verify(secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) error {
 	return s.VerifyContext(CanonicalContext{}, secret, body, timestamp, signature, maxAge)
 }
 
 // VerifyContext is Verify with an explicit [CanonicalContext]. Pass the
 // same context the producer used in [Signer.SignContext] — a mismatch
 // (e.g. wrong method or path) fails verification.
-func (s *Signer) VerifyContext(ctx CanonicalContext, secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+//
+// Returns nil on success or [ErrInvalidSignature] on mismatch — see
+// [Signer.Verify] for the configuration-error sentinels.
+func (s *Signer) VerifyContext(ctx CanonicalContext, secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) error {
 	if len(secret) < minSecretLen {
-		return false, ErrEmptySecret
+		return ErrEmptySecret
 	}
 	if s == nil || s.clock == nil {
-		return false, ErrInvalidSigner
+		return ErrInvalidSigner
 	}
 	if maxAge <= 0 {
-		return false, ErrInvalidMaxAge
+		return ErrInvalidMaxAge
 	}
 	if err := validateCanonicalContext(ctx); err != nil {
-		return false, err
+		return err
 	}
 	age := s.clock().Sub(time.Unix(timestamp, 0))
 	if age < -s.futureSkew {
-		return false, ErrSignatureClockSkew
+		return ErrSignatureClockSkew
 	}
 	if age > maxAge {
-		return false, ErrSignatureExpired
+		return ErrSignatureExpired
 	}
 
 	payload := buildSignedPayload(ctx, timestamp, body)
@@ -270,7 +286,10 @@ func (s *Signer) VerifyContext(ctx CanonicalContext, secret Secret, body []byte,
 			gotRaw = decoded
 		}
 	}
-	return hmac.Equal(expectedRaw, gotRaw), nil
+	if !hmac.Equal(expectedRaw, gotRaw) {
+		return ErrInvalidSignature
+	}
+	return nil
 }
 
 func validateCanonicalContext(ctx CanonicalContext) error {
@@ -287,13 +306,9 @@ func validateCanonicalContext(ctx CanonicalContext) error {
 }
 
 // Verify checks an HMAC-SHA256 signature using constant-time comparison.
-// The timestamp and body are combined as "<timestamp>.<body>" to match Sign.
-// It rejects signatures older than maxAge to limit the replay window.
-// A small future clock skew (30s) is tolerated for NTP jitter.
-// Use DefaultSignatureMaxAge for a reasonable default.
-//
-// Returns [ErrEmptySecret] if secret is empty.
-func Verify(secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+// See [Signer.Verify] for the full contract — package-level convenience
+// using the default signer's time.Now clock.
+func Verify(secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) error {
 	return defaultSigner.Verify(secret, body, timestamp, signature, maxAge)
 }
 
@@ -305,6 +320,6 @@ func SignContext(ctx CanonicalContext, secret Secret, body []byte) (signature st
 
 // VerifyContext is the package-level [Signer.VerifyContext], using the
 // default signer's time.Now clock.
-func VerifyContext(ctx CanonicalContext, secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) (bool, error) {
+func VerifyContext(ctx CanonicalContext, secret Secret, body []byte, timestamp int64, signature string, maxAge time.Duration) error {
 	return defaultSigner.VerifyContext(ctx, secret, body, timestamp, signature, maxAge)
 }

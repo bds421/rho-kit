@@ -60,21 +60,27 @@ type AppError interface {
 
 // --- Concrete error types ---
 
-// NotFoundError indicates a requested entity does not exist.
+// NotFoundError indicates a requested entity does not exist. The optional
+// cause is preserved through [errors.Unwrap] so callers can chain typed
+// classification (apperror) with the underlying transport error.
 type NotFoundError struct {
 	Entity   string
 	EntityID any
 	Message  string
+	cause    error
 }
 
 func (e *NotFoundError) Error() string   { return e.Message }
+func (e *NotFoundError) Unwrap() error   { return e.cause }
 func (e *NotFoundError) ErrorCode() Code { return CodeNotFound }
 func (e *NotFoundError) Retryable() bool { return false }
 
 // ValidationError indicates invalid input, optionally with field-level details.
+// The optional cause is preserved through [errors.Unwrap].
 type ValidationError struct {
 	Message string
 	Fields  []FieldError
+	cause   error
 }
 
 func (e *ValidationError) Error() string {
@@ -88,21 +94,25 @@ func (e *ValidationError) Error() string {
 	return e.Message
 }
 
-func (e *ValidationError) ErrorCode() Code { return CodeValidation }
-func (e *ValidationError) Retryable() bool { return false }
+func (e *ValidationError) Unwrap() error    { return e.cause }
+func (e *ValidationError) ErrorCode() Code  { return CodeValidation }
+func (e *ValidationError) Retryable() bool  { return false }
 
 // ConflictError indicates a resource conflict (duplicate, version mismatch).
 // Retryable defaults to false: most conflicts (unique-constraint violations,
 // state mismatches) will not succeed on retry without caller-side input
 // changes. Use [NewConflictRetryable] for optimistic-concurrency cases where
-// retrying with fresh state may succeed.
+// retrying with fresh state may succeed. The optional cause is preserved
+// through [errors.Unwrap].
 type ConflictError struct {
 	Message string
 	// retryable carries the retry hint set by the constructor.
 	retryable bool
+	cause     error
 }
 
 func (e *ConflictError) Error() string   { return e.Message }
+func (e *ConflictError) Unwrap() error   { return e.cause }
 func (e *ConflictError) ErrorCode() Code { return CodeConflict }
 func (e *ConflictError) Retryable() bool { return e.retryable }
 
@@ -117,31 +127,40 @@ func (e *PermanentError) Unwrap() error   { return e.cause }
 func (e *PermanentError) ErrorCode() Code { return CodePermanent }
 func (e *PermanentError) Retryable() bool { return false }
 
-// AuthRequiredError indicates missing or invalid authentication.
+// AuthRequiredError indicates missing or invalid authentication. The
+// optional cause is preserved through [errors.Unwrap].
 type AuthRequiredError struct {
 	Message string
+	cause   error
 }
 
 func (e *AuthRequiredError) Error() string   { return e.Message }
+func (e *AuthRequiredError) Unwrap() error   { return e.cause }
 func (e *AuthRequiredError) ErrorCode() Code { return CodeAuthRequired }
 func (e *AuthRequiredError) Retryable() bool { return false }
 
 // ForbiddenError indicates the caller is authenticated but lacks permission.
+// The optional cause is preserved through [errors.Unwrap].
 type ForbiddenError struct {
 	Message string
+	cause   error
 }
 
 func (e *ForbiddenError) Error() string   { return e.Message }
+func (e *ForbiddenError) Unwrap() error   { return e.cause }
 func (e *ForbiddenError) ErrorCode() Code { return CodeForbidden }
 func (e *ForbiddenError) Retryable() bool { return false }
 
-// RateLimitError indicates a rate limit or quota has been exceeded.
+// RateLimitError indicates a rate limit or quota has been exceeded. The
+// optional cause is preserved through [errors.Unwrap].
 type RateLimitError struct {
 	Message    string
 	RetryAfter time.Duration
+	cause      error
 }
 
 func (e *RateLimitError) Error() string   { return e.Message }
+func (e *RateLimitError) Unwrap() error   { return e.cause }
 func (e *RateLimitError) ErrorCode() Code { return CodeRateLimit }
 func (e *RateLimitError) Retryable() bool { return true }
 
@@ -204,9 +223,24 @@ func NewNotFound(entity string, id any) error {
 	}
 }
 
+// NewNotFoundWithCause is [NewNotFound] preserving the underlying cause.
+func NewNotFoundWithCause(entity string, id any, cause error) error {
+	return &NotFoundError{
+		Entity:   entity,
+		EntityID: id,
+		Message:  fmt.Sprintf("%s %v not found", entity, id),
+		cause:    cause,
+	}
+}
+
 // NewValidation creates a ValidationError with a simple message (no field details).
 func NewValidation(msg string) error {
 	return &ValidationError{Message: msg}
+}
+
+// NewValidationWithCause is [NewValidation] preserving the underlying cause.
+func NewValidationWithCause(msg string, cause error) error {
+	return &ValidationError{Message: msg, cause: cause}
 }
 
 // NewFieldValidation creates a ValidationError with structured field-level errors.
@@ -225,11 +259,22 @@ func NewConflict(msg string) error {
 	return &ConflictError{Message: msg}
 }
 
+// NewConflictWithCause is [NewConflict] preserving the underlying cause.
+func NewConflictWithCause(msg string, cause error) error {
+	return &ConflictError{Message: msg, cause: cause}
+}
+
 // NewConflictRetryable creates a retryable ConflictError. Use this for
 // optimistic-concurrency conflicts where re-reading state and retrying with
 // the fresh version may succeed (e.g. compare-and-swap on a version column).
 func NewConflictRetryable(msg string) error {
 	return &ConflictError{Message: msg, retryable: true}
+}
+
+// NewConflictRetryableWithCause is [NewConflictRetryable] preserving the
+// underlying cause.
+func NewConflictRetryableWithCause(msg string, cause error) error {
+	return &ConflictError{Message: msg, retryable: true, cause: cause}
 }
 
 // NewPermanent creates a non-retryable PermanentError.
@@ -247,9 +292,19 @@ func NewAuthRequired(msg string) error {
 	return &AuthRequiredError{Message: msg}
 }
 
+// NewAuthRequiredWithCause is [NewAuthRequired] preserving the underlying cause.
+func NewAuthRequiredWithCause(msg string, cause error) error {
+	return &AuthRequiredError{Message: msg, cause: cause}
+}
+
 // NewForbidden creates a ForbiddenError.
 func NewForbidden(msg string) error {
 	return &ForbiddenError{Message: msg}
+}
+
+// NewForbiddenWithCause is [NewForbidden] preserving the underlying cause.
+func NewForbiddenWithCause(msg string, cause error) error {
+	return &ForbiddenError{Message: msg, cause: cause}
 }
 
 // NewRateLimit creates a RateLimitError without a specific retry-after hint.
@@ -258,11 +313,22 @@ func NewRateLimit(msg string) error {
 	return &RateLimitError{Message: msg}
 }
 
+// NewRateLimitWithCause is [NewRateLimit] preserving the underlying cause.
+func NewRateLimitWithCause(msg string, cause error) error {
+	return &RateLimitError{Message: msg, cause: cause}
+}
+
 // NewRateLimitWithRetryAfter creates a RateLimitError that surfaces a
 // retry-after hint to the caller. Transports map this to Retry-After-style
 // headers; the resilience/retry package honors it via WithDelayOverride.
 func NewRateLimitWithRetryAfter(msg string, retryAfter time.Duration) error {
 	return &RateLimitError{Message: msg, RetryAfter: retryAfter}
+}
+
+// NewRateLimitWithRetryAfterAndCause is [NewRateLimitWithRetryAfter] preserving
+// the underlying cause.
+func NewRateLimitWithRetryAfterAndCause(msg string, retryAfter time.Duration, cause error) error {
+	return &RateLimitError{Message: msg, RetryAfter: retryAfter, cause: cause}
 }
 
 // NewOperationFailed creates an OperationFailedError.

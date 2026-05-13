@@ -174,16 +174,16 @@ func DefaultParams() Params {
 	}
 }
 
-// atLeastAsStrongAs reports whether `a` (the stored params) meets or
-// exceeds `b` (the verifier's target) along every dimension. When this
-// is false the stored hash is weaker than current policy and the
-// caller should re-hash on next successful login.
-func (a Params) atLeastAsStrongAs(b Params) bool {
-	return a.Memory >= b.Memory &&
-		a.Iterations >= b.Iterations &&
-		a.Parallelism >= b.Parallelism &&
-		a.SaltLen >= b.SaltLen &&
-		a.KeyLen >= b.KeyLen
+// atLeastAsStrongAs reports whether p (the stored params) meets or
+// exceeds target along every dimension. When this is false the stored
+// hash is weaker than current policy and the caller should re-hash on
+// next successful login.
+func (p Params) atLeastAsStrongAs(target Params) bool {
+	return p.Memory >= target.Memory &&
+		p.Iterations >= target.Iterations &&
+		p.Parallelism >= target.Parallelism &&
+		p.SaltLen >= target.SaltLen &&
+		p.KeyLen >= target.KeyLen
 }
 
 // HashLimits caps the cost parameters [Hash] is willing to feed

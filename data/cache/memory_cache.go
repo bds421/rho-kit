@@ -33,8 +33,9 @@ type MemoryCache struct {
 
 	// stopSweeper signals the background nxClaims-sweeper goroutine to
 	// exit. Closed by Close.
-	stopSweeper chan struct{}
-	closeOnce   sync.Once
+	stopSweeper        chan struct{}
+	closeOnce          sync.Once
+	ristrettoCloseOnce sync.Once
 
 	// nxClaims tracks keys that have been successfully claimed via SetNX.
 	// Ristretto buffers SetWithTTL writes AND its TinyLFU admission policy
@@ -445,12 +446,18 @@ func (mc *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
 // Callers MUST call Close when the cache is no longer needed; failing to
 // do so leaks goroutines. In server lifecycle code, register Close as a
 // shutdown hook or use defer.
+//
+// Idempotent and safe for concurrent calls — the underlying ristretto
+// cache is Close()-d exactly once. MemoryCache is safe for concurrent use
+// across all methods.
 func (mc *MemoryCache) Close() error {
 	if err := mc.ready(); err != nil {
 		return err
 	}
 	mc.stopBackgroundSweeper()
-	mc.cache.Close()
+	mc.ristrettoCloseOnce.Do(func() {
+		mc.cache.Close()
+	})
 	return nil
 }
 

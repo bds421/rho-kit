@@ -165,7 +165,7 @@ type Store interface {
 
 	// Query returns events matching the filter, ordered by timestamp descending.
 	// Returns the next cursor for pagination (empty string if no more results).
-	// The cursor returned here is a raw store-level cursor; [Logger.Query]
+	// The cursor returned here is a raw store-level cursor; [Logger.List]
 	// wraps it with a signed envelope before exposing it to callers.
 	Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error)
 
@@ -277,7 +277,7 @@ func WithChainKey(key []byte) Option {
 }
 
 // WithCursorKey configures the HMAC key used to sign pagination cursors
-// returned by [Logger.Query]. The key must be at least [MinCursorKeyLen]
+// returned by [Logger.List]. The key must be at least [MinCursorKeyLen]
 // (32) bytes; [New] panics if no key (or a too-short key) is supplied.
 //
 // Cursors are signed so an attacker cannot guess / forge cursors to skip
@@ -319,7 +319,7 @@ func New(store Store, opts ...Option) *Logger {
 }
 
 // Close zeroes the chain and cursor HMAC keys held by the Logger.
-// Subsequent calls to [Logger.LogE], [Logger.Query], or
+// Subsequent calls to [Logger.LogE], [Logger.List], or
 // [Logger.VerifyChain] return [ErrLoggerClosed]. Idempotent — calling
 // Close after the Logger is already closed is a no-op.
 //
@@ -492,7 +492,7 @@ func (l *Logger) LogAction(ctx context.Context, actor, action, resource, status 
 // The returned next-page cursor is itself signed with the Logger's cursor
 // key, so an attacker who captures a cursor cannot mint adjacent ones to
 // skip records or enumerate IDs.
-func (l *Logger) Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
+func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
 	if l.closed.Load() {
 		return nil, "", ErrLoggerClosed
 	}

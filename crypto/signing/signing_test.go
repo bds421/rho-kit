@@ -66,9 +66,8 @@ func TestVerify_RoundTrip(t *testing.T) {
 
 	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.True(t, ok, "round-trip verify should succeed")
+	assert.NoError(t, Verify(secret, body, ts, sig, DefaultSignatureMaxAge),
+		"round-trip verify should succeed")
 }
 
 func TestVerify_TamperedBody(t *testing.T) {
@@ -78,9 +77,8 @@ func TestVerify_TamperedBody(t *testing.T) {
 	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
 	tampered := []byte(`{"event":"deploy","status":"failure"}`)
-	ok, err := Verify(secret, tampered, ts, sig, DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.False(t, ok, "tampered body should fail verification")
+	assert.ErrorIs(t, Verify(secret, tampered, ts, sig, DefaultSignatureMaxAge), ErrInvalidSignature,
+		"tampered body should fail verification")
 }
 
 func TestVerify_WrongSecret(t *testing.T) {
@@ -89,9 +87,9 @@ func TestVerify_WrongSecret(t *testing.T) {
 
 	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify(Secret("wrong-webhook-secret-32bytes!!!!"), body, ts, sig, DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.False(t, ok, "wrong secret should fail verification")
+	assert.ErrorIs(t,
+		Verify(Secret("wrong-webhook-secret-32bytes!!!!"), body, ts, sig, DefaultSignatureMaxAge),
+		ErrInvalidSignature, "wrong secret should fail verification")
 }
 
 func TestVerify_WrongTimestamp(t *testing.T) {
@@ -100,9 +98,8 @@ func TestVerify_WrongTimestamp(t *testing.T) {
 
 	sig, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify(secret, body, ts+1, sig, DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.False(t, ok, "wrong timestamp should fail verification")
+	assert.ErrorIs(t, Verify(secret, body, ts+1, sig, DefaultSignatureMaxAge), ErrInvalidSignature,
+		"wrong timestamp should fail verification")
 }
 
 func TestVerify_InvalidSignature(t *testing.T) {
@@ -111,9 +108,8 @@ func TestVerify_InvalidSignature(t *testing.T) {
 
 	_, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify(secret, body, ts, "sha256=invalid", DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.False(t, ok, "invalid signature should fail verification")
+	assert.ErrorIs(t, Verify(secret, body, ts, "sha256=invalid", DefaultSignatureMaxAge), ErrInvalidSignature,
+		"invalid signature should fail verification")
 }
 
 func TestVerify_ExpiredSignature(t *testing.T) {
@@ -122,9 +118,9 @@ func TestVerify_ExpiredSignature(t *testing.T) {
 
 	oldTimestamp := time.Now().Add(-10 * time.Minute).Unix()
 	sigExpired, _ := signWithTimestamp(body, secret, oldTimestamp)
-	ok, err := Verify(secret, body, oldTimestamp, sigExpired, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrSignatureExpired)
-	assert.False(t, ok, "expired signature should fail verification")
+	assert.ErrorIs(t,
+		Verify(secret, body, oldTimestamp, sigExpired, 5*time.Minute), ErrSignatureExpired,
+		"expired signature should fail verification")
 }
 
 func TestVerify_FutureTimestamp(t *testing.T) {
@@ -133,17 +129,14 @@ func TestVerify_FutureTimestamp(t *testing.T) {
 
 	futureTS := time.Now().Add(10 * time.Minute).Unix()
 	sig, _ := signWithTimestamp(body, secret, futureTS)
-	ok, err := Verify(secret, body, futureTS, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrSignatureClockSkew)
-	assert.False(t, ok, "future timestamp should fail verification")
+	assert.ErrorIs(t,
+		Verify(secret, body, futureTS, sig, 5*time.Minute), ErrSignatureClockSkew,
+		"future timestamp should fail verification")
 }
 
 func TestVerify_EmptySecret(t *testing.T) {
-	_, err := Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
-	assert.ErrorIs(t, err, ErrEmptySecret)
-
-	_, err = Verify(Secret{}, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
-	assert.ErrorIs(t, err, ErrEmptySecret)
+	assert.ErrorIs(t, Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge), ErrEmptySecret)
+	assert.ErrorIs(t, Verify(Secret{}, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge), ErrEmptySecret)
 }
 
 func TestVerify_MissingPrefix(t *testing.T) {
@@ -152,9 +145,8 @@ func TestVerify_MissingPrefix(t *testing.T) {
 
 	_, ts, err := Sign(secret, body)
 	require.NoError(t, err)
-	ok, err := Verify(secret, body, ts, "no-prefix", DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.False(t, ok, "signature without sha256= prefix should fail")
+	assert.ErrorIs(t, Verify(secret, body, ts, "no-prefix", DefaultSignatureMaxAge), ErrInvalidSignature,
+		"signature without sha256= prefix should fail")
 }
 
 func TestSigner_WithClock_SignAndVerify(t *testing.T) {
@@ -169,9 +161,8 @@ func TestSigner_WithClock_SignAndVerify(t *testing.T) {
 	assert.Equal(t, fixedTime.Unix(), ts)
 
 	// Verify with the same clock succeeds.
-	ok, err := s.Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
-	require.NoError(t, err)
-	assert.True(t, ok, "round-trip with deterministic clock should succeed")
+	assert.NoError(t, s.Verify(secret, body, ts, sig, DefaultSignatureMaxAge),
+		"round-trip with deterministic clock should succeed")
 }
 
 func TestSigner_Verify_ExpiredWithClock(t *testing.T) {
@@ -188,9 +179,8 @@ func TestSigner_Verify_ExpiredWithClock(t *testing.T) {
 	sig, ts, err := signSigner.Sign(secret, body)
 	require.NoError(t, err)
 
-	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrSignatureExpired)
-	assert.False(t, ok, "expired signature should fail with deterministic clock")
+	err = verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
+	assert.ErrorIs(t, err, ErrSignatureExpired, "expired signature should fail with deterministic clock")
 }
 
 func TestSigner_Verify_FutureWithClock(t *testing.T) {
@@ -207,9 +197,8 @@ func TestSigner_Verify_FutureWithClock(t *testing.T) {
 	sig, ts, err := signSigner.Sign(secret, body)
 	require.NoError(t, err)
 
-	ok, err := verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
-	assert.ErrorIs(t, err, ErrSignatureClockSkew)
-	assert.False(t, ok, "future timestamp beyond skew should fail")
+	err = verifySigner.Verify(secret, body, ts, sig, 5*time.Minute)
+	assert.ErrorIs(t, err, ErrSignatureClockSkew, "future timestamp beyond skew should fail")
 }
 
 func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
@@ -228,7 +217,7 @@ func TestSigner_WithFutureSkew_RejectsBeyondLimit(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	_, err = verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
+	err = verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
 	assert.ErrorIs(t, err, ErrSignatureClockSkew)
 }
 
@@ -248,9 +237,8 @@ func TestSigner_WithFutureSkew_AcceptsWithinLimit(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	ok, err := verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
+	err = verifier.Verify(secret, []byte("body"), ts, sig, 5*time.Minute)
 	assert.NoError(t, err)
-	assert.True(t, ok)
 }
 
 func TestSignerOptions_PanicOnInvalidInput(t *testing.T) {
@@ -266,7 +254,7 @@ func TestSigner_Sign_EmptySecret(t *testing.T) {
 
 func TestSigner_Verify_EmptySecret(t *testing.T) {
 	s := NewSigner()
-	_, err := s.Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	err := s.Verify(nil, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrEmptySecret)
 }
 
@@ -276,7 +264,7 @@ func TestSigner_ZeroValueReturnsInvalidSigner(t *testing.T) {
 	_, _, err := s.Sign(testSecret, []byte("body"))
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 
-	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 }
 
@@ -286,7 +274,7 @@ func TestSigner_NilReceiverReturnsInvalidSigner(t *testing.T) {
 	_, _, err := s.Sign(testSecret, []byte("body"))
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 
-	_, err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
+	err = s.Verify(testSecret, []byte("body"), time.Now().Unix(), "sha256=abc", DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrInvalidSigner)
 }
 
@@ -295,10 +283,10 @@ func TestVerify_RejectsNonPositiveMaxAge(t *testing.T) {
 	sig, ts, err := s.Sign(testSecret, []byte("body"))
 	require.NoError(t, err)
 
-	_, err = s.Verify(testSecret, []byte("body"), ts, sig, 0)
+	err = s.Verify(testSecret, []byte("body"), ts, sig, 0)
 	assert.ErrorIs(t, err, ErrInvalidMaxAge)
 
-	_, err = s.Verify(testSecret, []byte("body"), ts, sig, -time.Second)
+	err = s.Verify(testSecret, []byte("body"), ts, sig, -time.Second)
 	assert.ErrorIs(t, err, ErrInvalidMaxAge)
 }
 
@@ -322,7 +310,7 @@ func TestVerifyContext_RejectsAmbiguousContextSeparators(t *testing.T) {
 	sig, ts, err := s.SignContext(ctx, testSecret, []byte("body"))
 	require.NoError(t, err)
 
-	_, err = s.VerifyContext(CanonicalContext{Method: "POST\nGET", Path: "/hooks", Domain: "webhook"}, testSecret, []byte("body"), ts, sig, DefaultSignatureMaxAge)
+	err = s.VerifyContext(CanonicalContext{Method: "POST\nGET", Path: "/hooks", Domain: "webhook"}, testSecret, []byte("body"), ts, sig, DefaultSignatureMaxAge)
 	assert.ErrorIs(t, err, ErrInvalidContext)
 }
 
@@ -353,10 +341,9 @@ func TestVerify_FutureTimestampReturnsClockSkew(t *testing.T) {
 	sig, ts, err := signer.Sign(testSecret, body)
 	require.NoError(t, err)
 
-	ok, err := verifier.Verify(testSecret, body, ts, sig, maxAge)
-	assert.ErrorIs(t, err, ErrSignatureClockSkew)
-	assert.NotErrorIs(t, err, ErrSignatureExpired)
-	assert.False(t, ok)
+	verifyErr := verifier.Verify(testSecret, body, ts, sig, maxAge)
+	assert.ErrorIs(t, verifyErr, ErrSignatureClockSkew)
+	assert.NotErrorIs(t, verifyErr, ErrSignatureExpired)
 }
 
 func TestVerify_PastMaxAgeReturnsExpired(t *testing.T) {
@@ -373,10 +360,9 @@ func TestVerify_PastMaxAgeReturnsExpired(t *testing.T) {
 	sig, ts, err := signer.Sign(testSecret, body)
 	require.NoError(t, err)
 
-	ok, err := verifier.Verify(testSecret, body, ts, sig, maxAge)
-	assert.ErrorIs(t, err, ErrSignatureExpired)
-	assert.NotErrorIs(t, err, ErrSignatureClockSkew)
-	assert.False(t, ok)
+	verifyErr := verifier.Verify(testSecret, body, ts, sig, maxAge)
+	assert.ErrorIs(t, verifyErr, ErrSignatureExpired)
+	assert.NotErrorIs(t, verifyErr, ErrSignatureClockSkew)
 }
 
 // signWithTimestamp is a test helper that signs with an explicit timestamp.

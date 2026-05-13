@@ -2,6 +2,7 @@ package redisstore
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 
@@ -90,16 +91,24 @@ func isConnectionUnavailable(err error) bool {
 // original cause is wrapped via apperror.NewDependencyUnavailable so
 // errors.Is(translated, ErrStoreUnavailable) holds and the cause remains
 // available to operators via errors.Unwrap.
+//
+// Implementation note: ErrStoreUnavailable is a singleton *UnavailableError
+// pointer, so errors.Is would not match a freshly-allocated
+// NewDependencyUnavailable. The fix is to double-wrap with %w so the
+// wrap chain contains both the sentinel pointer (for errors.Is) and the
+// kit-classified UnavailableError (so HTTP/gRPC adapters still map to 503
+// via the apperror.UnavailableError type assertion).
 func translateUnavailable(err error) error {
 	if err == nil {
 		return nil
 	}
 	if isReadOnlyError(err) || isConnectionUnavailable(err) {
-		return apperror.NewDependencyUnavailable(
+		classified := apperror.NewDependencyUnavailable(
 			"idempotency",
 			"idempotency store is temporarily unavailable",
 			err,
 		)
+		return fmt.Errorf("%w: %w", ErrStoreUnavailable, classified)
 	}
 	return err
 }

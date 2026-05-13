@@ -20,7 +20,7 @@
 // keyed by [WithChainKey]. [VerifyChain] (and the streaming
 // [Logger.VerifyChain]) returns wrapped [ErrChainBroken] if any record
 // has been modified, deleted, or inserted. Pagination cursors returned by
-// [Logger.Query] are HMAC-signed with [WithCursorKey] so attackers cannot
+// [Logger.List] are HMAC-signed with [WithCursorKey] so attackers cannot
 // guess / forge cursors to skip records; forged cursors return wrapped
 // [ErrInvalidCursor]. Both keys are required (≥32 bytes); [New] panics
 // fast at startup if either is missing.
@@ -30,7 +30,7 @@
 // Both the chain key and the cursor key are wrapped in
 // [secret.String], with reveals bounded to a single HMAC compute via
 // [secret.String.Use]. Call [Logger.Close] during graceful shutdown
-// to zero both wrappers; subsequent [Logger.LogE] / [Logger.Query] /
+// to zero both wrappers; subsequent [Logger.LogE] / [Logger.List] /
 // [Logger.VerifyChain] calls return [ErrLoggerClosed]. Memory dumps
 // taken after Close find zeroes in place of the key bytes.
 //

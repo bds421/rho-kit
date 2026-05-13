@@ -13,7 +13,7 @@ import (
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
-// ErrInvalidCursor is returned by [Logger.Query] when a supplied cursor is
+// ErrInvalidCursor is returned by [Logger.List] when a supplied cursor is
 // malformed, truncated, signed by a different key, or otherwise fails the
 // HMAC verification step. Callers can use errors.Is(err, ErrInvalidCursor)
 // to distinguish forgery / tamper attempts from Store I/O failures and

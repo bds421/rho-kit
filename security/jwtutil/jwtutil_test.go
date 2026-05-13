@@ -1190,7 +1190,8 @@ func TestNewProviderWithKeySet(t *testing.T) {
 	key := testKey(t)
 	ks, _ := ParseKeySet(testJWKS(t, key, "kid-1"))
 	p := NewProviderWithKeySet(ks, WithAllowAnyIssuer(), WithAllowAnyAudience())
-	if p.KeySet() != ks {
+	got := p.KeySet()
+	if got == nil || got.set != ks.set {
 		t.Error("expected keyset to be set")
 	}
 }
@@ -1235,7 +1236,8 @@ func TestNewProviderWithKeySet_AcceptsExplicitOptIns(t *testing.T) {
 		WithExpectedIssuer("https://issuer"),
 		WithExpectedAudience("svc"),
 	)
-	if p.KeySet() != ks {
+	got := p.KeySet()
+	if got == nil || got.set != ks.set {
 		t.Fatal("expected keyset to be set")
 	}
 	// R4: provider must NOT mutate the caller's KeySet — provider policy is
@@ -1262,8 +1264,19 @@ func TestNewProviderWithKeySet_AcceptsExplicitOptOuts(t *testing.T) {
 		WithAllowAnyIssuer(),
 		WithAllowAnyAudience(),
 	)
-	if p.KeySet() != ks {
+	got := p.KeySet()
+	if got == nil {
 		t.Fatal("expected keyset to be set")
+	}
+	// KeySet() returns a defensive snapshot — pointer identity differs but
+	// content matches.
+	if got.set != ks.set || got.ExpectedIssuer != ks.ExpectedIssuer || got.ExpectedAudience != ks.ExpectedAudience {
+		t.Fatalf("snapshot does not match source keyset: got %+v want %+v", got, ks)
+	}
+	// Mutating the snapshot must NOT affect the provider's live keyset.
+	got.ExpectedAudience = "tampered"
+	if again := p.KeySet(); again.ExpectedAudience == "tampered" {
+		t.Fatal("KeySet() returned live struct; mutation leaked back into provider")
 	}
 }
 

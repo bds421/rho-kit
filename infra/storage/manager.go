@@ -10,8 +10,17 @@ import (
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
+// ErrManagerClosed is returned by [Manager.Register], [Manager.Backend],
+// [Manager.Default], and [Manager.SetDefault] after the Manager has been
+// [Manager.Close]-d. Callers shouldn't normally see this error in
+// production — typically the application has already shut down by the
+// time backends are closed — but the explicit sentinel makes
+// post-shutdown races diagnosable.
+var ErrManagerClosed = errors.New("storage.Manager: already closed")
+
 // Manager holds named Storage backends, similar to Laravel's Storage::disk().
-// It is safe for concurrent use.
+// It is safe for concurrent use. [Manager.Close] is idempotent and gates
+// further registrations / lookups behind [ErrManagerClosed].
 //
 // Usage:
 //
@@ -28,6 +37,7 @@ type Manager struct {
 	backends    map[string]Storage
 	order       []string // tracks first-registered name for Default(); Names() returns sorted copy
 	defaultName string
+	closed      bool
 }
 
 // NewManager creates an empty Manager.
@@ -38,7 +48,8 @@ func NewManager() *Manager {
 }
 
 // Register adds a named backend to the manager.
-// Panics if name is empty or already registered.
+// Panics if name is empty or already registered, or if the Manager is
+// closed (post-shutdown registration is a wiring bug).
 // Returns the Manager for fluent chaining.
 func (m *Manager) Register(name string, backend Storage) *Manager {
 	if name == "" {
@@ -51,6 +62,9 @@ func (m *Manager) Register(name string, backend Storage) *Manager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		panic("storage.Manager: Register after Close")
+	}
 	if _, ok := m.backends[name]; ok {
 		panic("storage.Manager: backend already registered")
 	}
@@ -71,6 +85,9 @@ func (m *Manager) Backend(name string) (Storage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	if m.closed {
+		return nil, ErrManagerClosed
+	}
 	b, ok := m.backends[name]
 	if !ok {
 		return nil, apperror.NewNotFound("storage_backend", name)
@@ -92,11 +109,15 @@ func (m *Manager) MustBackend(name string) Storage {
 }
 
 // SetDefault sets the default backend name. The name must already be
-// registered. Returns the Manager for fluent chaining.
+// registered. Returns the Manager for fluent chaining. Panics if the
+// Manager is closed — post-shutdown reconfiguration is a wiring bug.
 func (m *Manager) SetDefault(name string) *Manager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		panic("storage.Manager: SetDefault after Close")
+	}
 	if _, ok := m.backends[name]; !ok {
 		panic("storage.Manager: default backend is not registered")
 	}
@@ -161,13 +182,22 @@ func (m *Manager) Has(name string) bool {
 // Close closes all registered backends that implement io.Closer in reverse
 // registration order. This ensures that decorators (e.g., encryption wrappers)
 // are closed before the backends they wrap.
-// Returns a joined error of all individual close failures.
+//
+// Idempotent — a second call is a no-op (returns nil). After Close,
+// further [Manager.Register] panics and [Manager.Backend] /
+// [Manager.SetDefault] return [ErrManagerClosed]. Returns a joined error
+// of all individual close failures.
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.closed {
+		return nil
+	}
+	m.closed = true
 
 	var errs []error
 	for i := len(m.order) - 1; i >= 0; i-- {

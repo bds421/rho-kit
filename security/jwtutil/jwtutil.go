@@ -863,12 +863,26 @@ func cloneTLSConfigWithFloor(cfg *tls.Config) *tls.Config {
 // already treats nil-keyset as "fail the request closed", so the
 // staleness check participates in that contract automatically.
 //
+// Returns a defensive snapshot — the previous implementation returned the
+// live struct, so a caller writing
+// `p.KeySet().ExpectedAudience = "x"` mutated verification policy under
+// concurrent verifiers. The snapshot shares the underlying jwk.Set
+// (immutable through its public API), so the only allocation cost is the
+// envelope struct.
+//
 // Callers that need to distinguish "not ready" from "stale" should use
 // [Provider.keySetWithReason] (private) via [Provider.Verify], which
 // returns [ErrKeySetNotReady] or [ErrKeySetStale].
 func (p *Provider) KeySet() *KeySet {
 	ks, _ := p.keySetWithReason()
-	return ks
+	if ks == nil {
+		return nil
+	}
+	return &KeySet{
+		set:              ks.set,
+		ExpectedIssuer:   ks.ExpectedIssuer,
+		ExpectedAudience: ks.ExpectedAudience,
+	}
 }
 
 // keySetWithReason returns the current keyset along with the typed reason

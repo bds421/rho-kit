@@ -21,7 +21,7 @@ func BenchmarkVerify(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		_, _ = Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
+		_ = Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
 	}
 }
 
@@ -32,6 +32,6 @@ func BenchmarkSignAndVerify_RoundTrip(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		sig, ts, _ := Sign(secret, body)
-		_, _ = Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
+		_ = Verify(secret, body, ts, sig, DefaultSignatureMaxAge)
 	}
 }
