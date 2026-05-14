@@ -8,16 +8,28 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
+func testCursorSigner(t *testing.T) *approval.CursorSigner {
+	t.Helper()
+	signer, err := approval.NewCursorSigner([]byte("test-approval-cursor-key-32-bytes"))
+	require.NoError(t, err)
+	return signer
+}
+
 func TestNew_PanicsOnNilPool(t *testing.T) {
-	assert.Panics(t, func() { New(nil) })
+	assert.Panics(t, func() { New(nil, testCursorSigner(t)) })
+}
+
+func TestNew_PanicsOnNilSigner(t *testing.T) {
+	assert.Panics(t, func() { New(&pgxpool.Pool{}, nil) })
 }
 
 func TestNew_PanicsOnNilOption(t *testing.T) {
-	assert.Panics(t, func() { New(&pgxpool.Pool{}, nil) })
+	assert.Panics(t, func() { New(&pgxpool.Pool{}, testCursorSigner(t), nil) })
 }
 
 func TestStore_InvalidReceiverReturnsError(t *testing.T) {
@@ -47,14 +59,14 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 }
 
 func TestList_ValidatesQueryScopeBeforeDBUse(t *testing.T) {
-	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now}
+	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now, cursorSigner: testCursorSigner(t)}
 
 	_, _, err := store.List(context.Background(), approval.Query{TenantID: "tenant", AllTenants: true})
 	assert.ErrorIs(t, err, approval.ErrQueryScopeConflict)
 }
 
 func TestCreate_UsesSharedValidationBeforeDBUse(t *testing.T) {
-	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now}
+	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now, cursorSigner: testCursorSigner(t)}
 
 	r := approval.Request{
 		ID:        strings.Repeat("a", approval.MaxIDLen+1),
@@ -78,7 +90,7 @@ func TestCreate_UsesSharedValidationBeforeDBUse(t *testing.T) {
 }
 
 func TestDecide_UsesSharedValidationBeforeDBUse(t *testing.T) {
-	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now}
+	store := &Store{pool: &pgxpool.Pool{}, clock: time.Now, cursorSigner: testCursorSigner(t)}
 
 	_, err := store.Approve(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok")
 	assert.ErrorIs(t, err, approval.ErrInvalidApprover)

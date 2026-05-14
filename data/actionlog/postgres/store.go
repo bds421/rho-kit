@@ -28,20 +28,26 @@ const uniqueViolation = "23505"
 // even when the tenant has zero rows yet — the lock is the only thing
 // preventing two concurrent first-appends from both racing to seq=1.
 type Store struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	cursorSigner *actionlog.CursorSigner
 }
 
-// New returns a Store. Panics on a nil pool — fail fast at startup so
-// the failure is visible at boot rather than at first append.
-func New(pool *pgxpool.Pool) *Store {
+// New returns a Store. Panics on a nil pool or nil signer — both are
+// fail-fast misconfigurations: pool absence would surface at the first
+// append, and a nil signer would let clients forge List cursors and
+// skip pages of action entries.
+func New(pool *pgxpool.Pool, signer *actionlog.CursorSigner) *Store {
 	if pool == nil {
 		panic("actionlog/postgres: pool must not be nil")
 	}
-	return &Store{pool: pool}
+	if signer == nil {
+		panic("actionlog/postgres: cursor signer must not be nil")
+	}
+	return &Store{pool: pool, cursorSigner: signer}
 }
 
 func (s *Store) ready() error {
-	if s == nil || s.pool == nil {
+	if s == nil || s.pool == nil || s.cursorSigner == nil {
 		return actionlog.ErrInvalidStore
 	}
 	return nil
@@ -135,7 +141,7 @@ func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry,
 	if err := q.Validate(); err != nil {
 		return nil, "", err
 	}
-	cursorTime, cursorID, err := actionlog.DecodeCursor(q.Cursor)
+	cursorTime, cursorID, err := s.cursorSigner.Decode(q.Cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -209,7 +215,7 @@ FROM action_log_entries`
 	var next string
 	if len(out) > limit {
 		last := out[limit-1]
-		next = actionlog.EncodeCursor(last.OccurredAt, last.ID)
+		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
 		out = out[:limit]
 	}
 	return out, next, nil
@@ -253,21 +259,6 @@ ORDER BY seq ASC`
 		return fmt.Errorf("actionlog/postgres: range by tenant seq iterate: %w", err)
 	}
 	return nil
-}
-
-// ListByTenantSeq returns every entry for tenantID ordered by Seq ASC.
-// Deprecated: use RangeByTenantSeq for verification paths so Postgres rows can
-// be scanned without materializing the full tenant chain.
-func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
-	var out []actionlog.Entry
-	err := s.RangeByTenantSeq(ctx, tenantID, func(e actionlog.Entry) error {
-		out = append(out, e)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // scannable abstracts pgx.Row and pgx.Rows so scanEntry handles both

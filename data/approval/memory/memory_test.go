@@ -13,6 +13,13 @@ import (
 	"github.com/bds421/rho-kit/data/v2/approval"
 )
 
+func testCursorSigner(t *testing.T) *approval.CursorSigner {
+	t.Helper()
+	signer, err := approval.NewCursorSigner([]byte("test-approval-cursor-key-32-bytes"))
+	require.NoError(t, err)
+	return signer
+}
+
 func newReq(id string) approval.Request {
 	return approval.Request{
 		ID:        id,
@@ -25,14 +32,14 @@ func newReq(id string) approval.Request {
 }
 
 func TestCreate_StartsPending(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	r, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	assert.Equal(t, approval.StatePending, r.State)
 }
 
 func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	r := newReq("copy-payload")
 	r.Payload = []byte("original")
 
@@ -74,7 +81,7 @@ func TestStore_CopiesPayloadOnPublicBoundaries(t *testing.T) {
 }
 
 func TestCreate_RejectsDuplicate(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("secret-token"))
 	require.NoError(t, err)
 	_, err = store.Create(context.Background(), newReq("secret-token"))
@@ -83,13 +90,13 @@ func TestCreate_RejectsDuplicate(t *testing.T) {
 }
 
 func TestCreate_RejectsMissingFields(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), approval.Request{ID: "r"})
 	assert.ErrorIs(t, err, approval.ErrInvalidRequest)
 }
 
 func TestCreate_RejectsZeroExpiresAt(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	r := newReq("r-zero")
 	r.ExpiresAt = time.Time{}
 	_, err := store.Create(context.Background(), r)
@@ -97,7 +104,7 @@ func TestCreate_RejectsZeroExpiresAt(t *testing.T) {
 }
 
 func TestCreate_RejectsPastExpiresAt(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	r := newReq("r-past")
 	r.ExpiresAt = time.Now().Add(-time.Hour)
 	_, err := store.Create(context.Background(), r)
@@ -105,7 +112,7 @@ func TestCreate_RejectsPastExpiresAt(t *testing.T) {
 }
 
 func TestCreate_UsesSharedValidation(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 
 	r := newReq(strings.Repeat("a", approval.MaxIDLen+1))
 	_, err := store.Create(context.Background(), r)
@@ -149,7 +156,7 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 }
 
 func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", "", "ok")
@@ -157,7 +164,7 @@ func TestDecide_RejectsEmptyDecidedBy(t *testing.T) {
 }
 
 func TestDecide_RejectsInvalidDecidedBy(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", strings.Repeat("a", approval.MaxActorLen+1), "ok")
@@ -165,7 +172,7 @@ func TestDecide_RejectsInvalidDecidedBy(t *testing.T) {
 }
 
 func TestDecide_RejectsInvalidReason(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", "approver-1", strings.Repeat("r", approval.MaxReasonLen+1))
@@ -173,7 +180,7 @@ func TestDecide_RejectsInvalidReason(t *testing.T) {
 }
 
 func TestDecide_ApprovesPending(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 
@@ -186,7 +193,7 @@ func TestDecide_ApprovesPending(t *testing.T) {
 }
 
 func TestDecide_RejectsPending(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 
@@ -196,7 +203,7 @@ func TestDecide_RejectsPending(t *testing.T) {
 }
 
 func TestDecide_IdempotentApproveApprove(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	r1, err := store.Approve(context.Background(), "r1", "approver-1", "ok")
@@ -213,7 +220,7 @@ func TestDecide_IdempotentApproveApprove(t *testing.T) {
 }
 
 func TestDecide_RefusesFlip(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
@@ -224,7 +231,7 @@ func TestDecide_RefusesFlip(t *testing.T) {
 }
 
 func TestDecide_RefusesAfterExecution(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
@@ -239,7 +246,7 @@ func TestDecide_RefusesAfterExecution(t *testing.T) {
 func TestDecide_AutoExpiresPastDeadline(t *testing.T) {
 	now := time.Now().UTC()
 	clock := now
-	store := New(WithClock(func() time.Time { return clock }))
+	store := New(testCursorSigner(t), WithClock(func() time.Time { return clock }))
 
 	r := newReq("r1")
 	r.ExpiresAt = now.Add(time.Minute)
@@ -258,7 +265,7 @@ func TestDecide_AutoExpiresPastDeadline(t *testing.T) {
 }
 
 func TestMarkExecuted_RequiresApproved(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 
@@ -267,7 +274,7 @@ func TestMarkExecuted_RequiresApproved(t *testing.T) {
 }
 
 func TestMarkExecuted_Idempotent(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Create(context.Background(), newReq("r1"))
 	require.NoError(t, err)
 	_, err = store.Approve(context.Background(), "r1", "approver-1", "ok")
@@ -281,7 +288,7 @@ func TestMarkExecuted_Idempotent(t *testing.T) {
 }
 
 func TestList_Filters(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	now := time.Now().UTC()
 
 	requests := []approval.Request{
@@ -317,13 +324,13 @@ func TestList_Filters(t *testing.T) {
 func TestList_RejectsEmptyTenantWithoutAllTenants(t *testing.T) {
 	// FR-053 [HIGH]: a handler that forgets to set TenantID must NOT
 	// silently leak across tenants. The store rejects ambiguous queries.
-	store := New()
+	store := New(testCursorSigner(t))
 	_, _, err := store.List(context.Background(), approval.Query{State: approval.StatePending})
 	require.ErrorIs(t, err, approval.ErrQueryTenantRequired)
 }
 
 func TestList_RejectsTenantAndAllTenantsConflict(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, _, err := store.List(context.Background(), approval.Query{TenantID: "t1", AllTenants: true})
 	require.ErrorIs(t, err, approval.ErrQueryScopeConflict)
 }
@@ -334,7 +341,7 @@ func TestList_RejectsTenantAndAllTenantsConflict(t *testing.T) {
 // Limit silently, so a tenant with >Limit requests silently lost the
 // tail.
 func TestList_CursorPaginatesAllRows(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	now := time.Now().UTC()
 	const total = 25
 	for i := 0; i < total; i++ {
@@ -374,7 +381,7 @@ func TestList_CursorPaginatesAllRows(t *testing.T) {
 }
 
 func TestList_RejectsMalformedCursor(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, _, err := store.List(context.Background(), approval.Query{
 		TenantID: "t", Cursor: "not-a-valid-cursor!!!",
 	})
@@ -390,7 +397,7 @@ func TestQuery_Validate(t *testing.T) {
 }
 
 func TestGet_NotFound(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.Get(context.Background(), "missing")
 	assert.ErrorIs(t, err, approval.ErrNotFound)
 }
@@ -403,10 +410,45 @@ func TestNew_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() { New(nil) })
 }
 
+// TestNew_PanicsOnNilCursorSigner pins the cursor-signer-required
+// contract: a nil signer would let clients forge cursors and skip
+// pending-approval pages.
+func TestNew_PanicsOnNilCursorSigner(t *testing.T) {
+	assert.Panics(t, func() { New(nil) })
+}
+
+// TestList_RejectsForgedCursor pins M-006: a client cannot construct
+// a cursor that this store will accept — every malformed or
+// foreign-signed input must surface as ErrInvalidCursor so HTTP
+// handlers can map cleanly to 400 Bad Request.
+func TestList_RejectsForgedCursor(t *testing.T) {
+	store := New(testCursorSigner(t))
+
+	// Seed a request so List has something to potentially paginate.
+	_, err := store.Create(context.Background(), newReq("r-seed"))
+	require.NoError(t, err)
+
+	otherSigner, err := approval.NewCursorSigner([]byte("attacker-cursor-key-32-bytes-pad"))
+	require.NoError(t, err)
+	forged := otherSigner.Encode(time.Now().UTC(), "fake-id")
+
+	_, _, err = store.List(context.Background(), approval.Query{
+		TenantID: "tenant",
+		Cursor:   forged,
+	})
+	require.ErrorIs(t, err, approval.ErrInvalidCursor)
+
+	_, _, err = store.List(context.Background(), approval.Query{
+		TenantID: "tenant",
+		Cursor:   "aGVsbG8td29ybGQ", // base64 without signature separator
+	})
+	require.ErrorIs(t, err, approval.ErrInvalidCursor)
+}
+
 func TestDecide_ExpiresAtTheInstant(t *testing.T) {
 	now := time.Now().UTC()
 	clock := now
-	store := New(WithClock(func() time.Time { return clock }))
+	store := New(testCursorSigner(t), WithClock(func() time.Time { return clock }))
 
 	r := newReq("r-instant")
 	r.ExpiresAt = now.Add(time.Minute)

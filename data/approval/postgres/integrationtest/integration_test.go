@@ -39,6 +39,13 @@ func startPostgres(t *testing.T) string {
 	return u.String()
 }
 
+func newTestCursorSigner(t *testing.T) *approval.CursorSigner {
+	t.Helper()
+	signer, err := approval.NewCursorSigner([]byte("test-approval-cursor-key-32-bytes"))
+	require.NoError(t, err)
+	return signer
+}
+
 func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -62,7 +69,7 @@ func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 func TestPostgres_Live_Lifecycle(t *testing.T) {
 	dsn := startPostgres(t)
 	pool := openAndMigrate(t, dsn)
-	store := postgresstore.New(pool)
+	store := postgresstore.New(pool, newTestCursorSigner(t))
 
 	r, err := store.Create(context.Background(), approval.Request{
 		ID:        "r1",

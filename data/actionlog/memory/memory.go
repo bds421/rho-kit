@@ -27,17 +27,29 @@ type Store struct {
 	// are removed in [Store.PruneTenants] to avoid unbounded growth in
 	// long-running test suites with many ephemeral tenants.
 	tenantMu sync.Map // map[string]*sync.Mutex
+
+	// cursorSigner produces tamper-resistant List cursors. Required —
+	// nil signers panic in [New] so misconfiguration is caught at
+	// process startup rather than at the first paginated read.
+	cursorSigner *actionlog.CursorSigner
 }
 
-// New creates an empty Store.
-func New() *Store {
+// New creates an empty Store. The signer is required; List results
+// embed signed keyset cursors that verify against this signer on the
+// next page request, so a nil signer would let clients forge cursors
+// and skip ahead through entries they were not yet authorised to see.
+func New(signer *actionlog.CursorSigner) *Store {
+	if signer == nil {
+		panic("actionlog/memory: New requires a non-nil *actionlog.CursorSigner")
+	}
 	return &Store{
-		byID: make(map[string]int),
+		byID:         make(map[string]int),
+		cursorSigner: signer,
 	}
 }
 
 func (s *Store) ready() error {
-	if s == nil || s.byID == nil {
+	if s == nil || s.byID == nil || s.cursorSigner == nil {
 		return actionlog.ErrInvalidStore
 	}
 	return nil
@@ -163,7 +175,7 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, s
 	if err := q.Validate(); err != nil {
 		return nil, "", err
 	}
-	cursorTime, cursorID, err := actionlog.DecodeCursor(q.Cursor)
+	cursorTime, cursorID, err := s.cursorSigner.Decode(q.Cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -207,7 +219,7 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, s
 	var next string
 	if len(matched) > limit {
 		last := matched[limit-1]
-		next = actionlog.EncodeCursor(last.OccurredAt, last.ID)
+		next = s.cursorSigner.Encode(last.OccurredAt, last.ID)
 		matched = matched[:limit]
 	}
 	return matched, next, nil
@@ -242,21 +254,6 @@ func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(a
 		}
 	}
 	return nil
-}
-
-// ListByTenantSeq returns every entry for tenantID in Seq ASC order.
-// Deprecated: use RangeByTenantSeq for verification paths so backend stores can
-// stream long tenant chains without materializing them.
-func (s *Store) ListByTenantSeq(ctx context.Context, tenantID string) ([]actionlog.Entry, error) {
-	out := make([]actionlog.Entry, 0)
-	err := s.RangeByTenantSeq(ctx, tenantID, func(e actionlog.Entry) error {
-		out = append(out, e)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // match reports whether e satisfies every non-zero filter on q.

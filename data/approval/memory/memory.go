@@ -23,6 +23,11 @@ type Store struct {
 	mu       sync.Mutex
 	requests map[string]approval.Request
 	clock    clock.Func
+
+	// cursorSigner produces tamper-resistant List cursors. Required —
+	// nil signers panic in [New] so misconfiguration is caught at
+	// startup rather than at the first paginated read.
+	cursorSigner *approval.CursorSigner
 }
 
 // Option configures the Store.
@@ -38,11 +43,18 @@ func WithClock(fn clock.Func) Option {
 	return func(s *Store) { s.clock = fn }
 }
 
-// New returns an empty Store.
-func New(opts ...Option) *Store {
+// New returns an empty Store. The signer is required; List results
+// embed signed keyset cursors that verify against this signer on the
+// next page request, so a nil signer would let clients forge cursors
+// and skip ahead through pending-approval pages.
+func New(signer *approval.CursorSigner, opts ...Option) *Store {
+	if signer == nil {
+		panic("approval/memory: New requires a non-nil *approval.CursorSigner")
+	}
 	s := &Store{
-		requests: make(map[string]approval.Request),
-		clock:    time.Now,
+		requests:     make(map[string]approval.Request),
+		clock:        time.Now,
+		cursorSigner: signer,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -118,7 +130,7 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 	if err := q.Validate(); err != nil {
 		return nil, "", err
 	}
-	cursorTime, cursorID, err := approval.DecodeCursor(q.Cursor)
+	cursorTime, cursorID, err := s.cursorSigner.Decode(q.Cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -159,7 +171,7 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 	var next string
 	if len(matched) > limit {
 		last := matched[limit-1]
-		next = approval.EncodeCursor(last.CreatedAt, last.ID)
+		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
 		matched = matched[:limit]
 	}
 	return matched, next, nil
@@ -278,7 +290,7 @@ func cloneRequest(r approval.Request) approval.Request {
 }
 
 func (s *Store) ready() error {
-	if s == nil || s.requests == nil || s.clock == nil {
+	if s == nil || s.requests == nil || s.clock == nil || s.cursorSigner == nil {
 		return approval.ErrInvalidStore
 	}
 	return nil

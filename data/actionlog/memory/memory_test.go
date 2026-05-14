@@ -19,6 +19,15 @@ func newTestSecrets(t *testing.T) *actionlog.StaticSecrets {
 	return actionlog.NewStaticSecrets("k1", map[string][]byte{"k1": key})
 }
 
+// testCursorSigner returns a deterministic signer for unit tests so
+// cursor encode/decode round-trips without depending on env state.
+func testCursorSigner(t *testing.T) *actionlog.CursorSigner {
+	t.Helper()
+	signer, err := actionlog.NewCursorSigner([]byte("test-actionlog-cursor-key-32bytes"))
+	require.NoError(t, err)
+	return signer
+}
+
 func validStoreEntry(id, tenantID string, metadata map[string]any) actionlog.Entry {
 	return actionlog.Entry{
 		ID:             id,
@@ -32,7 +41,7 @@ func validStoreEntry(id, tenantID string, metadata map[string]any) actionlog.Ent
 }
 
 func TestRoundTrip(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	written, err := logger.Append(context.Background(), actionlog.Entry{
@@ -51,7 +60,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestAppend_RejectsDuplicateID(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t),
 		actionlog.WithIDFunc(func() string { return "fixed-id" }))
 
@@ -68,7 +77,7 @@ func TestAppend_RejectsDuplicateID(t *testing.T) {
 }
 
 func TestTamper_DetectedByLogger(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	written, err := logger.Append(context.Background(), actionlog.Entry{
@@ -91,7 +100,7 @@ func TestTamper_DetectedByLogger(t *testing.T) {
 }
 
 func TestStore_CopiesMetadataOnPublicBoundaries(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	metadata := map[string]any{
 		"reason": "original",
 		"nested": map[string]any{"key": "value"},
@@ -131,7 +140,7 @@ func TestStore_CopiesMetadataOnPublicBoundaries(t *testing.T) {
 }
 
 func TestStore_CopiesPreviousEntryPassedToBuild(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, err := store.AppendChained(context.Background(), "t", func(actionlog.Entry, int64) (actionlog.Entry, error) {
 		entry := validStoreEntry("entry-1", "t", map[string]any{
 			"reason": "original",
@@ -159,7 +168,7 @@ func TestStore_CopiesPreviousEntryPassedToBuild(t *testing.T) {
 }
 
 func TestStore_RejectsInvalidBuiltEntryBeforeClone(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	cyclic := map[string]any{}
 	cyclic["self"] = cyclic
 
@@ -175,7 +184,7 @@ func TestStore_RejectsInvalidBuiltEntryBeforeClone(t *testing.T) {
 }
 
 func TestList_FiltersAndOrders(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	now := time.Now().UTC()
@@ -221,7 +230,7 @@ func TestList_FiltersAndOrders(t *testing.T) {
 }
 
 func TestStore_ListRejectsZeroQuery(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 	_, err := logger.Append(context.Background(), actionlog.Entry{
 		TenantID: "t1", Actor: "a", Action: "x", Outcome: actionlog.OutcomeSuccess,
@@ -246,17 +255,14 @@ func TestStore_ListRejectsZeroQuery(t *testing.T) {
 	assert.Len(t, all, 2)
 }
 
-func TestStore_ListByTenantSeqRejectsEmptyTenant(t *testing.T) {
-	store := New()
-	_, err := store.ListByTenantSeq(context.Background(), "")
-	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
-
-	err = store.RangeByTenantSeq(context.Background(), "", func(actionlog.Entry) error { return nil })
+func TestStore_RangeByTenantSeqRejectsEmptyTenant(t *testing.T) {
+	store := New(testCursorSigner(t))
+	err := store.RangeByTenantSeq(context.Background(), "", func(actionlog.Entry) error { return nil })
 	assert.ErrorIs(t, err, actionlog.ErrQueryTenantRequired)
 }
 
 func TestStore_RangeByTenantSeqStreamsInOrder(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	for i := 0; i < 3; i++ {
@@ -276,7 +282,7 @@ func TestStore_RangeByTenantSeqStreamsInOrder(t *testing.T) {
 }
 
 func TestList_DefaultLimitApplied(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	for i := 0; i < defaultLimit+10; i++ {
@@ -297,7 +303,7 @@ func TestList_DefaultLimitApplied(t *testing.T) {
 // cursor. Previously Logger.List capped output at Limit silently, so a
 // tenant with >Limit entries silently lost the tail.
 func TestList_CursorPaginatesAllRows(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	logger := actionlog.New(store, newTestSecrets(t))
 
 	const total = 25
@@ -333,7 +339,7 @@ func TestList_CursorPaginatesAllRows(t *testing.T) {
 }
 
 func TestList_RejectsMalformedCursor(t *testing.T) {
-	store := New()
+	store := New(testCursorSigner(t))
 	_, _, err := store.List(context.Background(), actionlog.Query{
 		TenantID: "t", Cursor: "not-a-valid-cursor!!!",
 	})
@@ -363,13 +369,55 @@ func TestStore_InvalidReceiverReturnsError(t *testing.T) {
 			_, _, err = tc.store.List(ctx, actionlog.Query{TenantID: "t"})
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
-			_, err = tc.store.ListByTenantSeq(ctx, "t")
-			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
-
 			err = tc.store.RangeByTenantSeq(ctx, "t", func(actionlog.Entry) error { return nil })
 			assert.ErrorIs(t, err, actionlog.ErrInvalidStore)
 
 			assert.NotPanics(t, func() { tc.store.PruneTenants() })
 		})
 	}
+}
+
+// TestNew_PanicsOnNilCursorSigner pins the cursor-signer-required
+// contract: a nil signer at construction would let clients forge List
+// cursors, so [New] must fail-fast with a panic at startup rather than
+// returning a Store that misbehaves at the first paginated read.
+func TestNew_PanicsOnNilCursorSigner(t *testing.T) {
+	assert.Panics(t, func() { New(nil) })
+}
+
+// TestList_RejectsForgedCursor pins the M-006 finding: a client cannot
+// construct a cursor that the store will accept. Either the signature
+// won't verify (different key) or the payload bytes don't decode
+// (random base64). In every case, errors.Is(err, ErrInvalidCursor)
+// must hold so HTTP handlers can map cleanly to 400 Bad Request.
+func TestList_RejectsForgedCursor(t *testing.T) {
+	store := New(testCursorSigner(t))
+	logger := actionlog.New(store, newTestSecrets(t))
+
+	_, err := logger.Append(context.Background(), actionlog.Entry{
+		TenantID: "t1",
+		Actor:    "agent",
+		Action:   "user.delete",
+		Outcome:  actionlog.OutcomeSuccess,
+	})
+	require.NoError(t, err)
+
+	// Forged with a different signing key.
+	otherSigner, err := actionlog.NewCursorSigner([]byte("attacker-cursor-key-32bytes-padd"))
+	require.NoError(t, err)
+	forged := otherSigner.Encode(time.Now().UTC(), "fake-id")
+
+	_, _, err = store.List(context.Background(), actionlog.Query{
+		TenantID: "t1",
+		Cursor:   forged,
+	})
+	require.ErrorIs(t, err, actionlog.ErrInvalidCursor)
+
+	// Stripped (unsigned base64 of the legacy transparent encoding):
+	// still rejected because no "." separator and no signature.
+	_, _, err = store.List(context.Background(), actionlog.Query{
+		TenantID: "t1",
+		Cursor:   "aGVsbG8td29ybGQ", // arbitrary base64 without "."
+	})
+	require.ErrorIs(t, err, actionlog.ErrInvalidCursor)
 }

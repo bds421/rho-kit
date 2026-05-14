@@ -39,6 +39,13 @@ func startPostgres(t *testing.T) string {
 	return u.String()
 }
 
+func newTestCursorSigner(t *testing.T) *actionlog.CursorSigner {
+	t.Helper()
+	signer, err := actionlog.NewCursorSigner([]byte("test-actionlog-cursor-key-32bytes"))
+	require.NoError(t, err)
+	return signer
+}
+
 func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -66,7 +73,7 @@ func openAndMigrate(t *testing.T, dsn string) *pgxpool.Pool {
 func TestPostgres_Live_RoundTrip(t *testing.T) {
 	dsn := startPostgres(t)
 	pool := openAndMigrate(t, dsn)
-	store := postgresstore.New(pool)
+	store := postgresstore.New(pool, newTestCursorSigner(t))
 	logger := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))
@@ -89,7 +96,7 @@ func TestPostgres_Live_RoundTrip(t *testing.T) {
 func TestPostgres_Live_TamperDetected(t *testing.T) {
 	dsn := startPostgres(t)
 	pool := openAndMigrate(t, dsn)
-	store := postgresstore.New(pool)
+	store := postgresstore.New(pool, newTestCursorSigner(t))
 	log := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))
@@ -122,7 +129,7 @@ func TestPostgres_Live_TamperDetected(t *testing.T) {
 func TestPostgres_Live_ConcurrentFirstAppend(t *testing.T) {
 	dsn := startPostgres(t)
 	pool := openAndMigrate(t, dsn)
-	store := postgresstore.New(pool)
+	store := postgresstore.New(pool, newTestCursorSigner(t))
 	log := actionlog.New(store, actionlog.NewStaticSecrets("k1", map[string][]byte{
 		"k1": []byte("0123456789abcdef0123456789abcdef"),
 	}))

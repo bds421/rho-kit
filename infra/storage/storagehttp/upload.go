@@ -28,15 +28,6 @@ type UploadResult struct {
 
 // UploadOptions configures [ParseAndStore] behavior.
 type UploadOptions struct {
-	// MaxMemory was previously documented as "the multipart memory buffer"
-	// but [ParseAndStore] uses [http.Request.MultipartReader] which streams
-	// parts directly without honouring this field. Kept for backwards-
-	// compatible doc-references; reads are silently ignored.
-	//
-	// Deprecated: ignored. The streaming reader path makes the field a
-	// misleading no-op. Will be removed in v2.
-	MaxMemory int64
-
 	// FormField is the name of the file field in the multipart form.
 	// Defaults to "file".
 	FormField string

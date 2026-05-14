@@ -22,8 +22,9 @@ const defaultLimit = 100
 // transaction with SELECT FOR UPDATE so concurrent decisions on the same
 // request serialise on the row lock.
 type Store struct {
-	pool  *pgxpool.Pool
-	clock clock.Func
+	pool         *pgxpool.Pool
+	clock        clock.Func
+	cursorSigner *approval.CursorSigner
 }
 
 // Option configures a Store.
@@ -39,12 +40,18 @@ func WithClock(fn clock.Func) Option {
 	return func(s *Store) { s.clock = fn }
 }
 
-// New returns a Store backed by pool. Panics on a nil pool.
-func New(pool *pgxpool.Pool, opts ...Option) *Store {
+// New returns a Store backed by pool. Panics on a nil pool or nil
+// signer — both are fail-fast misconfigurations: pool absence would
+// surface at the first call, and a nil signer would let clients
+// forge List cursors and skip pages of pending approvals.
+func New(pool *pgxpool.Pool, signer *approval.CursorSigner, opts ...Option) *Store {
 	if pool == nil {
 		panic("approval/postgres: pool must not be nil")
 	}
-	s := &Store{pool: pool, clock: time.Now}
+	if signer == nil {
+		panic("approval/postgres: cursor signer must not be nil")
+	}
+	s := &Store{pool: pool, clock: time.Now, cursorSigner: signer}
 	for _, o := range opts {
 		if o == nil {
 			panic("approval/postgres: option must not be nil")
@@ -120,7 +127,7 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 	if err := q.Validate(); err != nil {
 		return nil, "", err
 	}
-	cursorTime, cursorID, err := approval.DecodeCursor(q.Cursor)
+	cursorTime, cursorID, err := s.cursorSigner.Decode(q.Cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -194,7 +201,7 @@ FROM approval_requests`
 	var next string
 	if len(out) > limit {
 		last := out[limit-1]
-		next = approval.EncodeCursor(last.CreatedAt, last.ID)
+		next = s.cursorSigner.Encode(last.CreatedAt, last.ID)
 		out = out[:limit]
 	}
 	return out, next, nil
@@ -387,7 +394,7 @@ func nullableTime(t time.Time) any {
 }
 
 func (s *Store) ready() error {
-	if s == nil || s.pool == nil || s.clock == nil {
+	if s == nil || s.pool == nil || s.clock == nil || s.cursorSigner == nil {
 		return approval.ErrInvalidStore
 	}
 	return nil

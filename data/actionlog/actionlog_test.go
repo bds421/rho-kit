@@ -75,28 +75,20 @@ func (s *memStore) List(_ context.Context, q Query) ([]Entry, string, error) {
 	return out, "", nil
 }
 
-func (s *memStore) ListByTenantSeq(_ context.Context, tenantID string) ([]Entry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Entry, 0)
-	for _, id := range s.order {
-		e := s.entries[id]
-		if e.TenantID == tenantID {
-			out = append(out, e)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
-	return out, nil
-}
-
 func (s *memStore) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(Entry) error) error {
 	if fn == nil {
 		return ErrInvalidEntry
 	}
-	entries, err := s.ListByTenantSeq(ctx, tenantID)
-	if err != nil {
-		return err
+	s.mu.Lock()
+	entries := make([]Entry, 0)
+	for _, id := range s.order {
+		e := s.entries[id]
+		if e.TenantID == tenantID {
+			entries = append(entries, e)
+		}
 	}
+	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Seq < entries[j].Seq })
 	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return err

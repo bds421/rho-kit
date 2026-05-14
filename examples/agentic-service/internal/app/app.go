@@ -82,7 +82,6 @@ func run(ctx context.Context, addr string) error {
 	// wiring swaps these for the postgres / redis backends.
 	bud := budgetmem.New(1000 /* cap per period */, time.Minute)
 
-	alogStore := actionlogmem.New()
 	// Generate an ephemeral 32-byte secret per process start. This means
 	// every restart invalidates the chain, which is fine for the demo
 	// (no persistence) and prevents a copy-pasted hard-coded secret
@@ -91,12 +90,33 @@ func run(ctx context.Context, addr string) error {
 	if _, randErr := rand.Read(demoSecret); randErr != nil {
 		return fmt.Errorf("agentic-service: generate demo HMAC secret: %w", randErr)
 	}
+	// Generate an ephemeral 32-byte cursor signing key per process start so
+	// admin/UI pagination cursors are unforgeable even in the demo. Production
+	// must wire a stable rotated key — restarting today invalidates outstanding
+	// cursors, which is intentional for a memory-backed demo.
+	demoActionlogCursorKey := make([]byte, 32)
+	if _, randErr := rand.Read(demoActionlogCursorKey); randErr != nil {
+		return fmt.Errorf("agentic-service: generate actionlog cursor key: %w", randErr)
+	}
+	demoApprovalCursorKey := make([]byte, 32)
+	if _, randErr := rand.Read(demoApprovalCursorKey); randErr != nil {
+		return fmt.Errorf("agentic-service: generate approval cursor key: %w", randErr)
+	}
+	actionlogCursorSigner, err := actionlog.NewCursorSigner(demoActionlogCursorKey)
+	if err != nil {
+		return fmt.Errorf("agentic-service: build actionlog cursor signer: %w", err)
+	}
+	approvalCursorSigner, err := approval.NewCursorSigner(demoApprovalCursorKey)
+	if err != nil {
+		return fmt.Errorf("agentic-service: build approval cursor signer: %w", err)
+	}
+	alogStore := actionlogmem.New(actionlogCursorSigner)
 	slog.Default().Warn("agentic-service: using ephemeral per-process HMAC secret — chain resets on every restart; production must wire a real keysprovider")
 	alogger := actionlog.New(alogStore, actionlog.NewStaticSecrets("v1", map[string][]byte{
 		"v1": demoSecret,
 	}))
 
-	astore := approvalmem.New()
+	astore := approvalmem.New(approvalCursorSigner)
 
 	mcpServer := newMCPServer(alogger)
 
