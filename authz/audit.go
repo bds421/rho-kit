@@ -139,7 +139,13 @@ func (d *loggedDecider) Allow(ctx context.Context, subject, action, resource str
 		d.cfg.emit(ctx, subject, action, resource, ErrNoDecider)
 		return ErrNoDecider
 	}
-	err := d.inner.Allow(ctx, subject, action, resource)
+	// Route through the safe Allow helper rather than reaching for
+	// d.inner.Allow directly so a panic in the wrapped decider is
+	// recovered and converted to ErrDeciderPanic. Wave 72 closed a
+	// hostile-review finding that the prior direct-call path
+	// bypassed the helper's recover() and let inner panics propagate
+	// to the audit pipeline as a runtime crash.
+	err := Allow(ctx, d.inner, Request{Subject: subject, Action: action, Resource: resource})
 	d.cfg.emit(ctx, subject, action, resource, err)
 	return err
 }
