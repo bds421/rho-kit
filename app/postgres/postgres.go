@@ -109,7 +109,11 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	// pool.Stat() at scrape time, so there is no background goroutine to
 	// manage. Failure to register is non-fatal: pool capacity dashboards
 	// degrade, but the service itself runs.
-	if _, err := pgxbackend.NewPoolStatsCollector(pool.Pool(), m.cfg.registerer, m.cfg.instance); err != nil {
+	var statsOpts []pgxbackend.MetricsOption
+	if m.cfg.registerer != nil {
+		statsOpts = append(statsOpts, pgxbackend.WithRegisterer(m.cfg.registerer))
+	}
+	if _, err := pgxbackend.NewPoolStatsCollector(pool.Pool(), m.cfg.instance, statsOpts...); err != nil {
 		mc.Logger.Warn("postgres pool stats collector not registered",
 			slog.Any("error", err),
 		)

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/approval/memory"
 )
@@ -26,9 +27,17 @@ const (
 	testActor     = "agent-1"
 )
 
+// newRequest builds an httptest.NewRequest with a tenant already
+// resolved into the request context (the v2 default trust path) and a
+// canonical X-Actor header. Tests that exercise the legacy header
+// trust path opt in explicitly via [WithTenantFromHeader].
 func newRequest(method, path string, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
-	r.Header.Set(testKeyHeader, testTenantID)
+	ctx, err := coretenant.WithID(r.Context(), coretenant.MustNewID(testTenantID))
+	if err != nil {
+		panic(err)
+	}
+	r = r.WithContext(ctx)
 	r.Header.Set("X-Actor", testActor)
 	return r
 }
@@ -160,12 +169,16 @@ func TestMiddleware_400WhenTenantHeaderAmbiguousOrInvalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newApprovalStore(t)
-			mw := Middleware(store, headerActor())
+			// Header-trust path must be opted into explicitly in v2;
+			// this test exercises that path's validation.
+			mw := Middleware(store, headerActor(), WithTenantFromHeader(testKeyHeader))
 			h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("handler should not run when tenant header is invalid")
 			}))
 
-			r := newRequest(http.MethodDelete, "/v1/users/42", "")
+			r := httptest.NewRequest(http.MethodDelete, "/v1/users/42", strings.NewReader(""))
+			r.Header.Set(testKeyHeader, testTenantID)
+			r.Header.Set("X-Actor", testActor)
 			tt.setup(r)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, r)
@@ -201,7 +214,9 @@ func TestMiddleware_401WhenActorMissing(t *testing.T) {
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	r := httptest.NewRequest(http.MethodDelete, "/v1/users/42", nil)
-	r.Header.Set(testKeyHeader, testTenantID)
+	ctx, err := coretenant.WithID(r.Context(), coretenant.MustNewID(testTenantID))
+	require.NoError(t, err)
+	r = r.WithContext(ctx)
 	// Deliberately omit X-Actor.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -465,9 +480,9 @@ func TestWithTenantSource_PanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { WithTenantSource(nil) })
 }
 
-func TestWithTenantHeader_PanicsOnInvalidName(t *testing.T) {
-	assert.Panics(t, func() { WithTenantHeader("") })
-	assert.Panics(t, func() { WithTenantHeader("Bad Header") })
+func TestWithTenantFromHeader_PanicsOnInvalidName(t *testing.T) {
+	assert.Panics(t, func() { WithTenantFromHeader("") })
+	assert.Panics(t, func() { WithTenantFromHeader("Bad Header") })
 }
 
 func TestWithActorExtractor_PanicsOnNil(t *testing.T) {

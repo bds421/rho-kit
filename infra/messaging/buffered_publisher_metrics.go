@@ -40,26 +40,53 @@ type PrometheusBufferedPublisherMetrics struct {
 	bufferedByte *prometheus.GaugeVec
 }
 
-// NewPrometheusMetrics constructs a [PrometheusBufferedPublisherMetrics]
-// registered against reg. When reg is nil, [prometheus.DefaultRegisterer]
-// is used. publisherName must be a stable static label such as "events"
-// or "outbox-rabbit" — it is validated by [promutil.ValidateStaticLabelValue]
-// so an accidental tenant ID or payload-derived value panics at construction
+// MetricsOption configures [NewBufferedPublisherMetrics]. Standardised
+// across the kit so every metrics constructor uses
+// `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for buffered
+// publisher metrics. When unset, [prometheus.DefaultRegisterer] is
+// used. Passing nil panics so a miswired "metrics enabled, registerer
+// not supplied" caller surfaces at startup rather than going to the
+// global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
+	if reg == nil {
+		panic("messaging: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewBufferedPublisherMetrics constructs a
+// [PrometheusBufferedPublisherMetrics] for publisherName. publisherName
+// must be a stable static label such as "events" or "outbox-rabbit" —
+// it is validated by [promutil.ValidateStaticLabelValue] so an
+// accidental tenant ID or payload-derived value panics at construction
 // rather than exploding Prometheus cardinality at scrape time.
 //
-// Repeated calls with the same registerer reuse the previously registered
-// collectors (matching the kit convention enforced by
+// Pass [WithRegisterer] to use a non-default registry. Repeated calls
+// reuse the previously registered collectors on the same registry
+// (matching the kit convention enforced by
 // [promutil.MustRegisterOrGet]).
-func NewPrometheusMetrics(reg prometheus.Registerer, publisherName string) *PrometheusBufferedPublisherMetrics {
+func NewBufferedPublisherMetrics(publisherName string, opts ...MetricsOption) *PrometheusBufferedPublisherMetrics {
 	if publisherName == "" {
-		panic("messaging: NewPrometheusMetrics requires a non-empty publisher name")
+		panic("messaging: NewBufferedPublisherMetrics requires a non-empty publisher name")
 	}
 	if err := promutil.ValidateStaticLabelValue("publisher name", publisherName); err != nil {
 		panic("messaging: invalid publisher name for Prometheus label")
 	}
-	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("messaging: NewBufferedPublisherMetrics option must not be nil")
+		}
+		opt(&cfg)
 	}
+	reg := cfg.registerer
 
 	m := &PrometheusBufferedPublisherMetrics{
 		name: publisherName,
@@ -97,7 +124,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer, publisherName string) *Prom
 // callbacks to the registered Prometheus collectors. Use with
 // [WithMetrics]:
 //
-//	pm := messaging.NewPrometheusMetrics(reg, "events")
+//	pm := messaging.NewBufferedPublisherMetrics("events", messaging.WithRegisterer(reg))
 //	pub := messaging.OpenBufferedPublisher(inner, conn, logger,
 //	    messaging.WithStateFile(path),
 //	    messaging.WithMetrics(pm.Hooks()),
@@ -122,13 +149,18 @@ func (m *PrometheusBufferedPublisherMetrics) Hooks() *BufferedPublisherMetrics {
 
 // WithPrometheusMetrics is a convenience wrapper that registers
 // [PrometheusBufferedPublisherMetrics] and wires the hooks in a single
-// option, matching the WithComputePrometheusMetrics pattern from
-// data/cache. Equivalent to:
+// option. Equivalent to:
 //
-//	pm := messaging.NewPrometheusMetrics(reg, publisherName)
+//	pm := messaging.NewBufferedPublisherMetrics(publisherName, messaging.WithRegisterer(reg))
 //	messaging.WithMetrics(pm.Hooks())
-func WithPrometheusMetrics(reg prometheus.Registerer, publisherName string) BufferedPublisherOption {
-	pm := NewPrometheusMetrics(reg, publisherName)
+//
+// When reg is nil, the kit-wide [prometheus.DefaultRegisterer] is used.
+func WithPrometheusMetrics(publisherName string, reg prometheus.Registerer) BufferedPublisherOption {
+	var opts []MetricsOption
+	if reg != nil {
+		opts = append(opts, WithRegisterer(reg))
+	}
+	pm := NewBufferedPublisherMetrics(publisherName, opts...)
 	return WithMetrics(pm.Hooks())
 }
 

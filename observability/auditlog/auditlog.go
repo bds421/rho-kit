@@ -224,8 +224,10 @@ type Filter struct {
 // PrevHMAC and produce a chain fork.
 //
 // Safe for concurrent use — Log / LogE / List / VerifyChain can be
-// called from many goroutines. Close races the chainKey wipe against
-// in-flight LogE callbacks via secret.String.Use's internal lock.
+// called from many goroutines. Close coordinates with in-flight LogE
+// callbacks via secret.String.Use's internal lock plus an empty-key
+// check inside the chained build, so an append cannot complete with a
+// zeroed chainKey (see [Logger.Close]).
 type Logger struct {
 	store     Store
 	logger    *slog.Logger
@@ -351,6 +353,13 @@ func New(store Store, opts ...Option) *Logger {
 //
 // Close does not touch the underlying [Store]; close that separately
 // if it owns connections / file handles.
+//
+// Race-safety: LogE re-reads the closed flag inside the AppendChained
+// build callback AND inspects the snapshot it receives from
+// chainKey.Use. If Close.Zero happens between the closed-load and the
+// snapshot, the snapshot is empty; LogE treats that as
+// [ErrLoggerClosed] and aborts the append, so no event signed with
+// zeroed key material can ever reach the store.
 func (l *Logger) Close() error {
 	if l == nil {
 		return nil
@@ -358,15 +367,6 @@ func (l *Logger) Close() error {
 	if !l.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// LogE re-checks closed inside the AppendChained build callback so
-	// any in-flight HMAC computation aborts before we wipe the keys.
-	// There is still a tiny window where a build that has just read
-	// the closed flag (false) could call chainKey.Use() right as we
-	// zero — secret.String.Use takes a snapshot under its own internal
-	// lock, so the worst case is the build sees the pre-zero key
-	// (correct) or the post-zero key (which will fail downstream
-	// verification, a deliberate signal that the Logger was closed
-	// mid-write).
 	if l.chainKey != nil {
 		l.chainKey.Zero()
 	}
@@ -437,10 +437,27 @@ func (l *Logger) LogE(ctx context.Context, event Event) error {
 		if len(prev) > 0 {
 			event.PrevHMAC = append([]byte(nil), prev...)
 		}
-		var mac []byte
+		var (
+			mac      []byte
+			keyEmpty bool
+		)
 		l.chainKey.Use(func(k []byte) {
+			// chainKey.Use snapshots the key under secret.String's
+			// internal lock. If Close.Zero ran between the closed-load
+			// above and the snapshot, k is empty here. Treat that as
+			// ErrLoggerClosed so we never persist an event signed with
+			// nil/zero key material — that would silently break
+			// VerifyChain at shutdown boundaries (H2-003).
+			if len(k) == 0 {
+				keyEmpty = true
+				return
+			}
 			mac = computeHMAC(k, event.PrevHMAC, event)
 		})
+		if keyEmpty {
+			buildErr = ErrLoggerClosed
+			return Event{}, ErrLoggerClosed
+		}
 		event.HMAC = mac
 		if vErr := ValidateEvent(event); vErr != nil {
 			buildErr = vErr
@@ -542,31 +559,41 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 	return cloneEvents(events), signed, nil
 }
 
-// VerifyChain re-reads every event from the underlying store and validates
-// the tamper-evident HMAC chain end-to-end. It returns nil for an empty
-// store (degenerate-valid chain).
+// VerifyChain re-reads every event from the underlying store and
+// validates the tamper-evident HMAC chain end-to-end. It returns nil
+// for an empty store (degenerate-valid chain).
 //
-// Implementation note: VerifyChain pages through the store in ascending
-// time order using the store's native cursor (bypassing signed-cursor
-// envelopes since this is an in-process audit). The page size is fixed at
-// [verifyChainPageSize] so very large chains stream rather than buffer the
-// entire ledger in memory.
+// VerifyChain streams pages from the store in newest-first order
+// (matching [Store.Query]'s native iteration) and verifies each page
+// as it arrives — memory is bounded to one page at a time
+// ([verifyChainPageSize]). At each step it confirms:
 //
-// VerifyChain returns a wrapped [ErrChainBroken] at the first tamper site
-// it detects, or any underlying Store I/O error. Successful return means
-// every record's HMAC matches its content AND every record's PrevHMAC
-// links to the previous record's HMAC.
+//  1. The recomputed HMAC over the canonical encoding of the event
+//     (using event.PrevHMAC + event-without-HMAC) equals event.HMAC.
+//  2. The chain link is intact: every younger-neighbour event's
+//     PrevHMAC must equal the current (older) event's HMAC.
+//  3. The oldest event (last seen at end of stream) has an empty or
+//     zero PrevHMAC — i.e. the chain has a valid genesis.
+//
+// VerifyChain returns a wrapped [ErrChainBroken] at the first tamper
+// site it detects, or any underlying Store I/O error. Successful
+// return means every record's HMAC matches its content AND every
+// record's PrevHMAC links to the previous record's HMAC.
 func (l *Logger) VerifyChain(ctx context.Context) error {
 	if l.closed.Load() {
 		return ErrLoggerClosed
 	}
-	all, err := l.collectAllEventsAscending(ctx)
-	if err != nil {
-		return err
-	}
 	var verifyErr error
 	l.chainKey.Use(func(k []byte) {
-		verifyErr = VerifyChain(all, k)
+		if len(k) == 0 {
+			verifyErr = ErrLoggerClosed
+			return
+		}
+		if len(k) < MinChainKeyLen {
+			verifyErr = fmt.Errorf("%w: chain key must be at least %d bytes", ErrChainBroken, MinChainKeyLen)
+			return
+		}
+		verifyErr = l.streamVerifyChain(ctx, k)
 	})
 	return verifyErr
 }
@@ -576,27 +603,52 @@ func (l *Logger) VerifyChain(ctx context.Context) error {
 // per-page round-trip cost.
 const verifyChainPageSize = 500
 
-func (l *Logger) collectAllEventsAscending(ctx context.Context) ([]Event, error) {
-	// Store.Query returns events newest-first; we accumulate everything,
-	// then reverse so VerifyChain sees chain-order (oldest first).
-	var newestFirst []Event
+func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte) error {
 	cursor := ""
+	var (
+		// expectedNextHMAC is the HMAC the next (older) event we read
+		// must have. It is captured from the previous (younger)
+		// event's PrevHMAC. The newest event has no younger neighbour
+		// so this is uninitialised until the first event is seen.
+		expectedNextHMAC []byte
+		haveLink         bool
+		// lastPrevHMAC holds the most recently seen event's PrevHMAC.
+		// At end-of-stream it belongs to the oldest event and must be
+		// empty/zero (chain genesis).
+		lastPrevHMAC []byte
+		// fromNewest indexes the position of the event relative to the
+		// newest record, for error reporting only.
+		fromNewest int
+	)
 	for {
 		page, next, err := l.store.Query(ctx, Filter{}, cursor, verifyChainPageSize)
 		if err != nil {
-			return nil, fmt.Errorf("auditlog: verify chain: read page: %w", err)
+			return fmt.Errorf("auditlog: verify chain: read page: %w", err)
 		}
-		newestFirst = append(newestFirst, page...)
+		for _, event := range page {
+			expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
+			if !constantTimeEqualHMAC(event.HMAC, expected) {
+				return fmt.Errorf("%w: event (newest-offset=%d) HMAC does not match canonical content", ErrChainBroken, fromNewest)
+			}
+			if haveLink {
+				if !constantTimeEqualHMAC(event.HMAC, expectedNextHMAC) {
+					return fmt.Errorf("%w: chain link broken at newest-offset=%d (younger neighbour's PrevHMAC does not match this event's HMAC)", ErrChainBroken, fromNewest)
+				}
+			}
+			expectedNextHMAC = event.PrevHMAC
+			lastPrevHMAC = event.PrevHMAC
+			haveLink = true
+			fromNewest++
+		}
 		if next == "" {
 			break
 		}
 		cursor = next
 	}
-	out := make([]Event, len(newestFirst))
-	for i := range newestFirst {
-		out[len(newestFirst)-1-i] = newestFirst[i]
+	if haveLink && len(lastPrevHMAC) != 0 && !isZeroBytes(lastPrevHMAC) {
+		return fmt.Errorf("%w: oldest event PrevHMAC must be empty or zero (chain genesis missing)", ErrChainBroken)
 	}
-	return out, nil
+	return nil
 }
 
 // extractTraceID returns the OpenTelemetry trace ID from the context, or "".

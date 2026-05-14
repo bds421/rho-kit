@@ -204,9 +204,18 @@ func WithMetrics(m *Metrics) Option {
 	return func(c *config) { c.metrics = m }
 }
 
-// WithRequiredMethods sets the HTTP methods that require an idempotency key.
-// Default: POST, PUT, PATCH.
+// WithRequiredMethods sets the HTTP methods that require an
+// idempotency key. Default: POST, PUT, PATCH.
+//
+// Panics on a zero-length call (no methods). The v1 shape silently
+// accepted `WithRequiredMethods()` and replaced the safe default with
+// an empty map — middleware would then bypass every request. Services
+// that intentionally want no required methods must opt in via
+// [WithoutRequiredMethods].
 func WithRequiredMethods(methods ...string) Option {
+	if len(methods) == 0 {
+		panic("idempotency: WithRequiredMethods requires at least one method (use WithoutRequiredMethods to disable enforcement explicitly)")
+	}
 	canonical := make([]string, 0, len(methods))
 	for _, m := range methods {
 		m = strings.ToUpper(strings.TrimSpace(m))
@@ -220,6 +229,19 @@ func WithRequiredMethods(methods ...string) Option {
 		for _, m := range canonical {
 			c.requiredMethods[m] = true
 		}
+	}
+}
+
+// WithoutRequiredMethods disables the "method requires an idempotency
+// key" enforcement entirely — every request becomes optional even for
+// mutating methods. The long, explicit name is deliberate: this is
+// the unsafe-by-default escape hatch that turns off the middleware's
+// main protection. Use only when the caller has an out-of-band reason
+// (an upstream gateway already enforces idempotency, or the routes
+// behind this middleware are genuinely safe to retry).
+func WithoutRequiredMethods() Option {
+	return func(c *config) {
+		c.requiredMethods = map[string]bool{}
 	}
 }
 

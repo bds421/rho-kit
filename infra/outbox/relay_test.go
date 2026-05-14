@@ -90,7 +90,7 @@ func TestNewRelay_PanicsOnNilOption(t *testing.T) {
 
 func TestRelay_PublishesPendingEntries(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -141,7 +141,7 @@ func TestRelay_PublishesPendingEntries(t *testing.T) {
 
 func TestRelay_RetriesOnPublishError(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	pub := &fakePublisher{err: errors.New("broker down")}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -190,7 +190,7 @@ func TestRelay_RetriesOnPublishError(t *testing.T) {
 
 func TestRelay_HandlesPublisherPanicAsPublishError(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	ctx := context.Background()
 
 	params := outbox.WriteParams{
@@ -466,7 +466,7 @@ func TestRelay_Cleanup(t *testing.T) {
 
 func TestRelay_PublishesWithCorrectEntryContent(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -570,7 +570,7 @@ func TestRelay_OptionsPanicOnInvalidValues(t *testing.T) {
 
 func TestRelay_WithMetrics(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()
@@ -678,7 +678,7 @@ func TestRelay_RecoverStaleProcessingEntries(t *testing.T) {
 //     up in published state.
 func TestRelay_LongPublishDoesNotDuplicate(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	logger := slog.Default()
 	ctx := context.Background()
 
@@ -748,7 +748,7 @@ func (s *slowPublisher) count() int {
 
 func TestRelay_RecoverAfterPublisherError(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	pub := &fakePublisher{}
 	logger := slog.Default()
 	ctx := context.Background()

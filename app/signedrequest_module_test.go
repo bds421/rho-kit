@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -26,12 +27,12 @@ func TestWithSignedRequests_PanicsOnNilStore(t *testing.T) {
 			t.Fatal("expected panic on nil store (replay risk)")
 		}
 	}()
-	b.WithSignedRequests(func(_ string) ([]byte, error) { return nil, nil }, nil)
+	b.WithSignedRequests(func(_ context.Context, _ string) ([]byte, error) { return nil, nil }, nil)
 }
 
 func TestWithSignedRequests_RegistersOnBuilder(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).WithSignedRequests(
-		func(_ string) ([]byte, error) { return make([]byte, 32), nil },
+		func(_ context.Context, _ string) ([]byte, error) { return make([]byte, 32), nil },
 		signedrequest.NewMemoryNonceStore(time.Minute),
 	)
 	assert.NotNil(t, b.signedSpec)
@@ -42,7 +43,7 @@ func TestWithSignedRequests_ClonesOptions(t *testing.T) {
 	opts := []signedrequest.Option{signedrequest.WithBodyMaxSize(1024)}
 
 	b := New("test", "v1", BaseConfig{}).WithSignedRequests(
-		func(_ string) ([]byte, error) { return make([]byte, 32), nil },
+		func(_ context.Context, _ string) ([]byte, error) { return make([]byte, 32), nil },
 		signedrequest.NewMemoryNonceStore(time.Minute),
 		opts...,
 	)

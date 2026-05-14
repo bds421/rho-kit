@@ -274,13 +274,34 @@ func TestNewWriter_PanicsOnNilStore(t *testing.T) {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	outbox.NewWriter(nil)
+	outbox.NewWriter(nil, func(context.Context) error { return nil })
+}
+
+func TestNewWriter_PanicsOnNilTxCheck(t *testing.T) {
+	store := &fakeStore{}
+	assert.Panics(t, func() {
+		outbox.NewWriter(store, nil)
+	})
 }
 
 func TestNewWriter_PanicsOnNilOption(t *testing.T) {
 	store := &fakeStore{}
+	check := func(context.Context) error { return nil }
 	assert.Panics(t, func() {
-		outbox.NewWriter(store, nil)
+		outbox.NewWriter(store, check, nil)
+	})
+}
+
+func TestNewWriterWithoutTransactionCheck_PanicsOnNilStore(t *testing.T) {
+	assert.Panics(t, func() {
+		outbox.NewWriterWithoutTransactionCheck(nil)
+	})
+}
+
+func TestNewWriterWithoutTransactionCheck_PanicsOnNilOption(t *testing.T) {
+	store := &fakeStore{}
+	assert.Panics(t, func() {
+		outbox.NewWriterWithoutTransactionCheck(store, nil)
 	})
 }
 
@@ -292,7 +313,7 @@ func TestWriter_RequireTransaction_RejectsWithoutTx(t *testing.T) {
 		}
 		return nil
 	}
-	writer := outbox.NewWriter(store, outbox.WithRequireTransaction(check))
+	writer := outbox.NewWriter(store, check)
 
 	err := writer.Write(context.Background(), outbox.WriteParams{
 		Topic:       "t",
@@ -322,7 +343,7 @@ func TestWriter_RequireTransaction_AcceptsWithTx(t *testing.T) {
 		}
 		return nil
 	}
-	writer := outbox.NewWriter(store, outbox.WithRequireTransaction(check))
+	writer := outbox.NewWriter(store, check)
 
 	ctx := context.WithValue(context.Background(), testTxKey{}, "fake-tx")
 	err := writer.Write(ctx, outbox.WriteParams{
@@ -337,18 +358,9 @@ func TestWriter_RequireTransaction_AcceptsWithTx(t *testing.T) {
 	}
 }
 
-func TestWithRequireTransaction_PanicsOnNilCheck(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on nil check func")
-		}
-	}()
-	outbox.WithRequireTransaction(nil)
-}
-
 func TestWriter_Write(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	ctx := context.Background()
 
 	payload, err := json.Marshal(map[string]string{"key": "value"})
@@ -382,7 +394,7 @@ func TestWriter_Write(t *testing.T) {
 
 func TestWriter_Write_CopiesPayloadBeforeInsert(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	payload := []byte(`{"key":"value"}`)
 
 	err := writer.Write(context.Background(), outbox.WriteParams{
@@ -404,7 +416,7 @@ func TestWriter_Write_CopiesPayloadBeforeInsert(t *testing.T) {
 
 func TestWriter_Write_RejectsOversizedMessageBeforeInsert(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 
 	payload := json.RawMessage(`"` + strings.Repeat("x", messaging.DefaultMaxMessageBytes) + `"`)
 	err := writer.Write(context.Background(), outbox.WriteParams{
@@ -422,7 +434,7 @@ func TestWriter_Write_RejectsOversizedMessageBeforeInsert(t *testing.T) {
 
 func TestWriter_Write_RouteMaxMessageBytesOverridesDefault(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store,
+	writer := outbox.NewWriterWithoutTransactionCheck(store,
 		outbox.WithMaxMessageBytes(64),
 		outbox.WithRouteMaxMessageBytes("orders", "order.created", 512),
 	)
@@ -441,7 +453,7 @@ func TestWriter_Write_RouteMaxMessageBytesOverridesDefault(t *testing.T) {
 
 func TestWriter_Write_EmptyTopic(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	ctx := context.Background()
 
 	err := writer.Write(ctx, outbox.WriteParams{
@@ -457,7 +469,7 @@ func TestWriter_Write_EmptyTopic(t *testing.T) {
 
 func TestWriter_Write_EmptyRoutingKey(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	ctx := context.Background()
 
 	err := writer.Write(ctx, outbox.WriteParams{
@@ -557,7 +569,7 @@ func TestWriter_Write_RejectsUnsafeEntryFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeStore{}
-			writer := outbox.NewWriter(store)
+			writer := outbox.NewWriterWithoutTransactionCheck(store)
 			params := valid
 			tt.mutate(&params)
 
@@ -579,7 +591,7 @@ func TestWriter_Write_RejectsUnsafeEntryFields(t *testing.T) {
 
 func TestWriter_Write_PreservesHeaders(t *testing.T) {
 	store := &fakeStore{}
-	writer := outbox.NewWriter(store)
+	writer := outbox.NewWriterWithoutTransactionCheck(store)
 	ctx := context.Background()
 
 	err := writer.Write(ctx, outbox.WriteParams{

@@ -16,6 +16,7 @@ package sign
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -45,12 +46,31 @@ const keyIDMaxLen = 256
 // to sign a structurally invalid HTTP request.
 var ErrInvalidRequest = errors.New("sign: invalid request")
 
-// KeyStore supplies the active outbound signing key. Implementations must be
-// safe for concurrent use. Returning a different key ID/secret pair over time
-// lets clients rotate HMAC credentials without rebuilding the HTTP client.
+// KeyStore supplies the active outbound signing key. Implementations
+// must be safe for concurrent use. Returning a different key ID /
+// secret pair over time lets clients rotate HMAC credentials without
+// rebuilding the HTTP client.
+//
+// The ctx is the per-request context — KMS / Vault / Secrets Manager
+// adapters should honour its deadline and cancellation when fetching
+// or refreshing the active key. Return:
+//
+//   - the current keyID + secret + nil on success.
+//   - a non-nil error on provider failure (typically wrapping
+//     [ErrKeyStoreUnavailable]). The transport reports the error to
+//     the caller; the inbound HTTP request is aborted before the
+//     network roundtrip starts. Static in-memory stores never need
+//     to surface an error.
 type KeyStore interface {
-	CurrentKeyID() (string, []byte)
+	CurrentKeyID(ctx context.Context) (keyID string, secret []byte, err error)
 }
+
+// ErrKeyStoreUnavailable is the typed sentinel for transient
+// KeyStore failures (KMS / Vault / Secrets Manager outage,
+// rate-limit, network error). Distinct from a misconfigured store
+// (rejected at construction) so callers can retry the signed request
+// on this error rather than treat it as permanent.
+var ErrKeyStoreUnavailable = errors.New("sign: key store unavailable")
 
 // Option configures the [Wrap] RoundTripper.
 type Option func(*config)
@@ -213,7 +233,14 @@ func validateKeyID(keyID string) error {
 }
 
 func validateSigningKeyStore(keys KeyStore) error {
-	keyID, secret := keys.CurrentKeyID()
+	// Use Background here — this runs at Wrap construction time, not
+	// per-request. Static stores never need a deadline, and a slow
+	// remote store at construction would be a configuration bug we
+	// surface at startup rather than per request.
+	keyID, secret, err := keys.CurrentKeyID(context.Background())
+	if err != nil {
+		return fmt.Errorf("sign: KeyStore.CurrentKeyID at construction: %w", err)
+	}
 	return validateSigningKey(keyID, secret)
 }
 
@@ -232,8 +259,8 @@ type staticKeyStore struct {
 	secret []byte
 }
 
-func (s staticKeyStore) CurrentKeyID() (string, []byte) {
-	return s.keyID, append([]byte(nil), s.secret...)
+func (s staticKeyStore) CurrentKeyID(context.Context) (string, []byte, error) {
+	return s.keyID, append([]byte(nil), s.secret...), nil
 }
 
 type transport struct {
@@ -278,7 +305,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	keyID, secret := t.keys.CurrentKeyID()
+	keyID, secret, err := t.keys.CurrentKeyID(req.Context())
+	if err != nil {
+		return nil, fmt.Errorf("sign: resolve current key: %w", err)
+	}
 	if err := validateSigningKey(keyID, secret); err != nil {
 		return nil, err
 	}

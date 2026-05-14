@@ -115,48 +115,13 @@ type WriteParams struct {
 // full [Store] — keeping the producer codepath independent of relay
 // semantics (claim, outcome, janitor).
 type Writer struct {
-	store           Inserter
-	txCheck         func(context.Context) error
-	requireTxPolicy bool
-	sizeLimiter     messaging.MessageSizeLimiter
+	store       Inserter
+	txCheck     func(context.Context) error
+	sizeLimiter messaging.MessageSizeLimiter
 }
 
 // WriterOption configures the Writer.
 type WriterOption func(*Writer)
-
-// WithRequireTransaction makes Write fail when ctx does not carry an
-// active transaction handle. The check is performed by the supplied
-// predicate so outbox stays decoupled from any specific tx backend
-// (pgx, sqlc-generated wrappers, raw database/sql). The predicate
-// should return nil when ctx carries a tx, and a descriptive error
-// otherwise.
-//
-// Typical wiring with a pgx-backed store:
-//
-//	import "github.com/jackc/pgx/v5"
-//	w := outbox.NewWriter(store, outbox.WithRequireTransaction(func(ctx context.Context) error {
-//	    if _, ok := ctx.Value(pgxTxKey).(pgx.Tx); !ok {
-//	        return errors.New("outbox: write outside transaction not allowed")
-//	    }
-//	    return nil
-//	}))
-//
-// The whole point of the transactional-outbox pattern is atomicity between
-// the business write and the outbox-entry insert; without this option, a
-// caller can accidentally write to the outbox outside the tx that produced
-// the side effect, recreating the very split-brain the pattern exists to
-// prevent. Make this the default for any new service: the kit ships it
-// disabled only because tightening it on existing callers is a behaviour
-// change.
-func WithRequireTransaction(check func(context.Context) error) WriterOption {
-	if check == nil {
-		panic("outbox: WithRequireTransaction requires a non-nil check function")
-	}
-	return func(w *Writer) {
-		w.txCheck = check
-		w.requireTxPolicy = true
-	}
-}
 
 // WithMessageSizeLimiter replaces the writer's message-size policy. The
 // default is messaging.DefaultMaxMessageBytes so oversized rows are rejected
@@ -192,17 +157,67 @@ func WithRouteMaxMessageBytes(topic, routingKey string, maxBytes int) WriterOpti
 	}
 }
 
-// NewWriter creates a Writer backed by the given [Inserter]. Panics if
-// store is nil — the misconfiguration would otherwise surface as a
-// nil-deref on the first Write call. Accepting an Inserter rather than
-// the full [Store] means producer code only sees Insert and cannot
-// accidentally call Claimer/Outcomer/Janitor methods.
-func NewWriter(store Inserter, opts ...WriterOption) *Writer {
+// NewWriter creates a Writer that REQUIRES an active transaction on
+// every Write call. txCheck is invoked first; if it returns a non-nil
+// error the entry is rejected before it ever reaches the store. This
+// enforces the atomicity invariant the outbox pattern exists to
+// provide: a write to the outbox without the surrounding business
+// transaction recreates the split-brain the pattern was supposed to
+// prevent.
+//
+// txCheck stays generic so the outbox package does not depend on a
+// specific tx backend (pgx, sqlc, raw database/sql). The predicate
+// should return nil when ctx carries an active transaction handle, and
+// a descriptive error otherwise. Typical wiring with a pgx-backed
+// store:
+//
+//	import "github.com/jackc/pgx/v5"
+//	w := outbox.NewWriter(store, func(ctx context.Context) error {
+//	    if _, ok := ctx.Value(pgxTxKey).(pgx.Tx); !ok {
+//	        return errors.New("outbox: write outside transaction not allowed")
+//	    }
+//	    return nil
+//	})
+//
+// Panics if store is nil (would surface as nil-deref on first Write) or
+// if txCheck is nil (callers that explicitly want no atomicity
+// enforcement must use [NewWriterWithoutTransactionCheck]). Accepting
+// an Inserter rather than the full [Store] means producer code only
+// sees Insert and cannot accidentally call Claimer/Outcomer/Janitor
+// methods.
+func NewWriter(store Inserter, txCheck func(context.Context) error, opts ...WriterOption) *Writer {
 	if store == nil {
 		panic("outbox: NewWriter requires a non-nil Inserter")
 	}
+	if txCheck == nil {
+		panic("outbox: NewWriter requires a non-nil txCheck — use NewWriterWithoutTransactionCheck to opt out explicitly")
+	}
+	return newWriter(store, txCheck, opts)
+}
+
+// NewWriterWithoutTransactionCheck creates a Writer that does NOT
+// verify the request is wrapped in a transaction. It exists for
+// tests, devmode wiring, and the (rare) services that have their own
+// atomicity guarantee outside of the outbox abstraction (e.g. a
+// single-writer scenario where the business state and the outbox row
+// are the same row).
+//
+// The name is deliberately long and explicit: the safe entry point is
+// [NewWriter], and accidentally typing this name out should give
+// reviewers an obvious chance to ask "do we actually have atomicity
+// elsewhere?". Production services should prefer [NewWriter] with a
+// real transaction predicate.
+func NewWriterWithoutTransactionCheck(store Inserter, opts ...WriterOption) *Writer {
+	if store == nil {
+		panic("outbox: NewWriterWithoutTransactionCheck requires a non-nil Inserter")
+	}
+	return newWriter(store, nil, opts)
+}
+
+func newWriter(store Inserter, txCheck func(context.Context) error, opts []WriterOption) *Writer {
 	w := &Writer{
 		store:       store,
+		txCheck:     txCheck,
 		sizeLimiter: messaging.DefaultMessageSizeLimiter(),
 	}
 	for _, opt := range opts {
@@ -217,13 +232,14 @@ func NewWriter(store Inserter, opts ...WriterOption) *Writer {
 // Write inserts a new outbox entry via the configured store.
 // The entry will be picked up by the Relay for publishing.
 //
-// When the Writer was constructed with [WithRequireTransaction], the
-// configured predicate runs before any work happens; if it returns an error
-// the entry is rejected before reaching the store. This guards against the
-// "wrote to the outbox without a transaction" mistake that defeats the
-// outbox pattern's atomicity guarantee.
+// When the Writer was constructed via [NewWriter] the txCheck
+// predicate runs first; if it returns an error the entry is rejected
+// before reaching the store. This guards against the "wrote to the
+// outbox without a transaction" mistake that defeats the outbox
+// pattern's atomicity guarantee. Writers constructed via
+// [NewWriterWithoutTransactionCheck] skip this step.
 func (w *Writer) Write(ctx context.Context, params WriteParams) error {
-	if w.requireTxPolicy {
+	if w.txCheck != nil {
 		if err := w.txCheck(ctx); err != nil {
 			return fmt.Errorf("outbox: %w", err)
 		}

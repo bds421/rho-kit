@@ -192,16 +192,16 @@ func mustJSON(t *testing.T, v any) []byte {
 	return out
 }
 
-// TestNATSMetrics_OpaqueRouteLabelsBoundsCardinality pins M-008 for
-// the NATS publish-metric path. WithOpaqueRouteLabels must hash the
-// exchange + routing-key labels so tenant-bearing routes do not blow
-// up Prometheus series count.
-func TestNATSMetrics_OpaqueRouteLabelsBoundsCardinality(t *testing.T) {
+// TestNATSMetrics_RouteLabelDefaultIsOpaque pins the v2 default: the
+// route-label cardinality guard is on by default. The raw escape
+// hatch [WithRawRouteLabels] is exercised below for callers that have
+// audited their topology.
+func TestNATSMetrics_RouteLabelDefaultIsOpaque(t *testing.T) {
 	_ = testutil.CollectAndCount // ensure testutil retains a use
 	rawReg := prometheus.NewRegistry()
 	opaqueReg := prometheus.NewRegistry()
-	raw := NewMetrics(WithRegisterer(rawReg))
-	opaque := NewMetrics(WithRegisterer(opaqueReg), WithOpaqueRouteLabels())
+	raw := NewMetrics(WithRegisterer(rawReg), WithRawRouteLabels())
+	opaque := NewMetrics(WithRegisterer(opaqueReg)) // default — should hash
 
 	const tenantyKey = "orders.tenant-123-secret-id.created"
 	raw.observePublish("orders", tenantyKey, "success", time.Now())
@@ -210,12 +210,12 @@ func TestNATSMetrics_OpaqueRouteLabelsBoundsCardinality(t *testing.T) {
 	rawFams, err := rawReg.Gather()
 	require.NoError(t, err)
 	require.True(t, natsContainsLabel(rawFams, "nats_published_total", "routing_key", tenantyKey),
-		"default NATS Metrics must record the raw routing key")
+		"WithRawRouteLabels must record the raw routing key")
 
 	opaqueFams, err := opaqueReg.Gather()
 	require.NoError(t, err)
 	require.False(t, natsContainsLabel(opaqueFams, "nats_published_total", "routing_key", tenantyKey),
-		"WithOpaqueRouteLabels must drop the raw tenanty routing key")
+		"v2 default must drop the raw tenanty routing key")
 	require.True(t, natsHasLabelPrefix(opaqueFams, "nats_published_total", "routing_key", "routingkey"),
 		"opaque label keeps the static 'routingkey' visible prefix for dashboards")
 }

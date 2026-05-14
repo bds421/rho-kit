@@ -102,27 +102,44 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 // deterministic SHA-256 truncated hash so per-tenant or per-resource
 // route segments do not blow up Prometheus cardinality.
 //
-// Default behaviour (no option) ships raw exchange / routing-key
-// labels — backwards-compatible with v1 dashboards. Enable this when
-// the deployment may produce hundreds-of-thousands of distinct route
-// values (e.g. tenant IDs accidentally embedded in routing keys).
+// This is the v2 default — services no longer need to call this
+// option explicitly. It remains exported so dashboards that need an
+// explicit signal at construction time can keep the wiring obvious.
+// Pair with [WithRawRouteLabels] to revert to v1-style raw labels for
+// dashboards that explicitly want them.
 func WithOpaqueRouteLabels() MetricsOption {
 	return func(c *metricsConfig) {
-		c.labelRoute = func(exchange, routingKey string) (string, string) {
-			return promutil.OpaqueLabelValue("exchange", exchange),
-				promutil.OpaqueLabelValue("routingkey", routingKey)
-		}
+		c.labelRoute = opaqueRouteLabel
 	}
 }
 
+// WithRawRouteLabels reverts to v1-style raw exchange / routing-key
+// labels. Use ONLY when the deployment has audited every publisher
+// and confirmed route segments are static / low-cardinality — a single
+// tenant ID embedded in a routing key under raw labels turns
+// `amqp_published_total` into a per-tenant series and breaks
+// Prometheus.
+func WithRawRouteLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelRoute = passthroughRouteLabel
+	}
+}
+
+func opaqueRouteLabel(exchange, routingKey string) (string, string) {
+	return promutil.OpaqueLabelValue("exchange", exchange),
+		promutil.OpaqueLabelValue("routingkey", routingKey)
+}
+
 // NewMetrics creates and registers AMQP metrics. Pass [WithRegisterer]
-// to use a non-default registry, [WithOpaqueRouteLabels] to bound
-// route-label cardinality. Repeated calls reuse already-registered
-// collectors on the same registry.
+// to use a non-default registry. Route labels default to the bounded /
+// opaque form (v2 cardinality-safe default); pass [WithRawRouteLabels]
+// only when the routing topology is audited and known to be low
+// cardinality. Repeated calls reuse already-registered collectors on
+// the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{
 		registerer: prometheus.DefaultRegisterer,
-		labelRoute: passthroughRouteLabel,
+		labelRoute: opaqueRouteLabel,
 	}
 	for _, opt := range opts {
 		if opt == nil {

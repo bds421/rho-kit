@@ -112,11 +112,14 @@ type stubSecrets struct {
 	keys    map[string][]byte
 }
 
-func (s stubSecrets) CurrentKeyID() string { return s.current }
+func (s stubSecrets) CurrentKeyID(context.Context) (string, error) { return s.current, nil }
 
-func (s stubSecrets) Resolve(keyID string) ([]byte, bool) {
+func (s stubSecrets) Resolve(_ context.Context, keyID string) ([]byte, error) {
 	k, ok := s.keys[keyID]
-	return k, ok
+	if !ok {
+		return nil, ErrUnknownKeyID
+	}
+	return k, nil
 }
 
 func TestAppend_SetsIDAndTimestamp(t *testing.T) {
@@ -435,7 +438,7 @@ func TestSign_RejectsEmptyCurrentKeyIDFromCustomSecrets(t *testing.T) {
 	}
 	_ = New(newMemStore(), secrets)
 
-	sig, keyID, err := SignEntry(Entry{
+	sig, keyID, err := SignEntry(context.Background(), Entry{
 		ID:         "e1",
 		TenantID:   "t",
 		Actor:      "a",
@@ -465,7 +468,7 @@ func TestVerify_RejectsShortCustomSecret(t *testing.T) {
 	}
 	_ = New(store, weakSecrets)
 
-	err = VerifyEntry(e, weakSecrets)
+	err = VerifyEntry(context.Background(), e, weakSecrets)
 	assert.ErrorIs(t, err, ErrSecretTooShort)
 }
 
@@ -651,20 +654,23 @@ func TestAppend_ConcurrentMonotonicSeq(t *testing.T) {
 func TestStaticSecrets_ResolveReturnsCopy(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	ss := NewStaticSecrets("k1", map[string][]byte{"k1": key})
-	got, ok := ss.Resolve("k1")
-	require.True(t, ok)
+	ctx := context.Background()
+	got, err := ss.Resolve(ctx, "k1")
+	require.NoError(t, err)
 	got[0] ^= 0xff
 
-	again, ok := ss.Resolve("k1")
-	require.True(t, ok)
+	again, err := ss.Resolve(ctx, "k1")
+	require.NoError(t, err)
 	assert.Equal(t, byte('0'), again[0], "Resolve must return a defensive copy")
 }
 
 func TestStaticSecrets_NilReceiverFailsClosed(t *testing.T) {
 	var ss *StaticSecrets
-	assert.Empty(t, ss.CurrentKeyID())
-	got, ok := ss.Resolve("k1")
-	assert.False(t, ok)
+	id, err := ss.CurrentKeyID(context.Background())
+	assert.NoError(t, err)
+	assert.Empty(t, id)
+	got, err := ss.Resolve(context.Background(), "k1")
+	assert.ErrorIs(t, err, ErrUnknownKeyID)
 	assert.Nil(t, got)
 }
 
@@ -701,9 +707,9 @@ func TestSign_NewlineInjectionDoesNotCollide(t *testing.T) {
 		OccurredAt: now,
 	}
 
-	sigA, _, err := SignEntry(a, secrets)
+	sigA, _, err := SignEntry(context.Background(), a, secrets)
 	require.NoError(t, err)
-	sigB, _, err := SignEntry(b, secrets)
+	sigB, _, err := SignEntry(context.Background(), b, secrets)
 	require.NoError(t, err)
 	assert.NotEqual(t, sigA, sigB,
 		"length-prefix canonical form must distinguish entries that differ only in newline placement")
@@ -721,9 +727,9 @@ func TestSign_DeterministicAcrossInvocations(t *testing.T) {
 		OccurredAt: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 		Metadata:   map[string]any{"b": 1, "a": 2, "z": map[string]any{"y": 3, "x": 4}},
 	}
-	s1, _, err := SignEntry(e, secrets)
+	s1, _, err := SignEntry(context.Background(), e, secrets)
 	require.NoError(t, err)
-	s2, _, err := SignEntry(e, secrets)
+	s2, _, err := SignEntry(context.Background(), e, secrets)
 	require.NoError(t, err)
 	assert.Equal(t, s1, s2)
 }
@@ -746,9 +752,9 @@ func TestSign_OrderInsensitiveMetadata(t *testing.T) {
 	b := base
 	b.Metadata = map[string]any{"beta": 2, "alpha": 1}
 
-	sa, _, err := SignEntry(a, secrets)
+	sa, _, err := SignEntry(context.Background(), a, secrets)
 	require.NoError(t, err)
-	sb, _, err := SignEntry(b, secrets)
+	sb, _, err := SignEntry(context.Background(), b, secrets)
 	require.NoError(t, err)
 	assert.Equal(t, sa, sb)
 }
@@ -815,10 +821,10 @@ func TestSignedLogger_InvalidReceiverReturnsError(t *testing.T) {
 			_, _, err = tc.log.List(ctx, Query{TenantID: "t"})
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			_, _, err = SignEntry(Entry{}, nil)
+			_, _, err = SignEntry(ctx, Entry{}, nil)
 			assert.ErrorIs(t, err, ErrInvalidStore)
 
-			assert.ErrorIs(t, VerifyEntry(Entry{}, nil), ErrInvalidStore)
+			assert.ErrorIs(t, VerifyEntry(ctx, Entry{}, nil), ErrInvalidStore)
 			assert.ErrorIs(t, tc.log.VerifyChain(ctx, "t"), ErrInvalidStore)
 		})
 	}

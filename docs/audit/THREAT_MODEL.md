@@ -453,7 +453,7 @@ backends or other expensive operations.
 
 | ID | Threat | Adversary | Mitigation | Mitigation type | Where |
 |---|---|---|---|---|---|
-| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` can require an ambient transaction via `WithRequireTransaction`; relay reads, publishes, and marks processing rows through the store contract | kit-enforced | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
+| O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` (constructed via `NewWriter`) **requires** an ambient transaction by default; relay reads, publishes, and marks processing rows through the store contract | kit-enforced | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 | O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; exhausted rows move to failed state for dead-letter inspection | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 | O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | Atomic `UPDATE … WHERE claimed_at IS NULL` claim pattern; `updated_at` used for stale-claim detection | kit-enforced | [infra/outbox/gormstore](../../infra/outbox/gormstore/) |
 | O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay` cleans old published rows and old failed rows on startup and periodic ticks; `WithRetention` and `WithFailedRetention` tune the windows | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
@@ -845,7 +845,7 @@ inconsistency (§4.11 / O-01). Two-step flow:
 **Write path** — same Postgres transaction as the business write:
 
 ```go
-writer := outbox.NewWriter(store, outbox.WithRequireTransaction(requireTx))
+writer := outbox.NewWriter(store, requireTx) // v2: txCheck is required
 err := txRunner(ctx, func(txCtx context.Context) error {
     if err := createOrder(txCtx, order); err != nil { return err }
     return writer.Write(txCtx, outbox.WriteParams{

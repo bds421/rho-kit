@@ -78,25 +78,40 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 // WithOpaqueRouteLabels passes every (exchange, routing_key) pair
 // observed by the publish histogram and counter through
 // [promutil.OpaqueLabelValue] so per-tenant or per-resource segments
-// do not blow up Prometheus cardinality. Default (no option) keeps
-// raw labels for backwards compatibility with v1 dashboards.
+// do not blow up Prometheus cardinality.
+//
+// This is the v2 default — services no longer need to call this
+// option explicitly. Pair with [WithRawRouteLabels] to revert.
 func WithOpaqueRouteLabels() MetricsOption {
 	return func(c *metricsConfig) {
-		c.labelRoute = func(exchange, routingKey string) (string, string) {
-			return promutil.OpaqueLabelValue("exchange", exchange),
-				promutil.OpaqueLabelValue("routingkey", routingKey)
-		}
+		c.labelRoute = opaqueRouteLabel
 	}
 }
 
+// WithRawRouteLabels reverts to v1-style raw exchange / routing-key
+// labels. Use ONLY when the deployment has audited every publisher
+// and confirmed route segments are static / low-cardinality.
+func WithRawRouteLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelRoute = passthroughRouteLabel
+	}
+}
+
+func opaqueRouteLabel(exchange, routingKey string) (string, string) {
+	return promutil.OpaqueLabelValue("exchange", exchange),
+		promutil.OpaqueLabelValue("routingkey", routingKey)
+}
+
 // NewMetrics creates and registers NATS metrics. Pass [WithRegisterer]
-// to use a non-default registry, [WithOpaqueRouteLabels] to bound
-// route-label cardinality. Repeated calls reuse already-registered
-// collectors on the same registry.
+// to use a non-default registry. Route labels default to the bounded /
+// opaque form (v2 cardinality-safe default); pass [WithRawRouteLabels]
+// only when the routing topology is audited and known to be low
+// cardinality. Repeated calls reuse already-registered collectors on
+// the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{
 		registerer: prometheus.DefaultRegisterer,
-		labelRoute: passthroughRouteLabel,
+		labelRoute: opaqueRouteLabel,
 	}
 	for _, opt := range opts {
 		if opt == nil {

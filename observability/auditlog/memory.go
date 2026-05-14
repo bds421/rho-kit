@@ -20,13 +20,22 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{}
 }
 
+// memCtxCheckBatch is the number of stored events scanned between
+// ctx.Err() checks. Tuned so a cancelled scan returns within a
+// handful of microseconds even over multi-million-event stores
+// without making the common case noticeably slower.
+const memCtxCheckBatch = 1024
+
 // AppendChained holds the store mutex, reads the tail HMAC, runs build,
 // validates the resulting event, and persists it atomically. Two
 // concurrent appenders cannot observe the same prev HMAC because the
 // read-tail / build / persist sequence happens under m.mu.
-func (m *MemoryStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+func (m *MemoryStore) AppendChained(ctx context.Context, build func(prev []byte) (Event, error)) error {
 	if build == nil {
 		return ErrInvalidEvent
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -53,7 +62,10 @@ func (m *MemoryStore) AppendChained(_ context.Context, build func(prev []byte) (
 // historical chain restore). It does NOT participate in chain
 // construction — use [MemoryStore.AppendChained] from production
 // writers (Logger.LogE delegates to that path).
-func (m *MemoryStore) Append(_ context.Context, event Event) error {
+func (m *MemoryStore) Append(ctx context.Context, event Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := ValidateEvent(event); err != nil {
 		return err
 	}
@@ -67,7 +79,10 @@ func (m *MemoryStore) Append(_ context.Context, event Event) error {
 // the store is empty. Logger.LogE uses this value as the PrevHMAC for the
 // next event so the tamper-evident chain is preserved across restarts and
 // across multiple Logger instances sharing the same store.
-func (m *MemoryStore) LastHMAC(_ context.Context) ([]byte, error) {
+func (m *MemoryStore) LastHMAC(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if len(m.events) == 0 {
@@ -80,9 +95,15 @@ func (m *MemoryStore) LastHMAC(_ context.Context) ([]byte, error) {
 	return append([]byte(nil), tail...), nil
 }
 
-// Query returns events matching the filter with cursor-based pagination.
-// Events are returned in reverse insertion order (newest first).
-func (m *MemoryStore) Query(_ context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
+// Query returns events matching the filter with cursor-based
+// pagination. Events are returned in reverse insertion order (newest
+// first). ctx.Err() is checked before scanning and every
+// [memCtxCheckBatch] entries during the scan so a cancelled
+// VerifyChain or List does not pay for the full table.
+func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -91,10 +112,17 @@ func (m *MemoryStore) Query(_ context.Context, filter Filter, cursor string, lim
 	}
 
 	// Collect matching events in reverse order (newest first).
-	var matched []Event
+	matched := make([]Event, 0, limit+1)
 	pastCursor := cursor == ""
 
+	scanned := 0
 	for i := len(m.events) - 1; i >= 0; i-- {
+		if scanned%memCtxCheckBatch == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, "", err
+			}
+		}
+		scanned++
 		e := m.events[i]
 
 		if !pastCursor {

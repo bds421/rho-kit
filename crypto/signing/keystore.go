@@ -1,6 +1,8 @@
 package signing
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -10,6 +12,18 @@ import (
 	"github.com/bds421/rho-kit/core/v2/secret"
 )
 
+// ErrUnknownKeyID is returned by [KeyStore.Key] when the requested
+// key id is not in the store. Distinct from [ErrKeyStoreUnavailable]
+// (provider outage) so callers can tell rotation lag from a transient
+// dependency failure.
+var ErrUnknownKeyID = errors.New("signing: unknown key id")
+
+// ErrKeyStoreUnavailable is returned by [KeyStore] implementations
+// (Vault, KMS, Secrets Manager, file-watcher) when the underlying
+// provider fails transiently. Callers should retry on this error
+// rather than treat it as a permanent verification break.
+var ErrKeyStoreUnavailable = errors.New("signing: key store unavailable")
+
 // minKeyLen is the minimum key length for HMAC-SHA256 (matches hash output size).
 const minKeyLen = 32
 
@@ -17,17 +31,35 @@ const minKeyLen = 32
 // secret-store lookup keys.
 const maxKeyIDLen = 256
 
-// KeyStore manages signing keys. Implementations must be safe for concurrent use.
+// KeyStore manages signing keys. Implementations must be safe for
+// concurrent use.
 //
-// WARNING: The canonical string does not include the Host header. If keys are
-// shared across services, signatures are portable between them — a valid
-// signature for service A can be replayed against service B at the same path.
-// Use unique per-service-pair keys to prevent cross-service replay.
+// The ctx is the caller's request / verification context. Remote
+// stores (Vault, KMS, Secrets Manager) MUST honour its deadline and
+// cancellation. In-memory stores (the default [StaticKeyStore]) can
+// ignore ctx.
+//
+// Error semantics:
+//
+//   - [Key] returns ([]byte, nil) on success, (nil,
+//     [ErrUnknownKeyID]) when the id is not in the keyring, or any
+//     other error (typically wrapping [ErrKeyStoreUnavailable]) for
+//     transient provider failures.
+//   - [CurrentKeyID] returns (id, secret, nil) on success, or
+//     ("", nil, err) when the active key cannot be resolved. Static
+//     stores never return an error from CurrentKeyID.
+//
+// WARNING: The canonical string does not include the Host header. If
+// keys are shared across services, signatures are portable between
+// them — a valid signature for service A can be replayed against
+// service B at the same path. Use unique per-service-pair keys to
+// prevent cross-service replay.
 type KeyStore interface {
-	// Key returns the secret for the given key ID. Returns nil, false if not found.
-	Key(keyID string) ([]byte, bool)
+	// Key returns the secret for the given key ID. Returns
+	// [ErrUnknownKeyID] if absent.
+	Key(ctx context.Context, keyID string) ([]byte, error)
 	// CurrentKeyID returns the active signing key ID and secret.
-	CurrentKeyID() (string, []byte)
+	CurrentKeyID(ctx context.Context) (keyID string, secret []byte, err error)
 }
 
 // StaticKeyStore holds a fixed set of keys. Multiple keys support rotation:
@@ -104,34 +136,37 @@ func MustNewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyS
 	return s
 }
 
-// Key returns the secret for the given key ID. Returns nil, false if not found.
-// The returned slice is a defensive copy; callers cannot mutate internal state.
+// Key returns the secret for the given key ID. Returns
+// [ErrUnknownKeyID] if absent. The returned slice is a defensive
+// copy; callers cannot mutate internal state.
 //
-// Returns nil, false after [StaticKeyStore.Close] has zeroed the wrapped
-// secrets — callers downstream must treat that as the key store being
-// shut down.
-func (s *StaticKeyStore) Key(keyID string) ([]byte, bool) {
+// Returns [ErrUnknownKeyID] after [StaticKeyStore.Close] has zeroed
+// the wrapped secrets — callers downstream must treat that as the
+// key store being shut down.
+func (s *StaticKeyStore) Key(_ context.Context, keyID string) ([]byte, error) {
 	if s == nil || s.keys == nil || s.closed.Load() {
-		return nil, false
+		return nil, ErrUnknownKeyID
 	}
 	k, ok := s.keys[keyID]
 	if !ok || k == nil || k.IsEmpty() {
-		return nil, false
+		return nil, ErrUnknownKeyID
 	}
-	return k.Reveal(), true
+	return k.Reveal(), nil
 }
 
-// CurrentKeyID returns the active signing key ID and secret.
-// The returned slice is a defensive copy; callers cannot mutate internal state.
-func (s *StaticKeyStore) CurrentKeyID() (string, []byte) {
+// CurrentKeyID returns the active signing key ID and secret. The
+// returned slice is a defensive copy; callers cannot mutate internal
+// state. Returns ("", nil, nil) after [StaticKeyStore.Close] — the
+// static store never returns an error from CurrentKeyID.
+func (s *StaticKeyStore) CurrentKeyID(context.Context) (string, []byte, error) {
 	if s == nil || s.keys == nil || s.closed.Load() {
-		return "", nil
+		return "", nil, nil
 	}
 	k, ok := s.keys[s.currentID]
 	if !ok || k == nil || k.IsEmpty() {
-		return s.currentID, nil
+		return s.currentID, nil, nil
 	}
-	return s.currentID, k.Reveal()
+	return s.currentID, k.Reveal(), nil
 }
 
 // Close zeroes every wrapped key in the store. Subsequent Key /

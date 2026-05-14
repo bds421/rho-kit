@@ -30,24 +30,52 @@ type PoolStatsCollector struct {
 	canceledAcquireCount    *prometheus.Desc
 }
 
-// NewPoolStatsCollector constructs a collector for p and registers it with reg.
-// If reg is nil, [prometheus.DefaultRegisterer] is used. If reg already has an
-// equivalent collector registered, the existing one is reused (so repeated
-// construction in tests against [prometheus.DefaultRegisterer] does not panic).
+// MetricsOption configures [NewPoolStatsCollector]. Standardised
+// across the kit so every metrics constructor uses
+// `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for pgx pool
+// metrics. When unset, [prometheus.DefaultRegisterer] is used.
+// Passing nil panics so a miswired "metrics enabled, registerer not
+// supplied" caller surfaces at startup rather than going to the
+// global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
+	if reg == nil {
+		panic("pgx: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewPoolStatsCollector constructs a collector for p and registers it
+// with the configured registerer (defaults to
+// [prometheus.DefaultRegisterer]; pass [WithRegisterer] to override).
+// If the registerer already has an equivalent collector registered,
+// the existing one is reused (so repeated construction in tests
+// against [prometheus.DefaultRegisterer] does not panic).
 //
 // Returns an error when p is nil or instance is empty; constructing a
-// collector for a closed pool is the caller's responsibility (Collect emits
-// zero-valued samples once Stat() returns zero counters).
-func NewPoolStatsCollector(p *pgxpool.Pool, reg prometheus.Registerer, instance string) (*PoolStatsCollector, error) {
+// collector for a closed pool is the caller's responsibility (Collect
+// emits zero-valued samples once Stat() returns zero counters).
+func NewPoolStatsCollector(p *pgxpool.Pool, instance string, opts ...MetricsOption) (*PoolStatsCollector, error) {
 	if p == nil {
 		return nil, errors.New("pgx: NewPoolStatsCollector requires a non-nil pool")
 	}
 	if instance == "" {
 		return nil, errors.New("pgx: NewPoolStatsCollector requires a non-empty instance label")
 	}
-	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("pgx: NewPoolStatsCollector option must not be nil")
+		}
+		opt(&cfg)
 	}
+	reg := cfg.registerer
 
 	labels := prometheus.Labels{"instance": instance}
 	c := &PoolStatsCollector{

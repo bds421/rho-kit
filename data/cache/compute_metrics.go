@@ -31,12 +31,38 @@ type ComputeMetrics struct {
 	singleflightFollowers *prometheus.CounterVec
 }
 
-// NewComputeMetrics creates and registers ComputeCache metrics with the given
-// registerer. If reg is nil, prometheus.DefaultRegisterer is used.
-func NewComputeMetrics(reg prometheus.Registerer) *ComputeMetrics {
+// MetricsOption configures [NewComputeMetrics]. Standardised across
+// the kit so every package exposes `NewMetrics(opts ...MetricsOption)`
+// with a uniform [WithRegisterer] entry point.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for compute-cache
+// metrics. When unset, [prometheus.DefaultRegisterer] is used. Passing
+// nil panics so a miswired "metrics enabled, registerer not supplied"
+// caller surfaces at startup rather than going to the global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("cache: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewComputeMetrics creates and registers ComputeCache metrics. Pass
+// [WithRegisterer] to use a non-default registry. Repeated calls reuse
+// already-registered collectors on the same registry.
+func NewComputeMetrics(opts ...MetricsOption) *ComputeMetrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("cache: NewComputeMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &ComputeMetrics{
 		hits: prometheus.NewCounterVec(
@@ -116,10 +142,16 @@ func NewComputeMetrics(reg prometheus.Registerer) *ComputeMetrics {
 	return m
 }
 
-// WithComputePrometheusMetrics enables Prometheus metrics on the ComputeCache.
-// If reg is nil, prometheus.DefaultRegisterer is used.
+// WithComputePrometheusMetrics enables Prometheus metrics on the
+// ComputeCache. When reg is nil, [prometheus.DefaultRegisterer] is
+// used; pass an explicit registerer to scope metrics to a test or
+// per-tenant registry.
 func WithComputePrometheusMetrics(reg prometheus.Registerer) ComputeOption {
 	return func(cfg *computeConfig) {
-		cfg.metrics = NewComputeMetrics(reg)
+		var opts []MetricsOption
+		if reg != nil {
+			opts = append(opts, WithRegisterer(reg))
+		}
+		cfg.metrics = NewComputeMetrics(opts...)
 	}
 }

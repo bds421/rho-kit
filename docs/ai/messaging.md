@@ -398,7 +398,8 @@ or fail as one logical operation.
 
 ```go
 store := mypg.NewOutboxStore(pool)
-writer := outbox.NewWriter(store, outbox.WithRequireTransaction(requireTx))
+// NewWriter REQUIRES a tx-check predicate — atomicity is the whole point.
+writer := outbox.NewWriter(store, requireTx)
 
 err := pool.BeginTxFunc(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
     txCtx := withTx(ctx, tx)

@@ -227,7 +227,7 @@ func TestStatusClass(t *testing.T) {
 
 func TestNewBatch_RegistersAndSubsystemDefaultsToName(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewBatch(reg, "outbox")
+	m := NewBatch("outbox", WithBatchRegisterer(reg))
 	require.NotNil(t, m.Runs)
 
 	// Touch each *Vec so a series exists for Gather().
@@ -246,8 +246,8 @@ func TestNewBatch_RegistersAndSubsystemDefaultsToName(t *testing.T) {
 
 func TestNewBatch_ReusesRegisteredCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	first := NewBatch(reg, "outbox")
-	second := NewBatch(reg, "outbox")
+	first := NewBatch("outbox", WithBatchRegisterer(reg))
+	second := NewBatch("outbox", WithBatchRegisterer(reg))
 
 	second.Runs.WithLabelValues("relay", "success").Inc()
 	second.Duration.WithLabelValues("relay").Observe(0.1)
@@ -262,25 +262,25 @@ func TestNewBatch_ReusesRegisteredCollectors(t *testing.T) {
 
 func TestNewBatch_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
-		NewBatch(prometheus.NewRegistry(), "outbox", nil)
+		NewBatch("outbox", WithBatchRegisterer(prometheus.NewRegistry()), nil)
 	})
 }
 
 func TestNewBatch_PanicsOnInvalidMetricNameParts(t *testing.T) {
 	assert.Panics(t, func() {
-		NewBatch(prometheus.NewRegistry(), "nightly-job")
+		NewBatch("nightly-job", WithBatchRegisterer(prometheus.NewRegistry()))
 	})
 	assert.Panics(t, func() {
-		NewBatch(prometheus.NewRegistry(), "nightly", WithBatchNamespace("ops metrics"))
+		NewBatch("nightly", WithBatchRegisterer(prometheus.NewRegistry()), WithBatchNamespace("ops metrics"))
 	})
 	assert.Panics(t, func() {
-		NewBatch(prometheus.NewRegistry(), "nightly", WithBatchSubsystem("batch-jobs"))
+		NewBatch("nightly", WithBatchRegisterer(prometheus.NewRegistry()), WithBatchSubsystem("batch-jobs"))
 	})
 }
 
 func TestNewBatch_BucketsOverride(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewBatch(reg, "test", WithBatchBuckets([]float64{1, 10, 100}))
+	m := NewBatch("test", WithBatchRegisterer(reg), WithBatchBuckets([]float64{1, 10, 100}))
 	m.Duration.WithLabelValues("job").Observe(5)
 	count, err := testutil.GatherAndCount(reg, "test_run_duration_seconds")
 	require.NoError(t, err)
@@ -317,7 +317,7 @@ func TestWithBatchBuckets_ClonesInput(t *testing.T) {
 	opt := WithBatchBuckets(buckets)
 	buckets[0] = 0.001
 
-	m := NewBatch(prometheus.NewRegistry(), "test", opt)
+	m := NewBatch("test", WithBatchRegisterer(prometheus.NewRegistry()), opt)
 	observer, err := m.Duration.GetMetricWithLabelValues("job")
 	require.NoError(t, err)
 	metric := &dto.Metric{}

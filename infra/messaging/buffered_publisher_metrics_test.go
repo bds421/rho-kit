@@ -19,7 +19,7 @@ func TestNewPrometheusMetrics_PanicsOnEmptyName(t *testing.T) {
 			t.Fatal("expected panic on empty publisher name")
 		}
 	}()
-	NewPrometheusMetrics(prometheus.NewRegistry(), "")
+	NewBufferedPublisherMetrics("", WithRegisterer(prometheus.NewRegistry()))
 }
 
 func TestNewPrometheusMetrics_PanicsOnInvalidName(t *testing.T) {
@@ -37,14 +37,14 @@ func TestNewPrometheusMetrics_PanicsOnInvalidName(t *testing.T) {
 			t.Fatalf("panic leaked invalid label value: %q", msg)
 		}
 	}()
-	NewPrometheusMetrics(prometheus.NewRegistry(), "bad value with spaces")
+	NewBufferedPublisherMetrics("bad value with spaces", WithRegisterer(prometheus.NewRegistry()))
 }
 
 func TestNewPrometheusMetrics_RegistersOnDefaultWhenNil(t *testing.T) {
 	// Use a unique publisher name so we do not pollute the default registry
 	// with collisions across test runs (MustRegisterOrGet would reuse the
 	// existing collector either way; we just want to prove nil works).
-	pm := NewPrometheusMetrics(nil, "default_registerer_probe")
+	pm := NewBufferedPublisherMetrics("default_registerer_probe")
 	if pm == nil {
 		t.Fatal("expected non-nil metrics on nil registerer")
 	}
@@ -52,7 +52,7 @@ func TestNewPrometheusMetrics_RegistersOnDefaultWhenNil(t *testing.T) {
 
 func TestPrometheusBufferedPublisherMetrics_DropAndPendingAndBytes(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	pm := NewPrometheusMetrics(reg, "events")
+	pm := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 
 	fp := &fakePublisher{}
 	pub := testBufferedPublisher(fp, false,
@@ -85,7 +85,7 @@ func TestPrometheusBufferedPublisherMetrics_DropAndPendingAndBytes(t *testing.T)
 
 func TestPrometheusBufferedPublisherMetrics_PendingDecreasesOnDrain(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	pm := NewPrometheusMetrics(reg, "events")
+	pm := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 
 	fp := &fakePublisher{}
 	var healthy atomic.Bool
@@ -116,7 +116,7 @@ func TestPrometheusBufferedPublisherMetrics_PendingDecreasesOnDrain(t *testing.T
 
 func TestPrometheusBufferedPublisherMetrics_StateWriteSuccess(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	pm := NewPrometheusMetrics(reg, "events")
+	pm := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 
 	stateFile := filepath.Join(t.TempDir(), "buffered.json")
 	fp := &fakePublisher{}
@@ -142,7 +142,7 @@ func TestPrometheusBufferedPublisherMetrics_StateWriteSuccess(t *testing.T) {
 
 func TestPrometheusBufferedPublisherMetrics_StateWriteError(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	pm := NewPrometheusMetrics(reg, "events")
+	pm := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
@@ -183,7 +183,7 @@ func TestPrometheusBufferedPublisherMetrics_WithPrometheusMetrics(t *testing.T) 
 	pub := testBufferedPublisher(fp, false,
 		WithMaxSize(1),
 		withStateFileAbsoluteForTest(stateFile),
-		WithPrometheusMetrics(reg, "convenience"),
+		WithPrometheusMetrics("convenience", reg),
 	)
 	if pub.metrics == nil {
 		t.Fatal("WithPrometheusMetrics did not attach metrics hooks")
@@ -223,8 +223,8 @@ func TestPrometheusBufferedPublisherMetrics_WithPrometheusMetrics(t *testing.T) 
 
 func TestPrometheusBufferedPublisherMetrics_RepeatedRegistrationReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	pm1 := NewPrometheusMetrics(reg, "events")
-	pm2 := NewPrometheusMetrics(reg, "events")
+	pm1 := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
+	pm2 := NewBufferedPublisherMetrics("events", WithRegisterer(reg))
 
 	pm1.onDrop()
 	pm2.onDrop()

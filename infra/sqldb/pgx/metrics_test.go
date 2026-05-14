@@ -17,7 +17,7 @@ import (
 // easier to diagnose than runtime panics inside the metrics scrape goroutine.
 func TestNewPoolStatsCollector_NilPool(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	c, err := NewPoolStatsCollector(nil, reg, "primary")
+	c, err := NewPoolStatsCollector(nil, "primary", WithRegisterer(reg))
 	require.Error(t, err)
 	assert.Nil(t, c)
 	assert.Contains(t, err.Error(), "non-nil pool")
@@ -31,7 +31,7 @@ func TestNewPoolStatsCollector_EmptyInstance(t *testing.T) {
 	defer pool.Close()
 
 	reg := prometheus.NewRegistry()
-	_, err := NewPoolStatsCollector(pool, reg, "")
+	_, err := NewPoolStatsCollector(pool, "", WithRegisterer(reg))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "instance")
 }
@@ -43,7 +43,7 @@ func TestPoolStatsCollector_EmitsAllDescriptors(t *testing.T) {
 	defer pool.Close()
 
 	reg := prometheus.NewRegistry()
-	_, err := NewPoolStatsCollector(pool, reg, "primary")
+	_, err := NewPoolStatsCollector(pool, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 
 	families, err := reg.Gather()
@@ -81,7 +81,7 @@ func TestPoolStatsCollector_MaxConnsReportsConfigured(t *testing.T) {
 	defer pool.Close()
 
 	reg := prometheus.NewRegistry()
-	c, err := NewPoolStatsCollector(pool, reg, "primary")
+	c, err := NewPoolStatsCollector(pool, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 
 	// pgxpool.Stat() honours MaxConns from the config used at construction.
@@ -99,9 +99,9 @@ func TestPoolStatsCollector_DuplicateRegistrationReusesCollector(t *testing.T) {
 	defer pool.Close()
 
 	reg := prometheus.NewRegistry()
-	first, err := NewPoolStatsCollector(pool, reg, "primary")
+	first, err := NewPoolStatsCollector(pool, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
-	second, err := NewPoolStatsCollector(pool, reg, "primary")
+	second, err := NewPoolStatsCollector(pool, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 	assert.Same(t, first, second)
 }
@@ -116,14 +116,14 @@ func TestPoolStatsCollector_NilRegistererUsesDefault(t *testing.T) {
 	// Use a unique instance so we don't clash with prior tests sharing
 	// the process-wide default registerer.
 	const instance = "test-nil-reg"
-	c, err := NewPoolStatsCollector(pool, nil, instance)
+	c, err := NewPoolStatsCollector(pool, instance)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	defer prometheus.DefaultRegisterer.Unregister(c)
 
 	// Subsequent registration on the default registerer reuses the
 	// collector — proves it was actually registered the first time.
-	c2, err := NewPoolStatsCollector(pool, nil, instance)
+	c2, err := NewPoolStatsCollector(pool, instance)
 	require.NoError(t, err)
 	assert.Same(t, c, c2)
 }

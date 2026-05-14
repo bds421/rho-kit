@@ -27,7 +27,7 @@ const (
 
 func newResolver(t *testing.T) KeyResolver {
 	t.Helper()
-	return func(id string) ([]byte, error) {
+	return func(_ context.Context, id string) ([]byte, error) {
 		require.Equal(t, keyID, id)
 		return []byte(secretStr), nil
 	}
@@ -457,7 +457,7 @@ func TestVerify_RejectsOversizedSignatureHeadersBeforeResolver(t *testing.T) {
 		t.Run(header, func(t *testing.T) {
 			store := NewMemoryNonceStore(10 * time.Minute)
 			resolverCalled := false
-			mw := Middleware(func(string) ([]byte, error) {
+			mw := Middleware(func(context.Context, string) ([]byte, error) {
 				resolverCalled = true
 				return []byte(secretStr), nil
 			}, store)
@@ -495,7 +495,7 @@ func TestVerify_RejectsAmbiguousSignatureHeaderValuesBeforeResolver(t *testing.T
 		t.Run(header, func(t *testing.T) {
 			store := NewMemoryNonceStore(10 * time.Minute)
 			resolverCalled := false
-			mw := Middleware(func(string) ([]byte, error) {
+			mw := Middleware(func(context.Context, string) ([]byte, error) {
 				resolverCalled = true
 				return []byte(secretStr), nil
 			}, store)
@@ -534,7 +534,7 @@ func TestMiddleware_PanicsWithoutResolver(t *testing.T) {
 func TestVerify_RejectsShortResolvedSecret(t *testing.T) {
 	store := NewMemoryNonceStore(10 * time.Minute)
 	short := bytes.Repeat([]byte("a"), 31)
-	resolver := func(string) ([]byte, error) { return short, nil }
+	resolver := func(context.Context, string) ([]byte, error) { return short, nil }
 	mw := Middleware(resolver, store)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
@@ -548,7 +548,7 @@ func TestVerify_RejectsShortResolvedSecret(t *testing.T) {
 func TestVerify_AcceptsExactly32ByteResolvedSecret(t *testing.T) {
 	store := NewMemoryNonceStore(10 * time.Minute)
 	exact := bytes.Repeat([]byte("a"), 32)
-	resolver := func(string) ([]byte, error) { return exact, nil }
+	resolver := func(context.Context, string) ([]byte, error) { return exact, nil }
 	mw := Middleware(resolver, store)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
@@ -595,7 +595,7 @@ func TestVerify_RejectsOversizedBodyAfterResolver(t *testing.T) {
 	// size still rejects, nonce store untouched on oversize".
 	store := NewMemoryNonceStore(10 * time.Minute)
 	resolverCalled := false
-	resolver := func(string) ([]byte, error) {
+	resolver := func(context.Context, string) ([]byte, error) {
 		resolverCalled = true
 		return []byte(secretStr), nil
 	}
@@ -798,7 +798,7 @@ func TestSignCanonical_RejectsInvalidCanonicalHeaderValues(t *testing.T) {
 
 func TestMiddleware_PanicsOnNilOption(t *testing.T) {
 	store := NewMemoryNonceStore(time.Minute)
-	resolver := func(string) ([]byte, error) { return []byte("01234567890123456789012345678901"), nil }
+	resolver := func(context.Context, string) ([]byte, error) { return []byte("01234567890123456789012345678901"), nil }
 	assert.Panics(t, func() {
 		Middleware(resolver, store, nil)
 	})

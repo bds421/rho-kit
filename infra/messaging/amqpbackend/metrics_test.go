@@ -224,7 +224,11 @@ func deadLetterHeaders(queue string, count int64) amqp.Table {
 
 func assertPublish(t *testing.T, m *Metrics, exchange, routingKey, outcome string, want float64) {
 	t.Helper()
-	got := testutil.ToFloat64(m.published.WithLabelValues(exchange, routingKey, outcome))
+	// Route the lookup labels through the same labelRoute function the
+	// recorder uses so the test works against both the v2 default
+	// (opaque hashed labels) and [WithRawRouteLabels].
+	ex, rk := m.routeLabel(exchange, routingKey)
+	got := testutil.ToFloat64(m.published.WithLabelValues(ex, rk, outcome))
 	if got != want {
 		t.Fatalf("publish %s/%s/%s = %v, want %v", exchange, routingKey, outcome, got, want)
 	}
@@ -238,35 +242,34 @@ func assertConsume(t *testing.T, m *Metrics, queue, outcome string, want float64
 	}
 }
 
-// TestAMQPMetrics_OpaqueRouteLabelsBoundsCardinality pins the M-008
-// fix: WithOpaqueRouteLabels must hash variable route segments so a
-// service that accidentally embeds tenant IDs in routing keys does
-// not blow up Prometheus series count. Without the option, the raw
-// label is recorded; with the option, the resulting value carries
-// only the static prefix + deterministic hash suffix.
-func TestAMQPMetrics_OpaqueRouteLabelsBoundsCardinality(t *testing.T) {
+// TestAMQPMetrics_RouteLabelDefaultIsOpaque pins the v2 default: the
+// route-label cardinality guard is on by default. A service that
+// accidentally embeds tenant IDs in routing keys must not blow up
+// Prometheus series. The raw escape hatch [WithRawRouteLabels] is
+// exercised below for callers that have audited their topology.
+func TestAMQPMetrics_RouteLabelDefaultIsOpaque(t *testing.T) {
 	rawReg := prometheus.NewRegistry()
 	opaqueReg := prometheus.NewRegistry()
-	raw := NewMetrics(WithRegisterer(rawReg))
-	opaque := NewMetrics(WithRegisterer(opaqueReg), WithOpaqueRouteLabels())
+	raw := NewMetrics(WithRegisterer(rawReg), WithRawRouteLabels())
+	opaque := NewMetrics(WithRegisterer(opaqueReg)) // default — should hash
 
 	const tenantyKey = "orders.tenant-123-secret-id.created"
 	raw.observePublish("orders", tenantyKey, "success", time.Now())
 	opaque.observePublish("orders", tenantyKey, "success", time.Now())
 
-	// Raw labels: the tenanty routing key reaches Prometheus verbatim.
+	// Raw escape hatch: the tenanty routing key reaches Prometheus verbatim.
 	require.Equal(t, 1, testutil.CollectAndCount(raw.published, "amqp_published_total"))
 	rawFamilies, err := rawReg.Gather()
 	require.NoError(t, err)
 	require.True(t, containsLabel(rawFamilies, "amqp_published_total", "routing_key", tenantyKey),
-		"default Metrics must record the raw routing key")
+		"WithRawRouteLabels must record the raw routing key")
 
-	// Opaque labels: the tenanty value is replaced with a hashed
+	// Default (no option): the tenanty value is replaced with a hashed
 	// stand-in; the original string never reaches Prometheus.
 	opaqueFamilies, err := opaqueReg.Gather()
 	require.NoError(t, err)
 	require.False(t, containsLabel(opaqueFamilies, "amqp_published_total", "routing_key", tenantyKey),
-		"WithOpaqueRouteLabels must drop the raw tenanty routing key from the label")
+		"v2 default must drop the raw tenanty routing key from the label")
 	require.True(t, hasLabelPrefix(opaqueFamilies, "amqp_published_total", "routing_key", "routingkey"),
 		"opaque label must keep the static 'routingkey' visible prefix so dashboards can still group")
 }

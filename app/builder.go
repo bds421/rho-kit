@@ -485,6 +485,23 @@ func (b *Builder) WithActionLogger(l actionlog.Logger) *Builder {
 // gate destructive operations behind a pending → approved →
 // executed lifecycle. Exposed via [Infrastructure.ApprovalStore].
 //
+// IMPORTANT: this option ONLY stores the [approval.Store] for
+// handlers to consume. The Builder does NOT install the
+// [httpx/middleware/approval] middleware on the public mux —
+// handlers (or the RouterFunc) must wrap the routes that need
+// approval gating themselves. The lifecycle attribution
+// (tenant/actor extractors, action/resource derivation, panic
+// recovery) is too service-specific to wire automatically.
+//
+// Typical handler wiring:
+//
+//	mux.Handle("DELETE /v1/users/{id}",
+//	    approval.Middleware(infra.ApprovalStore,
+//	        approval.WithActorFromContext(auth.UserID),
+//	        // tenant defaults to coretenant.FromContext
+//	    )(http.HandlerFunc(deleteUser)),
+//	)
+//
 // Panics if `s` is nil.
 func (b *Builder) WithApprovalStore(s approval.Store) *Builder {
 	if s == nil {

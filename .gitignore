@@ -9,6 +9,18 @@ cmd/kit-doctor/kit-doctor
 cmd/kit-migrate/kit-migrate
 cmd/kit-new/kit-new
 cmd/kit-verify/kit-verify
+
+# Same binaries when accidentally built from repo root
+# (`go build ./cmd/<name>/...` drops the output in $PWD).
+/kit-bench-gate
+/kit-doctor
+/kit-migrate
+/kit-new
+/kit-verify
+
+# Scratch task / review prompt files used during release prep.
+/task.md
+
 # build artifacts
 dist/
 

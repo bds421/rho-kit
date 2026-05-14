@@ -17,20 +17,46 @@ type PoolMetrics struct {
 	WaitCount       prometheus.Counter
 }
 
-// NewPoolMetrics creates and registers the standard set of Prometheus collectors
-// for database connection pool monitoring. The namespace parameter is typically
-// the service name (e.g. "backend", "file_copier"). The reg parameter sets the
-// Prometheus registerer; if nil, prometheus.DefaultRegisterer is used.
-//
-// Uses tryRegister internally so that duplicate registrations (e.g. in tests
-// or multi-instance scenarios) reuse existing collectors instead of panicking.
-func NewPoolMetrics(namespace string, reg prometheus.Registerer) PoolMetrics {
+// MetricsOption configures [NewPoolMetrics]. Standardised across the
+// kit so every package exposes `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for sqldb pool
+// metrics. When unset, [prometheus.DefaultRegisterer] is used.
+// Passing nil panics so a miswired "metrics enabled, registerer not
+// supplied" caller surfaces at startup rather than going to the
+// global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("sqldb: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewPoolMetrics creates and registers the standard set of Prometheus
+// collectors for database connection pool monitoring. The namespace
+// parameter is typically the service name (e.g. "backend",
+// "file_copier"). Pass [WithRegisterer] to use a non-default registry.
+//
+// Uses tryRegister internally so that duplicate registrations (e.g. in
+// tests or multi-instance scenarios) reuse existing collectors instead
+// of panicking.
+func NewPoolMetrics(namespace string, opts ...MetricsOption) PoolMetrics {
 	if err := promutil.ValidateMetricNamePart("database metric namespace", namespace); err != nil {
 		panic("sqldb: metric namespace is invalid")
 	}
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("sqldb: NewPoolMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 	return PoolMetrics{
 		OpenConnections: tryRegister(reg, prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,

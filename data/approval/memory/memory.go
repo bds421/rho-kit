@@ -18,6 +18,12 @@ var ErrDuplicateID = errors.New("approval/memory: duplicate request id")
 
 const defaultLimit = 100
 
+// ctxCheckBatch is the number of map entries scanned between
+// ctx.Err() checks. Tuned so the overhead is negligible compared to
+// per-entry work but a cancelled scan returns promptly even over
+// large pending-approval sets.
+const ctxCheckBatch = 1024
+
 // Store is an in-memory [approval.Store]. Safe for concurrent use.
 type Store struct {
 	mu       sync.Mutex
@@ -142,8 +148,15 @@ func (s *Store) List(ctx context.Context, q approval.Query) ([]approval.Request,
 		limit = defaultLimit
 	}
 
-	matched := make([]approval.Request, 0, len(s.requests))
+	matched := make([]approval.Request, 0, limit+1)
+	i := 0
 	for _, r := range s.requests {
+		if i%ctxCheckBatch == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, "", err
+			}
+		}
+		i++
 		if !match(r, q) {
 			continue
 		}

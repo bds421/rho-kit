@@ -372,15 +372,69 @@ func TestServer_DescriptionOverride(t *testing.T) {
 }
 
 func TestServer_DestructiveFlagAddsVendorExtension(t *testing.T) {
-	s := mcp.NewServer()
+	s := mcp.NewServer(mcp.WithoutDestructiveGate())
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "delete", echoHandler,
-		mcp.WithDestructive(true),
+		mcp.WithDestructive(),
 	))
 	tools := s.Tools()
 	require.Len(t, tools, 1)
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal(tools[0].InputSchema, &schema))
 	assert.Equal(t, true, schema["x-destructive"])
+}
+
+func TestServer_DestructiveToolRefusedWithoutGate(t *testing.T) {
+	// Default Server: a destructive tool registered without
+	// WithDestructiveGate or WithoutDestructiveGate must fail at
+	// dispatch — the kit refuses to let the call through.
+	s := mcp.NewServer()
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "delete", echoHandler,
+		mcp.WithDestructive(),
+	))
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"delete","params":{"message":"hi"},"id":1}`)
+	require.NotNil(t, resp["error"], "destructive tool with no gate must error, got: %v", resp)
+}
+
+func TestServer_DestructiveToolAllowedWhenGateApproves(t *testing.T) {
+	called := 0
+	gate := func(_ context.Context, name string, payload []byte) error {
+		called++
+		assert.Equal(t, "delete", name)
+		assert.Contains(t, string(payload), "hi")
+		return nil
+	}
+	s := mcp.NewServer(mcp.WithDestructiveGate(gate))
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "delete", echoHandler,
+		mcp.WithDestructive(),
+	))
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"delete","params":{"message":"hi"},"id":1}`)
+	require.Nil(t, resp["error"], "approved destructive call must succeed: %v", resp["error"])
+	assert.Equal(t, 1, called, "gate must be invoked exactly once per destructive call")
+}
+
+func TestServer_DestructiveToolRefusedWhenGateRefuses(t *testing.T) {
+	gate := func(context.Context, string, []byte) error {
+		return errors.New("approval denied")
+	}
+	s := mcp.NewServer(mcp.WithDestructiveGate(gate))
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "delete", echoHandler,
+		mcp.WithDestructive(),
+	))
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"delete","params":{"message":"hi"},"id":1}`)
+	require.NotNil(t, resp["error"], "gate refusal must surface as a JSON-RPC error")
+}
+
+func TestServer_NonDestructiveToolBypassesGate(t *testing.T) {
+	called := 0
+	gate := func(context.Context, string, []byte) error {
+		called++
+		return errors.New("should not be called for non-destructive")
+	}
+	s := mcp.NewServer(mcp.WithDestructiveGate(gate))
+	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
+	resp := doRPC(t, s.HTTP(), `{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`)
+	require.Nil(t, resp["error"])
+	assert.Equal(t, 0, called, "gate must not be invoked for non-destructive tools")
 }
 
 func TestRegister_RejectsInvalidSchemaOverrides(t *testing.T) {

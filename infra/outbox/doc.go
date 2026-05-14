@@ -41,7 +41,13 @@
 // # Usage
 //
 //	store := mypg.NewOutboxStore(pool)   // pgx-backed Store implementation
-//	writer := outbox.NewWriter(store)
+//	// NewWriter REQUIRES a txCheck predicate — atomicity is the whole point.
+//	writer := outbox.NewWriter(store, func(ctx context.Context) error {
+//	    if _, ok := ctx.Value(pgxTxKey).(pgx.Tx); !ok {
+//	        return errors.New("outbox: write outside transaction not allowed")
+//	    }
+//	    return nil
+//	})
 //
 //	// Inside a pgx transaction:
 //	err := pool.BeginTxFunc(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {

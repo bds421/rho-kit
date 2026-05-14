@@ -94,8 +94,11 @@ func (s *Store) PruneTenants() {
 
 // AppendChained holds the per-tenant lock, reads the previous entry,
 // runs build, and persists the resulting entry under the same lock.
-func (s *Store) AppendChained(_ context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
+func (s *Store) AppendChained(ctx context.Context, tenantID string, build func(prev actionlog.Entry, prevSeq int64) (actionlog.Entry, error)) (actionlog.Entry, error) {
 	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return actionlog.Entry{}, err
 	}
 	if tenantID == "" {
@@ -108,6 +111,9 @@ func (s *Store) AppendChained(_ context.Context, tenantID string, build func(pre
 	tmu.Lock()
 	defer tmu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return actionlog.Entry{}, err
+	}
 	prev, prevSeq := s.latestForTenantLocked(tenantID)
 	entry, err := build(prev, prevSeq)
 	if err != nil {
@@ -151,8 +157,11 @@ func (s *Store) latestForTenantLocked(tenantID string) (actionlog.Entry, int64) 
 }
 
 // Get returns the entry by id, or [actionlog.ErrNotFound] if absent.
-func (s *Store) Get(_ context.Context, id string) (actionlog.Entry, error) {
+func (s *Store) Get(ctx context.Context, id string) (actionlog.Entry, error) {
 	if err := s.ready(); err != nil {
+		return actionlog.Entry{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return actionlog.Entry{}, err
 	}
 	s.mu.RLock()
@@ -167,9 +176,15 @@ func (s *Store) Get(_ context.Context, id string) (actionlog.Entry, error) {
 // List returns entries matching q ordered by OccurredAt descending,
 // then ID descending. Honours [actionlog.Query.Cursor] for keyset
 // pagination so the full list is reachable by following the returned
-// cursor; an empty next-cursor means the last page.
-func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
+// cursor; an empty next-cursor means the last page. ctx.Err() is
+// checked before scanning, and again every [ctxCheckBatch] scanned
+// entries, so a cancelled request does not pay for the full table
+// scan.
+func (s *Store) List(ctx context.Context, q actionlog.Query) ([]actionlog.Entry, string, error) {
 	if err := s.ready(); err != nil {
+		return nil, "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
 	if err := q.Validate(); err != nil {
@@ -187,8 +202,13 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, s
 		limit = defaultLimit
 	}
 
-	matched := make([]actionlog.Entry, 0, len(s.entries))
-	for _, e := range s.entries {
+	matched := make([]actionlog.Entry, 0, limit+1)
+	for i, e := range s.entries {
+		if i%ctxCheckBatch == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, "", err
+			}
+		}
 		if !match(e, q) {
 			continue
 		}
@@ -225,9 +245,16 @@ func (s *Store) List(_ context.Context, q actionlog.Query) ([]actionlog.Entry, s
 	return matched, next, nil
 }
 
-// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC order.
+// RangeByTenantSeq calls fn for every entry for tenantID in Seq ASC
+// order. ctx.Err() is checked before scanning, every
+// [ctxCheckBatch] entries during the scan, and before every fn
+// invocation so a cancelled verification does not pay for the full
+// per-tenant chain copy or iteration.
 func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(actionlog.Entry) error) error {
 	if err := s.ready(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if tenantID == "" {
@@ -238,7 +265,13 @@ func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(a
 	}
 	s.mu.RLock()
 	out := make([]actionlog.Entry, 0)
-	for _, e := range s.entries {
+	for i, e := range s.entries {
+		if i%ctxCheckBatch == 0 {
+			if err := ctx.Err(); err != nil {
+				s.mu.RUnlock()
+				return err
+			}
+		}
 		if e.TenantID == tenantID {
 			out = append(out, e.Clone())
 		}
@@ -255,6 +288,12 @@ func (s *Store) RangeByTenantSeq(ctx context.Context, tenantID string, fn func(a
 	}
 	return nil
 }
+
+// ctxCheckBatch is the number of entries we scan between ctx.Err()
+// checks. Tuned so the overhead is negligible compared to the work
+// done per entry but a cancelled scan returns within a handful of
+// microseconds even on multi-million-entry stores.
+const ctxCheckBatch = 1024
 
 // match reports whether e satisfies every non-zero filter on q.
 func match(e actionlog.Entry, q actionlog.Query) bool {

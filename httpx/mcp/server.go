@@ -273,6 +273,25 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, req jsonRPCReque
 		return
 	}
 
+	// Destructive-tool gate: refuse if the tool is destructive and
+	// the server has neither a configured gate nor an explicit
+	// acknowledgement of the metadata-only mode. Records the
+	// refusal as a failed action log entry so the attempted
+	// destructive call is still attributable.
+	if entry.destructive {
+		if s.cfg.destructiveGate != nil {
+			if err := s.cfg.destructiveGate(ctx, name, args); err != nil {
+				_ = s.recordActionLog(ctx, r, name, err)
+				writeJSONRPCError(w, http.StatusOK, req.ID, rpcErrInvalidRequest, "destructive call refused")
+				return
+			}
+		} else if !s.cfg.destructiveGateAcknowledged {
+			_ = s.recordActionLog(ctx, r, name, ErrDestructiveGateRequired)
+			writeJSONRPCError(w, http.StatusOK, req.ID, rpcErrInternalError, "destructive tool not configured")
+			return
+		}
+	}
+
 	result, dispatchErr := entry.dispatch(ctx, args)
 
 	// Strict + sync audit: the append must succeed before we admit

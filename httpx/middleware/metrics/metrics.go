@@ -21,12 +21,38 @@ type HTTPMetrics struct {
 	requestsInFlight prometheus.Gauge
 }
 
-// NewHTTPMetrics creates and registers HTTP metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewHTTPMetrics(reg prometheus.Registerer) *HTTPMetrics {
+// MetricsOption configures [NewHTTPMetrics]. Standardised across the
+// kit so every package exposes `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for HTTP
+// metrics. When unset, [prometheus.DefaultRegisterer] is used.
+// Passing nil panics so a miswired "metrics enabled, registerer not
+// supplied" caller surfaces at startup rather than going to the
+// global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("httpx/metrics: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewHTTPMetrics creates and registers HTTP metrics. Pass
+// [WithRegisterer] to use a non-default registry. Repeated calls
+// reuse already-registered collectors on the same registry.
+func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("httpx/metrics: NewHTTPMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &HTTPMetrics{
 		requestsTotal: prometheus.NewCounterVec(
@@ -121,11 +147,12 @@ var (
 	defaultHTTPMetricsOnce sync.Once
 )
 
-// Metrics is a convenience wrapper that uses the default Prometheus registerer.
-// For custom registerers, use NewHTTPMetrics.
+// Metrics is a convenience wrapper that uses the default Prometheus
+// registerer. For custom registerers, use [NewHTTPMetrics] with
+// [WithRegisterer].
 func Metrics(next http.Handler) http.Handler {
 	defaultHTTPMetricsOnce.Do(func() {
-		defaultHTTPMetrics = NewHTTPMetrics(nil)
+		defaultHTTPMetrics = NewHTTPMetrics()
 	})
 	return defaultHTTPMetrics.Middleware(next)
 }

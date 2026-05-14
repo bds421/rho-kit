@@ -1053,6 +1053,98 @@ func TestClose_NilReceiverIsSafe(t *testing.T) {
 	assert.NoError(t, l.Close())
 }
 
+// gatedStore lets the test pause inside AppendChained between
+// claiming the store lock and calling the build callback, so the
+// test can interleave a Logger.Close call deterministically.
+type gatedStore struct {
+	mu      sync.Mutex
+	events  []Event
+	enter   chan struct{} // store signals "about to call build" here
+	release chan struct{} // test signals "you may now call build" here
+}
+
+func newGatedStore() *gatedStore {
+	return &gatedStore{
+		enter:   make(chan struct{}, 1),
+		release: make(chan struct{}, 1),
+	}
+}
+
+func (s *gatedStore) Append(_ context.Context, event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, cloneEvent(event))
+	return nil
+}
+
+func (s *gatedStore) AppendChained(_ context.Context, build func(prev []byte) (Event, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var prev []byte
+	if len(s.events) > 0 {
+		prev = append([]byte(nil), s.events[len(s.events)-1].HMAC...)
+	}
+	s.enter <- struct{}{}
+	<-s.release
+	event, err := build(prev)
+	if err != nil {
+		return err
+	}
+	s.events = append(s.events, cloneEvent(event))
+	return nil
+}
+
+func (s *gatedStore) Query(_ context.Context, _ Filter, _ string, _ int) ([]Event, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Event(nil), s.events...), "", nil
+}
+
+func (s *gatedStore) LastHMAC(context.Context) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return nil, nil
+	}
+	return append([]byte(nil), s.events[len(s.events)-1].HMAC...), nil
+}
+
+func (s *gatedStore) DeleteOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
+// TestLogE_ReturnsClosedWhenZeroRacesBuildCallback exercises H2-003:
+// if Close zeroes the chainKey between LogE's outer closed check and
+// the inner build callback's chainKey.Use snapshot, LogE must abort
+// with ErrLoggerClosed and never persist a record HMACed over zero
+// key material.
+func TestLogE_ReturnsClosedWhenZeroRacesBuildCallback(t *testing.T) {
+	store := newGatedStore()
+	l := newTestLogger(store)
+
+	logErrCh := make(chan error, 1)
+	go func() {
+		logErrCh <- l.LogE(context.Background(), Event{
+			Actor:    "alice",
+			Action:   "create",
+			Resource: "r",
+			Status:   StatusSuccess,
+		})
+	}()
+
+	// Wait until the store has captured the tail and is about to call build.
+	<-store.enter
+	// Close the logger — this sets closed=true and zeroes chainKey.
+	require.NoError(t, l.Close())
+	// Now let the store call build(prev). The inner re-check (closed)
+	// OR the empty-key guard inside chainKey.Use must fire.
+	store.release <- struct{}{}
+
+	err := <-logErrCh
+	require.ErrorIs(t, err, ErrLoggerClosed)
+	require.Empty(t, store.events, "no event must be persisted when Close races the build callback")
+}
+
 // Reference secret to keep the unused-import linter quiet — secret.New is
 // used in the cursor-forgery test above.
 var _ = secret.New

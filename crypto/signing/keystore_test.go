@@ -1,6 +1,8 @@
 package signing
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +26,10 @@ func TestMustNewStaticKeyStore(t *testing.T) {
 		"k2": key2,
 	}, "k1")
 
-	id, secret := store.CurrentKeyID()
+	id, secret, err := store.CurrentKeyID(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentKeyID: %v", err)
+	}
 	if id != "k1" {
 		t.Errorf("CurrentKeyID() id = %q, want %q", id, "k1")
 	}
@@ -40,20 +45,21 @@ func TestStaticKeyStore_Key(t *testing.T) {
 		"k1": key1,
 		"k2": key2,
 	}, "k1")
+	ctx := context.Background()
 
-	k, ok := store.Key("k1")
-	if !ok || len(k) != 32 {
-		t.Errorf("Key(k1) = (%v, %v), want (32-byte key, true)", len(k), ok)
+	k, err := store.Key(ctx, "k1")
+	if err != nil || len(k) != 32 {
+		t.Errorf("Key(k1) = (len=%d, err=%v), want (32-byte key, nil)", len(k), err)
 	}
 
-	k, ok = store.Key("k2")
-	if !ok || len(k) != 48 {
-		t.Errorf("Key(k2) = (%v, %v), want (48-byte key, true)", len(k), ok)
+	k, err = store.Key(ctx, "k2")
+	if err != nil || len(k) != 48 {
+		t.Errorf("Key(k2) = (len=%d, err=%v), want (48-byte key, nil)", len(k), err)
 	}
 
-	_, ok = store.Key("nonexistent")
-	if ok {
-		t.Error("Key(nonexistent) should return false")
+	_, err = store.Key(ctx, "nonexistent")
+	if !errors.Is(err, ErrUnknownKeyID) {
+		t.Errorf("Key(nonexistent) = %v, want ErrUnknownKeyID", err)
 	}
 }
 
@@ -64,7 +70,7 @@ func TestStaticKeyStore_DefensiveCopy(t *testing.T) {
 
 	// Mutate the original — store should be unaffected.
 	original[0] = 0xFF
-	k, _ := store.Key("k1")
+	k, _ := store.Key(context.Background(), "k1")
 	if k[0] == 0xFF {
 		t.Error("StaticKeyStore did not defensively copy the key")
 	}
@@ -106,7 +112,11 @@ func TestNewStaticKeyStore_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStaticKeyStore: %v", err)
 	}
-	if id, _ := s.CurrentKeyID(); id != "k1" {
+	id, _, err := s.CurrentKeyID(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentKeyID: %v", err)
+	}
+	if id != "k1" {
 		t.Errorf("currentID = %q, want k1", id)
 	}
 }
@@ -187,33 +197,36 @@ func TestNewStaticKeyStore_ErrorOnInvalidNonCurrentKeyID(t *testing.T) {
 
 func TestStaticKeyStore_ZeroValueMethodsFailClosed(t *testing.T) {
 	var store StaticKeyStore
-	if k, ok := store.Key("k1"); ok || k != nil {
-		t.Fatalf("zero-value Key = (%v, %v), want nil false", k, ok)
+	ctx := context.Background()
+	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
+		t.Fatalf("zero-value Key = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k := store.CurrentKeyID(); id != "" || k != nil {
-		t.Fatalf("zero-value CurrentKeyID = (%q, %v), want empty nil", id, k)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
+		t.Fatalf("zero-value CurrentKeyID = (%q, %v, %v), want empty nil nil", id, k, err)
 	}
 }
 
 func TestStaticKeyStore_NilReceiverMethodsFailClosed(t *testing.T) {
 	var store *StaticKeyStore
-	if k, ok := store.Key("k1"); ok || k != nil {
-		t.Fatalf("nil Key = (%v, %v), want nil false", k, ok)
+	ctx := context.Background()
+	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
+		t.Fatalf("nil Key = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k := store.CurrentKeyID(); id != "" || k != nil {
-		t.Fatalf("nil CurrentKeyID = (%q, %v), want empty nil", id, k)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
+		t.Fatalf("nil CurrentKeyID = (%q, %v, %v), want empty nil nil", id, k, err)
 	}
 }
 
 func TestStaticKeyStore_ConcurrentAccess(t *testing.T) {
 	store := MustNewStaticKeyStore(map[string][]byte{"k1": testKey(32, 1)}, "k1")
 	var wg sync.WaitGroup
+	ctx := context.Background()
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			store.Key("k1")
-			store.CurrentKeyID()
+			_, _ = store.Key(ctx, "k1")
+			_, _, _ = store.CurrentKeyID(ctx)
 		}()
 	}
 	wg.Wait()
@@ -224,21 +237,22 @@ func TestStaticKeyStore_Close_ZeroesKeysAndFailsClosed(t *testing.T) {
 		"k1": testKey(32, 1),
 		"k2": testKey(32, 2),
 	}, "k1")
+	ctx := context.Background()
 
 	// Sanity: keys present before Close.
-	if k, ok := store.Key("k1"); !ok || len(k) == 0 {
+	if k, err := store.Key(ctx, "k1"); err != nil || len(k) == 0 {
 		t.Fatal("expected k1 present before Close")
 	}
 
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// After Close, lookups must report missing.
-	if k, ok := store.Key("k1"); ok || k != nil {
-		t.Fatalf("Key after Close = (%v, %v), want nil false", k, ok)
+	// After Close, lookups must report ErrUnknownKeyID.
+	if k, err := store.Key(ctx, "k1"); !errors.Is(err, ErrUnknownKeyID) || k != nil {
+		t.Fatalf("Key after Close = (%v, %v), want nil ErrUnknownKeyID", k, err)
 	}
-	if id, k := store.CurrentKeyID(); id != "" || k != nil {
-		t.Fatalf("CurrentKeyID after Close = (%q, %v), want empty nil", id, k)
+	if id, k, err := store.CurrentKeyID(ctx); id != "" || k != nil || err != nil {
+		t.Fatalf("CurrentKeyID after Close = (%q, %v, %v), want empty nil nil", id, k, err)
 	}
 	// Idempotent.
 	if err := store.Close(); err != nil {

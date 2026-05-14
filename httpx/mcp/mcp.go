@@ -54,6 +54,15 @@ const MaxToolNameLen = actionlog.MaxActionLen - len("mcp.")
 
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
+// ErrDestructiveGateRequired is returned to the caller when a tool
+// marked [WithDestructive] is invoked on a Server that has neither
+// a [DestructiveGate] wired via [WithDestructiveGate] nor an
+// explicit [WithoutDestructiveGate] acknowledgement. The kit refuses
+// rather than silently letting the call through, because a tool
+// catalog advertising `x-destructive: true` is the wrong place to
+// learn at runtime that nothing actually gates the call.
+var ErrDestructiveGateRequired = errors.New("mcp: destructive tool requires a server-side gate (configure WithDestructiveGate, or acknowledge via WithoutDestructiveGate)")
+
 // Tool describes one MCP tool. Every handler registered via
 // [Register] becomes one Tool. The fields are the public surface of
 // the MCP `tools/list` response — clients read them to render the
@@ -117,32 +126,91 @@ func WithOutputSchema(schema json.RawMessage) ToolOption {
 	return func(c *toolConfig) { c.outputSchema = schema }
 }
 
-// WithDestructive flags the tool as destructive. The Server records
-// this in the tool catalog and emits a top-level `destructive: true`
+// WithDestructive marks the tool as destructive. The Server records
+// this in the tool catalog and emits a `x-destructive: true`
 // JSON-Schema vendor-extension so clients can prompt for
-// confirmation. Wire the [httpx/middleware/approval] middleware
-// around the Server to gate destructive calls; the flag here is
-// metadata only.
-func WithDestructive(b bool) ToolOption {
-	return func(c *toolConfig) { c.destructive = b }
+// confirmation.
+//
+// Destructive tools fail with [ErrDestructiveGateRequired] at call
+// time unless one of these is configured:
+//
+//   - [WithDestructiveGate] — supplies a server-side gate (typically
+//     wired to [httpx/middleware/approval] or a custom authorization
+//     hook) that runs before dispatch and can refuse the call.
+//   - [WithoutDestructiveGate] — explicit "I am running destructive
+//     tools without server-side enforcement; clients prompt only"
+//     acknowledgement. Use only for services that gate destructive
+//     calls in their inbound HTTP middleware chain and need the
+//     destructive marker for schema vendor-extensions.
+//
+// The no-arg shape replaces v1's positional bool: previously the
+// option silently accepted `WithDestructive(false)`, which made
+// it easy to disable safety in a copy-paste edit.
+func WithDestructive() ToolOption {
+	return func(c *toolConfig) { c.destructive = true }
 }
 
 // ServerOption configures the [Server].
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	logger              *slog.Logger
-	actionLogger        actionlog.Logger
-	actorExtractor      func(*http.Request) string
-	allowAnonymousActor bool
-	tenantExtractor     func(ctx context.Context) (string, bool)
-	maxRequestBytes     int64
-	strictAudit         bool
-	strictAuditTimeout  time.Duration
-	asyncAudit          bool
-	asyncAuditWorkers   int
-	asyncAuditQueue     int
-	asyncAuditTimeout   time.Duration
+	logger                       *slog.Logger
+	actionLogger                 actionlog.Logger
+	actorExtractor               func(*http.Request) string
+	allowAnonymousActor          bool
+	tenantExtractor              func(ctx context.Context) (string, bool)
+	maxRequestBytes              int64
+	strictAudit                  bool
+	strictAuditTimeout           time.Duration
+	asyncAudit                   bool
+	asyncAuditWorkers            int
+	asyncAuditQueue              int
+	asyncAuditTimeout            time.Duration
+	destructiveGate              DestructiveGate
+	destructiveGateAcknowledged  bool
+}
+
+// DestructiveGate authorizes a destructive-tool invocation. The
+// Server calls it before dispatching any tool registered with
+// [WithDestructive]; a non-nil error refuses the call and the kit
+// returns that error to the caller (typically a structured
+// "approval required" response).
+//
+// ctx is the request context. toolName identifies the tool. The
+// payload is the raw, JSON-marshalled tool input — useful for
+// approval flows that need to surface the proposed change to a
+// human reviewer.
+type DestructiveGate func(ctx context.Context, toolName string, payload []byte) error
+
+// WithDestructiveGate wires a server-side gate for tools registered
+// with [WithDestructive]. Typical wiring forwards the call to
+// [data/approval] or a custom authorization service that records the
+// pending action and waits for human confirmation.
+//
+// The gate is the production-grade enforcement point: it runs in
+// every code path that dispatches a destructive tool, regardless of
+// which inbound middleware fronts the Server. Without a gate AND
+// without [WithoutDestructiveGate], every destructive tool call
+// returns [ErrDestructiveGateRequired].
+func WithDestructiveGate(fn DestructiveGate) ServerOption {
+	if fn == nil {
+		panic("mcp: WithDestructiveGate: function must not be nil")
+	}
+	return func(c *serverConfig) { c.destructiveGate = fn }
+}
+
+// WithoutDestructiveGate is the explicit "I gate destructive calls
+// somewhere else in my stack and just want the schema vendor
+// extension" acknowledgement. The Server stops refusing destructive
+// tool calls when this is set; the destructive flag remains in the
+// tool catalog and the JSON-Schema vendor extension.
+//
+// Use only for services that wrap the Server with their own
+// approval / authorization middleware. The long, explicit name is
+// deliberate — accidentally typing it triggers a "do I actually
+// have an external gate?" review.
+func WithoutDestructiveGate() ServerOption {
+	return func(c *serverConfig) { c.destructiveGateAcknowledged = true }
 }
 
 // WithLogger sets the [slog.Logger] used for server-side errors.
@@ -422,8 +490,9 @@ type auditJob struct {
 // dispatch closure boxes the typed Handler so the Server doesn't
 // need to track In/Out generic parameters at runtime.
 type toolEntry struct {
-	tool     Tool
-	dispatch dispatchFunc
+	tool        Tool
+	dispatch    dispatchFunc
+	destructive bool
 }
 
 // dispatchFunc is the type-erased dispatch shape. It accepts the raw
@@ -727,7 +796,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	}
 
 	dispatch := buildDispatch[In, Out](h)
-	return s.register(name, &toolEntry{tool: tool, dispatch: dispatch})
+	return s.register(name, &toolEntry{tool: tool, dispatch: dispatch, destructive: cfg.destructive})
 }
 
 func validateSchemaOverride(kind string, schema json.RawMessage) (json.RawMessage, error) {

@@ -29,10 +29,12 @@ const DefaultMaxBodyBytes = 64 << 10 // 64 KiB
 // auto-rejects on the next Decide call.
 const DefaultExpiry = 24 * time.Hour
 
-// DefaultTenantHeader is the request header read for the tenant id when
-// no override is configured. Services that already place tenant on the
-// request context via earlier middleware should pass [WithTenantSource]
-// instead.
+// DefaultTenantHeader is the conventional request header for the
+// tenant id. v2 no longer trusts this header by default — call
+// [WithTenantFromHeader] explicitly when the service runs behind a
+// proxy that strips and re-stamps the header from a verified
+// identity. The constant is exported so callers wiring
+// [WithTenantFromHeader] do not have to invent their own string.
 const DefaultTenantHeader = "X-Tenant-ID"
 
 // Option configures the middleware.
@@ -70,8 +72,11 @@ func WithExpiry(d time.Duration) Option {
 }
 
 // WithTenantSource sets the function that resolves a tenant id for a
-// request. The default reads [DefaultTenantHeader]; services that put
-// tenant on context via an upstream middleware should override.
+// request. The default reads the authenticated tenant from request
+// context via [coretenant.FromContext] — services that have not
+// installed an auth middleware that populates that context MUST
+// provide an explicit override (or opt into [WithTenantFromHeader]
+// after auditing the trust boundary).
 //
 // Returning ok=false produces 400 Bad Request — the kit cannot record
 // an approval without a tenant. Panics on a nil fn.
@@ -82,10 +87,27 @@ func WithTenantSource(fn func(*http.Request) (string, bool)) Option {
 	return func(c *config) { c.tenantSource = fn }
 }
 
-// WithTenantHeader sets the tenant source to a request header. The header must
-// be a singleton token: duplicate lines, comma-combined values, whitespace, and
-// control characters are rejected before the value is validated as a tenant ID.
-func WithTenantHeader(header string) Option {
+// WithTenantFromHeader is the EXPLICIT opt-in that lets the middleware
+// read the tenant id from a caller-controlled HTTP header.
+//
+// SECURITY: any HTTP client able to reach this endpoint can set the
+// header to an arbitrary value, which would let an unauthenticated
+// caller submit an approval request under a victim tenant. Use this
+// option ONLY when the service is exclusively reachable through a
+// trusted proxy that strips inbound copies of the header and re-stamps
+// it from a verified identity (e.g. an ingress that pins
+// X-Tenant-ID from a verified JWT claim and rejects requests that
+// also carry the header from the public Internet).
+//
+// In every other deployment, prefer the default ctx-based source
+// populated by an auth middleware. The default in v2 no longer
+// silently trusts the header — pre-v2 callers that relied on the
+// implicit header trust MUST add this option after auditing.
+//
+// The header must be a singleton token: duplicate lines,
+// comma-combined values, whitespace, and control characters are
+// rejected before the value is validated as a tenant ID.
+func WithTenantFromHeader(header string) Option {
 	return WithTenantSource(tenantSourceFromHeader(header))
 }
 
@@ -185,7 +207,7 @@ func defaultConfig() config {
 	return config{
 		maxBodyBytes:      DefaultMaxBodyBytes,
 		expiry:            DefaultExpiry,
-		tenantSource:      tenantSourceFromHeader(DefaultTenantHeader),
+		tenantSource:      tenantFromContext,
 		actionExtractor:   func(r *http.Request) string { return r.Method + " " + httpx.RequestPath(r) },
 		resourceExtractor: httpx.RequestPath,
 		idFunc: func() (string, error) {
@@ -199,9 +221,26 @@ func defaultConfig() config {
 	}
 }
 
+// tenantFromContext is the secure default for tenant resolution: it
+// reads the tenant id from request context, where an upstream auth
+// middleware has placed it from a verified claim. Returning ok=false
+// here results in 400 Bad Request — callers that legitimately need to
+// run without auth context must opt in to [WithTenantFromHeader] or
+// supply a custom [WithTenantSource].
+func tenantFromContext(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	id, ok := coretenant.FromContext(r.Context())
+	if !ok {
+		return "", false
+	}
+	return id.String(), true
+}
+
 func tenantSourceFromHeader(header string) func(*http.Request) (string, bool) {
 	if !httpguts.ValidHeaderFieldName(header) {
-		panic("approval: WithTenantHeader requires a valid non-empty header name")
+		panic("approval: WithTenantFromHeader requires a valid non-empty header name")
 	}
 	return func(r *http.Request) (string, bool) {
 		value, present, ok := headerutil.SingletonToken(r.Header, header)

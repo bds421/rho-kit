@@ -170,16 +170,16 @@ func TestValidateAuth_AcceptsRotatingCredentialProviders(t *testing.T) {
 		{
 			name: "username password provider",
 			cfg: Config{
-				UsernamePasswordProvider: func() (string, string) {
-					return "user", "rotated-password"
+				UsernamePasswordProvider: func(context.Context) (string, string, error) {
+					return "user", "rotated-password", nil
 				},
 			},
 		},
 		{
 			name: "token provider",
 			cfg: Config{
-				TokenProvider: func() string {
-					return "rotated-token"
+				TokenProvider: func(context.Context) (string, error) {
+					return "rotated-token", nil
 				},
 			},
 		},

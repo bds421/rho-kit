@@ -18,7 +18,7 @@ import (
 // further guards.
 func TestNewMetricsCollector_NilProvider(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	c, err := NewMetricsCollector(nil, reg, "primary")
+	c, err := NewMetricsCollector(nil, "primary", WithRegisterer(reg))
 	require.Error(t, err)
 	assert.Nil(t, c)
 }
@@ -29,7 +29,7 @@ func TestNewMetricsCollector_NilProvider(t *testing.T) {
 func TestNewMetricsCollector_EmptyInstance(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	_, err := NewMetricsCollector(p, reg, "")
+	_, err := NewMetricsCollector(p, "", WithRegisterer(reg))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "instance")
 }
@@ -40,7 +40,7 @@ func TestNewMetricsCollector_EmptyInstance(t *testing.T) {
 func TestMetricsCollector_EmitsZerosOnEmptyProvider(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	_, err := NewMetricsCollector(p, reg, "primary")
+	_, err := NewMetricsCollector(p, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 
 	families, err := reg.Gather()
@@ -73,7 +73,7 @@ func TestMetricsCollector_TracksSuccessAndStaleness(t *testing.T) {
 	p.mu.Unlock()
 
 	reg := prometheus.NewRegistry()
-	c, err := NewMetricsCollector(p, reg, "primary")
+	c, err := NewMetricsCollector(p, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 	// Pin the clock so the staleness math is deterministic.
 	c.clock = func() time.Time { return now }
@@ -108,7 +108,7 @@ func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 	}
 
 	reg := prometheus.NewRegistry()
-	_, err := NewMetricsCollector(p, reg, "primary")
+	_, err := NewMetricsCollector(p, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 
 	families, err := reg.Gather()
@@ -126,9 +126,9 @@ func TestMetricsCollector_ReportsStaleRejectedFailures(t *testing.T) {
 func TestMetricsCollector_DuplicateRegistrationReusesCollector(t *testing.T) {
 	p := newFixtureProvider(t)
 	reg := prometheus.NewRegistry()
-	first, err := NewMetricsCollector(p, reg, "primary")
+	first, err := NewMetricsCollector(p, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
-	second, err := NewMetricsCollector(p, reg, "primary")
+	second, err := NewMetricsCollector(p, "primary", WithRegisterer(reg))
 	require.NoError(t, err)
 	assert.Same(t, first, second)
 }

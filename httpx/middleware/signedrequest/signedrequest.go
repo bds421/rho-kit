@@ -133,9 +133,14 @@ func validNonce(nonce string) bool {
 }
 
 // KeyResolver returns the HMAC secret bytes for the given key ID.
-// Callers typically read from a config/secret store. Returns an
-// error to reject unknown key IDs.
-type KeyResolver func(keyID string) ([]byte, error)
+// Callers typically read from a config / secret manager / Vault /
+// KMS adapter. The ctx is the inbound request context, so the
+// resolver can honour the caller's deadline and cancellation when
+// talking to a remote secret store. Return an error to reject
+// unknown key IDs; the middleware maps a non-nil err or empty
+// secret to [ErrSignatureInvalid] without leaking the underlying
+// reason to the client.
+type KeyResolver func(ctx context.Context, keyID string) ([]byte, error)
 
 // NonceStore is the abstraction over the replay-protection cache.
 // Implementations must:
@@ -335,7 +340,7 @@ func verify(r *http.Request, cfg *config) error {
 	// unauthenticated caller can force the server to buffer up to
 	// bodyMaxSize bytes per request — a memory-amplification primitive
 	// against any endpoint that mounts this middleware.
-	secret, err := cfg.resolver(keyID)
+	secret, err := cfg.resolver(r.Context(), keyID)
 	if err != nil || len(secret) == 0 {
 		return ErrSignatureInvalid
 	}

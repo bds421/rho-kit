@@ -83,6 +83,16 @@ var (
 	// break implies missing or out-of-order rows in durable storage.
 	ErrChainBroken = errors.New("actionlog: per-tenant hash chain is broken")
 
+	// ErrSecretSourceUnavailable is returned when a [SecretSource]
+	// could not respond — e.g. a KMS / Vault / Secrets Manager
+	// outage, a deadline-exceeded context, or any other transient
+	// provider failure. Distinct from [ErrUnknownKeyID] (which means
+	// "the id is genuinely no longer in rotation") so operators can
+	// distinguish a permanent integrity break from a temporary
+	// dependency outage. Callers should retry on this error rather
+	// than treat it as audit-trail corruption.
+	ErrSecretSourceUnavailable = errors.New("actionlog: secret source unavailable")
+
 	// ErrQueryTenantRequired is returned by [Logger.List] when the
 	// caller passes a [Query] with no [Query.TenantID] and has not
 	// opted into [Query.AllTenants]. Cross-tenant listings are valid
@@ -347,16 +357,32 @@ type Store interface {
 // SecretSource resolves HMAC secrets by key id. Implementations
 // typically read from a config-managed map or a secret manager. Use
 // [StaticSecrets] for the common case of a small in-process map.
+//
+// The ctx-and-error signature is the v2 production-shape: KMS / Vault
+// / Secrets Manager adapters need to honour deadlines, report
+// dependency failures, and distinguish "unknown key" from "manager
+// unavailable". Implementations must return:
+//
+//   - [ErrUnknownKeyID] when the id is genuinely not in the keyring
+//     (permanent — rotation lag or deletion).
+//   - [ErrSecretSourceUnavailable] (or an error wrapping it) when the
+//     backing provider failed transiently. Callers retry on this.
+//   - ctx.Err() (via [errors.Is](err, context.Canceled) /
+//     context.DeadlineExceeded) when the context is cancelled or
+//     deadline-exceeded before the provider responds.
+//
+// [StaticSecrets] is the simple in-memory implementation; it always
+// returns [ErrUnknownKeyID] for unknown ids and never returns
+// transient errors.
 type SecretSource interface {
 	// CurrentKeyID returns the id of the key new entries should be
 	// signed with. Rotation works by changing the value this returns
 	// while keeping older ids resolvable.
-	CurrentKeyID() string
+	CurrentKeyID(ctx context.Context) (string, error)
 
-	// Resolve returns the secret bytes for the given key id, or false
-	// if the id is no longer known. Returning false produces
-	// [ErrUnknownKeyID] on read.
-	Resolve(keyID string) ([]byte, bool)
+	// Resolve returns the secret bytes for the given key id. See the
+	// interface docstring for the typed-error contract.
+	Resolve(ctx context.Context, keyID string) ([]byte, error)
 }
 
 // StaticSecrets is the simple SecretSource backed by an in-memory map.
@@ -398,38 +424,41 @@ func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecret
 	return &StaticSecrets{current: currentKeyID, keys: dup}
 }
 
-// CurrentKeyID returns the configured current key id.
-func (s *StaticSecrets) CurrentKeyID() string {
+// CurrentKeyID returns the configured current key id. The in-memory
+// source never fails so the returned error is always nil; the signature
+// stays ctx-and-error for [SecretSource] conformance.
+func (s *StaticSecrets) CurrentKeyID(context.Context) (string, error) {
 	if s == nil {
-		return ""
+		return "", nil
 	}
-	return s.current
+	return s.current, nil
 }
 
 // Resolve returns a defensive copy of the secret for keyID. Returning
 // the underlying slice would let a caller mutate the stored key (and
 // thereby break or forge subsequent verification/signing) — the copy
-// keeps the in-memory map immutable from the outside.
-func (s *StaticSecrets) Resolve(keyID string) ([]byte, bool) {
+// keeps the in-memory map immutable from the outside. Returns
+// [ErrUnknownKeyID] if the id is not in the map.
+func (s *StaticSecrets) Resolve(_ context.Context, keyID string) ([]byte, error) {
 	if s == nil || s.keys == nil {
-		return nil, false
+		return nil, ErrUnknownKeyID
 	}
 	k, ok := s.keys[keyID]
 	if !ok {
-		return nil, false
+		return nil, ErrUnknownKeyID
 	}
 	out := make([]byte, len(k))
 	copy(out, k)
-	return out, true
+	return out, nil
 }
 
-func resolveSignatureSecret(source SecretSource, keyID string) ([]byte, error) {
+func resolveSignatureSecret(ctx context.Context, source SecretSource, keyID string) ([]byte, error) {
 	if keyID == "" {
 		return nil, ErrUnknownKeyID
 	}
-	secret, ok := source.Resolve(keyID)
-	if !ok {
-		return nil, ErrUnknownKeyID
+	secret, err := source.Resolve(ctx, keyID)
+	if err != nil {
+		return nil, err
 	}
 	if len(secret) < minSignatureSecretLen {
 		return nil, ErrSecretTooShort
@@ -541,7 +570,10 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 	}
 	e.OccurredAt = e.OccurredAt.UTC()
 
-	keyID := l.secrets.CurrentKeyID()
+	keyID, err := l.secrets.CurrentKeyID(ctx)
+	if err != nil {
+		return Entry{}, fmt.Errorf("actionlog: resolve current key id: %w", err)
+	}
 	if keyID == "" {
 		// FR-050 [HIGH] belt-and-suspenders: NewStaticSecrets panics
 		// on empty current key id, but a custom Secrets implementation
@@ -549,7 +581,7 @@ func (l *signedLogger) Append(ctx context.Context, e Entry) (Entry, error) {
 		// entry whose SignatureKeyID Verify will reject permanently.
 		return Entry{}, fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
 	}
-	secret, err := resolveSignatureSecret(l.secrets, keyID)
+	secret, err := resolveSignatureSecret(ctx, l.secrets, keyID)
 	if err != nil {
 		return Entry{}, fmt.Errorf("actionlog: current key id: %w", err)
 	}
@@ -600,7 +632,7 @@ func (l *signedLogger) Get(ctx context.Context, id string) (Entry, error) {
 		return Entry{}, err
 	}
 	e = cloneEntry(e)
-	if err := VerifyEntry(e, l.secrets); err != nil {
+	if err := VerifyEntry(ctx, e, l.secrets); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -625,7 +657,7 @@ func (l *signedLogger) List(ctx context.Context, q Query) ([]Entry, string, erro
 	out := make([]Entry, len(entries))
 	for i, e := range entries {
 		e = cloneEntry(e)
-		if err := VerifyEntry(e, l.secrets); err != nil {
+		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
 			return nil, "", fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		out[i] = e
@@ -645,7 +677,7 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 	var prev Entry
 	var wantSeq int64 = 1
 	return l.store.RangeByTenantSeq(ctx, tenantID, func(e Entry) error {
-		if err := VerifyEntry(e, l.secrets); err != nil {
+		if err := VerifyEntry(ctx, e, l.secrets); err != nil {
 			return fmt.Errorf("actionlog: entry verification failed: %w", err)
 		}
 		if e.Seq != wantSeq {
@@ -679,16 +711,21 @@ func (l *signedLogger) VerifyChain(ctx context.Context, tenantID string) error {
 // (the contract mirrors [Logger.Append] which fills both fields).
 //
 // Returns [ErrUnknownKeyID] when [SecretSource.CurrentKeyID] is empty
-// or the resolved secret is shorter than [minSignatureSecretLen].
-func SignEntry(e Entry, secrets SecretSource) (signature, keyID string, err error) {
+// or the resolved secret is shorter than [minSignatureSecretLen]. The
+// ctx is passed through to the [SecretSource] for deadline / cancel
+// propagation; KMS/Vault-backed sources should honour it.
+func SignEntry(ctx context.Context, e Entry, secrets SecretSource) (signature, keyID string, err error) {
 	if secrets == nil {
 		return "", "", ErrInvalidStore
 	}
-	keyID = secrets.CurrentKeyID()
+	keyID, err = secrets.CurrentKeyID(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("actionlog: resolve current key id: %w", err)
+	}
 	if keyID == "" {
 		return "", "", fmt.Errorf("actionlog: Secrets.CurrentKeyID returned empty string: %w", ErrUnknownKeyID)
 	}
-	secret, err := resolveSignatureSecret(secrets, keyID)
+	secret, err := resolveSignatureSecret(ctx, secrets, keyID)
 	if err != nil {
 		return "", "", fmt.Errorf("actionlog: current key id: %w", err)
 	}
@@ -702,21 +739,23 @@ func SignEntry(e Entry, secrets SecretSource) (signature, keyID string, err erro
 
 // VerifyEntry reports whether the entry's stored signature matches the
 // recomputed canonical signature. Returns nil on match,
-// [ErrSignatureInvalid] / [ErrUnknownKeyID] otherwise.
+// [ErrSignatureInvalid] / [ErrUnknownKeyID] /
+// [ErrSecretSourceUnavailable] otherwise.
 //
 // Like [SignEntry], this is stateless — verifiers can validate a dump
 // of entries without a Logger or Store. The implementation uses a
 // fixed-size buffer for the constant-time compare so a valid-hex but
 // wrong-length stored signature does not take a faster code path than
-// a same-length forgery attempt (FR-052 [LOW]).
-func VerifyEntry(e Entry, secrets SecretSource) error {
+// a same-length forgery attempt (FR-052 [LOW]). The ctx is passed
+// through to the [SecretSource] for deadline / cancel propagation.
+func VerifyEntry(ctx context.Context, e Entry, secrets SecretSource) error {
 	if secrets == nil {
 		return ErrInvalidStore
 	}
 	if e.SignatureKeyID == "" {
 		return ErrSignatureInvalid
 	}
-	secret, err := resolveSignatureSecret(secrets, e.SignatureKeyID)
+	secret, err := resolveSignatureSecret(ctx, secrets, e.SignatureKeyID)
 	if err != nil {
 		return err
 	}

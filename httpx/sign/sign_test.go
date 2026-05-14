@@ -2,6 +2,7 @@ package sign
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -54,8 +55,8 @@ type mutableKeyStore struct {
 	secret []byte
 }
 
-func (s *mutableKeyStore) CurrentKeyID() (string, []byte) {
-	return s.keyID, append([]byte(nil), s.secret...)
+func (s *mutableKeyStore) CurrentKeyID(context.Context) (string, []byte, error) {
+	return s.keyID, append([]byte(nil), s.secret...), nil
 }
 
 // Round-trip end-to-end: client signs, server verifies. The most
@@ -63,7 +64,7 @@ func (s *mutableKeyStore) CurrentKeyID() (string, []byte) {
 // on the wire format" — a single test that runs both proves it.
 func TestSignAndVerify_RoundTrip(t *testing.T) {
 	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
-	resolver := func(id string) ([]byte, error) {
+	resolver := func(_ context.Context, id string) ([]byte, error) {
 		assert.Equal(t, keyID, id)
 		return []byte(secret), nil
 	}
@@ -95,7 +96,7 @@ func TestWrapKeyStore_UsesCurrentKeyPerRequest(t *testing.T) {
 		newSecret = "this-is-32-bytes-of-new-secret!!"
 	)
 	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
-	resolver := func(id string) ([]byte, error) {
+	resolver := func(_ context.Context, id string) ([]byte, error) {
 		switch id {
 		case oldKeyID:
 			return []byte(oldSecret), nil
@@ -231,7 +232,7 @@ func TestSign_BufferBodySizeErrorIsStable(t *testing.T) {
 
 func TestSign_NoBody(t *testing.T) {
 	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
-	resolver := func(string) ([]byte, error) { return []byte(secret), nil }
+	resolver := func(context.Context, string) ([]byte, error) { return []byte(secret), nil }
 	mw := signedrequest.Middleware(resolver, store)
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })))
 	defer srv.Close()
@@ -461,7 +462,7 @@ func (f roundTripFn) RoundTrip(r *http.Request) (*http.Response, error) { return
 
 func TestSign_IncludeHeaders_BoundIntoSignature(t *testing.T) {
 	store := signedrequest.NewMemoryNonceStore(10 * time.Minute)
-	resolver := func(string) ([]byte, error) { return []byte(secret), nil }
+	resolver := func(context.Context, string) ([]byte, error) { return []byte(secret), nil }
 	mw := signedrequest.Middleware(resolver, store, signedrequest.WithRequiredHeaders("X-Tenant-ID"))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })))
 	defer srv.Close()

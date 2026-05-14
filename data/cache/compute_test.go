@@ -423,7 +423,7 @@ func TestComputeCache_ContextCancellationDoesNotAffectOtherCallers(t *testing.T)
 func TestComputeCache_Metrics(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "m:",
 		WithComputeMetricsRegisterer(metrics),
@@ -541,7 +541,7 @@ func TestComputeCache_KeyValidation(t *testing.T) {
 func TestComputeCache_ErrorMetrics(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "em:",
 		WithComputeMetricsRegisterer(metrics),
@@ -569,7 +569,7 @@ func TestComputeCache_ErrorMetrics(t *testing.T) {
 func TestComputeCache_ErrorMetricsSingleflight(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "sferr:",
 		WithComputeMetricsRegisterer(metrics),
@@ -609,7 +609,7 @@ func TestComputeCache_ErrorMetricsSingleflight(t *testing.T) {
 func TestComputeCache_UnmarshalFailure(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "corrupt:",
 		WithComputeMetricsRegisterer(metrics),
@@ -659,7 +659,7 @@ func TestComputeCache_BackendSetFailure(t *testing.T) {
 func TestComputeCache_BackendGetErrorNotTreatedAsMiss(t *testing.T) {
 	mem := newTestBackend(t)
 	reg := prometheus.NewPedanticRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	fb := &faultyBackend{Cache: mem}
 	fb.getErr.Store(errors.New("redis timeout"))
@@ -806,7 +806,7 @@ func gatherHistogramSampleCount(t *testing.T, hv *prometheus.HistogramVec, label
 func TestComputeCache_SingleflightFollowerMetrics(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "sf:",
 		WithComputeMetricsRegisterer(metrics),
@@ -868,7 +868,7 @@ func TestComputeCache_SingleflightFollowerMetrics(t *testing.T) {
 func TestComputeCache_SingleflightSoloCallerNotFollower(t *testing.T) {
 	backend := newTestBackend(t)
 	reg := prometheus.NewRegistry()
-	metrics := NewComputeMetrics(reg)
+	metrics := NewComputeMetrics(WithRegisterer(reg))
 
 	cc, err := NewComputeCache[string](backend, "solo:",
 		WithComputeMetricsRegisterer(metrics),

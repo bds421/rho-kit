@@ -371,9 +371,21 @@ type BatchMetrics struct {
 type BatchOption func(*batchConfig)
 
 type batchConfig struct {
-	namespace string
-	subsystem string
-	buckets   []float64
+	namespace  string
+	subsystem  string
+	buckets    []float64
+	registerer prometheus.Registerer
+}
+
+// WithBatchRegisterer pins the Prometheus registerer used to register
+// the batch RED metric set. When unset, [prometheus.DefaultRegisterer]
+// is used. Replaces the v1 positional NewBatch(reg, ...) signature so
+// all kit metric constructors share the same options-only shape.
+func WithBatchRegisterer(reg prometheus.Registerer) BatchOption {
+	if reg == nil {
+		panic("redmetrics: WithBatchRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *batchConfig) { c.registerer = reg }
 }
 
 // WithBatchNamespace sets the Prometheus metric namespace.
@@ -419,11 +431,13 @@ func validateBuckets(buckets []float64) {
 // NewBatch constructs RED metrics for batch / cron workloads. The name
 // becomes the default subsystem, so a service that runs both an outbox
 // relay and a nightly cron sees `outbox_runs_total` and
-// `cron_runs_total` cleanly separated.
-func NewBatch(reg prometheus.Registerer, name string, opts ...BatchOption) *BatchMetrics {
+// `cron_runs_total` cleanly separated. Pass [WithBatchRegisterer] to
+// use a non-default registry.
+func NewBatch(name string, opts ...BatchOption) *BatchMetrics {
 	cfg := batchConfig{
-		subsystem: name,
-		buckets:   BatchDurationBuckets(),
+		subsystem:  name,
+		buckets:    BatchDurationBuckets(),
+		registerer: prometheus.DefaultRegisterer,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -433,6 +447,7 @@ func NewBatch(reg prometheus.Registerer, name string, opts ...BatchOption) *Batc
 	}
 	validateMetricNamePart("Batch namespace", cfg.namespace)
 	validateMetricNamePart("Batch subsystem", cfg.subsystem)
+	reg := cfg.registerer
 
 	runs := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: cfg.namespace,

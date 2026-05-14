@@ -46,7 +46,7 @@ func TestNewPoolMetrics(t *testing.T) {
 	// which would race if tests run in parallel with -race.
 	reg := prometheus.NewRegistry()
 
-	m := NewPoolMetrics("testservice", reg)
+	m := NewPoolMetrics("testservice", WithRegisterer(reg))
 
 	// Set values to verify collectors work.
 	m.OpenConnections.Set(5)
@@ -65,10 +65,10 @@ func TestNewPoolMetrics(t *testing.T) {
 
 func TestNewPoolMetrics_PanicsOnInvalidNamespace(t *testing.T) {
 	assert.Panics(t, func() {
-		NewPoolMetrics("my-service", prometheus.NewRegistry())
+		NewPoolMetrics("my-service", WithRegisterer(prometheus.NewRegistry()))
 	})
 	assert.Panics(t, func() {
-		NewPoolMetrics("tenant metrics", prometheus.NewRegistry())
+		NewPoolMetrics("tenant metrics", WithRegisterer(prometheus.NewRegistry()))
 	})
 }
 

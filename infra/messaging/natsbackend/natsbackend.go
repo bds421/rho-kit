@@ -108,19 +108,35 @@ type Config struct {
 	Username string
 	Password string
 
-	// UsernamePasswordProvider supplies user/password credentials whenever
-	// nats.go authenticates or reauthenticates a connection. Use this for
-	// rotating broker credentials; the provider should return the current
-	// credential pair and avoid blocking.
-	UsernamePasswordProvider func() (string, string)
+	// UsernamePasswordProvider supplies user/password credentials
+	// whenever nats.go authenticates or reauthenticates a connection.
+	// Use this for rotating broker credentials. The ctx carries the
+	// per-call deadline derived from [CredentialProviderTimeout] (default
+	// 5s); providers that hit a remote secret manager MUST honour it.
+	//
+	// Returned errors are logged and a previous successfully-resolved
+	// credential pair is reused if available — i.e. transient secret
+	// manager outages do not break an already-connected NATS client.
+	// On the first attempt with no cached value, an error fails the
+	// auth handler and triggers a reconnect cycle.
+	UsernamePasswordProvider func(ctx context.Context) (user, password string, err error)
 
 	// Token configures NATS bearer-token authentication.
 	Token string
 
-	// TokenProvider supplies a bearer token whenever nats.go authenticates or
-	// reauthenticates a connection. Use this for rotating tokens; it takes
-	// precedence over Token when both are set.
-	TokenProvider func() string
+	// TokenProvider supplies a bearer token whenever nats.go authenticates
+	// or reauthenticates a connection. Use this for rotating tokens; it
+	// takes precedence over Token when both are set. The ctx + caching
+	// semantics match [UsernamePasswordProvider].
+	TokenProvider func(ctx context.Context) (string, error)
+
+	// CredentialProviderTimeout bounds each call into [UsernamePasswordProvider]
+	// or [TokenProvider]. Zero (the default) uses 5 seconds; values below
+	// 100ms are clamped up to 100ms so providers always have a usable
+	// budget. The kit derives a per-call ctx with this timeout so
+	// providers that hit a remote secret manager cannot hang the NATS
+	// auth handler.
+	CredentialProviderTimeout time.Duration
 
 	// CredentialsFile points to a NATS `.creds` JWT-NKey credentials
 	// file (the standard format produced by `nsc add user`). Honoured
@@ -341,13 +357,19 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if cfg.TLS != nil {
 		opts = append(opts, nats.Secure(cfg.TLS))
 	}
+	timeout := cfg.CredentialProviderTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	} else if timeout < 100*time.Millisecond {
+		timeout = 100 * time.Millisecond
+	}
 	if cfg.UsernamePasswordProvider != nil {
-		opts = append(opts, nats.UserInfoHandler(cfg.UsernamePasswordProvider))
+		opts = append(opts, nats.UserInfoHandler(newUserPassBridge(cfg.UsernamePasswordProvider, timeout)))
 	} else if cfg.Username != "" {
 		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
 	}
 	if cfg.TokenProvider != nil {
-		opts = append(opts, nats.TokenHandler(cfg.TokenProvider))
+		opts = append(opts, nats.TokenHandler(newTokenBridge(cfg.TokenProvider, timeout)))
 	} else if cfg.Token != "" {
 		opts = append(opts, nats.Token(cfg.Token))
 	}

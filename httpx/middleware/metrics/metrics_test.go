@@ -58,7 +58,7 @@ func TestMetrics_UnmatchedPattern(t *testing.T) {
 
 func TestHTTPMetrics_CounterIncrement(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /test", func(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +82,7 @@ func TestHTTPMetrics_CounterIncrement(t *testing.T) {
 
 func TestHTTPMetrics_DurationObserved(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /submit", func(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +104,7 @@ func TestHTTPMetrics_DurationObserved(t *testing.T) {
 
 func TestHTTPMetrics_MethodQualifiedPatternUsesPathLabel(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Pattern = "PATCH /widgets/{id}"
@@ -123,7 +123,7 @@ func TestHTTPMetrics_MethodQualifiedPatternUsesPathLabel(t *testing.T) {
 
 func TestHTTPMetrics_InvalidMethodAndPatternAreBucketed(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Pattern = "bad\npattern"
@@ -143,7 +143,7 @@ func TestHTTPMetrics_InvalidMethodAndPatternAreBucketed(t *testing.T) {
 
 func TestHTTPMetrics_Records500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 	handlerPanic := assert.AnError
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +170,7 @@ func TestHTTPMetrics_Records500AndRepanicsWhenHandlerPanicsBeforeHeaders(t *test
 
 func TestHTTPMetrics_PanicAfterHeaderRecordsWrittenStatus(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 	handlerPanic := assert.AnError
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +193,7 @@ func TestHTTPMetrics_PanicAfterHeaderRecordsWrittenStatus(t *testing.T) {
 
 func TestHTTPMetrics_InFlightReturnsToZero(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTPMetrics(reg)
+	m := NewHTTPMetrics(WithRegisterer(reg))
 
 	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// During handling, in-flight should be 1.
