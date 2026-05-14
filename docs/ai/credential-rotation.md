@@ -4,22 +4,36 @@ Use short-lived or provider-managed credentials wherever the upstream SDK can
 refresh them. Static `_FILE` secrets are still supported for simple
 deployments, but production services should prefer the provider hooks below.
 
-| Surface | Rotation contract |
-|---|---|
-| PostgreSQL | `pgxbackend.Config.PasswordProvider` is called before every new physical connection. Call `Pool.Reset()` after a password rotation event to drain old authenticated connections. |
-| Redis | Pass go-redis `CredentialsProvider`, `CredentialsProviderContext`, or `StreamingCredentialsProvider` through `app/redis.Module` / `infra/redis.Connect`. Streaming providers can re-auth open connections when go-redis receives updates. |
-| RabbitMQ / AMQP | Use `amqpbackend.WithURLProvider` or `app/amqp.WithURLProvider`; the provider is called before each initial dial and reconnect. `amqpbackend.WithURLProviderTimeout` bounds the provider context. |
-| NATS JetStream | Use `natsbackend.Config.UsernamePasswordProvider` or `TokenProvider`; nats.go calls these during auth and reauth. `.creds` files are delegated to nats.go callbacks; NKey seed signatures are callback-based but the public key is fixed at connection construction, so prefer providers for live rotation. |
-| S3 | Prefer `S3Config.UseDefaultCredentials` for IAM role, web identity, ECS/EKS/EC2 metadata, SSO, or process providers. Use `S3Config.CredentialProvider` for explicit rotating AWS SDK providers. Static access keys are mutually exclusive with both. |
-| Azure Blob | Prefer `azurebackend.NewWithTokenCredential` with managed identity, workload identity, or chained Azure credentials. `New` with `AccountKey` remains the static-key path. |
-| GCS | Leave `CredentialsFile` empty to use Application Default Credentials / workload identity, or pass rotating credential options through `GCSConfig.ClientOptions`. |
-| SFTP | Use `SFTPConfig.PasswordProvider`; it is evaluated when a new SSH connection opens and receives a bounded context through `PasswordProviderTimeout` or the package default. Key files are read on each reconnect, so projected-key updates take effect after reconnect. |
-| CSRF | `httpx/middleware/csrf.WithSecrets(current, previous...)` and `security/csrf.NewIssuerWithSecrets` sign with the current secret and verify previous secrets during the overlap window. |
-| Signed HTTP requests | Receivers already resolve by key ID. Senders can use `httpx/sign.WrapKeyStore` so each request signs with the current key from a reloading key store. |
-| JWT | `security/jwtutil.Provider.Run` refreshes JWKS on schedule and on key misses; rotate issuer keys with overlapping JWKS publication. |
-| PASETO | **Asymmetric rotation contract.** `crypto/paseto.Provider` hot-refreshes *verification* keys on the consumer side; refreshed JWKS-style key sets take effect immediately. The kit does NOT ship a Provider for *signing* — `V4PublicSigner` is constructed from a single private key at startup. To rotate the signing key, callers must (a) construct a new signer from the rotated private key, (b) atomically swap their issuer's signer reference (typically guarded by a sync.RWMutex), (c) publish the matching new verification key alongside the previous one in the verifier-side key set, and (d) keep both verification keys live until the longest outstanding token TTL expires before retiring the old one. The kit's verifier-side `Provider` already handles step (c) at the consumer; the signer-side cutover is service-managed. |
-| Envelope KMS / Vault | Envelopes record KEK IDs / versions. Configure AWS KMS, GCP KMS, Azure Key Vault, and Vault clients with provider-managed credentials; rotate KEKs by writing new records with the new key while old records unwrap by recorded ID. |
-| TLS / mTLS material | Static load is the default. For hot rotation pass `app.Builder.WithReloadingTLS(netutil.WithReloadInterval(d))` (or trigger reloads from a SIGHUP handler via `FilesCertificateSource.Reload`). The Builder wires the same `CertificateSource` into the public server, the default outbound HTTP client, and `Infrastructure.TLSCertSource`; broker / gRPC / custom adapters should read `infra.TLSCertSource` and pass it through `netutil.ReloadingServerTLS` or `netutil.ReloadingClientTLS`. `ReloadingClientTLS` fails closed with `netutil.ErrServerNameRequired` if the caller dials without `tls.Config.ServerName`. |
+The matrix below is a **capability matrix**, not a feature parity claim:
+backends differ in which rotation styles they support and in how cutovers
+actually propagate to open connections. Read every cell that applies to
+your wiring before assuming the kit will rotate a credential for you.
+
+Columns:
+
+- **Static / file** — credential is read once at construction (or from a
+  `*_FILE` env path) and never re-read until the process restarts.
+- **Provider callback** — a `*Provider` / `Provider*` hook the kit invokes
+  on new dials, new physical connections, or reauth handshakes.
+- **Hot reload on open connection** — whether already-established
+  connections pick up the new credential without a reconnect.
+
+| Surface | Static / file | Provider callback | Hot reload on open connection | Notes |
+|---|---|---|---|---|
+| PostgreSQL | yes (Config.Password / Config.PasswordFile) | `pgxbackend.Config.PasswordProvider` called before every new physical connection | no — call `Pool.Reset()` to drain old authenticated connections | Provider context inherits the dial context's timeout. |
+| Redis | yes (Config.Password / Config.PasswordFile) | go-redis `CredentialsProvider` / `CredentialsProviderContext` / `StreamingCredentialsProvider` via `app/redis.Module` / `infra/redis.Connect` | streaming providers only — go-redis re-auths open connections when the streaming provider emits updates; non-streaming providers only fire on new connections | Choose the streaming variant for true hot-rotation. |
+| RabbitMQ / AMQP | yes (Config.URL / `_FILE`) | `amqpbackend.WithURLProvider` / `app/amqp.WithURLProvider`; bounded by `WithURLProviderTimeout` | no — the provider is consulted on initial dial and on reconnect, never against an open Connection | Trigger a reconnect to apply rotated credentials. |
+| NATS JetStream | yes (Config.Username/Password, NKey seed, .creds file) | `natsbackend.Config.UsernamePasswordProvider` / `TokenProvider` invoked by nats.go on auth + reauth | yes for token / username-password reauth; NKey public key is fixed at construction so prefer the provider hooks for live rotation | `.creds` files are delegated to nats.go callbacks (file path is re-read by nats.go). |
+| S3 | yes (static access keys, mutually exclusive with the other two columns) | `S3Config.CredentialProvider` — rotating AWS SDK provider | yes — the AWS SDK re-resolves credentials per request via the provider chain | `S3Config.UseDefaultCredentials` is recommended (IAM role, web-identity, ECS/EKS/EC2 metadata, SSO, process). |
+| Azure Blob | yes (`New` with AccountKey) | `azurebackend.NewWithTokenCredential` with managed identity / workload identity / chained Azure credentials | yes — the Azure SDK token credential refreshes against AAD | Static-key path is intentionally simple and does not rotate. |
+| GCS | yes (`CredentialsFile`) | `GCSConfig.ClientOptions` accepts rotating credential options; otherwise ADC / workload identity | yes when using ADC / workload identity — the Google SDK refreshes tokens against the metadata server | Leave `CredentialsFile` empty to use ADC. |
+| SFTP | yes (Config.Password / Config.PasswordFile, Config.PrivateKey / `_FILE`) | `SFTPConfig.PasswordProvider`; bounded by `PasswordProviderTimeout` (or package default) | no — SSH does not support credential rotation on an open connection; provider only runs on new SSH session establishment | Projected-key updates take effect only after reconnect. |
+| CSRF | yes (single secret) | `httpx/middleware/csrf.WithSecrets(current, previous...)` and `security/csrf.NewIssuerWithSecrets` sign with current, verify previous during the overlap window | n/a — secrets are evaluated per request | Overlap window keeps pre-rotation cookies/tokens valid. |
+| Signed HTTP requests | yes (single key at construction) | `httpx/sign.WrapKeyStore` so each request signs with the current key from a reloading key store | yes — receivers resolve by key ID per request | Pre-publish new key IDs before rotating senders. |
+| JWT | yes (static signer key) | `security/jwtutil.Provider.Run` refreshes JWKS on schedule and on key misses | yes (verification side) — rotated keys take effect on the next JWKS refresh | Rotate issuer keys with overlapping JWKS publication; signer cutover is service-managed. |
+| PASETO | yes (static V4PublicSigner) | `crypto/paseto.Provider` hot-refreshes *verification* keys (consumer side) | yes (verification side only) | **Asymmetric**: the kit does NOT ship a Provider for *signing*. To rotate the signing key callers must (a) construct a new signer, (b) atomically swap their issuer's signer reference (typically `sync.RWMutex`-guarded), (c) pre-publish the matching new verification key alongside the previous one, and (d) keep both verification keys live until the longest outstanding token TTL expires. |
+| Envelope KMS / Vault | yes (key handle / KEK identifier in config) | provider-managed credentials in AWS KMS / GCP KMS / Azure Key Vault / Vault clients; envelopes record KEK IDs / versions | yes — old records unwrap by recorded KEK ID while new records use the rotated KEK | KEK rotation = write new records under the new key; do not in-place re-encrypt unless you have a migration plan. |
+| TLS / mTLS material | yes — static load is the default | `app.Builder.WithReloadingTLS(netutil.WithReloadInterval(d))` (or SIGHUP-driven `FilesCertificateSource.Reload`) | yes — `ReloadingServerTLS` / `ReloadingClientTLS` consult the `CertificateSource` per new connection / handshake | The Builder wires the same `CertificateSource` into the public server, the default outbound HTTP client, and `Infrastructure.TLSCertSource`. Broker / gRPC / custom adapters should read `infra.TLSCertSource` and pass it through `netutil.ReloadingServerTLS` / `netutil.ReloadingClientTLS`. `ReloadingClientTLS` fails closed with `netutil.ErrServerNameRequired` if the caller dials without `tls.Config.ServerName`. |
 
 Operational sequence for overlapping secrets:
 

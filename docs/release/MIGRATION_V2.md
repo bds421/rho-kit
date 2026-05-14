@@ -82,12 +82,13 @@ Production services should converge on the Builder instead of hand-built
 servers. The Builder owns middleware ordering, lifecycle, shutdown, internal
 health, and production-safety validation.
 
-Illustrative shape:
+Illustrative shape — adapter wiring is now factored into `app/<service>`
+Modules registered with `Builder.With(...)`:
 
 ```go
 return app.New("billing-api", version, cfg.BaseConfig).
-    WithPostgres(cfg.Postgres).
-    WithRedis(cfg.Redis).
+    With(postgres.Module(cfg.Postgres)).
+    With(redis.Module(cfg.Redis)).
     WithJWT(cfg.JWKSURL).
     WithJWTAudience("billing-api").
     WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
@@ -95,12 +96,17 @@ return app.New("billing-api", version, cfg.BaseConfig).
     WithActionLogger(actionLogger).
     WithApprovalStore(approvalStore).
     WithSignedRequests(keyResolver, nonceStore).
+    WithIPRateLimit(60, time.Minute). // affirmative rate-limit declaration is required
     Router(func(infra app.Infrastructure) http.Handler {
         mux := http.NewServeMux()
         return stack.Default(mux, logger)
     }).
     Run()
 ```
+
+(Replace `postgres.Module` / `redis.Module` with the `app/<adapter>`
+Modules you actually wire; see §8 for the full list of adapter packages
+that replaced the removed `Builder.With<Backend>` shortcuts.)
 
 Use `cmd/kit-new` for a buildable scaffold:
 
@@ -479,4 +485,3 @@ The following remain out of scope for v2.0.0 and should not block adoption:
 - Kafka backend.
 - Additional managed-KMS adapters beyond the currently frozen AWS KMS, Azure
   Key Vault, Google Cloud KMS, and HashiCorp Vault Transit adapter modules.
-- The v2.1 lazy-adapter split (per §8).

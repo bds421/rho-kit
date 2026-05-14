@@ -72,10 +72,11 @@ func WithHard() Option {
 
 // WithLogger installs a logger that records late panics from handler
 // goroutines that completed AFTER the middleware already returned a
-// 503. Without it, a slow handler that panicked post-timeout would
-// have its panic recovered inside the goroutine but never surfaced,
-// leaving operators blind to the regression. Wave 66 closed a
-// hostile-review finding for this gap.
+// 503. Without this option, late panics fall back to [slog.Default]
+// so the regression is never silently dropped — the option is the
+// preferred path because it lets operators route late-panic events
+// to the structured logger their service already wires (and to
+// downstream metric/alert pipelines that read those records).
 //
 // Panics if logger is nil — omit the option entirely to opt out.
 func WithLogger(logger *slog.Logger) Option {
@@ -152,13 +153,22 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 				tw.writeToReal()
 			case <-ctx.Done():
 				tw.writeTimeout()
+				// Drain the late goroutine in the background so a
+				// post-timeout panic still surfaces in logs even
+				// though the request has already returned 503. We
+				// always drain — without it the buffered channel
+				// pins the handler goroutine's deferred sender at
+				// process exit and, more importantly, a panic that
+				// fires after the request returns is invisible.
+				// If no explicit logger was wired, fall back to
+				// slog.Default() rather than silently dropping the
+				// panic value (L-073).
+				lateLogger := cfg.logger
+				if lateLogger == nil {
+					lateLogger = slog.Default()
+				}
 				if cfg.postTimeoutWait == 0 {
-					// Drain the late goroutine in the background so a
-					// post-timeout panic still surfaces in logs even
-					// though the request has already returned 503.
-					if cfg.logger != nil {
-						go drainLateHandler(done, cfg.logger)
-					}
+					go drainLateHandler(done, lateLogger)
 					return
 				}
 				timer := time.NewTimer(cfg.postTimeoutWait)
@@ -169,10 +179,7 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 						panic(result.panicValue)
 					}
 				case <-timer.C:
-					// Same drain pattern as the hard-timeout path.
-					if cfg.logger != nil {
-						go drainLateHandler(done, cfg.logger)
-					}
+					go drainLateHandler(done, lateLogger)
 				}
 			}
 		})

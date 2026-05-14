@@ -23,9 +23,9 @@ grafana/
                          #   grpc_server_handling_seconds)
   runtime-go.json        # goroutines, threads, heap, GC, max RSS
   service-overview.json  # one screen with links to the per-area dashboards
-  db-pool.json           # Postgres/MySQL pool: open / idle / in-use /
-                         #   wait rate (matches __name__ regex on
-                         #   <service>_db_open_connections etc.)
+  db-pool.json           # PostgreSQL pool (pgx-backed): open / idle /
+                         #   in-use / wait rate (matches __name__ regex
+                         #   on <service>_db_open_connections etc.)
   redis.json             # Redis: command rate / errors / p50/p95/p99,
                          #   pool stats, reconnects, healthy gauge
   storage.json           # Storage provider overview: S3/GCS/Azure/SFTP

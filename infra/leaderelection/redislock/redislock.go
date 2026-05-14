@@ -262,6 +262,20 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		if lostErr != nil {
 			return errors.Join(holdErr, lostErr)
 		}
+		// A drain-timeout means an OnAcquired goroutine from the
+		// previous term is still running inside this process. We have
+		// no way to interrupt it (Go has no goroutine kill), so
+		// retrying acquire would risk a within-process double-leader:
+		// the new term could call OnAcquired again while the orphan
+		// goroutine still holds resources. Bail out and let the
+		// orchestrator restart the process (L-141).
+		if holdErr != nil && errors.Is(holdErr, ErrCallbackDrainTimeout) {
+			e.logger.Error("leader-election: OnAcquired drain timed out; refusing to re-acquire — restart the process",
+				redact.String("key", e.key),
+				redact.Error(holdErr),
+			)
+			return holdErr
+		}
 		if holdErr == nil {
 			e.logger.Info("leader-election: leadership callback returned; retrying",
 				redact.String("key", e.key),

@@ -95,8 +95,8 @@ FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishab
 ```
 
 A divergent version pin (e.g. `app` pins `crypto/envelope/v2 v2.0.0`
-while `crypto/paseto/v2` pins `crypto/envelope/v2 v1.9.0` transitively)
-fails the pre-tag gate and blocks the release.
+while another v2 module pins an earlier `crypto/envelope/v2 v2.0.0-rc.N`
+transitively) fails the pre-tag gate and blocks the release.
 
 ### 1.4 Direct dependency source allowlist
 
@@ -159,8 +159,10 @@ grep -rE "@(latest|main|master)\b" --include="*.go" --include="*.mod" .
 # List Go versions across modules (should all be the same):
 grep -h "^go " */go.mod */*/go.mod | sort -u
 
-# List toolchain versions across modules (same):
-grep -h "^toolchain " */go.mod */*/go.mod | sort -u
+# Confirm the workspace toolchain pin (per-module go.mod files
+# intentionally do not carry `toolchain`; the workspace pin is the
+# single source of truth — see §1.2 above):
+grep "^toolchain " go.work
 
 # Check reviewed direct dependency sources:
 make check-dependency-allowlist
@@ -467,8 +469,9 @@ requires SPDX.
 Downstream consumers can:
 
 ```bash
-# Fetch the SBOM for a given release:
-gh release download httpx/v1.6.0 --pattern rho-kit.cdx.json
+# Fetch the SBOM for a given release (substitute the actual tag,
+# e.g. httpx/v2.0.0):
+gh release download httpx/v2.0.0 --pattern rho-kit.cdx.json
 
 # Run a local osv-scanner against it:
 osv-scanner --sbom rho-kit.cdx.json

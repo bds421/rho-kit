@@ -196,8 +196,18 @@ type DependencyCheck struct {
 	// [defaultCheckTimeout] (3s); negative values are invalid and are
 	// rejected by readiness handler constructors. Tune lower for fast in-cluster
 	// dependencies (Redis, Postgres) so kubelet probes don't queue,
-	// higher for cross-region calls. The check goroutine receives a
-	// cancelled context when the timeout fires.
+	// higher for cross-region calls.
+	//
+	// The timeout is COOPERATIVE: when it fires the check's context is
+	// cancelled (ctx.Done() observes [context.DeadlineExceeded]) and the
+	// handler stops waiting for the result, returning a "timed out"
+	// status to the kubelet. The check goroutine itself is NOT
+	// preempted — a Check function that ignores ctx.Done() keeps
+	// running in the background and continues to hold any resources
+	// it acquired (DB connections, RPC streams) until it returns of
+	// its own accord. Check implementations must thread the supplied
+	// context through every blocking call and observe cancellation at
+	// well-defined safe points.
 	Timeout time.Duration
 }
 

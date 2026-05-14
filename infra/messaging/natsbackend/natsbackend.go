@@ -17,15 +17,22 @@
 //
 // The translation between [messaging.Message] and NATS JetStream:
 //
-//   - Stream subject = `exchange + "." + routingKey` when routingKey
-//     is non-empty, otherwise just `exchange`. The dotted form keeps
-//     NATS-native wildcard subscriptions workable.
-//   - The original exchange and routing-key are also carried as NATS
-//     message headers (`X-Exchange`, `X-Routing-Key`). The consumer
-//     reads these headers to reconstruct the [messaging.Delivery],
-//     which preserves the original (exchange, routingKey) pair even
-//     when one or both contain dots — splitting the subject would be
-//     ambiguous in that case.
+//   - Stream subject = `encode(exchange) + "." + encode(routingKey)`
+//     when routingKey is non-empty, otherwise just `encode(exchange)`.
+//     [composeSubject] URL-encodes NATS-reserved characters (`.`, `*`,
+//     `>`, whitespace) within each token so that a dotted exchange
+//     name like `orders.v1` cannot widen a wildcard subscription. The
+//     unencoded segment boundary between exchange and routingKey is
+//     preserved, keeping NATS-native wildcards (e.g. `orders.v1.>`)
+//     workable for operators that align their stream subjects with the
+//     kit's encoding scheme.
+//   - The original (unencoded) exchange and routing-key are carried as
+//     NATS message headers (`X-Exchange`, `X-Routing-Key`). The
+//     consumer reads these headers to reconstruct the
+//     [messaging.Delivery], which preserves the original pair exactly
+//     even when one or both contain reserved characters. Subjects are
+//     only used as a fallback for messages from non-kit publishers
+//     (see [splitSubject]).
 //   - Message body = JSON-encoded [messaging.Message] (same shape used
 //     by the AMQP and Redis backends).
 //   - User headers ride the NATS Msg.Header map.
@@ -1021,23 +1028,18 @@ func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 	return headers, msgHeaders
 }
 
-// composeSubject builds the NATS subject for the (exchange, routingKey)
-// pair. The subject is the natural dotted form so NATS-native wildcard
-// subscriptions (e.g. `orders.>`) keep working. Reconstruction of the
-// original (exchange, routingKey) on the consumer side reads the
-// `X-Exchange` / `X-Routing-Key` headers — never the subject — so a
-// dotted exchange like `orders.v1` paired with routing-key `created`
-// is preserved exactly even though the subject is `orders.v1.created`.
-// composeSubject builds the NATS subject for a (exchange, routingKey)
-// pair. Exchange and routing-key tokens may not contain wildcards
-// (`*`, `>`), whitespace, or characters NATS reserves; dots are
-// URL-encoded so the segment boundary is unambiguous (audit FR-074).
-//
-// Per the doc-comment contract, this used to claim sanitisation that
-// the body did not implement. The fix preserves the documented
-// behaviour: original values ride as headers, the wire subject uses
-// the encoded form so a `.`-bearing exchange like
-// "billing.invoices" cannot collide with a wildcard subscription.
+// composeSubject builds the NATS subject for an (exchange, routingKey)
+// pair. Each token is run through [encodeSubjectToken], which percent-
+// escapes NATS-reserved characters (`.`, `*`, `>`, whitespace), and the
+// two encoded tokens are joined with a literal `.` so the segment
+// boundary is unambiguous (audit FR-074). A dotted exchange like
+// `billing.invoices` therefore cannot collide with a wildcard
+// subscription targeting `billing.>` — the dot inside the exchange is
+// encoded to `%2E`. Reconstruction of the original (exchange,
+// routingKey) on the consumer side reads the `X-Exchange` /
+// `X-Routing-Key` headers — never the subject — so the round-trip
+// preserves the unencoded values regardless of which characters they
+// contain.
 func composeSubject(exchange, routingKey string) string {
 	if routingKey == "" {
 		return encodeSubjectToken(exchange)

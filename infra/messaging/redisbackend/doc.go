@@ -6,8 +6,15 @@
 //
 // Conceptual mapping:
 //
-//   - exchange → stream name
+//   - exchange → Redis stream name
 //   - routing key → stored in message headers (unused by Redis Streams directly)
-//   - consumer group → Binding.Queue
-//   - Binding.Retry → StreamConsumer max retries
+//   - consumer group → fixed at *stream.Consumer construction time; the
+//     wrapper validates Binding.Queue against that group and rejects
+//     mismatches (FR-064). It does NOT switch groups per binding.
+//   - Binding.Retry / Binding.WithoutRetry → ignored by this backend.
+//     Retry and dead-letter behaviour is configured on the underlying
+//     [redisstream.Consumer] at construction time (max retries, backoff,
+//     dead-letter stream) and applies uniformly to every Consume invocation
+//     on this wrapper. Construct one wrapper per (stream, group, retry
+//     policy) tuple if you need divergent retry behaviour.
 package redisbackend

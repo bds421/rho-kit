@@ -47,8 +47,19 @@ type Runner struct {
 // RunnerOption configures a Runner.
 type RunnerOption func(*Runner)
 
-// WithStopTimeout sets the maximum time allowed for each component's Stop
-// method. Default is 30 seconds.
+// WithStopTimeout sets the total wall-clock budget the Runner spends
+// inside [Runner.Stop] across ALL registered components. Default is 30
+// seconds.
+//
+// The budget is shared, not per-component: stopAll calls each component's
+// Stop in reverse registration order with a derived sub-context capped at
+// roughly `stopTimeout/N` (with min/max clamps — see stopAll for the exact
+// shape). An early component that consumes more than its share leaves
+// proportionally less time for the components behind it; the shared
+// stopTimeout is still the hard ceiling, after which every remaining Stop
+// observes ctx.Done(). Operators sizing this value should aim for the
+// upper bound on TOTAL graceful shutdown latency, not the maximum any one
+// component can spend.
 func WithStopTimeout(d time.Duration) RunnerOption {
 	if d <= 0 {
 		panic("lifecycle: WithStopTimeout requires a positive duration")
@@ -309,9 +320,14 @@ func (r *Runner) stopAll(parent context.Context) error {
 			// short salvage budget so each component sees the
 			// shutdown signal. This prevents goroutine leaks when
 			// an earlier component consumes the full stopTimeout.
+			// The salvage context is derived from the force-cancel
+			// parent (NOT from a fresh context.Background()) so a
+			// second SIGINT immediately interrupts an in-flight
+			// salvage stop instead of the operator having to wait
+			// up to salvageBudget per remaining component (L-147).
 			r.logger.Warn("shutdown deadline exceeded, stopping remaining component with salvage budget",
 				logattr.Component(r.components[i].name))
-			stepCtx, stepCancel = context.WithTimeout(context.Background(), salvageBudget)
+			stepCtx, stepCancel = context.WithTimeout(parent, salvageBudget)
 		} else {
 			stepCtx, stepCancel = context.WithTimeout(sharedCtx, perStep)
 		}

@@ -7,7 +7,11 @@
 //
 //   - Name() returns a stable identifier used in logs and metrics.
 //   - Start(ctx) blocks until ctx is cancelled or the component fails.
-//   - Stop(ctx) performs graceful shutdown, bounded by the supplied deadline.
+//   - Stop(ctx) performs graceful shutdown. The Runner derives per-component
+//     contexts from a single shared shutdown budget configured with
+//     [WithStopTimeout] (default 30s); each Stop observes ctx.Done() once
+//     that shared budget is exhausted, not after a fresh per-component
+//     timer.
 //
 // [Runner] orchestrates a set of components: Start them concurrently, block
 // on OS signals (SIGINT, SIGTERM), then Stop them in reverse registration

@@ -46,16 +46,23 @@ func MustRegisterOrGet[T prometheus.Collector](reg prometheus.Registerer, c T) T
 	return typed
 }
 
-// Register registers a Prometheus collector and reports whether an existing
-// equivalent collector was reused (returned in place of c). On conflict the
-// existing collector is logged at debug level and returned via the first
-// result; ok is false and err is nil. On other registration errors err is
-// returned unchanged so callers can decide whether to panic, retry, or
-// abort.
+// Register registers a Prometheus collector and returns the collector
+// that is live in reg paired with a registration error.
 //
-// The returned collector is the one that is actually live in reg: if an
-// equivalent was already registered, that one wins (Prometheus client
-// semantics); otherwise it is c.
+//   - On success the returned collector is c and err is nil.
+//   - On [prometheus.AlreadyRegisteredError] the existing collector is
+//     logged at debug level and returned in place of c; err is nil.
+//     Callers MUST observe through the returned collector — observations
+//     on c would record into an unregistered local.
+//   - On any other registration error (name shape conflict, label
+//     mismatch with a different collector type) the first result is nil
+//     and err is returned unchanged so callers can decide whether to
+//     panic, retry, or abort. There is no third "ok" boolean; the
+//     reuse path is signalled by `err == nil && returned != c`.
+//
+// Use [MustRegisterOrGet] in constructors that need the result typed,
+// or [RegisterCollector] for fire-and-forget collectors that do not
+// keep a handle.
 func Register(reg prometheus.Registerer, c prometheus.Collector) (prometheus.Collector, error) {
 	if err := reg.Register(c); err != nil {
 		var are prometheus.AlreadyRegisteredError

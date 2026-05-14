@@ -150,6 +150,9 @@ make lint
 make check-dependency-boundaries
 make check-dependency-allowlist
 make check-operational-readiness
+make check-api-freeze-coverage
+make check-dashboard-metrics
+make check-licenses
 FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make check-publishable
 GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -strict=critical .
 make vulncheck
@@ -169,6 +172,12 @@ Expected output summary:
   external deps approved`.
 - `make check-operational-readiness`: OK; current evidence is `77 modules
   covered`.
+- `make check-api-freeze-coverage`: OK; current evidence is `77 modules
+  covered` (parses each `go.mod` directly, not via `go list -m`).
+- `make check-dashboard-metrics`: OK; current evidence is `113 candidates;
+  13 resolved by allowlist`. Catches dashboard drift after metric renames.
+- `make check-licenses`: OK; the gate fails loud on any per-module
+  go-licenses scanner failure (wave 66 closed the prior `|| true` mask).
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable`: OK for internal pins, internal require versions, no
   local internal replaces, and Go directives.

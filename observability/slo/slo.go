@@ -3,6 +3,7 @@ package slo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"time"
@@ -162,6 +163,28 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 		if _, exists := seen[s.Name]; exists {
 			panic("slo: duplicate SLO name")
 		}
+		switch s.Type {
+		case TypeLatency:
+			if s.Threshold <= 0 {
+				panic("slo: latency SLO Threshold must be > 0 (seconds at the configured percentile)")
+			}
+			if s.Percentile <= 0 || s.Percentile >= 1 {
+				panic("slo: latency SLO Percentile must lie in (0, 1)")
+			}
+		case TypeErrorRate:
+			if s.Threshold < 0 || s.Threshold > 1 {
+				panic("slo: error-rate SLO Threshold must lie in [0, 1]")
+			}
+		case TypeSuccessRate:
+			if s.Threshold < 0 || s.Threshold > 1 {
+				panic("slo: success-rate SLO Threshold must lie in [0, 1]")
+			}
+		default:
+			panic("slo: SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")
+		}
+		if s.Window < 0 {
+			panic("slo: SLO Window must not be negative")
+		}
 		seen[s.Name] = struct{}{}
 	}
 
@@ -188,9 +211,17 @@ func (c *Checker) Evaluate() []SLOStatus {
 
 // gatherFamilies collects all metric families from the gatherer and returns
 // them indexed by name for O(1) lookup. Prometheus Gather() may return partial
-// results alongside errors; we use whatever data is available.
+// results alongside errors; we use whatever data is available and log gather
+// errors at warn level so operators can spot collector misconfiguration
+// rather than silently degraded SLO evaluation (L-155).
 func (c *Checker) gatherFamilies() map[string]*dto.MetricFamily {
-	mfs, _ := c.gatherer.Gather()
+	mfs, err := c.gatherer.Gather()
+	if err != nil {
+		slog.Warn("slo: prometheus gather returned errors; using partial data",
+			"error", err.Error(),
+			"families", len(mfs),
+		)
+	}
 	if len(mfs) == 0 {
 		return make(map[string]*dto.MetricFamily)
 	}

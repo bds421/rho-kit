@@ -46,7 +46,8 @@ import (
 //
 // Return semantics:
 //   - (zero ID, nil)        — no tenant present (header missing / empty);
-//     middleware applies the [WithRequired] rules.
+//     middleware applies the default require-tenant policy (opt-out via
+//     [WithoutTenantRequired] or [WithAllowMissingTenantOnSafeMethods]).
 //   - (validated ID, nil)   — tenant present and well-formed.
 //   - (zero ID, non-nil err) — tenant present but invalid; middleware
 //     responds with 400 and never invokes the next handler.
@@ -154,8 +155,9 @@ func WithoutTenantRequired() Option {
 // pattern is to mount those probes on a sibling router (the kit's
 // internal ops port already does this for /health, /ready, /metrics).
 //
-// The default is OFF: [WithRequired] applies to every method. The
-// previous behavior (safe-method short-circuit by default) let
+// The default is OFF: the require-tenant policy applies to every
+// method (see [WithoutTenantRequired] for the broader opt-out).
+// The previous behavior (safe-method short-circuit by default) let
 // downstream tenant-budget enforcement be silently bypassed by GETs
 // that omitted X-Tenant-Id. Making the bypass an explicit opt-out
 // keeps that mistake from re-emerging.

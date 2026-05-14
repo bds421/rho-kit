@@ -18,6 +18,23 @@ if [[ ! -f go.work ]]; then
   exit 1
 fi
 
+# The rehearsal copies the working tree wholesale via rsync below, so an
+# untracked artefact (a generated binary, a forgotten profile dump, a
+# half-written script) silently lands in the rehearsal repository and the
+# subsequent `git add .` records it as part of the input commit. That
+# poisons the rehearsal evidence: a clean re-tag from origin would not
+# include those files, so the rehearsal stops being faithful. Require a
+# clean tracked tree by default; let operators opt into an exploratory
+# run with ALLOW_DIRTY_TREE=1 (L-170).
+status="$(git status --porcelain 2>/dev/null || true)"
+if [[ -n "$status" && "${ALLOW_DIRTY_TREE:-0}" != "1" ]]; then
+  echo "ERROR: rehearse-v2-release: working tree is dirty; refusing to record exploratory state in canonical rehearsal evidence." >&2
+  echo "Commit, stash, or clean the tree — or set ALLOW_DIRTY_TREE=1 for a local exploratory rehearsal whose log must not be checked in." >&2
+  echo "Untracked or modified files:" >&2
+  printf '%s\n' "$status" >&2
+  exit 1
+fi
+
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 log_dir="$SOURCE_ROOT/docs/release/rehearsals"
 mkdir -p "$log_dir"

@@ -92,10 +92,49 @@ func Compare(baseline, current []Result, metrics []Metric, failOn map[Metric]str
 	return out
 }
 
+// indexByName groups results by benchmark name and aggregates duplicate
+// samples. `go test -bench -count=N` emits N rows per benchmark; before
+// this aggregation step the map-overwrite path silently kept only the
+// last sample (L-165) which made -count=N indistinguishable from -count=1.
+// Multi-sample rows are now collapsed by taking the arithmetic mean of
+// every per-op metric and the sum of iteration counts.
 func indexByName(rs []Result) map[string]Result {
-	m := make(map[string]Result, len(rs))
+	type accumulator struct {
+		ns         float64
+		bytes      float64
+		allocs     float64
+		iters      int64
+		samples    int64
+	}
+	acc := make(map[string]*accumulator, len(rs))
+	order := make([]string, 0, len(rs))
 	for _, r := range rs {
-		m[r.Name] = r
+		a, ok := acc[r.Name]
+		if !ok {
+			a = &accumulator{}
+			acc[r.Name] = a
+			order = append(order, r.Name)
+		}
+		a.ns += r.NsPerOp
+		a.bytes += float64(r.BPerOp)
+		a.allocs += float64(r.AllocsOp)
+		a.iters += r.Iterations
+		a.samples++
+	}
+	m := make(map[string]Result, len(acc))
+	for _, name := range order {
+		a := acc[name]
+		if a.samples == 0 {
+			continue
+		}
+		n := float64(a.samples)
+		m[name] = Result{
+			Name:       name,
+			NsPerOp:    a.ns / n,
+			BPerOp:     int64(a.bytes/n + 0.5),
+			AllocsOp:   int64(a.allocs/n + 0.5),
+			Iterations: a.iters,
+		}
 	}
 	return m
 }

@@ -273,7 +273,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, err
 	}
 	if cfg.Endpoint == "" {
-		return initNoop()
+		return initNoop(cfg.EnableBaggage)
 	}
 
 	if cfg.SampleRate <= 0 {
@@ -322,7 +322,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		} else {
 			logExporterFallback(cfg.Endpoint, err)
 		}
-		return initNoop()
+		return initNoop(cfg.EnableBaggage)
 	}
 
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))
@@ -389,14 +389,17 @@ func exporterErrorKind(err error) string {
 	return "exporter_dial_failed"
 }
 
-// initNoop sets up a noop tracer provider for when tracing is disabled.
-func initNoop() (*Provider, error) {
+// initNoop sets up a noop tracer provider for when tracing is disabled
+// or when the OTLP exporter handshake failed. Baggage propagation is
+// preserved on the fallback path so that EnableBaggage continues to be
+// honoured when the collector is unreachable — silently dropping it
+// would change cross-service semantics on a transient outage (L-156).
+func initNoop(enableBaggage bool) (*Provider, error) {
 	tp := sdktrace.NewTracerProvider() // no exporter = noop
 	otel.SetTracerProvider(tp)
 	// Even with tracing disabled, propagate W3C trace headers so downstream
-	// services that DO have tracing enabled see the request graph; just
-	// don't propagate Baggage by default.
-	otel.SetTextMapPropagator(propagators(false))
+	// services that DO have tracing enabled see the request graph.
+	otel.SetTextMapPropagator(propagators(enableBaggage))
 	return &Provider{tp: tp}, nil
 }
 

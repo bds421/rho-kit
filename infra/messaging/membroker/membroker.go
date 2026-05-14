@@ -123,9 +123,17 @@ func (b *Broker) Publish(ctx context.Context, exchange, routingKey string, msg m
 }
 
 // Subscribe registers a handler for messages matching the given exchange
-// and routing key. Use "*" for either to match all. Returns a
-// [SubscriptionID] that callers can pass to [Broker.Unsubscribe] for
-// fine-grained teardown without dropping unrelated subscriptions.
+// and routing key. Routing-key matching follows AMQP 0-9-1 topic rules:
+//
+//   - "#" matches zero or more dot-delimited segments (the catch-all).
+//   - "*" matches exactly one segment, so a "*" pattern will NOT match a
+//     multi-segment key like "user.created" — use "#" or a positional
+//     pattern such as "user.*".
+//   - The exchange argument also accepts "*" or "#" as a wildcard meaning
+//     "any exchange"; otherwise it is validated as a literal exchange name.
+//
+// Returns a [SubscriptionID] that callers can pass to [Broker.Unsubscribe]
+// for fine-grained teardown without dropping unrelated subscriptions.
 //
 // Panics if b or handler is nil, or the exchange/routing-key
 // arguments fail [messaging.ValidateExchangeName] /

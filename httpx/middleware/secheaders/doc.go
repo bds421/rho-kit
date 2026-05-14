@@ -6,17 +6,36 @@
 //   - X-Frame-Options: DENY — prevents clickjacking via iframe embedding
 //   - Referrer-Policy: strict-origin-when-cross-origin — limits referrer leakage
 //   - Permissions-Policy: geolocation=(), microphone=(), camera=() — disables browser APIs
-//   - Strict-Transport-Security: max-age=63072000; includeSubDomains — enforces HTTPS (2 years)
+//   - Strict-Transport-Security: max-age=63072000; includeSubDomains — sent ONLY when the request arrived over TLS (see HSTS section below)
 //   - Cache-Control: no-store — prevents caching of API responses
 //   - Content-Security-Policy: default-src 'none' — strictest CSP for pure API services
 //   - Cross-Origin-Opener-Policy: same-origin — severs cross-origin window.opener access
 //   - Cross-Origin-Embedder-Policy: require-corp — every embedded resource must opt in
 //   - Cross-Origin-Resource-Policy: same-origin — this service's responses can only be loaded by same-origin documents
 //
-// All headers are set on every response before the next handler runs.
+// All non-HSTS headers are set on every response before the next handler runs.
 // Use [WithoutHSTS] in development environments without TLS.
 // Override [WithContentSecurityPolicy] and [WithCacheControl] for services
 // that serve HTML content.
+//
+// # HSTS gating
+//
+// Strict-Transport-Security is RFC-6797 §7.2 gated: it is only emitted when
+// the request was received over TLS (r.TLS != nil) or when the operator has
+// explicitly opted into a proxy-aware path. In a typical Kubernetes ingress
+// (TLS terminates at the ingress, the service receives plaintext), HSTS is
+// SILENTLY OFF unless you configure one of:
+//
+//   - [WithTrustedProxiesForProto] — emits HSTS when the request comes from a
+//     trusted proxy CIDR AND carries X-Forwarded-Proto: https. This is the
+//     correct option for nearly every ingress-fronted deployment.
+//   - [WithForceHSTS] — emits HSTS unconditionally. Only safe when every
+//     request path to the service is HTTPS-only (no plaintext fallback); a
+//     plaintext request that picks up the header will be misinterpreted by
+//     the browser.
+//
+// Operators are expected to verify HSTS via a curl/integration test against
+// the deployed ingress, not by reading the default list above.
 //
 // # COOP / COEP / CORP trade-offs
 //

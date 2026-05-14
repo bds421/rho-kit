@@ -163,6 +163,34 @@ func TestFormat_MissingRegressedBenchmarkIsExplicit(t *testing.T) {
 	assert.Contains(t, out, "REGRESSED (missing benchmark)")
 }
 
+// TestCompare_AggregatesDuplicateSamples guards L-165: when the
+// baseline/current output contains multiple samples per benchmark
+// (e.g. produced by `go test -bench -count=N`), the aggregator must
+// average them, not silently keep only the last sample.
+func TestCompare_AggregatesDuplicateSamples(t *testing.T) {
+	base := []Result{
+		{Name: "BenchmarkA", NsPerOp: 100, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+		{Name: "BenchmarkA", NsPerOp: 110, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+		{Name: "BenchmarkA", NsPerOp: 120, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+	}
+	cur := []Result{
+		{Name: "BenchmarkA", NsPerOp: 130, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+		{Name: "BenchmarkA", NsPerOp: 140, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+		{Name: "BenchmarkA", NsPerOp: 150, BPerOp: 64, AllocsOp: 2, Iterations: 100},
+	}
+	failOn := map[Metric]struct{}{MetricNs: {}}
+	// Threshold 10% so the comparison reflects mean-vs-mean (110 → 140,
+	// +27.3%), not last-vs-last (120 → 150, +25%). Both would regress
+	// at 10%, so we verify the percentage directly.
+	diffs := Compare(base, cur, []Metric{MetricNs}, failOn, 10)
+	require.Len(t, diffs, 1)
+	d := diffs[0]
+	assert.Equal(t, "BenchmarkA", d.Name)
+	assert.InDelta(t, 110.0, d.Baseline, 0.001, "baseline must be the mean of three samples")
+	assert.InDelta(t, 140.0, d.Current, 0.001, "current must be the mean of three samples")
+	assert.True(t, d.Regressed)
+}
+
 func TestSupportedMetrics_ReturnsDetachedCopy(t *testing.T) {
 	got := SupportedMetrics()
 	require.NotEmpty(t, got)

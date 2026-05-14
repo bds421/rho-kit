@@ -391,14 +391,17 @@ identifiers and rejects row/column batches above `pgx.MaxCopyRows` and
 parameter for `rediss://` URLs, but the kit treats certificate verification as
 non-optional.
 Unsupported Redis URL schemes now avoid reflecting the provided scheme value.
-`infra/redis.Connect`, `ConnectUniversal`, and `app.Builder.WithRedis` now
-snapshot caller-owned option structs and clone embedded TLS configs, applying
-the same TLS 1.2 floor even when callers bypass `RedisConfig.Options`.
+`infra/redis.Connect`, `ConnectUniversal`, and the `app/redis.Module`
+adapter (which replaced the removed `Builder.WithRedis` shortcut) now
+snapshot caller-owned option structs and clone embedded TLS configs,
+applying the same TLS 1.2 floor even when callers bypass
+`RedisConfig.Options`.
 
 ### NATS configs snapshot caller-owned TLS/options
 
-`infra/messaging/natsbackend.Config.Clone`, `Connect`, and
-`app.Builder.WithNATS` now snapshot caller-owned config before storage or dial.
+`infra/messaging/natsbackend.Config.Clone`, `Connect`, and the
+`app/nats.Module` adapter (which replaced the removed `Builder.WithNATS`
+shortcut) now snapshot caller-owned config before storage or dial.
 Custom TLS configs are cloned and raised to the kit TLS 1.2 floor, and the raw
 `ExtraOptions` slice is copied so later caller slice mutation cannot alter
 Builder/module runtime wiring.
@@ -1177,7 +1180,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `docs/audit/dependency-allowlist.txt` + `make check-dependency-allowlist` — exact source ledger for direct external Go dependencies
 - `make check-dependency-boundaries` — keeps Redis, pgx, cloud, messaging, KMS, OpenFGA, Temporal, River, and Testcontainers deps behind adapter/test boundaries
 - `make check-operational-readiness` — verifies the release operational review covers every workspace module
-- `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations; no open in-kit mitigation gaps at this revision
+- `docs/audit/THREAT_MODEL.md` — STRIDE threat ledger tracking shipped mitigations. GAP-01 through GAP-10 are closed in v2.0.0; three LOW residual doc-fidelity follow-ups (GAP-11 typed auditlog tenant field, GAP-12 messaging buffer-full sentinel, GAP-13 binary marshaler on secret.String) remain open and are tracked in §8 of the threat model.
 - `docs/audit/SUPPLY_CHAIN.md` — pinning policy, direct dependency allowlist, heavy SDK boundary guard, release provenance, key rotation, vuln SLO
 - `security/asvs.Lookup` uses stable unknown-control errors instead of echoing
   the rejected control ID.
@@ -1284,13 +1287,19 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 | `k8slease` and `etcd` leader-election backends | Need k8s.io / etcd client libraries |
 | Kafka backend | Explicit "don't do kafka" directive this wave |
 
-## Stats
+## Release surface
 
-- **116 commits** ahead of v1.x baseline at release.
-- **5 parallel agents** + me orchestrating, plus 1 sequential agent (MCP).
-- **10 new packages** under `data/`, `httpx/`, `observability/`, plus the example.
-- **Package-relevant docs** for threat modeling, supply-chain policy, release
-  notes, migration, benchmarks, dashboards, and runbooks.
+- New `app/<adapter>` modules (`postgres`, `redis`, `amqp`, `nats`,
+  `tracing`, `grpc`) replace the v1 Builder shortcuts and keep heavy SDKs
+  out of `app/v2` itself.
+- New top-level packages under `data/`, `httpx/`, and `observability/` —
+  see the per-package sections above and the API freeze in
+  [`docs/release/API_FREEZE_V2.md`](release/API_FREEZE_V2.md) for the
+  authoritative inventory.
+- Package-relevant docs cover threat modeling, supply-chain policy,
+  release notes, migration, benchmarks, dashboards, and runbooks. See
+  [`docs/ai/`](ai/) for the AI-agent recipe set and
+  [`docs/audit/`](audit/) for the audit ledger.
 
 ## Upgrading from v1.x
 

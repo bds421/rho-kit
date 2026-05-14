@@ -69,9 +69,14 @@ func WithJitter(fraction float64) Option {
 	}
 }
 
-// WithTimeout sets the maximum duration for each batch execution.
-// If the batch function exceeds this timeout, its context is cancelled.
-// Default: 2 minutes.
+// WithTimeout sets the per-batch wall-clock budget. When the budget
+// elapses the per-batch context is cancelled (`ctx.Done()` fires); the
+// timeout is COOPERATIVE — the batch function must observe ctx.Done()
+// and return promptly for the bound to take effect. A batch that ignores
+// its context will keep running past the timeout, blocking subsequent
+// ticks; Worker.Stop in turn waits for it. Long-running CPU loops or
+// SQL calls without context propagation should be re-shaped to honour
+// the supplied context. Default: 2 minutes.
 //
 // FR-092 [LOW]: panics on d <= 0 so an unbounded-batch wiring error
 // surfaces at startup.
@@ -191,19 +196,24 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
-// Stop cancels the worker's internal context and waits for the batch loop to
-// finish (bounded by the per-batch timeout) or for the supplied ctx to
-// expire. Calling Stop without first cancelling the parent ctx is now safe —
-// previously Stop would block forever in standalone usage because no internal
-// cancel was registered.
+// Stop cancels the worker's internal context (which makes the in-flight
+// batch's ctx.Done() fire) and waits for the batch loop to finish or for
+// the supplied ctx to expire.
 //
-// Stop is also safe to call before Start: if the worker never started, Stop
-// closes `done` itself and returns immediately rather than waiting forever
-// on a channel that Start would have closed.
+// Stop is COOPERATIVE: it does not abort a running batch. Cancellation
+// propagates by the batch function observing ctx.Done() and returning. A
+// batch that ignores its context keeps running until the per-batch
+// timeout elapses (or longer if it ignores that too); during that window
+// Stop blocks waiting for the loop to drain, and the caller's ctx is the
+// only mechanism for bounding the wait. When the caller's ctx fires
+// first, Stop returns ctx.Err() — the worker goroutine and any
+// uncooperative batch may still be running afterwards.
 //
-// If the supplied ctx fires before the batch loop drains, Stop returns
-// ctx.Err() so callers see the missed shutdown deadline; the loop and any
-// in-flight batch may still be running until the per-batch timeout completes.
+// Calling Stop without first cancelling the parent ctx is safe — Stop
+// installs its own cancel signal. Stop is also safe to call before
+// Start: if the worker never started, Stop closes `done` itself and
+// returns immediately.
+//
 // Implements the lifecycle.Component interface.
 func (w *Worker) Stop(ctx context.Context) error {
 	if ctx == nil {

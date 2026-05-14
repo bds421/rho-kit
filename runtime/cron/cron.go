@@ -113,10 +113,18 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 	}
 }
 
-// WithJobTimeout configures a per-run timeout for the named job. The job's
-// context is derived from the scheduler ctx with WithTimeout(d), so a
-// long-running job that ignores cancellation will see ctx.Err() == context
-// .DeadlineExceeded after d.
+// WithJobTimeout configures a per-run wall-clock budget for the named
+// job. The job's context is derived from the scheduler ctx with
+// WithTimeout(d), so after d the context reports
+// `ctx.Err() == context.DeadlineExceeded`.
+//
+// The timeout is COOPERATIVE: the deadline fires on the context, but
+// the goroutine running the job is NOT preempted. A job that ignores
+// ctx.Done() will keep running past d (and past Scheduler.Stop) until
+// it returns of its own accord — the scheduler's only hard bound is
+// the caller's deadline passed to Stop. Jobs performing CPU loops,
+// non-context-aware SQL, or blocking I/O must thread the supplied
+// context through and check ctx.Done() at well-defined safe points.
 //
 // FR-094 [LOW]: panics on d <= 0 — pre-fix the call silently
 // returned without configuring a timeout, leaving the job

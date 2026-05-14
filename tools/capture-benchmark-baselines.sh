@@ -34,6 +34,20 @@ else
     tree_state="clean"
 fi
 
+# Canonical baselines must capture against a tracked, committed working
+# tree so the `kit-bench-gate -baseline` artefact a downstream consumer
+# loads is reproducible from the recorded git revision. Refuse to record
+# a dirty tree unless the operator opts in via ALLOW_DIRTY_TREE=1, which
+# is intended for local exploration only — never for release artefacts
+# committed under docs/release/benchmarks (L-171).
+if [[ "$tree_state" == "dirty" && "${ALLOW_DIRTY_TREE:-0}" != "1" ]]; then
+    printf >&2 'capture-benchmark-baselines: working tree is dirty; refusing to capture canonical baselines.\n'
+    printf >&2 'Either commit/stash the changes or set ALLOW_DIRTY_TREE=1 for an exploratory (non-canonical) run.\n'
+    printf >&2 'Untracked/modified files outside %s:\n' "$outdir"
+    printf >&2 '%s\n' "$source_status"
+    exit 1
+fi
+
 modules_file="$tmpdir/modules"
 sed -n '/^use (/,/^)/{ s/^[[:space:]]*\.\/\(.*\)/\1/p; }' go.work |
     grep -v '^\.' > "$modules_file"

@@ -7,9 +7,11 @@ import (
 	"sync"
 )
 
-// ErrResponseTooLarge is returned by Write when the buffered response exceeds
-// the maximum buffer size (10 MiB). This prevents silent data loss — callers
-// can detect truncation and stop writing.
+// ErrResponseTooLarge is returned by Write when the buffered response
+// exceeds the maximum buffer size configured for this middleware
+// (default 1 MiB, see [defaultMaxBufferSize]; override with
+// [WithMaxBufferSize]). This prevents silent data loss — callers can
+// detect truncation and stop writing.
 var ErrResponseTooLarge = errors.New("timeout: response exceeds buffer limit")
 
 // timeoutWriter buffers the handler's response so we can discard it if the

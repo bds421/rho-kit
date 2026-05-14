@@ -17,9 +17,9 @@
 // NATS, Redis, and the in-memory broker.
 //
 // Observability for [BufferedPublisher] is opt-in via
-// [NewPrometheusMetrics] (or [WithPrometheusMetrics]). The default
-// collectors are namespaced under `buffered_publisher_` and labelled by
-// publisher name:
+// [NewBufferedPublisherMetrics] (or the convenience option
+// [WithPrometheusMetrics] that wraps it). The default collectors are
+// namespaced under `buffered_publisher_` and labelled by publisher name:
 //
 //   - `buffered_publisher_dropped_total{publisher, reason}` — back-pressure drops.
 //   - `buffered_publisher_state_writes_total{publisher, outcome}` — state-file writes.

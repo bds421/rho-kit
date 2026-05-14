@@ -235,9 +235,11 @@ func WithoutLogging() Option {
 // Default: 30s. Handlers exceeding the deadline receive a 503 JSON response;
 // the handler goroutine is expected to honour ctx.Done().
 //
-// WebSocket upgrade requests bypass the timeout middleware automatically. SSE
-// or other streaming endpoints should be mounted on a sub-stack built with
-// [WithoutTimeout] (the timeout buffers the response, which defeats streaming).
+// The stack-level timeout does not auto-bypass WebSocket upgrades or any
+// streaming endpoint. The timeout middleware buffers the response, which
+// defeats streaming — mount SSE, WebSocket, or long-poll routes on a sub-stack
+// built with [WithoutTimeout] (or apply timeout.WithWebSocketUpgradeBypass on
+// a custom timeout middleware) rather than relying on automatic detection.
 func WithTimeout(d time.Duration) Option {
 	if d <= 0 {
 		panic("stack: WithTimeout requires a positive duration (use WithoutTimeout to opt out)")

@@ -79,6 +79,12 @@ var packageRegistry = []PackageClaim{
 		"GCP KMS envelope encryption"},
 	{"github.com/bds421/rho-kit/crypto/v2/envelope/awskms", []ID{"V6.2.1", "V6.4.1"}, EvidenceCapability,
 		"AWS KMS envelope encryption"},
+	{"github.com/bds421/rho-kit/crypto/v2/envelope/azurekeyvault", []ID{"V6.2.1", "V6.4.1"}, EvidenceCapability,
+		"Azure Key Vault envelope encryption"},
+	{"github.com/bds421/rho-kit/crypto/v2/envelope/vaulttransit", []ID{"V6.2.1", "V6.4.1"}, EvidenceCapability,
+		"HashiCorp Vault Transit envelope encryption"},
+	{"github.com/bds421/rho-kit/crypto/v2/paseto", []ID{"V2.1.5", "V3.2.1"}, EvidenceCapability,
+		"PASETO v4 public-key signing/verification with key-rotation Provider"},
 
 	// Validation, storage, infra — capability-level.
 	{"github.com/bds421/rho-kit/core/v2/validate", []ID{"V5.1.3"}, EvidenceCapability,
@@ -91,6 +97,12 @@ var packageRegistry = []PackageClaim{
 	// Auth / session — capability-level.
 	{"github.com/bds421/rho-kit/security/v2/jwtutil", []ID{"V2.1.5", "V2.3.1", "V3.2.1"}, EvidenceCapability,
 		"JWT verification + JWKS rotation"},
+	{"github.com/bds421/rho-kit/security/v2/csrf", []ID{"V13.2.3", "V3.4.1"}, EvidenceCapability,
+		"CSRF issuer with overlapping-secret rotation"},
+	{"github.com/bds421/rho-kit/security/v2/netutil", []ID{"V9.1.1", "V14.4.1"}, EvidenceCapability,
+		"Reloading TLS certificate source with TLS 1.2 floor and SNI enforcement"},
+	{"github.com/bds421/rho-kit/infra/v2/sqldb/pgx", []ID{"V9.1.1"}, EvidenceCapability,
+		"pgx-native Postgres pool with sslmode-aware preflight (TLS server communications)"},
 
 	// Observability — capability-level.
 	{"github.com/bds421/rho-kit/observability/v2/auditlog", []ID{"V7.1.1", "V7.4.1", "V4.1.5"}, EvidenceCapability,

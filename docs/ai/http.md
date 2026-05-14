@@ -178,7 +178,7 @@ tenantBudget := budgetredis.New(redisClient, 1_000_000, time.Hour)
 
 return stack.Default(mux, logger,
     stack.WithOuter(
-        tenant.New(tenant.WithRequired(true)),
+        tenant.New(), // default: tenant required on every method
         budgetmw.Middleware(tenantBudget,
             budgetmw.WithScope("tokens-per-hour"),
         ),
