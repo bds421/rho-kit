@@ -643,7 +643,10 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 
 	start := now()
 	f, err := client.Open(remotePath)
-	b.metrics.observeOp(b.instance, "get", start, err)
+	// Not-found is expected (cache miss / CAS probe / sweep) and must
+	// not inflate operation_errors_total. Route through sftpMetricErr
+	// so the dashboard contract matches S3 / Azure / GCS.
+	b.metrics.observeOp(b.instance, "get", start, sftpMetricErr(err))
 
 	if err != nil {
 		if isNotExist(err) {

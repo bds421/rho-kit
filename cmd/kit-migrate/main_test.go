@@ -99,7 +99,7 @@ func TestComponentNamesSorted(t *testing.T) {
 		t.Fatalf("componentNames() = %v, want sorted", names)
 	}
 
-	for _, want := range []string{"actionlog", "approval", "idempotency"} {
+	for _, want := range []string{"actionlog", "approval", "auditlog", "idempotency", "outbox"} {
 		if !contains(names, want) {
 			t.Fatalf("componentNames() = %v, missing %q", names, want)
 		}
@@ -111,7 +111,8 @@ func TestRunListUsesSortedRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run list code = %d, stderr = %q", code, stderr)
 	}
-	assertInOrder(t, stdout, "actionlog:\n", "approval:\n", "idempotency:\n")
+	// Sorted alphabetically: actionlog → approval → auditlog → idempotency → outbox.
+	assertInOrder(t, stdout, "actionlog:\n", "approval:\n", "auditlog:\n", "idempotency:\n", "outbox:\n")
 }
 
 func TestRunListRejectsArguments(t *testing.T) {

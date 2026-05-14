@@ -55,9 +55,14 @@ func TestLogged_DenyEmitsInfoExactlyOnce(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(out, "authz decision"),
 		"deny path must emit exactly one record, got: %s", out)
 	assert.Contains(t, out, "action=authz.deny")
-	assert.Contains(t, out, "actor=alice")
-	assert.Contains(t, out, "resource=doc:1")
-	assert.Contains(t, out, "verb=read")
+	// Identifier-shaped fields are redacted in the slog stream (operator-
+	// facing) but preserved in the structured audit sink (compliance).
+	assert.NotContains(t, out, "actor=alice",
+		"slog must not leak raw subject identifiers; the audit sink keeps full values")
+	assert.NotContains(t, out, "resource=doc:1")
+	assert.NotContains(t, out, "verb=read")
+	assert.Contains(t, out, "<redacted 5 bytes>",
+		"redacted length stamps must still appear for actor/resource")
 	assert.Contains(t, out, "outcome=deny")
 	assert.Contains(t, out, "reason=denied")
 	assert.Contains(t, out, "level=INFO")
@@ -67,6 +72,7 @@ func TestLogged_DenyEmitsInfoExactlyOnce(t *testing.T) {
 	assert.Equal(t, "authz.deny", events[0].Action)
 	assert.Equal(t, "deny", events[0].Outcome)
 	assert.Equal(t, "denied", events[0].Reason)
+	// AuditEvent keeps full values for the compliance/forensic sink.
 	assert.Equal(t, "alice", events[0].Actor)
 	assert.Equal(t, "doc:1", events[0].Resource)
 	assert.Equal(t, "read", events[0].Verb)

@@ -6,6 +6,8 @@ require (
 	github.com/bds421/rho-kit/data/actionlog/postgres/v2 v2.0.0
 	github.com/bds421/rho-kit/data/approval/postgres/v2 v2.0.0
 	github.com/bds421/rho-kit/data/idempotency/pgstore/v2 v2.0.0
+	github.com/bds421/rho-kit/infra/outbox/postgres/v2 v2.0.0
+	github.com/bds421/rho-kit/observability/auditlog/postgres/v2 v2.0.0
 )
 
 require (
@@ -17,9 +19,26 @@ require (
 )
 
 require (
+	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/infra/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/prometheus/client_golang v1.23.2 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.66.1 // indirect
+	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	go.opentelemetry.io/otel v1.43.0 // indirect
+	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	go.yaml.in/yaml/v2 v2.4.2 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 replace github.com/bds421/rho-kit/data/v2 => ../../data
@@ -29,3 +48,27 @@ replace github.com/bds421/rho-kit/data/actionlog/postgres/v2 => ../../data/actio
 replace github.com/bds421/rho-kit/data/approval/postgres/v2 => ../../data/approval/postgres
 
 replace github.com/bds421/rho-kit/data/idempotency/pgstore/v2 => ../../data/idempotency/pgstore
+
+replace github.com/bds421/rho-kit/observability/auditlog/postgres/v2 => ../../observability/auditlog/postgres
+
+replace github.com/bds421/rho-kit/observability/v2 => ../../observability
+
+replace github.com/bds421/rho-kit/infra/outbox/postgres/v2 => ../../infra/outbox/postgres
+
+replace github.com/bds421/rho-kit/infra/v2 => ../../infra
+
+replace github.com/bds421/rho-kit/core/v2 => ../../core
+
+replace github.com/bds421/rho-kit/io/v2 => ../../io
+
+replace github.com/bds421/rho-kit/resilience/v2 => ../../resilience
+
+replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
+
+replace github.com/bds421/rho-kit/security/v2 => ../../security
+
+replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../../infra/sqldb/pgx
+
+replace github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2 => ../../observability/auditlog/postgres/integrationtest
+
+replace github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2 => ../../infra/outbox/postgres/integrationtest

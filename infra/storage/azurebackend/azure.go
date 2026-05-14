@@ -294,7 +294,12 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 
 	start := now()
 	resp, err := b.client.DownloadStream(ctx, key, nil)
-	b.metrics.observeOp(b.instance, "get", start, err)
+	// Not-found is an expected outcome for object stores (cache miss /
+	// CAS probe / orphan reaper sweep). Counting it as an operation
+	// error would inflate operation_errors_total against the dashboard
+	// contract; route through azureMetricErr so dashboards stay
+	// comparable across providers (matches S3 / GCS / SFTP).
+	b.metrics.observeOp(b.instance, "get", start, azureMetricErr(err))
 	if err != nil {
 		if bloberror.HasCode(err, bloberror.BlobNotFound) {
 			return nil, storage.ObjectMeta{}, fmt.Errorf("azurebackend: get: %w", storage.ErrObjectNotFound)

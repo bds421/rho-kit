@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // AuditEvent is the cross-package field set emitted for one authorization
@@ -19,13 +21,36 @@ type AuditEvent struct {
 	Reason   string // short error-class for deny / error; empty on allow
 }
 
-// AuditSink consumes structured authorization-decision events. The shape
-// matches the minimum surface of observability/auditlog.Logger so production
-// callers wire the concrete Logger here without authz importing the
-// observability module. Implementations must be safe for concurrent use.
+// AuditSink consumes structured authorization-decision events.
+// Implementations must be safe for concurrent use.
+//
+// Wiring with observability/auditlog: the concrete
+// observability/auditlog.Logger does NOT directly satisfy this
+// interface (Logger ships Log/LogE/LogAction/List/VerifyChain, not
+// LogAuthz, and authz keeps no dependency on the observability
+// module). Adapt with [AuditSinkFunc]:
+//
+//	authz.WithAuditSink(authz.AuditSinkFunc(
+//	    func(ctx context.Context, e authz.AuditEvent) {
+//	        auditLogger.Log(ctx, auditlog.Event{
+//	            Actor:    e.Actor,
+//	            Action:   e.Action,
+//	            Resource: e.Resource,
+//	            Status:   e.Outcome,
+//	        })
+//	    },
+//	))
 type AuditSink interface {
 	LogAuthz(ctx context.Context, event AuditEvent)
 }
+
+// AuditSinkFunc adapts an ordinary function into an [AuditSink]. Use
+// it to wire a Logger / metric / async pipeline as the sink without
+// declaring a struct.
+type AuditSinkFunc func(ctx context.Context, event AuditEvent)
+
+// LogAuthz implements [AuditSink].
+func (f AuditSinkFunc) LogAuthz(ctx context.Context, event AuditEvent) { f(ctx, event) }
 
 // LoggedOption configures a [Logged] decorator.
 type LoggedOption func(*loggedConfig)
@@ -49,10 +74,10 @@ func WithLogger(l *slog.Logger) LoggedOption {
 }
 
 // WithAuditSink wires an [AuditSink] that receives the structured event for
-// every Allow call wrapped by [Logged]. The concrete
-// observability/auditlog.Logger satisfies this surface; authz does not depend
-// on the observability module so consumers pay no extra dep cost when the
-// sink is not wired.
+// every Allow call wrapped by [Logged]. The authz package keeps no dependency
+// on observability — wire a Logger by adapting it via [AuditSinkFunc] (see
+// the [AuditSink] docstring for the canonical pattern). Consumers pay no
+// extra dep cost when the sink is not wired.
 //
 // Panics on nil to fail fast at wiring time.
 func WithAuditSink(sink AuditSink) LoggedOption {
@@ -108,11 +133,18 @@ func (d *loggedDecider) Allow(ctx context.Context, subject, action, resource str
 func (c *loggedConfig) emit(ctx context.Context, subject, action, resource string, err error) {
 	verb, outcome, reason, level := classify(err)
 	if c.logger != nil {
+		// Identifier-shaped fields (subject SPIFFE/JWT id, resource path,
+		// engine verb) can be up to 512 bytes of tenant- or topology-
+		// carrying content. The structured audit sink keeps full values
+		// for compliance; the slog stream is operator-facing and uses
+		// redact.String so a tenant id or resource path does not leak
+		// into ordinary runtime logs (matches httpx/middleware/auth's
+		// redaction policy).
 		c.logger.Log(ctx, level, "authz decision",
 			slog.String("action", verb),
-			slog.String("actor", subject),
-			slog.String("resource", resource),
-			slog.String("verb", action),
+			redact.String("actor", subject),
+			redact.String("resource", resource),
+			redact.String("verb", action),
 			slog.String("outcome", outcome),
 			slog.String("reason", reason),
 		)

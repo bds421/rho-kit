@@ -22,6 +22,8 @@ import (
 	actionlogpostgres "github.com/bds421/rho-kit/data/actionlog/postgres/v2"
 	approvalpostgres "github.com/bds421/rho-kit/data/approval/postgres/v2"
 	"github.com/bds421/rho-kit/data/idempotency/pgstore/v2"
+	auditlogpostgres "github.com/bds421/rho-kit/observability/auditlog/postgres/v2"
+	outboxpostgres "github.com/bds421/rho-kit/infra/outbox/postgres/v2"
 )
 
 // registry maps kit component names to their embedded migration
@@ -33,6 +35,8 @@ var registry = map[string]fs.FS{
 	"idempotency": pgstore.Migrations,
 	"actionlog":   actionlogpostgres.Migrations,
 	"approval":    approvalpostgres.Migrations,
+	"auditlog":    auditlogpostgres.Migrations,
+	"outbox":      outboxpostgres.Migrations,
 }
 
 type registryEntry struct {

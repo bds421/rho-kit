@@ -50,12 +50,18 @@ func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 
 	metrics.observeOp("documents", "delete", start, azureMetricErr(azureBlobNotFoundErr()))
 	metrics.observeOp("documents", "exists", start, azureMetricErr(azureBlobNotFoundErr()))
+	// get must follow the same contract — a cache miss / probe must
+	// not inflate operation_errors_total. Matches S3 / GCS / SFTP.
+	metrics.observeOp("documents", "get", start, azureMetricErr(azureBlobNotFoundErr()))
 
 	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "delete")); got != 0 {
 		t.Fatalf("delete errors = %v, want 0", got)
 	}
 	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "exists")); got != 0 {
 		t.Fatalf("exists errors = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(metrics.opErrors.WithLabelValues("documents", "get")); got != 0 {
+		t.Fatalf("get errors = %v, want 0", got)
 	}
 }
 

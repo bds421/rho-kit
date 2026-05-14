@@ -18,9 +18,17 @@ import (
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-// Func is the signature for custom validation tags. Wraps the underlying
-// validator's FieldLevel so callers don't depend on the third-party type
-// in their public API surface.
+// Func is the signature for custom validation tags. This is intentionally
+// a type alias to [validator.Func] from go-playground/validator/v10 — the
+// kit re-exports the third-party function shape verbatim so callers can
+// register existing validator functions (or copy patterns from the
+// validator docs) without a wrapper conversion.
+//
+// API stability: the validator/v10 Func and FieldLevel types are part of
+// the kit's public v2 contract through this alias. A future kit revision
+// that hides the underlying validator package will need a different
+// alias path; for v2 the surface is deliberately the raw third-party
+// shape.
 type Func = validator.Func
 
 // Validator wraps go-playground/validator with kit conventions: JSON tag

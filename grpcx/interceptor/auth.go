@@ -611,9 +611,13 @@ func authenticateMTLSOrJWT(
 
 	if cfg.impersonationGuard != nil {
 		if err := callImpersonationGuard(ctx, cfg.impersonationGuard, identity, userID); err != nil {
+			// user_id / client_identity are tenant- or topology-carrying
+			// identifiers; the HTTP path redacts them
+			// (httpx/middleware/auth.go) and the gRPC path must match so
+			// dashboards and log archives have one privacy contract.
 			slog.WarnContext(ctx, "grpc s2s impersonation rejected by guard",
-				slog.String("user_id", userID),
-				slog.String("client_identity", identity),
+				redact.String("user_id", userID),
+				redact.String("client_identity", identity),
 				redact.Error(err),
 			)
 			return ctx, status.Error(codes.PermissionDenied, "impersonation not permitted")
@@ -621,8 +625,8 @@ func authenticateMTLSOrJWT(
 	}
 
 	slog.InfoContext(ctx, "grpc s2s user impersonation",
-		slog.String("user_id", userID),
-		slog.String("client_identity", identity),
+		redact.String("user_id", userID),
+		redact.String("client_identity", identity),
 	)
 
 	ctx = userIDKey.Set(ctx, grpcUserID(userID))
@@ -636,8 +640,8 @@ func callImpersonationGuard(ctx context.Context, guard func(context.Context, str
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.ErrorContext(ctx, "grpc s2s impersonation guard panicked",
-				slog.String("user_id", userID),
-				slog.String("client_identity", identity),
+				redact.String("user_id", userID),
+				redact.String("client_identity", identity),
 				redact.Panic(rec),
 				slog.String("stack", string(debug.Stack())),
 			)

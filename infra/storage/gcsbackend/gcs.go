@@ -228,7 +228,10 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, storage.O
 	start := now()
 	attrs, err := obj.Attrs(ctx)
 	if err != nil {
-		b.metrics.observeOp(b.instance, "get", start, err)
+		// Not-found is expected (cache miss / CAS probe / sweep) and
+		// must not inflate operation_errors_total. Route through
+		// gcsMetricErr so the contract matches S3 / Azure / SFTP.
+		b.metrics.observeOp(b.instance, "get", start, gcsMetricErr(err))
 		if errors.Is(err, gcsstorage.ErrObjectNotExist) {
 			return nil, storage.ObjectMeta{}, fmt.Errorf("gcsbackend: get: %w", storage.ErrObjectNotFound)
 		}
