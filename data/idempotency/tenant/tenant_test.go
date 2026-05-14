@@ -179,8 +179,8 @@ func TestScopedKey_ColonInTenantIDNoCollision(t *testing.T) {
 	inner := idempotency.NewMemoryStore()
 	w := Wrap(inner)
 
-	idAB := coretenant.MustNewID("a:b")
-	idA := coretenant.MustNewID("a")
+	idAB := coretenant.IDFromTrusted("a:b")
+	idA := coretenant.IDFromTrusted("a")
 
 	ctxAB, err := coretenant.WithID(context.Background(), idAB)
 	require.NoError(t, err)

@@ -61,10 +61,15 @@ func Load[T any]() (T, error) {
 }
 
 // MustLoad calls Load and panics on error. Use in main() for fail-fast.
+//
+// The panic value embeds the underlying Load error so the operator
+// sees which env var / file source caused the failure. Wave 68
+// closed a hostile-review finding that the prior generic message
+// discarded the cause.
 func MustLoad[T any]() T {
 	cfg, err := Load[T]()
 	if err != nil {
-		panic("config: Load failed")
+		panic(fmt.Sprintf("config: Load failed: %s", err))
 	}
 	return cfg
 }

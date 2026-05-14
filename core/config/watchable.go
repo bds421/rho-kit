@@ -90,8 +90,16 @@ func (w *Watchable[T]) Set(val T) {
 // Subscribers are notified in non-deterministic order (map iteration).
 // Do not depend on notification ordering between subscribers.
 //
+// Panics if fn is nil — a nil callback would silently no-op on every
+// Set, defeating the purpose of subscribing and producing surprising
+// runtime recover-and-log noise. Wave 68 closed a hostile-review
+// finding that the prior nil-tolerant path admitted wiring bugs.
+//
 // Returns a cancel function that unregisters the subscriber.
 func (w *Watchable[T]) OnChange(fn func(old, new T)) func() {
+	if fn == nil {
+		panic("config: Watchable.OnChange requires a non-nil callback")
+	}
 	w.mu.Lock()
 	id := w.nextID
 	w.nextID++

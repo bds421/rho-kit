@@ -528,7 +528,12 @@ func WithoutRecovery() Option {
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	q, err := NewQueueE(client, opts...)
 	if err != nil {
-		panic("redisqueue: NewQueue failed")
+		// Preserve the underlying cause in the panic value so the
+		// operator sees whether the failure was UUID generation, an
+		// option validation, or something else. Wave 68 closed a
+		// hostile-review finding that the prior generic string
+		// discarded the cause.
+		panic(fmt.Sprintf("redisqueue: NewQueue failed: %s", err))
 	}
 	return q
 }

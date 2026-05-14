@@ -130,14 +130,29 @@ func NewID(s string) (ID, error) {
 	return ID(s), nil
 }
 
-// MustNewID converts s into an ID without validation. Use only when s has
-// been validated upstream — typical case is reading from a trusted database
-// column populated via [NewID]. The empty string is still allowed; callers
-// that want non-empty must check [ID.IsZero].
+// IDFromTrusted converts s into an ID without validation. Use only
+// when s has been validated upstream — typical case is reading from a
+// trusted database column populated via [NewID]. The empty string is
+// still allowed; callers that want non-empty must check [ID.IsZero].
 //
 // This is the documented escape hatch for trusted inputs that bypass
-// [ValidateID]. New code paths handling user input should prefer [NewID].
-func MustNewID(s string) ID { return ID(s) }
+// [ValidateID]. New code paths handling user input should prefer
+// [NewID]. The name was changed from MustNewID in wave 68 to avoid
+// the Go convention trap that Must* helpers panic on invalid input —
+// this helper deliberately does not validate.
+func IDFromTrusted(s string) ID { return ID(s) }
+
+// MustNewID validates s with [ValidateID] and panics on invalid
+// input. Matches the Go Must* convention: callers that have a
+// compile-time-known valid ID get a non-error API; runtime callers
+// should use [NewID].
+func MustNewID(s string) ID {
+	id, err := NewID(s)
+	if err != nil {
+		panic("tenant: MustNewID invalid input")
+	}
+	return id
+}
 
 // ctxKey is unexported so consumers cannot bypass the typed helpers.
 type ctxKey struct{}

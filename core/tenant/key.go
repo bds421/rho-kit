@@ -15,6 +15,19 @@ import (
 // tenant-scoped keys remain suitable for Redis, logs, and metric exemplars.
 const MaxKeyPartLen = 1024
 
+// MaxKeyParts caps the number of caller-supplied parts a single
+// [Key]/[KeyFor] call accepts. Without it, a caller could append
+// thousands of small parts and produce a multi-KB key that still
+// passes the per-part cap.
+const MaxKeyParts = 32
+
+// MaxKeyTotalLen bounds the assembled length of a tenant-scoped key.
+// Even with the per-part and part-count caps, the final composed key
+// can grow large; this acts as the final defense so logs, metric
+// labels, and Redis key buffers stay reasonable. Wave 68 added the
+// total cap to close a hostile-review finding.
+const MaxKeyTotalLen = 16 * 1024
+
 // ErrKeyInvalid is returned when a tenant-scoped key cannot be built because
 // one of its caller-supplied parts is empty, too long, invalid UTF-8, or
 // contains whitespace/control bytes that corrupt logs or backend protocol
@@ -51,6 +64,9 @@ func KeyFor(id ID, parts ...string) (string, error) {
 	if len(parts) == 0 {
 		return "", fmt.Errorf("%w: at least one part is required", ErrKeyInvalid)
 	}
+	if len(parts) > MaxKeyParts {
+		return "", fmt.Errorf("%w: exceeds maximum part count %d", ErrKeyInvalid, MaxKeyParts)
+	}
 	var b strings.Builder
 	b.WriteString("tenant")
 	writeKeyField(&b, string(id))
@@ -59,6 +75,9 @@ func KeyFor(id ID, parts ...string) (string, error) {
 			return "", fmt.Errorf("%w at index %d: %w", ErrKeyInvalid, i, err)
 		}
 		writeKeyField(&b, part)
+	}
+	if b.Len() > MaxKeyTotalLen {
+		return "", fmt.Errorf("%w: assembled key exceeds maximum total length %d", ErrKeyInvalid, MaxKeyTotalLen)
 	}
 	return b.String(), nil
 }

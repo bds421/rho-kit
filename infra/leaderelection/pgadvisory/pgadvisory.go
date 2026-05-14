@@ -198,11 +198,15 @@ func (e *Elector) IsLeader() bool {
 // only — see [Elector] type docs. See [leaderelection.Elector.Run] for
 // callback semantics.
 func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
-	if !e.started.CompareAndSwap(false, true) {
-		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnLeader / OnRelinquish out of order")
-	}
+	// Validate ctx BEFORE flipping the started flag — wave 68 closed
+	// a hostile-review finding that a nil-ctx call poisoned the
+	// one-shot started state and prevented any future Run from
+	// running.
 	if ctx == nil {
 		return errors.New("leader-election: Run requires a non-nil context")
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		return errors.New("leader-election: Run already invoked on this Elector — a second Run would race the leader flag and call OnLeader / OnRelinquish out of order")
 	}
 
 	for {

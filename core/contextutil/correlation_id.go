@@ -8,8 +8,15 @@ type correlationID string
 // cidKey is the context key for correlation IDs.
 var cidKey = NewKey[correlationID]("correlation_id")
 
-// SetCorrelationID stores a correlation ID in the context.
+// SetCorrelationID stores a correlation ID in the context. Empty IDs
+// and IDs containing control characters or exceeding [MaxRequestIDLen]
+// are silently dropped — same validation policy as [SetRequestID] so
+// an inbound header cannot influence log lines and metric labels.
+// Wave 68 closed a hostile-review finding for this surface.
 func SetCorrelationID(ctx context.Context, id string) context.Context {
+	if !isValidContextID(id) {
+		return ctx
+	}
 	return cidKey.Set(ctx, correlationID(id))
 }
 

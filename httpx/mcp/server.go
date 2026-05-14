@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -464,7 +465,15 @@ func readBody(r *http.Request, max int64) ([]byte, error) {
 	if max <= 0 {
 		max = 1 << 20
 	}
-	limited := io.LimitReader(r.Body, max+1)
+	// Guard against max == math.MaxInt64 where max+1 wraps to a
+	// negative value and io.LimitReader treats every Read as
+	// "limit exhausted". Wave 68 closed a hostile-review finding for
+	// this overflow.
+	limit := max + 1
+	if limit <= 0 {
+		limit = math.MaxInt64
+	}
+	limited := io.LimitReader(r.Body, limit)
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, err

@@ -148,13 +148,17 @@ func TestNewID_RejectsOverlongIDs(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalid)
 }
 
-func TestMustNewID_BypassesValidation(t *testing.T) {
+func TestIDFromTrusted_BypassesValidation(t *testing.T) {
 	// The escape hatch must accept inputs NewID rejects — that's its
 	// whole purpose. Documented use case: reading from a trusted DB
 	// column populated before C-3 was fixed.
-	id := MustNewID("a:b")
+	id := IDFromTrusted("a:b")
 	assert.Equal(t, ID("a:b"), id)
 	assert.Equal(t, "a:b", id.String())
+}
+
+func TestMustNewID_PanicsOnInvalid(t *testing.T) {
+	assert.Panics(t, func() { MustNewID("a:b") })
 }
 
 func TestFromContext_AbsentReturnsFalse(t *testing.T) {
@@ -285,12 +289,12 @@ func TestKeyFor_RejectsInvalidParts(t *testing.T) {
 
 func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {
 	cases := []ID{
-		MustNewID("tenant\nid"),
-		MustNewID("tenant id"),
-		MustNewID("tenant\tid"),
-		MustNewID("tenant\x00id"),
-		MustNewID(string([]byte{'t', 0xff})),
-		MustNewID(strings.Repeat("a", MaxKeyPartLen+1)),
+		IDFromTrusted("tenant\nid"),
+		IDFromTrusted("tenant id"),
+		IDFromTrusted("tenant\tid"),
+		IDFromTrusted("tenant\x00id"),
+		IDFromTrusted(string([]byte{'t', 0xff})),
+		IDFromTrusted(strings.Repeat("a", MaxKeyPartLen+1)),
 	}
 	for _, id := range cases {
 		key, err := KeyFor(id, "profile")
@@ -300,10 +304,13 @@ func TestKeyFor_RejectsInvalidUncheckedTenantID(t *testing.T) {
 }
 
 func TestKeyFor_ColonInputsDoNotCollide(t *testing.T) {
-	ab, err := KeyFor(MustNewID("a:b"), "c")
+	// IDFromTrusted (not MustNewID) — wave 68 renamed the
+	// validation-bypass helper so MustNewID matches Go's panic-on-
+	// invalid convention.
+	ab, err := KeyFor(IDFromTrusted("a:b"), "c")
 	require.NoError(t, err)
 
-	a, err := KeyFor(MustNewID("a"), "b:c")
+	a, err := KeyFor(IDFromTrusted("a"), "b:c")
 	require.NoError(t, err)
 
 	assert.NotEqual(t, ab, a)

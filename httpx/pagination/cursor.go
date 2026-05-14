@@ -119,7 +119,16 @@ func singleQueryValue(q url.Values, key string) (string, error) {
 
 // BuildResult constructs a CursorResult from a slice fetched with limit+1.
 // extractID returns the cursor value from an item (typically the ID field).
+//
+// Negative limits are clamped to 0 — wave 68 closed a hostile-review
+// finding that a negative limit forced an out-of-range slice of items
+// and panicked at runtime. A clamped-to-zero result reports HasMore
+// when the caller has at least one item, surfacing the wiring bug
+// without crashing the request.
 func BuildResult[T any](items []T, limit int, extractID func(T) string) CursorResult[T] {
+	if limit < 0 {
+		limit = 0
+	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -248,6 +257,13 @@ func (s *CursorSigner) Decode(cursor string) (string, error) {
 		return "", nil
 	}
 	if !s.ready() {
+		return "", ErrCursorInvalid
+	}
+	// Cap the input before any base64 decode work. Wave 68 closed a
+	// hostile-review finding that direct callers (not going through
+	// ParseCursorParams) could submit unbounded cursors and force
+	// large base64 allocations before the HMAC compare.
+	if len(cursor) > MaxCursorLen {
 		return "", ErrCursorInvalid
 	}
 	idx := strings.IndexByte(cursor, '.')

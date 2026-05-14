@@ -224,6 +224,13 @@ const MaxEncryptableSize = 256 << 20 // 256 MiB
 // this cap can exhaust memory under modest fan-out. ctx cancellation
 // during the wait returns ctx.Err().
 func (e *EncryptedStorage) Put(ctx context.Context, key string, r io.Reader, meta storage.ObjectMeta) error {
+	if ctx == nil {
+		// Normalise a nil context up front so the semaphore Acquire
+		// and the underlying backend never see one. Wave 68 closed a
+		// hostile-review finding that the semaphore path panicked
+		// on ctx.Done() against a nil ctx.
+		ctx = context.Background()
+	}
 	// Validate key early to fail fast before expensive encryption work.
 	if err := storage.ValidateKey(key); err != nil {
 		return err

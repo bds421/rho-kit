@@ -44,6 +44,25 @@ func HandleCursorList[T any](w http.ResponseWriter, r *http.Request, opts Cursor
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	// Validate the limit envelope at request time. Wave 68 closed a
+	// hostile-review finding that HandleCursorList accepted any
+	// DefaultLimit/MaxLimit at the call site, including negatives,
+	// which then flowed into ParseCursorParams and BuildResult.
+	if opts.MaxLimit <= 0 {
+		opts.Logger.Error("pagination MaxLimit must be positive")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if opts.DefaultLimit <= 0 {
+		opts.Logger.Error("pagination DefaultLimit must be positive")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if opts.DefaultLimit > opts.MaxLimit {
+		opts.Logger.Error("pagination DefaultLimit exceeds MaxLimit")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	if opts.Signer != nil && !opts.Signer.ready() {
 		opts.Logger.Error("pagination cursor signer invalid")
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")

@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -67,6 +68,10 @@ func JSONStatus[Req, Resp any](logger *slog.Logger, fn func(ctx context.Context,
 			WriteServiceError(w, r, logger, err)
 			return
 		}
+		if !isValidHTTPStatus(status) {
+			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned invalid status %d (expected 100..999)", status))
+			return
+		}
 		_ = WriteJSON(w, r, status, resp)
 	})
 }
@@ -81,8 +86,21 @@ func JSONNoBodyStatus[Resp any](logger *slog.Logger, fn func(ctx context.Context
 			WriteServiceError(w, r, logger, err)
 			return
 		}
+		if !isValidHTTPStatus(status) {
+			WriteServiceError(w, r, logger, fmt.Errorf("httpx: handler returned invalid status %d (expected 100..999)", status))
+			return
+		}
 		_ = WriteJSON(w, r, status, resp)
 	})
+}
+
+// isValidHTTPStatus enforces the same status range stdlib uses
+// internally (validateStatusCode). Wave 68 closed a hostile-review
+// finding that JSONStatus / JSONNoBodyStatus accepted any int from
+// the handler and let it propagate into ResponseWriter.WriteHeader,
+// which panics on values outside 100..999.
+func isValidHTTPStatus(status int) bool {
+	return status >= 100 && status <= 999
 }
 
 // NoContent returns an http.Handler that calls fn and returns 204 No Content

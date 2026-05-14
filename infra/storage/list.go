@@ -125,12 +125,25 @@ func ListPage(ctx context.Context, l Lister, prefix string, opts ListOptions) (P
 	return page, nil
 }
 
+// MaxListPageSize bounds [ListPage] MaxKeys so a single request cannot
+// allocate an unbounded objects buffer or probe the backend with a
+// MaxKeys+1 value that would overflow on math.MaxInt64. Operators
+// that legitimately need larger pages can paginate via StartAfter.
+const MaxListPageSize = 1 << 20
+
 // ValidateListOptions checks list pagination controls before they reach a
 // backend API. StartAfter is a storage-key cursor and MaxKeys must be
 // non-negative; zero means unlimited.
 func ValidateListOptions(opts ListOptions) error {
 	if opts.MaxKeys < 0 {
 		return fmt.Errorf("%w: storage list MaxKeys must be >= 0", ErrValidation)
+	}
+	if opts.MaxKeys > MaxListPageSize {
+		// Wave 68 added an upper cap so a hostile or buggy caller
+		// cannot make ListPage allocate ~MaxKeys * ObjectInfo bytes
+		// per request, and so MaxKeys+1 (used to detect truncation)
+		// never overflows.
+		return fmt.Errorf("%w: storage list MaxKeys exceeds %d", ErrValidation, MaxListPageSize)
 	}
 	if opts.StartAfter != "" {
 		if err := ValidateKey(opts.StartAfter); err != nil {

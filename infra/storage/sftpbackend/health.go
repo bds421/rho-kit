@@ -20,6 +20,9 @@ func CriticalHealthCheck(b *Backend) health.DependencyCheck {
 }
 
 func healthCheck(b *Backend, critical bool) health.DependencyCheck {
+	if b == nil {
+		panic("sftpbackend: HealthCheck requires a non-nil Backend")
+	}
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("sftp", b.cfg.Host, strconv.Itoa(b.cfg.Port)),
 		Check: func(_ context.Context) string {

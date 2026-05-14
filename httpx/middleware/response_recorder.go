@@ -35,9 +35,19 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 
 // WriteHeader records the status code and delegates to the underlying writer.
 // Only the first call takes effect; subsequent calls are no-ops.
+//
+// Invalid status codes (outside 100..999) are mapped to 500 BEFORE
+// delegating so the recorder cannot trigger the stdlib panic that
+// would unwind the handler chain. Wave 68 closed a hostile-review
+// finding for this surface: a buggy handler returning a stale int
+// would otherwise crash the request after the recorder had already
+// updated its internal state.
 func (r *ResponseRecorder) WriteHeader(code int) {
 	if r.wroteHeader {
 		return
+	}
+	if code < 100 || code > 999 {
+		code = http.StatusInternalServerError
 	}
 	r.statusCode = code
 	r.wroteHeader = true

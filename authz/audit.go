@@ -79,10 +79,17 @@ func WithLogger(l *slog.Logger) LoggedOption {
 // the [AuditSink] docstring for the canonical pattern). Consumers pay no
 // extra dep cost when the sink is not wired.
 //
-// Panics on nil to fail fast at wiring time.
+// Panics on nil to fail fast at wiring time. Also rejects typed-nil
+// [AuditSinkFunc] values — `var f AuditSinkFunc; WithAuditSink(f)`
+// would otherwise pass the interface-nil check and panic on the
+// first authz call. Wave 68 closed a hostile-review finding for that
+// trap.
 func WithAuditSink(sink AuditSink) LoggedOption {
 	if sink == nil {
 		panic("authz: WithAuditSink requires a non-nil sink")
+	}
+	if f, ok := sink.(AuditSinkFunc); ok && f == nil {
+		panic("authz: WithAuditSink requires a non-nil AuditSinkFunc")
 	}
 	return func(c *loggedConfig) { c.sink = sink }
 }

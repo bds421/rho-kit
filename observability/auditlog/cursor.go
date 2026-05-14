@@ -70,6 +70,13 @@ func (s signedCursor) decodeCursor(cursor string) (string, error) {
 	if s.keyLen == 0 || s.key == nil || s.key.IsEmpty() {
 		return "", fmt.Errorf("%w: cursor signer is not configured", ErrInvalidCursor)
 	}
+	// Cap the input before any base64 decode work. Wave 68 added this
+	// guard so a hostile caller cannot force large allocations on a
+	// failed cursor decode. 4 KiB matches the auditlog/postgres and
+	// httpx/pagination caps.
+	if len(cursor) > 4096 {
+		return "", fmt.Errorf("%w: cursor exceeds maximum length", ErrInvalidCursor)
+	}
 	idx := strings.IndexByte(cursor, '.')
 	if idx < 0 {
 		return "", fmt.Errorf("%w: cursor is malformed", ErrInvalidCursor)

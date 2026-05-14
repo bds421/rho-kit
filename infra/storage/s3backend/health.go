@@ -25,9 +25,18 @@ func CriticalHealthCheck(b *Backend) health.DependencyCheck {
 }
 
 func healthCheck(b *Backend, critical bool) health.DependencyCheck {
+	if b == nil || b.client == nil {
+		// Panicking at construction surfaces the wiring bug
+		// immediately rather than leaking it as a nil-deref on the
+		// first scrape. Wave 68 closed a hostile-review finding here.
+		panic("s3backend: HealthCheck requires a fully-constructed Backend")
+	}
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("s3", b.bucket),
 		Check: func(ctx context.Context) string {
+			if ctx == nil {
+				ctx = context.Background()
+			}
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 

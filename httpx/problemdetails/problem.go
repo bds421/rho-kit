@@ -324,6 +324,11 @@ func mapStatus(err error) int {
 		return http.StatusForbidden
 	case apperror.CodeUnavailable:
 		return http.StatusBadGateway
+	case apperror.CodeStorageFull:
+		// Mirrors httpx.HTTPStatus mapping. Wave 68 closed a
+		// hostile-review finding that FromError defaulted to 500
+		// for CodeStorageFull while httpx.HTTPStatus returns 507.
+		return http.StatusInsufficientStorage
 	default:
 		return http.StatusInternalServerError
 	}
