@@ -35,7 +35,7 @@ func TestPublishConsume_RoundTrip(t *testing.T) {
 	url := startNATS(t)
 	conn, err := natsbackend.Connect(context.Background(), natsbackend.Config{URL: url, AllowInsecure: true})
 	require.NoError(t, err)
-	defer conn.Close()
+	defer conn.Stop(context.Background())
 
 	require.NoError(t, conn.EnsureStream(context.Background(), natsbackend.StreamConfig{
 		Name:        "EVENTS",
@@ -93,7 +93,7 @@ func TestConsumer_NackRedelivers(t *testing.T) {
 	url := startNATS(t)
 	conn, err := natsbackend.Connect(context.Background(), natsbackend.Config{URL: url, AllowInsecure: true})
 	require.NoError(t, err)
-	defer conn.Close()
+	defer conn.Stop(context.Background())
 
 	require.NoError(t, conn.EnsureStream(context.Background(), natsbackend.StreamConfig{
 		Name:        "RETRY",

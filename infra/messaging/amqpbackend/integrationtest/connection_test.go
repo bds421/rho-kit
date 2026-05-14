@@ -3,6 +3,7 @@
 package amqpbackend_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestDial_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 }
 
 func TestDial_InvalidURL(t *testing.T) {
@@ -38,7 +39,7 @@ func TestConnection_Channel(t *testing.T) {
 
 	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	ch, err := conn.Channel()
 	require.NoError(t, err)
@@ -53,6 +54,6 @@ func TestConnection_CloseIdempotent(t *testing.T) {
 	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
 
-	assert.NoError(t, conn.Close())
-	assert.NoError(t, conn.Close())
+	assert.NoError(t, conn.Stop(context.Background()))
+	assert.NoError(t, conn.Stop(context.Background()))
 }

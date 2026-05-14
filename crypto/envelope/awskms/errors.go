@@ -18,17 +18,17 @@ import (
 // can still inspect the raw smithy.APIError code/message in logs.
 // Unknown error codes are returned unchanged so existing fmt.Errorf("%w")
 // wrapping at the call site continues to work.
-func classifyAWSError(operation string, err error) error {
+func (k *KEK) classifyAWSError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
 	var apiErr smithy.APIError
 	if !errors.As(err, &apiErr) {
-		recordAWSError(operation, "unknown")
+		k.metrics.recordError(operation, "unknown")
 		return err
 	}
 	code := apiErr.ErrorCode()
-	recordAWSError(operation, code)
+	k.metrics.recordError(operation, code)
 	switch code {
 	case "ThrottlingException", "RequestThrottled", "Throttling", "ThrottledException":
 		return apperror.NewDependencyUnavailable("kms", "kms throttled: "+code, err)

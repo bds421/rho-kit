@@ -216,17 +216,30 @@ func Chain(validators ...Validator) Validator {
 	})
 }
 
-// SVGSanitizer rewrites or rejects an uploaded SVG body. Implementations
-// MUST drop or neutralise <script>, foreignObject, event handlers, and
-// any other vector for XSS or SSRF. The kit does not ship a sanitiser
-// — services that need to accept SVG must wire in one from an audited
+// SVGSanitizer rejects unsafe SVG uploads. Implementations MUST drop
+// or neutralise <script>, foreignObject, event handlers, and any other
+// vector for XSS or SSRF. The kit does not ship a sanitiser —
+// services that need to accept SVG must wire in one from an audited
 // library (e.g. bluemonday with an SVG profile, or DOMPurify via wasm).
+//
+// SanitizeSVG returns the sanitized payload, or an error if the input
+// is unsafe. [AllowSVG] compares the sanitised payload against the
+// original input — if they differ, the upload is rejected with
+// [ErrSVGSanitizationModified] because the Validator pipeline does
+// not support in-pipeline body transformation. Operators that need
+// to accept transforming sanitisation must run the sanitiser before
+// passing bytes to the upload pipeline.
 type SVGSanitizer interface {
-	// SanitizeSVG reads the candidate SVG from r and either returns a
-	// safe payload or a non-nil error. The returned payload replaces
-	// the upload body for downstream steps.
 	SanitizeSVG(r io.Reader) ([]byte, error)
 }
+
+// ErrSVGSanitizationModified is returned by [AllowSVG] when the
+// configured sanitizer produces output that differs from the original
+// upload. The Validator pipeline operates on an [io.ReadSeeker] and
+// cannot propagate a replacement body downstream, so operators that
+// run transforming sanitisers must invoke them before the upload
+// pipeline.
+var ErrSVGSanitizationModified = errors.New("uploadsec: SVG sanitiser produced different bytes; pipeline does not support in-pipeline transformation")
 
 // imageDeepDecodeMIMEs is the subset of image MIME types where a
 // successful [http.DetectContentType] match still needs additional
@@ -489,8 +502,16 @@ func AllowSVG(sanitizer SVGSanitizer) Validator {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return meta, fmt.Errorf("uploadsec: rewind for SVG sanitise: %w", err)
 		}
-		if _, err := sanitizer.SanitizeSVG(body); err != nil {
+		original, err := io.ReadAll(body)
+		if err != nil {
+			return meta, fmt.Errorf("uploadsec: read SVG body: %w", err)
+		}
+		sanitised, err := sanitizer.SanitizeSVG(bytes.NewReader(original))
+		if err != nil {
 			return meta, fmt.Errorf("uploadsec: %w", err)
+		}
+		if !bytes.Equal(original, sanitised) {
+			return meta, ErrSVGSanitizationModified
 		}
 		meta.ContentType = "image/svg+xml"
 		return meta, nil

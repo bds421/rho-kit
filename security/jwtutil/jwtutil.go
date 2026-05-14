@@ -846,15 +846,21 @@ func jwksHTTPClient(client *http.Client) *http.Client {
 	if client == nil {
 		return defaultHTTPClient()
 	}
-	if client.Timeout > 0 && client.Transport != nil && client.CheckRedirect != nil {
-		return client
-	}
+	// Always clone and re-apply the TLS floor so a fully custom
+	// *http.Client cannot bypass the kit's JWKS TLS hardening. Wave
+	// 66 closed a hostile-review finding that a user-supplied
+	// Transport could ship without the TLS 1.2 floor that
+	// defaultHTTPClient enforces.
 	cloned := *client
 	if cloned.Timeout <= 0 {
 		cloned.Timeout = defaultHTTPTimeout
 	}
 	if cloned.Transport == nil {
 		cloned.Transport = defaultHTTPTransport()
+	} else if tr, ok := cloned.Transport.(*http.Transport); ok {
+		hardened := tr.Clone()
+		hardened.TLSClientConfig = cloneTLSConfigWithFloor(hardened.TLSClientConfig)
+		cloned.Transport = hardened
 	}
 	if cloned.CheckRedirect == nil {
 		cloned.CheckRedirect = blockJWKSRedirect

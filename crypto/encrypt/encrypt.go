@@ -66,8 +66,18 @@ type FieldEncryptor struct {
 	// onOp is an optional callback fired after every successful Encrypt
 	// / Decrypt. Set via [FieldEncryptor.RegisterMetrics] so consumers
 	// can route counts to a metrics backend without forcing this
-	// package to import prometheus.
-	onOp func(op Operation)
+	// package to import prometheus. Stored via atomic.Pointer so the
+	// hook can be installed once at startup without racing with
+	// concurrent Encrypt / Decrypt readers.
+	onOp atomic.Pointer[onOpHolder]
+}
+
+// onOpHolder wraps the metrics callback so it can be swapped
+// atomically. The callback itself may be nil after a clear-callback
+// call; the holder lets us distinguish "no holder yet" from
+// "holder with nil callback".
+type onOpHolder struct {
+	fn func(op Operation)
 }
 
 // Operation identifies a FieldEncryptor call kind for metric hooks.
@@ -130,7 +140,7 @@ func (e *FieldEncryptor) RegisterMetrics(fn func(op Operation)) {
 	if e == nil {
 		return
 	}
-	e.onOp = fn
+	e.onOp.Store(&onOpHolder{fn: fn})
 }
 
 // OpsCount returns the running totals of successful encrypt and
@@ -151,8 +161,8 @@ func (e *FieldEncryptor) recordOp(op Operation) {
 	case OperationDecrypt:
 		e.decryptOps.Add(1)
 	}
-	if e.onOp != nil {
-		e.onOp(op)
+	if h := e.onOp.Load(); h != nil && h.fn != nil {
+		h.fn(op)
 	}
 }
 

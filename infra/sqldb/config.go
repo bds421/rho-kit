@@ -298,15 +298,22 @@ func validatePostgresSSLMode(mode string) error {
 		return nil
 	}
 	switch strings.ToLower(mode) {
-	case "require", "verify-ca", "verify-full":
+	case "verify-ca", "verify-full":
 		return nil
+	case "require":
+		// Aligns with infra/sqldb/pgx's FR-079 default: `require`
+		// admits MITM because libpq does not verify server identity.
+		// Operators on a closed network can opt back in at the dial
+		// layer via pgx.Config.AllowSSLModeRequire; the preflight
+		// remains strict so the policy is loud at config-load time.
+		return fmt.Errorf("DB_SSL_MODE=require admits MITM (no server identity verification); use verify-ca or verify-full, or opt in at dial time via pgx.Config.AllowSSLModeRequire on a closed network")
 	case "disable":
 		// Reported separately by the caller with full context.
 		return nil
 	case "allow", "prefer":
 		// Both modes silently degrade to plaintext on TLS handshake error.
-		return fmt.Errorf("DB_SSL_MODE admits a plaintext fallback on TLS handshake error; use require, verify-ca, or verify-full")
+		return fmt.Errorf("DB_SSL_MODE admits a plaintext fallback on TLS handshake error; use verify-ca or verify-full")
 	default:
-		return fmt.Errorf("DB_SSL_MODE must be require, verify-ca, or verify-full")
+		return fmt.Errorf("DB_SSL_MODE must be verify-ca or verify-full")
 	}
 }

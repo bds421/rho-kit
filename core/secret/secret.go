@@ -218,12 +218,17 @@ func (s *String) Equal(other *String) bool {
 // shorter side, and folds the length comparison into the result so
 // "right secret, wrong length" cannot be distinguished from "wrong
 // secret, right length" via timing.
+//
+// The length delta is folded as a uint (not byte) so length
+// differences that are multiples of 256 cannot collapse to zero.
+// A wave-66 review caught that the earlier byte cast meant a
+// 256-byte longer all-zero suffix could falsely report equality.
 func constantTimeEqual(a, b []byte) bool {
 	maxLen := len(a)
 	if len(b) > maxLen {
 		maxLen = len(b)
 	}
-	var v byte
+	var v uint
 	for i := 0; i < maxLen; i++ {
 		var ai, bi byte
 		if i < len(a) {
@@ -232,13 +237,10 @@ func constantTimeEqual(a, b []byte) bool {
 		if i < len(b) {
 			bi = b[i]
 		}
-		v |= ai ^ bi
+		v |= uint(ai ^ bi)
 	}
-	// Fold length equality in: if lengths differ, lenDelta != 0 and
-	// the OR with v keeps the result non-zero even on an all-zero
-	// XOR run.
-	lenDelta := byte(len(a) ^ len(b))
-	return (v | lenDelta) == 0
+	v |= uint(len(a)) ^ uint(len(b))
+	return v == 0
 }
 
 // The redaction methods use VALUE receivers so they remain in the method

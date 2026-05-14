@@ -75,16 +75,41 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 CSV_OUT="${WORK_DIR}/licenses.csv"
 : > "$CSV_OUT"
 
+scanner_failed=0
 for mod_dir in "${WORKSPACE_MODULES[@]}"; do
   echo "==> Licenses: ${mod_dir}"
   # go-licenses emits per-package rows; we accumulate and de-duplicate
-  # at the end. Stderr is captured and discarded so transient warnings
-  # ("Failed to find license for ...") do not pollute the gate output.
+  # at the end. The exit status MUST be captured per module — wave 66
+  # caught that the previous `|| true` swallowed scanner failures and
+  # made the gate weaker than the release policy claimed. A scanner
+  # failure can drop dependency rows silently; we now fail the gate
+  # but keep collecting other modules' rows for the diagnostic output.
+  mod_csv="${WORK_DIR}/${mod_dir//\//_}.csv"
+  mod_err="${WORK_DIR}/${mod_dir//\//_}.err"
+  set +e
   (
     cd "$mod_dir" && \
-    go run "github.com/google/go-licenses@${GO_LICENSES_VERSION}" csv ./... 2>"${WORK_DIR}/last.err" || true
-  ) >> "$CSV_OUT"
+    go run "github.com/google/go-licenses@${GO_LICENSES_VERSION}" csv ./... 2>"$mod_err"
+  ) > "$mod_csv"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    scanner_failed=1
+    echo "FAIL: go-licenses csv exited with status $rc for $mod_dir" >&2
+    if [[ -s "$mod_err" ]]; then
+      sed -e 's/^/    /' "$mod_err" >&2
+    fi
+  fi
+  cat "$mod_csv" >> "$CSV_OUT"
 done
+
+if [[ "$scanner_failed" == 1 ]]; then
+  echo "" >&2
+  echo "License gate cannot certify the dependency graph because at least one" >&2
+  echo "module scan failed above. Fix the underlying go-licenses error before" >&2
+  echo "treating the gate as authoritative." >&2
+  exit 1
+fi
 
 # De-duplicate (module, url, license) triples.
 sort -u "$CSV_OUT" -o "$CSV_OUT"

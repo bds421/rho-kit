@@ -21,7 +21,7 @@ func TestDeclareTopology_Direct(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.direct",
@@ -36,7 +36,7 @@ func TestDeclareTopology_Fanout(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.fanout",
@@ -51,7 +51,7 @@ func TestDeclareTopology_Topic(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.topic",
@@ -66,7 +66,7 @@ func TestDeclareTopology_Headers(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.headers",
@@ -81,7 +81,7 @@ func TestDeclareTopology_Idempotent(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
 		Exchange:     "test.idempotent",
@@ -100,7 +100,7 @@ func TestDeclareAll_RetryTopology(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
 		Exchange:     "test.retrytopo",
@@ -188,7 +188,7 @@ func TestDeclareAll_NoRetry_EmptyDeclaredFields(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	declared, err := amqpbackend.DeclareAll(conn, messaging.BindingSpec{
 		Exchange:     "test.noretry",
@@ -211,7 +211,7 @@ func TestDeclareAll_ValidationErrors(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	tests := []struct {
 		name    string

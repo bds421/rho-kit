@@ -40,7 +40,26 @@ type KEK struct {
 	// the bare-keyID decrypt path can reject envelope ARNs from a
 	// different region. Empty when the SDK client did not surface a
 	// region (best-effort).
-	region string
+	region  string
+	metrics *Metrics
+}
+
+// Option configures [NewKEK].
+type Option func(*KEK)
+
+// WithMetrics installs a custom [Metrics] for this KEK. When unset,
+// the package's lazily-initialised DefaultRegisterer-backed Metrics is
+// used. Pass [WithMetrics] explicitly with a [NewMetrics]-constructed
+// instance so awskms collectors land on a non-default registerer.
+//
+// Panics if m is nil — a nil Metrics would defeat the purpose of an
+// "observability enabled" toggle. Omit the option entirely to fall
+// back to the package default.
+func WithMetrics(m *Metrics) Option {
+	if m == nil {
+		panic("awskms: WithMetrics requires non-nil metrics (omit the option for the package default)")
+	}
+	return func(k *KEK) { k.metrics = m }
 }
 
 // Config bundles the kit's KMS knobs.
@@ -71,19 +90,29 @@ func (c Config) LogValue() slog.Value {
 // error if KeyID is empty. The client's region is captured (best-effort)
 // so the bare-keyID decrypt path can reject envelope ARNs from a
 // different region.
-func NewKEK(c *kms.Client, cfg Config) (*KEK, error) {
+func NewKEK(c *kms.Client, cfg Config, opts ...Option) (*KEK, error) {
 	if c == nil {
 		return nil, errors.New("awskms: client must not be nil")
 	}
 	if cfg.KeyID == "" {
 		return nil, errors.New("awskms: Config.KeyID must not be empty")
 	}
-	return &KEK{
+	k := &KEK{
 		c:       c,
 		keyID:   cfg.KeyID,
 		context: cloneContext(cfg.EncryptionContext),
 		region:  c.Options().Region,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, errors.New("awskms: NewKEK option must not be nil")
+		}
+		opt(k)
+	}
+	if k.metrics == nil {
+		k.metrics = packageDefaultMetrics()
+	}
+	return k, nil
 }
 
 // KeyID implements [envelope.KEK]. Returns the configured AWS key
@@ -114,7 +143,7 @@ func (k *KEK) Wrap(ctx context.Context, dek []byte) (string, []byte, error) {
 		EncryptionContext: k.context,
 	})
 	if err != nil {
-		classified := classifyAWSError("wrap", err)
+		classified := k.classifyAWSError("wrap", err)
 		if classified != err {
 			return "", nil, classified
 		}
@@ -149,7 +178,7 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 		EncryptionContext: k.context,
 	})
 	if err != nil {
-		classified := classifyAWSError("unwrap", err)
+		classified := k.classifyAWSError("unwrap", err)
 		if classified != err {
 			return nil, classified
 		}

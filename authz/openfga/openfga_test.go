@@ -237,16 +237,22 @@ func TestClientConfiguration_CustomHTTPClientFillsMissingTimeout(t *testing.T) {
 	}
 }
 
-func TestClientConfiguration_PreservesCustomHTTPClientWithExplicitRedirectPolicy(t *testing.T) {
+func TestClientConfiguration_RetainsCustomHTTPClientTimeoutAndCheckRedirect(t *testing.T) {
+	// Wave 66 changed openFGAHTTPClient to always clone so the TLS
+	// floor and response-header cap are re-applied to user-supplied
+	// *http.Transport instances. Pointer identity is no longer
+	// preserved — but the caller's Timeout and explicit CheckRedirect
+	// policy MUST survive the clone.
 	transport := openFGARoundTripper(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	})
+	customRedirect := func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	custom := &http.Client{
-		Timeout:   2 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		Timeout:       2 * time.Second,
+		Transport:     transport,
+		CheckRedirect: customRedirect,
 	}
 
 	cfg := clientConfiguration(Config{
@@ -255,8 +261,11 @@ func TestClientConfiguration_PreservesCustomHTTPClientWithExplicitRedirectPolicy
 		HTTPClient: custom,
 	})
 
-	if cfg.HTTPClient != custom {
-		t.Fatal("expected explicit redirect policy to preserve custom HTTP client")
+	if cfg.HTTPClient.Timeout != 2*time.Second {
+		t.Fatalf("Timeout = %v, want 2s", cfg.HTTPClient.Timeout)
+	}
+	if cfg.HTTPClient.CheckRedirect == nil {
+		t.Fatal("expected explicit CheckRedirect to be preserved")
 	}
 }
 

@@ -236,5 +236,11 @@ func allowsKeyID(parent, keyID string) bool {
 			return false
 		}
 	}
-	return version[0] != '0' || version == "0"
+	// Reject leading-zero versions ("01", "007") and version "0"
+	// itself — the doc contract is "positive integer", and GCP KMS
+	// only ever issues version numbers starting at 1.
+	if version[0] == '0' {
+		return false
+	}
+	return true
 }

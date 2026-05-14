@@ -36,7 +36,7 @@ func setupConsumerTest(t *testing.T) (*amqpbackend.Connection, *amqpbackend.Publ
 
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	db, err := amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     amqpTestName(t, ".exchange"),
@@ -145,7 +145,7 @@ func TestConsumeOnce_DLXRetryFlow(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
 		Exchange:     "test.retry",
@@ -197,7 +197,7 @@ func TestConsumeOnce_MaxRetriesExceeded_GoesToDeadQueue(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	spec := messaging.BindingSpec{
 		Exchange:     "test.maxretry",
@@ -399,7 +399,7 @@ func TestConsumeOnce_RequiresPublisher(t *testing.T) {
 	url := rabbitmqtest.Start(t)
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	binding := messaging.Binding{
 		BindingSpec: messaging.BindingSpec{

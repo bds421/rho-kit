@@ -63,12 +63,20 @@ func (c Config) RedisURL() string {
 // Options returns go-redis Options parsed from the resolved URL or built from
 // individual fields. This is the primary way to convert a Config into
 // the *redis.Options that Connect() and the Builder expect.
+//
+// FR-077 is enforced here so callers using Fields.Redis.Options() +
+// Connect cannot bypass the plaintext/passwordless guard that
+// [Fields.ValidateRedis] applies during preflight. Wave 66 closed a
+// hostile-review finding that the two paths disagreed.
 func (c Config) Options() (*goredis.Options, error) {
 	resolved := c.RedisURL()
 	if resolved == "" {
 		return nil, fmt.Errorf("redis: neither URL nor Host is configured")
 	}
 	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {
+		return nil, err
+	}
+	if err := c.checkFR077(resolved); err != nil {
 		return nil, err
 	}
 	opts, err := goredis.ParseURL(resolved)
@@ -82,6 +90,26 @@ func (c Config) Options() (*goredis.Options, error) {
 		}
 	}
 	return opts, nil
+}
+
+// checkFR077 enforces the plaintext / passwordless gate on a Config
+// independently of Fields.ValidateRedis. Kept private so the preflight
+// path and the runtime Options path stay in sync.
+func (c Config) checkFR077(resolved string) error {
+	if c.AllowPlaintext {
+		return nil
+	}
+	u, err := url.Parse(resolved)
+	if err != nil {
+		return nil // ValidateRedisURL already surfaces this
+	}
+	if u.Scheme == "redis" {
+		return fmt.Errorf("REDIS_URL uses plaintext scheme \"redis://\"; set REDIS_ALLOW_PLAINTEXT=true to permit (FR-077)")
+	}
+	if !redisURLHasCredentials(u) && c.Password == "" {
+		return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
+	}
+	return nil
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
@@ -186,15 +214,8 @@ func (f Fields) ValidateRedis(environment string) error {
 	if err := ValidateRedisURL("REDIS_URL", resolved); err != nil {
 		return err
 	}
-	if !f.Redis.AllowPlaintext {
-		if u, err := url.Parse(resolved); err == nil {
-			if u.Scheme == "redis" {
-				return fmt.Errorf("REDIS_URL uses plaintext scheme \"redis://\"; set REDIS_ALLOW_PLAINTEXT=true to permit (FR-077)")
-			}
-			if !redisURLHasCredentials(u) && f.Redis.Password == "" {
-				return fmt.Errorf("REDIS_URL has no credentials and REDIS_PASSWORD is empty; set REDIS_ALLOW_PLAINTEXT=true to permit anonymous Redis (FR-077)")
-			}
-		}
+	if err := f.Redis.checkFR077(resolved); err != nil {
+		return err
 	}
 	if f.Redis.Password == "" && f.Redis.URL == "" {
 		return fmt.Errorf("REDIS_PASSWORD is required (or pass it via REDIS_URL)")

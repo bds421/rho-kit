@@ -114,6 +114,11 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 // UPDATE ... RETURNING preserves any CTE ORDER BY, so we carry the
 // ordinal through a row_number() column and re-order the final
 // SELECT explicitly.
+//
+// SQL shape: the locking SELECT is its own CTE WITHOUT a window
+// function — Postgres rejects FOR UPDATE in a query that has a
+// window function in its select list. A second CTE adds the
+// row_number for stable FIFO ordering downstream.
 func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("outbox/postgres: store not initialized")
@@ -122,9 +127,8 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 		return nil, nil
 	}
 	const q = `
-WITH claimed AS (
-    SELECT id,
-           row_number() OVER (ORDER BY created_at, id) AS ord
+WITH locked AS (
+    SELECT id, created_at
     FROM outbox_entries
     WHERE status = 'pending'
       AND (next_retry_at IS NULL OR next_retry_at <= NOW())
@@ -132,15 +136,20 @@ WITH claimed AS (
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 ),
+ordered AS (
+    SELECT id,
+           row_number() OVER (ORDER BY created_at, id) AS ord
+    FROM locked
+),
 updated AS (
     UPDATE outbox_entries AS o
     SET status = 'processing',
         updated_at = NOW()
-    FROM claimed
-    WHERE o.id = claimed.id
+    FROM ordered
+    WHERE o.id = ordered.id
     RETURNING o.id, o.topic, o.routing_key, o.message_id, o.message_type,
               o.payload, o.headers, o.status, o.attempts, o.created_at,
-              o.published_at, o.next_retry_at, o.last_error, claimed.ord
+              o.published_at, o.next_retry_at, o.last_error, ordered.ord
 )
 SELECT id, topic, routing_key, message_id, message_type, payload, headers,
        status, attempts, created_at, published_at, next_retry_at, last_error

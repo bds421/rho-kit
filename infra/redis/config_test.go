@@ -84,7 +84,10 @@ func TestRedisConfig_RedisURL_NoPassword(t *testing.T) {
 }
 
 func TestRedisConfig_Options_FromURL(t *testing.T) {
-	cfg := Config{URL: "redis://:secret@localhost:6379/2"}
+	// AllowPlaintext required for redis:// URLs (FR-077). Production
+	// deployments use rediss:// and never need this opt-out; tests
+	// against fixture instances set it explicitly.
+	cfg := Config{URL: "redis://:secret@localhost:6379/2", AllowPlaintext: true}
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	assert.Equal(t, "localhost:6379", opts.Addr)
@@ -128,7 +131,8 @@ func TestCloneTLSConfigWithFloor_RejectsMaxVersionBelowFloor(t *testing.T) {
 }
 
 func TestRedisConfig_Options_FromFields(t *testing.T) {
-	cfg := Config{Host: "myredis", Port: 6380, Password: "pass", DB: 3}
+	// Host+Port without rediss:// → plaintext; opt out for tests.
+	cfg := Config{Host: "myredis", Port: 6380, Password: "pass", DB: 3, AllowPlaintext: true}
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	assert.Equal(t, "myredis:6380", opts.Addr)

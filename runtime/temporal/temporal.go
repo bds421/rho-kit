@@ -215,13 +215,27 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
-// Stop halts the worker. Idempotent.
+// Stop halts the worker. Idempotent. Honors ctx as a deadline for the
+// underlying SDK Stop call — the SDK's worker.Stop is a blocking
+// graceful drain that does not accept a context, so we run it in a
+// goroutine and return early when ctx is done. The drain continues
+// in the background even after Stop returns; pass a context with a
+// short deadline if you need a hard shutdown bound.
 func (w *Worker) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("temporal: Worker.Stop requires a non-nil context")
 	}
-	w.stopWorker()
-	return nil
+	done := make(chan struct{})
+	go func() {
+		w.stopWorker()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (w *Worker) stopWorker() {

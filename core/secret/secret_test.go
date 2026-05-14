@@ -361,3 +361,29 @@ func TestConcurrentReadsAreSafe(t *testing.T) {
 		<-done
 	}
 }
+
+// TestConstantTimeEqual_RejectsLenDeltaMultipleOf256 locks down the
+// wave-66 fix: the prior implementation folded length comparison via
+// byte(len(a) ^ len(b)), so a 256-byte longer all-zero suffix would
+// collapse to zero and the helper would falsely report equality.
+func TestConstantTimeEqual_RejectsLenDeltaMultipleOf256(t *testing.T) {
+	a := []byte("secret")
+	b := append([]byte("secret"), make([]byte, 256)...)
+	if constantTimeEqual(a, b) {
+		t.Fatal("length delta of 256 with zero suffix must not compare equal")
+	}
+	c := []byte("secret")
+	d := append([]byte("secret"), make([]byte, 512)...)
+	if constantTimeEqual(c, d) {
+		t.Fatal("length delta of 512 with zero suffix must not compare equal")
+	}
+}
+
+func TestConstantTimeEqual_EqualAndDiffer(t *testing.T) {
+	if !constantTimeEqual([]byte("aa"), []byte("aa")) {
+		t.Fatal("identical inputs must compare equal")
+	}
+	if constantTimeEqual([]byte("aa"), []byte("ab")) {
+		t.Fatal("different inputs of same length must not compare equal")
+	}
+}

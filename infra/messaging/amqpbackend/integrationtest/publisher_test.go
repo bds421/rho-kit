@@ -24,7 +24,7 @@ func setupPublisher(t *testing.T) (*amqpbackend.Publisher, *amqpbackend.Connecti
 
 	conn, err := dialLocalRabbitMQ(t, url, logger)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	_, err = amqpbackend.DeclareTopology(conn, messaging.BindingSpec{
 		Exchange:     "test.publish",

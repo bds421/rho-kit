@@ -186,9 +186,14 @@ func openFGAHTTPClient(client *http.Client) *http.Client {
 	if client == nil {
 		return defaultHTTPClient()
 	}
-	if client.Timeout > 0 && client.Transport != nil && client.CheckRedirect != nil {
-		return client
-	}
+	// Always clone and re-apply kit hardening even when the caller
+	// provides a fully populated *http.Client. Wave 66 closed a
+	// hostile-review finding that a custom transport could ship
+	// without the TLS floor, response-header cap, or
+	// redirect-blocking guardrails the kit advertises for outbound
+	// OpenFGA traffic. The clone is shallow; Transport-level
+	// hardening is applied on a clone of the user's *http.Transport
+	// (if any) so the caller's instance is not mutated.
 	cloned := *client
 	if cloned.Timeout <= 0 {
 		cloned.Timeout = defaultHTTPClientTimeout
@@ -199,6 +204,13 @@ func openFGAHTTPClient(client *http.Client) *http.Client {
 		transport.MaxResponseHeaderBytes = defaultMaxResponseHeaderBytes
 		transport.TLSClientConfig = cloneTLSConfigWithFloor(transport.TLSClientConfig)
 		cloned.Transport = transport
+	} else if tr, ok := cloned.Transport.(*http.Transport); ok {
+		hardened := tr.Clone()
+		if hardened.MaxResponseHeaderBytes <= 0 {
+			hardened.MaxResponseHeaderBytes = defaultMaxResponseHeaderBytes
+		}
+		hardened.TLSClientConfig = cloneTLSConfigWithFloor(hardened.TLSClientConfig)
+		cloned.Transport = hardened
 	}
 	if cloned.CheckRedirect == nil {
 		cloned.CheckRedirect = blockRedirect

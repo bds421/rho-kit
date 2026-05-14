@@ -26,10 +26,18 @@ func newAPIErr(code, msg string) error {
 	return &fakeAPIError{code: code, msg: msg, fault: smithy.FaultServer}
 }
 
+// testKEK builds a minimal KEK suitable for classify tests without
+// pulling in the real *kms.Client. We bypass NewKEK because the
+// constructor requires a non-nil client. The classify method only
+// touches k.metrics, so a fresh package-default Metrics is enough.
+func testKEK() *KEK {
+	return &KEK{metrics: packageDefaultMetrics()}
+}
+
 func TestClassifyAWSError_Throttling(t *testing.T) {
 	for _, code := range []string{"ThrottlingException", "RequestThrottled"} {
 		t.Run(code, func(t *testing.T) {
-			err := classifyAWSError("wrap", newAPIErr(code, "rate exceeded"))
+			err := testKEK().classifyAWSError("wrap", newAPIErr(code, "rate exceeded"))
 			if !apperror.IsUnavailable(err) {
 				t.Fatalf("expected UnavailableError, got %v", err)
 			}
@@ -42,7 +50,7 @@ func TestClassifyAWSError_Throttling(t *testing.T) {
 }
 
 func TestClassifyAWSError_KMSInternal(t *testing.T) {
-	err := classifyAWSError("wrap", newAPIErr("KMSInternalException", "internal"))
+	err := testKEK().classifyAWSError("wrap", newAPIErr("KMSInternalException", "internal"))
 	if !apperror.IsUnavailable(err) {
 		t.Fatalf("expected UnavailableError, got %v", err)
 	}
@@ -51,7 +59,7 @@ func TestClassifyAWSError_KMSInternal(t *testing.T) {
 func TestClassifyAWSError_KeyUnavailable(t *testing.T) {
 	for _, code := range []string{"KeyUnavailableException", "DisabledException", "KMSInvalidStateException"} {
 		t.Run(code, func(t *testing.T) {
-			err := classifyAWSError("unwrap", newAPIErr(code, "key disabled"))
+			err := testKEK().classifyAWSError("unwrap", newAPIErr(code, "key disabled"))
 			if !apperror.IsPermanent(err) {
 				t.Fatalf("expected PermanentError, got %v", err)
 			}
@@ -60,7 +68,7 @@ func TestClassifyAWSError_KeyUnavailable(t *testing.T) {
 }
 
 func TestClassifyAWSError_AccessDenied(t *testing.T) {
-	err := classifyAWSError("unwrap", newAPIErr("AccessDeniedException", "no perms"))
+	err := testKEK().classifyAWSError("unwrap", newAPIErr("AccessDeniedException", "no perms"))
 	if !apperror.IsPermanent(err) {
 		t.Fatalf("expected PermanentError, got %v", err)
 	}
@@ -68,7 +76,7 @@ func TestClassifyAWSError_AccessDenied(t *testing.T) {
 
 func TestClassifyAWSError_UnknownPassThrough(t *testing.T) {
 	raw := newAPIErr("ValidationException", "bad input")
-	got := classifyAWSError("wrap", raw)
+	got := testKEK().classifyAWSError("wrap", raw)
 	if got != raw {
 		t.Fatalf("unknown code should be returned unchanged, got %v", got)
 	}
@@ -76,14 +84,14 @@ func TestClassifyAWSError_UnknownPassThrough(t *testing.T) {
 
 func TestClassifyAWSError_NonSmithyPassThrough(t *testing.T) {
 	plain := errors.New("dial tcp: refused")
-	got := classifyAWSError("wrap", plain)
+	got := testKEK().classifyAWSError("wrap", plain)
 	if got != plain {
 		t.Fatalf("non-API error should be returned unchanged, got %v", got)
 	}
 }
 
 func TestClassifyAWSError_Nil(t *testing.T) {
-	if got := classifyAWSError("wrap", nil); got != nil {
+	if got := testKEK().classifyAWSError("wrap", nil); got != nil {
 		t.Fatalf("nil → nil, got %v", got)
 	}
 }
@@ -96,7 +104,7 @@ func TestClassifyAWSError_Nil(t *testing.T) {
 func TestEncrypt_ThrottlingMapsToDependencyUnavailable(t *testing.T) {
 	// Use classify directly; Wrap also invokes classifyAWSError on err and
 	// returns the classified error before fmt.Errorf wrapping kicks in.
-	err := classifyAWSError("wrap", newAPIErr("ThrottlingException", "rate exceeded"))
+	err := testKEK().classifyAWSError("wrap", newAPIErr("ThrottlingException", "rate exceeded"))
 	if !apperror.IsUnavailable(err) {
 		t.Fatalf("classify(ThrottlingException) = %v, want UnavailableError", err)
 	}
@@ -110,7 +118,7 @@ func TestEncrypt_ThrottlingMapsToDependencyUnavailable(t *testing.T) {
 }
 
 func TestDecrypt_KeyUnavailableMapsToPermanent(t *testing.T) {
-	err := classifyAWSError("unwrap", newAPIErr("KeyUnavailableException", "AWS internal: key not ready"))
+	err := testKEK().classifyAWSError("unwrap", newAPIErr("KeyUnavailableException", "AWS internal: key not ready"))
 	if !apperror.IsPermanent(err) {
 		t.Fatalf("classify(KeyUnavailableException) = %v, want PermanentError", err)
 	}

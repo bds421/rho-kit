@@ -258,18 +258,21 @@ func (k *KEK) Unwrap(_ context.Context, keyID string, wrapped []byte) ([]byte, e
 	if k.closed.Load() {
 		return nil, ErrKEKClosed
 	}
+	// Build the GCM under the RLock — symmetric with Wrap — so a
+	// concurrent RemoveKey (which zeroes the master slice) cannot
+	// race with the AES-GCM cipher construction.
 	k.mu.RLock()
 	if k.closed.Load() {
 		k.mu.RUnlock()
 		return nil, ErrKEKClosed
 	}
 	master := k.keys[keyID]
-	k.mu.RUnlock()
 	if master == nil {
+		k.mu.RUnlock()
 		return nil, fmt.Errorf("kekstatic: unknown keyID")
 	}
-
 	gcm, err := newGCM(master)
+	k.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}

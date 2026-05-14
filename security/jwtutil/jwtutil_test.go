@@ -721,8 +721,11 @@ func TestJWKSHTTPClient_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
 	}
 
 	hardened := jwksHTTPClient(custom)
-	if hardened != custom {
-		t.Fatal("expected explicit redirect policy to keep caller's client")
+	// Wave 66: the kit now always clones the caller's client so the
+	// TLS floor can be re-applied to the Transport. Pointer identity
+	// is not preserved; verify the explicit CheckRedirect survived.
+	if hardened.CheckRedirect == nil {
+		t.Fatal("expected explicit CheckRedirect to be preserved on clone")
 	}
 	resp, err := hardened.Get(srv.URL)
 	if err != nil {
@@ -1702,8 +1705,11 @@ func TestProviderFetch_RespectsExplicitCustomRedirectPolicy(t *testing.T) {
 	if p.KeySet() != nil {
 		t.Fatal("expected keyset to remain unset")
 	}
-	if p.httpClient != custom {
-		t.Fatal("expected provider to keep explicit custom redirect policy")
+	// Wave 66: the provider clones the caller's client to re-apply
+	// the TLS floor; pointer identity is no longer preserved. Verify
+	// the explicit CheckRedirect survived the clone instead.
+	if p.httpClient.CheckRedirect == nil {
+		t.Fatal("expected provider to preserve explicit custom CheckRedirect")
 	}
 }
 

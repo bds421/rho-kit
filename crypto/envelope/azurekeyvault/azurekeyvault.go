@@ -178,7 +178,12 @@ func (k *KEK) Unwrap(ctx context.Context, keyID string, wrapped []byte) ([]byte,
 	if keyVersion == "" {
 		return nil, errors.New("azurekeyvault: keyID must include key version")
 	}
-	if k.keyHost != "" && keyHost != k.keyHost {
+	// DNS hostnames are case-insensitive (RFC 1035 §2.3.3); compare via
+	// EqualFold so a Key Vault host spelled "MyVault.vault.azure.net"
+	// is treated as equal to "myvault.vault.azure.net". Wave 66 caught
+	// that case-sensitive comparison rejected legitimate uppercase
+	// envelope blobs.
+	if k.keyHost != "" && !strings.EqualFold(keyHost, k.keyHost) {
 		return nil, errors.New("azurekeyvault: unknown keyID")
 	}
 	algorithm := k.algorithm

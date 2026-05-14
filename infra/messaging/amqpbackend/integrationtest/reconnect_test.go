@@ -56,7 +56,7 @@ func TestConnection_Reconnect_OnReconnectCallbackFires(t *testing.T) {
 		return nil
 	}))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	assert.True(t, conn.Healthy(), "should be healthy before disconnect")
 
@@ -81,7 +81,7 @@ func TestConnection_Reconnect_ChannelWorksAfterReconnect(t *testing.T) {
 		return nil
 	}))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	closeAllRabbitMQConnections(t, container)
 
@@ -108,7 +108,7 @@ func TestConnection_MaxReconnectAttempts_FiresDead(t *testing.T) {
 
 	conn, err := dialLocalRabbitMQ(t, url, slog.Default(), amqpbackend.WithMaxReconnectAttempts(2))
 	require.NoError(t, err)
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = conn.Stop(context.Background()) }()
 
 	// Terminate the container — all reconnect attempts will TCP-refuse.
 	require.NoError(t, container.Terminate(ctx))
@@ -134,7 +134,7 @@ func TestConnection_Reconnect_CallbackError_RetriesUntilCallbackSucceeds(t *test
 		return nil
 	}))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	closeAllRabbitMQConnections(t, container)
 
@@ -157,7 +157,7 @@ func TestConnection_Reconnect_HealthTransitions(t *testing.T) {
 		return nil
 	}))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = conn.Stop(context.Background()) })
 
 	require.True(t, conn.Healthy(), "should start healthy")
 

@@ -134,6 +134,15 @@ func (m *Manager) Default() Storage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	if m.closed {
+		// Returning a backend after Close would let a slow caller
+		// dial through a now-released connection pool. Match the
+		// Register/Backend/SetDefault closed-Manager behaviour
+		// (panic, since calling Default on a shutdown Manager is a
+		// wiring bug just like Register on a closed Manager).
+		panic("storage.Manager: Default after Close")
+	}
+
 	if m.defaultName != "" {
 		s, ok := m.backends[m.defaultName]
 		if !ok {

@@ -417,6 +417,16 @@ func (b *Bus) maybeCompactLocked(eventName string) {
 // Security-critical events should use synchronous handlers (without
 // [WithAsync]) to guarantee delivery.
 func Publish[E Event](b *Bus, ctx context.Context, event E) error {
+	// Defensive: callers can pass a typed-nil pointer (or a nil
+	// interface) for E if it is a pointer type — calling EventName on
+	// such a value panics for any implementation that reads receiver
+	// fields. Subscribe already guards against this via an
+	// instantiation probe; Publish needed the same guard. Wave 66
+	// added an explicit typed error instead of letting the panic
+	// reach the caller.
+	if v := reflect.ValueOf(event); !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil()) {
+		return errors.New("eventbus: Publish requires a non-nil event")
+	}
 	eventName := event.EventName()
 	if err := promutil.ValidateStaticLabelValue("event name", eventName); err != nil {
 		return fmt.Errorf("eventbus: invalid event name: %w", err)

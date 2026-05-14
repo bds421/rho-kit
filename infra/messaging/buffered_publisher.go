@@ -122,6 +122,15 @@ type BufferedPublisher struct {
 	// not silently drop the messages buffering exists to preserve.
 	lossyStateRecovery bool
 
+	// lossyStateValidation opts in to "skip individual invalid entries
+	// when validating loaded state". By default, any entry that fails
+	// per-message validation is fatal at construction so corrupt
+	// entries never silently disappear. The strict default matches
+	// the kit's broader "loud, not silent" posture; operators
+	// recovering from a known-bad state file can flip this to log+
+	// skip via [WithLossyStateValidation].
+	lossyStateValidation bool
+
 	sizeLimiter MessageSizeLimiter
 
 	// lastSaveErr holds the most recent error from saveLocked(). Stored as
@@ -259,6 +268,18 @@ func WithLossyMode() BufferedPublisherOption {
 // its own at-least-once guarantee (e.g. an upstream outbox), or for tests.
 func WithLossyStateRecovery() BufferedPublisherOption {
 	return func(o *BufferedPublisher) { o.lossyStateRecovery = true }
+}
+
+// WithLossyStateValidation opts in to skipping individual entries that
+// fail per-message validation when loading persisted state. By default,
+// any invalid entry is fatal at construction so corrupt entries cannot
+// silently disappear — wave 66 closed a hostile-review finding that
+// load() silently dropped invalid entries with only a Warn log. Use
+// this option only when recovering from a known-bad state file or in
+// tests; production wiring should fail loudly and force a deliberate
+// recovery decision.
+func WithLossyStateValidation() BufferedPublisherOption {
+	return func(o *BufferedPublisher) { o.lossyStateValidation = true }
 }
 
 // WithEphemeralBuffer opts in to memory-only buffering. By default,
@@ -905,11 +926,17 @@ func (o *BufferedPublisher) load() error {
 	valid := make([]pendingMessage, 0, len(pending))
 	for i, pm := range pending {
 		if err := ValidatePublishRoute(pm.Exchange, pm.RoutingKey); err != nil {
+			if !o.lossyStateValidation {
+				return fmt.Errorf("buffered publisher state: invalid entry at index %d: %w (set WithLossyStateValidation to skip)", i, err)
+			}
 			o.logger.Warn("buffered publisher state: skipping invalid entry",
 				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))
 			continue
 		}
 		if err := ValidateMessage(pm.Msg); err != nil {
+			if !o.lossyStateValidation {
+				return fmt.Errorf("buffered publisher state: invalid message at index %d: %w (set WithLossyStateValidation to skip)", i, err)
+			}
 			o.logger.Warn("buffered publisher state: skipping invalid message",
 				"index", i, redact.String("msg_id", pm.Msg.ID), redact.Error(err))
 			continue

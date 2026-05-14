@@ -1031,10 +1031,25 @@ func (b *Builder) RunContext(ctx context.Context) error {
 
 	// 0. Convert builder config to modules. Modules created from With*()
 	// config are prepended so they initialize before user-registered modules.
+	// Exception: an app/tracing module (any module implementing
+	// [TracingProvider]) MUST initialize before the builtin HTTP-client
+	// module so the HTTP client can observe TracingActive() and wrap its
+	// transport in OTel instrumentation. Without this reordering the HTTP
+	// client always saw tracingActive=false because the tracing module
+	// hadn't initialized yet (regression-tested by
+	// TestHTTPClient_PicksUpTracingFromUserModule).
 	builtinModules := b.buildIntegrationModules()
 	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
+	var deferredUserModules []Module
+	for _, m := range b.modules {
+		if _, ok := m.(TracingProvider); ok {
+			allModules = append(allModules, m)
+		} else {
+			deferredUserModules = append(deferredUserModules, m)
+		}
+	}
 	allModules = append(allModules, builtinModules...)
-	allModules = append(allModules, b.modules...)
+	allModules = append(allModules, deferredUserModules...)
 
 	// 0.5. EventBus — always initialized (no With* required).
 	busOpts := []eventbus.Option{eventbus.WithLogger(logger)}

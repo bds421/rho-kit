@@ -255,11 +255,13 @@ func (rc *Cache) Exists(ctx context.Context, key string) (bool, error) {
 // — failing the whole batch on a single poisoned entry would let one
 // hostile co-tenant deny the entire request, which is worse than
 // silent omission for cache reads. Callers needing strict oversize
-// errors should iterate with [Get] instead.
-//
-// One round-trip remains: STRLEN+GET commands are pipelined and
-// flushed together. The cap check on STRLEN size runs before the
-// GET reply is read into Go memory.
+// When a max-value cap is configured, MGet issues two round-trips:
+// STRLEN for every key, then GET only for keys whose value fits the
+// cap. Wave 66 split this from a single pipelined STRLEN+GET round-
+// trip because the earlier implementation read every value's full
+// bytes over the wire before discarding oversized ones — defeating
+// the cap's purpose of bounding heap and bandwidth per request.
+// Without a cap configured, MGet stays one round-trip via MGET.
 func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if err := rc.ready(); err != nil {
 		return nil, err
@@ -294,16 +296,22 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 		return out, nil
 	}
 
+	// Round-trip 1: STRLEN every key. The pipeline carries no GET so
+	// no oversize bytes traverse the wire here.
 	pipe := rc.client.Pipeline()
 	strLens := make([]*goredis.IntCmd, len(keys))
-	gets := make([]*goredis.StringCmd, len(keys))
 	for i, k := range keys {
 		strLens[i] = pipe.StrLen(ctx, k)
-		gets[i] = pipe.Get(ctx, k)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
-		return nil, fmt.Errorf("redis cache mget pipeline: %w", err)
+		return nil, fmt.Errorf("redis cache mget strlen pipeline: %w", err)
 	}
+
+	// Decide which keys are under the cap. STRLEN returns 0 for
+	// missing keys (Redis treats them as empty); we issue GET only
+	// for under-cap candidates and count clear miss/oversize cases
+	// up front.
+	getKeys := make([]string, 0, len(keys))
 	out := make(map[string][]byte, len(keys))
 	for i, k := range keys {
 		sz, slErr := strLens[i].Result()
@@ -311,11 +319,25 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 			return nil, fmt.Errorf("redis cache mget strlen: %w", slErr)
 		}
 		if sz > int64(rc.maxValueSize) {
-			// Oversize: drop silently (counted as miss) so a single
-			// poisoned entry does not fail the whole batch.
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
+		getKeys = append(getKeys, k)
+	}
+	if len(getKeys) == 0 {
+		return out, nil
+	}
+
+	// Round-trip 2: GET only the under-cap keys.
+	pipe = rc.client.Pipeline()
+	gets := make([]*goredis.StringCmd, len(getKeys))
+	for i, k := range getKeys {
+		gets[i] = pipe.Get(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
+		return nil, fmt.Errorf("redis cache mget get pipeline: %w", err)
+	}
+	for i, k := range getKeys {
 		val, gErr := gets[i].Bytes()
 		if errors.Is(gErr, goredis.Nil) {
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()

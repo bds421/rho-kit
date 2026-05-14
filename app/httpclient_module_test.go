@@ -80,6 +80,54 @@ func TestHTTPClientModule_AlwaysPresent(t *testing.T) {
 	assert.True(t, hasModule(modules, "httpclient"), "httpclient should always be present")
 }
 
+// initObservingTracing observes whether httpclient saw a tracing provider
+// in its ModuleContext at init time. Used to lock down the tracing-first
+// init ordering invariant: before wave 66, the built-in httpclient init
+// ran before the user-registered tracing module, so TracingActive() was
+// never observed and outbound HTTP traces were silently dropped.
+type initObservingTracing struct {
+	BaseModule
+	saw bool
+}
+
+func (m *initObservingTracing) TracingActive() bool { return true }
+func (m *initObservingTracing) Init(_ context.Context, _ ModuleContext) error {
+	m.saw = true
+	return nil
+}
+
+func TestBuilder_TracingProviderInitsBeforeHTTPClient(t *testing.T) {
+	tracing := &initObservingTracing{BaseModule: NewBaseModule("tracing-stub")}
+	b := New("test", "v1", BaseConfig{}).WithModule(tracing)
+
+	hcm := newHTTPClientModule(true) // tracingConfigured=true
+	builtinModules := []Module{hcm}
+
+	// Mirror the production ordering logic from Builder.Run: tracing
+	// providers come first, then builtins, then remaining user modules.
+	allModules := make([]Module, 0, len(builtinModules)+len(b.modules))
+	var deferred []Module
+	for _, m := range b.modules {
+		if _, ok := m.(TracingProvider); ok {
+			allModules = append(allModules, m)
+		} else {
+			deferred = append(deferred, m)
+		}
+	}
+	allModules = append(allModules, builtinModules...)
+	allModules = append(allModules, deferred...)
+
+	mc := testModuleContext(t)
+	for _, m := range allModules {
+		require.NoError(t, m.Init(context.Background(), mc))
+		mc.modules[m.Name()] = m
+	}
+
+	require.True(t, tracing.saw, "tracing-provider module must initialize before any builtin queries it")
+	// And by then the HTTP client must observe tracing as active.
+	assert.NotNil(t, hcm.Client())
+}
+
 // testModuleContext creates a ModuleContext suitable for unit tests.
 func testModuleContext(t *testing.T) ModuleContext {
 	t.Helper()

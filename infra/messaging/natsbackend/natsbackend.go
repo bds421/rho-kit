@@ -395,9 +395,18 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		}
 		opts = append(opts, nkeyOpt)
 	}
-	// ExtraOptions go last so callers can override anything the kit
-	// installed by default.
+	// ExtraOptions are appended BEFORE the security-critical re-apply
+	// so callers can extend behaviour (custom error handlers, custom
+	// dialers, inbox prefixes) but cannot disable kit-hardened
+	// defaults. Wave 66 closed a hostile-review finding that
+	// ExtraOptions could override TLS, the drain bound, and the
+	// reconnect cap by being appended last.
 	opts = append(opts, cfg.ExtraOptions...)
+	opts = append(opts, nats.DrainTimeout(closeDrainTimeout))
+	if cfg.TLS != nil {
+		opts = append(opts, nats.Secure(cfg.TLS))
+	}
+	opts = append(opts, nats.MaxReconnects(cfg.MaxReconnects))
 	// Honour ctx deadline for the dial. nats.Connect itself does not
 	// accept a context, so we derive a finite Timeout from the deadline
 	// when present. Without this, a cancelled ctx would not abort the

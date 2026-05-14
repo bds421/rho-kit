@@ -287,15 +287,23 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 // already expired or been claimed by another process by the time Release
 // ran — callers performing critical-section work should treat that as
 // "my work may have raced with another holder; reconcile."
+//
+// The local token is preserved on ambiguous backend errors (network /
+// timeout / proxy reset) so a retried Release can still attempt to
+// release. The release script is idempotent: a second Release that
+// matches the live token will succeed; one that does not match will
+// surface ErrLockLost. Wave 66 closed a hostile-review finding where
+// the token was cleared before the Run result was inspected, losing
+// the ability to retry on ambiguous failures.
 func (l *handle) Release(ctx context.Context) error {
 	if l.token == "" {
 		return nil
 	}
 	result, err := releaseScript.Run(ctx, l.client, []string{l.key}, l.token).Int64()
-	l.token = ""
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("lock: release failed: %w", err)
 	}
+	l.token = ""
 	if result == 0 {
 		return lock.ErrLockLost
 	}

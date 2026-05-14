@@ -19,6 +19,12 @@ var defaultGRPCCode = map[apperror.Code]codes.Code{
 	apperror.CodeOperationFailed: codes.Internal,
 	apperror.CodeForbidden:       codes.PermissionDenied,
 	apperror.CodeUnavailable:     codes.Unavailable,
+	// ResourceExhausted is the canonical gRPC code for "the backend
+	// can't accept this write because it is out of capacity" —
+	// distinct from rate-limit semantics on the client path (also
+	// ResourceExhausted) only in the cause string, but the kit chose
+	// the same gRPC code so clients can apply uniform backoff.
+	apperror.CodeStorageFull: codes.ResourceExhausted,
 }
 
 // GRPCCode returns the gRPC status code for the given error.

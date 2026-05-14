@@ -1122,20 +1122,16 @@ func TestBufferedPublisherLoad_MissingFile_ReturnsNilPending(t *testing.T) {
 	}
 }
 
-func TestBufferedPublisherLoad_SkipsInvalidMessages(t *testing.T) {
+func TestBufferedPublisherLoad_StrictByDefault_FailsOnInvalidEntry(t *testing.T) {
+	// Wave 66: load() is strict by default — any invalid entry is
+	// fatal. The previous test asserted "silently skips" which was
+	// the bug codex flagged. Strict-by-default forces operators to
+	// confront corrupt state.
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
 	pending := []pendingMessage{
-		{
-			Exchange:   "events",
-			RoutingKey: "ok",
-			Msg:        Message{ID: "msg-1", Type: "ok.event", Payload: json.RawMessage(`{}`)},
-		},
-		{
-			Exchange:   "events",
-			RoutingKey: "bad",
-			Msg:        Message{ID: "msg-2", Type: "bad event", Payload: json.RawMessage(`{}`)},
-		},
+		{Exchange: "events", RoutingKey: "ok", Msg: Message{ID: "msg-1", Type: "ok.event", Payload: json.RawMessage(`{}`)}},
+		{Exchange: "events", RoutingKey: "bad", Msg: Message{ID: "msg-2", Type: "bad event", Payload: json.RawMessage(`{}`)}},
 	}
 	data, err := json.Marshal(pending)
 	if err != nil {
@@ -1148,11 +1144,33 @@ func TestBufferedPublisherLoad_SkipsInvalidMessages(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		withStateFileAbsoluteForTest(stateFile),
 	)
+	if err := pub.load(); err == nil {
+		t.Fatalf("expected strict load to fail on invalid entry, got nil")
+	}
+}
 
+func TestBufferedPublisherLoad_LossyStateValidationSkipsInvalidEntries(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "buffered.json")
+	pending := []pendingMessage{
+		{Exchange: "events", RoutingKey: "ok", Msg: Message{ID: "msg-1", Type: "ok.event", Payload: json.RawMessage(`{}`)}},
+		{Exchange: "events", RoutingKey: "bad", Msg: Message{ID: "msg-2", Type: "bad event", Payload: json.RawMessage(`{}`)}},
+	}
+	data, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(stateFile, data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	pub := newBufferedPublisher(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		withStateFileAbsoluteForTest(stateFile),
+		WithLossyStateValidation(),
+	)
 	if err := pub.load(); err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-
 	if pub.Pending() != 1 {
 		t.Fatalf("expected 1 valid pending message, got %d", pub.Pending())
 	}

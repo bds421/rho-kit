@@ -58,7 +58,7 @@ const MaxPasswordLen = 1024
 // default bound" (see [DefaultVerifyLimits]). Apply with
 // [WithVerifyLimits] when calling [Verify].
 type VerifyLimits struct {
-	MaxMemory      uint32 // KiB; default 1 GiB
+	MaxMemory      uint32 // KiB; default 256 MiB
 	MaxIterations  uint32 // default 100
 	MaxParallelism uint8  // default 16
 	MaxSaltLen     uint32 // bytes; default 64
@@ -66,13 +66,18 @@ type VerifyLimits struct {
 }
 
 // DefaultVerifyLimits returns the bounds Verify uses when no
-// [WithVerifyLimits] option is supplied. They are deliberately
-// generous compared to [DefaultParams] so legitimate parameter
-// upgrades still verify, but small enough that a malicious row cannot
-// pin a CPU or allocate gigabytes.
+// [WithVerifyLimits] option is supplied. Deliberately generous
+// compared to [DefaultParams] so legitimate parameter upgrades still
+// verify, but small enough that a malicious row cannot pin a CPU or
+// allocate gigabytes. The previous default permitted up to 1 GiB of
+// Argon2 memory per verification; wave 66 lowered the cap to 256 MiB
+// after a hostile review flagged the comment/value mismatch.
+// Operators running Argon2id with memory above 256 MiB can raise
+// this cap explicitly via [WithVerifyLimits], with full knowledge
+// of the memory-amplification trade-off.
 func DefaultVerifyLimits() VerifyLimits {
 	return VerifyLimits{
-		MaxMemory:      1 * 1024 * 1024,
+		MaxMemory:      256 * 1024,
 		MaxIterations:  100,
 		MaxParallelism: 16,
 		MaxSaltLen:     64,
