@@ -40,6 +40,15 @@ var ErrKeyInvalidChars = errors.New("cache: key contains invalid characters")
 // too many keys in one call.
 var ErrBulkTooLarge = errors.New("cache: bulk operation exceeds maximum key count")
 
+// ErrValueTooLarge is returned by backend Get/MGet when a stored value
+// exceeds the configured maximum size. It signals that the cache holds
+// a foreign-written or legacy value that the backend refuses to
+// materialise — distinct from [ErrCacheMiss] so callers do not
+// silently retry as if the key were absent. Backends MUST detect
+// oversize BEFORE allocating the response body (e.g. via STRLEN on
+// Redis) so a hostile peer cannot OOM the process before the cap runs.
+var ErrValueTooLarge = errors.New("cache: stored value exceeds maximum size")
+
 // MaxKeyLen is the maximum allowed length for cache keys.
 const MaxKeyLen = 1024
 

@@ -120,13 +120,33 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 	return rc, nil
 }
 
-// Get retrieves a value from Redis. Returns cache.ErrCacheMiss on redis.Nil.
+// Get retrieves a value from Redis. Returns [sharedcache.ErrCacheMiss] on
+// redis.Nil and [sharedcache.ErrValueTooLarge] when a stored value exceeds
+// the configured cap.
+//
+// The cap is enforced via STRLEN before GET so a hostile or legacy writer
+// that stored a multi-MB value cannot force this process to allocate the
+// full response body before the cap runs. A post-GET length check still
+// runs to catch the rare TOCTOU window where the value is replaced between
+// STRLEN and GET.
 func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := rc.ready(); err != nil {
 		return nil, err
 	}
 	if err := sharedcache.ValidateKey(key); err != nil {
 		return nil, err
+	}
+	if rc.maxValueSize > 0 {
+		sz, err := rc.client.StrLen(ctx, key).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redis cache get strlen: %w", err)
+		}
+		if sz > int64(rc.maxValueSize) {
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
+			return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
+		}
+		// STRLEN==0 covers both "missing" and "empty stored value"; both
+		// are safe to forward to GET, which distinguishes them via redis.Nil.
 	}
 	val, err := rc.client.Get(ctx, key).Bytes()
 	if errors.Is(err, goredis.Nil) {
@@ -136,13 +156,11 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("redis cache get: %w", err)
 	}
-	// Read-side size enforcement: another process sharing this Redis
-	// instance (legacy app, migration tool, malicious co-tenant) may
-	// have stored a value much larger than rc.maxValueSize. Without
-	// this check, the .Bytes() above could allocate hundreds of MB of
-	// scratch and OOM the host before we ever see the value.
+	// TOCTOU guard: another writer may have replaced the value with a
+	// larger one between STRLEN and GET. The cap check is cheap and
+	// preserves the contract.
 	if rc.maxValueSize > 0 && len(val) > rc.maxValueSize {
-		return nil, fmt.Errorf("redis cache get: value exceeds maximum size")
+		return nil, fmt.Errorf("redis cache get: %w", sharedcache.ErrValueTooLarge)
 	}
 	rc.metrics.hits.WithLabelValues(rc.name).Inc()
 	return val, nil
@@ -198,8 +216,18 @@ func (rc *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	return n > 0, nil
 }
 
-// MGet retrieves multiple values in a single Redis MGET round-trip.
-// Missing keys are silently absent from the returned map.
+// MGet retrieves multiple values via a STRLEN+GET pipeline per key so
+// oversize foreign-written values are detected before allocation.
+// Missing keys are silently absent from the returned map; oversized
+// keys are also dropped from the returned map but counted as misses
+// — failing the whole batch on a single poisoned entry would let one
+// hostile co-tenant deny the entire request, which is worse than
+// silent omission for cache reads. Callers needing strict oversize
+// errors should iterate with [Get] instead.
+//
+// One round-trip remains: STRLEN+GET commands are pipelined and
+// flushed together. The cap check on STRLEN size runs before the
+// GET reply is read into Go memory.
 func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if err := rc.ready(); err != nil {
 		return nil, err
@@ -210,31 +238,67 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	if err := sharedcache.ValidateBulkKeys(keys); err != nil {
 		return nil, err
 	}
-	vals, err := rc.client.MGet(ctx, keys...).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis cache mget: %w", err)
+
+	// Without a cap configured, MGET in a single round-trip is the
+	// efficient path. Skip the per-key pipeline.
+	if rc.maxValueSize <= 0 {
+		vals, err := rc.client.MGet(ctx, keys...).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redis cache mget: %w", err)
+		}
+		out := make(map[string][]byte, len(keys))
+		for i, v := range vals {
+			if v == nil {
+				rc.metrics.misses.WithLabelValues(rc.name).Inc()
+				continue
+			}
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			rc.metrics.hits.WithLabelValues(rc.name).Inc()
+			out[keys[i]] = []byte(s)
+		}
+		return out, nil
+	}
+
+	pipe := rc.client.Pipeline()
+	strLens := make([]*goredis.IntCmd, len(keys))
+	gets := make([]*goredis.StringCmd, len(keys))
+	for i, k := range keys {
+		strLens[i] = pipe.StrLen(ctx, k)
+		gets[i] = pipe.Get(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
+		return nil, fmt.Errorf("redis cache mget pipeline: %w", err)
 	}
 	out := make(map[string][]byte, len(keys))
-	for i, v := range vals {
-		if v == nil {
+	for i, k := range keys {
+		sz, slErr := strLens[i].Result()
+		if slErr != nil {
+			return nil, fmt.Errorf("redis cache mget strlen: %w", slErr)
+		}
+		if sz > int64(rc.maxValueSize) {
+			// Oversize: drop silently (counted as miss) so a single
+			// poisoned entry does not fail the whole batch.
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
-		// goredis returns string for MGet results.
-		s, ok := v.(string)
-		if !ok {
+		val, gErr := gets[i].Bytes()
+		if errors.Is(gErr, goredis.Nil) {
+			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
-		// Read-side size enforcement: see Get() for rationale. A foreign
-		// writer's oversized value silently drops out of the batch
-		// rather than failing the whole MGet, so a single poisoned
-		// entry doesn't take out the caller's whole request.
-		if rc.maxValueSize > 0 && len(s) > rc.maxValueSize {
+		if gErr != nil {
+			return nil, fmt.Errorf("redis cache mget get: %w", gErr)
+		}
+		if len(val) > rc.maxValueSize {
+			// TOCTOU: value grew between STRLEN and GET.
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
 			continue
 		}
 		rc.metrics.hits.WithLabelValues(rc.name).Inc()
-		out[keys[i]] = []byte(s)
+		out[k] = val
 	}
 	return out, nil
 }

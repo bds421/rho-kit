@@ -269,6 +269,49 @@ func TestCache_InvalidKey(t *testing.T) {
 	assert.Error(t, existsErr)
 }
 
+// TestGet_OversizeValueErrorsBeforeAllocation pins H-003: a foreign
+// writer that stored a value above the cap must be rejected via
+// STRLEN before the full body is materialised into Go memory. The
+// returned error must surface ErrValueTooLarge so callers can
+// distinguish poisoned slots from cache misses.
+func TestGet_OversizeValueErrorsBeforeAllocation(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	rc, err := NewCache(client, "test", WithCacheMaxValueSize(64))
+	require.NoError(t, err)
+
+	// Foreign writer stores 128 bytes — twice the cap.
+	require.NoError(t, client.Set(context.Background(), "poisoned", make([]byte, 128), time.Minute).Err())
+
+	_, err = rc.Get(context.Background(), "poisoned")
+	require.ErrorIs(t, err, sharedcache.ErrValueTooLarge,
+		"oversize get must surface ErrValueTooLarge, not ErrCacheMiss or a bare wrapped error")
+}
+
+// TestMGet_OversizeValueDroppedSilently pins the H-003 MGet contract:
+// an oversize entry within a batch must NOT fail the whole batch and
+// must NOT allocate the body. Other keys in the batch return normally.
+func TestMGet_OversizeValueDroppedSilently(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	rc, err := NewCache(client, "test", WithCacheMaxValueSize(64))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, client.Set(ctx, "ok", []byte("payload"), time.Minute).Err())
+	require.NoError(t, client.Set(ctx, "poisoned", make([]byte, 128), time.Minute).Err())
+
+	out, err := rc.MGet(ctx, []string{"ok", "poisoned", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("payload"), out["ok"])
+	_, hasPoisoned := out["poisoned"]
+	assert.False(t, hasPoisoned, "oversize entry must drop silently from MGet result")
+	_, hasMissing := out["missing"]
+	assert.False(t, hasMissing)
+}
+
 func TestWithCacheMaxValueSize_PanicsOnNegative(t *testing.T) {
 	assert.Panics(t, func() {
 		WithCacheMaxValueSize(-1)

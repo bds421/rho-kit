@@ -198,6 +198,12 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 
 // Get returns a cached response and applies fingerprint comparison if a
 // non-nil fingerprint is supplied.
+//
+// The cap is enforced via STRLEN before GET so a hostile or legacy writer
+// that stored a multi-MB value under the same key prefix cannot force this
+// process to allocate the full response body before the cap runs. A
+// post-GET length check still runs to catch the rare TOCTOU window where
+// the value is replaced between STRLEN and GET.
 func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	if err := s.ready(); err != nil {
 		return nil, false, err
@@ -205,7 +211,21 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	if err := validateKey(key); err != nil {
 		return nil, false, err
 	}
-	data, err := s.client.Get(ctx, s.k(key)).Bytes()
+	redisKey := s.k(key)
+	sz, err := s.client.StrLen(ctx, redisKey).Result()
+	if err != nil {
+		if translated := translateUnavailable(err); translated != err {
+			return nil, false, translated
+		}
+		return nil, false, fmt.Errorf("idempotencystore: get strlen: %w", err)
+	}
+	if sz == 0 {
+		// Distinguishing "missing" from "empty stored value" is left to
+		// the GET below — Redis returns redis.Nil for missing keys.
+	} else if sz > maxStoredEntryBytes {
+		return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	}
+	data, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
 			return nil, false, nil
@@ -280,7 +300,18 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 
 	// SETNX failed — inspect the existing value to distinguish "same
 	// fingerprint, contended" from "different fingerprint, conflict".
-	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
+	// Same STRLEN-before-GET guard as [Store.Get] so a poisoned slot
+	// cannot OOM the lock-inspection path.
+	redisKey := s.k(key)
+	if sz, slErr := s.client.StrLen(ctx, redisKey).Result(); slErr != nil {
+		if translated := translateUnavailable(slErr); translated != slErr {
+			return "", false, false, translated
+		}
+		return "", false, false, fmt.Errorf("idempotencystore: inspect strlen: %w", slErr)
+	} else if sz > maxStoredEntryBytes {
+		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	}
+	existing, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
 			// Race: TTL expired between SETNX and GET. Caller will retry.
