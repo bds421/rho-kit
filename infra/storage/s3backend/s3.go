@@ -108,8 +108,29 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 }
 
 // New creates a new Backend from the given config.
+//
+// New uses [context.Background] for the AWS SDK credential resolution
+// chain. This is safe for static `AccessKey`/`SecretKey` configs (no
+// I/O), but with `UseDefaultCredentials=true` or a remote
+// `CredentialProvider` the SDK may perform EC2 metadata fetches, STS
+// AssumeRole, SSO token exchange, or web-identity token reads — all
+// unbounded without a caller deadline. Production services that
+// resolve credentials remotely should call [NewContext] with a
+// bounded ctx instead.
+//
 // Panics if cfg.Bucket is empty.
 func New(cfg Config, opts ...Option) (*Backend, error) {
+	return NewContext(context.Background(), cfg, opts...)
+}
+
+// NewContext is the ctx-aware variant of [New]. The supplied ctx
+// bounds the AWS SDK credential resolution chain
+// ([awsconfig.LoadDefaultConfig]). Prefer this constructor over [New]
+// when the SDK may perform remote I/O during startup (EC2 metadata,
+// STS AssumeRole, SSO token exchange, web-identity tokens).
+//
+// Panics if cfg.Bucket is empty.
+func NewContext(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 	if cfg.Bucket == "" {
 		panic("s3backend: Config.Bucket is required")
 	}
@@ -117,7 +138,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 		return nil, err
 	}
 
-	awsCfg, err := buildAWSConfig(context.Background(), cfg)
+	awsCfg, err := buildAWSConfig(ctx, cfg)
 	if err != nil {
 		return nil, storage.WrapSafe("s3backend: build AWS config failed", err)
 	}

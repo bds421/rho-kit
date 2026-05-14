@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrServerNameRequired is returned by the [ReloadingClientTLS]
@@ -191,8 +193,12 @@ func (s *FilesCertificateSource) Reload() error {
 	snap, err := loadCertSnapshot(s.cfg)
 	if err != nil {
 		s.reloadErrs.Add(1)
+		// redact.Error sanitizes the wrapped error so cert/key/CA
+		// file paths from os.ReadFile and tls.LoadX509KeyPair do not
+		// leak the deployment's filesystem topology into structured
+		// logs.
 		s.logger.Error("netutil: TLS reload failed — keeping previous good snapshot",
-			slog.Any("error", err))
+			redact.Error(err))
 		return err
 	}
 	prev := s.snapshot.Load()
