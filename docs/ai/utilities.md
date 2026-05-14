@@ -28,6 +28,7 @@ apperror.NewPermanentWithCause("failed", err)           // CodePermanent → 422
 apperror.NewUnavailable("not ready")                    // CodeUnavailable → 503 (self not ready)
 apperror.NewUnavailableWithCause("down", err)           // CodeUnavailable → 503 (wraps cause)
 apperror.NewDependencyUnavailable("redis", "msg", err)  // CodeUnavailable → 502 (upstream down)
+apperror.NewStorageFull("object store full")            // CodeStorageFull → 507
 ```
 
 Every error type implements `Retryable() bool`. Use `apperror.ShouldRetry` as a predicate for retry middleware:
@@ -142,7 +143,7 @@ func listUsers(w http.ResponseWriter, r *http.Request) {
     result := pagination.BuildResult(users, p.Limit, func(u User) string {
         return u.ID // cursor value = primary key
     })
-    httpx.WriteJSON(w, 200, result)
+    httpx.WriteJSON(w, r, 200, result)
 }
 ```
 

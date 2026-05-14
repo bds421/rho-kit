@@ -193,12 +193,14 @@ paid upstream has already done work; add `httpbudget.WithRefundOnTransportError(
 only for providers that guarantee failed requests are never billed.
 
 ```go
-client := &http.Client{
-    Transport: httpbudget.Wrap(http.DefaultTransport, tenantBudget, tenantID,
-        httpbudget.WithEstimateHeader("X-Estimated-Tokens"),
-        httpbudget.WithActualHeader("X-Actual-Tokens"),
-    ),
-}
+// Start from a kit-hardened client (sane timeouts, TLS floor) and
+// wrap its Transport with the budget enforcer. The kit anti-pattern
+// list forbids reaching for http.DefaultClient / http.DefaultTransport.
+base := httpx.NewHTTPClient(10*time.Second, nil)
+base.Transport = httpbudget.Wrap(base.Transport, tenantBudget, tenantID,
+    httpbudget.WithEstimateHeader("X-Estimated-Tokens"),
+    httpbudget.WithActualHeader("X-Actual-Tokens"),
+)
 ```
 
 ## JSON Request/Response

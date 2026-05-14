@@ -57,7 +57,7 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
 
     return app.New("backend", handler.Version, base).
         With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
-        With(redis.Module(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"})).
+        With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{ServerName: "cache.internal"}})).
         With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
         WithJWT(os.Getenv("JWKS_URL")).
         WithJWTAudience("backend").
@@ -104,7 +104,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-c, err := rediscache.NewRedisCache(conn.Client(), "api-cache")
+c, err := rediscache.NewCache(conn.Client(), "api-cache")
 if err != nil {
     log.Fatal(err)
 }

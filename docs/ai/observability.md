@@ -23,18 +23,18 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 
 ## Tracing
 
-Use `app.WithTracing` for Builder services:
+Use `app/tracing.Module` for Builder services:
 
 ```go
 app.New("orders", version, cfg.BaseConfig).
-    WithTracing(tracing.Config{
+    With(tracing.Module(tracing.Config{
         ServiceName:    "orders",
         ServiceVersion: version,
         Environment:    cfg.Environment,
         Endpoint:       "otel-collector:4317",
         SampleRate:     0.05,
         Compression:    "gzip",
-    })
+    }))
 ```
 
 `tracing.Config.Validate` runs in `tracing.Init` and `Builder.Validate`.

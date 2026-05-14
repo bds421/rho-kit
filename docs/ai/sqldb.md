@@ -10,7 +10,11 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 
 Use `infra/sqldb` for PostgreSQL configuration and small stdlib helpers. Use `infra/sqldb/pgx` for the runtime pool. v2 does not ship MySQL, MariaDB, or GORM as the service database path.
 
-`app.Builder.WithPostgres` takes `pgxbackend.Config`, not `sqldb.Config`. Services that load field-based config should convert it to a pgx DSN at the service boundary.
+`app/postgres.Module(pgxbackend.Config)` is the adapter; services
+wire it via `app.Builder.With(postgres.Module(cfg))`. The adapter
+takes `pgxbackend.Config`, not `sqldb.Config` — services that load
+field-based config should convert it to a pgx DSN at the service
+boundary.
 
 Postgres-backed data adapters live in split modules so services only import what they use: `data/idempotency/pgstore`, `data/actionlog/postgres`, `data/approval/postgres`, `data/lock/pgadvisory`, and `data/queue/riverqueue`.
 
@@ -76,7 +80,7 @@ func postgresURL(c sqldb.Config) string {
 
 ```go
 app.New("my-service", version, cfg.BaseConfig).
-    WithPostgres(cfg.Postgres).
+    With(postgres.Module(cfg.Postgres)).
     WithMigrations(migrationsFS).
     Router(func(infra app.Infrastructure) http.Handler {
         repo := NewUserRepository(infra.DB.Pool())
@@ -121,7 +125,7 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (User, error) 
 var migrationsFS embed.FS
 
 app.New("my-service", version, cfg.BaseConfig).
-    WithPostgres(cfg.Postgres).
+    With(postgres.Module(cfg.Postgres)).
     WithMigrations(migrationsFS).
     Router(routerFn).
     Run()

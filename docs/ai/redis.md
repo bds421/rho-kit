@@ -56,7 +56,7 @@ Health ping every 5s. Reconnect backoff: 3s base, 60s max.
 URL validation: `redis.ValidateRedisURL("cache", rawURL)` — supports `redis://` and `rediss://` (TLS). Production configuration should use `rediss://` with credentials; parsed and caller-supplied TLS options are cloned and raised to a TLS 1.2 minimum before clients are created.
 For Redis credential rotation, pass one of go-redis'
 `CredentialsProvider`, `CredentialsProviderContext`, or
-`StreamingCredentialsProvider` fields in `*redis.Options`; `app.WithRedis`
+`StreamingCredentialsProvider` fields in `*redis.Options`; `app/redis.Module`
 recognizes these as valid non-loopback credentials, and the go-redis client
 handles new connection auth or streaming reauth according to the provider type.
 
@@ -82,7 +82,7 @@ Loaded via `redis.LoadRedisFields()`. Use `fields.Redis.Options()` to get `*gore
 Implements `cache.Cache` (Get/Set/Delete/Exists):
 
 ```go
-redisCache, err := rediscache.NewRedisCache(conn.Client(), "sessions",
+redisCache, err := rediscache.NewCache(conn.Client(), "sessions",
     rediscache.WithCacheMaxValueSize(10 << 20), // default 10 MiB
 )
 
@@ -103,7 +103,7 @@ to route/repository code. The wrapper uses `core/tenant.Key` and
 returns an error if the request context has no tenant ID.
 
 ```go
-baseCache, err := rediscache.NewRedisCache(conn.Client(), "sessions")
+baseCache, err := rediscache.NewCache(conn.Client(), "sessions")
 tenantCache := tenantcache.Wrap(baseCache)
 
 err = tenantCache.Set(ctx, "profile:123", jsonBytes, 30*time.Minute)
@@ -316,7 +316,7 @@ func TestRedisCache(t *testing.T) {
     conn, _ := redis.Connect(opts, redis.WithLogger(slog.Default()))
     defer conn.Close()
 
-    c, _ := rediscache.NewRedisCache(conn.Client(), "test-"+t.Name())
+    c, _ := rediscache.NewCache(conn.Client(), "test-"+t.Name())
     // ... test cache operations
 }
 ```

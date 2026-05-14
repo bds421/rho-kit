@@ -110,9 +110,9 @@ func main() {
         }
 
         return app.New("my-service", version, base).
-            WithPostgres(pgxbackend.Config{DSN: "postgres://localhost/my-service"}).
-            WithRedis(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"}).
-            WithRabbitMQ("amqps://broker.internal").
+            With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
+            With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{ServerName: "cache.internal"}})).
+            With(amqp.Module("amqps://broker.internal")).
             WithJWT("https://issuer.example.com/.well-known/jwks.json").
             WithJWTAudience("my-service").
             WithIPRateLimit(100, time.Minute).
@@ -143,12 +143,12 @@ The package decision tree in [AGENTS.md](../../AGENTS.md#package-decision-tree)
 is the canonical "I need to X, what do I import?" reference. Quick
 pointers for the most common downstream wiring:
 
-| Capability | Builder method | Infrastructure field |
+| Capability | Builder wiring | Infrastructure field |
 |---|---|---|
-| Postgres pool, readiness | `WithPostgres(pgxbackend.Config{DSN:...})` | `infra.DB` |
-| Redis (TLS-required) | `WithRedis(*goredis.Options, ...kitredis.ConnOption)` | `infra.Redis` |
-| RabbitMQ publisher/consumer | `WithRabbitMQ(url)` | `infra.Publisher`, `infra.Consumer` |
-| NATS JetStream | `WithNATS(natsbackend.Config)` | `infra.NATS`, `infra.NATSPublisher` |
+| Postgres pool, readiness | `With(postgres.Module(pgxbackend.Config{DSN:...}))` | `infra.DB` |
+| Redis (TLS-required) | `With(redis.Module(*goredis.Options, ...kitredis.ConnOption))` | `infra.Redis` |
+| RabbitMQ publisher/consumer | `With(amqp.Module(url))` | `infra.Publisher`, `infra.Consumer` |
+| NATS JetStream | `With(nats.Module(natsbackend.Config))` | `infra.NATS`, `infra.NATSPublisher` |
 | JWT verification (JWKS) | `WithJWT(jwksURL).WithJWTAudience(aud)` | `infra.JWT` |
 | Multi-tenant request scope | `WithMultiTenant(extractor, required)` | (middleware) |
 | In-process rate limit | `WithIPRateLimit(n, window)` | `infra.RateLimiter` |
@@ -176,9 +176,9 @@ require explicit opt-in:
 - **`httpx/middleware/idempotency`.** The Builder does not mount the
   idempotency middleware on every route — wire it on the specific mux
   subtree that needs it.
-- **OpenTelemetry tracing.** `WithTracing(cfg)` is opt-in; without it
-  the Builder runs with no tracer provider and `infra.HTTPClient` is
-  the non-tracing client.
+- **OpenTelemetry tracing.** `With(tracing.Module(cfg))` is opt-in;
+  without it the Builder runs with no tracer provider and
+  `infra.HTTPClient` is the non-tracing client.
 - **Audit logger, approval store, action logger.** `WithAuditLog`,
   `WithApprovalStore`, `WithActionLogger` are explicit; the kit ships
   in-memory implementations for tests but production backends
@@ -204,11 +204,11 @@ Reviews keep catching the same five mistakes in downstream services:
    `JSONNoBody`, `JSONStatus`, `JSONNoBodyStatus`, and `NoContent`.
 
 3. **Plaintext Redis URI bypassing FR-077.**
-   `WithRedis(&goredis.Options{Addr: "redis://cache:6379"})` against a
-   non-loopback host is rejected at `Run()` time. Set
-   `Options.TLSConfig` (or use a `rediss://` URL) and a non-empty
-   `Password`. Use `WithoutRedisTLS()` only on a reviewed local-dev
-   boundary; there is no `KIT_ENV` escape hatch.
+   `With(redis.Module(&goredis.Options{Addr: "cache:6379"}))` against
+   a non-loopback host without a `TLSConfig` is rejected at `Run()`
+   time. Set `Options.TLSConfig` (TLS 1.2 floor enforced) and a non-
+   empty `Password`. Use `redis.WithoutTLS()` only on a reviewed
+   local-dev boundary; there is no `KIT_ENV` escape hatch.
 
 4. **Custom modules implementing `Close`, not `Stop`.**
    `app.Module.Stop(ctx context.Context) error` is the v2 method.

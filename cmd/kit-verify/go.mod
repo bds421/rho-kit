@@ -7,7 +7,9 @@
 // — annotation says "this kit middleware satisfies V2.1.5";
 // kit-verify proves the running service exhibits that behaviour
 // (e.g., rejects passwords below entropy, returns 401 on missing
-// JWT, sets HSTS headers).
+// JWT). HSTS-header probing is documented for a future probe set
+// and is NOT yet implemented; rely on
+// httpx/middleware/secheaders tests for HSTS coverage today.
 //
 // kit-verify is INTENTIONALLY a separate command from kit-doctor:
 // kit-doctor analyses source, kit-verify probes a running binary.

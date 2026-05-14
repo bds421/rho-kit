@@ -41,8 +41,12 @@ Every `go.mod` in the workspace MUST satisfy all of:
 
 - `go` directive pinned to an exact patch version (e.g.
   `go 1.26.2`, never `go 1.26`).
-- `toolchain` directive pinned to an exact patch version
-  (`toolchain go1.26.2`).
+- The workspace `go.work` `toolchain` directive pins the exact
+  patch version (e.g. `toolchain go1.26.2`) for every module in the
+  workspace, so per-module `toolchain` directives are intentionally
+  omitted to avoid drift between the workspace and individual
+  `go.mod` files. Downstream consumers receive the resolved
+  toolchain via the workspace pin.
 - Every `require` line uses an exact semver tag — never `v0.0.0-`
   pseudo-versions for external code, never `latest`, never a
   branch reference.
@@ -251,9 +255,12 @@ the artefact a consumer receives.
 
 ### 3.1 Configuration
 
-The kit ships a Dependabot config (`.github/dependabot.yml`,
-landed alongside this document or as the next supply-chain
-follow-up) with three ecosystems:
+Dependabot configuration is the recommended cadence policy for the
+kit; `.github/dependabot.yml` is intentionally NOT shipped from the
+kit repo because the kit is consumed as a Go module and downstream
+services own their own dependency cadence. The table below
+documents the policy each consuming service should implement when
+adopting the kit. Three ecosystems are expected:
 
 | Ecosystem | Schedule | Auto-merge | Reviewers |
 |---|---|---|---|
@@ -639,9 +646,9 @@ tampering, unexpected artifact provenance, leaked secrets):
 
 ### 8.1 Allowed licenses
 
-The kit's deliverable is itself proprietary (see `LICENSE.md`), but
-it imports open-source dependencies. Allowed licenses for direct
-and transitive deps:
+The kit ships under Apache-2.0 (see `LICENSE.md` and `NOTICE`).
+It also imports open-source dependencies; allowed licenses for
+direct and transitive deps:
 
 | License | Status | Notes |
 |---|---|---|
@@ -674,8 +681,8 @@ in the same PR.
 
 ### 8.3 Per-module license declarations
 
-Each kit module is published under the same `LICENSE.md` (the kit
-is proprietary). The CycloneDX SBOM emitted by `sbom.yml` carries
+Each kit module is published under the same `LICENSE.md`
+(Apache-2.0). The CycloneDX SBOM emitted by `sbom.yml` carries
 each direct/transitive dep's license string in the `licenses` field
 of the corresponding component. The repository's
 [`NOTICE`](../../NOTICE) file points readers at the SBOM as the

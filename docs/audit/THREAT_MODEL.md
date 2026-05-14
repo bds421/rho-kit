@@ -455,7 +455,7 @@ backends or other expensive operations.
 |---|---|---|---|---|---|
 | O-01 | Dual-write inconsistency — DB commit succeeds but broker publish fails | A1 (broker outage) | `outbox.Writer` (constructed via `NewWriter`) **requires** an ambient transaction by default; relay reads, publishes, and marks processing rows through the store contract | kit-enforced | [infra/outbox/outbox.go](../../infra/outbox/outbox.go), [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 | O-02 | Tight retry loop with no backoff hammers broker | A1 (broker outage) | Relay uses `next_retry_at` + exponential backoff; exhausted rows move to failed state for dead-letter inspection | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
-| O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | Atomic `UPDATE … WHERE claimed_at IS NULL` claim pattern; `updated_at` used for stale-claim detection | kit-enforced | [infra/outbox/gormstore](../../infra/outbox/gormstore/) |
+| O-03 | Two relays claim the same row → duplicate publish | A1 (cluster condition) | `UPDATE outbox_entries SET status='processing' WHERE id IN (SELECT id FROM outbox_entries WHERE status='pending' ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT $1)`; `updated_at` used for stale-claim detection | kit-enforced | [infra/outbox/postgres/store.go](../../infra/outbox/postgres/store.go) |
 | O-04 | Outbox table grows forever | A5 (housekeeping omitted) | `Relay` cleans old published rows and old failed rows on startup and periodic ticks; `WithRetention` and `WithFailedRetention` tune the windows | kit-enforced | [infra/outbox/relay.go](../../infra/outbox/relay.go) |
 
 ### 4.12 Internal observability port

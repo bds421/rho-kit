@@ -156,7 +156,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Request-scoped logging | `httpx/middleware/logging.WithRequestLogger`, `httpx.Logger` | [http](docs/ai/http.md) |
 | Test HTTP handlers | `httpx/httpxtest` | [testing](docs/ai/testing.md) |
 | Redis-backed idempotency | `data/idempotency/redisstore` | [redis](docs/ai/redis.md) |
-| Queue depth health check | `redis/queue.DepthCheck` | [redis](docs/ai/redis.md) |
+| Queue depth health check | `data/queue/redisqueue.Queue.DepthCheck` | [redis](docs/ai/redis.md) |
 | Write integration tests (DB) | `infra/sqldb/dbtest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (Redis) | `infra/redis/redistest/v2` | [testing](docs/ai/testing.md) |
 | Write integration tests (RabbitMQ) | `infra/messaging/amqpbackend/integrationtest/v2/rabbitmqtest` | [testing](docs/ai/testing.md) |
@@ -234,7 +234,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Middleware order**: Always use `stack.Default()` — it enforces: outer → metrics → requestID → tracing → logging → inner → handler.
 - **Scaffolds**: Use `kit-new -tenant` for new multi-tenant services so Redis cache and idempotency start behind the tenant wrappers.
 - **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
-- **Messaging size**: Builder-created RabbitMQ and NATS publishers enforce `messaging.DefaultMaxMessageBytes`; use `WithRouteMaxMessageBytes` for explicitly large routes instead of disabling the cap globally.
+- **Messaging size**: `infra/messaging` publishers default to `messaging.DefaultMaxMessageBytes` (1 MiB); `infra/outbox.WithRouteMaxMessageBytes` overrides for one route, `infra/messaging/buffered_publisher.WithMaxMessageBytes` overrides the buffered-publisher default. Adapter modules (`app/amqp`, `app/nats`) wire these limits through to the underlying backend.
 - **Credential rotation**: Prefer provider-backed credentials over static secrets when the upstream SDK supports it. Use DB `PasswordProvider`, go-redis credential providers, AMQP URL providers, NATS auth providers, cloud SDK default credentials, CSRF `WithSecrets`, and signed-request key stores for zero-downtime rotation.
 - **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; a clean current release-candidate capture is the canonical `kit-bench-gate -baseline` input for the release branch. If the directory manifest marks the files historical/preliminary, treat them as comparison evidence only and rerun the baseline before tagging.
 

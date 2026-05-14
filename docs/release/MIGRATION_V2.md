@@ -90,7 +90,7 @@ return app.New("billing-api", version, cfg.BaseConfig).
     WithRedis(cfg.Redis).
     WithJWT(cfg.JWKSURL).
     WithJWTAudience("billing-api").
-    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"), true).
+    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
     WithTenantBudget(budgetStore).
     WithActionLogger(actionLogger).
     WithApprovalStore(approvalStore).

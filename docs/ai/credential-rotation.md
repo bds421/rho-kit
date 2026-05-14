@@ -7,8 +7,8 @@ deployments, but production services should prefer the provider hooks below.
 | Surface | Rotation contract |
 |---|---|
 | PostgreSQL | `pgxbackend.Config.PasswordProvider` is called before every new physical connection. Call `Pool.Reset()` after a password rotation event to drain old authenticated connections. |
-| Redis | Pass go-redis `CredentialsProvider`, `CredentialsProviderContext`, or `StreamingCredentialsProvider` through `app.WithRedis` / `infra/redis.Connect`. Streaming providers can re-auth open connections when go-redis receives updates. |
-| RabbitMQ / AMQP | Use `amqpbackend.WithURLProvider` or `app.WithRabbitMQURLProvider`; the provider is called before each initial dial and reconnect. `amqpbackend.WithURLProviderTimeout` bounds the provider context. |
+| Redis | Pass go-redis `CredentialsProvider`, `CredentialsProviderContext`, or `StreamingCredentialsProvider` through `app/redis.Module` / `infra/redis.Connect`. Streaming providers can re-auth open connections when go-redis receives updates. |
+| RabbitMQ / AMQP | Use `amqpbackend.WithURLProvider` or `app/amqp.WithURLProvider`; the provider is called before each initial dial and reconnect. `amqpbackend.WithURLProviderTimeout` bounds the provider context. |
 | NATS JetStream | Use `natsbackend.Config.UsernamePasswordProvider` or `TokenProvider`; nats.go calls these during auth and reauth. `.creds` files are delegated to nats.go callbacks; NKey seed signatures are callback-based but the public key is fixed at connection construction, so prefer providers for live rotation. |
 | S3 | Prefer `S3Config.UseDefaultCredentials` for IAM role, web identity, ECS/EKS/EC2 metadata, SSO, or process providers. Use `S3Config.CredentialProvider` for explicit rotating AWS SDK providers. Static access keys are mutually exclusive with both. |
 | Azure Blob | Prefer `azurebackend.NewWithTokenCredential` with managed identity, workload identity, or chained Azure credentials. `New` with `AccountKey` remains the static-key path. |

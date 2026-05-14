@@ -25,7 +25,7 @@ If the message must be committed atomically with a database write, use
 
 ```go
 app.New(...).
-    WithRabbitMQ(cfg.AMQPURL).
+    With(amqp.Module(cfg.AMQPURL)).
     Router(func(infra app.Infrastructure) http.Handler {
         // Declare topology (AMQP-specific)
         bindings, err := amqpbackend.DeclareAll(infra.Broker.(*amqpbackend.Connection),
@@ -79,7 +79,7 @@ conn, err := amqpbackend.Dial(url, logger,
 cloned and raised to a TLS 1.2 minimum; stricter caller settings are
 preserved.
 For credential rotation, use `WithURLProvider` (or
-`app.WithRabbitMQURLProvider`) so a fresh AMQP URL is fetched before the
+`app/amqp.WithURLProvider`) so a fresh AMQP URL is fetched before the
 initial dial and every reconnect. URL providers receive a bounded context; tune
 that bound with `WithURLProviderTimeout` when the secret manager has a known
 tail-latency SLO.
@@ -104,7 +104,7 @@ for trusted single-host development setups. NATS URLs must use
 embed credentials, query parameters, or fragments; use `Username`,
 `Token`, `CredentialsFile`, `NKeyFile`, `UsernamePasswordProvider`, or
 `TokenProvider` for authentication.
-`natsbackend.Config.Clone`, `Connect`, and `app.Builder.WithNATS`
+`natsbackend.Config.Clone`, `Connect`, and `app/nats.Module`
 snapshot caller-owned config; custom TLS configs are cloned with the TLS
 1.2+ floor, and `ExtraOptions` slices are copied before storage/dial.
 `UsernamePasswordProvider` and `TokenProvider` are delegated to nats.go auth
@@ -149,8 +149,8 @@ Use Builder methods for the golden path:
 
 ```go
 app.New("orders", version, cfg.BaseConfig).
-    WithRabbitMQ(cfg.AMQPURL).
-    WithNATS(natsCfg).
+    With(amqp.Module(cfg.AMQPURL)).
+    With(nats.Module(natsCfg)).
     WithMaxMessageBytes(512 << 10).                         // default for Builder-created publishers
     WithRouteMaxMessageBytes("orders", "order.bulk", 8<<20) // exact route override
 ```

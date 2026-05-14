@@ -1096,7 +1096,7 @@ b := app.New("my-service", "v2.0.0", cfg).
 
     // Multi-tenant — extracts X-Tenant-Id by default; required on
     // state-changing methods, GET/HEAD/OPTIONS pass through.
-    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"), true).
+    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
 
     // Per-tenant cost budgets. Default key = tenant.FromContext.
     WithTenantBudget(budgetredis.New(redisClient, 1_000_000, time.Hour)).
@@ -1294,18 +1294,35 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 
 ## Upgrading from v1.x
 
-1. **No code changes are required**. v1.x services keep working.
-2. To adopt v2 primitives incrementally:
-   - Start with `core/tenant` + the `httpx/middleware/tenant` middleware in the public mux.
-   - Then add `data/cache/tenant.Wrap(...)` around any cache the service constructs.
+v2 is a breaking release. v1.x services MUST update import paths
+(`/v2` suffix) and migrate Builder calls before upgrading. See
+[docs/release/MIGRATION_V2.md](release/MIGRATION_V2.md) for the
+full mapping table.
+
+1. **Update import paths.** Every kit import now carries the `/v2`
+   module-path suffix (e.g. `github.com/bds421/rho-kit/httpx/v2`).
+2. **Migrate removed Builder methods.** Adapter modules now wrap
+   what used to be Builder shortcuts:
+   - `WithPostgres(cfg)` → `With(postgres.Module(cfg))`
+   - `WithRedis(opts, ...)` → `With(redis.Module(opts, ...))`
+   - `WithRabbitMQ(url)` → `With(amqp.Module(url))`
+   - `WithNATS(cfg)` → `With(nats.Module(cfg))`
+   - `WithTracing(cfg)` → `With(tracing.Module(cfg))`
+3. To adopt v2 primitives incrementally:
+   - Start with `core/tenant` + the `httpx/middleware/tenant`
+     middleware in the public mux.
+   - Then add `data/cache/tenant.Wrap(...)` around any cache the
+     service constructs.
    - Then `WithMultiTenant` on the Builder.
-   - Cost budgets and action log come once tenant ID is reliably on ctx.
+   - Cost budgets and action log come once tenant ID is reliably
+     on ctx.
    - For new services, `kit-new -tenant` emits the Redis cache and
      idempotency wrappers from the start.
-3. Run `kit-doctor ./...` against the upgraded service to surface any drift from the kit's secure defaults.
-   The v2 doctor includes a `tenant-key-prefix` rule for hand-written
-   `tenant:` cache/idempotency keys; use `core/tenant.Key` or tenant
-   wrappers instead.
+4. Run `kit-doctor ./...` against the upgraded service to surface
+   any drift from the kit's secure defaults. The v2 doctor includes
+   a `tenant-key-prefix` rule for hand-written `tenant:` cache/
+   idempotency keys; use `core/tenant.Key` or tenant wrappers
+   instead.
 
 ## Acknowledgements
 
