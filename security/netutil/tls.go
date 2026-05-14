@@ -190,6 +190,23 @@ func (c TLSConfig) loadCertAndCA() (tls.Certificate, *x509.CertPool, error) {
 	return cert, caPool, nil
 }
 
+// Reloading constructs a [FilesCertificateSource] from this
+// TLSConfig. Use this when a service needs hot rotation of
+// cert/key/CA files (Kubernetes secret rotation, Vault Agent
+// templating) without restarting the process.
+//
+// The result is a single CertificateSource that backs both server
+// and client TLS via [ReloadingServerTLS] and [ReloadingClientTLS].
+// Pass [WithReloadInterval] to enable polling, or call
+// [FilesCertificateSource.Reload] from a SIGHUP handler.
+//
+// Returns an error if TLS is not fully configured — call sites
+// that may run without TLS should branch on [TLSConfig.Enabled]
+// first.
+func (c TLSConfig) Reloading(opts ...FilesCertificateSourceOption) (*FilesCertificateSource, error) {
+	return NewFilesCertificateSource(c, opts...)
+}
+
 // LoadTLS reads TLS config from standard environment variables.
 func LoadTLS() TLSConfig {
 	return TLSConfig{
