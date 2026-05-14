@@ -239,7 +239,7 @@ func TestDangerousAction_MissingTenantUsesJSONError(t *testing.T) {
 // endpoint returns the tenant's current budget remaining via the
 // Peek API. Demonstrates the read-only side of the budget primitive.
 func TestBudgetStatus_ReturnsRemaining(t *testing.T) {
-	bud := budgetmem.New(1000, time.Minute)
+	bud := budgetmem.Open(1000, time.Minute)
 	h := budgetStatus(bud)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/budget", nil)
@@ -271,7 +271,7 @@ func TestBudgetStatus_BackendErrorDoesNotLeak(t *testing.T) {
 }
 
 func TestBudgetStatus_MissingTenantUsesJSONError(t *testing.T) {
-	h := budgetStatus(budgetmem.New(1000, time.Minute))
+	h := budgetStatus(budgetmem.Open(1000, time.Minute))
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/budget", nil)
 	rec := httptest.NewRecorder()

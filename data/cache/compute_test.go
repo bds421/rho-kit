@@ -20,7 +20,7 @@ import (
 // newTestBackend creates a MemoryCache suitable for testing.
 func newTestBackend(t *testing.T) *MemoryCache {
 	t.Helper()
-	mc, err := NewMemoryCache()
+	mc, err := OpenMemoryCache()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mc.Close() })
 	return mc

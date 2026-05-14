@@ -160,7 +160,15 @@ func WithCleanupInterval(d time.Duration) MemoryCacheOption {
 // counts as len(value) and the default MaxCost is 64 MiB. Use WithMaxSize
 // or WithEntryCost to switch to entry-count accounting; use WithCostFunc
 // to plug in a custom cost (e.g. struct size including overhead).
-func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
+// OpenMemoryCache constructs a [MemoryCache] and starts its background
+// sweeper goroutine. The Open* prefix marks this as a side-effecting
+// constructor; pair with [MemoryCache.Close] in shutdown wiring for
+// deterministic cleanup, though a forgotten Close is recoverable thanks
+// to the sweeper's weak.Pointer (see Close docs).
+//
+// Replaces the v1 NewMemoryCache spelling so the lifecycle obligation
+// is visible at the call site.
+func OpenMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 	mc := &MemoryCache{metricsEnabled: true}
 	for _, o := range opts {
 		if o == nil {
@@ -271,10 +279,12 @@ func (mc *MemoryCache) stopBackgroundSweeper() {
 	})
 }
 
-// MustNewMemoryCache is like NewMemoryCache but panics on error.
-// Use in init() or main() where failure is unrecoverable.
-func MustNewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
-	mc, err := NewMemoryCache(opts...)
+// MustOpenMemoryCache is like [OpenMemoryCache] but panics on error.
+// Use in init() or main() where failure is unrecoverable. Replaces
+// the v1 MustNewMemoryCache spelling to match the Open* prefix used
+// for side-effecting constructors.
+func MustOpenMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
+	mc, err := OpenMemoryCache(opts...)
 	if err != nil {
 		panic("cache: memory cache configuration is invalid")
 	}

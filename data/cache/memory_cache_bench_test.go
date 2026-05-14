@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkMemoryCache_Get(b *testing.B) {
-	mc := MustNewMemoryCache()
+	mc := MustOpenMemoryCache()
 	ctx := context.Background()
 	_ = mc.Set(ctx, "bench-key", []byte("bench-value"), time.Hour)
 
@@ -19,7 +19,7 @@ func BenchmarkMemoryCache_Get(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_Set(b *testing.B) {
-	mc := MustNewMemoryCache()
+	mc := MustOpenMemoryCache()
 	ctx := context.Background()
 	val := []byte("bench-value")
 
@@ -30,7 +30,7 @@ func BenchmarkMemoryCache_Set(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_GetMiss(b *testing.B) {
-	mc := MustNewMemoryCache()
+	mc := MustOpenMemoryCache()
 	ctx := context.Background()
 
 	b.ResetTimer()
@@ -40,7 +40,7 @@ func BenchmarkMemoryCache_GetMiss(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_SetOverwrite(b *testing.B) {
-	mc := MustNewMemoryCache()
+	mc := MustOpenMemoryCache()
 	ctx := context.Background()
 	val := []byte("bench-value")
 

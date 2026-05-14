@@ -87,12 +87,19 @@ func WithoutSweeper() Option {
 //
 // Examples:
 //
-//   - New(1_000_000, time.Hour) — one million tokens per hour.
-//   - New(50, 24*time.Hour)     — fifty operations per day.
+//   - Open(1_000_000, time.Hour) — one million tokens per hour.
+//   - Open(50, 24*time.Hour)     — fifty operations per day.
+//
+// The Open* prefix marks this constructor as side-effecting: it spawns
+// a background sweeper goroutine that holds only a weak reference to
+// the budget, so a forgotten Close does not pin it forever. Pair with
+// [Budget.Close] in shutdown wiring for deterministic cleanup.
 //
 // Panics on cap <= 0 or period <= 0; misconfiguration here is
 // almost always a bug rather than a recoverable runtime condition.
-func New(cap int64, period time.Duration, opts ...Option) *Budget {
+// Replaces the v1 New() spelling so the lifecycle obligation is
+// visible at the call site.
+func Open(cap int64, period time.Duration, opts ...Option) *Budget {
 	if cap <= 0 {
 		panic("budget/memory: cap must be > 0")
 	}

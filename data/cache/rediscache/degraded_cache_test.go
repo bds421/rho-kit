@@ -37,7 +37,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	primary, err := NewCache(client, "test-degraded")
 	require.NoError(t, err)
 
-	fallback, err2 := sharedcache.NewMemoryCache()
+	fallback, err2 := sharedcache.OpenMemoryCache()
 	require.NoError(t, err2)
 	t.Cleanup(func() { _ = fallback.Close() })
 

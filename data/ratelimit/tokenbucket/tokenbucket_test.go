@@ -19,14 +19,14 @@ func TestImplementsLimiter(t *testing.T) {
 }
 
 func TestAllow_RejectsEmptyKey(t *testing.T) {
-	l := New(5, 1)
+	l := Open(5, 1)
 	allowed, _, err := l.Allow(context.Background(), "")
 	assert.False(t, allowed)
 	assert.ErrorIs(t, err, ratelimit.ErrInvalidKey)
 }
 
 func TestAllow_RejectsInvalidKey(t *testing.T) {
-	l := New(5, 1)
+	l := Open(5, 1)
 
 	cases := []string{
 		"tenant\nid",
@@ -44,7 +44,7 @@ func TestAllow_RejectsInvalidKey(t *testing.T) {
 }
 
 func TestAllow_FullBucketAcceptsBurst(t *testing.T) {
-	l := New(5, 1) // 5 tokens, refill 1/s
+	l := Open(5, 1) // 5 tokens, refill 1/s
 	for i := 0; i < 5; i++ {
 		ok, _, err := l.Allow(context.Background(), "k")
 		require.NoError(t, err)
@@ -59,7 +59,7 @@ func TestAllow_FullBucketAcceptsBurst(t *testing.T) {
 
 func TestAllow_RefillsOverTime(t *testing.T) {
 	now := time.Now()
-	l := New(2, 2, WithClock(func() time.Time { return now }))
+	l := Open(2, 2, WithClock(func() time.Time { return now }))
 	// Drain.
 	require.True(t, mustAllow(t, l, "k"))
 	require.True(t, mustAllow(t, l, "k"))
@@ -73,7 +73,7 @@ func TestAllow_RefillsOverTime(t *testing.T) {
 }
 
 func TestAllow_PerKeyIsolation(t *testing.T) {
-	l := New(1, 1)
+	l := Open(1, 1)
 	require.True(t, mustAllow(t, l, "alice"))
 	// alice is drained but bob's bucket is independent.
 	require.True(t, mustAllow(t, l, "bob"))
@@ -99,13 +99,13 @@ func TestNew_PanicsOnInvalidParams(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Panics(t, func() { New(tc.capacity, tc.refill) })
+			assert.Panics(t, func() { Open(tc.capacity, tc.refill) })
 		})
 	}
 }
 
 func TestNew_PanicsOnNilOption(t *testing.T) {
-	assert.Panics(t, func() { New(1, 1, nil) })
+	assert.Panics(t, func() { Open(1, 1, nil) })
 }
 
 func TestInvalidReceiverReturnsError(t *testing.T) {
@@ -132,7 +132,7 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 
 func TestRetryAfter_AccurateWhenDenied(t *testing.T) {
 	now := time.Now()
-	l := New(1, 1, WithClock(func() time.Time { return now })) // 1 token/sec
+	l := Open(1, 1, WithClock(func() time.Time { return now })) // 1 token/sec
 	require.True(t, mustAllow(t, l, "k"))
 
 	ok, retry, err := l.Allow(context.Background(), "k")
@@ -144,7 +144,7 @@ func TestRetryAfter_AccurateWhenDenied(t *testing.T) {
 
 func TestRetryAfter_ClampsSubNanosecondWaitToPositive(t *testing.T) {
 	now := time.Now()
-	l := New(1, math.MaxFloat64, WithClock(func() time.Time { return now }))
+	l := Open(1, math.MaxFloat64, WithClock(func() time.Time { return now }))
 	require.True(t, mustAllow(t, l, "k"))
 
 	ok, retry, err := l.Allow(context.Background(), "k")
@@ -176,7 +176,7 @@ func TestWithSweeper_PanicsOnNonPositive(t *testing.T) {
 func TestSweeper_RemovesColdBuckets(t *testing.T) {
 	var cur atomic.Int64
 	cur.Store(time.Now().UnixNano())
-	l := New(2, 2,
+	l := Open(2, 2,
 		WithClock(func() time.Time { return time.Unix(0, cur.Load()) }),
 		WithSweeper(10*time.Millisecond),
 	)
@@ -202,7 +202,7 @@ func TestSweeper_RemovesColdBuckets(t *testing.T) {
 }
 
 func TestClose_Idempotent(t *testing.T) {
-	l := New(1, 1, WithSweeper(time.Hour))
+	l := Open(1, 1, WithSweeper(time.Hour))
 	require.NoError(t, l.Close())
 	require.NoError(t, l.Close())
 }
@@ -215,7 +215,7 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 // return ctx.Err() without spending a token, so memory and Redis
 // wirings agree about what a cancelled caller observes.
 func TestAllow_HonorsCancelledContext(t *testing.T) {
-	l := New(1, 1)
+	l := Open(1, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
