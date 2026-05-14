@@ -72,6 +72,8 @@ use (
 	./infra/storage/storagetest
 	./io
 	./observability
+	./observability/auditlog/postgres
+	./observability/auditlog/postgres/integrationtest
 	./resilience
 	./runtime
 	./runtime/temporal

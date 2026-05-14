@@ -78,6 +78,7 @@ allowed_for_boundary_dep() {
                 infra/leaderelection/pgadvisory/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/sqldb/pgx/go.mod|\
+                observability/auditlog/postgres/go.mod|\
                 */integrationtest/go.mod)
                     return 0
                     ;;
