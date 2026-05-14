@@ -97,6 +97,15 @@ const MaxPageLimit = 10_000
 // argument exceeds [MaxPageLimit].
 var ErrLimitTooLarge = errors.New("auditlog: list limit exceeds MaxPageLimit")
 
+// ErrLimitNegative is returned by [Logger.List] when the limit argument
+// is negative. A negative limit's behaviour is Store-specific — the
+// bundled [MemoryStore] treats limit <= 0 as a default-50 page, but a
+// custom (e.g. postgres) Store might interpret it as "no limit" and
+// stream the whole table into memory. Rejecting at the Logger keeps
+// every Store implementation safe from caller-controlled unbounded
+// scans without depending on Store-side defensive code.
+var ErrLimitNegative = errors.New("auditlog: list limit must not be negative")
+
 func cloneEvent(event Event) Event {
 	if event.Metadata != nil {
 		event.Metadata = append(json.RawMessage(nil), event.Metadata...)
@@ -562,6 +571,9 @@ func (l *Logger) LogAction(ctx context.Context, actor, action, resource, status 
 func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
 	if l.closed.Load() {
 		return nil, "", ErrLoggerClosed
+	}
+	if limit < 0 {
+		return nil, "", ErrLimitNegative
 	}
 	if limit > MaxPageLimit {
 		return nil, "", ErrLimitTooLarge

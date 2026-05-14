@@ -176,6 +176,29 @@ func TestQuery_Pagination(t *testing.T) {
 	assert.Empty(t, cursor3)
 }
 
+func TestLogger_List_RejectsNegativeLimit(t *testing.T) {
+	// Reject at the Logger boundary so every Store impl stays safe from
+	// caller-controlled unbounded scans, regardless of how each Store
+	// interprets limit <= 0 internally.
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	defer func() { _ = l.Close() }()
+
+	_, _, err := l.List(context.Background(), Filter{}, "", -1)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLimitNegative)
+}
+
+func TestLogger_List_RejectsLimitOverMax(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	defer func() { _ = l.Close() }()
+
+	_, _, err := l.List(context.Background(), Filter{}, "", MaxPageLimit+1)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLimitTooLarge)
+}
+
 func TestMemoryStore_Reset(t *testing.T) {
 	store := NewMemoryStore()
 	l := newTestLogger(store)

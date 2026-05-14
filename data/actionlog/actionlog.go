@@ -112,6 +112,14 @@ var (
 	// more than [MaxPageLimit] entries must follow [Query.Cursor]
 	// across pages.
 	ErrLimitTooLarge = errors.New("actionlog: query limit exceeds MaxPageLimit")
+
+	// ErrLimitNegative is returned by [Logger.List] / [Query.Validate]
+	// when [Query.Limit] is negative. A negative limit's behaviour is
+	// Store-specific (the bundled stores treat <= 0 as a default page
+	// size; a custom Store could interpret it as "no limit" and stream
+	// the entire table). Reject at the API boundary so every Store
+	// stays safe without per-impl defensive code.
+	ErrLimitNegative = errors.New("actionlog: query limit must not be negative")
 )
 
 // MaxPageLimit caps the per-page entries [Query.Limit] may request.
@@ -260,6 +268,9 @@ func (q Query) Validate() error {
 	}
 	if q.TenantID == "" && !q.AllTenants {
 		return ErrQueryTenantRequired
+	}
+	if q.Limit < 0 {
+		return ErrLimitNegative
 	}
 	if q.Limit > MaxPageLimit {
 		return ErrLimitTooLarge

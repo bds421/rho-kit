@@ -518,6 +518,17 @@ func TestQueryValidate(t *testing.T) {
 	assert.ErrorIs(t, (Query{TenantID: "t", AllTenants: true}).Validate(), ErrQueryScopeConflict)
 }
 
+func TestQueryValidate_LimitBounds(t *testing.T) {
+	// Reject at the Query boundary so every Store impl stays safe
+	// from caller-controlled unbounded scans, regardless of how each
+	// Store interprets limit <= 0 internally.
+	assert.ErrorIs(t, (Query{TenantID: "t", Limit: -1}).Validate(), ErrLimitNegative)
+	assert.ErrorIs(t, (Query{TenantID: "t", Limit: MaxPageLimit + 1}).Validate(), ErrLimitTooLarge)
+	assert.NoError(t, (Query{TenantID: "t", Limit: 0}).Validate(),
+		"limit=0 is reserved for Store-side defaulting; only negative is rejected")
+	assert.NoError(t, (Query{TenantID: "t", Limit: MaxPageLimit}).Validate())
+}
+
 func TestList_AllTenantsOptIn(t *testing.T) {
 	store := newMemStore()
 	logger := New(store, newTestSecrets(t))

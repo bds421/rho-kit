@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // PublicKeySource returns the current set of trusted Ed25519 public
@@ -256,19 +258,12 @@ func (p *Provider) callOnRefreshError(err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Default().Error("paseto: OnRefreshError callback panicked",
-				"panic", redactedPanicValue(rec),
+				redact.Panic(rec),
 				"stack", string(debug.Stack()),
 			)
 		}
 	}()
 	p.onRefreshErr(err)
-}
-
-func redactedPanicValue(v any) string {
-	if v == nil {
-		return "<redacted panic value: <nil>>"
-	}
-	return fmt.Sprintf("<redacted panic value: %T>", v)
 }
 
 func (p *Provider) refresh(ctx context.Context) error {
