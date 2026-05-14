@@ -89,12 +89,22 @@ func WithExtractor(e Extractor) Option {
 	return func(c *config) { c.extractor = e }
 }
 
-// WithRequired controls whether a missing tenant returns 400. Default:
-// true. When true, every request method is required to carry a tenant
-// (including GET/HEAD/OPTIONS) — see
-// [WithAllowMissingTenantOnSafeMethods] for the explicit opt-out.
-func WithRequired(required bool) Option {
-	return func(c *config) { c.required = required }
+// WithoutTenantRequired opts out of the default fail-closed tenant
+// requirement so a missing tenant is logged and the handler runs
+// anyway. Default middleware behaviour (no option) returns 400 Bad
+// Request when X-Tenant-Id is absent — every downstream tenant-scoped
+// component then trusts that ctx carries a tenant id.
+//
+// Use this only for routers that intentionally serve pre-auth or
+// public endpoints alongside tenant-scoped routes. The safer pattern
+// is to mount those endpoints on a sibling router (the kit's internal
+// ops port already does this for /health, /ready, /metrics).
+//
+// Replaces the v1 WithRequired(bool) form so the security-relevant
+// opt-out is a typed named intent rather than a one-token bool flip.
+// For method-level relaxation see [WithAllowMissingTenantOnSafeMethods].
+func WithoutTenantRequired() Option {
+	return func(c *config) { c.required = false }
 }
 
 // WithAllowMissingTenantOnSafeMethods opts out of the default

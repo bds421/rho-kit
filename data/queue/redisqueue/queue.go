@@ -475,13 +475,22 @@ func WithHeartbeatInterval(d time.Duration) Option {
 	}
 }
 
-// WithRecoveryEnabled toggles automatic reclaim of stranded processing
+// WithoutRecovery opts out of automatic reclaim of stranded processing
 // lists left behind by dead consumers (detected via missing heartbeat).
-// Default true. Disable only if you have an external reaper or know that
-// consumers always shut down cleanly.
-func WithRecoveryEnabled(enabled bool) Option {
+// Default Queue behaviour (no option) runs recovery; jobs claimed by a
+// consumer that crashed before deleting them re-enter the pending list
+// for another worker.
+//
+// Use this option only when an external reaper handles recovery or
+// the deployment guarantees consumers always shut down cleanly. With
+// no recovery configured, a hard consumer crash silently strands
+// jobs.
+//
+// Replaces the v1 WithRecoveryEnabled(bool) form so the durability
+// opt-out is a typed named intent rather than a one-token bool flip.
+func WithoutRecovery() Option {
 	return func(q *Queue) {
-		q.recoveryEnabled = enabled
+		q.recoveryEnabled = false
 	}
 }
 

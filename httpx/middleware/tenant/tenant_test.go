@@ -66,7 +66,7 @@ func TestNew_RejectsMissingOnGET_DefaultRequired(t *testing.T) {
 }
 
 func TestNew_NonRequiredPassesWithoutTenant(t *testing.T) {
-	mw := New(WithRequired(false))
+	mw := New(WithoutTenantRequired())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -209,8 +209,8 @@ func TestNew_RejectsDuplicateTenantHeader(t *testing.T) {
 		opts []Option
 	}{
 		{name: "default required"},
-		{name: "not required", opts: []Option{WithRequired(false)}},
-		{name: "allow missing on safe methods", opts: []Option{WithRequired(true), WithAllowMissingTenantOnSafeMethods()}},
+		{name: "not required", opts: []Option{WithoutTenantRequired()}},
+		{name: "allow missing on safe methods", opts: []Option{WithAllowMissingTenantOnSafeMethods()}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -246,7 +246,7 @@ func TestHeaderExtractor_DuplicateErrorDoesNotReflectHeaderName(t *testing.T) {
 
 func TestNew_RejectsBlankTenantHeaderEvenWhenNotRequired(t *testing.T) {
 	called := false
-	mw := New(WithRequired(false))
+	mw := New(WithoutTenantRequired())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
@@ -282,7 +282,7 @@ func TestNew_RejectsInvalidEvenOnSafeMethod(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidEvenWithRequiredFalse(t *testing.T) {
-	mw := New(WithRequired(false))
+	mw := New(WithoutTenantRequired())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler should not run for invalid tenant ID")
 		w.WriteHeader(http.StatusOK)
@@ -293,7 +293,7 @@ func TestNew_RejectsInvalidEvenWithRequiredFalse(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code,
-		"WithRequired(false) only relaxes missing tenants — invalid IDs must still 400")
+		"WithoutTenantRequired() only relaxes missing tenants — invalid IDs must still 400")
 }
 
 func TestHeaderExtractor_PanicsOnEmpty(t *testing.T) {
@@ -338,7 +338,7 @@ func TestNew_EmptyHeaderTreatedAsMissing(t *testing.T) {
 func TestNew_AllowMissingOnSafeMethods_PassesGET(t *testing.T) {
 	// Explicit opt-out: GET/HEAD/OPTIONS without a tenant short-circuit
 	// through the middleware while POST still requires one.
-	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
+	mw := New(WithAllowMissingTenantOnSafeMethods())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -355,7 +355,7 @@ func TestNew_AllowMissingOnSafeMethods_PassesGET(t *testing.T) {
 }
 
 func TestNew_AllowMissingOnSafeMethods_StillRejectsPOST(t *testing.T) {
-	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
+	mw := New(WithAllowMissingTenantOnSafeMethods())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -367,7 +367,7 @@ func TestNew_AllowMissingOnSafeMethods_StillRejectsPOST(t *testing.T) {
 }
 
 func TestNew_AllowMissingOnSafeMethods_PassesWithTenant(t *testing.T) {
-	mw := New(WithRequired(true), WithAllowMissingTenantOnSafeMethods())
+	mw := New(WithAllowMissingTenantOnSafeMethods())
 	handler := mw(okHandler(t, coretenant.ID("acme")))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

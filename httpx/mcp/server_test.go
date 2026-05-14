@@ -448,7 +448,9 @@ func TestServer_BodyCap_RespectsLimit(t *testing.T) {
 
 func newTestActionLogger(t *testing.T) (actionlog.Logger, *actionlogmemory.Store) {
 	t.Helper()
-	store := actionlogmemory.New()
+	cursorSigner, err := actionlog.NewCursorSigner(bytes.Repeat([]byte{0x55}, 32))
+	require.NoError(t, err)
+	store := actionlogmemory.New(cursorSigner)
 	keys := map[string][]byte{
 		"k1": bytes.Repeat([]byte{0x42}, 32),
 	}
@@ -582,7 +584,7 @@ func TestServer_ActionLog_StrictMode_TenantExtractorPanicRefusesDispatch(t *test
 func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T) {
 	// Loose mode preserves the legacy fail-open behaviour: log a
 	// warning, skip the audit entry, run the tool. Operators must
-	// opt in via WithStrictAudit(false).
+	// opt in via WithBestEffortAuditOnMissingTenant().
 	var logBuf bytes.Buffer
 	slogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -590,7 +592,7 @@ func TestServer_ActionLog_LooseMode_NoTenant_RunsToolAndSkipsAudit(t *testing.T)
 	s := mcp.NewServer(
 		mcp.WithLogger(slogger),
 		mcp.WithActionLogger(logger),
-		mcp.WithStrictAudit(false),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 	)
 
 	calls := 0
@@ -686,7 +688,7 @@ func (l *contextRecordingLogger) VerifyChain(ctx context.Context, tenantID strin
 }
 
 func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
-	// L-3 fix: WithAsyncAudit(true) spawns the audit append in a
+	// L-3 fix: WithAsyncAuditDispatch() spawns the audit append in a
 	// background goroutine so MCP latency does not depend on the
 	// audit store's response time.
 	innerLogger, _ := newTestActionLogger(t)
@@ -701,7 +703,7 @@ func TestServer_ActionLog_AsyncMode_RespondsBeforeAppend(t *testing.T) {
 	s := mcp.NewServer(
 		mcp.WithActionLogger(blocking),
 		withTestActor("agent-async"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 
@@ -740,7 +742,7 @@ func TestServer_ActionLog_AsyncMode_PreservesContextValuesAfterCancellation(t *t
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-async-context"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 	)
@@ -1115,7 +1117,7 @@ func TestServer_ActionLog_LooseMode_AppendFailure_StillReturnsResult(t *testing.
 		mcp.WithLogger(slogger),
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-loose-fail"),
-		mcp.WithStrictAudit(false),
+		mcp.WithBestEffortAuditOnMissingTenant(),
 	)
 	require.NoError(t, mcp.Register[echoIn, echoOut](s, "echo", echoHandler))
 
@@ -1178,7 +1180,7 @@ func TestServer_AsyncAudit_QueueSaturation_DropsRatherThanLeaks(t *testing.T) {
 	s := mcp.NewServer(
 		mcp.WithActionLogger(blocking),
 		withTestActor("agent-sat"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 		mcp.WithAsyncAuditTimeout(2*time.Second),
@@ -1211,7 +1213,7 @@ func TestServer_AsyncAudit_StopDrainsWorkers(t *testing.T) {
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-drain"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(8),
 	)
@@ -1240,7 +1242,7 @@ func TestServer_StopRejectsNilContext(t *testing.T) {
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-stop"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 		mcp.WithAsyncAuditWorkers(1),
 		mcp.WithAsyncAuditQueue(1),
 	)
@@ -1267,7 +1269,7 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 	s := mcp.NewServer(
 		mcp.WithActionLogger(logger),
 		withTestActor("agent-race"),
-		mcp.WithAsyncAudit(true),
+		mcp.WithAsyncAuditDispatch(),
 		mcp.WithAsyncAuditWorkers(2),
 		mcp.WithAsyncAuditQueue(N),
 	)

@@ -337,5 +337,28 @@ make check-dependency-allowlist
 make check-dependency-boundaries
 ```
 
-All commands above passed. `make check-operational-readiness` covered all 67
-workspace modules.
+All commands above passed. `make check-operational-readiness` covered all 73
+workspace modules (recount as of 2026-05-13 — see M-009 reconciliation).
+
+## Supply-chain decision: runtime/temporal indirect dependency on nexus-rpc
+
+The `runtime/temporal/v2` adapter imports `go.temporal.io/sdk`, which in turn
+pulls in `github.com/nexus-rpc/sdk-go` as an indirect dependency. The kit
+itself does not call Nexus RPC APIs directly; the import surfaces only inside
+Temporal's internal worker code. The release owner accepts this dependency
+posture for v2.0.0 on the following grounds:
+
+- `runtime/temporal` is a deliberately isolated module that callers opt into
+  by importing it; downstream services that never reach for Temporal pay no
+  Nexus RPC dependency cost.
+- The Nexus RPC dependency is fully transitive via a single direct dependency
+  (`go.temporal.io/sdk`); upstream Temporal SDK upgrades will track Nexus
+  evolution as part of their own release process.
+- Removing the Temporal adapter or moving to an alternative orchestrator is a
+  v2.x supply-chain follow-up if the dependency posture changes — it would
+  not require a v2 break since the adapter is isolated.
+
+If a future v2.x decides to drop Nexus exposure, the path is to either swap
+`runtime/temporal` for an alternative workflow engine or remove the adapter
+from the v2 stable surface entirely. Recorded against the v2 freeze so the
+decision is not relitigated each release.

@@ -293,50 +293,55 @@ func WithStrictAuditTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.strictAuditTimeout = d }
 }
 
-// WithStrictAudit controls the Server's behaviour when an action
-// logger is configured but the request context carries no tenant.
+// WithBestEffortAuditOnMissingTenant opts out of the default
+// fail-closed audit gate so that tool calls dispatched on a request
+// with no tenant context will still execute. Default Server behaviour
+// (no option) is the fail-closed path: a JSON-RPC caller without
+// tenant context receives a -32603 internal error and the tool does
+// NOT execute, preserving the audit invariant that "every executed
+// tool call produced a signed entry."
 //
-// Default: true (fail-closed). The JSON-RPC caller receives a
-// -32603 internal error and the tool does NOT execute. This
-// preserves the audit invariant that "every executed tool call
-// produced a signed entry."
-//
-// WithStrictAudit(false) restores the legacy behaviour: the Server
-// logs a warn-level message, skips the audit entry, and runs the
-// tool anyway. Use only when operators have explicitly accepted the
-// audit gap (e.g. a dev environment without tenant middleware). In
+// Passing this option restores the legacy behaviour: the Server logs
+// a warn-level message, skips the audit entry, and runs the tool
+// anyway. Use only when operators have explicitly accepted the audit
+// gap (e.g. a dev environment without tenant middleware). In
 // production this opens a fail-open path where a tool executed
 // against an unscoped request leaves no signed evidence.
 //
+// Replaces the v1 WithStrictAudit(bool) form so the security-relevant
+// opt-out is a typed named intent rather than a one-token bool flip.
+//
 // Has no effect when no action logger is configured (audit is
 // already opt-in there).
-func WithStrictAudit(strict bool) ServerOption {
-	return func(c *serverConfig) { c.strictAudit = strict }
+func WithBestEffortAuditOnMissingTenant() ServerOption {
+	return func(c *serverConfig) { c.strictAudit = false }
 }
 
-// WithAsyncAudit controls whether the action-log append runs on the
-// request hot path or in a background goroutine pool.
+// WithAsyncAuditDispatch enables best-effort async audit append.
+// Default Server behaviour (no option) runs the action-log append
+// synchronously between dispatch and response-write — a slow audit
+// store extends MCP latency, but a crash between the two cannot lose
+// the entry.
 //
-// Default: false. The append runs synchronously between dispatch and
-// response-write — a slow audit store extends MCP latency, but a
-// crash between the two cannot lose the entry.
-//
-// WithAsyncAudit(true) hands appends to a bounded worker pool that
-// performs the append using context.WithoutCancel of the request
-// context plus a per-task timeout (see [WithAsyncAuditTimeout]). The
-// pool is sized by [WithAsyncAuditWorkers]. When the queue saturates,
-// the oldest-fitting append is recorded as DROPPED via a counter
-// surfaced through [Server.AsyncAuditDropped] and the request still
-// returns success — async mode is best-effort by definition.
+// This option hands appends to a bounded worker pool that performs
+// the append using context.WithoutCancel of the request context plus
+// a per-task timeout (see [WithAsyncAuditTimeout]). The pool is sized
+// by [WithAsyncAuditWorkers]. When the queue saturates, the oldest-
+// fitting append is recorded as DROPPED via a counter surfaced
+// through [Server.AsyncAuditDropped] and the request still returns
+// success — async mode is best-effort by definition.
 //
 // Use async mode when MCP latency dominates over single-request
 // durability — e.g. high-RPS read-only tools where the client
 // retries on its own and a missed entry is acceptable. Pair with
 // [Server.Stop] so workers drain on graceful shutdown.
 //
+// Replaces the v1 WithAsyncAudit(bool) form so the durability-vs-
+// latency trade-off is a typed named intent.
+//
 // Has no effect when no action logger is configured.
-func WithAsyncAudit(async bool) ServerOption {
-	return func(c *serverConfig) { c.asyncAudit = async }
+func WithAsyncAuditDispatch() ServerOption {
+	return func(c *serverConfig) { c.asyncAudit = true }
 }
 
 // WithAsyncAuditWorkers sets the number of background workers

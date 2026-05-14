@@ -41,6 +41,13 @@ func headerActor() Option {
 	return WithActorFromHeader("X-Actor")
 }
 
+func newApprovalStore(t *testing.T) *memory.Store {
+	t.Helper()
+	signer, err := approval.NewCursorSigner([]byte("test-approval-cursor-key-32-bytes"))
+	require.NoError(t, err)
+	return memory.New(signer)
+}
+
 func requireApprovalCount(t *testing.T, store *memory.Store, want int) {
 	t.Helper()
 	got, _, err := store.List(context.Background(), approval.Query{AllTenants: true})
@@ -49,7 +56,7 @@ func requireApprovalCount(t *testing.T, store *memory.Store, want int) {
 }
 
 func TestMiddleware_RecordsPendingAndReturns202(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor())
 
 	// Downstream handler must NOT execute on the pending path. The
@@ -82,7 +89,7 @@ func TestMiddleware_RecordsPendingAndReturns202(t *testing.T) {
 }
 
 func TestMiddleware_DefaultMetadataUsesEscapedPath(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor())
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -100,7 +107,7 @@ func TestMiddleware_DefaultMetadataUsesEscapedPath(t *testing.T) {
 }
 
 func TestMiddleware_400WhenTenantMissing(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor())
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -152,7 +159,7 @@ func TestMiddleware_400WhenTenantHeaderAmbiguousOrInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := memory.New()
+			store := newApprovalStore(t)
 			mw := Middleware(store, headerActor())
 			h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("handler should not run when tenant header is invalid")
@@ -170,7 +177,7 @@ func TestMiddleware_400WhenTenantHeaderAmbiguousOrInvalid(t *testing.T) {
 }
 
 func TestMiddleware_400WhenTenantSourcePanics(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store,
 		headerActor(),
 		WithTenantSource(func(*http.Request) (string, bool) {
@@ -189,7 +196,7 @@ func TestMiddleware_400WhenTenantSourcePanics(t *testing.T) {
 }
 
 func TestMiddleware_401WhenActorMissing(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor())
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -248,7 +255,7 @@ func TestMiddleware_401WhenActorHeaderAmbiguousOrInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := memory.New()
+			store := newApprovalStore(t)
 			mw := Middleware(store, headerActor())
 			h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("handler should not run when actor header is invalid")
@@ -266,7 +273,7 @@ func TestMiddleware_401WhenActorHeaderAmbiguousOrInvalid(t *testing.T) {
 }
 
 func TestMiddleware_401WhenActorExtractorPanics(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, WithActorExtractor(func(*http.Request) (string, bool) {
 		panic("actor failed")
 	}))
@@ -282,7 +289,7 @@ func TestMiddleware_401WhenActorExtractorPanics(t *testing.T) {
 }
 
 func TestMiddleware_PanicsWithoutActorExtractor(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	assert.Panics(t, func() { Middleware(store) })
 }
 
@@ -312,7 +319,7 @@ func TestMiddleware_500WhenApprovalMetadataCallbackPanics(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := memory.New()
+			store := newApprovalStore(t)
 			mw := Middleware(store, headerActor(), tt.opt)
 			h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -328,7 +335,7 @@ func TestMiddleware_500WhenApprovalMetadataCallbackPanics(t *testing.T) {
 }
 
 func TestMiddleware_500WhenIDFuncReturnsError(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store,
 		headerActor(),
 		WithIDFuncE(func() (string, error) {
@@ -345,7 +352,7 @@ func TestMiddleware_500WhenIDFuncReturnsError(t *testing.T) {
 }
 
 func TestMiddleware_413WhenBodyTooLarge(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor(), WithMaxBodyBytes(8))
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -357,7 +364,7 @@ func TestMiddleware_413WhenBodyTooLarge(t *testing.T) {
 func TestMiddleware_BodyAtCapAccepted(t *testing.T) {
 	// The "exactly at the cap" boundary case — exercising the off-by-
 	// one we'd otherwise have between read-N+1 and len > N.
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor(), WithMaxBodyBytes(8))
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -367,7 +374,7 @@ func TestMiddleware_BodyAtCapAccepted(t *testing.T) {
 }
 
 func TestMiddleware_ActorExtraction(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store,
 		WithActorExtractor(func(r *http.Request) (string, bool) {
 			v := r.Header.Get("X-Actor")
@@ -398,7 +405,7 @@ func TestMiddleware_TenantSourceOverride(t *testing.T) {
 	// supply their own tenantSource. Verify the option does the right
 	// thing.
 	type ctxKey struct{}
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store,
 		headerActor(),
 		WithTenantSource(func(r *http.Request) (string, bool) {
@@ -423,7 +430,7 @@ func TestMiddleware_TenantSourceOverride(t *testing.T) {
 }
 
 func TestMiddleware_ExpiryDefault(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor())
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -443,7 +450,7 @@ func TestMiddleware_PanicsOnNilStore(t *testing.T) {
 }
 
 func TestMiddleware_PanicsOnNilOption(t *testing.T) {
-	assert.Panics(t, func() { Middleware(memory.New(), nil) })
+	assert.Panics(t, func() { Middleware(newApprovalStore(t), nil) })
 }
 
 func TestWithMaxBodyBytes_PanicsOnZero(t *testing.T) {
@@ -489,7 +496,7 @@ func TestWithIDFuncE_PanicsOnNil(t *testing.T) {
 }
 
 func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	mw := Middleware(store, headerActor(), WithLogger(nil))
 	h := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -499,7 +506,7 @@ func TestWithLogger_NilNormalizesToDefault(t *testing.T) {
 }
 
 func TestMiddleware_IDFuncLogRedactsError(t *testing.T) {
-	store := memory.New()
+	store := newApprovalStore(t)
 	buf := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := Middleware(store,

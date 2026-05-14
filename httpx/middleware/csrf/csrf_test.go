@@ -272,7 +272,7 @@ func TestNew_CustomHeaderNameNotReflectedInError(t *testing.T) {
 }
 
 func TestNew_SecureFlag(t *testing.T) {
-	mw := New(WithSecret(testSecret()), WithSecure(true))
+	mw := New(WithSecret(testSecret()))
 	handler := mw(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1262,11 +1262,11 @@ func TestNew_PanicsOnSameSiteNoneWithoutSecure(t *testing.T) {
 		if r == nil {
 			t.Fatal("expected panic for SameSite=None with explicit Secure=false")
 		}
-		assert.Contains(t, r.(string), "SameSite=None requires Secure=true")
+		assert.Contains(t, r.(string), "SameSite=None requires the default Secure cookie")
 	}()
 	// FR-020: Secure now defaults to true. Have to explicitly opt out
 	// to trigger the SameSite=None+!Secure panic.
-	_ = New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithSecure(false))
+	_ = New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithoutSecureCookieForLocalHTTP())
 }
 
 func TestNew_DefaultsSecureToTrue(t *testing.T) {
@@ -1337,7 +1337,7 @@ func TestNew_WithSecretsReissuesPreviousSessionBoundToken(t *testing.T) {
 }
 
 func TestNew_SameSiteNoneWithSecureIsAllowed(t *testing.T) {
-	mw := New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode), WithSecure(true))
+	mw := New(WithSecret(testSecret()), WithSameSite(http.SameSiteNoneMode))
 	assert.NotNil(t, mw)
 }
 

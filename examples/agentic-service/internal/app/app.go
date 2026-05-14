@@ -243,7 +243,7 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 // uniform error code (-32603) regardless of which transport carried
 // the call.
 func mcpHTTPHandler(srv *mcp.Server) http.Handler {
-	return tenant.New(tenant.WithRequired(false))(srv.HTTP())
+	return tenant.New(tenant.WithoutTenantRequired())(srv.HTTP())
 }
 
 // dangerousAction is a contrived endpoint that creates an approval

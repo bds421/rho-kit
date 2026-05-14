@@ -85,15 +85,22 @@ func WithHeaderName(name string) Option {
 	return func(c *config) { c.headerName = name }
 }
 
-// WithSecure overrides the Secure flag on the CSRF cookie.
-// Default: TRUE — production-safe. Pre-2.0 the default was false, which
-// allowed CSRF cookies to ride along plaintext same-host requests
-// (audit FR-020 [HIGH]). Set to false ONLY for local plain-HTTP
-// development; pair with [WithDevSecret] so the unsafe-default
-// posture is explicit at the call site.
-func WithSecure(secure bool) Option {
+// WithoutSecureCookieForLocalHTTP opts out of the default Secure-flag
+// CSRF cookie. Default middleware behaviour (no option) sets the
+// Secure attribute so browsers refuse to send the cookie over
+// plaintext HTTP. Pre-2.0 the default was insecure, which allowed CSRF
+// cookies to ride along plaintext same-host requests (audit FR-020
+// [HIGH]).
+//
+// Use this option ONLY for local plain-HTTP development; pair with
+// [WithDevSecret] so the unsafe-default posture is explicit at the
+// call site. Production deployments must never set this option.
+//
+// Replaces the v1 WithSecure(bool) form so the cookie-safety opt-out
+// is a typed named intent rather than a one-token bool flip.
+func WithoutSecureCookieForLocalHTTP() Option {
 	return func(c *config) {
-		c.secure = secure
+		c.secure = false
 		c.secureSet = true
 	}
 }
@@ -374,7 +381,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	// with that combination if Secure is missing, so the middleware would
 	// silently fail to set the cookie at all. Catch the misconfig at startup.
 	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
-		panic("csrf: SameSite=None requires Secure=true (browsers reject the cookie otherwise) — call WithSecure(true)")
+		panic("csrf: SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
 	}
 
 	// Session-bound mode: build the security/csrf Issuer once and route

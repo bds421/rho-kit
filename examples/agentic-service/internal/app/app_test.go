@@ -40,9 +40,18 @@ func (f failingBudget) Peek(context.Context, string) (int64, error) {
 
 func newTestLogger(t *testing.T) actionlog.Logger {
 	t.Helper()
-	return actionlog.New(actionlogmem.New(), actionlog.NewStaticSecrets("v1", map[string][]byte{
+	cursorSigner, err := actionlog.NewCursorSigner([]byte("test-actionlog-cursor-key-32bytes"))
+	require.NoError(t, err)
+	return actionlog.New(actionlogmem.New(cursorSigner), actionlog.NewStaticSecrets("v1", map[string][]byte{
 		"v1": []byte("at-least-32-bytes-of-secret-bytes!"),
 	}))
+}
+
+func newTestApprovalSigner(t *testing.T) *approval.CursorSigner {
+	t.Helper()
+	signer, err := approval.NewCursorSigner([]byte("test-approval-cursor-key-32-bytes"))
+	require.NoError(t, err)
+	return signer
 }
 
 func TestRun_StartsAndShutsDown(t *testing.T) {
@@ -173,7 +182,7 @@ func TestStrictAudit_RefusesWhenTenantMissing(t *testing.T) {
 // 202 Accepted with an approval ID, and the approval store has a
 // pending entry for the request.
 func TestDangerousAction_CreatesApprovalRequest(t *testing.T) {
-	store := approvalmem.New()
+	store := approvalmem.New(newTestApprovalSigner(t))
 	h := dangerousAction(store)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/dangerous-action", nil)
@@ -215,7 +224,7 @@ func TestDangerousAction_StoreErrorDoesNotLeak(t *testing.T) {
 }
 
 func TestDangerousAction_MissingTenantUsesJSONError(t *testing.T) {
-	h := dangerousAction(approvalmem.New())
+	h := dangerousAction(approvalmem.New(newTestApprovalSigner(t)))
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/dangerous-action", nil)
 	rec := httptest.NewRecorder()

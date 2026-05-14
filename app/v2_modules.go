@@ -35,7 +35,9 @@ func (b *Builder) tenantMiddleware() func(http.Handler) http.Handler {
 	if b.tenantSpec.extractor != nil {
 		opts = append(opts, httpxtenant.WithExtractor(b.tenantSpec.extractor))
 	}
-	opts = append(opts, httpxtenant.WithRequired(b.tenantSpec.required))
+	if !b.tenantSpec.required {
+		opts = append(opts, httpxtenant.WithoutTenantRequired())
+	}
 	if b.tenantSpec.allowMissingTenantOnSafeMethods {
 		opts = append(opts, httpxtenant.WithAllowMissingTenantOnSafeMethods())
 	}
