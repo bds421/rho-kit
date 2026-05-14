@@ -56,9 +56,23 @@ type Metrics struct {
 	consumed        *prometheus.CounterVec
 	handlerDuration *prometheus.HistogramVec
 
-	connectionUp                  *prometheus.GaugeVec
-	reconnectAttempts             *prometheus.CounterVec
-	consecutiveReconnectFailures  *prometheus.GaugeVec
+	connectionUp                 *prometheus.GaugeVec
+	reconnectAttempts            *prometheus.CounterVec
+	consecutiveReconnectFailures *prometheus.GaugeVec
+
+	// labelRoute maps a raw (exchange, routingKey) pair to the label
+	// values that will reach Prometheus. The default identity function
+	// preserves backwards-compatible labels. [WithOpaqueRouteLabels]
+	// swaps in a hashing function that bounds cardinality when a
+	// service accidentally encodes tenant or resource IDs into route
+	// segments.
+	labelRoute routeLabelFunc
+}
+
+type routeLabelFunc func(exchange, routingKey string) (string, string)
+
+func passthroughRouteLabel(exchange, routingKey string) (string, string) {
+	return exchange, routingKey
 }
 
 // MetricsOption configures the AMQP metric constructor. Standardised
@@ -67,6 +81,7 @@ type MetricsOption func(*metricsConfig)
 
 type metricsConfig struct {
 	registerer prometheus.Registerer
+	labelRoute routeLabelFunc
 }
 
 // WithRegisterer pins the Prometheus registerer used for AMQP
@@ -80,11 +95,35 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
+// WithOpaqueRouteLabels passes every (exchange, routing_key) pair
+// observed by the publish histogram and counter through
+// [promutil.OpaqueLabelValue]. The visible label keeps a static
+// prefix (`exchange` / `routingkey`), while the variable suffix is a
+// deterministic SHA-256 truncated hash so per-tenant or per-resource
+// route segments do not blow up Prometheus cardinality.
+//
+// Default behaviour (no option) ships raw exchange / routing-key
+// labels — backwards-compatible with v1 dashboards. Enable this when
+// the deployment may produce hundreds-of-thousands of distinct route
+// values (e.g. tenant IDs accidentally embedded in routing keys).
+func WithOpaqueRouteLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelRoute = func(exchange, routingKey string) (string, string) {
+			return promutil.OpaqueLabelValue("exchange", exchange),
+				promutil.OpaqueLabelValue("routingkey", routingKey)
+		}
+	}
+}
+
 // NewMetrics creates and registers AMQP metrics. Pass [WithRegisterer]
-// to use a non-default registry. Repeated calls reuse already-registered
+// to use a non-default registry, [WithOpaqueRouteLabels] to bound
+// route-label cardinality. Repeated calls reuse already-registered
 // collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
-	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	cfg := metricsConfig{
+		registerer: prometheus.DefaultRegisterer,
+		labelRoute: passthroughRouteLabel,
+	}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("amqpbackend: NewMetrics option must not be nil")
@@ -139,6 +178,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.connectionUp = promutil.MustRegisterOrGet(reg, m.connectionUp)
 	m.reconnectAttempts = promutil.MustRegisterOrGet(reg, m.reconnectAttempts)
 	m.consecutiveReconnectFailures = promutil.MustRegisterOrGet(reg, m.consecutiveReconnectFailures)
+	m.labelRoute = cfg.labelRoute
 	return m
 }
 
@@ -146,8 +186,16 @@ func (m *Metrics) observePublish(exchange, routingKey, outcome string, started t
 	if m == nil {
 		return
 	}
-	m.published.WithLabelValues(exchange, routingKey, outcome).Inc()
-	m.publishDuration.WithLabelValues(exchange, routingKey, outcome).Observe(time.Since(started).Seconds())
+	ex, rk := m.routeLabel(exchange, routingKey)
+	m.published.WithLabelValues(ex, rk, outcome).Inc()
+	m.publishDuration.WithLabelValues(ex, rk, outcome).Observe(time.Since(started).Seconds())
+}
+
+func (m *Metrics) routeLabel(exchange, routingKey string) (string, string) {
+	if m == nil || m.labelRoute == nil {
+		return exchange, routingKey
+	}
+	return m.labelRoute(exchange, routingKey)
 }
 
 func (m *Metrics) observeConsumed(queue, outcome string) {

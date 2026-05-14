@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -188,4 +190,64 @@ func mustJSON(t *testing.T, v any) []byte {
 	out, err := json.Marshal(v)
 	require.NoError(t, err)
 	return out
+}
+
+// TestNATSMetrics_OpaqueRouteLabelsBoundsCardinality pins M-008 for
+// the NATS publish-metric path. WithOpaqueRouteLabels must hash the
+// exchange + routing-key labels so tenant-bearing routes do not blow
+// up Prometheus series count.
+func TestNATSMetrics_OpaqueRouteLabelsBoundsCardinality(t *testing.T) {
+	_ = testutil.CollectAndCount // ensure testutil retains a use
+	rawReg := prometheus.NewRegistry()
+	opaqueReg := prometheus.NewRegistry()
+	raw := NewMetrics(WithRegisterer(rawReg))
+	opaque := NewMetrics(WithRegisterer(opaqueReg), WithOpaqueRouteLabels())
+
+	const tenantyKey = "orders.tenant-123-secret-id.created"
+	raw.observePublish("orders", tenantyKey, "success", time.Now())
+	opaque.observePublish("orders", tenantyKey, "success", time.Now())
+
+	rawFams, err := rawReg.Gather()
+	require.NoError(t, err)
+	require.True(t, natsContainsLabel(rawFams, "nats_published_total", "routing_key", tenantyKey),
+		"default NATS Metrics must record the raw routing key")
+
+	opaqueFams, err := opaqueReg.Gather()
+	require.NoError(t, err)
+	require.False(t, natsContainsLabel(opaqueFams, "nats_published_total", "routing_key", tenantyKey),
+		"WithOpaqueRouteLabels must drop the raw tenanty routing key")
+	require.True(t, natsHasLabelPrefix(opaqueFams, "nats_published_total", "routing_key", "routingkey"),
+		"opaque label keeps the static 'routingkey' visible prefix for dashboards")
+}
+
+func natsContainsLabel(fams []*dto.MetricFamily, family, name, value string) bool {
+	for _, mf := range fams {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == name && lp.GetValue() == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func natsHasLabelPrefix(fams []*dto.MetricFamily, family, name, prefix string) bool {
+	for _, mf := range fams {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == name && strings.HasPrefix(lp.GetValue(), prefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

@@ -363,31 +363,26 @@ If a future v2.x decides to drop Nexus exposure, the path is to either swap
 from the v2 stable surface entirely. Recorded against the v2 freeze so the
 decision is not relitigated each release.
 
-## Deferred metric contract polish: M-004 / M-008
+## Metric contract polish closure: M-004 / M-008
 
-Two pieces of the 2026-05-13 hostile review (`docs/audit/v2-api-freeze-hostile-review-2026-05-13.md`) are deliberately deferred to a v2.x patch:
+The 2026-05-13 hostile review's metric contract findings are CLOSED for
+v2.0.0:
 
-- **M-004 — Prometheus metric constructor shape inconsistency.** The kit
-  currently mixes positional `NewMetrics(reg)`, `NewHTTP(reg, ...)`,
-  `WithRegisterer(...)` option-based, and a handful of package-specific
-  `WithCacheRegisterer` / `WithConsumerRegisterer` variants. Standardising
-  on a single shape across every metric-producing package is a coordinated
-  rename touching dozens of call sites and downstream dashboards. v2.0.0
-  freezes the existing shapes and a v2.x patch will introduce a single
-  conventional form alongside (with the old constructors deprecated, not
-  removed, so dashboards keep collecting).
+- **M-004 — Prometheus metric constructor shape inconsistency.** Resolved
+  in wave 35. Every metric-producing package now exposes
+  `NewMetrics(opts ...MetricsOption)` (positional `NewMetrics(reg)` is
+  gone), with a canonical `WithRegisterer` (or `MetricsWithRegisterer`
+  where a component-level option already owns the short name). Component-
+  level options that pass a registerer through to the metric set use the
+  `WithMetricsRegisterer` convention.
 
-- **M-008 — AMQP/NATS publish metric route-label cardinality.** Today
-  `amqp_published_total` and `nats_published_total` label every sample with
-  raw `exchange` / `routing_key` / `subject`. The audit recommends either
-  static route registration or routing through
-  [`promutil.OpaqueLabelValue`](../../observability/promutil/label_value.go).
-  Both require touching the public Metrics constructor and producing a
-  cardinality-guard option without breaking dashboards. v2.0.0 ships the
-  current behaviour with documented advice: callers MUST NOT encode tenant
-  IDs, user IDs, or payload-derived values into AMQP/NATS topology names
-  while these metrics are enabled. v2.x will add the opaque-label option
-  once the constructor shape (M-004) is settled.
+- **M-008 — AMQP/NATS publish metric route-label cardinality.** Resolved
+  in wave 36. `amqpbackend` and `natsbackend` now accept
+  `WithOpaqueRouteLabels()` on `NewMetrics`, routing `exchange` and
+  `routing_key` through [`promutil.OpaqueLabelValue`](../../observability/promutil/label_value.go)
+  so per-tenant or per-resource segments collapse to a hashed suffix.
+  Default behaviour (no option) keeps raw labels so v1 dashboards stay
+  compatible; services that may produce high-cardinality routes opt in.
 
-Both items are non-blocking for v2.0.0: the metrics work and remain stable,
-they just don't yet expose the safer cardinality control the audit flagged.
+Both items are tested via regression tests that pin the wire-level label
+behaviour with and without the option.

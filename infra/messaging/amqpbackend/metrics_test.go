@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -234,6 +236,71 @@ func assertConsume(t *testing.T, m *Metrics, queue, outcome string, want float64
 	if got != want {
 		t.Fatalf("consume %s/%s = %v, want %v", queue, outcome, got, want)
 	}
+}
+
+// TestAMQPMetrics_OpaqueRouteLabelsBoundsCardinality pins the M-008
+// fix: WithOpaqueRouteLabels must hash variable route segments so a
+// service that accidentally embeds tenant IDs in routing keys does
+// not blow up Prometheus series count. Without the option, the raw
+// label is recorded; with the option, the resulting value carries
+// only the static prefix + deterministic hash suffix.
+func TestAMQPMetrics_OpaqueRouteLabelsBoundsCardinality(t *testing.T) {
+	rawReg := prometheus.NewRegistry()
+	opaqueReg := prometheus.NewRegistry()
+	raw := NewMetrics(WithRegisterer(rawReg))
+	opaque := NewMetrics(WithRegisterer(opaqueReg), WithOpaqueRouteLabels())
+
+	const tenantyKey = "orders.tenant-123-secret-id.created"
+	raw.observePublish("orders", tenantyKey, "success", time.Now())
+	opaque.observePublish("orders", tenantyKey, "success", time.Now())
+
+	// Raw labels: the tenanty routing key reaches Prometheus verbatim.
+	require.Equal(t, 1, testutil.CollectAndCount(raw.published, "amqp_published_total"))
+	rawFamilies, err := rawReg.Gather()
+	require.NoError(t, err)
+	require.True(t, containsLabel(rawFamilies, "amqp_published_total", "routing_key", tenantyKey),
+		"default Metrics must record the raw routing key")
+
+	// Opaque labels: the tenanty value is replaced with a hashed
+	// stand-in; the original string never reaches Prometheus.
+	opaqueFamilies, err := opaqueReg.Gather()
+	require.NoError(t, err)
+	require.False(t, containsLabel(opaqueFamilies, "amqp_published_total", "routing_key", tenantyKey),
+		"WithOpaqueRouteLabels must drop the raw tenanty routing key from the label")
+	require.True(t, hasLabelPrefix(opaqueFamilies, "amqp_published_total", "routing_key", "routingkey"),
+		"opaque label must keep the static 'routingkey' visible prefix so dashboards can still group")
+}
+
+func containsLabel(fams []*dto.MetricFamily, family, name, value string) bool {
+	for _, mf := range fams {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == name && lp.GetValue() == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasLabelPrefix(fams []*dto.MetricFamily, family, name, prefix string) bool {
+	for _, mf := range fams {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == name && strings.HasPrefix(lp.GetValue(), prefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func assertMetricLabels(t *testing.T, reg *prometheus.Registry, family string, want []string) {

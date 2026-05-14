@@ -41,6 +41,18 @@ type Metrics struct {
 	publishDuration *prometheus.HistogramVec
 	consumed        *prometheus.CounterVec
 	handlerDuration *prometheus.HistogramVec
+
+	// labelRoute maps a raw (exchange, routingKey) pair to the label
+	// values that reach Prometheus. Default is identity; opt in via
+	// [WithOpaqueRouteLabels] to bound cardinality when a service
+	// embeds tenant or resource IDs into the route segments.
+	labelRoute routeLabelFunc
+}
+
+type routeLabelFunc func(exchange, routingKey string) (string, string)
+
+func passthroughRouteLabel(exchange, routingKey string) (string, string) {
+	return exchange, routingKey
 }
 
 // MetricsOption configures the NATS metric constructor. Standardised
@@ -49,6 +61,7 @@ type MetricsOption func(*metricsConfig)
 
 type metricsConfig struct {
 	registerer prometheus.Registerer
+	labelRoute routeLabelFunc
 }
 
 // WithRegisterer pins the Prometheus registerer used for NATS
@@ -62,11 +75,29 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
+// WithOpaqueRouteLabels passes every (exchange, routing_key) pair
+// observed by the publish histogram and counter through
+// [promutil.OpaqueLabelValue] so per-tenant or per-resource segments
+// do not blow up Prometheus cardinality. Default (no option) keeps
+// raw labels for backwards compatibility with v1 dashboards.
+func WithOpaqueRouteLabels() MetricsOption {
+	return func(c *metricsConfig) {
+		c.labelRoute = func(exchange, routingKey string) (string, string) {
+			return promutil.OpaqueLabelValue("exchange", exchange),
+				promutil.OpaqueLabelValue("routingkey", routingKey)
+		}
+	}
+}
+
 // NewMetrics creates and registers NATS metrics. Pass [WithRegisterer]
-// to use a non-default registry. Repeated calls reuse already-registered
+// to use a non-default registry, [WithOpaqueRouteLabels] to bound
+// route-label cardinality. Repeated calls reuse already-registered
 // collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
-	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	cfg := metricsConfig{
+		registerer: prometheus.DefaultRegisterer,
+		labelRoute: passthroughRouteLabel,
+	}
 	for _, opt := range opts {
 		if opt == nil {
 			panic("natsbackend: NewMetrics option must not be nil")
@@ -103,6 +134,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.publishDuration = promutil.MustRegisterOrGet(reg, m.publishDuration)
 	m.consumed = promutil.MustRegisterOrGet(reg, m.consumed)
 	m.handlerDuration = promutil.MustRegisterOrGet(reg, m.handlerDuration)
+	m.labelRoute = cfg.labelRoute
 	return m
 }
 
@@ -110,8 +142,16 @@ func (m *Metrics) observePublish(exchange, routingKey, outcome string, started t
 	if m == nil {
 		return
 	}
-	m.published.WithLabelValues(exchange, routingKey, outcome).Inc()
-	m.publishDuration.WithLabelValues(exchange, routingKey, outcome).Observe(time.Since(started).Seconds())
+	ex, rk := m.routeLabel(exchange, routingKey)
+	m.published.WithLabelValues(ex, rk, outcome).Inc()
+	m.publishDuration.WithLabelValues(ex, rk, outcome).Observe(time.Since(started).Seconds())
+}
+
+func (m *Metrics) routeLabel(exchange, routingKey string) (string, string) {
+	if m == nil || m.labelRoute == nil {
+		return exchange, routingKey
+	}
+	return m.labelRoute(exchange, routingKey)
 }
 
 func (m *Metrics) observeConsumed(stream, durable, outcome string) {
