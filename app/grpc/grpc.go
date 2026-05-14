@@ -18,6 +18,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/grpcx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
@@ -251,7 +252,7 @@ func (m *grpcModule) gracefulStop(ctx context.Context) error {
 		logger.Info("gRPC server stopped gracefully")
 		return nil
 	case <-ctx.Done():
-		logger.Warn("gRPC graceful stop context expired, forcing stop", slog.Any("error", ctx.Err()))
+		logger.Warn("gRPC graceful stop context expired, forcing stop", redact.Error(ctx.Err()))
 		m.server.Stop()
 		<-done
 		return ctx.Err()

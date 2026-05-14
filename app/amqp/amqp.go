@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -228,7 +229,7 @@ func (m *messagingModule) Stop(ctx context.Context) error {
 	conn := m.conn
 	m.conn = nil
 	if err := conn.Stop(ctx); err != nil {
-		m.logger.Warn("error closing rabbitmq", slog.Any("error", err))
+		m.logger.Warn("error closing rabbitmq", redact.Error(err))
 		return err
 	}
 	return nil

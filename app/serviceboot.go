@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/logging"
 )
@@ -30,7 +31,7 @@ func Main(name, version string, runFn func(logger *slog.Logger) error) {
 	logger.Info("starting service")
 
 	if err := runFn(logger); err != nil {
-		logger.Error("application error", slog.Any("error", err))
+		logger.Error("application error", redact.Error(err))
 		os.Exit(1)
 	}
 }

@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
@@ -106,7 +106,7 @@ func (m *jwtModule) Init(_ context.Context, mc ModuleContext) error {
 	}
 	if _, err := jwtutil.NewMetricsCollector(m.provider, m.instance, jwtMetricsOpts...); err != nil {
 		mc.Logger.Warn("jwks metrics collector not registered",
-			slog.Any("error", err),
+			redact.Error(err),
 		)
 	}
 

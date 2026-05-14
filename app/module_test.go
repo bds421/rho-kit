@@ -185,10 +185,15 @@ func TestCloseModules_LogsModuleNameAndError(t *testing.T) {
 
 	got := logs.String()
 	assert.Contains(t, got, "module stop error")
-	// Operator-facing logs: the module name and stop error are not redacted
-	// so the operator can correlate failures with a specific module.
+	// Operator-facing logs: the module name stays visible so the operator
+	// can correlate failures with a specific module. The error itself is
+	// redacted (kit-wide convention via redact.Error) to keep credentials,
+	// broker URLs, DSN fragments, and other sensitive error-string content
+	// out of logs. The redacted attribute keeps the error TYPE for triage.
 	assert.Contains(t, got, "close-mod-name")
-	assert.Contains(t, got, "stop failed")
+	assert.Contains(t, got, "<redacted error:")
+	assert.NotContains(t, got, "stop failed",
+		"raw error message must not appear in logs once redact.Error is applied")
 }
 
 func TestInitModules_FailureClosesInitialized(t *testing.T) {

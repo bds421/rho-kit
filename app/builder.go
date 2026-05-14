@@ -13,6 +13,7 @@ import (
 	"time"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/crypto/v2/paseto"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
@@ -1400,7 +1401,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		shutdownCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 		defer cancel()
 		if shutdownErr := internalSrv.Shutdown(shutdownCtx); shutdownErr != nil {
-			logger.Warn("internal server shutdown error", slog.Any("error", shutdownErr))
+			logger.Warn("internal server shutdown error", redact.Error(shutdownErr))
 		}
 	}()
 

@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	pgxbackend "github.com/bds421/rho-kit/infra/sqldb/pgx/v2"
 	"github.com/bds421/rho-kit/infra/v2/sqldb/migrate"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -115,7 +116,7 @@ func (m *pgxModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	}
 	if _, err := pgxbackend.NewPoolStatsCollector(pool.Pool(), m.cfg.instance, statsOpts...); err != nil {
 		mc.Logger.Warn("postgres pool stats collector not registered",
-			slog.Any("error", err),
+			redact.Error(err),
 		)
 	}
 

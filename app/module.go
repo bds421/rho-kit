@@ -283,7 +283,7 @@ func closeModules(ctx context.Context, modules []Module, logger *slog.Logger) {
 			if err := m.Stop(ctx); err != nil {
 				logger.Warn("module stop error",
 					slog.String("module", m.Name()),
-					slog.Any("error", err),
+					redact.Error(err),
 				)
 			}
 		}()

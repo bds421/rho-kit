@@ -13,6 +13,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/core/v2/tlsclone"
 	kitredis "github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -173,7 +174,7 @@ func (m *redisModule) Stop(_ context.Context) error {
 	conn := m.conn
 	m.conn = nil
 	if err := conn.Close(); err != nil {
-		m.logger.Warn("error closing redis", slog.Any("error", err))
+		m.logger.Warn("error closing redis", redact.Error(err))
 		return err
 	}
 	return nil
