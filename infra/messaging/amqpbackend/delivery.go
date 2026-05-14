@@ -62,12 +62,18 @@ func intToUint(v int64) uint {
 
 // extractStringHeaders picks out string-valued AMQP headers for application-level
 // tracing. Non-string values (x-death tables, etc.) are intentionally skipped.
+// The output map is bounded by maxHeaderNodes so a hostile peer cannot
+// allocate an unbounded application-headers map upfront — wave 69
+// added the cap.
 func extractStringHeaders(h amqp.Table) map[string]string {
 	if len(h) == 0 {
 		return nil
 	}
 	result := make(map[string]string)
 	for k, v := range h {
+		if len(result) >= maxHeaderNodes {
+			break
+		}
 		if s, ok := v.(string); ok {
 			result[k] = s
 		}

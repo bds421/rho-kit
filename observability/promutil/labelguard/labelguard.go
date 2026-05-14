@@ -66,7 +66,14 @@ type config struct {
 // the rejected-observations counter. Defaults to
 // [prometheus.DefaultRegisterer]; tests should pass a fresh
 // [prometheus.NewRegistry] to keep state isolated across runs.
+//
+// Panics on nil to align with the kit-wide WithRegisterer convention
+// (see AGENTS.md). Wave 69 closed a hostile-review finding that
+// labelguard silently accepted nil.
 func WithRegisterer(reg prometheus.Registerer) Option {
+	if reg == nil {
+		panic("labelguard: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
 	return func(c *config) {
 		c.registerer = reg
 	}

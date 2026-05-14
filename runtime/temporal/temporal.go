@@ -32,6 +32,7 @@ package temporal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -88,7 +89,11 @@ func Connect(ctx context.Context, opts client.Options) (*Client, error) {
 	}
 	c, err := client.DialContext(ctx, opts)
 	if err != nil {
-		return nil, errors.New("temporal: dial failed")
+		// Wrap-with-cause so the operator sees the real reason (DNS,
+		// auth, TLS) rather than a generic "dial failed". Wave 69
+		// closed a hostile-review finding that hid the dial cause
+		// behind a static string.
+		return nil, fmt.Errorf("temporal: dial failed: %w", err)
 	}
 	return &Client{c: c}, nil
 }
@@ -209,6 +214,19 @@ func (w *Worker) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		w.stopWorker()
+		// Drain the SDK worker's eventual return so any underlying
+		// failure that happened concurrently with cancellation is
+		// surfaced rather than discarded. Wave 69 closed a
+		// hostile-review finding that ctx cancellation always
+		// returned nil regardless of worker.Run state. Non-nil
+		// errors are wrapped; clean shutdown still returns nil.
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return fmt.Errorf("temporal: Worker.Run after cancel: %w", err)
+			}
+		default:
+		}
 		return nil
 	case err := <-errCh:
 		return err

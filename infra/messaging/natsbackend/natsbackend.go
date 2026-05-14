@@ -992,13 +992,21 @@ func publishOutcomeForError(err error) string {
 	return natsPublishOutcomeFailed
 }
 
+// maxNatsDeliveryHeaders caps the number of headers materialised from a
+// JetStream delivery so a hostile publisher cannot force unbounded
+// allocations upfront. Mirrors the AMQP maxHeaderNodes cap.
+const maxNatsDeliveryHeaders = 256
+
 func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 	if len(h) == 0 {
 		return nil, nil
 	}
-	headers := make(map[string]any, len(h))
-	msgHeaders := make(map[string]string, len(h))
+	headers := make(map[string]any)
+	msgHeaders := make(map[string]string)
 	for k, v := range h {
+		if len(headers) >= maxNatsDeliveryHeaders {
+			break
+		}
 		if len(v) > 0 {
 			headers[k] = v[0]
 			msgHeaders[k] = v[0]

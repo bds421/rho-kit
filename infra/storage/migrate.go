@@ -160,6 +160,13 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		}
 	}
 
+	// Aggregate per-object failures into the returned error so callers
+	// that check `err != nil` cannot silently treat a partial-failure
+	// run as success. Wave 69 closed a hostile-review finding that
+	// Migrate returned nil when every object failed individually.
+	if result.Failed > 0 {
+		return result, fmt.Errorf("storage.Migrate: %d object(s) failed", result.Failed)
+	}
 	return result, nil
 }
 

@@ -227,7 +227,12 @@ func (b *Backend) connect(ctx context.Context) error {
 	conn, err := ssh.Dial("tcp", addr, sshCfg)
 	if err != nil {
 		b.metrics.connectionHealthy.WithLabelValues(b.instance).Set(0)
-		return fmt.Errorf("SSH dial failed")
+		// Wrap-with-cause via storage.WrapSafe so the SSH error
+		// reaches the operator via logs while topology-leaking
+		// substrings (paths, hostnames, port numbers) are stripped.
+		// Wave 69 closed a hostile-review finding that the prior
+		// "SSH dial failed" string hid the auth/host failure cause.
+		return storage.WrapSafe("sftpbackend: SSH dial failed", err)
 	}
 
 	sftpClient, err := sftp.NewClient(conn)

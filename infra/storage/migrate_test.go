@@ -172,7 +172,7 @@ func TestMigrate_RejectsInvalidListedSourceKeyBeforeGet(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Equal(t, int64(0), result.Copied)
 	assert.Equal(t, int64(1), result.Failed)
 	assert.Equal(t, 0, src.getCalls)
@@ -193,7 +193,7 @@ func TestMigrate_RetainedErrorsAreCapped(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Equal(t, int64(storage.MaxMigrationErrors+2), result.Failed)
 	assert.Len(t, result.Errors, storage.MaxMigrationErrors)
 	assert.True(t, result.ErrorsTruncated)
@@ -213,7 +213,7 @@ func TestMigrate_RejectsInvalidTransformedKeyWithoutReflectingIt(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Equal(t, int64(0), result.Copied)
 	assert.Equal(t, int64(1), result.Failed)
 	assert.Equal(t, 0, src.getCalls)
@@ -227,9 +227,13 @@ func TestMigrate_CopyGetErrorDoesNotReflectSourceKey(t *testing.T) {
 	src := &unsafeListerBackend{key: "secret-token.txt", getErr: errors.New("backend down")}
 	dst := membackend.New()
 
+	// Wave 69: Migrate returns a non-nil aggregate error when any
+	// per-object copy failed. The per-key error in result.Errors is
+	// still the source of truth for the safe-detail check.
 	result, err := storage.Migrate(ctx, src, dst, storage.MigrateOptions{})
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
 	assert.Equal(t, int64(0), result.Copied)
 	assert.Equal(t, int64(1), result.Failed)
 	require.Error(t, result.Errors["secret-token.txt"])
@@ -248,7 +252,8 @@ func TestMigrate_CopyPutErrorDoesNotReflectDestinationKey(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret-token")
 	assert.Equal(t, int64(0), result.Copied)
 	assert.Equal(t, int64(1), result.Failed)
 	require.Error(t, result.Errors["source.txt"])

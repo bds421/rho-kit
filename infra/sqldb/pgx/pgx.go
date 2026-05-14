@@ -551,6 +551,12 @@ func requireTLSOnParsedConfig(pcfg *pgxpool.Config, dsn string, allowRequire boo
 // "" if none. Mirrors pgxpool's last-wins semantics for repeated
 // keys. Handles both libpq URL form (?sslmode=...) and keyword form
 // (sslmode=...).
+//
+// Quoted values (`sslmode='require'`) are unwrapped so the value the
+// kit compares is the same value pgx will use. Wave 69 strengthened
+// the scanner after a hostile-review finding flagged that the prior
+// implementation could misclassify a quoted "require" as `'require'`
+// (not matching the policy switch) and bypass FR-079.
 func lastSSLMode(dsn string) string {
 	const key = "sslmode="
 	last := ""
@@ -561,12 +567,31 @@ func lastSSLMode(dsn string) string {
 			break
 		}
 		v := rest[i+len(key):]
+		// Handle single-quoted values (libpq keyword form):
+		//   sslmode='require'
+		if len(v) > 0 && v[0] == '\'' {
+			end := -1
+			for j := 1; j < len(v); j++ {
+				if v[j] == '\'' && v[j-1] != '\\' {
+					end = j
+					break
+				}
+			}
+			if end < 0 {
+				// Unterminated quote; stop scanning to avoid an
+				// infinite loop or misleading value.
+				return last
+			}
+			last = v[1:end]
+			rest = v[end+1:]
+			continue
+		}
 		// Stop at the first delimiter pgx recognises:
 		// whitespace (keyword form) or `&` (URL form).
 		end := len(v)
 		for j := 0; j < len(v); j++ {
 			c := v[j]
-			if c == ' ' || c == '\t' || c == '\n' || c == '&' {
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '&' {
 				end = j
 				break
 			}
