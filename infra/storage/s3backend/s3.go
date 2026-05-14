@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -18,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -206,6 +208,16 @@ func buildAWSConfig(ctx context.Context, cfg Config) (aws.Config, error) {
 		// chain: environment, shared config, web identity, ECS/EKS/EC2 roles,
 		// SSO, process providers, and any SDK-supported rotating source.
 	default:
+		// Static access-key path. The AWS SDK's StaticCredentialsProvider
+		// returns the same credential on every request — no rotation,
+		// no expiry — so a rotation event at the IAM side leaves the
+		// kit signing with the old key until the process is restarted.
+		// Warn at construction so operators wiring static keys cannot
+		// silently miss the rotation gap (L119).
+		slog.Warn("s3backend: using static AccessKeyID/SecretAccessKey — credentials will NOT rotate without a process restart; prefer UseDefaultCredentials or CredentialProvider for rotating credentials",
+			redact.String("bucket", cfg.Bucket),
+			redact.String("region", cfg.Region),
+		)
 		opts = append(opts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		))

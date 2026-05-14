@@ -12,8 +12,8 @@
    `namespace`, `service`, `exchange`, `routing_key`, or `queue`.
 2. Check `amqp_published_total{outcome!="success"}` by outcome:
    `unroutable` usually means a missing binding, `too_large` means the route
-   needs `WithRouteMaxMessageBytes`, and `failed` points to channel, confirm,
-   auth, or broker availability.
+   needs a higher per-route cap in the publisher's `MessageSizeLimiter`,
+   and `failed` points to channel, confirm, auth, or broker availability.
 3. Check `amqp_consumed_total` outcomes for `retry`, `dead_lettered`,
    `dlq_publish_failed`, and `force_discarded`.
 4. Inspect RabbitMQ topology for the main exchange, retry exchange, dead
@@ -24,9 +24,9 @@
 - For `unroutable`, restore the queue binding or stop publishing that routing
   key. The AMQP publisher uses mandatory publish and treats returned messages
   as failures by design.
-- For `too_large`, add an exact route override with
-  `WithRouteMaxMessageBytes(exchange, routingKey, maxBytes)` only for the
-  event type that needs it.
+- For `too_large`, add an exact route override to the publisher's
+  `MessageSizeLimiter` (`messaging.RouteLimit{Exchange: ..., RoutingKey: ...,
+  MaxBytes: ...}`) only for the event type that needs it.
 - For `dlq_publish_failed`, fix the dead exchange and dead queue bindings
   before restarting consumers. The consumer nacks back into the retry path
   until the safety cap is reached.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -17,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -94,6 +96,18 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	if err := cfg.Validate(""); err != nil {
 		return nil, err
 	}
+
+	// Static AccountKey path. SharedKeyCredential never refreshes its
+	// key — a rotation event in Azure leaves the kit signing with the
+	// old key until the process is restarted. Warn at construction so
+	// operators wiring static keys cannot silently miss the rotation
+	// gap; production deployments should use [NewWithTokenCredential]
+	// (managed identity / workload identity / chained Azure credentials)
+	// instead (L120).
+	slog.Warn("azurebackend: using static AccountKey — credentials will NOT rotate without a process restart; prefer NewWithTokenCredential for rotating credentials",
+		redact.String("account", cfg.AccountName),
+		redact.String("container", cfg.ContainerName),
+	)
 
 	cred, err := azblob.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
 	if err != nil {

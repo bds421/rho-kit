@@ -67,7 +67,7 @@ is a single-tenant breach; disclosure of `[5]` is catastrophic.
 
 | # | Asset | Stored where | Lifetime | Sensitivity |
 |---|---|---|---|---|
-| 1 | **End-user data** (records the service holds on behalf of users — PII, content, files) | Postgres / MariaDB; object storage; Redis cache | Indefinite | Per-tenant |
+| 1 | **End-user data** (records the service holds on behalf of users — PII, content, files) | PostgreSQL; object storage; Redis cache | Indefinite | Per-tenant |
 | 2 | **Tenant boundaries** — the invariant that tenant A's request never reads / writes tenant B's data | In-process context (`core/tenant`); enforced at every storage boundary | Per request | Multi-tenant integrity |
 | 3 | **Authentication tokens** — JWTs / PASETOs in flight, OAuth client secrets, refresh tokens | Headers / cookies; never persisted by the kit | Token TTL | Per-user |
 | 4 | **Session secrets** — CSRF HMAC keys, signed-request HMAC keys, idempotency owner tokens | `core/secret`-wrapped config; never logged | Process / config rotation | Per-deployment |
@@ -344,7 +344,7 @@ and `Consumer` interfaces.
 | M-05 | Producer outage drops events that should reach the broker | A1 (DoS) | `messaging.BufferedPublisher` with an optional state file persists pending messages across restarts; **state file path validated against directory traversal** | caller-must-cooperate | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 | M-06 | Internal `debughttp` Publish/Consume HTTP endpoints expose broker to attacker | A1 | `debughttp` requires a `Guard` middleware + Authenticator — refuses to mount otherwise | kit-enforced via panic | [infra/messaging/amqpbackend/debughttp/guard.go](../../infra/messaging/amqpbackend/debughttp/guard.go) |
 | M-07 | TLS-less broker connection on the wire | A1 (network observer) | Connector validates `amqps://` scheme; pure `amqp://` is rejected by the always-on `app.Builder` production-safety validator | kit-enforced via panic | [infra/messaging/amqpbackend](../../infra/messaging/amqpbackend/), [app/builder.go](../../app/builder.go) |
-| M-08 | Oversized messages exhaust broker/client memory or poison the buffered retry state file | A1, A4 | `messaging.MessageSizeLimiter` defaults to 1 MiB, supports exact route overrides, and is wired into AMQP, NATS, Redis Streams, `membroker`, and `BufferedPublisher`; Builder exposes `WithMaxMessageBytes` and `WithRouteMaxMessageBytes` for golden-path services | kit-enforced | [infra/messaging/size_limit.go](../../infra/messaging/size_limit.go), [app/builder.go](../../app/builder.go) |
+| M-08 | Oversized messages exhaust broker/client memory or poison the buffered retry state file | A1, A4 | `messaging.MessageSizeLimiter` defaults to 1 MiB, supports exact route overrides, and is wired into AMQP, NATS, Redis Streams, `membroker`, and `BufferedPublisher`; the `app/amqp` and `app/nats` adapter Modules expose `WithMessageSizeLimiter` for golden-path services | kit-enforced | [infra/messaging/size_limit.go](../../infra/messaging/size_limit.go) |
 
 **Note:** `BufferedPublisher` is **not** a transactional outbox.
 Where strict at-most-once / exactly-once is required, services use
@@ -482,7 +482,7 @@ hint.
 The kit panics at startup (NOT at first request) when any of the
 following hold:
 
-- `WithPostgres` without a non-empty pgx DSN.
+- `app/postgres.Module(cfg)` without a non-empty pgx DSN in `cfg`.
 - `WithJWT` without `WithJWTIssuer` (or the explicit `WithoutJWTIssuer` opt-out). Audience has the same shape.
 - Postgres `sslmode=disable` outside development.
 - AMQP scheme `amqp://` (cleartext) outside development.
@@ -729,12 +729,12 @@ The canonical "user submits a payment" flow. Wired via:
 
 ```go
 app.New("payments", version, cfg.BaseConfig).
-    WithPostgres(cfg.Postgres).
-    WithRedis(&redis.Options{Addr: cfg.RedisAddr}).
+    With(postgres.Module(cfg.Postgres)).
+    With(redis.Module(&goredis.Options{Addr: cfg.RedisAddr})).
 	    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
 	    WithIPRateLimit(100, time.Minute).
 	    Router(func(infra app.Infrastructure) http.Handler {
-	        h := payments.NewHandler(infra.DB, infra.Cache, audit)
+	        h := payments.NewHandler(postgres.Pool(infra), redis.Connection(infra), audit)
 	        csrfMW := csrf.New(
 	            csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
 	            csrf.WithAllowedOrigins(cfg.PublicOrigin),

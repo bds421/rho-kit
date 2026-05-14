@@ -145,14 +145,16 @@ state file. The shared `messaging.MessageSizeLimiter` includes the JSON
 message body plus transport headers in the estimate, so oversized
 headers cannot bypass the body cap.
 
-Use Builder methods for the golden path:
+Use the adapter Modules' `WithMessageSizeLimiter` option for the golden path:
 
 ```go
+sizeLimiter := messaging.NewExactSizeLimiter(
+    512<<10, // default
+    messaging.RouteLimit{Exchange: "orders", RoutingKey: "order.bulk", MaxBytes: 8 << 20}, // exact override
+)
 app.New("orders", version, cfg.BaseConfig).
-    With(amqp.Module(cfg.AMQPURL)).
-    With(nats.Module(natsCfg)).
-    WithMaxMessageBytes(512 << 10).                         // default for Builder-created publishers
-    WithRouteMaxMessageBytes("orders", "order.bulk", 8<<20) // exact route override
+    With(amqp.Module(cfg.AMQPURL, amqp.WithMessageSizeLimiter(sizeLimiter))).
+    With(nats.Module(natsCfg, nats.WithMessageSizeLimiter(sizeLimiter)))
 ```
 
 Manual publishers expose the same pattern:

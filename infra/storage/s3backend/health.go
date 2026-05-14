@@ -28,8 +28,15 @@ func healthCheck(b *Backend, critical bool) health.DependencyCheck {
 	if b == nil || b.client == nil {
 		// Panicking at construction surfaces the wiring bug
 		// immediately rather than leaking it as a nil-deref on the
-		// first scrape. Wave 68 closed a hostile-review finding here.
+		// first scrape.
 		panic("s3backend: HealthCheck requires a fully-constructed Backend")
+	}
+	if b.bucket == "" {
+		// An empty bucket would let HeadBucket reach the AWS API with
+		// an empty Bucket value and return an unhelpful "bucket name
+		// cannot be empty" error every scrape. Treat as a wiring bug
+		// (L117).
+		panic("s3backend: HealthCheck requires a Backend with a non-empty bucket")
 	}
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("s3", b.bucket),

@@ -37,12 +37,12 @@ freezes `redis_stream_messages_produced_total`,
 | Module | Decision | Rename/remove decision | Freeze notes |
 |---|---|---|---|
 | `github.com/bds421/rho-kit/app/v2` | Keep | No rename/remove | Golden-path service builder. New `With*` methods are frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/amqp/v2` | Keep | No rename/remove | AMQP module factory; `Builder.WithAMQP`, options, reconnect-aware. Frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/grpc/v2` | Keep | No rename/remove | gRPC server module factory; `Builder.WithGRPC`, interceptor wiring, keep-alive. Frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/nats/v2` | Keep | No rename/remove | NATS module factory; `app/nats.Module(cfg)` wired via `Builder.With(...)`, JetStream consumer registration, credential providers. Frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/postgres/v2` | Keep | No rename/remove | Postgres pool module factory; `app/postgres.Module(cfg)` wired via `Builder.With(...)`, password-provider rotation, TLS reload. Frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/redis/v2` | Keep | No rename/remove | Redis client module factory; `app/redis.Module(opts, ...)` wired via `Builder.With(...)`, credential provider, TLS reload. Frozen for v2.0.0. |
-| `github.com/bds421/rho-kit/app/tracing/v2` | Keep | No rename/remove | Tracing module factory; `Builder.WithTracing`, OTLP exporter and sampler config. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/amqp/v2` | Keep | No rename/remove | AMQP adapter Module wired via `Builder.With(amqp.Module(url, ...))`; options, reconnect-aware, URL provider. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/grpc/v2` | Keep | No rename/remove | gRPC server adapter Module wired via `Builder.With(grpc.Module(register, addr, ...))`; interceptor wiring, keep-alive. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/nats/v2` | Keep | No rename/remove | NATS adapter Module wired via `Builder.With(nats.Module(cfg))`; JetStream consumer registration, credential providers. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/postgres/v2` | Keep | No rename/remove | Postgres pool adapter Module wired via `Builder.With(postgres.Module(cfg, ...))`; password-provider rotation, TLS reload. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/redis/v2` | Keep | No rename/remove | Redis client adapter Module wired via `Builder.With(redis.Module(opts, ...))`; credential provider, TLS reload. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/tracing/v2` | Keep | No rename/remove | Tracing adapter Module wired via `Builder.With(tracing.Module(cfg))`; OTLP exporter, sampler, propagator config. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/core/v2` | Keep | No rename/remove | Shared low-dependency primitives: config, typed errors, tenant IDs, redaction, secrets, validation, tls clone helpers. |
 | `github.com/bds421/rho-kit/httpx/v2` | Keep | No rename/remove | HTTP server/client defaults, JSON helpers, middleware, authz bridge, MCP, pagination, signing, redirect safety. |
 | `github.com/bds421/rho-kit/grpcx/v2` | Keep | No rename/remove | gRPC server defaults, interceptors, RED metrics, auth, health, deadlines. |

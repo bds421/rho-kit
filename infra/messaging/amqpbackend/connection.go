@@ -285,7 +285,30 @@ func (c *Connection) resolveDialURL(ctx context.Context) (string, error) {
 			providerCtx, cancel = context.WithTimeout(providerCtx, c.urlProviderTimeout)
 			defer cancel()
 		}
-		provided, err := c.urlProvider(providerCtx)
+		// Hard-bound the provider invocation: a misbehaving URL source
+		// that ignores ctx.Done() would otherwise stall Dial / reconnect
+		// indefinitely. The provider goroutine becomes an orphan on
+		// timeout; resolveDialURL returns ctx.Err so Dial can fail
+		// fast and the reconnect loop can retry (L133).
+		type result struct {
+			url string
+			err error
+		}
+		resultCh := make(chan result, 1)
+		go func() {
+			u, err := c.urlProvider(providerCtx)
+			resultCh <- result{url: u, err: err}
+		}()
+		var (
+			provided string
+			err      error
+		)
+		select {
+		case r := <-resultCh:
+			provided, err = r.url, r.err
+		case <-providerCtx.Done():
+			err = providerCtx.Err()
+		}
 		if err != nil {
 			return "", safeCauseError{msg: "amqp URL provider failed", cause: err}
 		}

@@ -349,6 +349,18 @@ func (b *Backend) buildSSHConfig(ctx context.Context) (*ssh.ClientConfig, error)
 		if err != nil {
 			return nil, fmt.Errorf("read SSH key file failed")
 		}
+		// Zero the in-memory file bytes after ParsePrivateKey extracts
+		// what it needs; ssh.ParsePrivateKey copies the parsed material
+		// into its own structs (audited against golang.org/x/crypto/ssh
+		// in the workspace tree), so the original `key` slice is safe
+		// to wipe before the signer is used. This shortens the window
+		// during which the on-disk private-key plaintext sits on the
+		// process heap (L123).
+		defer func() {
+			for i := range key {
+				key[i] = 0
+			}
+		}()
 		signer, err := ssh.ParsePrivateKey(key)
 		if err != nil {
 			return nil, fmt.Errorf("parse SSH key failed")

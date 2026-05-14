@@ -602,8 +602,18 @@ func (o *BufferedPublisher) Run(ctx context.Context) error {
 	}
 }
 
-// finalDrain attempts one last drain with a short timeout so pending messages
-// are not silently discarded on shutdown.
+// finalDrain attempts one last drain so pending messages are not silently
+// discarded on shutdown.
+//
+// The drain budget configured by [WithFinalDrainTimeout] sets ctx.Done()
+// for the underlying publisher; the bound is COOPERATIVE because the
+// upstream publisher's Publish call must honour the supplied context.
+// A publisher that ignores ctx.Done() (rare for the kit's AMQP/NATS/
+// Redis adapters, possible for custom integrations) will hold the
+// drain past the configured timeout. Operators relying on a hard
+// shutdown bound MUST wire publishers that respect context
+// cancellation; the state file (configured via [WithStateFile]) is the
+// kit's recovery hook when the bound is exceeded (L128).
 func (o *BufferedPublisher) finalDrain(ctx context.Context) {
 	o.mu.Lock()
 	remaining := len(o.pending)
