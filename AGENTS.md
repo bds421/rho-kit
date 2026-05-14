@@ -220,7 +220,13 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 
 - **Env vars**: `UPPER_SNAKE_CASE`. Secrets use `{PREFIX}_` prefix and support `_FILE` suffix for mounted secrets.
 - **Error handling**: Return typed `core/apperror` errors using `apperror.Code` enum (`CodeNotFound`, `CodeValidation`, `CodeConflict`, `CodeAuthRequired`, `CodeForbidden`, `CodeRateLimit`, `CodeOperationFailed`, `CodePermanent`, `CodeUnavailable`). `httpx.WriteServiceError` maps them to HTTP status codes automatically via `httpx.HTTPStatus()`. Every error type implements `Retryable() bool` — use `apperror.ShouldRetry` as a predicate for retry middleware (e.g. `retry.WithRetryIf(apperror.ShouldRetry)`). Error codes are transport-agnostic; HTTP mapping lives in `httpx`, not in `core/apperror`.
-- **Metrics**: All Prometheus metrics accept `prometheus.Registerer` via `WithRegisterer()` options. Defaults to `prometheus.DefaultRegisterer` for zero-config usage. Use custom registerers for test isolation.
+- **Metrics**: All Prometheus metric constructors expose `NewMetrics(opts ...MetricsOption)` (positional `NewMetrics(reg)` is gone) and default to `prometheus.DefaultRegisterer` for zero-config usage. The canonical registerer option is `WithRegisterer(reg)`. A small set of packages disambiguates with a longer name to avoid same-package collision with component-level options — these are stable v2 names, not drift:
+  - `infra/redis.MetricsWithRegisterer` (the package also has `redis.WithRegisterer` that wires a registerer through to BOTH connection and command metrics — see app/redis pool-metrics forwarding for the canonical pattern).
+  - `data/cache/rediscache.MetricsWithRegisterer` and `data/cache/rediscache.WithMetricsRegisterer` (metric-level vs cache-level options).
+  - `data/stream/redisstream.WithProducerMetricsRegisterer` (producer-side metric set; coexists with future consumer-side options).
+  - `httpx/middleware/signedrequest.WithMetricsRegisterer` (middleware-level vs metric-level options).
+  - `observability/redmetrics.WithHTTPRegisterer` and `observability/redmetrics.WithBatchRegisterer` (separate HTTP and batch metric sets in one package).
+  Use custom registerers for test isolation.
 - **Permanent errors**: Wrap with `apperror.NewPermanent()` to skip retries in consumers.
 - **Operation errors**: Use `apperror.NewOperationFailed()` for non-retryable operation failures that should be logged and typed; HTTP adapters return a generic `internal error` body for both operation failures and untyped errors.
 - **Unavailable errors**: Use `apperror.NewUnavailable()` when the service itself is not ready, or `apperror.NewDependencyUnavailable("redis", msg, cause)` when an upstream dependency is down. Both are retryable. HTTP status mapping (502 vs 503) is handled by `httpx.HTTPStatus()`.

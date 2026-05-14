@@ -159,6 +159,14 @@ type ModuleContext struct {
 	// Config is the service's base configuration (server ports, TLS, environment).
 	Config BaseConfig
 
+	// TLSCertSource is the hot-rotation source threaded in by
+	// [Builder.WithReloadingTLS]. Nil when reloading TLS is not
+	// configured; modules that build their own *tls.Config (the
+	// default HTTP client, gRPC dial-loops, broker adapters) MUST
+	// prefer this source over [Config.TLS]'s static loaders when
+	// non-nil so the whole service shares one reload cycle.
+	TLSCertSource netutil.CertificateSource
+
 	// modules holds references to already-initialized modules, keyed by name.
 	// This is unexported to prevent direct mutation; use the Module method.
 	modules map[string]Module
@@ -201,6 +209,7 @@ func initModules(
 	logger *slog.Logger,
 	runner *lifecycle.Runner,
 	cfg BaseConfig,
+	tlsSource netutil.CertificateSource,
 ) (func(context.Context), error) {
 	// Validate name uniqueness across all modules (builtin + user-registered).
 	// WithModule only checks user-registered modules; this catches collisions
@@ -218,10 +227,11 @@ func initModules(
 	moduleMap := make(map[string]Module, len(modules))
 
 	mc := ModuleContext{
-		Logger:  logger,
-		Runner:  runner,
-		Config:  cfg,
-		modules: moduleMap,
+		Logger:        logger,
+		Runner:        runner,
+		Config:        cfg,
+		TLSCertSource: tlsSource,
+		modules:       moduleMap,
 	}
 
 	for _, m := range modules {

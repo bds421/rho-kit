@@ -2,6 +2,7 @@ package auditlog
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -95,35 +96,91 @@ func (m *MemoryStore) LastHMAC(ctx context.Context) ([]byte, error) {
 	return append([]byte(nil), tail...), nil
 }
 
-// Query returns events matching the filter with cursor-based
-// pagination. Events are returned in reverse insertion order (newest
-// first). ctx.Err() is checked before scanning and every
-// [memCtxCheckBatch] entries during the scan so a cancelled
-// VerifyChain or List does not pay for the full table.
+// RangeChain calls fn for every stored event in append order (oldest
+// first). Implements [Store.RangeChain] so chain verification iterates
+// independently of the timestamp-ordered [Query] view — a backfilled
+// or clock-skewed event would otherwise be mis-ordered against the
+// HMAC chain.
+//
+// ctx.Err() is checked before scanning, every [memCtxCheckBatch]
+// entries during the scan, and after every fn invocation so a
+// cancelled VerifyChain returns promptly.
+func (m *MemoryStore) RangeChain(ctx context.Context, fn func(Event) error) error {
+	if fn == nil {
+		return ErrInvalidEvent
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Snapshot the slice under the read lock so fn (which may take a
+	// long time, especially for verification over large stores) does
+	// not pin the writer side.
+	m.mu.RLock()
+	snapshot := make([]Event, len(m.events))
+	for i, e := range m.events {
+		snapshot[i] = cloneEvent(e)
+	}
+	m.mu.RUnlock()
+
+	for i, e := range snapshot {
+		if i%memCtxCheckBatch == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Query returns events matching the filter ordered by [Event.Timestamp]
+// descending (the [Store.Query] contract), with cursor-based
+// pagination. The bundled memory store explicitly sorts the snapshot
+// by timestamp so it matches the documented contract — relying on
+// insertion order here would silently mask backfill / clock-skew
+// bugs that the streaming chain verifier ([Logger.VerifyChain],
+// which now uses [RangeChain]) is designed to expose.
+//
+// ctx.Err() is checked before scanning and every [memCtxCheckBatch]
+// entries during the scan so a cancelled List does not pay for the
+// full table.
 func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Snapshot under the read lock so the sort runs on an immutable
+	// slice without pinning writers behind it.
+	snap := make([]Event, len(m.events))
+	for i, e := range m.events {
+		snap[i] = cloneEvent(e)
+	}
+	m.mu.RUnlock()
 
 	if limit <= 0 {
 		limit = 50
 	}
 
-	// Collect matching events in reverse order (newest first).
+	// Sort timestamp-descending; ties break on event ID descending so
+	// the iteration is stable.
+	sort.SliceStable(snap, func(i, j int) bool {
+		if !snap[i].Timestamp.Equal(snap[j].Timestamp) {
+			return snap[i].Timestamp.After(snap[j].Timestamp)
+		}
+		return snap[i].ID > snap[j].ID
+	})
+
 	matched := make([]Event, 0, limit+1)
 	pastCursor := cursor == ""
 
-	scanned := 0
-	for i := len(m.events) - 1; i >= 0; i-- {
-		if scanned%memCtxCheckBatch == 0 {
+	for i, e := range snap {
+		if i%memCtxCheckBatch == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, "", err
 			}
 		}
-		scanned++
-		e := m.events[i]
 
 		if !pastCursor {
 			if e.ID == cursor {
@@ -136,7 +193,7 @@ func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, l
 			continue
 		}
 
-		matched = append(matched, cloneEvent(e))
+		matched = append(matched, e)
 		if len(matched) > limit {
 			break
 		}

@@ -34,11 +34,28 @@ providers and SFTP password providers now have explicit timeout contracts.
 
 ## TLS Material Rotation
 
-Current status: reviewed, documented as a rolling-restart contract for v2.0.0.
-`security/netutil.TLSConfig` loads server and client TLS material at startup and
-validates partial configuration. Services rotate TLS material by updating the
-mounted files and rolling replicas. Live in-process certificate reload is not a
-v2.0.0 guarantee and must not be implied in docs.
+Current status: live in-process reload is available as an opt-in for v2.0.0.
+
+Two contracts ship side-by-side:
+
+1. **Static (default)**: `security/netutil.TLSConfig.ServerTLS` /
+   `ClientTLS` load TLS material once at startup. Services rotate by
+   updating the mounted files and rolling replicas. This remains the
+   default golden path; no change for services that prefer
+   rolling-restart semantics.
+2. **Reloading (opt-in)**: `Builder.WithReloadingTLS(opts...)` wires
+   `netutil.FilesCertificateSource` into the public server (via
+   `ReloadingServerTLS`), threads the same source into the default
+   outbound HTTP client (via `ReloadingClientTLS`), and registers the
+   poller's `Close` on the lifecycle Runner. Trigger reloads via
+   `WithReloadInterval` (background polling) or
+   `FilesCertificateSource.Reload` from a SIGHUP handler. Services that
+   build their own `*tls.Config` (broker adapters, gRPC dial loops)
+   read `Infrastructure.TLSCertSource` and pass it through the same
+   `Reloading*TLS` helpers so the whole service shares one reload
+   cycle. `ReloadingClientTLS` fails closed with
+   `netutil.ErrServerNameRequired` if the caller dials without setting
+   `tls.Config.ServerName`.
 
 ## Startup And Configuration
 
@@ -94,7 +111,7 @@ coverage, race, benchmarks, dashboard validation, publishability, and rehearsal.
 | ID | Severity | Surface | Status | Finding |
 |---|---|---|---|---|
 | OR-001 | HIGH | AMQP and SFTP rotating credential providers | Fixed in this review | Provider callbacks were context-aware but did not have explicit provider-timeout contracts on every startup/reconnect path. |
-| OR-002 | MEDIUM | TLS material | Documented contract | TLS files are startup-loaded, not live-reloaded. This is acceptable for v2.0.0 only as an explicit rolling-restart contract. |
+| OR-002 | MEDIUM | TLS material | Documented contract | Static load is the default; live in-process reload is opt-in via `Builder.WithReloadingTLS` (threads `FilesCertificateSource` into server, default HTTP client, and `Infrastructure.TLSCertSource` for adapter consumers). Rolling-restart remains supported for services that prefer it. |
 | OR-003 | MEDIUM | Full release evidence | Open release gate | Docker integration and full `make release-candidate` remain final pre-tag gates, not covered by the targeted operational check. |
 
 ## Module Coverage Matrix

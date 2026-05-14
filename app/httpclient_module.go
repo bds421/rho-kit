@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // httpClientModule implements the Module interface for creating an HTTP client.
@@ -37,9 +38,20 @@ func newHTTPClientModule(tracingConfigured bool) *httpClientModule {
 }
 
 func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
-	cTLS, err := mc.Config.TLS.ClientTLS()
-	if err != nil {
-		return fmt.Errorf("httpclient module: build client TLS: %w", err)
+	var (
+		cTLS *tls.Config
+		err  error
+	)
+	if mc.TLSCertSource != nil {
+		// Hot-rotation path: share the same source the public server
+		// uses so cert/key/CA reloads flow through the default
+		// outbound client without restart.
+		cTLS = netutil.ReloadingClientTLS(mc.TLSCertSource)
+	} else {
+		cTLS, err = mc.Config.TLS.ClientTLS()
+		if err != nil {
+			return fmt.Errorf("httpclient module: build client TLS: %w", err)
+		}
 	}
 	m.clientTLS = cTLS
 

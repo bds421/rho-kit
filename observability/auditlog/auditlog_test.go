@@ -317,6 +317,10 @@ func (s failingStore) Query(context.Context, Filter, string, int) ([]Event, stri
 	return nil, "", s.err
 }
 
+func (s failingStore) RangeChain(context.Context, func(Event) error) error {
+	return s.err
+}
+
 func (s failingStore) LastHMAC(context.Context) ([]byte, error) {
 	return nil, nil
 }
@@ -466,6 +470,21 @@ func (s *captureStore) LastHMAC(context.Context) ([]byte, error) {
 		return nil, nil
 	}
 	return append([]byte(nil), tail...), nil
+}
+
+func (s *captureStore) RangeChain(_ context.Context, fn func(Event) error) error {
+	s.mu.Lock()
+	snap := make([]Event, len(s.events))
+	for i, e := range s.events {
+		snap[i] = cloneEvent(e)
+	}
+	s.mu.Unlock()
+	for _, e := range snap {
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestLogger_LogEClonesMetadataBeforeStore(t *testing.T) {
@@ -785,6 +804,53 @@ func TestVerifyChain_EmptyIsValid(t *testing.T) {
 	require.NoError(t, l.VerifyChain(context.Background()))
 }
 
+// TestLogger_VerifyChain_AppendsOrderIndependentOfTimestamp pins the
+// R2-001 fix: chain verification scans via Store.RangeChain (append
+// order), not Store.Query (timestamp order). A service that backfills
+// a historical event with an older timestamp than the previous append
+// must still produce a verifiable chain.
+func TestLogger_VerifyChain_AppendsOrderIndependentOfTimestamp(t *testing.T) {
+	store := NewMemoryStore()
+	l := newTestLogger(store)
+	ctx := context.Background()
+
+	// First append carries "now". Second append is a backfill with a
+	// deliberately older timestamp — the kind of thing a replay or
+	// import flow would write. Query() will return them
+	// timestamp-descending (first, then second), which is the wrong
+	// order for chain link validation. RangeChain() must yield them in
+	// append order (second event sees the first event's HMAC as its
+	// PrevHMAC) regardless.
+	now := time.Now()
+	require.NoError(t, l.LogE(ctx, Event{
+		Actor:     "alice",
+		Action:    "login",
+		Resource:  "sessions",
+		Status:    StatusSuccess,
+		Timestamp: now,
+	}))
+	require.NoError(t, l.LogE(ctx, Event{
+		Actor:     "system",
+		Action:    "backfill",
+		Resource:  "audit",
+		Status:    StatusSuccess,
+		Timestamp: now.Add(-24 * time.Hour),
+	}))
+
+	// The chain is intact in append order, so VerifyChain succeeds.
+	require.NoError(t, l.VerifyChain(ctx))
+
+	// Sanity: Query order is timestamp-descending. The newer-timestamp
+	// event comes first even though it was appended first; this is the
+	// expected user-facing list order and exactly the case that would
+	// break a timestamp-order chain verifier.
+	page, _, err := store.Query(ctx, Filter{}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, page, 2)
+	assert.Equal(t, "alice", page[0].Actor, "Query is timestamp-descending so the newer-timestamped (first-appended) event leads")
+	assert.Equal(t, "system", page[1].Actor)
+}
+
 // TestLogger_Append_ConcurrentDoesNotReuseHMAC is the regression test for
 // the append-mutex: without it, two concurrent appenders could both read
 // the same PrevHMAC from the store and write events whose PrevHMAC was
@@ -1010,6 +1076,10 @@ func (s *retentionCaptureStore) LastHMAC(context.Context) ([]byte, error) {
 	return nil, nil
 }
 
+func (s *retentionCaptureStore) RangeChain(context.Context, func(Event) error) error {
+	return nil
+}
+
 func (s *retentionCaptureStore) DeleteBefore(_ context.Context, before time.Time) (int64, error) {
 	s.before = before
 	s.deleteCalls++
@@ -1098,6 +1168,18 @@ func (s *gatedStore) Query(_ context.Context, _ Filter, _ string, _ int) ([]Even
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Event(nil), s.events...), "", nil
+}
+
+func (s *gatedStore) RangeChain(_ context.Context, fn func(Event) error) error {
+	s.mu.Lock()
+	snap := append([]Event(nil), s.events...)
+	s.mu.Unlock()
+	for _, e := range snap {
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *gatedStore) LastHMAC(context.Context) ([]byte, error) {

@@ -369,20 +369,34 @@ The 2026-05-13 hostile review's metric contract findings are CLOSED for
 v2.0.0:
 
 - **M-004 — Prometheus metric constructor shape inconsistency.** Resolved
-  in wave 35. Every metric-producing package now exposes
-  `NewMetrics(opts ...MetricsOption)` (positional `NewMetrics(reg)` is
-  gone), with a canonical `WithRegisterer` (or `MetricsWithRegisterer`
-  where a component-level option already owns the short name). Component-
-  level options that pass a registerer through to the metric set use the
-  `WithMetricsRegisterer` convention.
+  in wave 35 (refined in wave 41 and wave 52). Every metric-producing
+  package exposes `NewMetrics(opts ...MetricsOption)` (positional
+  `NewMetrics(reg)` is gone) and defaults to
+  `prometheus.DefaultRegisterer`. The canonical registerer option is
+  `WithRegisterer(reg)`; a small set of packages uses a longer name
+  to avoid a same-package collision with a component-level option.
+  The exception taxonomy is enumerated in `AGENTS.md` under "Metrics":
+  `infra/redis.MetricsWithRegisterer`,
+  `data/cache/rediscache.MetricsWithRegisterer` /
+  `WithMetricsRegisterer`,
+  `data/stream/redisstream.WithProducerMetricsRegisterer`,
+  `httpx/middleware/signedrequest.WithMetricsRegisterer`,
+  `observability/redmetrics.WithHTTPRegisterer` /
+  `WithBatchRegisterer`. These are stable v2 names; the longer
+  spelling preserves type-level disambiguation that `WithRegisterer`
+  alone could not.
 
 - **M-008 — AMQP/NATS publish metric route-label cardinality.** Resolved
-  in wave 36. `amqpbackend` and `natsbackend` now accept
-  `WithOpaqueRouteLabels()` on `NewMetrics`, routing `exchange` and
-  `routing_key` through [`promutil.OpaqueLabelValue`](../../observability/promutil/label_value.go)
-  so per-tenant or per-resource segments collapse to a hashed suffix.
-  Default behaviour (no option) keeps raw labels so v1 dashboards stay
-  compatible; services that may produce high-cardinality routes opt in.
+  in wave 36 + refined in wave 41 / wave 50. `amqpbackend` and
+  `natsbackend` now default to the cardinality-safe **opaque**
+  route-label form: `exchange` and `routing_key` are routed through
+  [`promutil.OpaqueLabelValue`](../../observability/promutil/label_value.go)
+  so per-tenant or per-resource segments collapse to a hashed suffix
+  on every call. Services that have audited their routing topology
+  and want v1-style raw labels for dashboard continuity opt in
+  explicitly with `WithRawRouteLabels()`. `WithOpaqueRouteLabels()`
+  remains exported as the explicit-on form so wiring code can be
+  self-documenting.
 
 Both items are tested via regression tests that pin the wire-level label
 behaviour with and without the option.

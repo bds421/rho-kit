@@ -23,6 +23,7 @@ import (
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // RouterFunc builds the service's HTTP handler from the initialized
@@ -52,6 +53,16 @@ type Infrastructure struct {
 	Logger    *slog.Logger
 	ClientTLS *tls.Config
 	ServerTLS *tls.Config
+
+	// TLSCertSource is the hot-rotation source supplied by
+	// [Builder.WithReloadingTLS]. Nil when reloading TLS is not
+	// configured. Services that build their own *tls.Config — broker
+	// adapters, gRPC dial loops, custom HTTP clients — should pass
+	// this through [netutil.ReloadingServerTLS] or
+	// [netutil.ReloadingClientTLS] instead of constructing static
+	// configs from [Config.TLS], so the whole service shares one
+	// reload poll.
+	TLSCertSource netutil.CertificateSource
 
 	JWT    *jwtutil.Provider // nil if no WithJWT
 	PASETO *paseto.Provider  // nil if no WithPASETO

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/tls"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Builder configures and runs a service's infrastructure lifecycle.
@@ -111,6 +113,15 @@ type Builder struct {
 
 	// Append-only action log (optional). Exposed via Infrastructure.
 	alog actionlog.Logger
+
+	// Reloading TLS source: when non-nil, the Builder builds a
+	// FilesCertificateSource from b.cfg.TLS at Run time, uses
+	// [netutil.ReloadingServerTLS] for the public server, threads
+	// the source into the default HTTP client (via
+	// [netutil.ReloadingClientTLS]), and registers Stop on the
+	// lifecycle Runner. Wire with [Builder.WithReloadingTLS].
+	tlsReloadOpts   []netutil.FilesCertificateSourceOption
+	tlsReloadActive bool
 
 	// Approval store (optional). Exposed via Infrastructure.
 	astore approval.Store
@@ -466,6 +477,30 @@ func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option)
 	return b
 }
 
+// WithReloadingTLS enables hot rotation of the TLS material configured
+// on [BaseConfig.TLS]. The Builder constructs a
+// [netutil.FilesCertificateSource] from the configured cert/key/CA
+// paths, threads it into the public server via
+// [netutil.ReloadingServerTLS], threads it into the default HTTP
+// client via [netutil.ReloadingClientTLS], and registers a Stop hook
+// on the lifecycle Runner so the background poller exits cleanly.
+//
+// Pass [netutil.WithReloadInterval] to enable periodic polling, or
+// drive reloads manually by calling [FilesCertificateSource.Reload]
+// from a SIGHUP handler — the kit does not assume which trigger is
+// in use. Without this option the Builder still loads TLS material
+// at Run time but treats the snapshot as immutable until process
+// restart, matching v1 behaviour.
+//
+// TLS must be fully configured (CACert + Cert + Key) before calling
+// this; without it the option is wired but Run returns an error from
+// the source constructor.
+func (b *Builder) WithReloadingTLS(opts ...netutil.FilesCertificateSourceOption) *Builder {
+	b.tlsReloadOpts = append([]netutil.FilesCertificateSourceOption(nil), opts...)
+	b.tlsReloadActive = true
+	return b
+}
+
 // WithActionLogger registers an [actionlog.Logger] so handlers can
 // attribute writes to the originating actor + tenant. Exposed via
 // [Infrastructure.ActionLog] — handlers append entries; the kit
@@ -493,12 +528,19 @@ func (b *Builder) WithActionLogger(l actionlog.Logger) *Builder {
 // (tenant/actor extractors, action/resource derivation, panic
 // recovery) is too service-specific to wire automatically.
 //
-// Typical handler wiring:
+// Typical handler wiring (note the import is the middleware package,
+// not data/approval):
+//
+//	import approvalmw "github.com/bds421/rho-kit/httpx/v2/middleware/approval"
 //
 //	mux.Handle("DELETE /v1/users/{id}",
-//	    approval.Middleware(infra.ApprovalStore,
-//	        approval.WithActorFromContext(auth.UserID),
-//	        // tenant defaults to coretenant.FromContext
+//	    approvalmw.Middleware(infra.ApprovalStore,
+//	        approvalmw.WithActorExtractor(func(r *http.Request) (string, bool) {
+//	            id, ok := auth.UserID(r.Context())
+//	            return id, ok
+//	        }),
+//	        // Tenant defaults to coretenant.FromContext; opt into header
+//	        // trust explicitly via approvalmw.WithTenantFromHeader.
 //	    )(http.HandlerFunc(deleteUser)),
 //	)
 //
@@ -956,9 +998,34 @@ func (b *Builder) RunContext(ctx context.Context) error {
 
 	// 1. TLS -- server TLS is still needed here for the public server.
 	// Client TLS is now handled by the httpClientModule.
-	serverTLS, err := b.cfg.TLS.ServerTLS(b.serverTLSOptions()...)
-	if err != nil {
-		return fmt.Errorf("build server TLS config: %w", err)
+	//
+	// When WithReloadingTLS was called, swap the static snapshot for a
+	// reloading source so the public server, the default outbound HTTP
+	// client, and any consumer that reads infra.TLSCertificateSource
+	// share the same poll loop. The source's Close hook tears down the
+	// background poller on shutdown.
+	var (
+		serverTLS *tls.Config
+		tlsSource netutil.CertificateSource
+		tlsErr    error
+	)
+	if b.tlsReloadActive {
+		src, srcErr := b.cfg.TLS.Reloading(b.tlsReloadOpts...)
+		if srcErr != nil {
+			return fmt.Errorf("build reloading TLS source: %w", srcErr)
+		}
+		serverTLS = netutil.ReloadingServerTLS(src)
+		tlsSource = src
+		b.shutdownHooks = append(b.shutdownHooks, func(context.Context) {
+			if err := src.Close(); err != nil {
+				logger.Warn("tls-reload source close failed", "error", err)
+			}
+		})
+	} else {
+		serverTLS, tlsErr = b.cfg.TLS.ServerTLS(b.serverTLSOptions()...)
+		if tlsErr != nil {
+			return fmt.Errorf("build server TLS config: %w", tlsErr)
+		}
 	}
 
 	// 2. Lifecycle Runner -- manages all long-running goroutines.
@@ -1053,6 +1120,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			logger,
 			runner,
 			b.cfg,
+			tlsSource,
 		)
 		initCancel()
 		if moduleErr != nil {
@@ -1088,6 +1156,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	infra := Infrastructure{
 		Logger:         logger,
 		ServerTLS:      serverTLS,
+		TLSCertSource:  tlsSource,
 		RateLimiter:    rl,
 		KeyedLimiters:  keyedLimiters,
 		Storage:        b.storageBackend,

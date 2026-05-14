@@ -43,9 +43,10 @@ type Metrics struct {
 	handlerDuration *prometheus.HistogramVec
 
 	// labelRoute maps a raw (exchange, routingKey) pair to the label
-	// values that reach Prometheus. Default is identity; opt in via
-	// [WithOpaqueRouteLabels] to bound cardinality when a service
-	// embeds tenant or resource IDs into the route segments.
+	// values that reach Prometheus. The v2 default is the
+	// cardinality-safe opaque (hashed) form ([opaqueRouteLabel]);
+	// services that have audited their topology can opt back into
+	// raw labels with [WithRawRouteLabels].
 	labelRoute routeLabelFunc
 }
 

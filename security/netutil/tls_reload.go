@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+// ErrServerNameRequired is returned by the [ReloadingClientTLS]
+// VerifyConnection callback when the server name is empty. Since the
+// reloading client config sets [tls.Config.InsecureSkipVerify] to
+// true and replaces verification with VerifyConnection, an empty
+// ServerName would let the peer's chain pass with no hostname
+// binding — strictly weaker than the stock Go TLS client. Callers
+// MUST set [tls.Config.ServerName] (typically via the SDK's
+// per-target setter) before dialing.
+var ErrServerNameRequired = errors.New("netutil: ReloadingClientTLS requires tls.Config.ServerName to be set before dialing")
+
 // CertificateSource is the read side of a hot-rotatable TLS keypair
 // and trust store. Each call returns the freshest material the source
 // can provide; a Reloading source caches between reloads so callers can
@@ -355,6 +365,15 @@ func ReloadingServerTLS(src CertificateSource, opts ...ServerTLSOption) *tls.Con
 // [tls.Config.GetClientCertificate] for the client identity (which is
 // dynamic) and [tls.Config.VerifyConnection] to verify the peer's
 // chain against the freshest CA pool on every handshake.
+//
+// Hostname-verification safety: ServerName MUST be set on every dial
+// (either via [tls.Config.ServerName] on a cloned config or via the
+// SDK's per-target setter). Since we set [tls.Config.InsecureSkipVerify]
+// to true to replace verification with [tls.Config.VerifyConnection],
+// an empty ServerName would otherwise let the chain pass without
+// hostname binding — strictly weaker than the stock Go TLS client.
+// VerifyConnection fails closed in that case and refuses the handshake
+// with [ErrServerNameRequired].
 func ReloadingClientTLS(src CertificateSource) *tls.Config {
 	if src == nil {
 		panic("netutil: ReloadingClientTLS requires a non-nil CertificateSource")
@@ -366,6 +385,9 @@ func ReloadingClientTLS(src CertificateSource) *tls.Config {
 			return src.ClientCertificate()
 		},
 		VerifyConnection: func(state tls.ConnectionState) error {
+			if state.ServerName == "" {
+				return ErrServerNameRequired
+			}
 			pool, err := src.CAs()
 			if err != nil {
 				return fmt.Errorf("netutil: client TLS verify: %w", err)

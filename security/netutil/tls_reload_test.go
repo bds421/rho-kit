@@ -195,6 +195,27 @@ func TestReloadingClientTLS_PanicsOnNilSource(t *testing.T) {
 	})
 }
 
+// TestReloadingClientTLS_FailsClosedWithoutServerName pins R2-002:
+// the verification callback must refuse the handshake when ServerName
+// is empty. Without this guard, InsecureSkipVerify=true combined with
+// VerifyConnection would let the peer's chain pass without hostname
+// binding — strictly weaker than the stock Go TLS client.
+func TestReloadingClientTLS_FailsClosedWithoutServerName(t *testing.T) {
+	t.Parallel()
+	cfg, _ := generateRotatableTLSFixture(t)
+	src, err := NewFilesCertificateSource(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = src.Close() })
+
+	tlsCfg := ReloadingClientTLS(src)
+	require.NotNil(t, tlsCfg.VerifyConnection)
+
+	err = tlsCfg.VerifyConnection(tls.ConnectionState{
+		ServerName: "", // SDK that did not stamp the hostname
+	})
+	require.ErrorIs(t, err, ErrServerNameRequired)
+}
+
 func mustServerCert(t *testing.T, s *FilesCertificateSource) *tls.Certificate {
 	t.Helper()
 	c, err := s.ServerCertificate()

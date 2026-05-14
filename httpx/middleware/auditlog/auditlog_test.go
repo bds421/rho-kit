@@ -46,6 +46,15 @@ func (s *recordingStore) Query(_ context.Context, _ auditlog.Filter, _ string, _
 	return nil, "", nil
 }
 
+func (s *recordingStore) RangeChain(_ context.Context, fn func(auditlog.Event) error) error {
+	for _, e := range s.events {
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *recordingStore) LastHMAC(_ context.Context) ([]byte, error) {
 	if len(s.events) == 0 {
 		return nil, nil

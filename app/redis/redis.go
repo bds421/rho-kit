@@ -131,9 +131,19 @@ func (m *redisModule) Init(_ context.Context, mc app.ModuleContext) error {
 	}
 	m.conn = conn
 
+	// Forward the connection's metrics instance so pool gauges land
+	// on the same registerer connection / command metrics use. Without
+	// this, callers that built the connection with WithRegisterer
+	// would see pool metrics silently routed to the default registry
+	// (R2-007).
+	poolMetrics := conn.Metrics()
 	mc.Runner.AddFunc("redis-pool-metrics", func(ctx context.Context) error {
+		var opts []kitredis.PoolCollectorOption
+		if poolMetrics != nil {
+			opts = append(opts, kitredis.WithPoolMetrics(poolMetrics))
+		}
 		kitredis.StartPoolMetricsCollector(
-			ctx, conn.Client(), "default", 15*time.Second,
+			ctx, conn.Client(), "default", 15*time.Second, opts...,
 		)
 		return nil
 	})

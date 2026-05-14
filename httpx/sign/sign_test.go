@@ -59,6 +59,37 @@ func (s *mutableKeyStore) CurrentKeyID(context.Context) (string, []byte, error) 
 	return s.keyID, append([]byte(nil), s.secret...), nil
 }
 
+// blockingKeyStore blocks CurrentKeyID until ctx is cancelled. Used
+// to prove that WrapKeyStore does not perform synchronous startup
+// I/O — a remote secret manager outage at boot must not pin
+// construction forever (R2-004).
+type blockingKeyStore struct{}
+
+func (blockingKeyStore) CurrentKeyID(ctx context.Context) (string, []byte, error) {
+	<-ctx.Done()
+	return "", nil, ctx.Err()
+}
+
+func TestWrapKeyStore_DoesNotBlockOnRemoteProvider(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		_ = WrapKeyStore(http.DefaultTransport, blockingKeyStore{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WrapKeyStore blocked on KeyStore.CurrentKeyID — startup I/O leaked into construction")
+	}
+}
+
+func TestWrapKeyStoreContext_RespectsCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := WrapKeyStoreContext(ctx, http.DefaultTransport, blockingKeyStore{})
+	require.Error(t, err, "WrapKeyStoreContext must surface the deadline-exceeded error from the blocked KeyStore")
+}
+
 // Round-trip end-to-end: client signs, server verifies. The most
 // useful guarantee a kit can give callers is "signer + verifier agree
 // on the wire format" — a single test that runs both proves it.

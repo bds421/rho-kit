@@ -283,6 +283,22 @@ func (c *Connection) Client() redis.UniversalClient {
 	return c.client
 }
 
+// Metrics returns the [Metrics] instance backing this connection's
+// observability hooks. Use it to pass [WithPoolMetrics] into
+// [StartPoolMetricsCollector] so pool gauges land on the same
+// Prometheus registry as connection / command metrics — without
+// this hop, callers that built the connection with [WithRegisterer]
+// would see pool gauges silently routed to the default registry.
+//
+// Returns nil on a nil receiver; otherwise the receiver always has
+// a non-nil metrics instance.
+func (c *Connection) Metrics() *Metrics {
+	if c == nil {
+		return nil
+	}
+	return c.metrics
+}
+
 // Healthy reports whether the connection is currently healthy. This is used
 // by health check integrations (health.DependencyCheck).
 //

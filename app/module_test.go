@@ -161,6 +161,7 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
@@ -223,6 +224,7 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -256,6 +258,7 @@ func TestInitModules_DependencyLookup(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 	defer cleanup(context.Background())
@@ -278,6 +281,7 @@ func TestInitModules_CloseErrorIsLogged(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -295,6 +299,7 @@ func TestInitModules_NilSlice(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
@@ -311,6 +316,7 @@ func TestInitModules_EmptySlice(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
@@ -461,6 +467,7 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -502,6 +509,7 @@ func TestCloseModules_PanicRecovery(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -534,6 +542,7 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -574,6 +583,7 @@ func TestInitModules_PopulateOrder(t *testing.T) {
 		logger,
 		runner,
 		BaseConfig{},
+		nil,
 	)
 	require.NoError(t, err)
 	defer cleanup(context.Background())
@@ -631,6 +641,6 @@ func TestInitModules_DuplicateNamePanics(t *testing.T) {
 	m2 := &stubModule{name: "dup-secret-token"}
 
 	assert.PanicsWithValue(t, "app: duplicate module name (builtin + user modules must have unique names)", func() {
-		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{})
+		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{}, nil)
 	})
 }

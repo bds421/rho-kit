@@ -188,7 +188,26 @@ type Store interface {
 	// Returns the next cursor for pagination (empty string if no more results).
 	// The cursor returned here is a raw store-level cursor; [Logger.List]
 	// wraps it with a signed envelope before exposing it to callers.
+	//
+	// Query order is for user-facing list views only. It MUST NOT be
+	// relied on for chain integrity: see [Store.RangeChain] for
+	// append-order traversal.
 	Query(ctx context.Context, filter Filter, cursor string, limit int) ([]Event, string, error)
+
+	// RangeChain calls fn for every event in append order (oldest first),
+	// regardless of timestamp. Used exclusively by [Logger.VerifyChain]
+	// so chain integrity does not depend on caller-supplied
+	// [Event.Timestamp] values — a service that backfills a historical
+	// event with an older timestamp would otherwise break chain
+	// verification under Query's timestamp ordering, even though the
+	// HMAC chain is intact.
+	//
+	// Implementations MUST iterate in the same order events were
+	// appended via [Store.AppendChained]. Postgres-backed stores
+	// typically scan by a monotonic SERIAL column; the bundled
+	// [MemoryStore] iterates its append slice. Returning fn's error
+	// stops iteration immediately.
+	RangeChain(ctx context.Context, fn func(Event) error) error
 
 	// LastHMAC returns the HMAC of the most recently appended event, or an
 	// empty / all-zero slice if the store is empty. Useful for chain
@@ -563,17 +582,21 @@ func (l *Logger) List(ctx context.Context, filter Filter, cursor string, limit i
 // validates the tamper-evident HMAC chain end-to-end. It returns nil
 // for an empty store (degenerate-valid chain).
 //
-// VerifyChain streams pages from the store in newest-first order
-// (matching [Store.Query]'s native iteration) and verifies each page
-// as it arrives — memory is bounded to one page at a time
-// ([verifyChainPageSize]). At each step it confirms:
+// VerifyChain streams the store via [Store.RangeChain], which yields
+// events in append order (oldest first) regardless of timestamp.
+// Memory is bounded to one event in flight. At each step it confirms:
 //
 //  1. The recomputed HMAC over the canonical encoding of the event
 //     (using event.PrevHMAC + event-without-HMAC) equals event.HMAC.
-//  2. The chain link is intact: every younger-neighbour event's
-//     PrevHMAC must equal the current (older) event's HMAC.
-//  3. The oldest event (last seen at end of stream) has an empty or
-//     zero PrevHMAC — i.e. the chain has a valid genesis.
+//  2. The chain link is intact: event[i].PrevHMAC must equal
+//     event[i-1].HMAC for i > 0.
+//  3. The first (oldest) event has an empty or zero PrevHMAC — i.e.
+//     the chain has a valid genesis.
+//
+// Using append order (not timestamp order) means a service that
+// backfills a historical entry, or one whose clock skews backwards,
+// still has a verifiable chain — the previous timestamp-ordered
+// implementation could reject a valid chain in either case.
 //
 // VerifyChain returns a wrapped [ErrChainBroken] at the first tamper
 // site it detects, or any underlying Store I/O error. Successful
@@ -598,55 +621,34 @@ func (l *Logger) VerifyChain(ctx context.Context) error {
 	return verifyErr
 }
 
-// verifyChainPageSize bounds the per-page batch for VerifyChain. Tuned to
-// keep memory bounded for very large stores while still amortising the
-// per-page round-trip cost.
-const verifyChainPageSize = 500
-
 func (l *Logger) streamVerifyChain(ctx context.Context, chainKey []byte) error {
-	cursor := ""
 	var (
-		// expectedNextHMAC is the HMAC the next (older) event we read
-		// must have. It is captured from the previous (younger)
-		// event's PrevHMAC. The newest event has no younger neighbour
-		// so this is uninitialised until the first event is seen.
-		expectedNextHMAC []byte
-		haveLink         bool
-		// lastPrevHMAC holds the most recently seen event's PrevHMAC.
-		// At end-of-stream it belongs to the oldest event and must be
-		// empty/zero (chain genesis).
-		lastPrevHMAC []byte
-		// fromNewest indexes the position of the event relative to the
-		// newest record, for error reporting only.
-		fromNewest int
+		prevHMAC []byte // HMAC of the previously visited (older) event
+		seenAny  bool
+		index    int // append-order index, for error messages
 	)
-	for {
-		page, next, err := l.store.Query(ctx, Filter{}, cursor, verifyChainPageSize)
-		if err != nil {
-			return fmt.Errorf("auditlog: verify chain: read page: %w", err)
+	err := l.store.RangeChain(ctx, func(event Event) error {
+		// 1. Self-consistency: recomputed HMAC must equal stored HMAC.
+		expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
+		if !constantTimeEqualHMAC(event.HMAC, expected) {
+			return fmt.Errorf("%w: event[%d] HMAC does not match canonical content", ErrChainBroken, index)
 		}
-		for _, event := range page {
-			expected := computeHMAC(chainKey, event.PrevHMAC, eventWithoutHMAC(event))
-			if !constantTimeEqualHMAC(event.HMAC, expected) {
-				return fmt.Errorf("%w: event (newest-offset=%d) HMAC does not match canonical content", ErrChainBroken, fromNewest)
+		// 2. Genesis / link: first event's PrevHMAC must be empty or
+		// zero; subsequent events must point at the previous event's HMAC.
+		if !seenAny {
+			if len(event.PrevHMAC) != 0 && !isZeroBytes(event.PrevHMAC) {
+				return fmt.Errorf("%w: event[0] PrevHMAC must be empty or zero", ErrChainBroken)
 			}
-			if haveLink {
-				if !constantTimeEqualHMAC(event.HMAC, expectedNextHMAC) {
-					return fmt.Errorf("%w: chain link broken at newest-offset=%d (younger neighbour's PrevHMAC does not match this event's HMAC)", ErrChainBroken, fromNewest)
-				}
-			}
-			expectedNextHMAC = event.PrevHMAC
-			lastPrevHMAC = event.PrevHMAC
-			haveLink = true
-			fromNewest++
+		} else if !constantTimeEqualHMAC(event.PrevHMAC, prevHMAC) {
+			return fmt.Errorf("%w: event[%d] PrevHMAC does not match event[%d] HMAC", ErrChainBroken, index, index-1)
 		}
-		if next == "" {
-			break
-		}
-		cursor = next
-	}
-	if haveLink && len(lastPrevHMAC) != 0 && !isZeroBytes(lastPrevHMAC) {
-		return fmt.Errorf("%w: oldest event PrevHMAC must be empty or zero (chain genesis missing)", ErrChainBroken)
+		prevHMAC = event.HMAC
+		seenAny = true
+		index++
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	return nil
 }

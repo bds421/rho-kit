@@ -84,3 +84,49 @@ func TestTokenBridge_FirstErrorReturnsEmpty(t *testing.T) {
 	}, time.Second)
 	assert.Empty(t, bridge())
 }
+
+func TestUserPassBridge_EmptySuccessPreservesCache(t *testing.T) {
+	var calls atomic.Int64
+	bridge := newUserPassBridge(func(context.Context) (string, string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "alice", "secret-1", nil
+		}
+		// A provider bug returning ("", "", nil) on the second call.
+		// The bridge must NOT replace the cached good pair with an
+		// empty one — that would break reauth (R2-005).
+		return "", "", nil
+	}, time.Second)
+
+	u, p := bridge()
+	require.Equal(t, "alice", u)
+	require.Equal(t, "secret-1", p)
+
+	u, p = bridge()
+	assert.Equal(t, "alice", u, "empty-success must not invalidate the cached credential")
+	assert.Equal(t, "secret-1", p)
+}
+
+func TestTokenBridge_EmptySuccessPreservesCache(t *testing.T) {
+	var calls atomic.Int64
+	bridge := newTokenBridge(func(context.Context) (string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "tok-1", nil
+		}
+		return "", nil
+	}, time.Second)
+
+	require.Equal(t, "tok-1", bridge())
+	assert.Equal(t, "tok-1", bridge(), "empty-success must not invalidate the cached token")
+}
+
+func TestUserPassBridge_FirstEmptySuccessReturnsEmpty(t *testing.T) {
+	bridge := newUserPassBridge(func(context.Context) (string, string, error) {
+		return "", "", nil
+	}, time.Second)
+
+	u, p := bridge()
+	assert.Empty(t, u)
+	assert.Empty(t, p)
+}

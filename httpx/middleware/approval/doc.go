@@ -10,8 +10,13 @@
 //
 // On a wrapped route the middleware:
 //
-//  1. Extracts the tenant from the configured tenant header (or fails
-//     400 Bad Request — the audit trail is unusable without it).
+//  1. Extracts the tenant. The v2 default reads the tenant ID from
+//     request context via [core/tenant.FromContext] — typically
+//     populated by the kit's tenant / auth middleware from a verified
+//     claim. Header-trust is an explicit opt-in via
+//     [WithTenantFromHeader]; the default refuses to trust any
+//     caller-supplied header. Missing tenant fails 400 Bad Request —
+//     the audit trail is unusable without it.
 //
 //  2. Extracts the actor via the configured extractor.
 //
@@ -45,11 +50,14 @@
 // destructive operations; missing or empty actor at request time
 // produces 401 Unauthorized.
 //
-// Prefer extracting actors from authenticated request context. If a
-// deployment must trust a proxy-stamped actor header, wire
-// [WithActorFromHeader] so duplicate, comma-combined, whitespace, and
-// control-character values are rejected consistently with the rest of
-// the kit's identity-header handling.
+// Prefer extracting actors from authenticated request context — wire
+// [WithActorExtractor] with a function that reads the actor id from
+// request context (for example, the value an upstream auth
+// middleware put on the context). If a deployment must trust a
+// proxy-stamped actor header, wire [WithActorFromHeader] so
+// duplicate, comma-combined, whitespace, and control-character
+// values are rejected consistently with the rest of the kit's
+// identity-header handling.
 //
 // # Body size cap
 //

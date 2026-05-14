@@ -61,11 +61,10 @@ type Metrics struct {
 	consecutiveReconnectFailures *prometheus.GaugeVec
 
 	// labelRoute maps a raw (exchange, routingKey) pair to the label
-	// values that will reach Prometheus. The default identity function
-	// preserves backwards-compatible labels. [WithOpaqueRouteLabels]
-	// swaps in a hashing function that bounds cardinality when a
-	// service accidentally encodes tenant or resource IDs into route
-	// segments.
+	// values that will reach Prometheus. The v2 default is the
+	// cardinality-safe opaque (hashed) form ([opaqueRouteLabel]);
+	// services that have audited their topology can opt back into
+	// raw labels with [WithRawRouteLabels].
 	labelRoute routeLabelFunc
 }
 

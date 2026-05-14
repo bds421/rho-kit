@@ -175,16 +175,31 @@ func WithNonceFn(fn func() string) Option {
 // exceeds the keyID length cap, or any option is nil — all
 // programmer-side wiring mistakes caught at construction.
 func Wrap(base http.RoundTripper, secret []byte, keyID string, opts ...Option) http.RoundTripper {
-	return wrap(base, staticKeyStore{keyID: keyID, secret: append([]byte(nil), secret...)}, opts...)
+	keys := staticKeyStore{keyID: keyID, secret: append([]byte(nil), secret...)}
+	// Static stores can be validated synchronously and panic on
+	// misconfiguration (e.g. too-short secret) — they never block on
+	// remote I/O.
+	if err := validateSigningKeyStore(context.Background(), keys); err != nil {
+		panic(err.Error())
+	}
+	return wrap(base, keys, opts...)
 }
 
-// WrapKeyStore returns an http.RoundTripper that resolves the current signing
-// key from keys for every request. Use this with a reloading key store so new
-// outbound requests move to the new key immediately while verifiers still keep
-// the previous key in their resolver during the overlap window.
+// WrapKeyStore returns an http.RoundTripper that resolves the current
+// signing key from keys for every request. Use this with a reloading
+// or remote key store (KMS, Vault, Secrets Manager) so new outbound
+// requests move to the new key immediately while verifiers still
+// keep the previous key in their resolver during the overlap window.
 //
-// Panics if keys is nil, its current key fails validation, or any
-// option is nil. Use Wrap when a single static key is sufficient.
+// Unlike [Wrap], WrapKeyStore does NOT validate the store at
+// construction — that would force a remote store outage to become a
+// startup hard-block with no caller deadline. The first signed
+// request validates the resolved key via [req.Context], so a
+// misconfigured store surfaces as a per-request error with the
+// caller's deadline applied. Use [WrapKeyStoreContext] when startup
+// validation against a remote store is required.
+//
+// Panics if keys is nil or any option is nil.
 func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
 	if keys == nil {
 		panic("sign: KeyStore must not be nil")
@@ -192,12 +207,27 @@ func WrapKeyStore(base http.RoundTripper, keys KeyStore, opts ...Option) http.Ro
 	return wrap(base, keys, opts...)
 }
 
+// WrapKeyStoreContext is the explicit-startup-validation variant of
+// [WrapKeyStore]. The caller-supplied ctx bounds how long
+// construction will wait on the KeyStore to return the current key.
+// Returns the wrapped RoundTripper on success, or an error wrapping
+// the underlying KeyStore failure (e.g. provider timeout, unknown
+// key). Use this when "fail fast at startup if the KMS is
+// unreachable" is the desired behaviour; use [WrapKeyStore] when
+// the service should boot and surface KMS issues at first request.
+func WrapKeyStoreContext(ctx context.Context, base http.RoundTripper, keys KeyStore, opts ...Option) (http.RoundTripper, error) {
+	if keys == nil {
+		return nil, errors.New("sign: KeyStore must not be nil")
+	}
+	if err := validateSigningKeyStore(ctx, keys); err != nil {
+		return nil, err
+	}
+	return wrap(base, keys, opts...), nil
+}
+
 func wrap(base http.RoundTripper, keys KeyStore, opts ...Option) http.RoundTripper {
 	if base == nil {
 		base = transportdefaults.New(nil, 0, "httpx/sign: Wrap")
-	}
-	if err := validateSigningKeyStore(keys); err != nil {
-		panic(err.Error())
 	}
 	cfg := config{
 		bodyMaxSize: 10 * 1024 * 1024,
@@ -232,12 +262,8 @@ func validateKeyID(keyID string) error {
 	return nil
 }
 
-func validateSigningKeyStore(keys KeyStore) error {
-	// Use Background here — this runs at Wrap construction time, not
-	// per-request. Static stores never need a deadline, and a slow
-	// remote store at construction would be a configuration bug we
-	// surface at startup rather than per request.
-	keyID, secret, err := keys.CurrentKeyID(context.Background())
+func validateSigningKeyStore(ctx context.Context, keys KeyStore) error {
+	keyID, secret, err := keys.CurrentKeyID(ctx)
 	if err != nil {
 		return fmt.Errorf("sign: KeyStore.CurrentKeyID at construction: %w", err)
 	}
