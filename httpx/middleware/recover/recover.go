@@ -45,13 +45,35 @@ type Metrics struct {
 	panics *prometheus.CounterVec
 }
 
-// NewMetrics registers and returns the panic counter. If reg is nil,
-// prometheus.DefaultRegisterer is used. Safe to call repeatedly; duplicate
-// construction reuses the collector already registered on reg.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the recover-middleware metric constructor.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer. Unset defaults to
+// [prometheus.DefaultRegisterer]; passing nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("recover: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics registers and returns the panic counter. Pass
+// [WithRegisterer] for a non-default registry. Safe to call
+// repeatedly; duplicate construction reuses the collector already
+// registered on reg.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("recover: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "http",
 		Name:      "panics_total",

@@ -39,12 +39,34 @@ type Metrics struct {
 	errors    prometheus.Counter // store errors (500)
 }
 
-// NewMetrics creates and registers idempotency metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the idempotency metric constructor.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for idempotency
+// metrics. Unset defaults to [prometheus.DefaultRegisterer]; passing
+// nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("idempotency: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers idempotency metrics. Pass
+// [WithRegisterer] to use a non-default registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("idempotency: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 	m := &Metrics{
 		hits: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "http",

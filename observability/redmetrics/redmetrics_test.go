@@ -18,7 +18,7 @@ import (
 
 func TestNewHTTP_RegistersAllFour(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	require.NotNil(t, m.Requests)
 	require.NotNil(t, m.Errors)
 	require.NotNil(t, m.Duration)
@@ -45,8 +45,8 @@ func TestNewHTTP_RegistersAllFour(t *testing.T) {
 
 func TestNewHTTP_ReusesRegisteredCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	first := NewHTTP(reg)
-	second := NewHTTP(reg)
+	first := NewHTTP(WithHTTPRegisterer(reg))
+	second := NewHTTP(WithHTTPRegisterer(reg))
 
 	second.Requests.WithLabelValues("/x", "GET", "200").Inc()
 	second.Errors.WithLabelValues("/x", "GET", "5xx").Inc()
@@ -78,22 +78,22 @@ func TestDefaultBuckets_ReturnDetachedCopies(t *testing.T) {
 
 func TestNewHTTP_PanicsOnNilOption(t *testing.T) {
 	assert.Panics(t, func() {
-		NewHTTP(prometheus.NewRegistry(), nil)
+		NewHTTP(WithHTTPRegisterer(prometheus.NewRegistry()), nil)
 	})
 }
 
 func TestNewHTTP_PanicsOnInvalidMetricNameParts(t *testing.T) {
 	assert.Panics(t, func() {
-		NewHTTP(prometheus.NewRegistry(), WithHTTPNamespace("my-service"))
+		NewHTTP(WithHTTPRegisterer(prometheus.NewRegistry()), WithHTTPNamespace("my-service"))
 	})
 	assert.Panics(t, func() {
-		NewHTTP(prometheus.NewRegistry(), WithHTTPSubsystem("http api"))
+		NewHTTP(WithHTTPRegisterer(prometheus.NewRegistry()), WithHTTPSubsystem("http api"))
 	})
 }
 
 func TestHTTPMiddleware_Records2xxAsRequestNotError(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	h := m.Middleware(func(*http.Request) string { return "/healthz" })(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -111,7 +111,7 @@ func TestHTTPMiddleware_Records2xxAsRequestNotError(t *testing.T) {
 
 func TestHTTPMiddleware_Records5xxAsError(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	h := m.Middleware(func(*http.Request) string { return "/api/widgets" })(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -126,7 +126,7 @@ func TestHTTPMiddleware_Records5xxAsError(t *testing.T) {
 
 func TestHTTPMiddleware_NilRouteExtractorYieldsUnknown(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	h := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/anything", nil))
@@ -135,7 +135,7 @@ func TestHTTPMiddleware_NilRouteExtractorYieldsUnknown(t *testing.T) {
 
 func TestHTTPMiddleware_InvalidRouteAndMethodAreBucketed(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	h := m.Middleware(func(*http.Request) string { return "bad\nroute" })(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
 	)
@@ -154,7 +154,7 @@ func TestHTTPMiddleware_InvalidRouteAndMethodAreBucketed(t *testing.T) {
 
 func TestHTTPMiddleware_RouteExtractorPanicRecordsUnknown(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	h := m.Middleware(func(*http.Request) string {
 		panic("route exploded")
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -170,7 +170,7 @@ func TestHTTPMiddleware_RouteExtractorPanicRecordsUnknown(t *testing.T) {
 
 func TestHTTPMiddleware_RouteExtractorPanicDoesNotReplaceHandlerPanic(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 	handlerPanic := assert.AnError
 	h := m.Middleware(func(*http.Request) string {
 		panic("route exploded")
@@ -189,7 +189,7 @@ func TestHTTPMiddleware_RouteExtractorPanicDoesNotReplaceHandlerPanic(t *testing
 
 func TestHTTPMiddleware_InFlightRisesAndFalls(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewHTTP(reg)
+	m := NewHTTP(WithHTTPRegisterer(reg))
 
 	gateInside := make(chan struct{})
 	gateOutside := make(chan struct{})
@@ -292,7 +292,7 @@ func TestWithHTTPBuckets_ClonesInput(t *testing.T) {
 	opt := WithHTTPBuckets(buckets)
 	buckets[0] = 0.001
 
-	m := NewHTTP(prometheus.NewRegistry(), opt)
+	m := NewHTTP(WithHTTPRegisterer(prometheus.NewRegistry()), opt)
 	observer, err := m.Duration.GetMetricWithLabelValues("/route", "GET")
 	require.NoError(t, err)
 	metric := &dto.Metric{}

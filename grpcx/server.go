@@ -310,7 +310,11 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		stream = append([]grpc.StreamServerInterceptor{interceptor.DeadlineStream(cfg.defaultDeadline)}, stream...)
 	}
 	if !cfg.disableMetrics {
-		metrics := interceptor.NewGRPCMetrics(cfg.metricsRegisterer)
+		var metricsOpts []interceptor.MetricsOption
+		if cfg.metricsRegisterer != nil {
+			metricsOpts = append(metricsOpts, interceptor.WithRegisterer(cfg.metricsRegisterer))
+		}
+		metrics := interceptor.NewMetrics(metricsOpts...)
 		unary = append([]grpc.UnaryServerInterceptor{metrics.UnaryInterceptor()}, unary...)
 		stream = append([]grpc.StreamServerInterceptor{metrics.StreamInterceptor()}, stream...)
 	}

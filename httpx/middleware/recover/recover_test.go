@@ -139,7 +139,7 @@ func TestMiddleware_PanicAfterWriteHeaderLogsButDoesNotDoubleWrite(t *testing.T)
 
 func TestMiddleware_MetricsCounterIncrements(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 
 	mw := Middleware(WithLogger(slog.New(slog.NewJSONHandler(io.Discard, nil))), WithMetrics(metrics))
 	handler := mw(panicHandler("counted"))
@@ -155,7 +155,7 @@ func TestMiddleware_MetricsCounterIncrements(t *testing.T) {
 }
 
 func TestMiddleware_MetricsBucketsInvalidMethod(t *testing.T) {
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 
 	mw := Middleware(WithLogger(slog.New(slog.NewJSONHandler(io.Discard, nil))), WithMetrics(metrics))
 	handler := mw(panicHandler("counted"))

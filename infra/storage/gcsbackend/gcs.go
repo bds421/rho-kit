@@ -56,11 +56,17 @@ func WithValidators(validators ...storage.Validator) Option {
 	}
 }
 
-// WithRegisterer sets the Prometheus registerer for GCS metrics.
-// If not set, prometheus.DefaultRegisterer is used.
-func WithRegisterer(reg prometheus.Registerer) Option {
+// WithMetricsRegisterer sets the Prometheus registerer for GCS
+// metrics. If not set, prometheus.DefaultRegisterer is used. Replaces
+// the v1 WithRegisterer spelling so it no longer collides with the
+// metrics-level option of the same name.
+func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 	return func(b *Backend) {
-		b.metrics = NewMetrics(reg)
+		if reg == nil {
+			b.metrics = NewMetrics()
+			return
+		}
+		b.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
 

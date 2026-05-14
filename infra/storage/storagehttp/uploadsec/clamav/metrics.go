@@ -37,14 +37,35 @@ type Metrics struct {
 	scansTotal   *prometheus.CounterVec
 }
 
-// NewMetrics creates and registers clamav metrics with reg. If reg is nil,
-// prometheus.DefaultRegisterer is used. MustRegisterOrGet folds re-registration
-// against the same Registerer into a single metric set so tests that build
-// many scanners against one registry behave deterministically.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the clamav metric constructor.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer. Unset defaults to
+// [prometheus.DefaultRegisterer]; passing nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("clamav: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers clamav metrics. Pass [WithRegisterer]
+// for a non-default registry. MustRegisterOrGet folds re-registration
+// against the same Registerer into a single metric set so tests that
+// build many scanners against one registry behave deterministically.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("clamav: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &Metrics{
 		scanDuration: prometheus.NewHistogramVec(

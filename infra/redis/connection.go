@@ -139,10 +139,17 @@ func WithOnReconnectTimeout(d time.Duration) ConnOption {
 }
 
 // WithRegisterer sets the Prometheus registerer for connection metrics.
-// If not set, prometheus.DefaultRegisterer is used.
+// If not set, prometheus.DefaultRegisterer is used. The connection-
+// level option keeps the short name (the kit-wide convention for
+// component options), while the metrics-level option in this package
+// uses [MetricsWithRegisterer] to avoid same-package collision.
 func WithRegisterer(reg prometheus.Registerer) ConnOption {
 	return func(c *Connection) {
-		c.metrics = NewMetrics(reg)
+		if reg == nil {
+			c.metrics = NewMetrics()
+			return
+		}
+		c.metrics = NewMetrics(MetricsWithRegisterer(reg))
 	}
 }
 

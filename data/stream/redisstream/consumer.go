@@ -64,12 +64,34 @@ type ConsumerMetrics struct {
 	pendingMessages      *prometheus.GaugeVec
 }
 
-// NewConsumerMetrics creates and registers consumer metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewConsumerMetrics(reg prometheus.Registerer) *ConsumerMetrics {
+// ConsumerMetricsOption configures the redisstream consumer metric constructor.
+type ConsumerMetricsOption func(*consumerMetricsConfig)
+
+type consumerMetricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithConsumerMetricsRegisterer pins the Prometheus registerer used
+// for consumer metrics. Unset defaults to [prometheus.DefaultRegisterer];
+// passing nil panics.
+func WithConsumerMetricsRegisterer(reg prometheus.Registerer) ConsumerMetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("redisstream: WithConsumerMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *consumerMetricsConfig) { c.registerer = reg }
+}
+
+// NewConsumerMetrics creates and registers consumer metrics. Pass
+// [WithConsumerMetricsRegisterer] to use a non-default registry.
+func NewConsumerMetrics(opts ...ConsumerMetricsOption) *ConsumerMetrics {
+	cfg := consumerMetricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("redisstream: NewConsumerMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &ConsumerMetrics{
 		messagesConsumed: prometheus.NewCounterVec(
@@ -129,7 +151,7 @@ func NewConsumerMetrics(reg prometheus.Registerer) *ConsumerMetrics {
 	return m
 }
 
-var defaultConsumerMetrics = sync.OnceValue(func() *ConsumerMetrics { return NewConsumerMetrics(nil) })
+var defaultConsumerMetrics = sync.OnceValue(func() *ConsumerMetrics { return NewConsumerMetrics() })
 
 // Consumer reads from a Redis stream using consumer groups.
 // It handles automatic consumer group creation, pending message claim,
@@ -301,11 +323,18 @@ func WithDeadLetterMaxLen(n int64) ConsumerOption {
 	}
 }
 
-// WithConsumerRegisterer sets the Prometheus registerer for consumer metrics.
-// If not set, prometheus.DefaultRegisterer is used.
+// WithConsumerRegisterer sets the Prometheus registerer for consumer
+// metrics. If not set, prometheus.DefaultRegisterer is used. The
+// consumer/producer naming distinction stays in this package because
+// the package exports both a Consumer and a Producer side-by-side; a
+// generic "WithMetricsRegisterer" would collide.
 func WithConsumerRegisterer(reg prometheus.Registerer) ConsumerOption {
 	return func(c *Consumer) {
-		c.metrics = NewConsumerMetrics(reg)
+		if reg == nil {
+			c.metrics = NewConsumerMetrics()
+			return
+		}
+		c.metrics = NewConsumerMetrics(WithConsumerMetricsRegisterer(reg))
 	}
 }
 

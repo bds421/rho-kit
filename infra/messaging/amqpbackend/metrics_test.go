@@ -18,8 +18,8 @@ import (
 
 func TestAMQPMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewMetrics(reg)
-	m2 := NewMetrics(reg)
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
 
 	assert.Same(t, m1.published, m2.published)
 	assert.Same(t, m1.publishDuration, m2.publishDuration)
@@ -36,7 +36,7 @@ func TestAMQPMetrics_ReusesCollectors(t *testing.T) {
 // observable from a Prometheus scrape, not derived from logs.
 func TestAMQPMetrics_ConnectionUp_FlipsOnUpAndDown(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	m.observeConnectionUp("primary", true)
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.connectionUp.WithLabelValues("primary")))
@@ -51,7 +51,7 @@ func TestAMQPMetrics_ConnectionUp_FlipsOnUpAndDown(t *testing.T) {
 // alert forever after recovery).
 func TestAMQPMetrics_ReconnectAttempts_TracksOutcomes(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
 	m.observeReconnectAttempt("primary", amqpReconnectOutcomeFailed)
@@ -71,7 +71,7 @@ func TestAMQPMetrics_ReconnectAttempts_TracksOutcomes(t *testing.T) {
 // predictable.
 func TestAMQPMetrics_ReconnectAttempts_EmptyBrokerFallsBack(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	m.observeReconnectAttempt("", amqpReconnectOutcomeFailed)
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.reconnectAttempts.WithLabelValues("default", amqpReconnectOutcomeFailed)))
@@ -97,7 +97,7 @@ func TestWithConnectionMetrics_NilPanics(t *testing.T) {
 
 func TestAMQPMetrics_Contract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	now := time.Now()
 
 	metrics.observePublish("events", "order.created", amqpPublishOutcomeSuccess, now)
@@ -111,7 +111,7 @@ func TestAMQPMetrics_Contract(t *testing.T) {
 }
 
 func TestPublisherMetrics_RecordTooLargePublish(t *testing.T) {
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 	pub := NewPublisher(noopConnector{}, discardLogger(),
 		WithMaxMessageBytes(4),
 		WithPublisherMetrics(metrics),
@@ -125,7 +125,7 @@ func TestPublisherMetrics_RecordTooLargePublish(t *testing.T) {
 }
 
 func TestConsumerMetrics_RecordDeliveryOutcomes(t *testing.T) {
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 	c := newTestConsumer(nil, ConsumerHooks{})
 	c.metrics = metrics
 	msg, err := messaging.NewMessage("test.event", "payload")
@@ -154,7 +154,7 @@ func TestConsumerMetrics_RecordDeliveryOutcomes(t *testing.T) {
 }
 
 func TestConsumerMetrics_RecordFailureOutcomes(t *testing.T) {
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 	msg, err := messaging.NewMessage("test.event", "payload")
 	require.NoError(t, err)
 

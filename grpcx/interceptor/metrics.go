@@ -19,16 +19,41 @@ type GRPCMetrics struct {
 	handlingSeconds *prometheus.HistogramVec
 }
 
-// NewGRPCMetrics creates and registers gRPC server metrics with the given
-// registerer. If reg is nil, prometheus.DefaultRegisterer is used.
+// MetricsOption configures [NewMetrics].
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for gRPC server
+// metrics. Unset defaults to [prometheus.DefaultRegisterer]; passing
+// nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
+	if reg == nil {
+		panic("grpcx/interceptor: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers gRPC server metrics. Pass
+// [WithRegisterer] to use a non-default registry.
 //
 // Registered metrics:
 //   - grpc_server_handled_total: counter with labels {grpc_method, grpc_code}
 //   - grpc_server_handling_seconds: histogram with labels {grpc_method}
-func NewGRPCMetrics(reg prometheus.Registerer) *GRPCMetrics {
-	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+//
+// Replaces the v1 NewGRPCMetrics(reg) spelling so the constructor
+// signature matches the kit-wide options-based shape.
+func NewMetrics(opts ...MetricsOption) *GRPCMetrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("grpcx/interceptor: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
 	}
+	reg := cfg.registerer
 
 	m := &GRPCMetrics{
 		handledTotal: prometheus.NewCounterVec(

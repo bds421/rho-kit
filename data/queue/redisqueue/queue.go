@@ -127,12 +127,34 @@ type Metrics struct {
 	dlqDepth             *prometheus.GaugeVec
 }
 
-// NewMetrics creates and registers queue metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the redisqueue metric constructor.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for queue
+// metrics. Unset defaults to [prometheus.DefaultRegisterer]; passing
+// nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("redisqueue: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers queue metrics. Pass [WithRegisterer]
+// to use a non-default registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("redisqueue: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &Metrics{
 		messagesEnqueued: prometheus.NewCounterVec(
@@ -242,7 +264,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics() })
 
 func queueMetricLabel(queue string) string {
 	return promutil.OpaqueLabelValue("queue", queue)
@@ -402,11 +424,17 @@ func WithMaxPayloadSize(n int) Option {
 	}
 }
 
-// WithRegisterer sets the Prometheus registerer for queue metrics.
-// If not set, prometheus.DefaultRegisterer is used.
-func WithRegisterer(reg prometheus.Registerer) Option {
+// WithMetricsRegisterer sets the Prometheus registerer for queue
+// metrics. If not set, prometheus.DefaultRegisterer is used. Replaces
+// the v1 WithRegisterer spelling so it no longer collides with the
+// metrics-level option of the same name.
+func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 	return func(q *Queue) {
-		q.metrics = NewMetrics(reg)
+		if reg == nil {
+			q.metrics = NewMetrics()
+			return
+		}
+		q.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
 

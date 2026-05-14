@@ -18,7 +18,7 @@ import (
 
 func TestGRPCMetrics_RecordsRequestMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := interceptor.NewGRPCMetrics(reg)
+	metrics := interceptor.NewMetrics(interceptor.WithRegisterer(reg))
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer(
@@ -66,21 +66,21 @@ func TestGRPCMetrics_RecordsRequestMetrics(t *testing.T) {
 
 func TestGRPCMetrics_DefaultRegisterer(t *testing.T) {
 	// Should not panic with nil registerer.
-	m := interceptor.NewGRPCMetrics(nil)
+	m := interceptor.NewMetrics()
 	assert.NotNil(t, m)
 }
 
 func TestGRPCMetrics_DuplicateRegistration(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := interceptor.NewGRPCMetrics(reg)
-	m2 := interceptor.NewGRPCMetrics(reg)
+	m1 := interceptor.NewMetrics(interceptor.WithRegisterer(reg))
+	m2 := interceptor.NewMetrics(interceptor.WithRegisterer(reg))
 	assert.NotNil(t, m1)
 	assert.NotNil(t, m2)
 }
 
 func TestGRPCMetrics_StreamInterceptor_RecordsMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := interceptor.NewGRPCMetrics(reg)
+	metrics := interceptor.NewMetrics(interceptor.WithRegisterer(reg))
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer(

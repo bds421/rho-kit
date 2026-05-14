@@ -16,12 +16,34 @@ type Metrics struct {
 	opErrors   *prometheus.CounterVec
 }
 
-// NewMetrics creates and registers Azure Blob Storage metrics with the
-// given registerer. If reg is nil, prometheus.DefaultRegisterer is used.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the azurebackend metric constructor.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer. Unset defaults to
+// [prometheus.DefaultRegisterer]; passing nil panics so a miswired
+// caller surfaces at startup.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("azurebackend: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers Azure Blob Storage metrics. Pass
+// [WithRegisterer] for a non-default registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("azurebackend: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &Metrics{
 		opDuration: prometheus.NewHistogramVec(
@@ -51,7 +73,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics() })
 
 // now returns the current time. A variable so tests can override it.
 var now = time.Now

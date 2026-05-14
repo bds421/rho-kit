@@ -12,16 +12,16 @@ import (
 
 func TestRedisStreamProducerMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewProducerMetrics(reg)
-	m2 := NewProducerMetrics(reg)
+	m1 := NewProducerMetrics(WithProducerMetricsRegisterer(reg))
+	m2 := NewProducerMetrics(WithProducerMetricsRegisterer(reg))
 
 	assert.Same(t, m1.messagesProduced, m2.messagesProduced)
 }
 
 func TestRedisStreamConsumerMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewConsumerMetrics(reg)
-	m2 := NewConsumerMetrics(reg)
+	m1 := NewConsumerMetrics(WithConsumerMetricsRegisterer(reg))
+	m2 := NewConsumerMetrics(WithConsumerMetricsRegisterer(reg))
 
 	assert.Same(t, m1.messagesConsumed, m2.messagesConsumed)
 	assert.Same(t, m1.messagesFailed, m2.messagesFailed)
@@ -32,8 +32,8 @@ func TestRedisStreamConsumerMetrics_ReusesCollectors(t *testing.T) {
 
 func TestRedisStreamMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	producerMetrics := NewProducerMetrics(reg)
-	consumerMetrics := NewConsumerMetrics(reg)
+	producerMetrics := NewProducerMetrics(WithProducerMetricsRegisterer(reg))
+	consumerMetrics := NewConsumerMetrics(WithConsumerMetricsRegisterer(reg))
 
 	stream := streamMetricLabel("tenant-secret:events.high")
 	group := groupMetricLabel("tenant-secret:workers.high")

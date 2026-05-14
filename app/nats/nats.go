@@ -90,7 +90,7 @@ func (m *natsModule) Init(ctx context.Context, mc app.ModuleContext) error {
 		return fmt.Errorf("nats module: %w", err)
 	}
 	m.conn = conn
-	metrics := natsbackend.NewMetrics(nil)
+	metrics := natsbackend.NewMetrics()
 	m.publisher = conn.NewPublisher(
 		natsbackend.WithMessageSizeLimiter(m.messageSizeLimiter),
 		natsbackend.WithPublisherMetrics(metrics),

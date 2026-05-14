@@ -43,13 +43,37 @@ type Metrics struct {
 	handlerDuration *prometheus.HistogramVec
 }
 
-// NewMetrics creates and registers NATS metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used. Repeated calls reuse
-// already-registered collectors on the same registry.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the NATS metric constructor. Standardised
+// across the kit so every package exposes `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithRegisterer pins the Prometheus registerer used for NATS
+// metrics. When unset, [prometheus.DefaultRegisterer] is used. Passing
+// nil panics so a miswired "metrics enabled, registerer not supplied"
+// caller surfaces at startup rather than going to the global default.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("natsbackend: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers NATS metrics. Pass [WithRegisterer]
+// to use a non-default registry. Repeated calls reuse already-registered
+// collectors on the same registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("natsbackend: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 	m := &Metrics{
 		published: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "nats",

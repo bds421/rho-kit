@@ -28,12 +28,37 @@ type Metrics struct {
 	connectionHealthy      *prometheus.GaugeVec
 }
 
-// NewMetrics creates and registers Redis metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+// MetricsOption configures the redis metric constructor. Standardised
+// across the kit so every package exposes
+// `NewMetrics(opts ...MetricsOption)`.
+type MetricsOption func(*metricsConfig)
+
+type metricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// MetricsWithRegisterer pins the Prometheus registerer used for Redis
+// metrics. The name carries the "Metrics" prefix so this option does
+// not collide with the connection-level [WithRegisterer] option in the
+// same package. Passing nil panics.
+func MetricsWithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("redis: MetricsWithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *metricsConfig) { c.registerer = reg }
+}
+
+// NewMetrics creates and registers Redis metrics. Pass
+// [MetricsWithRegisterer] to use a non-default registry.
+func NewMetrics(opts ...MetricsOption) *Metrics {
+	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("redis: NewMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &Metrics{
 		commandDuration: prometheus.NewHistogramVec(
@@ -149,7 +174,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 // registerer, never at package-load time. Wires through
 // [sync.OnceValue] so concurrent first-callers converge on a single
 // instance.
-var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics(nil) })
+var defaultMetrics = sync.OnceValue(func() *Metrics { return NewMetrics() })
 
 // knownCommands is an allowlist of Redis command names used as Prometheus
 // label values. Commands not in this set are bucketed as "other" to prevent

@@ -144,7 +144,7 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 	// and reconnect attempts. The same Metrics instance is shared with the
 	// publisher and consumer so a single registry sees publish/consume +
 	// connection-lifecycle samples without name collisions.
-	metrics := amqpbackend.NewMetrics(nil)
+	metrics := amqpbackend.NewMetrics()
 
 	mqOpts := []amqpbackend.DialOption{
 		amqpbackend.WithLazyConnect(),

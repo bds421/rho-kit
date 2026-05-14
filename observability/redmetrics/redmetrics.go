@@ -80,9 +80,10 @@ type HTTPMetrics struct {
 type HTTPOption func(*httpConfig)
 
 type httpConfig struct {
-	namespace string
-	subsystem string
-	buckets   []float64
+	namespace  string
+	subsystem  string
+	buckets    []float64
+	registerer prometheus.Registerer
 }
 
 // WithHTTPNamespace sets the Prometheus metric namespace prefix.
@@ -108,12 +109,30 @@ func WithHTTPBuckets(buckets []float64) HTTPOption {
 	return func(c *httpConfig) { c.buckets = append([]float64(nil), buckets...) }
 }
 
+// HTTPRegisterer is a typed option for pinning the Prometheus
+// registerer passed to [NewHTTP]. The function is exported via the
+// HTTPOption type itself — see [WithHTTPRegisterer].
+type httpRegistererOption struct{ reg prometheus.Registerer }
+
+// WithHTTPRegisterer pins the Prometheus registerer used to register
+// the HTTP RED metric set. When unset, the [prometheus.DefaultRegisterer]
+// is used. Replaces the v1 positional NewHTTP(reg, ...) signature so
+// all kit metric constructors share the same options-only shape.
+func WithHTTPRegisterer(reg prometheus.Registerer) HTTPOption {
+	if reg == nil {
+		panic("redmetrics: WithHTTPRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
+	return func(c *httpConfig) { c.registerer = reg }
+}
+
 // NewHTTP constructs the standard HTTP RED metric set and registers it
-// on reg. Pass [prometheus.NewRegistry] in tests to keep state isolated.
-func NewHTTP(reg prometheus.Registerer, opts ...HTTPOption) *HTTPMetrics {
+// on the configured registerer. Pass [WithHTTPRegisterer] (typically
+// with [prometheus.NewRegistry]) in tests to keep state isolated.
+func NewHTTP(opts ...HTTPOption) *HTTPMetrics {
 	cfg := httpConfig{
-		subsystem: "http",
-		buckets:   HTTPLatencyBuckets(),
+		subsystem:  "http",
+		buckets:    HTTPLatencyBuckets(),
+		registerer: prometheus.DefaultRegisterer,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -123,6 +142,7 @@ func NewHTTP(reg prometheus.Registerer, opts ...HTTPOption) *HTTPMetrics {
 	}
 	validateMetricNamePart("HTTP namespace", cfg.namespace)
 	validateMetricNamePart("HTTP subsystem", cfg.subsystem)
+	reg := cfg.registerer
 
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: cfg.namespace,

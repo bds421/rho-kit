@@ -20,8 +20,8 @@ import (
 
 func TestNATSMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewMetrics(reg)
-	m2 := NewMetrics(reg)
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
 
 	assert.Same(t, m1.published, m2.published)
 	assert.Same(t, m1.publishDuration, m2.publishDuration)
@@ -31,7 +31,7 @@ func TestNATSMetrics_ReusesCollectors(t *testing.T) {
 
 func TestNATSMetrics_Contract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	now := time.Now()
 
 	metrics.observePublish("events", "order.created", natsPublishOutcomeSuccess, now)
@@ -45,7 +45,7 @@ func TestNATSMetrics_Contract(t *testing.T) {
 }
 
 func TestNATSConsumerMetrics_RecordDispatchOutcomes(t *testing.T) {
-	metrics := NewMetrics(prometheus.NewRegistry())
+	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
 	c := &Consumer{
 		cfg:     ConsumerConfig{Stream: "EVENTS", Durable: "orders"},
 		logger:  slog.Default(),

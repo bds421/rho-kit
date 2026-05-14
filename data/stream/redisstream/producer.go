@@ -26,12 +26,34 @@ type ProducerMetrics struct {
 	messagesProduced *prometheus.CounterVec
 }
 
-// NewProducerMetrics creates and registers producer metrics with the given registerer.
-// If reg is nil, prometheus.DefaultRegisterer is used.
-func NewProducerMetrics(reg prometheus.Registerer) *ProducerMetrics {
+// ProducerMetricsOption configures the redisstream producer metric constructor.
+type ProducerMetricsOption func(*producerMetricsConfig)
+
+type producerMetricsConfig struct {
+	registerer prometheus.Registerer
+}
+
+// WithProducerMetricsRegisterer pins the Prometheus registerer used
+// for producer metrics. Unset defaults to [prometheus.DefaultRegisterer];
+// passing nil panics.
+func WithProducerMetricsRegisterer(reg prometheus.Registerer) ProducerMetricsOption {
 	if reg == nil {
-		reg = prometheus.DefaultRegisterer
+		panic("redisstream: WithProducerMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
+	return func(c *producerMetricsConfig) { c.registerer = reg }
+}
+
+// NewProducerMetrics creates and registers producer metrics. Pass
+// [WithProducerMetricsRegisterer] to use a non-default registry.
+func NewProducerMetrics(opts ...ProducerMetricsOption) *ProducerMetrics {
+	cfg := producerMetricsConfig{registerer: prometheus.DefaultRegisterer}
+	for _, opt := range opts {
+		if opt == nil {
+			panic("redisstream: NewProducerMetrics option must not be nil")
+		}
+		opt(&cfg)
+	}
+	reg := cfg.registerer
 
 	m := &ProducerMetrics{
 		messagesProduced: prometheus.NewCounterVec(
@@ -50,7 +72,7 @@ func NewProducerMetrics(reg prometheus.Registerer) *ProducerMetrics {
 	return m
 }
 
-var defaultProducerMetrics = sync.OnceValue(func() *ProducerMetrics { return NewProducerMetrics(nil) })
+var defaultProducerMetrics = sync.OnceValue(func() *ProducerMetrics { return NewProducerMetrics() })
 
 func streamMetricLabel(stream string) string {
 	return promutil.OpaqueLabelValue("stream", stream)
@@ -140,11 +162,17 @@ func WithRetention(d time.Duration) ProducerOption {
 	}
 }
 
-// WithProducerRegisterer sets the Prometheus registerer for producer metrics.
-// If not set, prometheus.DefaultRegisterer is used.
+// WithProducerRegisterer sets the Prometheus registerer for producer
+// metrics. If not set, prometheus.DefaultRegisterer is used. The
+// consumer/producer naming distinction stays here because the package
+// exports both side-by-side.
 func WithProducerRegisterer(reg prometheus.Registerer) ProducerOption {
 	return func(p *Producer) {
-		p.metrics = NewProducerMetrics(reg)
+		if reg == nil {
+			p.metrics = NewProducerMetrics()
+			return
+		}
+		p.metrics = NewProducerMetrics(WithProducerMetricsRegisterer(reg))
 	}
 }
 

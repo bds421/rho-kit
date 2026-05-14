@@ -12,8 +12,8 @@ import (
 
 func TestNewMetricsReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewMetrics(reg)
-	m2 := NewMetrics(reg)
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
 
 	if m1.opDuration != m2.opDuration {
 		t.Fatal("opDuration collector was not reused")
@@ -25,7 +25,7 @@ func TestNewMetricsReusesCollectors(t *testing.T) {
 
 func TestMetricsContract(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("assets", "put", start, nil)
@@ -44,7 +44,7 @@ func TestMetricsContract(t *testing.T) {
 
 func TestMetricsNormalizeExpectedNotFound(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(reg)
+	metrics := NewMetrics(WithRegisterer(reg))
 	start := time.Now().Add(-10 * time.Millisecond)
 
 	metrics.observeOp("assets", "delete", start, s3MetricErr(&types.NotFound{}))

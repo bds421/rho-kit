@@ -147,7 +147,7 @@ func TestScannerMetricsCleanScan(t *testing.T) {
 	addr := startClamd(t, "stream: OK\x00", seen)
 
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	err := New(addr,
 		WithScanTimeout(time.Second),
@@ -173,7 +173,7 @@ func TestScannerMetricsInfectedScan(t *testing.T) {
 	addr := startClamd(t, "stream: Eicar-Test-Signature FOUND\x00", seen)
 
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	err := New(addr,
 		WithScanTimeout(time.Second),
@@ -197,7 +197,7 @@ func TestScannerMetricsInfectedScan(t *testing.T) {
 // infected burst can be a coordinated upload attack.
 func TestScannerMetricsErrorOutcome(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	errDial := errors.New("dial blocked")
 	err := New("clamd.invalid:3310",
@@ -225,7 +225,7 @@ func TestScannerMetricsValidatorLabel(t *testing.T) {
 	addr := startClamd(t, "stream: OK\x00", seen)
 
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	err := New(addr,
 		WithScanTimeout(time.Second),

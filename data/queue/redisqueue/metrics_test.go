@@ -20,7 +20,7 @@ func TestUpdateProcessingDepth_PollsAllThreeQueues(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	reg := prometheus.NewRegistry()
-	q := NewQueue(client, WithRegisterer(reg))
+	q := NewQueue(client, WithMetricsRegisterer(reg))
 
 	ctx := context.Background()
 	queueName := "test-queue"
@@ -53,7 +53,7 @@ func TestUpdateProcessingDepth_EmptyDLQName(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	reg := prometheus.NewRegistry()
-	q := NewQueue(client, WithRegisterer(reg))
+	q := NewQueue(client, WithMetricsRegisterer(reg))
 
 	ctx := context.Background()
 	queueName := "test-queue"
@@ -77,7 +77,7 @@ func TestUpdateProcessingDepth_EmptyDLQName(t *testing.T) {
 // rather than in production scrapes.
 func TestNewMetrics_RegistersDLQDepth(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics(WithRegisterer(reg))
 
 	m.dlqDepth.WithLabelValues("probe").Set(7)
 
