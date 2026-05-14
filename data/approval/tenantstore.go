@@ -29,6 +29,28 @@ var ErrTenantMismatch = errors.New("approval: request does not belong to the sco
 // List callers should still pass [Query.TenantID] explicitly — the
 // wrapper substitutes its own tenant on List as well so a stray
 // caller cannot widen the query.
+//
+// # TOCTOU window on state transitions (L057)
+//
+// Decide / Approve / Reject / MarkExecuted use a check-then-modify
+// pattern: TenantStore reads the row to confirm ownership, then calls
+// the inner Store's mutation method (which takes only an id). If a
+// concurrent operator action reassigns the row's TenantID between the
+// read and the write, the underlying state transition runs against
+// the reassigned tenant's record. TenantStore detects this by re-
+// reading TenantID after the write and returns ErrTenantMismatch, but
+// at that point the state transition (and any audit log entry written
+// inside the inner Store) has already happened.
+//
+// This is an interface-level limitation: the [Store] mutation methods
+// do not accept a TenantID argument, so the wrapper cannot push tenant
+// scoping into the same SQL statement that performs the transition.
+// Operators MUST treat in-place TenantID reassignment as a privileged
+// administrative action (covered by a separate maintenance runbook)
+// and not a routine API; the wrapper's post-write check is a
+// best-effort tripwire, not a primary defense. The audit-log
+// downstream of the transition is the canonical record of which
+// tenant context invoked the action.
 type TenantStore struct {
 	inner    Store
 	tenantID string

@@ -23,6 +23,18 @@ const (
 	MaxHeaderNameBytes = 128
 	// MaxHeaderValueBytes caps each stream header value.
 	MaxHeaderValueBytes = 8 * 1024
+	// MaxHeaderCount caps the total number of header entries per
+	// message. A single message with the maximum number of headers
+	// each at the maximum value size still fits inside the kit's
+	// 1 MiB default message ceiling, but unbounded counts could blow
+	// out the consumer-side map allocation before any payload guard
+	// fires (L051).
+	MaxHeaderCount = 64
+	// MaxTotalHeaderBytes caps the aggregate header name+value size
+	// per message so a peer cannot smuggle a multi-MB blob across
+	// MaxHeaderCount entries that each individually fit under
+	// MaxHeaderValueBytes (L051).
+	MaxTotalHeaderBytes = 256 * 1024
 )
 
 // ErrInvalidMessage marks Redis Stream messages whose metadata or payload
@@ -162,9 +174,17 @@ func ValidateMessage(msg Message, maxPayloadBytes int) error {
 // ValidateHeaders rejects header metadata that cannot safely round-trip through
 // Redis Streams and the kit's message-transport bridges.
 func ValidateHeaders(headers map[string]string) error {
+	if len(headers) > MaxHeaderCount {
+		return fmt.Errorf("%w: header count %d exceeds maximum %d", ErrInvalidHeader, len(headers), MaxHeaderCount)
+	}
+	total := 0
 	for name, value := range headers {
 		if err := validateHeader(name, value); err != nil {
 			return err
+		}
+		total += len(name) + len(value)
+		if total > MaxTotalHeaderBytes {
+			return fmt.Errorf("%w: total header bytes exceeds maximum %d", ErrInvalidHeader, MaxTotalHeaderBytes)
 		}
 	}
 	return nil

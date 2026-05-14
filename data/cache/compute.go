@@ -437,6 +437,19 @@ func (cc *ComputeCache[T]) executeCompute(ctx context.Context, full string, fn C
 		var zero T
 		return zero, fmt.Errorf("cache compute: ComputeFunc returned non-positive ttl; ComputeCache requires a positive TTL because it adds stale-while-revalidate semantics on top")
 	}
+	// Reject TTL values that would overflow time.Time arithmetic when
+	// added to time.Now() or combined with the stale window. math.MaxInt64
+	// nanoseconds is ~292 years; cap well below it so we never wrap to
+	// a negative ExpiresAt or a negative backend TTL (L045).
+	const maxCacheTTL = 10 * 365 * 24 * time.Hour // ~10 years
+	if ttl > maxCacheTTL {
+		var zero T
+		return zero, fmt.Errorf("cache compute: ttl %s exceeds maximum %s", ttl, maxCacheTTL)
+	}
+	if cc.cfg.staleTTL > maxCacheTTL {
+		var zero T
+		return zero, fmt.Errorf("cache compute: staleTTL %s exceeds maximum %s", cc.cfg.staleTTL, maxCacheTTL)
+	}
 
 	valBytes, marshalErr := cc.codec.Marshal(val)
 	if marshalErr != nil {

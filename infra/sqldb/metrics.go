@@ -105,7 +105,25 @@ func tryRegister(reg prometheus.Registerer, c prometheus.Collector) prometheus.C
 // WARNING: Only one ExportPoolMetrics goroutine should run per *sql.DB. Running
 // multiple instances with different PoolMetrics for the same DB will double-count
 // the WaitCount counter.
+//
+// Panics on a nil db (a nil pool would crash on the first Stats call
+// every tick) or a non-positive interval (NewTicker panics on
+// non-positive durations, and a zero interval would burn CPU). Use a
+// nil-collector PoolMetrics field to opt a single metric out: every
+// observe call checks the receiver for nil before recording. PoolMetrics
+// values whose required Open/Idle/WaitCount collectors are all nil are
+// rejected at startup — recording with no live collectors is a wiring
+// bug we surface loudly (L096).
 func ExportPoolMetrics(ctx context.Context, db *sql.DB, m PoolMetrics, interval time.Duration) {
+	if db == nil {
+		panic("sqldb: ExportPoolMetrics requires a non-nil *sql.DB")
+	}
+	if interval <= 0 {
+		panic("sqldb: ExportPoolMetrics requires a positive interval")
+	}
+	if m.OpenConnections == nil && m.IdleConnections == nil && m.WaitCount == nil {
+		panic("sqldb: ExportPoolMetrics: PoolMetrics has no live collectors (use NewPoolMetrics)")
+	}
 	var lastWaitCount int64
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -115,10 +133,14 @@ func ExportPoolMetrics(ctx context.Context, db *sql.DB, m PoolMetrics, interval 
 			return
 		case <-ticker.C:
 			stats := db.Stats()
-			m.OpenConnections.Set(float64(stats.OpenConnections))
-			m.IdleConnections.Set(float64(stats.Idle))
+			if m.OpenConnections != nil {
+				m.OpenConnections.Set(float64(stats.OpenConnections))
+			}
+			if m.IdleConnections != nil {
+				m.IdleConnections.Set(float64(stats.Idle))
+			}
 			delta := stats.WaitCount - lastWaitCount
-			if delta > 0 {
+			if delta > 0 && m.WaitCount != nil {
 				m.WaitCount.Add(float64(delta))
 			}
 			// Always update lastWaitCount to handle stats reset (e.g., DB replaced).

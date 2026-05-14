@@ -41,7 +41,30 @@ func newUserPassBridge(provider func(ctx context.Context) (string, string, error
 func (b *userPassBridge) fetch() (string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
-	user, pass, err := b.provider(ctx)
+	// Hard-bound the provider invocation so a misbehaving credential
+	// source that ignores ctx.Done() cannot stall nats.go's reauth
+	// path indefinitely. The provider goroutine becomes an orphan on
+	// timeout; the bridge returns to nats.go with a synthesized
+	// timeout error and the cache-or-empty fallback below (L137).
+	type result struct {
+		user, pass string
+		err        error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		u, p, err := b.provider(ctx)
+		resultCh <- result{user: u, pass: p, err: err}
+	}()
+	var (
+		user, pass string
+		err        error
+	)
+	select {
+	case r := <-resultCh:
+		user, pass, err = r.user, r.pass, r.err
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
 	// Treat (\"\", \"\", nil) as failure: a credential bug that
 	// silently replaced a good cached pair with an empty one would
 	// break reauth even though the previous credential was still
@@ -91,7 +114,27 @@ func newTokenBridge(provider func(ctx context.Context) (string, error), timeout 
 func (b *tokenBridge) fetch() string {
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
-	tok, err := b.provider(ctx)
+	// Hard-bound the provider invocation. See userPassBridge.fetch for
+	// the rationale (L137).
+	type result struct {
+		tok string
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		t, err := b.provider(ctx)
+		resultCh <- result{tok: t, err: err}
+	}()
+	var (
+		tok string
+		err error
+	)
+	select {
+	case r := <-resultCh:
+		tok, err = r.tok, r.err
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
 	// Treat ("", nil) as failure — see the userPassBridge equivalent.
 	// A transient provider bug must not invalidate an established
 	// cached token.

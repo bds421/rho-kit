@@ -373,6 +373,15 @@ func scanRequest(s scannable) (approval.Request, error) {
 	if decidedAtNT != nil {
 		out.DecidedAt = decidedAtNT.UTC()
 	}
+	if len(payloadRaw) > approval.MaxPayloadSize {
+		// Defense-in-depth: the SQL-side CHECK constraint
+		// (approval_requests_payload_size) rejects oversize payloads on
+		// INSERT, but a row produced by a pre-constraint backfill or a
+		// foreign restore would still get this far. Refuse to surface
+		// it as a usable Request rather than serving an out-of-policy
+		// blob to handlers (L056).
+		return approval.Request{}, fmt.Errorf("approval/postgres: row payload exceeds MaxPayloadSize (%d > %d)", len(payloadRaw), approval.MaxPayloadSize)
+	}
 	if len(payloadRaw) > 0 {
 		out.Payload = json.RawMessage(payloadRaw)
 	}

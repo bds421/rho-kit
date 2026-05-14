@@ -405,15 +405,22 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	// ExtraOptions are appended BEFORE the security-critical re-apply
 	// so callers can extend behaviour (custom error handlers, custom
 	// dialers, inbox prefixes) but cannot disable kit-hardened
-	// defaults. Wave 66 closed a hostile-review finding that
-	// ExtraOptions could override TLS, the drain bound, and the
-	// reconnect cap by being appended last.
+	// defaults. The re-applied set covers every kit-owned option that
+	// alters trust, lifecycle bounds, or reconnect behaviour:
+	// DrainTimeout (bounded shutdown), TLS (transport security),
+	// MaxReconnects + ReconnectWait (bounded reconnect storm), and
+	// the connection Name (operator-visible identifier in NATS server
+	// logs). L138 added Name and ReconnectWait to the re-apply set
+	// after the prior round only covered TLS, DrainTimeout, and
+	// MaxReconnects.
 	opts = append(opts, cfg.ExtraOptions...)
 	opts = append(opts, nats.DrainTimeout(closeDrainTimeout))
 	if cfg.TLS != nil {
 		opts = append(opts, nats.Secure(cfg.TLS))
 	}
 	opts = append(opts, nats.MaxReconnects(cfg.MaxReconnects))
+	opts = append(opts, nats.ReconnectWait(cfg.ReconnectWait))
+	opts = append(opts, nats.Name(cfg.Name))
 	// Honour ctx deadline for the dial. nats.Connect itself does not
 	// accept a context, so we derive a finite Timeout from the deadline
 	// when present. Without this, a cancelled ctx would not abort the
@@ -1004,17 +1011,30 @@ func publishOutcomeForError(err error) string {
 // allocations upfront. Mirrors the AMQP maxHeaderNodes cap.
 const maxNatsDeliveryHeaders = 256
 
+// maxNatsDeliveryHeaderBytes caps the total byte size of materialised
+// header keys + values per delivery. A peer that emits exactly
+// maxNatsDeliveryHeaders headers each carrying multi-MB values could
+// otherwise still exhaust memory. 64 KiB is generous for realistic
+// header sets and matches the AMQP-side aggregate budget (L139).
+const maxNatsDeliveryHeaderBytes = 64 * 1024
+
 func deliveryHeaderMaps(h nats.Header) (map[string]any, map[string]string) {
 	if len(h) == 0 {
 		return nil, nil
 	}
 	headers := make(map[string]any)
 	msgHeaders := make(map[string]string)
+	byteBudget := maxNatsDeliveryHeaderBytes
 	for k, v := range h {
 		if len(headers) >= maxNatsDeliveryHeaders {
 			break
 		}
 		if len(v) > 0 {
+			cost := len(k) + len(v[0])
+			if cost > byteBudget {
+				break
+			}
+			byteBudget -= cost
 			headers[k] = v[0]
 			msgHeaders[k] = v[0]
 		}

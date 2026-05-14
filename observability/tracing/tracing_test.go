@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
 )
 
 var _ slog.LogValuer = Config{}
@@ -462,4 +464,45 @@ func TestInit_NegativeTimeoutDisablesBound(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	_ = p.Stop(context.Background())
+}
+
+// TestInit_BaggagePropagatorRespectsConfigOnNoopPath guards L156: the
+// noop path (no endpoint configured) and the exporter-dial-fallback
+// path must honour Config.EnableBaggage rather than silently using the
+// non-baggage propagator. A transient collector outage that flipped
+// the kit to noop without preserving baggage propagation would alter
+// cross-service semantics in a way that is invisible to monitoring.
+func TestInit_BaggagePropagatorRespectsConfigOnNoopPath(t *testing.T) {
+	cases := []struct {
+		name          string
+		enableBaggage bool
+		wantBaggage   bool
+	}{
+		{name: "baggage disabled stays disabled on noop path", enableBaggage: false, wantBaggage: false},
+		{name: "baggage enabled stays enabled on noop path", enableBaggage: true, wantBaggage: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Init(context.Background(), Config{
+				ServiceName:   "baggage-test",
+				EnableBaggage: tc.enableBaggage,
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			defer func() { _ = p.Stop(context.Background()) }()
+
+			fields := otel.GetTextMapPropagator().Fields()
+			hasBaggage := false
+			for _, f := range fields {
+				if f == "baggage" {
+					hasBaggage = true
+					break
+				}
+			}
+			if hasBaggage != tc.wantBaggage {
+				t.Fatalf("propagator fields = %v; want baggage=%v", fields, tc.wantBaggage)
+			}
+		})
+	}
 }

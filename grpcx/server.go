@@ -342,7 +342,24 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(stream...))
 	}
 
+	// Raw caller-supplied options must NOT silently undo kit-hardened
+	// defaults (max recv/send message size, keepalive params, header
+	// list size). grpc.NewServer applies options in slice order and
+	// later options win for non-additive setters, so we re-append the
+	// hardened set AFTER cfg.grpcOpts. Callers who genuinely need to
+	// override message size limits or keepalive policy should use the
+	// typed options (WithMaxRecvMsgSize, WithKeepaliveParams, …) which
+	// are baked into the same hardened set below and therefore win
+	// over any raw override (L083).
 	grpcOpts = append(grpcOpts, cfg.grpcOpts...)
+	grpcOpts = append(grpcOpts,
+		grpc.MaxRecvMsgSize(cfg.maxRecvMsgSize),
+		grpc.MaxSendMsgSize(cfg.maxSendMsgSize),
+		grpc.MaxConcurrentStreams(cfg.maxConcurrentStreams),
+		grpc.MaxHeaderListSize(defaultMaxHeaderListSize),
+		grpc.KeepaliveParams(kp),
+		grpc.KeepaliveEnforcementPolicy(ep),
+	)
 
 	return grpc.NewServer(grpcOpts...)
 }

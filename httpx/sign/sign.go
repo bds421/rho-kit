@@ -335,6 +335,16 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign: resolve current key: %w", err)
 	}
+	// CurrentKeyID returns a per-call copy (the static and wrapped
+	// key stores both copy on read). Zero it immediately after the
+	// signature is computed so the secret does not sit on the heap
+	// until the next GC sweep. SignCanonical does not retain a
+	// reference, so wiping after the call is safe.
+	defer func() {
+		for i := range secret {
+			secret[i] = 0
+		}
+	}()
 	if err := validateSigningKey(keyID, secret); err != nil {
 		return nil, err
 	}

@@ -57,8 +57,13 @@ func New(db *sql.DB) *Locker {
 // Release is called.
 //
 // Returns (nil, false, nil) when the lock is held by another session.
-// Returns (nil, false, err) on backend errors.
+// Returns (nil, false, err) on backend errors. A nil ctx is rejected
+// (L142) — a nil context is a wiring bug that would otherwise panic
+// deep inside database/sql.
 func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	if ctx == nil {
+		return nil, false, fmt.Errorf("pgadvisory: Acquire requires a non-nil context")
+	}
 	conn, err := l.db.Conn(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("pgadvisory: acquire conn: %w", err)
@@ -84,6 +89,9 @@ func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, erro
 // Returns (true, nil) on success, (false, nil) when the lock is held
 // elsewhere, or (false, err) on backend errors.
 func (l *Locker) AcquireTx(ctx context.Context, tx *sql.Tx, key string) (bool, error) {
+	if ctx == nil {
+		return false, fmt.Errorf("pgadvisory: AcquireTx requires a non-nil context")
+	}
 	if tx == nil {
 		return false, fmt.Errorf("pgadvisory: tx must not be nil")
 	}

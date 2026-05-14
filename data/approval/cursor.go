@@ -49,6 +49,9 @@ type CursorSigner struct {
 // Key bytes are copied into a [secret.String] so callers can zero
 // their source slice immediately after construction. Returns an
 // error if the key is shorter than [MinCursorSigningKeyBytes].
+//
+// Always pair with [CursorSigner.Close] at shutdown so the wrapped
+// HMAC key is wiped from process memory rather than waiting for GC.
 func NewCursorSigner(key []byte) (*CursorSigner, error) {
 	if len(key) < MinCursorSigningKeyBytes {
 		return nil, fmt.Errorf("approval: cursor signing key must be at least %d bytes", MinCursorSigningKeyBytes)
@@ -57,6 +60,22 @@ func NewCursorSigner(key []byte) (*CursorSigner, error) {
 		key:    secret.New(append([]byte(nil), key...)),
 		keyLen: len(key),
 	}, nil
+}
+
+// Close zeroes the wrapped HMAC signing key. Subsequent [CursorSigner.Encode]
+// returns "" (the empty key short-circuits) and [CursorSigner.Decode] fails
+// closed with a wrapped [ErrInvalidCursor]. Idempotent; safe for concurrent
+// use with in-flight Encode / Decode callers (the [secret.String.Zero]
+// path holds an internal mutex against [secret.String.Use]).
+//
+// Always returns nil — the signature matches [io.Closer] so the signer
+// can be wired into resource-cleanup helpers (L058).
+func (s *CursorSigner) Close() error {
+	if s == nil || s.key == nil {
+		return nil
+	}
+	s.key.Zero()
+	return nil
 }
 
 // Encode renders the keyset position (createdAt, id) as a signed,

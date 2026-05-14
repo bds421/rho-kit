@@ -20,11 +20,15 @@ CREATE TABLE IF NOT EXISTS action_log_entries (
     -- backstop that keeps two concurrent appends from producing the
     -- same Seq on dialects that elide SELECT FOR UPDATE.
     seq               BIGINT NOT NULL DEFAULT 0,
-    -- prev_hash is the hex-encoded HMAC-SHA256 of the previous entry's
-    -- canonical form for this tenant; the first entry stores 64 zero
-    -- hex chars. Together with seq, this turns the table into a
-    -- tamper-evident append-only log: deletion / reordering /
-    -- truncation breaks the chain on the next VerifyChain call.
+    -- prev_hash is the hex-encoded plain SHA-256 of the previous
+    -- entry's canonical form for this tenant; the first entry stores
+    -- 64 zero hex chars. The chain hash is key-free on purpose — the
+    -- per-row HMAC signature carries the tamper-evident property and
+    -- includes prev_hash in its canonical input, so a key rotation
+    -- between two entries does not produce a false ErrChainBroken.
+    -- Together with seq, this turns the table into a tamper-evident
+    -- append-only log: deletion / reordering / truncation breaks the
+    -- chain on the next VerifyChain call.
     prev_hash         VARCHAR(64) NOT NULL DEFAULT '',
     signature         VARCHAR(128) NOT NULL
 );
