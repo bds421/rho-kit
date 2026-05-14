@@ -70,6 +70,8 @@ use (
 	./infra/storage/sftpbackend
 	./infra/storage/storagehttp/uploadsec/clamav
 	./infra/storage/storagetest
+	./infra/outbox/postgres
+	./infra/outbox/postgres/integrationtest
 	./io
 	./observability
 	./observability/auditlog/postgres

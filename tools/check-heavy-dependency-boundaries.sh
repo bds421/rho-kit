@@ -76,6 +76,7 @@ allowed_for_boundary_dep() {
                 data/lock/pgadvisory/go.mod|\
                 data/queue/riverqueue/go.mod|\
                 infra/leaderelection/pgadvisory/go.mod|\
+                infra/outbox/postgres/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/sqldb/pgx/go.mod|\
                 observability/auditlog/postgres/go.mod|\
