@@ -127,6 +127,33 @@ type Locker struct {
 
 var tokenRandReader io.Reader = rand.Reader
 
+// MaxLockKeyLen caps the byte length of a lock key passed to
+// [Locker.Acquire] / [Locker.WithLock]. Beyond this length, Redis
+// keys become awkward to inspect and large keys hurt cluster
+// performance. The cap matches the kit's tenant-scoped key cap.
+const MaxLockKeyLen = 1024
+
+// validateLockKey enforces the kit's lock-key shape: non-empty, no
+// control characters or whitespace, length within MaxLockKeyLen.
+// Wave 71 added this guard to close a hostile-review finding that
+// redislock accepted arbitrary bytes (including newlines and NUL)
+// as lock keys, which can corrupt logs and Redis ACL evaluation.
+func validateLockKey(key string) error {
+	if key == "" {
+		return errors.New("redislock: lock key must not be empty")
+	}
+	if len(key) > MaxLockKeyLen {
+		return errors.New("redislock: lock key exceeds maximum length")
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c < 0x20 || c == 0x7f {
+			return errors.New("redislock: lock key contains control bytes")
+		}
+	}
+	return nil
+}
+
 // NewLocker creates a Locker bound to the given Redis client. The options
 // (TTL, retry interval, retry attempts) become the defaults for every
 // Acquire call. Panics if client is nil — a miswired locker would otherwise
@@ -153,6 +180,9 @@ func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
 // Returns (nil, false, ctx.Err()) if the context is cancelled while waiting
 // to retry.
 func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	if err := validateLockKey(key); err != nil {
+		return nil, false, err
+	}
 	token, err := generateToken()
 	if err != nil {
 		return nil, false, err

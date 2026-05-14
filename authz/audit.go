@@ -130,6 +130,13 @@ func (d *loggedDecider) Allow(ctx context.Context, subject, action, resource str
 		return ErrNoDecider
 	}
 	if d.inner == nil {
+		// Emit the failure as an audit event so a wiring mistake
+		// (Logged wrapping a nil decider) is observable through the
+		// same audit pipeline as a real deny. Without this, the
+		// caller saw ErrNoDecider but downstream audit consumers
+		// missed every "decision" against the misconfigured wrapper.
+		// Wave 71 closed a hostile-review finding for this gap.
+		d.cfg.emit(ctx, subject, action, resource, ErrNoDecider)
 		return ErrNoDecider
 	}
 	err := d.inner.Allow(ctx, subject, action, resource)

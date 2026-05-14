@@ -291,6 +291,17 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	if err := storage.ValidateKey(key); err != nil {
 		return nil, storage.ObjectMeta{}, err
 	}
+	// Resolve the decryption key BEFORE pulling ciphertext into memory.
+	// Wave 71 closed a hostile-review finding that the prior order
+	// (Get → read N MiB → DecryptionKey lookup) let a misconfigured
+	// or unreachable key provider waste megabytes of read bandwidth
+	// per request before surfacing the wiring failure.
+	keyBytes, err := e.keys.EncryptionKey(ctx)
+	if err != nil {
+		return nil, storage.ObjectMeta{}, storage.WrapSafe("encryption: get key failed", err)
+	}
+	defer zeroBytes(keyBytes)
+
 	rc, meta, err := e.backend.Get(ctx, key)
 	if err != nil {
 		return nil, meta, storage.WrapSafe("encryption: get failed", err)
@@ -313,12 +324,6 @@ func (e *EncryptedStorage) Get(ctx context.Context, key string) (io.ReadCloser, 
 	if int64(len(ciphertext)) > int64(maxCiphertextSize) {
 		return nil, meta, fmt.Errorf("encryption: ciphertext exceeds maximum size (%d bytes)", maxCiphertextSize)
 	}
-
-	keyBytes, err := e.keys.EncryptionKey(ctx)
-	if err != nil {
-		return nil, meta, storage.WrapSafe("encryption: get key failed", err)
-	}
-	defer zeroBytes(keyBytes)
 
 	gcm, err := encrypt.NewGCM(keyBytes)
 	if err != nil {

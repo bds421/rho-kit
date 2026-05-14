@@ -4,11 +4,13 @@ package auditlog
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/clientip"
@@ -24,6 +26,7 @@ type config struct {
 	statusFilter   func(int) bool
 	clientIPFunc   func(*http.Request) string
 	trustedProxies []*net.IPNet
+	errLogger      *slog.Logger
 }
 
 // WithActorExtractor sets a function that extracts the actor identity from the
@@ -184,7 +187,33 @@ func writeAuditEntry(l *auditlog.Logger, r *http.Request, rec *middleware.Respon
 	if panicked {
 		ev.Metadata = panicMetadataJSON
 	}
-	l.Log(auditCtx, ev)
+	if cfg.errLogger != nil {
+		// LogE surfaces audit-sink failures via the configured
+		// logger so operators see when the audit pipeline drops a
+		// request. Wave 71 closed a hostile-review finding that the
+		// fire-and-forget Log() variant silenced failures
+		// unconditionally.
+		if err := l.LogE(auditCtx, ev); err != nil {
+			cfg.errLogger.Error("auditlog middleware: emit failed",
+				redact.Error(err),
+			)
+		}
+	} else {
+		l.Log(auditCtx, ev)
+	}
+}
+
+// WithErrorLogger installs a logger that records auditlog.Logger.Log
+// failures. Without it, audit-sink failures are silenced. Pass the
+// same logger the service uses elsewhere so operators correlate audit
+// drops with the broader runtime context.
+//
+// Panics if logger is nil — omit the option entirely to opt out.
+func WithErrorLogger(logger *slog.Logger) Option {
+	if logger == nil {
+		panic("auditlog: WithErrorLogger requires a non-nil logger")
+	}
+	return func(c *config) { c.errLogger = logger }
 }
 
 // panicMetadataJSON is the metadata payload attached to entries
