@@ -389,7 +389,7 @@ For binary releases, the recommended verification is:
 # Clone, check out a tag:
 git clone https://github.com/bds421/rho-kit
 cd rho-kit
-git checkout cmd/kit-doctor/v0.3.0
+git checkout cmd/kit-doctor/v2.0.0
 
 # Build with the same flags CI uses:
 make release-bin BIN=kit-doctor

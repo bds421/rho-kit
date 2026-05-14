@@ -37,7 +37,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 3 | Append-only signed action log + approval workflow | "What did the agent do this hour against tenant X" becomes a SQL query, not a log grep |
 | 4 | MCP helpers — typed handlers as JSON-RPC tools, schema auto-generation | Expose any kit handler as an MCP tool with the kit's full middleware stack reused |
 | 5 | SBOM (CycloneDX), `govulncheck` + `osv-scanner` CI, direct dependency allowlist, heavy SDK boundary gate, `THREAT_MODEL.md`, `SUPPLY_CHAIN.md` | "Trusted library" claim is auditable, not marketing |
-| 6 | Builder integrations for every new primitive + the deferred Phase A items | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
+| 6 | Builder integrations for every new primitive | The kit's golden path (`app.Builder`) reaches the new primitives without each consumer wiring middleware by hand |
 | 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 11 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
 | 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters + v2 benchmark baselines | Production encryption and performance gates are concrete before the API freeze |
 
@@ -57,14 +57,13 @@ RC evidence checklist.
 
 Downstream onboarding (minimum `go.mod`, the smallest compilable program,
 and the common first-mistake checklist) lives in
-[ai/adoption.md](ai/adoption.md). Note: the v2.0.0 `app/v2` module
-transitively imports every adapter sub-module (`amqpbackend`,
-`natsbackend`, `pgx`, `redis`, storage backends, …) so the Builder can
-stay fluent without compile-time adapter selection; a v2.1 "lazy
-adapter" split into per-adapter sub-packages
-(`app/postgres`, `app/amqp`, `app/nats`, …) is planned and documented in
-[release/MIGRATION_V2.md §8](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-v21-lazy-adapter-plan).
-This is a known migration cost, not a v2.0.0 blocker.
+[ai/adoption.md](ai/adoption.md). v2.0.0 ships the lazy-adapter split:
+`app/v2` itself imports no heavy SDKs, and services pull in
+`app/postgres/v2`, `app/redis/v2`, `app/amqp/v2`, `app/nats/v2`,
+`app/tracing/v2`, and `app/grpc/v2` only for the adapters they actually
+use, registered via `Builder.With(<adapter>.Module(cfg))`. See
+[release/MIGRATION_V2.md §8](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-lazy-adapter-architecture-shipped-in-v200)
+for the full mechanical mapping from the removed Builder shortcuts.
 
 ## Breaking changes
 
@@ -73,11 +72,15 @@ fail-closed fix below, authtest-only auth context injection helpers, typed
 `crypto/signing.Secret` parameters, strict leader-election callback draining,
 explicit CORS origins, lifecycle HTTP server fail-fast checks, one-shot
 background component starts, and the removal of development mode (next
-section). Most remaining v2.0.0 surface is additive over v1.x; new
-`app.Builder` methods
-(`WithPASETO`, `WithNATS`, `WithPostgres`, `WithLeaderElection`,
+section). Most remaining v2.0.0 surface is additive over v1.x. New
+`app.Builder` methods (`WithPASETO`, `WithLeaderElection`,
 `WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
-`WithActionLogger`, `WithApprovalStore`) don't change existing signatures.
+`WithActionLogger`, `WithApprovalStore`) don't change existing
+signatures. The v1.x adapter shortcuts `WithPostgres`, `WithRedis`,
+`WithRabbitMQ`, and `WithNATS` are removed; their replacement is
+`Builder.With(<adapter>.Module(cfg))` from the `app/postgres`,
+`app/redis`, `app/amqp`, and `app/nats` adapter modules — see
+[Lazy adapter migration](release/MIGRATION_V2.md#8-adopter-onboarding-and-the-lazy-adapter-architecture-shipped-in-v200).
 
 ### Background components are one-shot
 
@@ -178,14 +181,15 @@ body/secret swaps a compile-time error.
 ### Credential rotation hooks are explicit
 
 Postgres pgx pools can now use `Config.PasswordProvider` and `Pool.Reset()`;
-RabbitMQ can use `amqpbackend.WithURLProvider` or
-`app.WithRabbitMQURLProvider`; NATS exposes username/password and token
-providers; S3 supports AWS default-chain or explicit SDK credential providers;
-Azure Blob supports `NewWithTokenCredential`; GCS accepts advanced client
-options; SFTP accepts a password provider; CSRF accepts secret rings through
-`WithSecrets`; and outbound signed requests can use `sign.WrapKeyStore`.
-AMQP URL providers and SFTP password providers receive bounded contexts so
-secret-manager stalls do not silently stretch startup or reconnect paths.
+RabbitMQ can use `amqpbackend.WithURLProvider` (wired through
+`app/amqp.Module` + `amqp.WithURLProvider`); NATS exposes username/password
+and token providers; S3 supports AWS default-chain or explicit SDK credential
+providers; Azure Blob supports `NewWithTokenCredential`; GCS accepts advanced
+client options; SFTP accepts a password provider; CSRF accepts secret rings
+through `WithSecrets`; and outbound signed requests can use
+`sign.WrapKeyStore`. AMQP URL providers and SFTP password providers receive
+bounded contexts so secret-manager stalls do not silently stretch startup or
+reconnect paths.
 
 ### Operational readiness review is explicit
 
@@ -1037,20 +1041,21 @@ the marker.
    environments. Set `WithStateFile(path)` or pass
    `WithEphemeralBuffer()` for an explicit opt-out backed by an
    upstream outbox. Dev environments warn but allow ephemeral
-   buffering. *This was already in main pre-v2; flagged here for
-   visibility.*
+   buffering.
 
 2. **JWT issuer pinning is enforced unconditionally**. Calling
    `WithJWT(...)` without `WithJWTIssuer(...)` (or the explicit
    `WithoutJWTIssuer()` opt-out) fails `Builder.Build()` validation.
-   Migration: chain the issuer call. *Pre-v2; tightened from
-   "non-development only" to unconditional in v2.*
+   Migration: chain the issuer call.
 
-3. **MCP server doesn't implement JSON-RPC batch**. Single-call
-   semantics keep the action-log entry per-call rather than
-   per-batch (forensics is cleaner). Bodies starting with `[` are
-   rejected with `-32600 Invalid request`. Document for SDK
-   consumers; deferred to v2.1 if a real consumer needs it.
+3. **MCP server doesn't implement JSON-RPC batch**. This is a
+   permanent design choice for v2: single-call semantics keep the
+   action-log entry per-call rather than per-batch (forensics is
+   cleaner) and avoid the partial-failure footgun where a batch with
+   one denied call must still return success for the others. Bodies
+   starting with `[` are rejected with `-32600 Invalid request`. SDK
+   consumers should call tools sequentially or in parallel HTTP
+   requests, not via JSON-RPC batches.
 
 4. **Feature flag keys and user targeting keys are validated at the
    kit boundary**. `flags.Client` error-returning getters now reject
@@ -1111,7 +1116,8 @@ b := app.New("my-service", "v2.0.0", cfg).
     WithApprovalStore(approvalpg.New(db)).
 
     // pgx-native Postgres pool for queries, LISTEN/NOTIFY, and COPY
-    WithPostgres(pgxbackend.Config{DSN: cfg.PgxDSN}).
+    // (lazy adapter — pulls pgx in only when this Module is registered)
+    With(postgres.Module(pgxbackend.Config{DSN: cfg.PgxDSN})).
 
     // Leader election for cron jobs
     WithLeaderElection(leaderpg.New(db, "my-service")).
@@ -1119,8 +1125,8 @@ b := app.New("my-service", "v2.0.0", cfg).
     // Service-to-service request signing
     WithSignedRequests(keyResolver, signedrequest.NewMemoryNonceStore(time.Minute)).
 
-    // NATS JetStream (independent of WithRabbitMQ; both can coexist)
-    WithNATS(natsbackend.Config{URL: cfg.NATSURL}).
+    // NATS JetStream (independent of the amqp adapter; both can coexist)
+    With(nats.Module(natsbackend.Config{URL: cfg.NATSURL})).
 
     RunContext(ctx)
 ```
@@ -1138,8 +1144,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
   tenant or budget work runs.
 - `tenant` runs before `budget` because the budget middleware reads
   tenant ID from ctx.
-- `recovery`, `logging`, `tracing` are part of `stack.Default` and
-  unchanged from v1.x.
+- `recovery`, `logging`, `tracing` are part of `stack.Default`.
 
 ## New primitives (skim of what shipped)
 
@@ -1246,7 +1251,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `infra/outbox.Relay` — cleans old published and failed rows on startup and periodic ticks, with `WithRetention` and `WithFailedRetention`; closes threat-model GAP-09
 
 ### Messaging hardening
-- `messaging.MessageSizeLimiter` — shared 1 MiB default with exact route overrides, wired into AMQP, NATS, Redis Streams, `membroker`, `BufferedPublisher`, and Builder `WithMaxMessageBytes` / `WithRouteMaxMessageBytes`; closes threat-model GAP-07
+- `messaging.MessageSizeLimiter` — shared 1 MiB default with exact route overrides, wired into AMQP, NATS, Redis Streams, `membroker`, `BufferedPublisher`, and the `app/amqp` / `app/nats` adapter Modules via `amqp.WithMessageSizeLimiter` / `nats.WithMessageSizeLimiter`; closes threat-model GAP-07
 - `infra/messaging/amqpbackend.NewMetrics` plus `WithPublisherMetrics` and
   `WithConsumerMetrics` freeze direct AMQP Prometheus contracts for publish
   outcomes, consume outcomes, publish duration, and handler duration.
@@ -1279,13 +1284,17 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `storage.Validator` and `storage.ApplyValidators` are context-aware, so upload scanners and custom validator I/O honor request/backend cancellation instead of running on `context.Background()`.
 - `infra/storage/storagehttp/uploadsec/clamav` — ClamAV `clamd` INSTREAM adapter plus a `storage.Validator` bridge for `storagehttp.ParseAndStore`; closes threat-model GAP-08 without adding third-party scanner SDK dependencies
 
-## What's deliberately NOT in v2.0.0
+## What's deliberately NOT shipped
 
-| Item | Why deferred |
+The kit intentionally does not include these. None are on a roadmap;
+consumers that need them should reach for a third-party library or
+file an issue with a concrete use case before assuming we will add them.
+
+| Item | Why |
 |---|---|
-| Additional KMS adapters beyond `crypto/envelope/awskms`, `crypto/envelope/azurekeyvault`, `crypto/envelope/gcpkms`, and `crypto/envelope/vaulttransit` | AWS, Azure Key Vault, Google KMS, and HashiCorp Vault Transit ship as frozen modules; remaining provider SDKs wait for concrete consumer demand |
-| `k8slease` and `etcd` leader-election backends | Need k8s.io / etcd client libraries |
-| Kafka backend | Explicit "don't do kafka" directive this wave |
+| KMS adapters beyond AWS KMS, Azure Key Vault, Google Cloud KMS, and HashiCorp Vault Transit | The four shipped adapters cover the production estate the kit was designed for; additional provider SDKs are not in scope. |
+| `k8slease` and `etcd` leader-election backends | Bringing in `k8s.io/...` or `go.etcd.io/...` would violate the heavy-SDK boundary policy. Out of scope. |
+| Kafka backend | The kit's messaging contract targets AMQP, NATS JetStream, Redis Streams, and the in-memory broker. Kafka is not in scope. |
 
 ## Release surface
 

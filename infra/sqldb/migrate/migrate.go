@@ -1,7 +1,6 @@
 // Package migrate runs goose-managed PostgreSQL migrations against a
-// *sql.DB. v2 dropped MySQL/MariaDB and GORM support — kit consumers
-// hand goose a *sql.DB sourced from pgx (or the stdlib pq driver) and
-// the migration set is parsed via embed.FS.
+// *sql.DB. Consumers hand goose a *sql.DB sourced from pgx (or the
+// stdlib pq driver) and the migration set is parsed via embed.FS.
 //
 // Typical wiring:
 //

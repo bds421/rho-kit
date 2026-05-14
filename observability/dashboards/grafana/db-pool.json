@@ -106,7 +106,7 @@
       "type": "text",
       "options": {
         "mode": "markdown",
-        "content": "DB pool metrics are emitted by `infra/sqldb.NewPoolMetrics` and exported on a 15s tick by the `app` builder. The metric name is prefixed with the service's namespace (e.g. `mysvc_db_open_connections`), hence the `__name__` regex match. Works for both Postgres (pgx, gorm) and MySQL (gorm) drivers."
+        "content": "DB pool metrics are emitted by `infra/sqldb.NewPoolMetrics` and exported on a 15s tick by the `app/postgres` adapter Module. The metric name is prefixed with the service's namespace (e.g. `mysvc_db_open_connections`), hence the `__name__` regex match. The kit ships PostgreSQL only (pgx-native)."
       },
       "gridPos": { "h": 4, "w": 24, "x": 0, "y": 12 }
     }

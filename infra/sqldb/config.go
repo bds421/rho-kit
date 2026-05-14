@@ -12,9 +12,9 @@ import (
 	"github.com/bds421/rho-kit/core/v2/config"
 )
 
-// Config holds PostgreSQL connection settings. v2 dropped MySQL/MariaDB
-// support — pgx + sqlc is the canonical data path now and there is no
-// reason to abstract over a database the kit no longer ships.
+// Config holds PostgreSQL connection settings. pgx + sqlc is the
+// canonical data path; the kit ships PostgreSQL only and does not
+// abstract over alternative SQL engines.
 //
 // Driver-specific tuning (sslmode, application_name, statement_timeout)
 // goes in Options. The driver layer reads what it needs and ignores

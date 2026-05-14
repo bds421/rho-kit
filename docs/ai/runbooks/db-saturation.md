@@ -56,10 +56,10 @@ hit too. Symptoms upstream: HTTP p99 latency climbs, errors when
 ## Longer-term fix
 
 - Thread a context with a per-query deadline so context-cancelled
-  queries actually release their pgx connection. rho-kit's
-  `infra/sqldb` (pgx-backed in v2; lib/pq and GORM were removed) does
-  this when callers thread a context — the pgx driver propagates
-  cancellation to PostgreSQL via its cancel-request protocol.
+  queries actually release their pgx connection. `infra/sqldb`
+  (pgx-backed) does this when callers thread a context — the pgx
+  driver propagates cancellation to PostgreSQL via its cancel-request
+  protocol.
 - Run `EXPLAIN ANALYZE` on the slowest endpoint's query and add
   the missing index.
 - Set `MaxOpenConns` to a value that the DB can actually handle:

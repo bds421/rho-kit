@@ -1070,11 +1070,12 @@ func encodeSubjectToken(s string) string {
 	return b.String()
 }
 
-// splitSubject is the legacy splitter used only for messages that
+// splitSubject is the fallback splitter used only for messages that
 // arrive without the [headerExchange] / [headerRoutingKey] headers
-// (e.g. produced by older clients or tools other than this backend).
-// It splits on the first dot, which is lossy for dotted exchange names
-// but matches pre-v2 behaviour. The dispatcher prefers headers.
+// (e.g. produced by NATS clients or operator tooling that does not
+// emit the kit's header convention). It splits on the first dot,
+// which is lossy for dotted exchange names — the dispatcher prefers
+// headers exactly because of this ambiguity.
 func splitSubject(subject string) (exchange, routingKey string) {
 	i := strings.IndexByte(subject, '.')
 	if i < 0 {
