@@ -490,14 +490,19 @@ caller-provided audit identifiers.
 Config file-watcher and environment-reload diagnostics now redact watched file
 paths and loader errors while still reporting reload outcomes.
 App module lifecycle, tracing shutdown/init, broker close, internal-server
-shutdown, and top-level application error logs now redact module names and
-runtime errors.
+shutdown, and top-level application error logs now redact runtime errors via
+`redact.Error`. The fatal-exit log from `app.Main` additionally records the
+unwrap chain of concrete Go error types via `redact.ErrorChain` so operators
+keep enough triage information to identify the failing subsystem.
+Operator-visible identifiers — module names (for log correlation),
+gRPC/internal listener bind addresses (for ops visibility) — are
+deliberately NOT redacted; tenant- or attacker-controlled identifiers
+(gRPC mTLS user IDs, client identities, request paths) ARE redacted to
+match the HTTP middleware path.
 Low-level helper diagnostics in config secrets, request ID fallback, HTTP JSON
 writes, health response encoding, cursor pagination, cron shutdown, Redis-lock
 release, and MCP internal/action-log paths now use redacted runtime errors and
 identifiers.
-gRPC/internal listener address logs and mTLS impersonation logs also avoid
-copying internal addresses, user IDs, client identities, and request paths.
 `observability/logattr.Error` now redacts error strings by default, so shared
 runtime/lifecycle/error-handler logs keep error type without copying backend
 diagnostics.
@@ -1216,8 +1221,8 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 
 ### Benchmark baselines
 - `make bench-baseline` captures raw `go test -run=^$ -bench=. -benchmem -count=5 ./...` outputs for every current benchmarked workspace module.
-- v2.0.0 baselines live under `docs/release/benchmarks/v2.0.0/` and can be used directly with `kit-bench-gate -baseline`.
-- The current baseline set covers `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime`, including tenant-context, envelope-encryption, in-memory rate-limit, and middleware-chain hot paths added before the API freeze.
+- The checked-in `docs/release/benchmarks/v2.0.0/` files are historical/preliminary until refreshed from the final clean release-candidate commit; do not use the 2026-05-12 set as canonical `kit-bench-gate -baseline` input for the v2.0.0 tag.
+- The preliminary baseline set covers `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime`, including tenant-context, envelope-encryption, in-memory rate-limit, and middleware-chain hot paths added before the API freeze. Rerun `make bench-baseline` before publishing the release notes.
 
 ### gRPC hardening
 - `grpcx.WithDefaultDeadline(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)

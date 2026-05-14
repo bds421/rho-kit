@@ -138,18 +138,21 @@ func WithOnReconnectTimeout(d time.Duration) ConnOption {
 	}
 }
 
-// WithRegisterer sets the Prometheus registerer for connection metrics.
-// If not set, prometheus.DefaultRegisterer is used. The connection-
-// level option keeps the short name (the kit-wide convention for
-// component options), while the metrics-level option in this package
-// uses [MetricsWithRegisterer] to avoid same-package collision.
-func WithRegisterer(reg prometheus.Registerer) ConnOption {
+// WithMetricsRegisterer sets the Prometheus registerer for connection
+// metrics. Kit-canonical name on a top-level [ConnOption] threading
+// the registerer through to the metrics builder (mirrors
+// `infra/storage/{azure,gcs,s3,sftp}backend.WithMetricsRegisterer`,
+// `infra/leaderelection/{pgadvisory,redislock}.WithMetricsRegisterer`,
+// `grpcx.WithMetricsRegisterer`). The MetricsOption-typed
+// [WithRegisterer] in the same package is the inner builder option.
+// Defaults to [prometheus.DefaultRegisterer].
+func WithMetricsRegisterer(reg prometheus.Registerer) ConnOption {
 	return func(c *Connection) {
 		if reg == nil {
 			c.metrics = NewMetrics()
 			return
 		}
-		c.metrics = NewMetrics(MetricsWithRegisterer(reg))
+		c.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
 

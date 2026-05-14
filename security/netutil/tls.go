@@ -3,12 +3,38 @@ package netutil
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/bds421/rho-kit/core/v2/config"
 )
+
+// TLS material load errors are intentionally path-free: TLS file paths often
+// reveal secret mount layout. Use errors.Is to classify the safe reason code
+// without parsing or logging raw filesystem errors.
+var (
+	ErrTLSCertKeyPairLoad = errors.New("netutil: TLS cert/key pair load failed")
+	ErrTLSCARead          = errors.New("netutil: TLS CA certificate read failed")
+	ErrTLSCAParse         = errors.New("netutil: TLS CA certificate parse failed")
+)
+
+// TLSLoadErrorReason returns a stable, path-free reason label for TLS material
+// load failures. It is intended for logs and metrics; callers that need control
+// flow should prefer errors.Is with the ErrTLS* sentinels above.
+func TLSLoadErrorReason(err error) string {
+	switch {
+	case errors.Is(err, ErrTLSCertKeyPairLoad):
+		return "cert_key_pair_load"
+	case errors.Is(err, ErrTLSCARead):
+		return "ca_read"
+	case errors.Is(err, ErrTLSCAParse):
+		return "ca_parse"
+	default:
+		return "unknown"
+	}
+}
 
 // TLSConfig holds paths to TLS certificate files for mTLS.
 // When all three paths are set, TLS is enabled.
@@ -172,22 +198,27 @@ func (c TLSConfig) ClientTLS() (*tls.Config, error) {
 }
 
 func (c TLSConfig) loadCertAndCA() (tls.Certificate, *x509.CertPool, error) {
+	cert, _, caPool, err := loadTLSMaterial(c)
+	return cert, caPool, err
+}
+
+func loadTLSMaterial(c TLSConfig) (tls.Certificate, []byte, *x509.CertPool, error) {
 	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
 	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("load cert/key pair failed")
+		return tls.Certificate{}, nil, nil, ErrTLSCertKeyPairLoad
 	}
 
 	caPEM, err := os.ReadFile(c.CACert)
 	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("read CA cert failed")
+		return tls.Certificate{}, nil, nil, ErrTLSCARead
 	}
 
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caPEM) {
-		return tls.Certificate{}, nil, fmt.Errorf("failed to parse CA certificate")
+		return tls.Certificate{}, nil, nil, ErrTLSCAParse
 	}
 
-	return cert, caPool, nil
+	return cert, caPEM, caPool, nil
 }
 
 // Reloading constructs a [FilesCertificateSource] from this

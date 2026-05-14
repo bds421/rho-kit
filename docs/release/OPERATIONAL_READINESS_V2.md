@@ -179,8 +179,12 @@ coverage, race, benchmarks, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/infra/storage/sftpbackend/v2` | Adapter | SFTP password provider rotation, provider timeout, host key validation, reconnect cleanup. |
 | `github.com/bds421/rho-kit/infra/storage/storagehttp/uploadsec/clamav/v2` | Adapter | Scanner fail-closed behavior, temp-file cleanup, ClamAV outage readiness. |
 | `github.com/bds421/rho-kit/infra/storage/storagetest/v2` | Integration helper | Storage backend compliance coverage only. |
+| `github.com/bds421/rho-kit/infra/outbox/postgres/v2` | Adapter | Postgres outbox Store: transactional Insert via `WithTx`, `FOR UPDATE SKIP LOCKED` claim path, status-guarded `ErrStaleState` transitions, partial-index retention sweeps, stale-recovery for crashed relays. Migrations ship via `cmd/kit-migrate`. |
+| `github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2` | Integration helper | Outbox postgres integration coverage only (tx atomicity, SKIP LOCKED, retention, stale recovery). |
 | `github.com/bds421/rho-kit/io/v2` | Runtime | Atomic file writes, progress accounting, file cleanup behavior. |
 | `github.com/bds421/rho-kit/observability/v2` | Runtime | Health, metrics, dashboards, runbooks, pprof, tracing, audit logs. |
+| `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | Postgres audit-log Store: tamper-evident chain via `pg_advisory_xact_lock` + tail `FOR UPDATE`, append-order verification through `seq BIGSERIAL`, signed-cursor pagination. Migrations ship via `cmd/kit-migrate`. |
+| `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration helper | Audit-log postgres integration coverage only (chain integrity, tamper / deletion detection, concurrent appends, backfilled-timestamp safety). |
 | `github.com/bds421/rho-kit/resilience/v2` | Runtime | Retry/circuit-breaker defaults, context/error precedence, bounded retries. |
 | `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior. |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |

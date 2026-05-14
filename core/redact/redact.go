@@ -74,6 +74,39 @@ func Error(err error) slog.Attr {
 	return slog.String("error", ErrorValue(err))
 }
 
+// ErrorChainTypes returns the list of concrete Go types in err's
+// errors.Unwrap chain, deepest cause last. The chain is bounded at 16
+// frames so a pathological wrap-loop cannot exhaust memory; in practice
+// real error chains are 2–5 deep.
+//
+// Type names are kit-controlled (or well-known SDK types) and never
+// contain caller-supplied content, so this is safe to emit on
+// fatal-startup / operator-facing log lines where a redacted message
+// alone leaves operators without enough triage information to identify
+// the failing subsystem.
+func ErrorChainTypes(err error) []string {
+	if err == nil {
+		return nil
+	}
+	const maxFrames = 16
+	out := make([]string, 0, 4)
+	cur := err
+	for i := 0; i < maxFrames && cur != nil; i++ {
+		out = append(out, fmt.Sprintf("%T", cur))
+		cur = errors.Unwrap(cur)
+	}
+	return out
+}
+
+// ErrorChain returns a slog.Attr listing the concrete Go types in
+// err's errors.Unwrap chain. Pair with [Error] when the message must
+// stay redacted but operators still need to know which subsystem
+// failed (the canonical use case is the fatal-exit log from the
+// service bootstrap).
+func ErrorChain(err error) slog.Attr {
+	return slog.Any("error_chain", ErrorChainTypes(err))
+}
+
 // ErrorKey returns a redacted slog attribute for an error under key.
 func ErrorKey(key string, err error) slog.Attr {
 	return slog.String(key, ErrorValue(err))

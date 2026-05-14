@@ -190,7 +190,8 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | pprof profiling endpoint (internal port only) | `observability/pprof` | [observability](docs/ai/observability.md) |
 | Service health check binary | `app.Main` `--health` flag (invokes `observability/health.RunHealthCheck`) | [observability](docs/ai/observability.md) |
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
-| Tamper-evident audit log | `observability/auditlog` | [observability](docs/ai/observability.md) |
+| Tamper-evident audit log | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
+| Transactional outbox (at-least-once messaging) | `infra/outbox` + `infra/outbox/postgres` (schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [observability](docs/ai/observability.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |
 | OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
@@ -220,13 +221,11 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 
 - **Env vars**: `UPPER_SNAKE_CASE`. Secrets use `{PREFIX}_` prefix and support `_FILE` suffix for mounted secrets.
 - **Error handling**: Return typed `core/apperror` errors using `apperror.Code` enum (`CodeNotFound`, `CodeValidation`, `CodeConflict`, `CodeAuthRequired`, `CodeForbidden`, `CodeRateLimit`, `CodeOperationFailed`, `CodePermanent`, `CodeUnavailable`). `httpx.WriteServiceError` maps them to HTTP status codes automatically via `httpx.HTTPStatus()`. Every error type implements `Retryable() bool` — use `apperror.ShouldRetry` as a predicate for retry middleware (e.g. `retry.WithRetryIf(apperror.ShouldRetry)`). Error codes are transport-agnostic; HTTP mapping lives in `httpx`, not in `core/apperror`.
-- **Metrics**: All Prometheus metric constructors expose `NewMetrics(opts ...MetricsOption)` (positional `NewMetrics(reg)` is gone) and default to `prometheus.DefaultRegisterer` for zero-config usage. The canonical registerer option is `WithRegisterer(reg)`. A small set of packages disambiguates with a longer name to avoid same-package collision with component-level options — these are stable v2 names, not drift:
-  - `infra/redis.MetricsWithRegisterer` (the package also has `redis.WithRegisterer` that wires a registerer through to BOTH connection and command metrics — see app/redis pool-metrics forwarding for the canonical pattern).
-  - `data/cache/rediscache.MetricsWithRegisterer` and `data/cache/rediscache.WithMetricsRegisterer` (metric-level vs cache-level options).
-  - `data/stream/redisstream.WithProducerMetricsRegisterer` (producer-side metric set; coexists with future consumer-side options).
-  - `httpx/middleware/signedrequest.WithMetricsRegisterer` (middleware-level vs metric-level options).
-  - `observability/redmetrics.WithHTTPRegisterer` and `observability/redmetrics.WithBatchRegisterer` (separate HTTP and batch metric sets in one package).
-  Use custom registerers for test isolation.
+- **Metrics**: All Prometheus metric constructors expose `NewMetrics(opts ...MetricsOption)` (positional `NewMetrics(reg)` is gone) and default to `prometheus.DefaultRegisterer` for zero-config usage. Naming follows two stable v2 conventions:
+  - `WithRegisterer(MetricsOption)` is the canonical inner option, used by every single-purpose metrics constructor (e.g. `infra/outbox`, `infra/redis`, `infra/storage/{azure,gcs,s3,sftp}backend`, `infra/leaderelection/{pgadvisory,redislock}`, `httpx/middleware/signedrequest`, `data/queue/redisqueue`, `data/cache/rediscache`).
+  - `WithMetricsRegisterer(Option)` is the canonical outer option, used only when a top-level constructor (`ConnOption` / `CacheOption` / backend `Option` / `ServerOption`) threads a registerer through to its inner metrics builder — see `infra/redis.WithMetricsRegisterer` (ConnOption), `data/cache/rediscache.WithMetricsRegisterer` (CacheOption), `infra/storage/{azure,gcs,s3,sftp}backend.WithMetricsRegisterer` (backend Option), `data/queue/redisqueue.WithMetricsRegisterer` (queue Option), `grpcx.WithMetricsRegisterer` (ServerOption).
+  - `WithHTTPRegisterer` / `WithBatchRegisterer` (in `observability/redmetrics`) and `WithProducerMetricsRegisterer` / `WithConsumerMetricsRegisterer` (in `data/stream/redisstream`) are the prefix-by-constructor variant: each package exposes multiple distinct metric sets in one package, so the registerer option carries the discriminator prefix.
+  Wave 64 finished the canonicalisation: every inner `MetricsOption` is now `WithRegisterer`, every outer-Option spelling is `WithMetricsRegisterer`. The pre-wave `MetricsWithRegisterer` outlier is gone. Use custom registerers for test isolation.
 - **Permanent errors**: Wrap with `apperror.NewPermanent()` to skip retries in consumers.
 - **Operation errors**: Use `apperror.NewOperationFailed()` for non-retryable operation failures that should be logged and typed; HTTP adapters return a generic `internal error` body for both operation failures and untyped errors.
 - **Unavailable errors**: Use `apperror.NewUnavailable()` when the service itself is not ready, or `apperror.NewDependencyUnavailable("redis", msg, cause)` when an upstream dependency is down. Both are retryable. HTTP status mapping (502 vs 503) is handled by `httpx.HTTPStatus()`.
@@ -238,7 +237,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Dependencies**: New direct external Go modules must be added to `docs/audit/dependency-allowlist.txt` in the same change; `make check-dependency-allowlist` rejects unreviewed or stale direct dependencies.
 - **Messaging size**: Builder-created RabbitMQ and NATS publishers enforce `messaging.DefaultMaxMessageBytes`; use `WithRouteMaxMessageBytes` for explicitly large routes instead of disabling the cap globally.
 - **Credential rotation**: Prefer provider-backed credentials over static secrets when the upstream SDK supports it. Use DB `PasswordProvider`, go-redis credential providers, AMQP URL providers, NATS auth providers, cloud SDK default credentials, CSRF `WithSecrets`, and signed-request key stores for zero-downtime rotation.
-- **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; these are the canonical `kit-bench-gate -baseline` inputs for the release branch.
+- **Benchmark baselines**: `make bench-baseline` writes raw `go test -bench` outputs under `docs/release/benchmarks/$(RELEASE_VERSION)/`; a clean current release-candidate capture is the canonical `kit-bench-gate -baseline` input for the release branch. If the directory manifest marks the files historical/preliminary, treat them as comparison evidence only and rerun the baseline before tagging.
 
 ## Anti-Patterns
 

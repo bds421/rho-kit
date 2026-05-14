@@ -37,19 +37,20 @@ type metricsConfig struct {
 	registerer prometheus.Registerer
 }
 
-// MetricsWithRegisterer pins the Prometheus registerer used for Redis
-// metrics. The name carries the "Metrics" prefix so this option does
-// not collide with the connection-level [WithRegisterer] option in the
-// same package. Passing nil panics.
-func MetricsWithRegisterer(reg prometheus.Registerer) MetricsOption {
+// WithRegisterer pins the Prometheus registerer used for Redis metrics.
+// The kit-canonical name on the inner [MetricsOption] type; callers
+// building a Connection through [Connect] should pass
+// [WithMetricsRegisterer] (the ConnOption variant) instead. Passing
+// nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("redis: MetricsWithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("redis: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
 // NewMetrics creates and registers Redis metrics. Pass
-// [MetricsWithRegisterer] to use a non-default registry.
+// [WithRegisterer] to use a non-default registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
@@ -309,8 +310,8 @@ type poolCollectorConfig struct {
 
 // WithPoolMetrics uses a custom Metrics instance for pool metrics
 // collection instead of the default global metrics. Use this when the
-// Connection was created with WithRegisterer to ensure pool metrics are
-// emitted to the same registerer.
+// Connection was created with WithMetricsRegisterer to ensure pool
+// metrics are emitted to the same registerer.
 func WithPoolMetrics(m *Metrics) PoolCollectorOption {
 	return func(c *poolCollectorConfig) { c.metrics = m }
 }

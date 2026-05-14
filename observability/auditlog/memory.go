@@ -150,6 +150,17 @@ func (m *MemoryStore) Query(ctx context.Context, filter Filter, cursor string, l
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
+	// Defensive: callers that bypass [Logger.List] and reach the Store
+	// directly must not be able to ask for unbounded scans. The Logger
+	// already enforces ErrLimitNegative / ErrLimitTooLarge at the API
+	// boundary; mirror that contract at the SPI so a misuse cannot
+	// allocate huge slices or stall the read lock.
+	if limit < 0 {
+		return nil, "", ErrLimitNegative
+	}
+	if limit > MaxPageLimit {
+		return nil, "", ErrLimitTooLarge
+	}
 	m.mu.RLock()
 	// Snapshot under the read lock so the sort runs on an immutable
 	// slice without pinning writers behind it.

@@ -275,7 +275,7 @@ func TestNewWithLocker_PanicsOnNilOption(t *testing.T) {
 
 func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(WithMetricsRegisterer(reg))
+	metrics := NewMetrics(WithRegisterer(reg))
 
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))

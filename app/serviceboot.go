@@ -1,11 +1,11 @@
 package app
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/bds421/rho-kit/core/v2/config"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/logging"
 )
@@ -17,15 +17,13 @@ import (
 //
 // Log level defaults to "info" and can be overridden via LOG_LEVEL env var.
 //
-// Startup error logging: this path is the fatal-exit log immediately
-// before os.Exit(1). The kit's redact convention applies to request-path
-// errors that can carry tenant-controlled content (broker URLs with
-// credentials, DSN fragments, validator output). The top-level startup
-// error is operator-facing diagnostic information — a redacted "<error
-// type only>" leaves a failed service with no actionable cause. We
-// deliberately emit the unredacted error message and the typed prefix
-// here so an operator can debug bind-failure / config-load / cert-load
-// without correlating against another data source.
+// Fatal-startup error logging: emits the redacted message (kit
+// convention — error strings can carry SDK URLs, broker credentials,
+// DSN fragments, or validator output) PLUS the unwrap chain of concrete
+// Go types (kit-controlled / SDK-controlled identifiers, no
+// caller-supplied content). Operators get enough triage information to
+// identify the failing subsystem ("config.LoadError → os.PathError")
+// without leaking the underlying message.
 func Main(name, version string, runFn func(logger *slog.Logger) error) {
 	if len(os.Args) > 1 && os.Args[1] == "--health" {
 		health.RunHealthCheck(9090)
@@ -42,8 +40,8 @@ func Main(name, version string, runFn func(logger *slog.Logger) error) {
 
 	if err := runFn(logger); err != nil {
 		logger.Error("application error",
-			slog.String("error", err.Error()),
-			slog.String("error_type", fmt.Sprintf("%T", err)),
+			redact.Error(err),
+			redact.ErrorChain(err),
 		)
 		os.Exit(1)
 	}

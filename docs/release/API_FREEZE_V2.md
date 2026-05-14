@@ -61,6 +61,8 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | No rename/remove | Redis-backed tenant budget ledger. |
 | `github.com/bds421/rho-kit/data/actionlog/postgres/v2` | Adapter | No rename/remove | Postgres signed action-log store and migrations. |
 | `github.com/bds421/rho-kit/data/approval/postgres/v2` | Adapter | No rename/remove | Postgres approval workflow store and migrations. |
+| `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | No rename/remove | Postgres tamper-evident audit-log Store (AppendChained / RangeChain / Query / LastHMAC) and migrations. |
+| `github.com/bds421/rho-kit/infra/outbox/postgres/v2` | Adapter | No rename/remove | Postgres transactional-outbox Store (Inserter, Claimer, Outcomer, Janitor, Observer) with `WithTx`/`RequireTx` ctx helpers and migrations. |
 | `github.com/bds421/rho-kit/data/lock/pgadvisory/v2` | Adapter | No rename/remove | Postgres advisory-lock implementation. |
 | `github.com/bds421/rho-kit/data/lock/redislock/v2` | Adapter | No rename/remove | Redis lock implementation. |
 | `github.com/bds421/rho-kit/data/queue/redisqueue/v2` | Adapter | No rename/remove | Redis list-backed queue. |
@@ -110,8 +112,10 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/data/stream/redisstream/integrationtest/v2` | Integration test helper | No rename/remove | Redis stream integration tests. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2` | Integration test helper | No rename/remove | RabbitMQ integration tests and `rabbitmqtest` helper. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/integrationtest/v2` | Integration test helper | No rename/remove | NATS integration tests. |
+| `github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres outbox integration tests (tx atomicity, SKIP LOCKED, stale recovery, retention). |
 | `github.com/bds421/rho-kit/infra/redis/redistest/v2` | Integration test helper | No rename/remove | Redis Testcontainers helper. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/integrationtest/v2` | Integration test helper | No rename/remove | pgx/Postgres integration tests. |
+| `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres audit-log integration tests (chain integrity, tamper detection, concurrent appends). |
 
 ## Commands And Examples
 

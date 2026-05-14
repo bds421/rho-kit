@@ -1,6 +1,6 @@
 # Observability - Health, Metrics, Tracing, Profiling
 
-Packages: `observability/health`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing`, `observability/logattr`, `observability/promutil`, `observability/auditlog`
+Packages: `observability/health`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing`, `observability/logattr`, `observability/promutil`, `observability/auditlog`, `observability/auditlog/postgres`
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -112,10 +112,14 @@ cannot be explained from the docs.
 ## Audit Events
 
 `observability/auditlog` owns the `Store` and `Logger` contracts for structured
-audit events. `NewMemoryStore` is for tests and local demos only; production
-services should provide a durable store. Use `LogE` when the originating action
-must fail if the audit append fails. `Log` is best-effort and reports drops
-through logs, `WithDroppedCounter`, and `WithOnDrop`.
+audit events. `NewMemoryStore` is for tests and local demos only. Production
+services use `observability/auditlog/postgres`, which implements the full Store
+contract (advisory-lock-serialised `AppendChained`, append-order `RangeChain`
+for `Logger.VerifyChain`, signed-cursor `Query` pagination, `LastHMAC` for
+operator tooling). Apply its schema with `kit-migrate publish --to=./migrations
+auditlog`. Use `LogE` when the originating action must fail if the audit
+append fails. `Log` is best-effort and reports drops through logs,
+`WithDroppedCounter`, and `WithOnDrop`.
 
 Use `httpx/middleware/auditlog` for request-level HTTP audit capture. Configure
 the same trusted proxy CIDRs as access logging so `IPAddress` is derived from

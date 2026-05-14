@@ -121,7 +121,15 @@ func (s *Store) Query(ctx context.Context, filter auditlog.Filter, cursor string
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
-	if limit <= 0 {
+	// Defensive: mirror the Logger.List boundary check so callers that
+	// reach the Store directly cannot bypass the limit guards.
+	if limit < 0 {
+		return nil, "", auditlog.ErrLimitNegative
+	}
+	if limit > auditlog.MaxPageLimit {
+		return nil, "", auditlog.ErrLimitTooLarge
+	}
+	if limit == 0 {
 		limit = defaultLimit
 	}
 

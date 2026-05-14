@@ -300,7 +300,15 @@ app.New("my-svc", version, cfg.BaseConfig).
 ## Audit Log
 
 ```go
-auditStore := auditlog.NewMemoryStore() // replace with durable storage in production
+// Production: use the kit's postgres-backed Store (apply schema with
+//   kit-migrate publish --to=./migrations auditlog
+// then bind it to the same pgx pool the service already uses).
+//
+//   pool, _ := pgxpool.New(ctx, dsn)
+//   auditStore := auditlogpg.New(pool)
+//
+// Dev / tests / local demos: in-memory store has zero deps.
+auditStore := auditlog.NewMemoryStore()
 
 app.New("my-svc", version, cfg.BaseConfig).
     WithAuditLog(auditStore).

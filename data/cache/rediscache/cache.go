@@ -36,19 +36,20 @@ type metricsConfig struct {
 	registerer prometheus.Registerer
 }
 
-// MetricsWithRegisterer pins the Prometheus registerer used for cache
-// metrics. The "Metrics" prefix keeps this option distinct from the
-// cache-level [WithCacheRegisterer] option in the same package. Unset
-// defaults to [prometheus.DefaultRegisterer]; passing nil panics.
-func MetricsWithRegisterer(reg prometheus.Registerer) MetricsOption {
+// WithRegisterer pins the Prometheus registerer used for cache
+// metrics. The kit-canonical name on the inner [MetricsOption] type;
+// callers building a Cache through [NewCache] should pass
+// [WithMetricsRegisterer] (the CacheOption variant) instead.
+// Defaults to [prometheus.DefaultRegisterer]; passing nil panics.
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("rediscache: MetricsWithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("rediscache: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
 // NewMetrics creates and registers cache metrics. Pass
-// [MetricsWithRegisterer] to use a non-default registry.
+// [WithRegisterer] to use a non-default registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
@@ -121,7 +122,7 @@ func WithMetricsRegisterer(reg prometheus.Registerer) CacheOption {
 			rc.metrics = NewMetrics()
 			return
 		}
-		rc.metrics = NewMetrics(MetricsWithRegisterer(reg))
+		rc.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
 

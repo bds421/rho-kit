@@ -14,8 +14,8 @@ import (
 
 func TestSignedRequestMetrics_ReusesCollectors(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m1 := NewMetrics(WithMetricsRegisterer(reg))
-	m2 := NewMetrics(WithMetricsRegisterer(reg))
+	m1 := NewMetrics(WithRegisterer(reg))
+	m2 := NewMetrics(WithRegisterer(reg))
 
 	if m1.verifyFailures != m2.verifyFailures {
 		t.Fatal("NewMetrics should reuse verifyFailures collector on duplicate registration")
@@ -24,7 +24,7 @@ func TestSignedRequestMetrics_ReusesCollectors(t *testing.T) {
 
 func TestSignedRequestMetrics_PanicOnNil(t *testing.T) {
 	require.Panics(t, func() { WithMetrics(nil) })
-	require.Panics(t, func() { WithMetricsRegisterer(nil) })
+	require.Panics(t, func() { WithRegisterer(nil) })
 	require.Panics(t, func() { NewMetrics(nil) })
 }
 
@@ -35,7 +35,7 @@ func TestSignedRequestMetrics_PanicOnNil(t *testing.T) {
 // operators do not get silently-dropped categories.
 func TestSignedRequestMetrics_CountsByReason(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	metrics := NewMetrics(WithMetricsRegisterer(reg))
+	metrics := NewMetrics(WithRegisterer(reg))
 
 	store := NewMemoryNonceStore(10 * time.Minute)
 	// Pin the verifier clock so future-skew vs past-expiry are

@@ -134,6 +134,13 @@ var (
 	// for the rationale — large positive limits force pathological
 	// SQL LIMIT and slice preallocation.
 	ErrLimitTooLarge = errors.New("approval: query limit exceeds MaxPageLimit")
+
+	// ErrLimitNegative is returned by [Store.List] / [Query.Validate]
+	// when [Query.Limit] is negative. A negative limit's behaviour is
+	// Store-specific; mirror the actionlog contract and reject at the
+	// API boundary so every Store stays safe without per-impl
+	// defensive code. Limit=0 is reserved for Store-side defaulting.
+	ErrLimitNegative = errors.New("approval: query limit must not be negative")
 )
 
 // MaxPageLimit caps the per-page entries [Query.Limit] may request.
@@ -190,6 +197,9 @@ func (q Query) Validate() error {
 	}
 	if q.TenantID == "" && !q.AllTenants {
 		return ErrQueryTenantRequired
+	}
+	if q.Limit < 0 {
+		return ErrLimitNegative
 	}
 	if q.Limit > MaxPageLimit {
 		return ErrLimitTooLarge

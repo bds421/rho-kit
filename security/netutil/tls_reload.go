@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,8 +92,8 @@ type FilesCertificateSource struct {
 }
 
 type certSnapshot struct {
-	cert  tls.Certificate
-	caPEM []byte // raw PEM for cheap equality checks across reloads
+	cert   tls.Certificate
+	caPEM  []byte // raw PEM for cheap equality checks across reloads
 	caPool *x509.CertPool
 }
 
@@ -198,6 +197,7 @@ func (s *FilesCertificateSource) Reload() error {
 		// leak the deployment's filesystem topology into structured
 		// logs.
 		s.logger.Error("netutil: TLS reload failed — keeping previous good snapshot",
+			slog.String("reason", TLSLoadErrorReason(err)),
 			redact.Error(err))
 		return err
 	}
@@ -272,17 +272,9 @@ func (s *FilesCertificateSource) CAs() (*x509.CertPool, error) {
 }
 
 func loadCertSnapshot(cfg TLSConfig) (*certSnapshot, error) {
-	cert, err := tls.LoadX509KeyPair(cfg.Cert, cfg.Key)
+	cert, caPEM, caPool, err := loadTLSMaterial(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("load cert/key pair failed")
-	}
-	caPEM, err := os.ReadFile(cfg.CACert)
-	if err != nil {
-		return nil, fmt.Errorf("read CA cert failed")
-	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("failed to parse CA certificate")
+		return nil, err
 	}
 	return &certSnapshot{cert: cert, caPEM: caPEM, caPool: caPool}, nil
 }

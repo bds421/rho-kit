@@ -4,11 +4,12 @@
 > `kit-bench-gate -baseline` input for the v2.0.0 release tag.**
 >
 > These files were captured on 2026-05-12 at revision
-> `5fb930d7ac5b206b6174be535fc4751a6c33d6b2`, before the wave 37–55
+> `5fb930d7ac5b206b6174be535fc4751a6c33d6b2`, before the wave 37–57
 > source / API churn (approval / outbox / auditlog defaults,
 > ctx+error key-store / resolver sweep, Prometheus contract
 > standardisation, NATS credential bridge, AMQP / NATS metric
-> label-default flip, TLS reload wiring, MCP destructive gate,
+> label-default flip, TLS reload wiring, broker TLS reload propagation,
+> MCP destructive gate,
 > auditlog append-order RangeChain, idempotency `WithRequiredMethods`
 > safety, memory-store ctx checks). The rows reflect symbols that
 > have since been renamed (`BenchmarkWithIDChecked` → `BenchmarkWithID`)

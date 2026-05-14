@@ -103,6 +103,10 @@ func TestFilesCertificateSource_ReloadFailureKeepsLastGood(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfg.Cert, []byte("not a pem"), 0o600))
 	err = src.Reload()
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrTLSCertKeyPairLoad)
+	assert.Equal(t, "cert_key_pair_load", TLSLoadErrorReason(err))
+	assert.NotContains(t, err.Error(), cfg.Cert)
+	assert.NotContains(t, err.Error(), cfg.Key)
 	assert.Equal(t, uint64(1), src.ReloadErrors())
 
 	// Read must still return the previous good cert.

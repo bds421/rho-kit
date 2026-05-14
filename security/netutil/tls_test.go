@@ -8,9 +8,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,74 @@ func TestServerTLS_DoesNotReflectSecretPaths(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), cfg.Cert) || strings.Contains(err.Error(), cfg.Key) {
 		t.Fatalf("ServerTLS leaked TLS path: %v", err)
+	}
+	if !errors.Is(err, ErrTLSCertKeyPairLoad) {
+		t.Fatalf("ServerTLS error = %v, want ErrTLSCertKeyPairLoad", err)
+	}
+}
+
+func TestTLSLoadErrorsExposeSafeReasonCodes(t *testing.T) {
+	t.Run("cert key pair load", func(t *testing.T) {
+		cfg := realTLSConfigForTest(t)
+		if err := os.WriteFile(cfg.Cert, []byte("not a certificate"), 0o600); err != nil {
+			t.Fatalf("corrupt cert: %v", err)
+		}
+
+		_, err := cfg.ServerTLS()
+		if !errors.Is(err, ErrTLSCertKeyPairLoad) {
+			t.Fatalf("ServerTLS error = %v, want ErrTLSCertKeyPairLoad", err)
+		}
+		if strings.Contains(err.Error(), cfg.Cert) || strings.Contains(err.Error(), cfg.Key) {
+			t.Fatalf("ServerTLS leaked TLS path: %v", err)
+		}
+	})
+
+	t.Run("ca read", func(t *testing.T) {
+		cfg := realTLSConfigForTest(t)
+		cfg.CACert = filepath.Join(t.TempDir(), "missing-ca.pem")
+
+		_, err := cfg.ClientTLS()
+		if !errors.Is(err, ErrTLSCARead) {
+			t.Fatalf("ClientTLS error = %v, want ErrTLSCARead", err)
+		}
+		if strings.Contains(err.Error(), cfg.CACert) {
+			t.Fatalf("ClientTLS leaked TLS path: %v", err)
+		}
+	})
+
+	t.Run("ca parse", func(t *testing.T) {
+		cfg := realTLSConfigForTest(t)
+		if err := os.WriteFile(cfg.CACert, []byte("not a certificate"), 0o600); err != nil {
+			t.Fatalf("corrupt CA: %v", err)
+		}
+
+		_, err := cfg.ServerTLS()
+		if !errors.Is(err, ErrTLSCAParse) {
+			t.Fatalf("ServerTLS error = %v, want ErrTLSCAParse", err)
+		}
+		if strings.Contains(err.Error(), cfg.CACert) {
+			t.Fatalf("ServerTLS leaked TLS path: %v", err)
+		}
+	})
+}
+
+func TestTLSLoadErrorReason(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"cert key pair", ErrTLSCertKeyPairLoad, "cert_key_pair_load"},
+		{"ca read", ErrTLSCARead, "ca_read"},
+		{"ca parse", ErrTLSCAParse, "ca_parse"},
+		{"unknown", errors.New("other"), "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TLSLoadErrorReason(tc.err); got != tc.want {
+				t.Fatalf("TLSLoadErrorReason() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

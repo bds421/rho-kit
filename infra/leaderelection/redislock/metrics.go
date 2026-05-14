@@ -45,18 +45,18 @@ type metricsConfig struct {
 	registerer prometheus.Registerer
 }
 
-// WithMetricsRegisterer pins the Prometheus registerer used for the
+// WithRegisterer pins the Prometheus registerer used for the
 // callback-drain metrics. When unset, [prometheus.DefaultRegisterer]
 // is used.
-func WithMetricsRegisterer(reg prometheus.Registerer) MetricsOption {
+func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("leaderelection/redislock: WithMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("leaderelection/redislock: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
 
 // NewMetrics creates and registers callback-drain metrics. Pass
-// [WithMetricsRegisterer] to use a non-default registry. Repeated
+// [WithRegisterer] to use a non-default registry. Repeated
 // calls reuse already-registered collectors on the same registry.
 func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}

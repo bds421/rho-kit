@@ -59,9 +59,9 @@ Machine-readable tag plan:
 RELEASE_MODE=all RELEASE_FORMAT=tags make release-plan | tee /tmp/rho-kit-v2-tags-by-level.txt
 ```
 
-As of this release-prep package (refreshed 2026-05-14 against the current
-workspace), the full plan contains 73 module tags across six dependency
-levels (level 0–5). Modules in the same level do not depend on each other
+As of this release-prep package (refreshed 2026-05-14 after waves 60/61
+against the current workspace), the full plan contains 77 module tags
+across six dependency levels (level 0–5; distribution 7/8/7/26/23/6). Modules in the same level do not depend on each other
 and can be tagged together after that level's `go.mod`/`go.sum` files are
 tidied and committed. Always rerun `RELEASE_MODE=all make release-plan`
 just before tagging to catch any module added since this checklist was
@@ -164,7 +164,7 @@ Expected output summary:
 - `make check-dependency-allowlist` prints an OK line; current evidence is
   `59 direct external deps approved`.
 - `make check-operational-readiness` prints `operational readiness check OK
-  (73 modules covered)`.
+  (77 modules covered)`.
 - `FORBID_INTERNAL_REPLACES=1 EXPECTED_INTERNAL_VERSION=v2.0.0 make
   check-publishable` confirms no internal replaces remain and all internal
   requires point at `v2.0.0`.
