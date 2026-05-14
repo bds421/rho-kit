@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -372,7 +373,16 @@ func parseResponse(response string) error {
 }
 
 func copyBounded(dst io.Writer, src io.Reader, maxBytes int64) error {
-	lr := io.LimitReader(src, maxBytes+1)
+	// Defend against maxBytes near math.MaxInt64: maxBytes+1 would wrap
+	// to math.MinInt64 and io.LimitReader would treat that as "no
+	// data" instead of "no limit", silently truncating uploads. Cap
+	// the limit at math.MaxInt64 so the +1 overflow becomes a no-op
+	// instead of a silent truncation (L110, L113).
+	limit := maxBytes
+	if limit < math.MaxInt64 {
+		limit = limit + 1
+	}
+	lr := io.LimitReader(src, limit)
 	n, err := io.Copy(dst, lr)
 	if err != nil {
 		return fmt.Errorf("%w: spool upload failed", uploadsec.ErrScannerUnavailable)

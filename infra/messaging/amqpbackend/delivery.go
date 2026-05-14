@@ -62,21 +62,30 @@ func intToUint(v int64) uint {
 
 // extractStringHeaders picks out string-valued AMQP headers for application-level
 // tracing. Non-string values (x-death tables, etc.) are intentionally skipped.
-// The output map is bounded by maxHeaderNodes so a hostile peer cannot
-// allocate an unbounded application-headers map upfront — wave 69
-// added the cap.
+// The output map is bounded by maxHeaderNodes AND maxHeaderBytes so a hostile
+// peer cannot allocate an unbounded application-headers map upfront (L134).
+// A peer that emits exactly maxHeaderNodes headers each carrying multi-MB
+// values would otherwise still exhaust memory through the byte axis alone.
 func extractStringHeaders(h amqp.Table) map[string]string {
 	if len(h) == 0 {
 		return nil
 	}
 	result := make(map[string]string)
+	byteBudget := maxHeaderBytes
 	for k, v := range h {
 		if len(result) >= maxHeaderNodes {
 			break
 		}
-		if s, ok := v.(string); ok {
-			result[k] = s
+		s, ok := v.(string)
+		if !ok {
+			continue
 		}
+		cost := len(k) + len(s)
+		if cost > byteBudget {
+			break
+		}
+		byteBudget -= cost
+		result[k] = s
 	}
 	if len(result) == 0 {
 		return nil
@@ -94,6 +103,11 @@ func extractStringHeaders(h amqp.Table) map[string]string {
 const (
 	maxHeaderDepth = 8
 	maxHeaderNodes = 256
+	// maxHeaderBytes caps the total aggregate name+value byte size of
+	// materialised application headers per delivery. 64 KiB is generous
+	// for realistic header sets (correlation IDs, trace IDs, tenant IDs,
+	// timestamps) and matches the natsbackend cap (L134).
+	maxHeaderBytes = 64 * 1024
 )
 
 // truncatedHeaderValue is the placeholder substituted for headers that

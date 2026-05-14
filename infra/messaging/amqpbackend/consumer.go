@@ -26,7 +26,13 @@ type DeadLetterPublisher interface {
 
 const (
 	defaultPrefetch          = 10
-	handlerShutdownTimeout   = 30 * time.Second // max time for in-flight handler on ctx cancellation
+	// handlerTimeout caps every handler invocation, both during normal
+	// operation and during graceful shutdown. The same bound is used in
+	// both paths because a stuck handler is the root failure mode the
+	// timeout exists to defend against — there is no useful reason to
+	// be lenient about it during steady-state. Handlers that must
+	// distinguish steady-state from shutdown can call IsShutdown(ctx).
+	handlerTimeout = 30 * time.Second
 	deadLetterPublishTimeout = 10 * time.Second // max time for dead-letter exchange publish
 )
 
@@ -40,7 +46,7 @@ type shutdownSignalKey struct{}
 // IsShutdown reports whether ctx carries the consumer's shutdown signal.
 // True means "the consumer is in graceful shutdown; finish or fail quickly
 // rather than starting any long-lived work". The handler's ctx is still
-// scoped to a deadline (handlerShutdownTimeout); IsShutdown is the
+// scoped to a deadline (handlerTimeout); IsShutdown is the
 // finer-grained signal that the consumer itself is winding down.
 func IsShutdown(ctx context.Context) bool {
 	_, ok := ctx.Value(shutdownSignalKey{}).(struct{})
@@ -264,7 +270,7 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 			//
 			// Shutdown semantics: when ctx is cancelled, the handler receives
 			// a context with a cancelled parent but a fresh deadline
-			// (handlerShutdownTimeout). Handlers should check ctx.Err() if
+			// (handlerTimeout). Handlers should check ctx.Err() if
 			// they need to know whether the service is shutting down.
 			//
 			// Always apply a timeout to handler execution, both during
@@ -287,7 +293,7 @@ func (c *Consumer) ConsumeOnce(ctx context.Context, b messaging.Binding, handler
 			if isShutdown {
 				base = context.WithValue(base, shutdownSignalKey{}, struct{}{})
 			}
-			handlerCtx, handlerCancel := context.WithTimeout(base, handlerShutdownTimeout)
+			handlerCtx, handlerCancel := context.WithTimeout(base, handlerTimeout)
 			c.handleDelivery(handlerCtx, delivery, handler, b)
 			handlerCancel()
 		}
