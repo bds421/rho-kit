@@ -12,6 +12,7 @@ import (
 	"github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Resource keys under which the Module publishes its connection,
@@ -135,11 +136,6 @@ func (m *messagingModule) Name() string { return "rabbitmq" }
 func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
 
-	clientTLS, err := mc.Config.TLS.ClientTLS()
-	if err != nil {
-		return fmt.Errorf("amqp module: build client TLS: %w", err)
-	}
-
 	// Construct metrics up front so the Dial path can observe connection_up
 	// and reconnect attempts. The same Metrics instance is shared with the
 	// publisher and consumer so a single registry sees publish/consume +
@@ -150,8 +146,23 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 		amqpbackend.WithLazyConnect(),
 		amqpbackend.WithConnectionMetrics(metrics, "default"),
 	}
-	if clientTLS != nil {
-		mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
+
+	// Prefer the Builder's hot-rotation source when WithReloadingTLS was
+	// wired — that way a SIGHUP/poll-driven cert rotation flows through to
+	// the AMQP client without restart, matching what the public HTTP server
+	// and default outbound HTTP client already do via the same source.
+	// Without the source, fall back to the static snapshot loaded from
+	// BaseConfig.TLS.
+	if mc.TLSCertSource != nil {
+		mqOpts = append(mqOpts, amqpbackend.WithReloadingTLS(netutil.ReloadingClientTLS(mc.TLSCertSource)))
+	} else {
+		clientTLS, err := mc.Config.TLS.ClientTLS()
+		if err != nil {
+			return fmt.Errorf("amqp module: build client TLS: %w", err)
+		}
+		if clientTLS != nil {
+			mqOpts = append(mqOpts, amqpbackend.WithTLS(clientTLS))
+		}
 	}
 	if m.urlProvider != nil {
 		mqOpts = append(mqOpts, amqpbackend.WithURLProvider(m.urlProvider))

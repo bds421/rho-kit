@@ -284,7 +284,19 @@ func (c Config) validateAuth(serverURL *url.URL) error {
 }
 
 func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
-	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion)
+	// Hot-rotation configs (from security/netutil.ReloadingClientTLS)
+	// intentionally set InsecureSkipVerify=true and replace stdlib
+	// verification with VerifyConnection so they can validate against
+	// the freshest CA pool on every handshake. Permit the opt-in
+	// explicitly when VerifyConnection is non-nil — without this,
+	// callers cannot use the Builder's reloading TLS source with NATS
+	// and must choose between rotation and the kit's anti-downgrade
+	// guardrail.
+	cloneOpts := []tlsclone.Option(nil)
+	if cfg != nil && cfg.InsecureSkipVerify && cfg.VerifyConnection != nil {
+		cloneOpts = append(cloneOpts, tlsclone.AllowInsecureSkipVerify())
+	}
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, cloneOpts...)
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
 			return nil, errors.New("natsbackend: TLS InsecureSkipVerify=true is not permitted")

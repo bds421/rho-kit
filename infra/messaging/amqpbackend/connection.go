@@ -112,6 +112,36 @@ func WithTLS(cfg *tls.Config) DialOption {
 	}
 }
 
+// WithReloadingTLS configures mTLS using a hot-rotation config produced by
+// the kit's [security/netutil.ReloadingClientTLS]. That config intentionally
+// sets [tls.Config.InsecureSkipVerify]=true and replaces stdlib verification
+// with [tls.Config.VerifyConnection] so it can validate against the freshest
+// CA pool on every handshake without restart.
+//
+// Unlike [WithTLS], this option permits InsecureSkipVerify=true on the input
+// because the caller has already wired the verification replacement —
+// rejecting it here would force callers to choose between mTLS rotation and
+// the kit's anti-downgrade guardrail. WithReloadingTLS panics if
+// VerifyConnection is nil on the supplied config, so the InsecureSkipVerify
+// opt-in cannot be turned into a silent "no verification at all" by passing
+// a stripped config.
+func WithReloadingTLS(cfg *tls.Config) DialOption {
+	if cfg == nil {
+		panic("amqpbackend: WithReloadingTLS requires a non-nil tls.Config")
+	}
+	if cfg.VerifyConnection == nil {
+		panic("amqpbackend: WithReloadingTLS requires VerifyConnection to be set " +
+			"(use netutil.ReloadingClientTLS)")
+	}
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.AllowInsecureSkipVerify())
+	if err != nil {
+		panic("amqpbackend: WithReloadingTLS MaxVersion must allow TLS 1.2 or newer")
+	}
+	return func(c *Connection) {
+		c.tlsConfig = cloned
+	}
+}
+
 // WithAllowPlaintext permits an amqp:// connection without TLS. Use
 // only for local tests or an explicitly reviewed private network. By
 // default, Dial rejects plaintext AMQP because credentials and message

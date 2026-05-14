@@ -296,10 +296,16 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, meta storage
 // back to the generic translation.
 //
 // EntityTooLarge — the object exceeded the per-object cap (5 GiB single
-// PUT, 5 TiB multipart). InvalidRequest with a large declared size is
+// PUT, 5 TiB multipart). InvalidRequest with a non-zero declared size is
 // the S3 response when a request-body length header overflows the
-// streaming limit. ServiceUnavailable + a non-trivial size usually
-// indicates the bucket has been throttled because it is nearing capacity.
+// streaming limit.
+//
+// Generic ServiceUnavailable (503) is deliberately NOT mapped here. AWS
+// returns it for regional outage, throttling, partial maintenance, and
+// other transient conditions that are not capacity failures; tagging
+// them as STORAGE_FULL would send operators to the wrong runbook and
+// confuse retry / admission decisions. Such errors fall through to the
+// generic safe wrapper as transient backend failures.
 func translateS3Capacity(err error, size int64) error {
 	if err == nil {
 		return nil
@@ -314,10 +320,6 @@ func translateS3Capacity(err error, size int64) error {
 	case "InvalidRequest":
 		if size > 0 {
 			return fmt.Errorf("s3backend: request rejected for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
-		}
-	case "ServiceUnavailable":
-		if size > 0 {
-			return fmt.Errorf("s3backend: bucket reported unavailable for size: %w (cause: %w)", storage.ErrInsufficientCapacity, err)
 		}
 	}
 	return nil

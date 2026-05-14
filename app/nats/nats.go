@@ -8,6 +8,7 @@ import (
 	"github.com/bds421/rho-kit/app/v2"
 	"github.com/bds421/rho-kit/infra/messaging/natsbackend/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
+	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
 // Resource keys under which the Module publishes its connection and
@@ -84,6 +85,15 @@ func (m *natsModule) Name() string { return "nats" }
 
 func (m *natsModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
+
+	// Prefer the Builder's hot-rotation source when WithReloadingTLS was
+	// wired. natsbackend.Config.Clone() detects the reloading-config
+	// shape (InsecureSkipVerify+VerifyConnection) and bypasses the
+	// anti-downgrade guard for that intentional path. Caller-supplied
+	// TLS material on m.cfg is preserved when the source is absent.
+	if mc.TLSCertSource != nil {
+		m.cfg.TLS = netutil.ReloadingClientTLS(mc.TLSCertSource)
+	}
 
 	conn, err := natsbackend.Connect(ctx, m.cfg)
 	if err != nil {

@@ -97,6 +97,14 @@ func (b *Builder) Validate() error {
 		}
 	}
 
+	// WithTLSReloadOnSignal only makes sense alongside the reloading
+	// TLS source — without the source there is nothing to reload.
+	// Reject at construction rather than discover the misconfiguration
+	// at the first signal delivery.
+	if len(b.tlsReloadSignals) > 0 && !b.tlsReloadActive {
+		return fmt.Errorf("WithTLSReloadOnSignal requires WithReloadingTLS")
+	}
+
 	// H-4: WithTenantBudget without WithMultiTenant cannot derive the
 	// default tenant key. Keep this as a startup error instead of
 	// letting every request fail later at the budget middleware.

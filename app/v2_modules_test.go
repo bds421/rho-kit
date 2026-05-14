@@ -74,8 +74,38 @@ func TestWithMultiTenant_RegistersOnBuilder(t *testing.T) {
 	assert.True(t, b.tenantSpec.required)
 }
 
-func TestTenantMiddleware_PopulatesContext(t *testing.T) {
+func TestTenantMiddleware_PopulatesContext_DefaultContextExtractor(t *testing.T) {
+	// WithMultiTenant(nil) selects the default extractor, which now
+	// reads from ctx (an upstream auth middleware is expected to have
+	// resolved the tenant). The middleware is a pass-through in that
+	// case — it just enforces the require-tenant rule.
 	b := New("test", "v1", BaseConfig{}).WithMultiTenant(nil)
+	mw := b.tenantMiddleware()
+	require.NotNil(t, mw)
+
+	id, err := coretenant.NewID("acme")
+	require.NoError(t, err)
+	ctx, err := coretenant.WithID(context.Background(), id)
+	require.NoError(t, err)
+
+	captured := ""
+	h := mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if got, ok := coretenant.FromContext(r.Context()); ok {
+			captured = string(got)
+		}
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, "acme", captured)
+}
+
+func TestTenantMiddleware_PopulatesContext_HeaderExtractorOptIn(t *testing.T) {
+	// Header-trust is an explicit opt-in now. Verify the path still
+	// works when the caller wires it deliberately.
+	b := New("test", "v1", BaseConfig{}).
+		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"))
 	mw := b.tenantMiddleware()
 	require.NotNil(t, mw)
 

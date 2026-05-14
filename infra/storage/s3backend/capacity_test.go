@@ -38,7 +38,13 @@ func TestTranslateCapacity(t *testing.T) {
 		{"EntityTooLarge", &smithyErr{code: "EntityTooLarge"}, 100, true, true},
 		{"InvalidRequest with size", &smithyErr{code: "InvalidRequest"}, 100, true, true},
 		{"InvalidRequest no size", &smithyErr{code: "InvalidRequest"}, 0, false, false},
-		{"ServiceUnavailable with size", &smithyErr{code: "ServiceUnavailable"}, 1024, true, true},
+		// Generic 503 (ServiceUnavailable) is no longer mapped to
+		// ErrInsufficientCapacity: AWS uses it for regional outage,
+		// throttling, partial maintenance, etc., and the previous
+		// mapping would steer operators to a "bucket full" runbook for
+		// transient failures.
+		{"ServiceUnavailable with size", &smithyErr{code: "ServiceUnavailable"}, 1024, false, false},
+		{"ServiceUnavailable no size", &smithyErr{code: "ServiceUnavailable"}, 0, false, false},
 		{"OtherCode", &smithyErr{code: "Throttling"}, 100, false, false},
 	}
 	for _, tc := range cases {
@@ -66,6 +72,27 @@ func TestPut_EntityTooLargeReturnsInsufficientCapacity(t *testing.T) {
 	err := b.Put(context.Background(), "k.bin", bytes.NewReader([]byte("payload")), storage.ObjectMeta{Size: 7})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, storage.ErrInsufficientCapacity), "got: %v", err)
+}
+
+// TestPut_GenericServiceUnavailableIsNotStorageFull asserts that S3's
+// generic 503 (regional outage / throttling / maintenance) flows through
+// as a transient backend error rather than being misclassified as
+// STORAGE_FULL — which would route operators to a capacity runbook for
+// what is actually a transient dependency failure.
+func TestPut_GenericServiceUnavailableIsNotStorageFull(t *testing.T) {
+	client := &mockS3Client{
+		putFn: func(_ context.Context, _ *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			return nil, &smithyErr{code: "ServiceUnavailable", message: "we are unable to process your request"}
+		},
+	}
+	b := NewWithClient(client, &mockPresigner{}, "bucket")
+
+	err := b.Put(context.Background(), "k.bin", bytes.NewReader([]byte("payload")), storage.ObjectMeta{Size: 7})
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, storage.ErrInsufficientCapacity),
+		"generic 503 must not be reported as ErrInsufficientCapacity: %v", err)
+	assert.False(t, apperror.IsStorageFull(err),
+		"generic 503 must not advertise CodeStorageFull: %v", err)
 }
 
 // TestPut_EntityTooLargeErrIsStorageFull verifies the classified backend

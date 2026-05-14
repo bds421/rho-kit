@@ -2,15 +2,25 @@
 // current request's tenant ID and stores it on the request context
 // for downstream handlers (and other tenant-aware kit packages).
 //
-// The default extractor reads the "X-Tenant-Id" header. JWT-claim
-// extraction is left to a small custom extractor at wire time so the
-// httpx module doesn't pull a JWT dependency for callers who don't
-// use it.
+// The default extractor reads the tenant from the request context via
+// [coretenant.FromContext], assuming an upstream authentication
+// middleware (PASETO/JWT verifier, mTLS subject mapper, signed-request
+// validator) has already called [coretenant.WithID]. Callers who do
+// want to trust an inbound header opt in explicitly with
+// [WithExtractor]([HeaderExtractor]("X-Tenant-Id")) — that path
+// remains supported but is no longer the default, because an
+// unsigned caller-controlled header is too weak a trust source for
+// tenant identity.
 //
-// When [WithRequired] is true (the default), every request without a
-// tenant gets a 400 — including safe methods (GET/HEAD/OPTIONS).
-// Health/readiness probes belong on a sibling router (e.g. the kit's
-// internal ops port) so this middleware can stay strict.
+// JWT-claim extraction is left to a small custom extractor at wire
+// time so the httpx module doesn't pull a JWT dependency for callers
+// who don't use it.
+//
+// When the require-tenant default is in effect (no
+// [WithoutTenantRequired]), every request without a tenant gets a
+// 400 — including safe methods (GET/HEAD/OPTIONS). Health/readiness
+// probes belong on a sibling router (e.g. the kit's internal ops
+// port) so this middleware can stay strict.
 // [WithAllowMissingTenantOnSafeMethods] is an explicit opt-out for
 // services that intentionally expose pre-auth GETs through the same
 // router (legacy compatibility).
@@ -48,10 +58,39 @@ import (
 // cache/idempotency/log/metric keys.
 type Extractor func(*http.Request) (coretenant.ID, error)
 
+// ContextExtractor returns an Extractor that reads the tenant ID
+// already attached to the request context via [coretenant.WithID].
+// This is the default extractor; it assumes an upstream authentication
+// middleware (PASETO/JWT/mTLS/signed-request) is responsible for
+// resolving and validating the tenant before this middleware runs.
+//
+// Absence of a tenant on ctx is reported as the zero ID with a nil
+// error, matching [HeaderExtractor]'s "no tenant present" semantics —
+// the middleware's require-tenant rule then applies. The extractor
+// never returns an invalid ID: [coretenant.WithID] already runs
+// validation when the upstream middleware injects the ID.
+func ContextExtractor() Extractor {
+	return func(r *http.Request) (coretenant.ID, error) {
+		id, ok := coretenant.FromContext(r.Context())
+		if !ok {
+			return "", nil
+		}
+		return id, nil
+	}
+}
+
 // HeaderExtractor returns an Extractor that reads `header` from the
 // request and validates the value through [coretenant.NewID]. Invalid,
 // empty, or duplicated values cause the middleware to respond with 400;
-// only a fully absent header is handled per [WithRequired].
+// only a fully absent header is handled per the require-tenant rule.
+//
+// This extractor trusts a caller-supplied HTTP header, so it's only
+// appropriate when the deployment is sure the header is set by a
+// trusted upstream (identity proxy, mesh sidecar) that strips any
+// inbound value the client tried to inject. For unauthenticated
+// public endpoints, prefer resolving the tenant from a signed token
+// in an upstream middleware and rely on the default
+// [ContextExtractor].
 func HeaderExtractor(header string) Extractor {
 	if !httpguts.ValidHeaderFieldName(header) {
 		panic("tenant: HeaderExtractor header must be a valid non-empty header name")
@@ -92,8 +131,9 @@ func WithExtractor(e Extractor) Option {
 // WithoutTenantRequired opts out of the default fail-closed tenant
 // requirement so a missing tenant is logged and the handler runs
 // anyway. Default middleware behaviour (no option) returns 400 Bad
-// Request when X-Tenant-Id is absent — every downstream tenant-scoped
-// component then trusts that ctx carries a tenant id.
+// Request when no tenant is present on the request context — every
+// downstream tenant-scoped component then trusts that ctx carries a
+// tenant id.
 //
 // Use this only for routers that intentionally serve pre-auth or
 // public endpoints alongside tenant-scoped routes. The safer pattern
@@ -124,13 +164,16 @@ func WithAllowMissingTenantOnSafeMethods() Option {
 }
 
 // New returns the middleware. By default the tenant ID is read from
-// the "X-Tenant-Id" header and required on every request — including
-// GET/HEAD/OPTIONS. Mount health/readiness on a sibling router or use
+// the request context (assuming an upstream authentication middleware
+// has called [coretenant.WithID]) and required on every request —
+// including GET/HEAD/OPTIONS. To trust an inbound header instead,
+// pass [WithExtractor]([HeaderExtractor]("X-Tenant-Id")). Mount
+// health/readiness on a sibling router or use
 // [WithAllowMissingTenantOnSafeMethods] when pre-auth GETs must share
 // the public mux.
 func New(opts ...Option) func(http.Handler) http.Handler {
 	cfg := config{
-		extractor: HeaderExtractor("X-Tenant-Id"),
+		extractor: ContextExtractor(),
 		required:  true,
 	}
 	for _, o := range opts {

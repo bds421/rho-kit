@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -120,8 +122,9 @@ type Builder struct {
 	// the source into the default HTTP client (via
 	// [netutil.ReloadingClientTLS]), and registers Stop on the
 	// lifecycle Runner. Wire with [Builder.WithReloadingTLS].
-	tlsReloadOpts   []netutil.FilesCertificateSourceOption
-	tlsReloadActive bool
+	tlsReloadOpts    []netutil.FilesCertificateSourceOption
+	tlsReloadActive  bool
+	tlsReloadSignals []os.Signal // when non-empty, RunContext installs a signal→Reload bridge
 
 	// Approval store (optional). Exposed via Infrastructure.
 	astore approval.Store
@@ -407,9 +410,13 @@ func (b *Builder) WithSignedRequests(
 // it on ctx); handlers downstream can call [tenant.FromContext] /
 // [tenant.Required] without each route reinventing the extractor.
 //
-// `extractor` defaults to [httpxtenant.HeaderExtractor("X-Tenant-Id")]
-// when nil. Pass a custom one to read from a JWT claim, mTLS
-// certificate, or whatever your auth boundary surfaces.
+// `extractor` defaults to [httpxtenant.ContextExtractor] when nil,
+// which reads the tenant already attached to ctx by an upstream
+// authentication middleware (PASETO/JWT verifier, mTLS subject
+// mapper, signed-request validator). Pass [httpxtenant.HeaderExtractor]
+// to trust an inbound X-Tenant-Id header, or a custom one to read
+// from a JWT claim, mTLS certificate, or whatever your auth
+// boundary surfaces.
 //
 // Tenant requirement is applied to every method by default (including
 // GET/HEAD/OPTIONS). Health/readiness probes belong on the kit's
@@ -498,6 +505,45 @@ func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option)
 func (b *Builder) WithReloadingTLS(opts ...netutil.FilesCertificateSourceOption) *Builder {
 	b.tlsReloadOpts = append([]netutil.FilesCertificateSourceOption(nil), opts...)
 	b.tlsReloadActive = true
+	return b
+}
+
+// WithTLSReloadOnSignal installs a signal→[FilesCertificateSource.Reload]
+// bridge alongside the reloading source built by [Builder.WithReloadingTLS],
+// so an external rotator can trigger a hot reload by sending one of
+// `signals` (typically [syscall.SIGHUP]) to the process. Without this
+// option callers still drive reloads either by passing
+// [netutil.WithReloadInterval] (background poller) or by calling
+// [FilesCertificateSource.Reload] directly — the kit doesn't assume
+// which trigger is in use, so the signal bridge is opt-in rather than
+// always-on.
+//
+// The bridge is a goroutine registered with the lifecycle Runner. It
+// drains signal deliveries until ctx cancellation, calls Reload for
+// every signal, and logs reload failures via the Builder's slog
+// logger (the snapshot already on the source is kept on failure, so
+// the live TLS config doesn't degrade).
+//
+// Avoid registering [os.Interrupt] or [syscall.SIGTERM] here — the
+// lifecycle Runner already consumes those for orderly shutdown, and
+// piggybacking on them would conflate reload with stop. Panics if
+// `signals` is empty or contains a nil element; this is a
+// configuration error and should fail at construction, not at the
+// first signal delivery.
+//
+// Requires [Builder.WithReloadingTLS]; calling this without it is a
+// configuration error and Run returns an error from the Builder's
+// startup validation step.
+func (b *Builder) WithTLSReloadOnSignal(signals ...os.Signal) *Builder {
+	if len(signals) == 0 {
+		panic("app: WithTLSReloadOnSignal requires at least one signal")
+	}
+	for _, s := range signals {
+		if s == nil {
+			panic("app: WithTLSReloadOnSignal signal must not be nil")
+		}
+	}
+	b.tlsReloadSignals = append([]os.Signal(nil), signals...)
 	return b
 }
 
@@ -1005,17 +1051,24 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// share the same poll loop. The source's Close hook tears down the
 	// background poller on shutdown.
 	var (
-		serverTLS *tls.Config
-		tlsSource netutil.CertificateSource
-		tlsErr    error
+		serverTLS    *tls.Config
+		tlsSource    netutil.CertificateSource
+		tlsReloadSrc *netutil.FilesCertificateSource
+		tlsErr       error
 	)
 	if b.tlsReloadActive {
 		src, srcErr := b.cfg.TLS.Reloading(b.tlsReloadOpts...)
 		if srcErr != nil {
 			return fmt.Errorf("build reloading TLS source: %w", srcErr)
 		}
-		serverTLS = netutil.ReloadingServerTLS(src)
+		// Thread the same server TLS options into the reloading path so
+		// WithOptionalClientCertificates / future client-auth opt-outs
+		// take effect identically whether or not TLS reload is wired —
+		// otherwise enabling reload would silently flip
+		// VerifyClientCertIfGiven back to RequireAndVerifyClientCert.
+		serverTLS = netutil.ReloadingServerTLS(src, b.serverTLSOptions()...)
 		tlsSource = src
+		tlsReloadSrc = src
 		b.shutdownHooks = append(b.shutdownHooks, func(context.Context) {
 			if err := src.Close(); err != nil {
 				logger.Warn("tls-reload source close failed", "error", err)
@@ -1045,6 +1098,33 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// shutdown to the Runner so embedded RunContext calls do not leak
 	// eventbus workers after returning.
 	runner.Add("eventbus", eventBus)
+
+	// 2.6. TLS reload-on-signal bridge — only registered when the
+	// caller wired WithTLSReloadOnSignal alongside WithReloadingTLS
+	// (Validate enforces the combination). The bridge runs as a
+	// lifecycle component so its goroutine exits cleanly on shutdown
+	// even when the FilesCertificateSource itself is closed later
+	// from a shutdown hook.
+	if len(b.tlsReloadSignals) > 0 && tlsReloadSrc != nil {
+		signals := append([]os.Signal(nil), b.tlsReloadSignals...)
+		src := tlsReloadSrc
+		runner.AddFunc("tls-reload-signal", func(ctx context.Context) error {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, signals...)
+			defer signal.Stop(sigCh)
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-sigCh:
+					if err := src.Reload(); err != nil {
+						logger.Warn("tls-reload-on-signal reload failed, keeping previous snapshot",
+							"error", err)
+					}
+				}
+			}
+		})
+	}
 
 	// 3. Rate limiters
 	var rateLimitMetrics *mwrl.Metrics

@@ -238,8 +238,10 @@ Stop the local service before tagging.
 ## 6. Tag
 
 Run the dependency-ordered level loop from
-[TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md). The future release must create 67
-module-prefixed tags plus the coordination tag `release/v2.0.0`.
+[TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md). The future release must create 73
+module-prefixed tags plus the coordination tag `release/v2.0.0` (regenerate
+the exact count with `RELEASE_MODE=all make release-plan` before tagging in
+case the workspace grew further between now and the tag).
 
 Do not tag all modules at one commit. Dependency modules must be tagged first;
 dependent modules are tidied with `GOWORK=off`, committed with real internal

@@ -109,11 +109,6 @@ func WithHTTPBuckets(buckets []float64) HTTPOption {
 	return func(c *httpConfig) { c.buckets = append([]float64(nil), buckets...) }
 }
 
-// HTTPRegisterer is a typed option for pinning the Prometheus
-// registerer passed to [NewHTTP]. The function is exported via the
-// HTTPOption type itself — see [WithHTTPRegisterer].
-type httpRegistererOption struct{ reg prometheus.Registerer }
-
 // WithHTTPRegisterer pins the Prometheus registerer used to register
 // the HTTP RED metric set. When unset, the [prometheus.DefaultRegisterer]
 // is used. Replaces the v1 positional NewHTTP(reg, ...) signature so

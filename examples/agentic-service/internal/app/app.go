@@ -249,14 +249,20 @@ func newMCPServer(alog actionlog.Logger) *mcp.Server {
 // mcpHTTPHandler returns the MCP server's HTTP handler wrapped in the
 // kit's tenant middleware. The middleware lifts X-Tenant-Id from the
 // request header onto context so MCP's default tenant extractor (which
-// reads from core/tenant context) finds it. WithRequired(false) means
-// requests without the header still pass through; the strict-audit gate
-// inside MCP rejects them at the audit-precheck step rather than the
-// transport edge — that gives the audit a single chokepoint and a
-// uniform error code (-32603) regardless of which transport carried
-// the call.
+// reads from core/tenant context) finds it. The kit's default
+// extractor reads from ctx (assuming an upstream auth middleware did
+// the resolution); this example deliberately trusts the
+// caller-supplied header instead, so we opt in to HeaderExtractor
+// explicitly. WithRequired(false) means requests without the header
+// still pass through; the strict-audit gate inside MCP rejects them
+// at the audit-precheck step rather than the transport edge — that
+// gives the audit a single chokepoint and a uniform error code
+// (-32603) regardless of which transport carried the call.
 func mcpHTTPHandler(srv *mcp.Server) http.Handler {
-	return tenant.New(tenant.WithoutTenantRequired())(srv.HTTP())
+	return tenant.New(
+		tenant.WithExtractor(tenant.HeaderExtractor("X-Tenant-Id")),
+		tenant.WithoutTenantRequired(),
+	)(srv.HTTP())
 }
 
 // dangerousAction is a contrived endpoint that creates an approval

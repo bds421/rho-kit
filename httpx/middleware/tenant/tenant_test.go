@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,11 @@ import (
 
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 )
+
+// headerOpt rebuilds the v1-style header-default middleware so tests
+// that exercise X-Tenant-Id semantics keep a clear, explicit handle on
+// that opt-in path.
+func headerOpt() Option { return WithExtractor(HeaderExtractor("X-Tenant-Id")) }
 
 func okHandler(t *testing.T, want coretenant.ID) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,8 +29,39 @@ func okHandler(t *testing.T, want coretenant.ID) http.Handler {
 	})
 }
 
-func TestNew_DefaultHeaderExtractor(t *testing.T) {
+func TestNew_DefaultContextExtractor_PassesWhenTenantOnCtx(t *testing.T) {
 	mw := New()
+	handler := mw(okHandler(t, coretenant.ID("acme")))
+
+	id, err := coretenant.NewID("acme")
+	require.NoError(t, err)
+	ctx, err := coretenant.WithID(context.Background(), id)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestNew_DefaultContextExtractor_IgnoresHeader(t *testing.T) {
+	// Header trust is OFF by default — the kit must not read
+	// X-Tenant-Id unless WithExtractor(HeaderExtractor(...)) is set.
+	mw := New()
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Tenant-Id", "acme")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"default extractor reads ctx only — inbound X-Tenant-Id must not satisfy the requirement")
+}
+
+func TestNew_HeaderExtractor_OptIn(t *testing.T) {
+	mw := New(headerOpt())
 	handler := mw(okHandler(t, coretenant.ID("acme")))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -35,7 +72,7 @@ func TestNew_DefaultHeaderExtractor(t *testing.T) {
 }
 
 func TestNew_RejectsMissingOnPOST(t *testing.T) {
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -47,10 +84,10 @@ func TestNew_RejectsMissingOnPOST(t *testing.T) {
 }
 
 func TestNew_RejectsMissingOnGET_DefaultRequired(t *testing.T) {
-	// Default behavior: WithRequired(true) applies to every method,
-	// including GET/HEAD/OPTIONS. The previous safe-method
+	// Default behavior: the require-tenant rule applies to every
+	// method, including GET/HEAD/OPTIONS. The previous safe-method
 	// short-circuit was the source of a tenant-budget bypass.
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -63,6 +100,31 @@ func TestNew_RejectsMissingOnGET_DefaultRequired(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 		})
 	}
+}
+
+func TestContextExtractor_AbsentReturnsZeroNoError(t *testing.T) {
+	extract := ContextExtractor()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	id, err := extract(req)
+	require.NoError(t, err)
+	assert.True(t, id.IsZero(),
+		"absence on ctx must map to the zero ID so the middleware's "+
+			"require-tenant rule decides the response code")
+}
+
+func TestContextExtractor_ReturnsPreviouslyInjectedID(t *testing.T) {
+	want, err := coretenant.NewID("acme")
+	require.NoError(t, err)
+	ctx, err := coretenant.WithID(context.Background(), want)
+	require.NoError(t, err)
+
+	extract := ContextExtractor()
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+
+	got, err := extract(req)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 func TestNew_NonRequiredPassesWithoutTenant(t *testing.T) {
@@ -133,7 +195,7 @@ func TestNew_CustomExtractorMustReturnValidatedTenantID(t *testing.T) {
 }
 
 func TestNew_DoesNotReflectInvalidTenantDetails(t *testing.T) {
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler should not run for invalid tenant ID")
 		w.WriteHeader(http.StatusOK)
@@ -172,7 +234,7 @@ func TestNew_DoesNotReflectCustomExtractorInvalidDetails(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidTenantHeader(t *testing.T) {
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler should not run for invalid tenant ID")
 		w.WriteHeader(http.StatusOK)
@@ -208,9 +270,9 @@ func TestNew_RejectsDuplicateTenantHeader(t *testing.T) {
 		name string
 		opts []Option
 	}{
-		{name: "default required"},
-		{name: "not required", opts: []Option{WithoutTenantRequired()}},
-		{name: "allow missing on safe methods", opts: []Option{WithAllowMissingTenantOnSafeMethods()}},
+		{name: "default required", opts: []Option{headerOpt()}},
+		{name: "not required", opts: []Option{headerOpt(), WithoutTenantRequired()}},
+		{name: "allow missing on safe methods", opts: []Option{headerOpt(), WithAllowMissingTenantOnSafeMethods()}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -246,7 +308,7 @@ func TestHeaderExtractor_DuplicateErrorDoesNotReflectHeaderName(t *testing.T) {
 
 func TestNew_RejectsBlankTenantHeaderEvenWhenNotRequired(t *testing.T) {
 	called := false
-	mw := New(WithoutTenantRequired())
+	mw := New(headerOpt(), WithoutTenantRequired())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
@@ -262,7 +324,7 @@ func TestNew_RejectsBlankTenantHeaderEvenWhenNotRequired(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidEvenOnSafeMethod(t *testing.T) {
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler should not run for invalid tenant ID")
 		w.WriteHeader(http.StatusOK)
@@ -282,7 +344,7 @@ func TestNew_RejectsInvalidEvenOnSafeMethod(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidEvenWithRequiredFalse(t *testing.T) {
-	mw := New(WithoutTenantRequired())
+	mw := New(headerOpt(), WithoutTenantRequired())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler should not run for invalid tenant ID")
 		w.WriteHeader(http.StatusOK)
@@ -323,7 +385,7 @@ func TestNew_PanicsOnNilOption(t *testing.T) {
 }
 
 func TestNew_EmptyHeaderTreatedAsMissing(t *testing.T) {
-	mw := New()
+	mw := New(headerOpt())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -338,7 +400,7 @@ func TestNew_EmptyHeaderTreatedAsMissing(t *testing.T) {
 func TestNew_AllowMissingOnSafeMethods_PassesGET(t *testing.T) {
 	// Explicit opt-out: GET/HEAD/OPTIONS without a tenant short-circuit
 	// through the middleware while POST still requires one.
-	mw := New(WithAllowMissingTenantOnSafeMethods())
+	mw := New(headerOpt(), WithAllowMissingTenantOnSafeMethods())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -355,7 +417,7 @@ func TestNew_AllowMissingOnSafeMethods_PassesGET(t *testing.T) {
 }
 
 func TestNew_AllowMissingOnSafeMethods_StillRejectsPOST(t *testing.T) {
-	mw := New(WithAllowMissingTenantOnSafeMethods())
+	mw := New(headerOpt(), WithAllowMissingTenantOnSafeMethods())
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -367,7 +429,7 @@ func TestNew_AllowMissingOnSafeMethods_StillRejectsPOST(t *testing.T) {
 }
 
 func TestNew_AllowMissingOnSafeMethods_PassesWithTenant(t *testing.T) {
-	mw := New(WithAllowMissingTenantOnSafeMethods())
+	mw := New(headerOpt(), WithAllowMissingTenantOnSafeMethods())
 	handler := mw(okHandler(t, coretenant.ID("acme")))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
