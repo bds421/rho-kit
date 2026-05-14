@@ -26,6 +26,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/security/v2/jwtutil"
 )
 
@@ -304,15 +305,30 @@ func (s *Store) emit(ctx context.Context, action, issuer, id string, err error) 
 		)
 	}
 	if s.audit != nil {
-		s.audit.LogRevocation(ctx, AuditEvent{
-			Action:   action,
-			Actor:    actor,
-			Resource: resource,
-			Issuer:   issuerField,
-			JTI:      jtiField,
-			Outcome:  outcome,
-			Reason:   reason,
-		})
+		// Audit sinks run AFTER the underlying mutation has already
+		// committed. A panic in the sink must not propagate to the
+		// caller — wave 66 caught that a buggy sink could crash the
+		// goroutine performing Revoke/IsRevoked even though the
+		// revocation state was successfully recorded.
+		func() {
+			defer func() {
+				if r := recover(); r != nil && s.logger != nil {
+					s.logger.Error("jwt revocation audit sink panicked",
+						slog.String("action", action),
+						slog.String("panic", redact.PanicValue(r)),
+					)
+				}
+			}()
+			s.audit.LogRevocation(ctx, AuditEvent{
+				Action:   action,
+				Actor:    actor,
+				Resource: resource,
+				Issuer:   issuerField,
+				JTI:      jtiField,
+				Outcome:  outcome,
+				Reason:   reason,
+			})
+		}()
 	}
 }
 

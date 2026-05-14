@@ -103,6 +103,28 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	if err := idempotency.ValidateKey(key); err != nil {
 		return nil, false, err
 	}
+	// Size-gate the response body BEFORE pulling its bytes into Go
+	// memory. Wave 66 closed a hostile-review finding that a hostile
+	// or legacy row with a multi-MB response_body would be fully
+	// scanned before ValidateCachedResponse caught the oversize.
+	// octet_length(response_body) lets Postgres serialise the size
+	// without sending the bytes.
+	sizeQuery := fmt.Sprintf(
+		`SELECT octet_length(response_body) FROM %s
+		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
+		s.table,
+	)
+	var bodyLen int64
+	if err := s.db.QueryRowContext(ctx, sizeQuery, key).Scan(&bodyLen); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("pgstore: size probe: %w", err)
+	}
+	if bodyLen > int64(idempotency.MaxCachedBodyBytes) {
+		return nil, false, fmt.Errorf("pgstore: stored response body exceeds %d bytes", idempotency.MaxCachedBodyBytes)
+	}
+
 	query := fmt.Sprintf(
 		`SELECT status_code, headers, response_body, fingerprint FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
@@ -115,6 +137,8 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	err := s.db.QueryRowContext(ctx, query, key).Scan(&statusCode, &headersJSON, &body, &storedFP)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// Row vanished between size probe and full SELECT (TTL
+			// expired). Treat as miss.
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("pgstore: get: %w", err)

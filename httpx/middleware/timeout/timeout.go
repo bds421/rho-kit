@@ -2,9 +2,12 @@ package timeout
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 const defaultPostTimeoutWait = 100 * time.Millisecond
@@ -16,6 +19,7 @@ type timeoutOptions struct {
 	maxBuffer             int
 	postTimeoutWait       time.Duration
 	allowWebSocketUpgrade bool
+	logger                *slog.Logger
 }
 
 type handlerResult struct {
@@ -64,6 +68,21 @@ func WithPostTimeoutWait(d time.Duration) Option {
 // reaches the real ResponseWriter.
 func WithHard() Option {
 	return WithPostTimeoutWait(0)
+}
+
+// WithLogger installs a logger that records late panics from handler
+// goroutines that completed AFTER the middleware already returned a
+// 503. Without it, a slow handler that panicked post-timeout would
+// have its panic recovered inside the goroutine but never surfaced,
+// leaving operators blind to the regression. Wave 66 closed a
+// hostile-review finding for this gap.
+//
+// Panics if logger is nil — omit the option entirely to opt out.
+func WithLogger(logger *slog.Logger) Option {
+	if logger == nil {
+		panic("timeout: WithLogger requires a non-nil logger")
+	}
+	return func(o *timeoutOptions) { o.logger = logger }
 }
 
 // Timeout wraps an http.Handler with a write deadline.
@@ -134,6 +153,12 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 			case <-ctx.Done():
 				tw.writeTimeout()
 				if cfg.postTimeoutWait == 0 {
+					// Drain the late goroutine in the background so a
+					// post-timeout panic still surfaces in logs even
+					// though the request has already returned 503.
+					if cfg.logger != nil {
+						go drainLateHandler(done, cfg.logger)
+					}
 					return
 				}
 				timer := time.NewTimer(cfg.postTimeoutWait)
@@ -144,9 +169,26 @@ func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 						panic(result.panicValue)
 					}
 				case <-timer.C:
+					// Same drain pattern as the hard-timeout path.
+					if cfg.logger != nil {
+						go drainLateHandler(done, cfg.logger)
+					}
 				}
 			}
 		})
+	}
+}
+
+// drainLateHandler consumes the abandoned handler-goroutine result so
+// a late panic still reaches the operator via the configured logger.
+// The done channel is buffered with capacity 1, so the deferred sender
+// in the handler goroutine never blocks even after this drain runs.
+func drainLateHandler(done <-chan handlerResult, logger *slog.Logger) {
+	result := <-done
+	if result.panicValue != nil {
+		logger.Error("timeout: handler panicked after request returned",
+			slog.String("panic", redact.PanicValue(result.panicValue)),
+		)
 	}
 }
 

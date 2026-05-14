@@ -369,7 +369,18 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 		return err
 	}
 	// We need the same fingerprint that was passed at TryLock time so the
-	// envelope embeds it. Recover it by reading the lock value back.
+	// envelope embeds it. Recover it by reading the lock value back —
+	// guarded by a STRLEN pre-check so a hostile writer cannot force
+	// us to allocate a multi-MB blob before deciding the lock value is
+	// not even a valid encoding. Mirrors the cap Get applies.
+	if sz, err := s.client.StrLen(ctx, s.k(key)).Result(); err != nil {
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
+		return fmt.Errorf("idempotencystore: set strlen: %w", err)
+	} else if sz > maxStoredEntryBytes {
+		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	}
 	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
@@ -379,6 +390,9 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 			return translated
 		}
 		return fmt.Errorf("idempotencystore: read lock: %w", err)
+	}
+	if len(existing) > maxStoredEntryBytes {
+		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
 	if !ok || curToken != token {
@@ -424,6 +438,16 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 	}
 	// We don't know the fingerprint here — but the lock value encoding is
 	// "lock:token:b64fp", so we read once to recover the original value.
+	// STRLEN gate mirrors Get/Set so a hostile writer cannot force a
+	// multi-MB allocation under the same key prefix.
+	if sz, err := s.client.StrLen(ctx, s.k(key)).Result(); err != nil {
+		if translated := translateUnavailable(err); translated != err {
+			return translated
+		}
+		return fmt.Errorf("idempotencystore: unlock strlen: %w", err)
+	} else if sz > maxStoredEntryBytes {
+		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
+	}
 	existing, err := s.client.Get(ctx, s.k(key)).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
@@ -433,6 +457,9 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 			return translated
 		}
 		return fmt.Errorf("idempotencystore: read lock: %w", err)
+	}
+	if len(existing) > maxStoredEntryBytes {
+		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 	curToken, fp, ok := decodeLockValue(string(existing))
 	if !ok || curToken != token {

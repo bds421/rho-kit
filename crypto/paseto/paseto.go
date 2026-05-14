@@ -336,9 +336,16 @@ func (s *V4PublicSigner) Close() error {
 // V4Local verifies and seals v4.local tokens (XChaCha20-Poly1305).
 // V4Local is safe for concurrent use by multiple goroutines.
 type V4Local struct {
-	cfg         config
-	parser      paseto.Parser
-	key         paseto.V4SymmetricKey
+	cfg    config
+	parser paseto.Parser
+	key    paseto.V4SymmetricKey
+	// keyBytes is the kit-owned copy of the raw 32-byte key. We
+	// retain it so [V4Local.Close] can zero a slice we own,
+	// independent of whether the upstream library's
+	// V4SymmetricKeyFromBytes/ExportBytes contract returns a fresh
+	// copy or shares the slice. Wave 66 strengthened the Close
+	// guarantee here.
+	keyBytes    []byte
 	initialized bool
 	closed      atomic.Bool
 }
@@ -358,7 +365,7 @@ func NewV4Local(key []byte, opts ...Option) (*V4Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("paseto: invalid V4Local key: %w", err)
 	}
-	return &V4Local{cfg: cfg, parser: paseto.NewParser(), key: wrapped, initialized: true}, nil
+	return &V4Local{cfg: cfg, parser: paseto.NewParser(), key: wrapped, keyBytes: keyCopy, initialized: true}, nil
 }
 
 // Verify parses, authenticates, and validates a v4.local token.
@@ -411,6 +418,14 @@ func (v *V4Local) Close() error {
 	if !v.initialized {
 		return nil
 	}
+	// Zero the kit-owned copy first — we KNOW we own these bytes.
+	for i := range v.keyBytes {
+		v.keyBytes[i] = 0
+	}
+	// And defensively zero whatever ExportBytes returns. When the
+	// upstream library shares the slice, this redundant zero is a
+	// no-op against an already-zero buffer; when upstream returns a
+	// copy, this catches any leak the kit-owned-copy zero missed.
 	raw := v.key.ExportBytes()
 	for i := range raw {
 		raw[i] = 0
