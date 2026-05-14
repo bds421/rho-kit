@@ -180,6 +180,63 @@ func TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains(t *testing.T) {
 	}
 }
 
+// TestHoldLeadership_DrainTimeoutAbandonsStalledCallback pins H-008:
+// with WithCallbackDrainTimeout configured, a callback that ignores
+// ctx must not pin the elector forever. Run returns
+// ErrCallbackDrainTimeout joined with the underlying loss reason so
+// the orchestrator can log + restart.
+func TestHoldLeadership_DrainTimeoutAbandonsStalledCallback(t *testing.T) {
+	e := &Elector{
+		healthCheck:   10 * time.Millisecond,
+		drainWarnTick: time.Hour, // suppress noise; we test the timeout path
+		drainTimeout:  30 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+
+	started := make(chan struct{})
+	// Callback never returns — the bug the audit warns about.
+	err := e.holdLeadership(context.Background(), handle, leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			close(started)
+			select {} // intentionally hangs forever
+		},
+	})
+	require.ErrorIs(t, err, ErrCallbackDrainTimeout,
+		"drain timeout must surface ErrCallbackDrainTimeout in the joined error")
+	require.ErrorContains(t, err, "handle reports lost",
+		"original loss reason must remain joined with the timeout sentinel")
+
+	select {
+	case <-started:
+	default:
+		t.Fatal("OnAcquired did not start — test sanity check failed")
+	}
+}
+
+// TestHoldLeadership_DrainTimeoutNotTrippedWhenCallbackCooperates
+// pins the happy path: a callback that honours ctx must drain within
+// the timeout and Run returns the plain loss error without the
+// timeout sentinel.
+func TestHoldLeadership_DrainTimeoutNotTrippedWhenCallbackCooperates(t *testing.T) {
+	e := &Elector{
+		healthCheck:   10 * time.Millisecond,
+		drainWarnTick: time.Hour,
+		drainTimeout:  500 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+
+	err := e.holdLeadership(context.Background(), handle, leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done() // cooperative
+		},
+	})
+	require.ErrorContains(t, err, "handle reports lost")
+	require.NotErrorIs(t, err, ErrCallbackDrainTimeout,
+		"cooperative callback must not trip the drain-timeout sentinel")
+}
+
 func TestLeaderReleaseContextPreservesValuesAfterCancellation(t *testing.T) {
 	parent := context.WithValue(context.Background(), releaseContextKey{}, "trace-123")
 	ctx, cancel := context.WithCancel(parent)

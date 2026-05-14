@@ -356,3 +356,52 @@ func TestHoldLeadership_LongCallbackEmitsWarnAndMetric(t *testing.T) {
 	// Sanity: nothing crashed and the warn log mentions the key.
 	require.True(t, strings.Contains(logBuf.String(), "elapsed"))
 }
+
+// TestHoldLeadership_DrainTimeoutAbandonsStalledCallback pins H-008:
+// a callback that ignores ctx no longer pins the redislock elector
+// when WithCallbackDrainTimeout is configured.
+func TestHoldLeadership_DrainTimeoutAbandonsStalledCallback(t *testing.T) {
+	e := &Elector{
+		renewInterval: 10 * time.Millisecond,
+		drainWarnTick: time.Hour,
+		drainTimeout:  30 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+
+	started := make(chan struct{})
+	err := e.holdLeadership(context.Background(), handle, leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			close(started)
+			select {}
+		},
+	})
+	require.ErrorIs(t, err, ErrCallbackDrainTimeout)
+	require.ErrorContains(t, err, "handle reports lost")
+
+	select {
+	case <-started:
+	default:
+		t.Fatal("OnAcquired did not start — test sanity check failed")
+	}
+}
+
+// TestHoldLeadership_DrainTimeoutNotTrippedWhenCallbackCooperates pins
+// the happy path for redislock's WithCallbackDrainTimeout.
+func TestHoldLeadership_DrainTimeoutNotTrippedWhenCallbackCooperates(t *testing.T) {
+	e := &Elector{
+		renewInterval: 10 * time.Millisecond,
+		drainWarnTick: time.Hour,
+		drainTimeout:  500 * time.Millisecond,
+	}
+	handle := &fakeLockHandle{}
+	handle.extendOK.Store(false)
+
+	err := e.holdLeadership(context.Background(), handle, leaderelection.Callbacks{
+		OnAcquired: func(ctx context.Context) {
+			<-ctx.Done()
+		},
+	})
+	require.ErrorContains(t, err, "handle reports lost")
+	require.NotErrorIs(t, err, ErrCallbackDrainTimeout)
+}

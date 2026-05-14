@@ -39,6 +39,14 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 )
 
+// ErrCallbackDrainTimeout is returned by Run when
+// [WithCallbackDrainTimeout] is configured and the OnAcquired
+// callback did not return within the configured drain window after
+// leadership ended. The orphan goroutine is left running — the
+// orchestrator MUST treat this as a fatal signal and restart the
+// process rather than retrying the elector in-place.
+var ErrCallbackDrainTimeout = errors.New("leaderelection/redislock: OnAcquired callback drain timed out")
+
 // Elector is a [leaderelection.Elector] backed by a Redis SET-NX lock.
 //
 // Concurrency: [Elector.Run] must be invoked from a single goroutine —
@@ -51,8 +59,14 @@ type Elector struct {
 	retryInterval time.Duration
 	renewInterval time.Duration
 	drainWarnTick time.Duration
-	logger        *slog.Logger
-	metrics       callbackDrainMetrics
+	// drainTimeout bounds how long Run waits for OnAcquired to return
+	// after leadership ends. Zero (default) preserves the wait-forever
+	// strict policy; a positive value enables fail-fast shutdown via
+	// [ErrCallbackDrainTimeout]. See [WithCallbackDrainTimeout] for the
+	// full semantics.
+	drainTimeout time.Duration
+	logger       *slog.Logger
+	metrics      callbackDrainMetrics
 
 	leader  atomic.Bool
 	started atomic.Bool
@@ -122,6 +136,28 @@ func WithCallbackDrainWarnInterval(d time.Duration) Option {
 		panic("leaderelection/redislock: WithCallbackDrainWarnInterval requires a positive duration")
 	}
 	return func(e *Elector) { e.drainWarnTick = d }
+}
+
+// WithCallbackDrainTimeout caps how long the elector waits for
+// [leaderelection.Callbacks.OnAcquired] to return after leadership
+// ends. Default behaviour (no option) is wait-forever: a buggy
+// callback that ignores ctx can pin shutdown until SIGKILL, which
+// preserves the strict no-overlap-in-process invariant.
+//
+// Passing a positive duration enables fail-fast shutdown: when the
+// timeout fires the elector logs a critical warning, records a
+// drainStateTimeout metric observation, and returns Run with a
+// wrapped [ErrCallbackDrainTimeout]. The orphan goroutine continues
+// running (Go has no goroutine kill) so the orchestrator MUST treat
+// the timeout as fatal and restart the process rather than retrying
+// the elector in-place.
+//
+// The duration must be positive.
+func WithCallbackDrainTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("leaderelection/redislock: WithCallbackDrainTimeout requires a positive duration")
+	}
+	return func(e *Elector) { e.drainTimeout = d }
 }
 
 // New constructs an Elector that competes for `key` against every other
@@ -272,9 +308,14 @@ func leaderReleaseContext(ctx context.Context, timeout time.Duration) (context.C
 
 // callbackResult is the value sent on cbDone when the OnAcquired
 // goroutine exits — either normally (zero value) or via panic
-// (panicValue captures recover()).
+// (panicValue captures recover()). The timedOut flag is set by
+// [Elector.awaitCallbackDrain] when [WithCallbackDrainTimeout] is
+// configured and the goroutine fails to signal before the deadline;
+// the orphan goroutine continues running and the elector returns
+// [ErrCallbackDrainTimeout].
 type callbackResult struct {
 	panicValue any
+	timedOut   bool
 }
 
 // holdLeadership runs the OnAcquired callback and renews the lock on
@@ -313,15 +354,32 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 		return e.awaitCallbackDrain(cbDone)
 	}
 
+	joinDrainResult := func(termErr error, result callbackResult) error {
+		errs := []error{}
+		if termErr != nil {
+			errs = append(errs, termErr)
+		}
+		if result.panicValue != nil {
+			errs = append(errs, onAcquiredPanicError(result.panicValue))
+		}
+		if result.timedOut {
+			errs = append(errs, ErrCallbackDrainTimeout)
+		}
+		switch len(errs) {
+		case 0:
+			return nil
+		case 1:
+			return errs[0]
+		default:
+			return errors.Join(errs...)
+		}
+	}
+
 	for {
 		select {
 		case <-parent.Done():
 			cancel()
-			result := awaitCallback()
-			if result.panicValue != nil {
-				return errors.Join(parent.Err(), onAcquiredPanicError(result.panicValue))
-			}
-			return parent.Err()
+			return joinDrainResult(parent.Err(), awaitCallback())
 		case result := <-cbDone:
 			if result.panicValue != nil {
 				return onAcquiredPanicError(result.panicValue)
@@ -330,22 +388,12 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 		case <-renewTicker.C:
 			ok, err := handle.Extend(ctx)
 			if err != nil {
-				termErr := fmt.Errorf("extend: %w", err)
 				cancel()
-				result := awaitCallback()
-				if result.panicValue != nil {
-					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
-				}
-				return termErr
+				return joinDrainResult(fmt.Errorf("extend: %w", err), awaitCallback())
 			}
 			if !ok {
-				termErr := errors.New("leader-election: handle reports lost")
 				cancel()
-				result := awaitCallback()
-				if result.panicValue != nil {
-					return errors.Join(termErr, onAcquiredPanicError(result.panicValue))
-				}
-				return termErr
+				return joinDrainResult(errors.New("leader-election: handle reports lost"), awaitCallback())
 			}
 		}
 	}
@@ -355,7 +403,14 @@ func (e *Elector) holdLeadership(parent context.Context, handle lock.Lock, cb le
 // signalled completion via cbDone. While waiting it emits a warn log
 // and (if metrics are configured) records a pending-drain observation
 // every drainWarnTick so a stalled callback is operator-visible. The
-// terminal duration is always recorded with state="drained".
+// terminal duration is always recorded — state="drained" on a normal
+// return, state="timeout" when [Elector.drainTimeout] is configured
+// and fires before the goroutine returns.
+//
+// On timeout the orphan goroutine is left running (Go has no
+// goroutine kill); the elector signals the caller by returning a
+// callbackResult with timedOut=true. holdLeadership lifts this into
+// [ErrCallbackDrainTimeout] for the Run boundary.
 func (e *Elector) awaitCallbackDrain(cbDone <-chan callbackResult) callbackResult {
 	start := time.Now()
 	tick := e.drainWarnTick
@@ -364,6 +419,14 @@ func (e *Elector) awaitCallbackDrain(cbDone <-chan callbackResult) callbackResul
 	}
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+
+	var deadline <-chan time.Time
+	if e.drainTimeout > 0 {
+		t := time.NewTimer(e.drainTimeout)
+		defer t.Stop()
+		deadline = t.C
+	}
+
 	for {
 		select {
 		case result := <-cbDone:
@@ -371,6 +434,21 @@ func (e *Elector) awaitCallbackDrain(cbDone <-chan callbackResult) callbackResul
 				e.metrics.observeDrainDuration(time.Since(start), e.key, drainStateDrained)
 			}
 			return result
+		case <-deadline:
+			elapsed := time.Since(start)
+			logger := e.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("leader-election: OnAcquired callback drain timeout — orphan goroutine left running, orchestrator must restart process",
+				redact.String("key", e.key),
+				slog.Duration("elapsed", elapsed),
+				slog.Duration("timeout", e.drainTimeout),
+			)
+			if e.metrics != nil {
+				e.metrics.observeDrainDuration(elapsed, e.key, drainStateTimeout)
+			}
+			return callbackResult{timedOut: true}
 		case <-ticker.C:
 			elapsed := time.Since(start)
 			logger := e.logger

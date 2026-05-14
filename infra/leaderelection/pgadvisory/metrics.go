@@ -11,6 +11,7 @@ import (
 const (
 	drainStatePending = "pending"
 	drainStateDrained = "drained"
+	drainStateTimeout = "timeout"
 )
 
 // callbackDrainMetrics is the minimal observation surface the
