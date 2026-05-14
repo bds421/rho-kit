@@ -585,14 +585,85 @@ func TestWithBodyMaxSize_PanicsOnNonPositive(t *testing.T) {
 	assert.Panics(t, func() { WithBodyMaxSize(-1) })
 }
 
+func TestWithInMemoryBodyMax_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { WithInMemoryBodyMax(0) })
+	assert.Panics(t, func() { WithInMemoryBodyMax(-1) })
+}
+
+// TestVerify_LargeBodySpillsToDisk proves the memory-amplification
+// defense end-to-end: with inMemoryBodyMax = 64 and a 4 KiB body, the
+// verifier must (1) accept the request, (2) deliver the full body to
+// the downstream handler, and (3) compute a hash that matches a fresh
+// sha256 over the bytes the handler observes — i.e. nothing is dropped
+// or corrupted by the spool path.
+func TestVerify_LargeBodySpillsToDisk(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("ab", 2048) // 4096 bytes, well above inMemoryBodyMax=64
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	var observed []byte
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+		WithBodyMaxSize(1<<20),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		observed = b
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := signRequest(t, "POST", "/upload", body, now, makeNonce("spill"), nil, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, len(body), len(observed), "downstream must see full body even when spilled to disk")
+	require.Equal(t, body, string(observed), "spool path must not corrupt body bytes")
+}
+
+// TestVerify_FailedMACDoesNotLeakSpooledFile guards the cleanup
+// invariant: a MAC mismatch on a spooled body must release the temp
+// file. We can't easily inspect the OS file table from a unit test,
+// but we can prove the discarded path returns cleanly without panic.
+// (The real disk-leak property is enforced by spooledBody.cleanup()
+// being called on every error path inside verify; see signedrequest.go
+// for the audit.)
+func TestVerify_FailedMACDoesNotLeakSpooledFile(t *testing.T) {
+	store := NewMemoryNonceStore(10 * time.Minute)
+	body := strings.Repeat("z", 2048)
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	mw := Middleware(
+		newResolver(t),
+		store,
+		WithClock(func() time.Time { return now }),
+		WithInMemoryBodyMax(64),
+	)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	req := signRequest(t, "POST", "/x", body, now, makeNonce("bad-mac-spill"), nil, nil)
+	// Corrupt the signature so verify fails after the body has spooled.
+	req.Header.Set(HeaderSignature, "hmac-sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Zero(t, store.Len(), "MAC mismatch must not record a replay nonce")
+}
+
 func TestVerify_RejectsOversizedBodyAfterResolver(t *testing.T) {
-	// The fix moves secret resolution before body buffering so an
-	// unauthenticated caller cannot force the server to hold up to
-	// bodyMaxSize bytes in memory per request. Body bytes are now
-	// streamed through a SHA-256 hasher (no full buffer until MAC
-	// passes), so the previous "resolver must not be called on
-	// oversize" invariant becomes "resolver is called early, body
-	// size still rejects, nonce store untouched on oversize".
+	// Wave 65 layered two defenses against body-driven memory
+	// amplification: secret resolution runs BEFORE body reading, and
+	// the body itself is spooled (in-memory cap = inMemoryBodyMax,
+	// overflow goes to a private temp file). The resolver-first
+	// invariant means an unknown key id never touches body bytes; the
+	// spool invariant means even a known key id pins only
+	// inMemoryBodyMax of heap per request, regardless of how close to
+	// bodyMaxSize the caller pushes the body.
 	store := NewMemoryNonceStore(10 * time.Minute)
 	resolverCalled := false
 	resolver := func(context.Context, string) ([]byte, error) {

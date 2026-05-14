@@ -1,6 +1,6 @@
 # Kit — Go Service Toolkit
 
-**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 73 Go modules at `/v2` path suffix)
+**Repo:** `github.com/bds421/rho-kit` (multi-module monorepo, 77 Go modules at `/v2` path suffix)
 **Go:** 1.26+ | **License:** Apache 2.0
 
 Shared infrastructure library for rho platform microservices. Provides secure-by-default, composable packages so services focus on domain logic.
@@ -191,7 +191,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Service health check binary | `app.Main` `--health` flag (invokes `observability/health.RunHealthCheck`) | [observability](docs/ai/observability.md) |
 | Per-request health endpoints | `httpx/healthhttp` | [observability](docs/ai/observability.md) |
 | Tamper-evident audit log | `observability/auditlog` (in-process `MemoryStore`) → `observability/auditlog/postgres` (durable, schema via `cmd/kit-migrate auditlog`) | [observability](docs/ai/observability.md) |
-| Transactional outbox (at-least-once messaging) | `infra/outbox` + `infra/outbox/postgres` (schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [observability](docs/ai/observability.md) |
+| Transactional outbox (at-least-once messaging, DB + broker) | `infra/outbox` (Relay) + `infra/outbox/postgres` (durable Store; schema via `cmd/kit-migrate outbox`; `WithTx`/`RequireTx` for caller-tx atomicity) | [messaging](docs/ai/messaging.md) |
 | Distributed tracing helpers | `observability/tracing` | [observability](docs/ai/observability.md) |
 | RFC 7807 problem-details responses | `httpx/problemdetails` | [http](docs/ai/http.md) |
 | OpenAPI helpers | `httpx/openapi` | [http](docs/ai/http.md) |
@@ -201,7 +201,6 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Verify a running service's ASVS controls | `cmd/kit-verify` | [security](docs/ai/security.md) |
 | Performance regression gate | `cmd/kit-bench-gate` | — |
 | NATS JetStream messaging | `infra/messaging/natsbackend` | [messaging](docs/ai/messaging.md) |
-| Transactional outbox (DB + broker) | `infra/outbox` | [messaging](docs/ai/messaging.md) |
 | Postgres-backed durable job queue | `data/queue/riverqueue` | [database](docs/ai/sqldb.md) |
 | Leader election | `infra/leaderelection` (`pgadvisory`/`redislock`) | [redis](docs/ai/redis.md) |
 | Run scheduled tasks (cron) | `runtime/cron` (Scheduler) | [utilities](docs/ai/utilities.md) |

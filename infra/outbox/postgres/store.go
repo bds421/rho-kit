@@ -16,7 +16,7 @@ import (
 
 // Store is a pgx-backed [outbox.Store]. It implements every role in
 // the [outbox] persistence contract (Inserter, Claimer, Outcomer,
-// Janitor, Observer) against a single audit_log_entries table.
+// Janitor, Observer) against a single outbox_entries table.
 //
 // Insert participates in the caller's business transaction when ctx
 // carries a [pgx.Tx] via [WithTx]; otherwise it falls back to the
@@ -106,6 +106,14 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 // each replica grabs a disjoint slice. Entries whose next_retry_at is
 // still in the future are skipped so exponential backoff actually
 // takes effect.
+//
+// FIFO contract: the returned slice is ordered oldest-first by
+// created_at, tie-broken by id, so the relay's default serial publish
+// path preserves the FIFO-on-the-wire behaviour documented on
+// [outbox.Relay]. Postgres does not guarantee that a bare
+// UPDATE ... RETURNING preserves any CTE ORDER BY, so we carry the
+// ordinal through a row_number() column and re-order the final
+// SELECT explicitly.
 func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("outbox/postgres: store not initialized")
@@ -115,20 +123,29 @@ func (s *Store) FetchPending(ctx context.Context, limit int) ([]outbox.Entry, er
 	}
 	const q = `
 WITH claimed AS (
-    SELECT id
+    SELECT id,
+           row_number() OVER (ORDER BY created_at, id) AS ord
     FROM outbox_entries
     WHERE status = 'pending'
       AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-    ORDER BY created_at
+    ORDER BY created_at, id
     LIMIT $1
     FOR UPDATE SKIP LOCKED
+),
+updated AS (
+    UPDATE outbox_entries AS o
+    SET status = 'processing',
+        updated_at = NOW()
+    FROM claimed
+    WHERE o.id = claimed.id
+    RETURNING o.id, o.topic, o.routing_key, o.message_id, o.message_type,
+              o.payload, o.headers, o.status, o.attempts, o.created_at,
+              o.published_at, o.next_retry_at, o.last_error, claimed.ord
 )
-UPDATE outbox_entries
-SET status = 'processing',
-    updated_at = NOW()
-WHERE id IN (SELECT id FROM claimed)
-RETURNING id, topic, routing_key, message_id, message_type, payload, headers,
-          status, attempts, created_at, published_at, next_retry_at, last_error`
+SELECT id, topic, routing_key, message_id, message_type, payload, headers,
+       status, attempts, created_at, published_at, next_retry_at, last_error
+FROM updated
+ORDER BY ord`
 	rows, err := s.pool.Query(ctx, q, limit)
 	if err != nil {
 		return nil, fmt.Errorf("outbox/postgres: fetch pending: %w", err)

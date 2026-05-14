@@ -172,6 +172,46 @@ func TestFetchPending_SkipLocked(t *testing.T) {
 	}
 }
 
+// TestFetchPending_PreservesFIFOByCreatedAt pins the FIFO ordering
+// contract documented on [outbox.Relay] (default serial publish
+// preserves insertion order). A bare UPDATE ... RETURNING does NOT
+// preserve any CTE ORDER BY, so this test would have caught the
+// previous implementation silently shuffling rows. The fix carries
+// row_number() through the claim CTE and re-orders the final SELECT.
+func TestFetchPending_PreservesFIFOByCreatedAt(t *testing.T) {
+	dsn := startPostgres(t)
+	pool := openAndMigrate(t, dsn)
+	store := outboxpg.New(pool)
+
+	ctx := context.Background()
+	const total = 50
+	wantOrder := make([]uuid.UUID, 0, total)
+	base := time.Now().UTC().Add(-time.Hour)
+	// Stagger created_at deterministically so the FIFO order is well
+	// defined and not subject to clock granularity inside the insert
+	// loop.
+	for i := 0; i < total; i++ {
+		e := mustEntry()
+		e.CreatedAt = base.Add(time.Duration(i) * time.Millisecond)
+		require.NoError(t, store.Insert(ctx, e))
+		// Override created_at because Insert stamps NOW() server-side;
+		// we need the staggered values for a strict ordering assertion.
+		_, err := pool.Exec(ctx, `UPDATE outbox_entries SET created_at = $1 WHERE id = $2`, e.CreatedAt, e.ID)
+		require.NoError(t, err)
+		wantOrder = append(wantOrder, e.ID)
+	}
+
+	got, err := store.FetchPending(ctx, total)
+	require.NoError(t, err)
+	require.Len(t, got, total)
+
+	gotOrder := make([]uuid.UUID, len(got))
+	for i := range got {
+		gotOrder[i] = got[i].ID
+	}
+	assert.Equal(t, wantOrder, gotOrder, "FetchPending must return entries oldest-first by created_at")
+}
+
 // TestMarkPublished_StaleStateAfterReset: if ResetStaleProcessing
 // pulls a row back to pending while a publish is in flight, the
 // follow-up MarkPublished must surface ErrStaleState so the relay

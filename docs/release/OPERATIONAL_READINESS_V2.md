@@ -119,6 +119,12 @@ coverage, race, benchmarks, dashboard validation, publishability, and rehearsal.
 | Module | Class | Operational review focus |
 |---|---|---|
 | `github.com/bds421/rho-kit/app/v2` | Runtime | Builder startup, TLS, module lifecycle, health, shutdown order, credential provider wiring. |
+| `github.com/bds421/rho-kit/app/amqp/v2` | Adapter | AMQP module wiring: TLS reload, credential rotation provider with bounded timeout, declarative topology, reconnect, graceful drain on Stop. |
+| `github.com/bds421/rho-kit/app/grpc/v2` | Adapter | gRPC server module wiring: keep-alive tuning, TLS reload, mTLS identity, interceptor stack, graceful stop on shutdown. |
+| `github.com/bds421/rho-kit/app/nats/v2` | Adapter | NATS module wiring: TLS reload, credential/token rotation provider with bounded timeout, JetStream consumer registration, drain on Stop. |
+| `github.com/bds421/rho-kit/app/postgres/v2` | Adapter | Postgres pool module wiring: password provider with `Pool.Reset` on rotation, TLS reload, statement timeout, pool limits, graceful close. |
+| `github.com/bds421/rho-kit/app/redis/v2` | Adapter | Redis client module wiring: go-redis credential provider, TLS reload, pool sizing, pipelined health, close on shutdown. |
+| `github.com/bds421/rho-kit/app/tracing/v2` | Adapter | OpenTelemetry tracing module wiring: OTLP exporter, sampler defaults, head-based sampling, shutdown flush with deadline. |
 | `github.com/bds421/rho-kit/authz/v2` | Runtime | Policy defaults, fail-closed authorization, low-cardinality audit behavior. |
 | `github.com/bds421/rho-kit/authz/openfga/v2` | Adapter | External authz dependency configuration, client deadlines, optional dependency isolation. |
 | `github.com/bds421/rho-kit/cmd/kit-bench-gate/v2` | Tool | Performance gate reproducibility and release evidence inputs. |

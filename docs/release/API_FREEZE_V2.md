@@ -37,6 +37,12 @@ freezes `redis_stream_messages_produced_total`,
 | Module | Decision | Rename/remove decision | Freeze notes |
 |---|---|---|---|
 | `github.com/bds421/rho-kit/app/v2` | Keep | No rename/remove | Golden-path service builder. New `With*` methods are frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/amqp/v2` | Keep | No rename/remove | AMQP module factory; `Builder.WithAMQP`, options, reconnect-aware. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/grpc/v2` | Keep | No rename/remove | gRPC server module factory; `Builder.WithGRPC`, interceptor wiring, keep-alive. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/nats/v2` | Keep | No rename/remove | NATS module factory; `Builder.WithNATS`, JetStream consumer registration, credential providers. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/postgres/v2` | Keep | No rename/remove | Postgres pool module factory; `Builder.WithPostgres`, password-provider rotation, TLS reload. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/redis/v2` | Keep | No rename/remove | Redis client module factory; `Builder.WithRedis`, credential provider, TLS reload. Frozen for v2.0.0. |
+| `github.com/bds421/rho-kit/app/tracing/v2` | Keep | No rename/remove | Tracing module factory; `Builder.WithTracing`, OTLP exporter and sampler config. Frozen for v2.0.0. |
 | `github.com/bds421/rho-kit/core/v2` | Keep | No rename/remove | Shared low-dependency primitives: config, typed errors, tenant IDs, redaction, secrets, validation, tls clone helpers. |
 | `github.com/bds421/rho-kit/httpx/v2` | Keep | No rename/remove | HTTP server/client defaults, JSON helpers, middleware, authz bridge, MCP, pagination, signing, redirect safety. |
 | `github.com/bds421/rho-kit/grpcx/v2` | Keep | No rename/remove | gRPC server defaults, interceptors, RED metrics, auth, health, deadlines. |

@@ -166,6 +166,7 @@ type config struct {
 	maxClockSkew    time.Duration
 	requiredHeaders []string
 	bodyMaxSize     int64
+	inMemoryBodyMax int64
 	now             clock.Func
 	metrics         *Metrics
 }
@@ -216,6 +217,21 @@ func WithBodyMaxSize(n int64) Option {
 	return func(c *config) { c.bodyMaxSize = n }
 }
 
+// WithInMemoryBodyMax caps how many request-body bytes stay in memory
+// before the verifier spools the rest to a bounded temp file. The
+// threshold bounds heap amplification per authenticated request: a
+// caller with a valid key id who never produces a verifiable MAC can
+// only pin n bytes of heap (default 64 KiB), not the full
+// [WithBodyMaxSize] cap. Disk usage stays bounded by bodyMaxSize.
+//
+// Panics if n is non-positive.
+func WithInMemoryBodyMax(n int64) Option {
+	if n <= 0 {
+		panic("signedrequest: WithInMemoryBodyMax requires a positive byte cap")
+	}
+	return func(c *config) { c.inMemoryBodyMax = n }
+}
+
 // WithClock overrides the time source for tests.
 //
 // Panics if now is nil — a nil clock would compile but blow up on the
@@ -253,11 +269,12 @@ func Middleware(resolver KeyResolver, nonceStore NonceStore, opts ...Option) fun
 	}
 
 	cfg := config{
-		resolver:     resolver,
-		nonceStore:   nonceStore,
-		maxClockSkew: 5 * time.Minute,
-		bodyMaxSize:  10 * 1024 * 1024,
-		now:          time.Now,
+		resolver:        resolver,
+		nonceStore:      nonceStore,
+		maxClockSkew:    5 * time.Minute,
+		bodyMaxSize:     10 * 1024 * 1024,
+		inMemoryBodyMax: defaultInMemoryBodyMax,
+		now:             time.Now,
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -363,9 +380,14 @@ func verify(r *http.Request, cfg *config) error {
 		}
 	}()
 
-	// Stream the body through a SHA-256 hasher so we have the body hash
-	// for the canonical string without buffering. Bound by bodyMaxSize.
-	body, bodyHash, err := streamBody(r, cfg.bodyMaxSize)
+	// Stream the body through a SHA-256 hasher. Up to inMemoryBodyMax
+	// bytes are kept in memory; anything beyond spools to a private
+	// temp file. This bounds heap amplification per authenticated
+	// request: a caller with a valid key id who never produces a
+	// verifiable MAC can only pin inMemoryBodyMax bytes of heap, not
+	// the full bodyMaxSize cap. Disk usage stays bounded by
+	// bodyMaxSize.
+	spooled, bodyHash, err := readSpooledBody(r, cfg.bodyMaxSize, cfg.inMemoryBodyMax)
 	if err != nil {
 		return err
 	}
@@ -373,20 +395,27 @@ func verify(r *http.Request, cfg *config) error {
 	canonical := buildCanonicalFromHash(r, ts, nonce, bodyHash, cfg.requiredHeaders)
 	expected := hmacSHA256(secret, canonical)
 	if !hmac.Equal(gotMAC, expected) {
+		// MAC mismatch: discard the spooled body (and the temp file,
+		// if any) before returning. The downstream handler will not
+		// run, so we own cleanup here.
+		spooled.cleanup()
 		return ErrSignatureInvalid
 	}
 
-	// Only after the MAC verifies do we expose the buffered body to the
-	// downstream handler.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
 	first, err := cfg.nonceStore.SeenOrStore(r.Context(), nonce)
 	if err != nil {
+		spooled.cleanup()
 		return fmt.Errorf("signedrequest: nonce store: %w", err)
 	}
 	if !first {
+		spooled.cleanup()
 		return ErrNonceReplayed
 	}
+
+	// Only after MAC verifies AND nonce checks do we expose the body
+	// to the downstream handler. The returned ReadCloser removes any
+	// underlying temp file on Close (net/http closes r.Body for us).
+	r.Body = spooled.Body()
 	return nil
 }
 
@@ -441,14 +470,13 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 }
 
-// streamBody reads the request body up to max bytes through a SHA-256
-// hasher and returns both the buffered body (for downstream handlers
-// after MAC verifies) and the body hash (for the canonical string).
+// streamBody buffers the body in memory and returns its SHA-256 hash.
+// Used only by the offline Sign helper, which operates on
+// caller-controlled outbound bodies (no amplification risk). The
+// server-side verifier uses [readSpooledBody] instead, which spools
+// bodies that exceed inMemoryBodyMax to a private temp file so a
+// single authenticated caller cannot pin bodyMaxSize bytes of heap.
 // Returns ErrBodyTooLarge when the limit is exceeded.
-//
-// We still buffer the body because verify() must be able to defer the
-// body to the downstream handler. The body is NOT placed back on
-// r.Body here — verify() does that only after the MAC succeeds.
 func streamBody(r *http.Request, max int64) ([]byte, [32]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, sha256.Sum256(nil), nil

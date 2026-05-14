@@ -32,7 +32,19 @@ missing=()
 count=0
 while IFS= read -r dir; do
   [[ -n "$dir" ]] || continue
-  module_path="$(cd "$dir" && go list -m -f '{{.Path}}')"
+  if [[ ! -f "$dir/go.mod" ]]; then
+    echo "missing $dir/go.mod for workspace entry" >&2
+    exit 1
+  fi
+  # Parse the module path directly from go.mod. `go list -m` would honour
+  # go.work and print every workspace module's path, which silently turns
+  # this coverage check into a tautology when grep -Fq matches against any
+  # one of those concatenated lines.
+  module_path="$(awk '/^module[[:space:]]/ { print $2; exit }' "$dir/go.mod")"
+  if [[ -z "$module_path" ]]; then
+    echo "$dir/go.mod missing module directive" >&2
+    exit 1
+  fi
   count=$((count + 1))
   if ! grep -Fq "| \`$module_path\` |" "$doc"; then
     missing+=("$module_path")
