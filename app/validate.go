@@ -79,23 +79,9 @@ func (b *Builder) Validate() error {
 		return err
 	}
 
-	if b.ipRateRequests > 0 && b.ipRateWindow <= 0 {
-		return fmt.Errorf("IP rate limit window must be > 0 when rate limiting is enabled")
-	}
-	if b.ipRateWindow > 0 && b.ipRateRequests < 1 {
-		return fmt.Errorf("IP rate limit requests must be > 0 when window is set")
-	}
-	for _, spec := range b.keyedLimiters {
-		if spec.name == "" {
-			return fmt.Errorf("keyed rate limiter name is required")
-		}
-		if spec.requests <= 0 {
-			return fmt.Errorf("keyed rate limiter must allow at least 1 request")
-		}
-		if spec.window <= 0 {
-			return fmt.Errorf("keyed rate limiter window must be > 0")
-		}
-	}
+	// Rate-limit per-module argument validation is enforced at
+	// app/ratelimit.IPModule / KeyedModule construction (panics on
+	// invalid requests / window / name).
 
 	// WithTLSReloadOnSignal only makes sense alongside the reloading
 	// TLS source — without the source there is nothing to reload.
@@ -153,8 +139,8 @@ func (b *Builder) validateProductionSafety() error {
 	// Pin the affirmative-declaration contract here: callers must pick
 	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
 	// WithoutRateLimit opt-out for traffic-bounded services.
-	if b.ipRateRequests <= 0 && len(b.keyedLimiters) == 0 && !b.allowNoRateLimit {
-		return fmt.Errorf("rate limiting must be declared explicitly: call WithIPRateLimit / WithKeyedRateLimit, or WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
+	if !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
+		return fmt.Errorf("rate limiting must be declared explicitly: register a ratelimit.IPModule / ratelimit.KeyedModule from app/ratelimit, or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
 	}
 
 	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,

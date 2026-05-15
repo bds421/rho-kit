@@ -22,18 +22,15 @@ import (
 	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
-	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 )
 
 type runContextValueKey struct{}
 
 func TestBuilder_FluentChaining(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithIPRateLimit(100, time.Minute).
-		WithKeyedRateLimit("api", 50, time.Minute).
+		WithoutRateLimit().
 		WithStorage(membackend.New()).
 		WithNamedStorage("local", membackend.New()).
-		WithCron().
 		WithEventBusPool(4).
 		WithModule(NewBaseModule("svc-extra")).
 		WithServerOption(WithWriteTimeout(0)).
@@ -81,15 +78,9 @@ func TestBuilder_WithAuditLogClonesOptions(t *testing.T) {
 	assert.NotNil(t, b.auditOpts[0])
 }
 
-func TestBuilder_WithCronClonesOptions(t *testing.T) {
-	opts := []kitcron.Option{kitcron.WithLocation(time.UTC)}
-
-	b := New("test-svc", "v0.1.0", BaseConfig{}).WithCron(opts...)
-	opts[0] = nil
-
-	require.Len(t, b.cronOpts, 1)
-	assert.NotNil(t, b.cronOpts[0])
-}
+// TestBuilder_WithCronClonesOptions was removed when cron moved to
+// app/cron — option cloning is now an app/cron.Module concern,
+// covered by its own tests.
 
 func TestBuilder_WithLogger(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
@@ -138,61 +129,9 @@ func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
 	New("test-svc", "v0.1.0", BaseConfig{}).WithNamedStorage("s3", nil)
 }
 
-func TestBuilder_DuplicateKeyedRateLimiterPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for duplicate keyed rate limiter")
-		}
-		assert.Equal(t, "app: duplicate keyed rate limiter name", r)
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).
-		WithKeyedRateLimit("api-secret-token", 10, time.Second).
-		WithKeyedRateLimit("api-secret-token", 20, time.Second)
-}
-
-func TestBuilder_WithIPRateLimitPanicsOnInvalidInput(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithIPRateLimit(0, time.Minute)
-	})
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithIPRateLimit(1, 0)
-	})
-}
-
-func TestBuilder_WithKeyedRateLimitPanicsOnInvalidInput(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("", 1, time.Minute)
-	})
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("api key", 1, time.Minute)
-	})
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("api", 0, time.Minute)
-	})
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithKeyedRateLimit("api", 1, 0)
-	})
-}
-
-func TestBuilder_ValidateKeyedRateLimiterDoesNotReflectName(t *testing.T) {
-	b := New("test-svc", "v0.1.0", BaseConfig{
-		Server:   ServerConfig{Port: 8080},
-		Internal: InternalConfig{Host: "127.0.0.1", Port: 9090},
-	}).
-		WithoutTLS()
-	b.keyedLimiters = []keyedLimiterSpec{{
-		name:     "api-secret-token",
-		requests: 0,
-		window:   time.Minute,
-	}}
-
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "keyed rate limiter")
-	assert.NotContains(t, err.Error(), "api-secret-token")
-	assert.NotContains(t, err.Error(), "secret-token")
-}
+// Rate-limit Builder-method-shaped tests have moved to
+// app/ratelimit (IPModule / KeyedModule own the parameter checks
+// and dedupe contract now).
 
 func TestBuilder_WithServerOptionPanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() {

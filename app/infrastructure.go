@@ -13,11 +13,9 @@ import (
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
-	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
-	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -65,13 +63,9 @@ type Infrastructure struct {
 	ApprovalStore approval.Store   // nil if no WithApprovalStore
 	Authz         kitauthz.Decider // nil if no WithAuthz
 
-	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
-	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit
-
-	Storage        storage.Storage    // nil if no WithStorage
-	StorageManager *storage.Manager   // nil if no WithNamedStorage
-	Cron           *kitcron.Scheduler // nil if no WithCron
-	AuditLog       *auditlog.Logger   // nil if no WithAuditLog
+	Storage        storage.Storage  // nil if no WithStorage
+	StorageManager *storage.Manager // nil if no WithNamedStorage
+	AuditLog       *auditlog.Logger // nil if no WithAuditLog
 	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
 
 	HTTPClient *http.Client

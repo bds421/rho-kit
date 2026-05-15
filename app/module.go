@@ -193,6 +193,17 @@ type SLOCheckerProvider interface {
 	SLOChecker() *slo.Checker
 }
 
+// RateLimitDeclarer is implemented by modules that count as a
+// rate-limit declaration for the always-on Builder validator.
+// Each module that installs ANY kind of rate limiting (IP-wide,
+// per-key, custom) implements this marker so [Builder.Validate]
+// can verify the service made an explicit choice — either by
+// declaring a limiter, or by calling [Builder.WithoutRateLimit]
+// to acknowledge the trade-off.
+type RateLimitDeclarer interface {
+	DeclaresRateLimit()
+}
+
 // BaseModule provides no-op defaults for optional Module methods. Embed it in
 // custom module structs to avoid implementing methods you don't need:
 //
@@ -270,6 +281,16 @@ func (mc ModuleContext) Module(name string) Module {
 		panic("app: module not found (check registration order — modules are init'd in registration order)")
 	}
 	return m
+}
+
+// LookupModule returns a previously initialized module by name or
+// (nil, false) if absent. Use this from modules that depend on
+// another module *optionally* — e.g., app/cron gates jobs on
+// app/leader if present but runs unguarded otherwise. The panicking
+// [ModuleContext.Module] is the right call for hard deps.
+func (mc ModuleContext) LookupModule(name string) (Module, bool) {
+	m, ok := mc.modules[name]
+	return m, ok
 }
 
 // serverTLSOptions returns the netutil.ServerTLSOption set the

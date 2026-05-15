@@ -69,12 +69,6 @@ type storageSpec struct {
 	backend storage.Storage
 }
 
-type keyedLimiterSpec struct {
-	name     string
-	requests int
-	window   time.Duration
-}
-
 type bgSpec struct {
 	name string
 	fn   func(ctx context.Context) error
@@ -131,6 +125,19 @@ func (b *Builder) buildIntegrationModules() []Module {
 func (b *Builder) hasTracingModule() bool {
 	for _, m := range b.modules {
 		if _, ok := m.(TracingProvider); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRateLimitDeclaration reports whether any user-registered
+// module implements [RateLimitDeclarer]. Used by Builder.Validate
+// to enforce the explicit rate-limit-or-opt-out contract without
+// duplicating module-name knowledge across packages.
+func (b *Builder) hasRateLimitDeclaration() bool {
+	for _, m := range b.modules {
+		if _, ok := m.(RateLimitDeclarer); ok {
 			return true
 		}
 	}

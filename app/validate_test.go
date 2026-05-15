@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -72,64 +71,10 @@ func TestValidate_EmptyBuilder(t *testing.T) {
 	}
 }
 
-func TestValidate_RateLimitRequestsWithoutWindow(t *testing.T) {
-	b := newTestBuilder()
-	b.ipRateRequests = 100
-	b.ipRateWindow = 0
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for rate limit requests without window")
-	}
-}
-
-func TestValidate_RateLimitWindowWithoutRequests(t *testing.T) {
-	b := newTestBuilder()
-	b.ipRateRequests = 0
-	b.ipRateWindow = time.Second
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for rate limit window without requests")
-	}
-}
-
-func TestValidate_RateLimitValid(t *testing.T) {
-	b := newTestBuilder()
-	b.ipRateRequests = 100
-	b.ipRateWindow = time.Minute
-	if err := b.Validate(); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-}
-
-func TestValidate_KeyedLimiterEmptyName(t *testing.T) {
-	b := newTestBuilder()
-	b.keyedLimiters = []keyedLimiterSpec{{name: "", requests: 10, window: time.Second}}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for empty keyed limiter name")
-	}
-}
-
-func TestValidate_KeyedLimiterZeroRequests(t *testing.T) {
-	b := newTestBuilder()
-	b.keyedLimiters = []keyedLimiterSpec{{name: "api", requests: 0, window: time.Second}}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for zero keyed limiter requests")
-	}
-}
-
-func TestValidate_KeyedLimiterZeroWindow(t *testing.T) {
-	b := newTestBuilder()
-	b.keyedLimiters = []keyedLimiterSpec{{name: "api", requests: 10, window: 0}}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for zero keyed limiter window")
-	}
-}
-
-func TestValidate_KeyedLimiterValid(t *testing.T) {
-	b := newTestBuilder()
-	b.keyedLimiters = []keyedLimiterSpec{{name: "api", requests: 10, window: time.Second}}
-	if err := b.Validate(); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-}
+// Per-module rate-limit parameter validation (requests > 0,
+// window > 0, name non-empty + metric-safe, duplicate dedupe)
+// moved to app/ratelimit.IPModule / KeyedModule constructors —
+// see their package tests.
 
 func TestValidate_InvalidServerPort(t *testing.T) {
 	cfg := validBaseConfig()
@@ -183,32 +128,30 @@ func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no rate-limit declaration is present")
 	}
-	for _, want := range []string{"WithIPRateLimit", "WithKeyedRateLimit", "WithoutRateLimit"} {
+	for _, want := range []string{"ratelimit.IPModule", "ratelimit.KeyedModule", "WithoutRateLimit"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rate-limit error must name %q (got: %v)", want, err)
 		}
 	}
 }
 
-// TestValidate_WithIPRateLimitSatisfiesGate confirms WithIPRateLimit is
-// one of the three accepted declarations.
-func TestValidate_WithIPRateLimitSatisfiesGate(t *testing.T) {
-	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
-		WithIPRateLimit(100, time.Minute)
-	if err := b.Validate(); err != nil {
-		t.Fatalf("WithIPRateLimit must satisfy the rate-limit gate, got: %v", err)
-	}
-}
+// fakeRateLimitDeclarer implements RateLimitDeclarer so we can
+// drive the gate test from core app without importing
+// app/ratelimit (which would invert the dep direction).
+type fakeRateLimitDeclarer struct{ BaseModule }
 
-// TestValidate_WithKeyedRateLimitSatisfiesGate confirms a single keyed
-// limiter is sufficient — services may rate-limit by API key alone.
-func TestValidate_WithKeyedRateLimitSatisfiesGate(t *testing.T) {
+func (fakeRateLimitDeclarer) DeclaresRateLimit() {}
+
+// TestValidate_RateLimitDeclarerSatisfiesGate confirms that any
+// module implementing RateLimitDeclarer satisfies the gate — the
+// real-world implementations (app/ratelimit.IPModule,
+// app/ratelimit.KeyedModule) get their own tests in that package.
+func TestValidate_RateLimitDeclarerSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithKeyedRateLimit("api", 10, time.Minute)
+		WithModule(fakeRateLimitDeclarer{BaseModule: NewBaseModule("fake-rl")})
 	if err := b.Validate(); err != nil {
-		t.Fatalf("WithKeyedRateLimit must satisfy the rate-limit gate, got: %v", err)
+		t.Fatalf("RateLimitDeclarer module must satisfy the rate-limit gate, got: %v", err)
 	}
 }
 

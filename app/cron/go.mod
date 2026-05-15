@@ -1,16 +1,14 @@
-module github.com/bds421/rho-kit/app/paseto/v2
+module github.com/bds421/rho-kit/app/cron/v2
 
 go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/app/v2 v2.0.0
-	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
+	github.com/bds421/rho-kit/runtime/v2 v2.0.0
 )
 
 require (
-	aidanwoods.dev/go-paseto v1.6.0 // indirect
-	aidanwoods.dev/go-result v0.3.1 // indirect
 	github.com/bds421/rho-kit/authz/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
@@ -18,7 +16,6 @@ require (
 	github.com/bds421/rho-kit/infra/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/runtime/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/security/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -37,6 +34,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
@@ -57,8 +55,6 @@ replace github.com/bds421/rho-kit/app/v2 => ../
 replace github.com/bds421/rho-kit/authz/v2 => ../../authz
 
 replace github.com/bds421/rho-kit/core/v2 => ../../core
-
-replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
 
 replace github.com/bds421/rho-kit/data/v2 => ../../data
 

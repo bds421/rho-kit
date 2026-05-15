@@ -20,16 +20,12 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
 	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
-	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
-	"github.com/bds421/rho-kit/httpx/v2/middleware/signedrequest"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
-	"github.com/bds421/rho-kit/observability/v2/promutil"
-	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/netutil"
@@ -82,10 +78,6 @@ type Builder struct {
 	cfg     BaseConfig
 	logger  *slog.Logger
 
-	// Signed requests (optional). The public mux wraps every route in
-	// the signedrequest middleware when this is set.
-	signedSpec *signedRequestSpec
-
 	// Multi-tenant request handling (optional). Activates the tenant
 	// middleware so handlers can read tenant.FromContext.
 	tenantSpec *tenantSpec
@@ -122,11 +114,12 @@ type Builder struct {
 	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
 	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
 
-	// Rate limiters
-	ipRateRequests   int
-	ipRateWindow     time.Duration
-	keyedLimiters    []keyedLimiterSpec
-	allowNoRateLimit bool // explicit opt-out from the mandatory rate-limit declaration
+	// Rate-limit declaration opt-out. The actual IP/keyed
+	// limiters live in app/ratelimit bridge modules; this field
+	// only records the explicit "no rate limit" acknowledgement
+	// so Builder.Validate can refuse silent un-throttled
+	// deployments.
+	allowNoRateLimit bool
 
 	// Storage
 	storageBackend storage.Storage
@@ -140,8 +133,6 @@ type Builder struct {
 	eventBusPoolSize int
 
 	// Cron
-	cronOpts    []kitcron.Option
-	cronEnabled bool
 
 	// Server options
 	serverOpts []httpx.ServerOption
@@ -241,43 +232,6 @@ func (b *Builder) WithoutTLS() *Builder {
 // verifier is the kit's only authentication layer for those callers.
 func (b *Builder) WithOptionalClientCertificates() *Builder {
 	b.tlsOptionalClientCert = true
-	return b
-}
-
-// WithSignedRequests installs the [signedrequest] middleware on the
-// public mux so every inbound request must carry a valid HMAC
-// signature header (`X-Signature`, plus timestamp and nonce). Use
-// this for service-to-service traffic where mTLS isn't available
-// but message integrity is required.
-//
-// `resolver` looks up the HMAC secret for a given key ID; `store`
-// caches recently-seen nonces to defeat replay. The middleware is
-// strict about defaults — a nil store panics at construction since
-// no-store means trivially-replayable signatures.
-//
-// `opts` flow through to [signedrequest.Middleware] (clock skew,
-// required headers, body cap).
-func (b *Builder) WithSignedRequests(
-	resolver signedrequest.KeyResolver,
-	store signedrequest.NonceStore,
-	opts ...signedrequest.Option,
-) *Builder {
-	if resolver == nil {
-		panic("app: WithSignedRequests requires a non-nil KeyResolver")
-	}
-	if store == nil {
-		panic("app: WithSignedRequests requires a non-nil NonceStore (no-store means trivially-replayable signatures)")
-	}
-	for _, opt := range opts {
-		if opt == nil {
-			panic("app: WithSignedRequests option must not be nil")
-		}
-	}
-	b.signedSpec = &signedRequestSpec{
-		resolver: resolver,
-		store:    store,
-		opts:     append([]signedrequest.Option(nil), opts...),
-	}
 	return b
 }
 
@@ -496,77 +450,22 @@ func (b *Builder) WithAuthz(d kitauthz.Decider) *Builder {
 	return b
 }
 
-// WithIPRateLimit configures a per-IP rate limiter and auto-applies
-// its middleware to the public mux. The limiter sits between
-// stack.Default and signedrequest in the inbound chain — cheap-reject
-// hostile clients before the signed-request crypto verification runs.
-//
-// Lifecycle note: the limiter's background sweeper runs via
-// runner.AddFunc. A panic inside that goroutine kills the entire service
-// via the lifecycle Runner — there is no per-component supervision.
-// Monitor the "goroutine_panicked" log event if you need an early signal.
-//
-// The limiter is also exposed on Infrastructure.RateLimiter for
-// per-route overrides — e.g. tightening the limit on /admin while the
-// auto-applied limiter handles the public mux baseline.
-func (b *Builder) WithIPRateLimit(requests int, window time.Duration) *Builder {
-	if requests <= 0 {
-		panic("app: WithIPRateLimit requires a positive request limit")
-	}
-	if window <= 0 {
-		panic("app: WithIPRateLimit requires a positive window")
-	}
-	b.ipRateRequests = requests
-	b.ipRateWindow = window
-	return b
-}
-
 // WithoutRateLimit acknowledges that the public HTTP server will run
-// without any kit-managed rate limiter (neither [Builder.WithIPRateLimit]
-// nor [Builder.WithKeyedRateLimit]). Without this opt-in, [Builder.Build]
-// rejects any configuration that does not declare at least one rate-limit
-// option, because an un-rate-limited public listener is a silent
-// foot-gun: a single hostile client can saturate the request budget,
-// exhaust DB pools, or DoS the service.
+// without any kit-managed rate limiter. The actual IP / keyed
+// limiters live in [github.com/bds421/rho-kit/app/ratelimit/v2]
+// bridge modules; calling this method records the explicit
+// opt-out so [Builder.Validate] does not reject the configuration.
 //
-// Use this only for services with a genuine traffic bound that does not
-// need application-level throttling — e.g. an internal cron worker
-// reachable only through mTLS from a fixed peer set, an admin tool
-// behind a VPN, or a service whose upstream gateway already applies a
-// stricter limit. The check is unconditional — there is no KIT_ENV
-// escape hatch. Mirrors the [WithoutTLS] / [WithoutJWTAudience] shape
-// so every always-on security tightening has the same affirmative
-// declaration shape.
+// Use this only for services with a genuine traffic bound that
+// does not need application-level throttling — e.g. an internal
+// cron worker reachable only through mTLS from a fixed peer set,
+// an admin tool behind a VPN, or a service whose upstream
+// gateway already applies a stricter limit. The check is
+// unconditional — there is no KIT_ENV escape hatch. Mirrors the
+// [WithoutTLS] shape so every always-on security tightening has
+// the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
-	return b
-}
-
-// WithKeyedRateLimit adds a named keyed rate limiter. The limiter is accessible
-// via Infrastructure.KeyedLimiters[name].
-func (b *Builder) WithKeyedRateLimit(name string, requests int, window time.Duration) *Builder {
-	if name == "" {
-		panic("app: WithKeyedRateLimit requires a non-empty name")
-	}
-	if err := promutil.ValidateStaticLabelValue("keyed rate limiter name", name); err != nil {
-		panic("app: WithKeyedRateLimit requires a metric-safe static name")
-	}
-	if requests <= 0 {
-		panic("app: WithKeyedRateLimit requires a positive request limit")
-	}
-	if window <= 0 {
-		panic("app: WithKeyedRateLimit requires a positive window")
-	}
-	for _, existing := range b.keyedLimiters {
-		if existing.name == name {
-			panic("app: duplicate keyed rate limiter name")
-		}
-	}
-	b.keyedLimiters = append(b.keyedLimiters, keyedLimiterSpec{
-		name:     name,
-		requests: requests,
-		window:   window,
-	})
 	return b
 }
 
@@ -620,26 +519,6 @@ func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *B
 	}
 	b.auditStore = store
 	b.auditOpts = append([]auditlog.Option(nil), opts...)
-	return b
-}
-
-// WithCron enables the cron scheduler. The scheduler is available via
-// infra.Cron in the RouterFunc, where jobs can be added with infra.Cron.Add().
-// The scheduler is started as a lifecycle component before the HTTP server
-// and stopped during graceful shutdown (waits for running jobs to complete).
-//
-// When [WithLeaderElection] is also configured, every cron job gates on
-// `elector.IsLeader()` automatically — only the elected replica runs
-// scheduled work. Other infrastructure (HTTP, consumers) keeps running on
-// every replica.
-func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
-	for _, opt := range opts {
-		if opt == nil {
-			panic("app: WithCron option must not be nil")
-		}
-	}
-	b.cronEnabled = true
-	b.cronOpts = append([]kitcron.Option(nil), opts...)
 	return b
 }
 
@@ -973,29 +852,9 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		})
 	}
 
-	// 3. Rate limiters
-	var rateLimitMetrics *mwrl.Metrics
-	if b.ipRateRequests > 0 || len(b.keyedLimiters) > 0 {
-		rateLimitMetrics = mwrl.NewMetrics()
-	}
-	var rl *mwrl.RateLimiter
-	if b.ipRateRequests > 0 {
-		rl = mwrl.NewRateLimiter(b.ipRateRequests, b.ipRateWindow,
-			mwrl.WithMetrics(rateLimitMetrics),
-			mwrl.WithLimiterName("ip"),
-		)
-		runner.Add("rate-limiter-cleanup", rl)
-	}
-
-	keyedLimiters := make(map[string]*mwrl.KeyedRateLimiter, len(b.keyedLimiters))
-	for _, spec := range b.keyedLimiters {
-		kl := mwrl.NewKeyedRateLimiter(spec.requests, spec.window,
-			mwrl.WithKeyedMetrics(rateLimitMetrics),
-			mwrl.WithKeyedLimiterName(spec.name),
-		)
-		keyedLimiters[spec.name] = kl
-		runner.Add("keyed-limiter-"+spec.name, kl)
-	}
+	// (Rate limiters are now opt-in bridge modules under
+	// app/ratelimit — see ratelimit.IPModule and
+	// ratelimit.KeyedModule.)
 
 	// 5. Audit log
 	var auditLogger *auditlog.Logger
@@ -1003,22 +862,9 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		auditLogger = auditlog.New(b.auditStore, b.auditOpts...)
 	}
 
-	// 6. Cron scheduler. If a leader-election module is registered,
-	// its Elector gates cron execution to the leader replica. The
-	// lookup uses the [ElectorProvider] capability so app/v2 does
-	// not import app/leader.
-	var cronScheduler *kitcron.Scheduler
-	if b.cronEnabled {
-		opts := append([]kitcron.Option(nil), b.cronOpts...)
-		for _, m := range allModules {
-			if ep, ok := m.(ElectorProvider); ok {
-				opts = append(opts, kitcron.WithLeaderGate(ep.Elector().IsLeader))
-				break
-			}
-		}
-		cronScheduler = kitcron.New(logger, opts...)
-		runner.Add("cron-scheduler", cronScheduler)
-	}
+	// (Cron is now an opt-in bridge module under app/cron, which
+	// reads the optional leader gate via the ElectorProvider
+	// capability at its Init time.)
 
 	// 7. Early background goroutines
 	for _, bg := range b.earlyBgs {
@@ -1091,11 +937,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		Logger:         logger,
 		ServerTLS:      serverTLS,
 		TLSCertSource:  tlsSource,
-		RateLimiter:    rl,
-		KeyedLimiters:  keyedLimiters,
 		Storage:        b.storageBackend,
 		StorageManager: storageMgr,
-		Cron:           cronScheduler,
 		AuditLog:       auditLogger,
 		EventBus:       eventBus,
 		TenantBudget:   b.budgetSpecStore(),
@@ -1146,31 +989,24 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		httpHandler = http.NotFoundHandler()
 	}
 	// Compose the inbound middleware chain. Bridge modules in app/*
-	// declare which phase they target via [MiddlewareInstaller]; the
-	// kit's hardcoded ordering (budget → tenant → auth →
-	// signedrequest → ratelimit → stack) lives in the [MiddlewarePhase]
-	// constants, not here. This block stays the canonical assembly
-	// point so adapters cannot independently inject middleware in
-	// arbitrary positions — the Builder remains the single owner of
-	// chain order.
+	// declare which phase they target via [MiddlewareInstaller];
+	// the kit's hardcoded ordering (budget → tenant → auth →
+	// signedrequest → ratelimit → stack) lives in the
+	// [MiddlewarePhase] constants, not here. This block stays the
+	// canonical assembly point so adapters cannot independently
+	// inject middleware in arbitrary positions — the Builder
+	// remains the single owner of chain order.
 	//
-	// Direct Builder-owned middleware (budget, tenant, signedrequest,
-	// ratelimit) is retained alongside the module-contributed chain
-	// during the migration. As each subsystem moves into app/* (waves
-	// 88+), its Builder-owned hook drops out and only the module
-	// contribution remains.
+	// budget + tenant remain Builder-owned for now (their wiring
+	// is bundled with multi-tenant / per-tenant cost surfaces that
+	// are still configured on the Builder); they will move to
+	// bridge modules in a follow-up wave.
 	httpHandler = applyPhasedMiddleware(httpHandler, allModules)
 	if mw := b.budgetMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
 	}
 	if mw := b.tenantMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
-	}
-	if mw := b.signedRequestMiddleware(); mw != nil {
-		httpHandler = mw(httpHandler)
-	}
-	if rl != nil {
-		httpHandler = mwrl.Middleware(rl)(httpHandler)
 	}
 	if !b.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
