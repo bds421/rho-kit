@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"time"
@@ -80,12 +79,6 @@ func validateBackgroundSpec(name string, fn func(context.Context) error) {
 func validateDependencyCheck(check health.DependencyCheck, where string) {
 	if err := health.ValidateDependencyCheck(check); err != nil {
 		panic("app: health check invalid")
-	}
-}
-
-func validateDependencyChecks(checks []health.DependencyCheck, where string) {
-	for i, check := range checks {
-		validateDependencyCheck(check, fmt.Sprintf("%s[%d]", where, i))
 	}
 }
 

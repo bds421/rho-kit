@@ -331,6 +331,38 @@ func (mc ModuleContext) Module(name string) Module {
 	return m
 }
 
+// TestModuleContext builds a ModuleContext whose moduleMap is
+// pre-populated with the supplied modules. It is intended for
+// per-bridge unit tests that need to exercise [Module.Init] under a
+// realistic [ModuleContext.LookupModule] / [ModuleContext.Module]
+// shape — e.g., app/budget's cross-module Init check against
+// app/tenant.
+//
+// Returns an error if any registered module has an empty name or a
+// duplicate name, mirroring the Builder's own pre-Init validation.
+func TestModuleContext(modules ...Module) (ModuleContext, error) {
+	moduleMap := make(map[string]Module, len(modules))
+	for _, m := range modules {
+		if m == nil {
+			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: nil module")
+		}
+		name := m.Name()
+		if name == "" {
+			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: module with empty name")
+		}
+		if _, dup := moduleMap[name]; dup {
+			return ModuleContext{}, fmt.Errorf("app: TestModuleContext: duplicate module name %q", name)
+		}
+		moduleMap[name] = m
+	}
+	return ModuleContext{
+		ServiceName: "test",
+		Logger:      slog.Default(),
+		Runner:      lifecycle.NewRunner(slog.Default()),
+		modules:     moduleMap,
+	}, nil
+}
+
 // LookupModule returns a registered module by name or nil if no
 // module with that name is registered. The returned module may
 // not yet have Init'd (the moduleMap is pre-populated at startup
