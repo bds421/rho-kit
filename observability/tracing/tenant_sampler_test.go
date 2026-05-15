@@ -189,7 +189,7 @@ func TestTenantSampler_Description_ListsTenantsSorted(t *testing.T) {
 	if alphaIdx < 0 || mikeIdx < 0 || zuluIdx < 0 {
 		t.Fatalf("description missing tenant id(s): %q", desc)
 	}
-	if !(alphaIdx < mikeIdx && mikeIdx < zuluIdx) {
+	if alphaIdx >= mikeIdx || mikeIdx >= zuluIdx {
 		t.Fatalf("description tenants must appear in sorted order to keep observability output stable; got %q", desc)
 	}
 }
