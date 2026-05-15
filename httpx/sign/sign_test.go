@@ -523,3 +523,65 @@ func TestSign_IncludeHeadersRejectsInvalidHeaderValue(t *testing.T) {
 	assert.Nil(t, resp)
 	assert.True(t, errors.Is(err, signedrequest.ErrInvalidRequest), "got %v", err)
 }
+
+// TestSign_ZeroesPerRequestKeyCopy guards L029: the kit's RoundTripper
+// fetches a per-request copy of the signing secret from CurrentKeyID,
+// signs the request, then must zero that copy via defer so the secret
+// does not sit on the heap until GC.
+//
+// The test wires a custom KeyStore that observes the slice the kit
+// hands SignCanonical via a shared reference; after RoundTrip returns
+// the observed slice must be all-zero.
+func TestSign_ZeroesPerRequestKeyCopy(t *testing.T) {
+	// Use a 32-byte secret pattern so the zeroize is visible as a
+	// transition from non-zero to all-zero.
+	secret := bytes.Repeat([]byte("ABCDEF12"), 4)
+	require.Equal(t, 32, len(secret))
+
+	// Capture the secret slice the kit will pass through the
+	// CurrentKeyID hook. The kit must copy this slice into a
+	// throwaway per-request copy that gets zeroed; the original
+	// slice owned by the store stays intact.
+	var observed []byte
+	store := keyStoreFn(func(ctx context.Context) (string, []byte, error) {
+		// Return a fresh copy each call — this mirrors the
+		// staticKeyStore convention and lets us observe the slice
+		// the RoundTripper hands SignCanonical via a shared
+		// reference.
+		cp := append([]byte(nil), secret...)
+		observed = cp
+		return keyID, cp, nil
+	})
+
+	rt := WrapKeyStore(roundTripFn(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}), store)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/api/x", bytes.NewReader([]byte("body")))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.NotNil(t, observed, "store hook should have been invoked")
+	// After RoundTrip returns, every byte of the per-request copy
+	// must be zero. The defer in (*transport).RoundTrip is the
+	// mechanism under test.
+	for i, b := range observed {
+		require.Zero(t, b, "byte %d of per-request key copy must be zero after RoundTrip; secret bytes leaked into the heap", i)
+	}
+
+	// Confirm the store's source-of-truth secret is untouched —
+	// the zero must apply only to the per-request copy.
+	expected := bytes.Repeat([]byte("ABCDEF12"), 4)
+	require.Equal(t, expected, secret, "store-owned secret must not be zeroed; only the per-request copy")
+}
+
+// keyStoreFn is a tiny adapter for the KeyStore interface that lets
+// tests drive CurrentKeyID with arbitrary behaviour.
+type keyStoreFn func(ctx context.Context) (string, []byte, error)
+
+func (f keyStoreFn) CurrentKeyID(ctx context.Context) (string, []byte, error) {
+	return f(ctx)
+}

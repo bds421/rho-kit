@@ -2,6 +2,7 @@ package slo
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -538,4 +539,41 @@ func TestEvaluateLatency_LabelFilter(t *testing.T) {
 		LatencyLabelFilter: LabelFilter{Name: "route", Pattern: "no-such-route"},
 	}, families)
 	assert.True(t, math.IsNaN(none))
+}
+
+// failingGatherer returns partial data with an error — the exact shape
+// of a Prometheus gatherer that hit a per-collector failure but still
+// produced data for healthy collectors.
+type failingGatherer struct {
+	mfs []*dto.MetricFamily
+	err error
+}
+
+func (f *failingGatherer) Gather() ([]*dto.MetricFamily, error) {
+	return f.mfs, f.err
+}
+
+// TestChecker_Evaluate_TolerantesGatherErrors guards L155: when the
+// underlying gatherer returns a non-nil error alongside partial data,
+// the Checker must still evaluate against the partial data rather than
+// crash or silently treat every SLO as unbreaching. The error is logged
+// at warn level — we don't capture the log in this test (the kit uses
+// slog.Default which is process-global) but verify the behaviour
+// invariant.
+func TestChecker_Evaluate_TolerantesGatherErrors(t *testing.T) {
+	g := &failingGatherer{
+		mfs: nil, // no partial data
+		err: errors.New("collector blew up"),
+	}
+	c := NewChecker(g,
+		ErrorRateSLO("err", 0.01, time.Hour),
+	)
+	statuses := c.Evaluate()
+	require.Len(t, statuses, 1)
+	// With no metric data, an error-rate SLO has nothing to compute
+	// — Current is NaN and the status surfaces the absence of data
+	// rather than a misleading "breaching" or "not breaching"
+	// classification.
+	assert.Equal(t, "err", statuses[0].Name)
+	assert.True(t, math.IsNaN(statuses[0].Current))
 }

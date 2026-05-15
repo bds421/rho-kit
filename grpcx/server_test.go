@@ -3,6 +3,7 @@ package grpcx_test
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,4 +284,57 @@ func TestNewServer_MaxConcurrentStreamsCapsInflightStreams(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("3rd Watch never started after freeing a slot — cap may be too tight or release did not propagate")
 	}
+}
+
+// TestNewServer_RawOptionsDoNotOverrideHardenedDefaults guards L083:
+// a caller passing raw grpc.ServerOption values via WithGRPCServerOptions
+// must NOT be able to override kit-hardened defaults like
+// MaxRecvMsgSize. The kit re-appends its hardened set AFTER cfg.grpcOpts
+// so grpc.NewServer's slice-order semantics put the kit's values last.
+//
+// This is verified by sending a payload that exceeds the kit's
+// default 4 MiB MaxRecvMsgSize but is well within the raw override's
+// 64 MiB value. The server must reject with ResourceExhausted
+// (proving the kit default won), not accept it.
+func TestNewServer_RawOptionsDoNotOverrideHardenedDefaults(t *testing.T) {
+	const bufSize = 8 * 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+
+	// Caller attempts to widen MaxRecvMsgSize to 64 MiB via raw
+	// option. The kit's hardened default (4 MiB) must still apply.
+	srv := grpcx.NewServer(
+		grpcx.WithGRPCServerOptions(grpc.MaxRecvMsgSize(64 * 1024 * 1024)),
+	)
+	healthpb.RegisterHealthServer(srv, &okHealth{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// Client side must also be permissive — otherwise the
+		// client transport rejects the message before it leaves.
+		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(64*1024*1024)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := healthpb.NewHealthClient(conn)
+
+	// 5 MiB payload — exceeds the kit's hardened 4 MiB default but
+	// inside the raw 64 MiB override.
+	big := strings.Repeat("x", 5*1024*1024)
+	_, err = client.Check(context.Background(), &healthpb.HealthCheckRequest{Service: big})
+	require.Error(t, err, "request larger than kit default must be rejected even when raw option attempts to widen")
+	require.Equal(t, codes.ResourceExhausted, status.Code(err),
+		"hardened default must produce ResourceExhausted; raw override should NOT win")
+}
+
+type okHealth struct {
+	healthpb.UnimplementedHealthServer
+}
+
+func (okHealth) Check(context.Context, *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
 }

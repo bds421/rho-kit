@@ -1,10 +1,12 @@
 package clamav
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/require"
 
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/infra/v2/storage/storagehttp/uploadsec"
@@ -567,4 +570,34 @@ func assertDirEmpty(t *testing.T, dir string) {
 	if len(entries) != 0 {
 		t.Fatalf("temp dir has %d entries after replay; want empty", len(entries))
 	}
+}
+
+// TestCopyBounded_OverflowGuard guards L110/L113: maxBytes near
+// math.MaxInt64 must not wrap to a negative limit when the function
+// computes maxBytes+1 for the LimitReader. Without the overflow guard
+// io.LimitReader would treat the negative limit as "no data" and
+// silently truncate uploads to zero bytes — a hostile peer could
+// trigger that by triggering a config path that ended up with
+// math.MaxInt64 as the cap.
+func TestCopyBounded_OverflowGuard(t *testing.T) {
+	src := strings.NewReader("hello world")
+	var dst bytes.Buffer
+	// Pass math.MaxInt64 to exercise the overflow boundary. The wrapped
+	// upload is far smaller than the limit so the call must succeed,
+	// not silently truncate.
+	err := copyBounded(&dst, src, math.MaxInt64)
+	require.NoError(t, err)
+	require.Equal(t, "hello world", dst.String())
+}
+
+// TestCopyBounded_RejectsAtCap verifies the existing cap behaviour
+// holds for ordinary maxBytes values — an upload exactly one byte
+// over the cap is rejected with a validation error.
+func TestCopyBounded_RejectsAtCap(t *testing.T) {
+	src := strings.NewReader("aaaaaaa") // 7 bytes
+	var dst bytes.Buffer
+	err := copyBounded(&dst, src, 6)
+	require.Error(t, err)
+	// The reader read at most maxBytes+1 = 7 bytes; the assertion
+	// is on the error path.
 }
