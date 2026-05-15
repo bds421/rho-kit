@@ -79,6 +79,70 @@ func TestNewChecker_DuplicateNamePanicDoesNotReflectName(t *testing.T) {
 	})
 }
 
+// TestNewChecker_ValidatesThresholdAndPercentile guards L155: the
+// constructor must panic on out-of-range Threshold or Percentile
+// values for each SLOType rather than silently producing a checker
+// that misclassifies every observation.
+func TestNewChecker_ValidatesThresholdAndPercentile(t *testing.T) {
+	cases := []struct {
+		name string
+		slo  SLO
+	}{
+		{
+			name: "latency threshold zero",
+			slo:  SLO{Name: "lat", Type: TypeLatency, Threshold: 0, Percentile: 0.99, Window: time.Hour},
+		},
+		{
+			name: "latency threshold negative",
+			slo:  SLO{Name: "lat", Type: TypeLatency, Threshold: -1, Percentile: 0.99, Window: time.Hour},
+		},
+		{
+			name: "latency percentile zero",
+			slo:  SLO{Name: "lat", Type: TypeLatency, Threshold: 0.5, Percentile: 0, Window: time.Hour},
+		},
+		{
+			name: "latency percentile one",
+			slo:  SLO{Name: "lat", Type: TypeLatency, Threshold: 0.5, Percentile: 1, Window: time.Hour},
+		},
+		{
+			name: "latency percentile above one",
+			slo:  SLO{Name: "lat", Type: TypeLatency, Threshold: 0.5, Percentile: 1.5, Window: time.Hour},
+		},
+		{
+			name: "error-rate threshold above one",
+			slo:  SLO{Name: "err", Type: TypeErrorRate, Threshold: 1.5, Window: time.Hour},
+		},
+		{
+			name: "error-rate threshold negative",
+			slo:  SLO{Name: "err", Type: TypeErrorRate, Threshold: -0.01, Window: time.Hour},
+		},
+		{
+			name: "success-rate threshold above one",
+			slo:  SLO{Name: "ok", Type: TypeSuccessRate, Threshold: 1.01, Window: time.Hour},
+		},
+		{
+			name: "success-rate threshold negative",
+			slo:  SLO{Name: "ok", Type: TypeSuccessRate, Threshold: -0.5, Window: time.Hour},
+		},
+		{
+			name: "unknown SLOType",
+			slo:  SLO{Name: "x", Type: SLOType("nonsense"), Threshold: 0.5, Window: time.Hour},
+		},
+		{
+			name: "negative window",
+			slo:  SLO{Name: "err", Type: TypeErrorRate, Threshold: 0.01, Window: -time.Second},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Panics(t, func() {
+				NewChecker(prometheus.NewRegistry(), tc.slo)
+			})
+		})
+	}
+}
+
 func TestChecker_Evaluate_EmptyRegistry(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	c := NewChecker(reg,

@@ -2,6 +2,7 @@ package redisstream
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -122,6 +123,49 @@ func TestValidateHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateHeaders_RejectsOversizedCount guards L051: a header map
+// with too many entries must be rejected even if each entry is
+// individually valid. Prevents unbounded map allocations on the
+// consumer side.
+func TestValidateHeaders_RejectsOversizedCount(t *testing.T) {
+	headers := map[string]string{}
+	for i := 0; i <= MaxHeaderCount; i++ {
+		headers[fmt.Sprintf("X-Custom-%05d", i)] = "v"
+	}
+	err := ValidateHeaders(headers)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrInvalidHeader))
+}
+
+// TestValidateHeaders_RejectsOversizedTotalBytes guards L051: a header
+// map whose entries are each individually within the per-name and
+// per-value caps but whose aggregate size exceeds MaxTotalHeaderBytes
+// must still be rejected.
+func TestValidateHeaders_RejectsOversizedTotalBytes(t *testing.T) {
+	// Pack just under MaxHeaderCount entries, each at the maximum
+	// per-value size. 64 entries × 8 KiB = 512 KiB, which exceeds
+	// the 256 KiB total cap.
+	headers := map[string]string{}
+	for i := 0; i < MaxHeaderCount; i++ {
+		headers[fmt.Sprintf("X-Pack-%05d", i)] = strings.Repeat("x", MaxHeaderValueBytes)
+	}
+	err := ValidateHeaders(headers)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrInvalidHeader))
+	assert.Contains(t, err.Error(), "total header bytes")
+}
+
+// TestValidateHeaders_AcceptsExactlyAtCountAndByteCaps guards the
+// boundary: a header set at exactly MaxHeaderCount with small values
+// (well under the byte cap) is admitted.
+func TestValidateHeaders_AcceptsExactlyAtCountAndByteCaps(t *testing.T) {
+	headers := map[string]string{}
+	for i := 0; i < MaxHeaderCount; i++ {
+		headers[fmt.Sprintf("X-Pack-%05d", i)] = "v"
+	}
+	require.NoError(t, ValidateHeaders(headers))
 }
 
 func TestValidateHeaders_DoesNotReflectHeaderMetadata(t *testing.T) {

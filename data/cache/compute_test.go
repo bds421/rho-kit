@@ -891,3 +891,49 @@ func TestComputeCache_SingleflightSoloCallerNotFollower(t *testing.T) {
 	assert.EqualValues(t, 0, gatherGaugeValue(t, metrics.singleflightInflight, "solo_cache"),
 		"inflight gauge must be 0 after solo compute completes")
 }
+
+// TestComputeCache_OverflowingTTL_Rejected guards L045: ComputeFunc
+// must not be able to wedge the cache with a TTL so large that
+// time.Now().Add(ttl) overflows int64 nanoseconds. The kit caps at
+// 10 years; values above that are rejected loudly rather than wrapping
+// to a negative ExpiresAt.
+func TestComputeCache_OverflowingTTL_Rejected(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "ovf:")
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	// 11 years is past the 10-year cap.
+	overflowing := 11 * 365 * 24 * time.Hour
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		return "v", overflowing, nil
+	}
+
+	_, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ttl")
+	assert.Contains(t, err.Error(), "exceeds maximum")
+}
+
+// TestComputeCache_StaleTTLOverflow_Rejected guards the same overflow
+// at construction time: staleTTL above the 10-year cap is rejected
+// when the first GetOrCompute fires (the cap is enforced inside the
+// compute path so the existing WithStaleTTL panic-on-negative
+// validation is preserved).
+func TestComputeCache_StaleTTLOverflow_Rejected(t *testing.T) {
+	backend := newTestBackend(t)
+	cc, err := NewComputeCache[string](backend, "ovfs:",
+		WithStaleTTL(11*365*24*time.Hour),
+	)
+	require.NoError(t, err)
+	defer func() { _ = cc.Close() }()
+
+	fn := func(ctx context.Context) (string, time.Duration, error) {
+		return "v", time.Hour, nil
+	}
+
+	_, err = cc.GetOrCompute(context.Background(), "k", fn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "staleTTL")
+	assert.Contains(t, err.Error(), "exceeds maximum")
+}

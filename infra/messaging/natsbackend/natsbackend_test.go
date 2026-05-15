@@ -673,3 +673,55 @@ func TestDispatch_PopulatesMessageHeadersAndDetachesMessage(t *testing.T) {
 	assert.Equal(t, `{Xid":"42"}`, string(got.Message.Payload))
 	assert.Equal(t, "corr-1", jm.headers.Get(messaging.HeaderCorrelationID))
 }
+
+// TestDeliveryHeaderMaps_RejectsOversizedAggregate guards L139: NATS
+// header materialisation caps total bytes via maxNatsDeliveryHeaderBytes
+// so a peer emitting fewer than the count cap but with multi-MB values
+// cannot exhaust memory.
+func TestDeliveryHeaderMaps_RejectsOversizedAggregate(t *testing.T) {
+	// Single value at the budget admits.
+	atBudget := nats.Header{}
+	atBudget.Set("k", strings.Repeat("x", maxNatsDeliveryHeaderBytes-1))
+	headers, _ := deliveryHeaderMaps(atBudget)
+	require.NotNil(t, headers)
+	require.Len(t, headers, 1)
+
+	// Single value above the budget is dropped.
+	overBudget := nats.Header{}
+	overBudget.Set("k", strings.Repeat("x", maxNatsDeliveryHeaderBytes+1))
+	headers, _ = deliveryHeaderMaps(overBudget)
+	require.Nil(t, headers, "value larger than aggregate byte budget must not materialise")
+
+	// Many small headers that collectively exceed the budget — admit
+	// some, drop the rest. Map iteration order is non-deterministic so
+	// we assert on byte sum, not specific keys.
+	manyValues := nats.Header{}
+	const each = 1024
+	const count = (maxNatsDeliveryHeaderBytes / each) + 16
+	for i := 0; i < count; i++ {
+		manyValues.Set(fmt.Sprintf("k-%03d", i), strings.Repeat("v", each-len("k-000")))
+	}
+	headers, _ = deliveryHeaderMaps(manyValues)
+	require.NotNil(t, headers)
+	totalBytes := 0
+	for k, v := range headers {
+		if s, ok := v.(string); ok {
+			totalBytes += len(k) + len(s)
+		}
+	}
+	require.LessOrEqual(t, totalBytes, maxNatsDeliveryHeaderBytes,
+		"materialised header bytes must not exceed aggregate budget")
+}
+
+// TestDeliveryHeaderMaps_RejectsOversizedCount guards the existing
+// node-count cap independent of the byte budget.
+func TestDeliveryHeaderMaps_RejectsOversizedCount(t *testing.T) {
+	h := nats.Header{}
+	for i := 0; i < maxNatsDeliveryHeaders*2; i++ {
+		h.Set(fmt.Sprintf("k-%05d", i), "v")
+	}
+	headers, _ := deliveryHeaderMaps(h)
+	require.NotNil(t, headers)
+	require.LessOrEqual(t, len(headers), maxNatsDeliveryHeaders,
+		"materialised header count must not exceed maxNatsDeliveryHeaders")
+}

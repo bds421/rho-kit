@@ -1,6 +1,8 @@
 package amqpbackend
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -334,4 +336,59 @@ func TestFromAMQPDelivery_SchemaVersionZeroWhenAbsent(t *testing.T) {
 
 	assert.Equal(t, uint(0), d.SchemaVersion)
 	assert.Equal(t, uint(0), d.Message.SchemaVersion)
+}
+
+// TestExtractStringHeaders_RejectsOversizedAggregate guards L134: a peer
+// that emits a small number of headers but with very large values must
+// not exhaust memory through the byte axis. The aggregate name+value
+// budget caps materialised headers at maxHeaderBytes total.
+func TestExtractStringHeaders_RejectsOversizedAggregate(t *testing.T) {
+	// One header at exactly the byte budget admits.
+	atBudget := amqp.Table{
+		"k": strings.Repeat("x", maxHeaderBytes-1),
+	}
+	result := extractStringHeaders(atBudget)
+	require.NotNil(t, result)
+	require.Len(t, result, 1)
+
+	// A single value larger than the budget is dropped — the loop breaks
+	// before adding it. Result is nil (no headers materialised).
+	overBudget := amqp.Table{
+		"k": strings.Repeat("x", maxHeaderBytes+1),
+	}
+	result = extractStringHeaders(overBudget)
+	require.Nil(t, result, "value larger than aggregate byte budget must not materialise")
+
+	// Many small values that collectively exceed the budget: subsequent
+	// headers after the budget is consumed are dropped. We accept
+	// exactly as many as fit (map iteration order is non-deterministic
+	// so we assert on byte sum, not specific keys).
+	manyValues := amqp.Table{}
+	const each = 1024
+	const count = (maxHeaderBytes / each) + 16 // overshoot by 16 headers
+	for i := 0; i < count; i++ {
+		manyValues[fmt.Sprintf("k-%03d", i)] = strings.Repeat("v", each-len("k-000"))
+	}
+	result = extractStringHeaders(manyValues)
+	require.NotNil(t, result)
+	totalBytes := 0
+	for k, v := range result {
+		totalBytes += len(k) + len(v)
+	}
+	require.LessOrEqual(t, totalBytes, maxHeaderBytes,
+		"materialised header bytes must not exceed aggregate budget")
+}
+
+// TestExtractStringHeaders_RejectsOversizedCount guards the existing
+// node-count cap independent of the new byte budget — a peer emitting
+// thousands of one-byte headers should still be capped at maxHeaderNodes.
+func TestExtractStringHeaders_RejectsOversizedCount(t *testing.T) {
+	h := amqp.Table{}
+	for i := 0; i < maxHeaderNodes*2; i++ {
+		h[fmt.Sprintf("k-%05d", i)] = "v"
+	}
+	result := extractStringHeaders(h)
+	require.NotNil(t, result)
+	require.LessOrEqual(t, len(result), maxHeaderNodes,
+		"materialised header count must not exceed maxHeaderNodes")
 }
