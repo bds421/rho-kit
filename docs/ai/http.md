@@ -261,7 +261,7 @@ client := httpx.NewTracingHTTPClient(10*time.Second, tlsConfig) // with OpenTele
 client := httpx.NewHTTPClient(10*time.Second, tlsConfig, httpx.WithFollowRedirects(3)) // explicit redirect opt-in
 client := httpx.NewResilientHTTPClient(httpx.WithResilientIdleConnTimeout(30*time.Second)) // circuit breaker + kit transport defaults
 
-// infra.HTTPClient is pre-configured (tracing-aware if app/tracing.Module is registered)
+// app.HTTPClient(infra) is pre-configured (tracing-aware if app/tracing.Module is registered)
 ```
 
 Kit-created outbound HTTP clients block redirects by default and return
@@ -418,7 +418,7 @@ maputil.SetIfNotNil(updates, "age", req.Age)      // *int
 ## Anti-Patterns
 
 - **Never** create or serve with `net/http` server entrypoints (`http.Server{}`, `http.ListenAndServe`, `http.Serve`) directly — use `httpx.NewServer` for safe defaults.
-- **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `infra.HTTPClient`.
+- **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `app.HTTPClient(infra)`.
 - **Never** manually order middleware — use `stack.Default` with `WithOuter`/`WithInner`.
 - **Never** pass `nil` JWT provider to `auth.JWT` — it panics by design.
 - **Never** use `r.URL.Path` for metrics labels — use `r.Pattern` (Go 1.22+) to avoid cardinality explosion.

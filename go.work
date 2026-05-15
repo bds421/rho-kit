@@ -11,6 +11,7 @@ use (
 	./app/authz
 	./app/budget
 	./app/cron
+	./app/eventbus
 	./app/flags
 	./app/grpc
 	./app/http

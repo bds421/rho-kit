@@ -27,7 +27,6 @@ type runContextValueKey struct{}
 func TestBuilder_FluentChaining(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
 		WithoutRateLimit().
-		EventBusPool(4).
 		With(NewBaseModule("svc-extra")).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).
@@ -39,29 +38,8 @@ func TestBuilder_FluentChaining(t *testing.T) {
 	}
 }
 
-func TestBuilder_WithEventBusPool(t *testing.T) {
-	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		EventBusPool(4)
-	assert.Equal(t, 4, b.eventBusPoolSize)
-}
-
-func TestBuilder_WithEventBusPoolPanicsOnZero(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for zero pool size")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).EventBusPool(0)
-}
-
-func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for negative pool size")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).EventBusPool(-1)
-}
+// EventBusPool panic-on-invalid tests moved to app/eventbus — the
+// bridge's WithPoolSize option owns the construction-time contract.
 
 // TestBuilder_WithAuditLogClonesOptions was removed when audit log
 // moved to app/auditlog — option cloning is now an app/auditlog.Module
@@ -175,12 +153,8 @@ func TestTestInfrastructure(t *testing.T) {
 	if infra.Logger == nil {
 		t.Fatal("Logger should not be nil")
 	}
-	if infra.HTTPClient == nil {
-		t.Fatal("HTTPClient should not be nil")
-	}
-	if infra.HTTPClient.Timeout <= 0 {
-		t.Fatal("HTTPClient should have a bounded timeout")
-	}
+	// HTTPClient defaults to nil in TestInfrastructure — tests that
+	// need one publish it via infra.SetResource(ResourceHTTPClientKey, …).
 	// Function fields should be callable without panicking.
 	infra.Background("test", func(_ context.Context) error { return nil })
 	infra.SetCustomReadiness(http.NotFoundHandler())

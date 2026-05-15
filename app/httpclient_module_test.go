@@ -64,8 +64,7 @@ func TestHTTPClientModule_PopulateSetsFields(t *testing.T) {
 
 	infra := &Infrastructure{}
 	m.Populate(infra)
-	assert.NotNil(t, infra.HTTPClient, "HTTPClient should be set")
-	// ClientTLS is nil when no TLS is configured, which is fine.
+	assert.NotNil(t, HTTPClient(*infra), "HTTPClient should be published on the resource map")
 }
 
 func TestHTTPClientModule_ClientBeforeInit(t *testing.T) {

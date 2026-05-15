@@ -242,7 +242,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 ## Anti-Patterns
 
 - **Never** create or serve with `net/http` server entrypoints (`http.Server`, `http.ListenAndServe`, `http.Serve`) directly — use `httpx.NewServer` (safe timeouts, header limits).
-- **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `infra.HTTPClient`.
+- **Never** use `http.DefaultClient` — use `httpx.NewHTTPClient` or `app.HTTPClient(infra)`.
 - **Never** embed user IDs or request IDs in Redis/Prometheus metric names — causes cardinality explosion.
 - **Never** use raw client filenames as storage keys — use `storagehttp.UUIDKeyFunc`.
 - **Never** store user uploads when malware scanning fails or returns inconclusive — treat `uploadsec.ErrScannerUnavailable` as fail-closed.

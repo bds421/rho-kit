@@ -18,7 +18,6 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
 	"github.com/bds421/rho-kit/observability/v2/health"
-	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -76,9 +75,6 @@ type Builder struct {
 	// so Builder.Validate can refuse silent un-throttled
 	// deployments.
 	allowNoRateLimit bool
-
-	// EventBus worker pool
-	eventBusPoolSize int
 
 	// Health checks
 	healthChecks []health.DependencyCheck
@@ -144,19 +140,6 @@ func New(name, version string, cfg BaseConfig) *Builder {
 // has the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
-	return b
-}
-
-// EventBusPool overrides the default bounded worker pool size for the
-// in-process event bus. The pool is registered on the lifecycle runner so it
-// starts before handlers can publish async events and drains during shutdown.
-//
-// Panics if size is not positive.
-func (b *Builder) EventBusPool(size int) *Builder {
-	if size <= 0 {
-		panic("app: EventBusPool requires a positive pool size")
-	}
-	b.eventBusPoolSize = size
 	return b
 }
 
@@ -341,13 +324,6 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	httpCfg := resolveHTTPConfig(append(allModules, deferredUserModules...))
 	allModules = append(allModules, deferredUserModules...)
 
-	// 0.5. EventBus — always initialized (no With* required).
-	busOpts := []eventbus.Option{eventbus.WithLogger(logger)}
-	if b.eventBusPoolSize > 0 {
-		busOpts = append(busOpts, eventbus.WithWorkerPool(b.eventBusPoolSize))
-	}
-	eventBus := eventbus.New(busOpts...)
-
 	// 1. TLS -- server TLS is still needed here for the public server.
 	// Client TLS is now handled by the httpClientModule.
 	//
@@ -398,12 +374,9 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 	runner := lifecycle.NewRunner(logger, runnerOpts...)
 
-	// 2.5. EventBus lifecycle -- register even when the Builder uses
-	// the eventbus package's default auto-started worker pool. Start
-	// will not create duplicate workers for that pool; it simply binds
-	// shutdown to the Runner so embedded RunContext calls do not leak
-	// eventbus workers after returning.
-	runner.Add("eventbus", eventBus)
+	// (EventBus is now an opt-in bridge module under app/eventbus —
+	// see eventbus.Module and eventbus.Bus(infra). Services that
+	// need it call b.With(eventbus.Module()).)
 
 	// 2.6. TLS reload-on-signal bridge — only registered when the
 	// caller wired TLSReloadOnSignal alongside ReloadingTLS
@@ -512,7 +485,6 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		Logger:        logger,
 		ServerTLS:     serverTLS,
 		TLSCertSource: tlsSource,
-		EventBus:      eventBus,
 		Config:        b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			validateBackgroundSpec(name, fn)

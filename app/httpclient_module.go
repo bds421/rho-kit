@@ -35,8 +35,7 @@ type httpClientModule struct {
 	tracingConfigured bool
 
 	// initialized during Init
-	client    *http.Client
-	clientTLS *tls.Config
+	client *http.Client
 }
 
 // newHTTPClientModule creates an HTTP client module.
@@ -65,7 +64,6 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 			return fmt.Errorf("httpclient module: build client TLS: %w", err)
 		}
 	}
-	m.clientTLS = cTLS
 
 	tracingActive := false
 	if m.tracingConfigured {
@@ -91,8 +89,9 @@ func (m *httpClientModule) Init(_ context.Context, mc ModuleContext) error {
 }
 
 func (m *httpClientModule) Populate(infra *Infrastructure) {
-	infra.HTTPClient = m.client
-	infra.ClientTLS = m.clientTLS
+	if m.client != nil {
+		infra.SetResource(ResourceHTTPClientKey, m.client)
+	}
 }
 
 // Client returns the initialized HTTP client, or nil if Init has not been called.

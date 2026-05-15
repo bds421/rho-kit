@@ -166,6 +166,7 @@ pointers for the most common downstream wiring:
 | Action logger | `With(actionlog.Module(logger))` | `actionlog.Logger(infra)` |
 | Approval store | `With(approval.Module(store))` | `approval.Store(infra)` |
 | Authorization decider | `With(authz.Module(decider))` | `authz.Decider(infra)` |
+| In-process event bus | `With(eventbus.Module())` | `eventbus.Bus(infra)` |
 | Signed-request middleware | `With(signedrequest.Module(resolver, store))` | _(middleware)_ |
 | HTTP server config | `With(http.Module(http.WithoutTLS(), ...))` | _(consumed by Builder)_ |
 | Typed HTTP handlers | `httpx.JSON[Req,Resp](logger, fn)` etc. | — |
@@ -192,7 +193,7 @@ require explicit opt-in:
   subtree that needs it.
 - **OpenTelemetry tracing.** `With(tracing.Module(cfg))` is opt-in;
   without it the Builder runs with no tracer provider and
-  `infra.HTTPClient` is the non-tracing client.
+  `app.HTTPClient(infra)` is the non-tracing client.
 - **Audit logger, approval store, action logger.** Register via
   `With(auditlog.Module(store))`, `With(approval.Module(store))`,
   `With(actionlog.Module(logger))`. The kit ships in-memory
@@ -235,7 +236,7 @@ Reviews keep catching the same five mistakes in downstream services:
 5. **Direct `net/http.Server` or `http.DefaultClient`.**
    Both are rejected by `kit-doctor`. Use `httpx.NewServer(addr,
    handler, ...)` and `httpx.NewHTTPClient(...)` (or the Builder's
-   `infra.HTTPClient`).
+   `app.HTTPClient(infra)`).
 
 ## 6. Programs That Outgrow The Builder
 

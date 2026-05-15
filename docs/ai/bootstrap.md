@@ -135,7 +135,6 @@ lives in per-adapter sub-modules under `app/` and is registered via
 | `OnShutdown(fn)` | Shutdown hook before close/drain | - |
 | `Logger(l)` | Override the kit-built logger | - |
 | `StartupTimeout(d)` | Cap on module Init() time | - |
-| `EventBusPool(n)` | EventBus worker pool size | - |
 | `Router(fn)` | HTTP handler builder | required |
 
 Concept-specific configuration moves through the corresponding bridge
@@ -160,6 +159,7 @@ module — register via `b.With(<bridge>.Module(...))`:
 | Action logger | `With(actionlog.Module(logger))` | `actionlog.Logger(infra)` |
 | Approval store | `With(approval.Module(store))` | `approval.Store(infra)` |
 | Authorization decider | `With(authz.Module(decider))` | `authz.Decider(infra)` |
+| In-process event bus | `With(eventbus.Module(eventbus.WithPoolSize(n)))` | `eventbus.Bus(infra)` |
 
 ## Infrastructure
 
@@ -168,13 +168,9 @@ Available inside `RouterFunc`:
 ```go
 type Infrastructure struct {
     Logger        *slog.Logger
-    ClientTLS     *tls.Config
     ServerTLS     *tls.Config
     TLSCertSource netutil.CertificateSource // populated when http.WithReloadingTLS is configured
-
-    EventBus   *eventbus.Bus
-    HTTPClient *http.Client
-    Config     app.BaseConfig
+    Config        app.BaseConfig
 
     Background(name string, fn func(ctx context.Context) error)
     SetCustomReadiness(h http.Handler)
@@ -184,13 +180,14 @@ type Infrastructure struct {
 }
 ```
 
-Nil fields mean the matching Builder method was not called. Bridge-
-module resources (Postgres pool, Redis, JWT, PASETO, flags, cron
-scheduler, leader elector, SLO checker, rate limiters, AMQP/NATS
-connections, …) are accessed via per-bridge lookup functions on the
-`Infrastructure` value — e.g., `postgres.Pool(infra)`,
-`jwt.Provider(infra)`, `ratelimit.IPLimiter(infra)`. The callback
-fields are valid only during the synchronous `RouterFunc` call.
+Every other service resource (Postgres pool, Redis, JWT, PASETO,
+flags, cron scheduler, leader elector, SLO checker, rate limiters,
+AMQP/NATS connections, event bus, the outbound HTTP client, …)
+lives in the bridge resource map and is reached via per-bridge
+lookup functions: `postgres.Pool(infra)`, `jwt.Provider(infra)`,
+`ratelimit.IPLimiter(infra)`, `app.HTTPClient(infra)`,
+`eventbus.Bus(infra)`, etc. The callback fields are valid only
+during the synchronous `RouterFunc` call.
 
 ## Lifecycle Order
 

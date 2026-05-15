@@ -349,13 +349,14 @@ type OrderPlaced struct {
 }
 func (OrderPlaced) EventName() string { return "order.placed" }
 
-// 2. Subscribe (inside RouterFunc using infra.EventBus):
-eventbus.Subscribe(infra.EventBus, func(ctx context.Context, e OrderPlaced) error {
+// 2. Subscribe (inside RouterFunc using bus := appeventbus.Bus(infra)):
+bus := appeventbus.Bus(infra)
+eventbus.Subscribe(bus, func(ctx context.Context, e OrderPlaced) error {
     return sendConfirmationEmail(ctx, e.OrderID)
 }, eventbus.WithName("send-confirmation"))
 
 // 3. Publish (from handler code):
-err := eventbus.Publish(infra.EventBus, ctx, OrderPlaced{
+err := eventbus.Publish(bus, ctx, OrderPlaced{
     OrderID: "ord-123", CustomerID: "cust-456", Total: 99.99,
 })
 ```
@@ -363,7 +364,7 @@ err := eventbus.Publish(infra.EventBus, ctx, OrderPlaced{
 Async handlers (fire-and-forget, errors go to OnError callback):
 
 ```go
-eventbus.Subscribe(infra.EventBus, func(ctx context.Context, e OrderPlaced) error {
+eventbus.Subscribe(bus, func(ctx context.Context, e OrderPlaced) error {
     return updateAnalytics(ctx, e)
 }, eventbus.WithAsync(), eventbus.WithName("analytics"))
 ```
@@ -372,7 +373,7 @@ eventbus.Subscribe(infra.EventBus, func(ctx context.Context, e OrderPlaced) erro
 - `Subscribe` and `Publish` are package-level functions (Go methods can't have type params)
 - Sync handlers: errors collected via `errors.Join` and returned from `Publish`
 - Async handlers: run through the default bounded worker pool; saturation returns `eventbus.ErrQueueFull` unless you explicitly choose drop or block behavior with `WithOnFull`
-- Always available on `infra.EventBus` (no `WithEventBus()` needed)
+- Available when the service registers `b.With(appeventbus.Module())`; the kit no longer ships an always-on bus
 - NOT for cross-service communication (use `infra/messaging` instead)
 
 ## Anti-Patterns

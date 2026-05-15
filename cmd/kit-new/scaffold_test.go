@@ -302,6 +302,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/authz",
 		"app/budget",
 		"app/cron",
+		"app/eventbus",
 		"app/flags",
 		"app/grpc",
 		"app/http",
