@@ -234,3 +234,111 @@ func TestAllow_HonorsCancelledContext(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 }
+
+// TestNew_PrecisionAcrossConfigurations guards L040: the rate calculation
+// `period / time.Duration(burst)` is integer division. The constructor
+// already panics when the quotient rounds to zero, but the test pins the
+// exact (period, burst) pairs the kit supports without precision loss so
+// future refactors that change the rate calculation can't silently widen
+// or narrow the supported range.
+func TestNew_PrecisionAcrossConfigurations(t *testing.T) {
+	cases := []struct {
+		name     string
+		period   time.Duration
+		burst    int
+		wantRate time.Duration
+	}{
+		// Common rate-limit shapes.
+		{"1 per second", time.Second, 1, time.Second},
+		{"10 per second", time.Second, 10, 100 * time.Millisecond},
+		{"100 per second", time.Second, 100, 10 * time.Millisecond},
+		{"1k per second", time.Second, 1000, time.Millisecond},
+		{"1M per second", time.Second, 1_000_000, time.Microsecond},
+		// Long windows.
+		{"1 per minute", time.Minute, 1, time.Minute},
+		{"60 per minute", time.Minute, 60, time.Second},
+		{"3600 per hour", time.Hour, 3600, time.Second},
+		// Sub-second windows.
+		{"10 per 100ms", 100 * time.Millisecond, 10, 10 * time.Millisecond},
+		{"100 per 10ms", 10 * time.Millisecond, 100, 100 * time.Microsecond},
+		// Integer-division floor cases — period is not evenly divisible
+		// by burst but the quotient remains positive. The kit accepts
+		// any positive rate; callers asking for exact fairness should
+		// pick (period, burst) pairs that divide cleanly.
+		{"3 per second floor", time.Second, 3, 333_333_333 * time.Nanosecond},
+		{"7 per second floor", time.Second, 7, 142_857_142 * time.Nanosecond},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := New(tc.period, tc.burst)
+			defer func() { _ = l.Close() }()
+			require.Equal(t, tc.wantRate, l.rate,
+				"period=%s burst=%d should produce rate=%s, got %s",
+				tc.period, tc.burst, tc.wantRate, l.rate)
+		})
+	}
+}
+
+// TestNew_PanicsAtRateUnderflowBoundary pins the precise (period, burst)
+// pair that causes the kit to reject the construction because period/burst
+// rounds to zero. Without the panic, the limiter would admit every event
+// without any spacing — a silent rate-limit bypass (L040).
+func TestNew_PanicsAtRateUnderflowBoundary(t *testing.T) {
+	// time.Duration is int64 nanoseconds. The smallest non-zero rate
+	// is 1 nanosecond. Anything more granular rounds to zero.
+	assert.NotPanics(t, func() {
+		l := New(time.Duration(1), 1) // rate = 1ns, fine
+		_ = l.Close()
+	})
+	assert.NotPanics(t, func() {
+		l := New(time.Duration(10), 10) // rate = 1ns, fine
+		_ = l.Close()
+	})
+	assert.Panics(t, func() {
+		// period=1ns, burst=2 → rate = 0 → kit refuses.
+		_ = New(time.Duration(1), 2)
+	})
+	assert.Panics(t, func() {
+		// period=10ns, burst=100 → rate = 0 → kit refuses.
+		_ = New(time.Duration(10), 100)
+	})
+}
+
+// TestAllow_SmoothRatePrecisionUnderFastClock proves the smoothing
+// behaviour holds at sub-millisecond resolution. A 1000/sec limiter is
+// fed events at perfect 1000Hz cadence and every event must admit; a
+// follow-up burst at a frozen clock must respect the burst capacity
+// rather than admitting unbounded events (precision boundary for L040).
+func TestAllow_SmoothRatePrecisionUnderFastClock(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	const burst = 1000
+	l := New(time.Second, burst, WithClock(func() time.Time { return cur }))
+	defer func() { _ = l.Close() }()
+
+	// Phase 1: events at perfect 1000Hz must all admit.
+	admitted := 0
+	for i := 0; i < burst; i++ {
+		ok, _, err := l.Allow(context.Background(), "k")
+		require.NoError(t, err)
+		if ok {
+			admitted++
+		}
+		cur = cur.Add(time.Millisecond)
+	}
+	require.Equal(t, burst, admitted, "1000 events at 1000Hz must all admit under a 1000/sec limiter")
+
+	// Phase 2: clock frozen — back-to-back requests must respect the
+	// burst capacity. The exact admit count within a frozen-clock
+	// burst depends on the TAT-relative-to-now arithmetic, but a
+	// 1000/sec limiter can never admit more than 2*burst events at a
+	// single instant.
+	burstAdmits := 0
+	for i := 0; i < burst*4; i++ {
+		ok, _, err := l.Allow(context.Background(), "k")
+		require.NoError(t, err)
+		if ok {
+			burstAdmits++
+		}
+	}
+	require.LessOrEqual(t, burstAdmits, burst, "back-to-back requests with no clock advance must not exceed the burst capacity")
+}

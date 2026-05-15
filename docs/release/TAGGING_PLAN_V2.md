@@ -160,7 +160,7 @@ Expected output summary:
 - `git status --short` prints nothing.
 - `git diff --check` prints nothing.
 - `make check-dependency-boundaries` prints an OK line; current evidence is
-  `413 direct module edges checked`.
+  `414 direct module edges checked`.
 - `make check-dependency-allowlist` prints an OK line; current evidence is
   `59 direct external deps approved`.
 - `make check-operational-readiness` prints `operational readiness check OK

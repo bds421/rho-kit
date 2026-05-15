@@ -166,7 +166,7 @@ RELEASE_MODE=all make release-plan
 Expected output summary:
 
 - `git diff --check`: no output.
-- `make check-dependency-boundaries`: OK; current evidence is `393 direct
+- `make check-dependency-boundaries`: OK; current evidence is `414 direct
   module edges checked`.
 - `make check-dependency-allowlist`: OK; current evidence is `59 direct
   external deps approved`.
