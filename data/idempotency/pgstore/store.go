@@ -108,9 +108,12 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	// or legacy row with a multi-MB response_body would be fully
 	// scanned before ValidateCachedResponse caught the oversize.
 	// octet_length(response_body) lets Postgres serialise the size
-	// without sending the bytes.
+	// without sending the bytes. COALESCE handles legitimate cached
+	// responses with no body (e.g. 204 No Content, 200 with empty
+	// payload) where response_body is NULL — octet_length(NULL)
+	// returns NULL and would fail the int64 scan.
 	sizeQuery := fmt.Sprintf(
-		`SELECT octet_length(response_body) FROM %s
+		`SELECT COALESCE(octet_length(response_body), 0) FROM %s
 		 WHERE key = $1 AND status_code IS NOT NULL AND expires_at > now()`,
 		s.table,
 	)
