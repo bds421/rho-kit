@@ -7,9 +7,9 @@ import (
 	"github.com/bds421/rho-kit/data/v2/ratelimit/tokenbucket"
 )
 
-func ExampleOpen() {
+func ExampleNew() {
 	// Capacity 2, refill 1/sec. The first two requests pass; the third is denied.
-	lim := tokenbucket.Open(2, 1, tokenbucket.WithoutSweeper())
+	lim := tokenbucket.New(2, 1, tokenbucket.WithoutSweeper())
 	defer func() { _ = lim.Close() }()
 
 	ctx := context.Background()

@@ -39,11 +39,11 @@ func (panicDegradationHandler) OnUnavailable(_ context.Context) error {
 	panic("degradation failed")
 }
 
-func TestRateLimiter_Degradation_Passthrough(t *testing.T) {
+func TestLimiter_Degradation_Passthrough(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
 
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithDegradation(health, passthroughHandler{}),
 	)
 
@@ -63,11 +63,11 @@ func TestRateLimiter_Degradation_Passthrough(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_Degradation_FailFast(t *testing.T) {
+func TestLimiter_Degradation_FailFast(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
 
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithDegradation(health, failFastHandler{}),
 	)
 
@@ -85,9 +85,9 @@ func TestRateLimiter_Degradation_FailFast(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
+func TestLimiter_Degradation_PanicFailsClosed(t *testing.T) {
 	t.Run("health", func(t *testing.T) {
-		rl := NewRateLimiter(1, time.Minute,
+		rl := NewLimiter(1, time.Minute,
 			WithDegradation(panicHealth{}, passthroughHandler{}),
 		)
 		handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -103,7 +103,7 @@ func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
 	t.Run("handler", func(t *testing.T) {
 		health := &stubHealth{}
 		health.healthy.Store(false)
-		rl := NewRateLimiter(1, time.Minute,
+		rl := NewLimiter(1, time.Minute,
 			WithDegradation(health, panicDegradationHandler{}),
 		)
 		handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -118,11 +118,11 @@ func TestRateLimiter_Degradation_PanicFailsClosed(t *testing.T) {
 	})
 }
 
-func TestRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
+func TestLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(true)
 
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithDegradation(health, passthroughHandler{}),
 	)
 
@@ -147,11 +147,11 @@ func TestRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_Degradation_TransitionFromHealthyToUnhealthy(t *testing.T) {
+func TestLimiter_Degradation_TransitionFromHealthyToUnhealthy(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(true)
 
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithDegradation(health, passthroughHandler{}),
 	)
 
@@ -178,8 +178,8 @@ func TestRateLimiter_Degradation_TransitionFromHealthyToUnhealthy(t *testing.T) 
 	}
 }
 
-func TestRateLimiter_NoDegradation_BackwardCompatible(t *testing.T) {
-	rl := NewRateLimiter(1, time.Minute)
+func TestLimiter_NoDegradation_BackwardCompatible(t *testing.T) {
+	rl := NewLimiter(1, time.Minute)
 
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -202,11 +202,11 @@ func TestRateLimiter_NoDegradation_BackwardCompatible(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_Degradation_Passthrough(t *testing.T) {
+func TestKeyedLimiter_Degradation_Passthrough(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
 
-	rl := NewKeyedRateLimiter(1, time.Minute,
+	rl := NewKeyedLimiter(1, time.Minute,
 		WithKeyedDegradation(health, passthroughHandler{}),
 	)
 
@@ -227,11 +227,11 @@ func TestKeyedRateLimiter_Degradation_Passthrough(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_Degradation_FailFast(t *testing.T) {
+func TestKeyedLimiter_Degradation_FailFast(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
 
-	rl := NewKeyedRateLimiter(1, time.Minute,
+	rl := NewKeyedLimiter(1, time.Minute,
 		WithKeyedDegradation(health, failFastHandler{}),
 	)
 
@@ -251,11 +251,11 @@ func TestKeyedRateLimiter_Degradation_FailFast(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
+func TestKeyedLimiter_Degradation_HealthyUsesNormalRateLimiting(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(true)
 
-	rl := NewKeyedRateLimiter(1, time.Minute,
+	rl := NewKeyedLimiter(1, time.Minute,
 		WithKeyedDegradation(health, passthroughHandler{}),
 	)
 

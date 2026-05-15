@@ -54,7 +54,7 @@ const (
 	defaultDeadLetterMaxLen int64 = 10000
 
 	// defaultMaxPayloadSize is the default max message size (1 MiB).
-	// Override with WithMaxPayloadSize. Set to 0 to disable the limit.
+	// Override with WithMaxMessageBytes. Set to 0 to disable the limit.
 	defaultMaxPayloadSize = kitqueue.DefaultMaxPayloadBytes
 
 	// defaultHeartbeatTTL is how long an active consumer's heartbeat key
@@ -412,12 +412,12 @@ func WithDeadLetterMaxLen(n int64) Option {
 	}
 }
 
-// WithMaxPayloadSize sets the maximum message size in bytes. Messages exceeding
+// WithMaxMessageBytes sets the maximum message size in bytes. Messages exceeding
 // this limit are rejected at enqueue time. Default is 1 MiB. Set to 0 to
 // disable the limit entirely. Negative values panic.
-func WithMaxPayloadSize(n int) Option {
+func WithMaxMessageBytes(n int) Option {
 	if n < 0 {
-		panic("redisqueue: WithMaxPayloadSize requires n >= 0")
+		panic("redisqueue: WithMaxMessageBytes requires n >= 0")
 	}
 	return func(q *Queue) {
 		q.maxPayloadSize = n

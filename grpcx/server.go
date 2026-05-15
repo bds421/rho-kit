@@ -38,7 +38,7 @@ type serverConfig struct {
 // DefaultRPCDeadline is the per-RPC deadline applied automatically by
 // [NewServer] when the caller does not configure one explicitly. It bounds
 // every handler so a streaming RPC or a unary RPC from a crashed client
-// cannot pin a goroutine indefinitely. Override with [WithDefaultDeadline]
+// cannot pin a goroutine indefinitely. Override with [WithDefaultTimeout]
 // or opt out with [WithoutDefaultDeadline].
 const DefaultRPCDeadline = 30 * time.Second
 
@@ -202,7 +202,7 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 	return func(c *serverConfig) { c.recoveryLogger = l }
 }
 
-// WithDefaultDeadline overrides the [DefaultRPCDeadline] applied by
+// WithDefaultTimeout overrides the [DefaultRPCDeadline] applied by
 // [NewServer] for the per-RPC default-deadline interceptor (both unary and
 // streaming). The interceptor sets the handler ctx deadline to `now + d`
 // when the inbound RPC has no deadline OR has a deadline further out than
@@ -218,9 +218,9 @@ func WithRecoveryLogger(l *slog.Logger) ServerOption {
 // codes.Internal but every request lands with a bounded ctx.
 //
 // Panics if d is not positive.
-func WithDefaultDeadline(d time.Duration) ServerOption {
+func WithDefaultTimeout(d time.Duration) ServerOption {
 	if d <= 0 {
-		panic("grpcx: WithDefaultDeadline requires a positive duration")
+		panic("grpcx: WithDefaultTimeout requires a positive duration")
 	}
 	return func(c *serverConfig) { c.defaultDeadline = d }
 }

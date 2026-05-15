@@ -176,7 +176,7 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 	// the construction-time check passes but Init or the lazy reconnect
 	// path rejects the same plaintext URL.
 	if m.allowPlaintext {
-		mqOpts = append(mqOpts, amqpbackend.WithAllowPlaintext())
+		mqOpts = append(mqOpts, amqpbackend.WithoutTLS())
 	}
 
 	conn, dialErr := amqpbackend.Connect(m.url, mc.Logger, mqOpts...)

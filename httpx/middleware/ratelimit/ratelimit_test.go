@@ -19,8 +19,8 @@ func TestCleanupInterval_SaturatesOnLargeWindow(t *testing.T) {
 	}
 }
 
-func TestRateLimiterAllow(t *testing.T) {
-	rl := NewRateLimiter(3, time.Minute)
+func TestLimiterAllow(t *testing.T) {
+	rl := NewLimiter(3, time.Minute)
 
 	for i := 0; i < 3; i++ {
 		if allowed, _ := rl.allow("1.2.3.4"); !allowed {
@@ -37,8 +37,8 @@ func TestRateLimiterAllow(t *testing.T) {
 	}
 }
 
-func TestRateLimiterAllowRejectsEmptyIPWithoutStoring(t *testing.T) {
-	rl := NewRateLimiter(1, time.Minute)
+func TestLimiterAllowRejectsEmptyIPWithoutStoring(t *testing.T) {
+	rl := NewLimiter(1, time.Minute)
 
 	allowed, remaining := rl.allow("")
 	if allowed {
@@ -52,9 +52,9 @@ func TestRateLimiterAllowRejectsEmptyIPWithoutStoring(t *testing.T) {
 	}
 }
 
-func TestRateLimiterWindowReset(t *testing.T) {
+func TestLimiterWindowReset(t *testing.T) {
 	now := time.Now()
-	rl := NewRateLimiter(2, 50*time.Millisecond, WithClock(func() time.Time { return now }))
+	rl := NewLimiter(2, 50*time.Millisecond, WithClock(func() time.Time { return now }))
 
 	rl.allow("1.2.3.4") //nolint:errcheck
 	rl.allow("1.2.3.4") //nolint:errcheck
@@ -70,9 +70,9 @@ func TestRateLimiterWindowReset(t *testing.T) {
 	}
 }
 
-func TestRateLimiterCleanup(t *testing.T) {
+func TestLimiterCleanup(t *testing.T) {
 	now := time.Now()
-	rl := NewRateLimiter(5, 50*time.Millisecond, WithClock(func() time.Time { return now }))
+	rl := NewLimiter(5, 50*time.Millisecond, WithClock(func() time.Time { return now }))
 
 	rl.allow("1.2.3.4") //nolint:errcheck
 	rl.allow("5.6.7.8") //nolint:errcheck
@@ -94,8 +94,8 @@ func TestRateLimiterCleanup(t *testing.T) {
 	}
 }
 
-func TestRateLimiterMiddleware(t *testing.T) {
-	rl := NewRateLimiter(2, time.Minute)
+func TestLimiterMiddleware(t *testing.T) {
+	rl := NewLimiter(2, time.Minute)
 
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -127,8 +127,8 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	}
 }
 
-func TestRateLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testing.T) {
-	rl := NewRateLimiter(2, time.Minute)
+func TestLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testing.T) {
+	rl := NewLimiter(2, time.Minute)
 	called := false
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -151,8 +151,8 @@ func TestRateLimiterMiddleware_InvalidClientIPReturns400WithoutStoring(t *testin
 	}
 }
 
-func TestRateLimiterXForwardedFor(t *testing.T) {
-	rl := NewRateLimiter(1, time.Minute)
+func TestLimiterXForwardedFor(t *testing.T) {
+	rl := NewLimiter(1, time.Minute)
 
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -188,8 +188,8 @@ func TestRateLimiterXForwardedFor(t *testing.T) {
 	}
 }
 
-func TestRateLimiterXForwardedForMultipleIPs(t *testing.T) {
-	rl := NewRateLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24", "198.51.100.0/24"}))
+func TestLimiterXForwardedForMultipleIPs(t *testing.T) {
+	rl := NewLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24", "198.51.100.0/24"}))
 
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -226,8 +226,8 @@ func TestRateLimiterXForwardedForMultipleIPs(t *testing.T) {
 	}
 }
 
-func TestRateLimiterTrustedProxies(t *testing.T) {
-	rl := NewRateLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24"}))
+func TestLimiterTrustedProxies(t *testing.T) {
+	rl := NewLimiter(1, time.Minute, WithTrustedProxies([]string{"10.0.0.0/24"}))
 
 	handler := Middleware(rl)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -255,8 +255,8 @@ func TestRateLimiterTrustedProxies(t *testing.T) {
 func TestWithTrustedProxies_OptionReuseClonesOutput(t *testing.T) {
 	opt := WithTrustedProxies([]string{"192.0.2.0/24"})
 
-	rl1 := NewRateLimiter(1, time.Minute, opt)
-	rl2 := NewRateLimiter(1, time.Minute, opt)
+	rl1 := NewLimiter(1, time.Minute, opt)
+	rl2 := NewLimiter(1, time.Minute, opt)
 
 	rl1.trustedProxies[0].IP = net.ParseIP("10.0.0.0")
 	if !rl2.trustedProxies[0].Contains(net.ParseIP("192.0.2.10")) {
@@ -264,8 +264,8 @@ func TestWithTrustedProxies_OptionReuseClonesOutput(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
-	rl := NewRateLimiter(5, 10*time.Millisecond)
+func TestLimiterRun_StopsOnCancel(t *testing.T) {
+	rl := NewLimiter(5, 10*time.Millisecond)
 	rl.allow("1.2.3.4")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -289,8 +289,8 @@ func TestRateLimiterRun_StopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRun_RejectsNilContext(t *testing.T) {
-	rl := NewRateLimiter(5, 10*time.Millisecond)
+func TestLimiterRun_RejectsNilContext(t *testing.T) {
+	rl := NewLimiter(5, 10*time.Millisecond)
 	var ctx context.Context
 	err := rl.Start(ctx)
 	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
@@ -298,20 +298,20 @@ func TestRateLimiterRun_RejectsNilContext(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRun_RejectsInvalidLimiter(t *testing.T) {
-	var rl RateLimiter
+func TestLimiterRun_RejectsInvalidLimiter(t *testing.T) {
+	var rl Limiter
 	if err := rl.Start(context.Background()); err != ErrInvalidLimiter {
 		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
 	}
 }
 
-func TestRateLimiterRun_RejectsSecondStart(t *testing.T) {
-	rl := NewRateLimiter(5, time.Hour)
+func TestLimiterRun_RejectsSecondStart(t *testing.T) {
+	rl := NewLimiter(5, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
-	waitForRateLimiterRunStarted(t, rl)
+	waitForLimiterRunStarted(t, rl)
 
 	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already started") {
@@ -324,13 +324,13 @@ func TestRateLimiterRun_RejectsSecondStart(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
-	rl := NewRateLimiter(5, time.Hour)
+func TestLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
+	rl := NewLimiter(5, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
-	waitForRateLimiterRunStarted(t, rl)
+	waitForLimiterRunStarted(t, rl)
 
 	cancel()
 	if err := <-done; err != nil {
@@ -343,7 +343,7 @@ func TestRateLimiterRun_RejectsRestartAfterCancel(t *testing.T) {
 	}
 }
 
-func waitForRateLimiterRunStarted(t *testing.T, rl *RateLimiter) {
+func waitForLimiterRunStarted(t *testing.T, rl *Limiter) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -355,11 +355,11 @@ func waitForRateLimiterRunStarted(t *testing.T, rl *RateLimiter) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("RateLimiter.Start did not start")
+	t.Fatal("Limiter.Start did not start")
 }
 
 func TestClientIP_DirectConnection(t *testing.T) {
-	rl := NewRateLimiter(10, time.Minute)
+	rl := NewLimiter(10, time.Minute)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "203.0.113.1:4321"
@@ -372,7 +372,7 @@ func TestClientIP_DirectConnection(t *testing.T) {
 
 func TestClientIP_UntrustedProxy(t *testing.T) {
 	// With a non-trusted remote addr, X-Forwarded-For should be ignored.
-	rl := NewRateLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.0/8"}))
+	rl := NewLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.0/8"}))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "203.0.113.1:4321"
@@ -385,7 +385,7 @@ func TestClientIP_UntrustedProxy(t *testing.T) {
 }
 
 func TestClientIP_TrustedProxy(t *testing.T) {
-	rl := NewRateLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.0/8"}))
+	rl := NewLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.0/8"}))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:4321"
@@ -399,7 +399,7 @@ func TestClientIP_TrustedProxy(t *testing.T) {
 
 func TestWithTrustedProxies_PlainIP(t *testing.T) {
 	// Test that plain IPs (not CIDRs) are accepted.
-	rl := NewRateLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.1"}))
+	rl := NewLimiter(10, time.Minute, WithTrustedProxies([]string{"10.0.0.1"}))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:4321"
@@ -424,9 +424,9 @@ func TestWithTrustedProxies_PanicsOnInvalid(t *testing.T) {
 	_ = WithTrustedProxies([]string{"secret-token", "10.0.0.0/8"})
 }
 
-func TestRateLimiterWithClock(t *testing.T) {
+func TestLimiterWithClock(t *testing.T) {
 	now := time.Now()
-	rl := NewRateLimiter(1, time.Minute, WithClock(func() time.Time { return now }))
+	rl := NewLimiter(1, time.Minute, WithClock(func() time.Time { return now }))
 
 	if allowed, _ := rl.allow("1.2.3.4"); !allowed {
 		t.Fatal("first request should be allowed")
@@ -451,23 +451,23 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 	_ = WithClock(nil)
 }
 
-func TestNewRateLimiter_PanicsOnNilOption(t *testing.T) {
+func TestNewLimiter_PanicsOnNilOption(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	_ = NewRateLimiter(1, time.Minute, nil)
+	_ = NewLimiter(1, time.Minute, nil)
 }
 
-func TestRateLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
+func TestLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
 	t.Run("zero limiter", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
 				t.Fatal("expected panic on zero limiter")
 			}
 		}()
-		var zero RateLimiter
+		var zero Limiter
 		_ = Middleware(&zero)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	})
 	t.Run("nil limiter", func(t *testing.T) {
@@ -484,11 +484,11 @@ func TestRateLimiterMiddleware_PanicsOnInvalidInputs(t *testing.T) {
 				t.Fatal("expected panic on nil next handler")
 			}
 		}()
-		_ = Middleware(NewRateLimiter(1, time.Minute))(nil)
+		_ = Middleware(NewLimiter(1, time.Minute))(nil)
 	})
 }
 
-func rateLimiterEntryCount(rl *RateLimiter) int {
+func rateLimiterEntryCount(rl *Limiter) int {
 	var count int
 	for i := range rl.shards {
 		s := &rl.shards[i]

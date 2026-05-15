@@ -13,20 +13,20 @@ import (
 )
 
 func TestMemory_GrantThenAllow(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	m.Grant("alice", "read", "doc:1")
 	require.NoError(t, m.Allow(context.Background(), "alice", "read", "doc:1"))
 }
 
 func TestMemory_DeniedByDefault(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	err := m.Allow(context.Background(), "alice", "read", "doc:1")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, authz.ErrDenied))
 }
 
 func TestMemory_RevokeRemovesGrant(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	m.Grant("alice", "read", "doc:1")
 	m.Revoke("alice", "read", "doc:1")
 	err := m.Allow(context.Background(), "alice", "read", "doc:1")
@@ -34,7 +34,7 @@ func TestMemory_RevokeRemovesGrant(t *testing.T) {
 }
 
 func TestMemory_DistinctTuplesIsolated(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	m.Grant("alice", "read", "doc:1")
 	// Same subject, different resource → denied.
 	assert.True(t, errors.Is(m.Allow(context.Background(), "alice", "read", "doc:2"), authz.ErrDenied))
@@ -43,12 +43,12 @@ func TestMemory_DistinctTuplesIsolated(t *testing.T) {
 }
 
 func TestMemory_PanicsOnInvalidGrant(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	require.Panics(t, func() { m.Grant("alice smith", "read", "doc:1") })
 }
 
 func TestMemory_InvalidAllowFailsClosed(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	err := m.Allow(context.Background(), "alice", "read", "bad resource")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, authz.ErrInvalidRequest)
@@ -56,14 +56,14 @@ func TestMemory_InvalidAllowFailsClosed(t *testing.T) {
 }
 
 func TestMemory_NilReceiverReturnsErrNoDecider(t *testing.T) {
-	var m *authz.Memory
+	var m *authz.MemoryStore
 	err := m.Allow(context.Background(), "alice", "read", "doc:1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, authz.ErrNoDecider)
 }
 
 func TestAllow_DispatchesToDecider(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	m.Grant("alice", "write", "doc:1")
 	require.NoError(t, authz.Allow(context.Background(), m, authz.Request{
 		Subject: "alice", Action: "write", Resource: "doc:1",
@@ -79,7 +79,7 @@ func TestAllow_NilDeciderReturnsErrNoDecider(t *testing.T) {
 }
 
 func TestAllow_NilContextReturnsErrInvalidContext(t *testing.T) {
-	m := authz.NewMemory()
+	m := authz.NewMemoryStore()
 	var ctx context.Context
 	err := authz.Allow(ctx, m, authz.Request{
 		Subject: "alice", Action: "read", Resource: "doc:1",
@@ -149,4 +149,4 @@ func TestValidateRequest_RejectsMalformedParts(t *testing.T) {
 }
 
 // Compile-time check: Memory satisfies Decider.
-var _ authz.Decider = (*authz.Memory)(nil)
+var _ authz.Decider = (*authz.MemoryStore)(nil)

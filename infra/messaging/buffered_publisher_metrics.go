@@ -125,7 +125,7 @@ func NewBufferedPublisherMetrics(publisherName string, opts ...MetricsOption) *P
 // [WithMetrics]:
 //
 //	pm := messaging.NewBufferedPublisherMetrics("events", messaging.WithRegisterer(reg))
-//	pub := messaging.OpenBufferedPublisher(inner, conn, logger,
+//	pub := messaging.NewBufferedPublisher(inner, conn, logger,
 //	    messaging.WithStateFile(path),
 //	    messaging.WithMetrics(pm.Hooks()),
 //	)

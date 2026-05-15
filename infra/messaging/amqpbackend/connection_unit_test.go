@@ -40,7 +40,7 @@ func TestDial_InvalidURL_ReturnsError(t *testing.T) {
 func TestDial_RejectsPlaintextWithoutOptIn(t *testing.T) {
 	_, err := Connect("amqp://localhost:5672/", discardLogger())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithAllowPlaintext")
+	assert.Contains(t, err.Error(), "WithoutTLS")
 }
 
 func TestNormalizeDialURL_RewritesAMQPWhenTLSConfigured(t *testing.T) {
@@ -167,9 +167,9 @@ func TestWithTLS_NilConfigDisablesCustomTLS(t *testing.T) {
 	assert.Nil(t, c.tlsConfig)
 }
 
-func TestWithAllowPlaintext_SetsFlag(t *testing.T) {
+func TestWithoutTLS_SetsFlag(t *testing.T) {
 	c := &Connection{}
-	WithAllowPlaintext()(c)
+	WithoutTLS()(c)
 	assert.True(t, c.allowPlaintext)
 }
 
@@ -349,7 +349,7 @@ func TestDial_LazyConnect_ReturnsImmediately(t *testing.T) {
 	// LazyConnect should return a connection immediately, even with an invalid URL.
 	// The reconnect loop runs in the background.
 	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),
-		WithAllowPlaintext(),
+		WithoutTLS(),
 		WithLazyConnect(),
 		WithMaxReconnectAttempts(1),
 	)
@@ -376,7 +376,7 @@ func TestDial_WithAllOptions(t *testing.T) {
 	conn, err := Connect("amqp://invalid-host:99999", discardLogger(),
 		WithMaxReconnectAttempts(1),
 		WithLazyConnect(),
-		WithAllowPlaintext(),
+		WithoutTLS(),
 		OnReconnect(func(_ Connector) error {
 			reconnectCalled = true
 			return nil

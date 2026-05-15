@@ -22,7 +22,7 @@ func TestNew_PanicsOnZeroCap(t *testing.T) {
 			t.Fatal("expected panic on zero cap")
 		}
 	}()
-	memory.Open(0, time.Hour)
+	memory.New(0, time.Hour)
 }
 
 func TestNew_PanicsOnZeroPeriod(t *testing.T) {
@@ -31,7 +31,7 @@ func TestNew_PanicsOnZeroPeriod(t *testing.T) {
 			t.Fatal("expected panic on zero period")
 		}
 	}()
-	memory.Open(100, 0)
+	memory.New(100, 0)
 }
 
 func TestNew_PanicsOnNilOption(t *testing.T) {
@@ -40,7 +40,7 @@ func TestNew_PanicsOnNilOption(t *testing.T) {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	memory.Open(100, time.Hour, nil)
+	memory.New(100, time.Hour, nil)
 }
 
 func TestWithSweeper_PanicsOnNonPositive(t *testing.T) {
@@ -85,14 +85,14 @@ func TestInvalidReceiverReturnsError(t *testing.T) {
 }
 
 func TestConsume_RejectsEmptyKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ok, _, _, err := b.Consume(context.Background(), "", 1)
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestConsume_RejectsInvalidKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	for _, key := range []string{
 		strings.Repeat("a", budget.MaxKeyLen+1),
 		"tenant\x00acme",
@@ -109,14 +109,14 @@ func TestConsume_RejectsInvalidKey(t *testing.T) {
 }
 
 func TestConsume_RejectsNegativeAmount(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ok, _, _, err := b.Consume(context.Background(), "k", -1)
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 }
 
 func TestConsume_HappyPath(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	ok, rem, retry, err := b.Consume(ctx, "alice", 30)
 	require.NoError(t, err)
@@ -131,7 +131,7 @@ func TestConsume_HappyPath(t *testing.T) {
 }
 
 func TestConsume_RejectsOverCap(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	ok, _, _, _ := b.Consume(ctx, "alice", 80)
 	require.True(t, ok)
@@ -144,7 +144,7 @@ func TestConsume_RejectsOverCap(t *testing.T) {
 }
 
 func TestConsume_ZeroAmountIsPeek(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 25)
 	ok, rem, _, err := b.Consume(ctx, "alice", 0)
@@ -154,26 +154,26 @@ func TestConsume_ZeroAmountIsPeek(t *testing.T) {
 }
 
 func TestPeek_UnknownKeyReturnsFullCap(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	rem, err := b.Peek(context.Background(), "ghost")
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem, "unknown key has the full budget")
 }
 
 func TestPeek_RejectsEmptyKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	_, err := b.Peek(context.Background(), "")
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestPeek_RejectsInvalidKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	_, err := b.Peek(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1))
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestKeysIsolated(t *testing.T) {
-	b := memory.Open(10, time.Hour)
+	b := memory.New(10, time.Hour)
 	ctx := context.Background()
 
 	okA, _, _, _ := b.Consume(ctx, "alice", 10)
@@ -185,7 +185,7 @@ func TestKeysIsolated(t *testing.T) {
 
 func TestPeriodRollover_ResetsBudget(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	b := memory.Open(100, time.Minute, memory.WithClock(func() time.Time { return cur }))
+	b := memory.New(100, time.Minute, memory.WithClock(func() time.Time { return cur }))
 	ctx := context.Background()
 
 	ok, _, _, _ := b.Consume(ctx, "alice", 100)
@@ -204,7 +204,7 @@ func TestPeriodRollover_ResetsBudget(t *testing.T) {
 
 func TestPeek_SeesRolloverWithoutConsume(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	b := memory.Open(100, time.Minute, memory.WithClock(func() time.Time { return cur }))
+	b := memory.New(100, time.Minute, memory.WithClock(func() time.Time { return cur }))
 	ctx := context.Background()
 
 	_, _, _, _ = b.Consume(ctx, "alice", 60)
@@ -220,7 +220,7 @@ func TestPeek_SeesRolloverWithoutConsume(t *testing.T) {
 
 func TestConcurrentConsume_DoesNotExceedCap(t *testing.T) {
 	cap := int64(1000)
-	b := memory.Open(cap, time.Hour)
+	b := memory.New(cap, time.Hour)
 	const callers = 200
 	const each = 7
 
@@ -251,7 +251,7 @@ func TestConcurrentConsume_DoesNotExceedCap(t *testing.T) {
 }
 
 func TestRefund_CreditsBack(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 30)
 	rem, err := b.Refund(ctx, "alice", 10)
@@ -266,7 +266,7 @@ func TestRefund_CreditsBack(t *testing.T) {
 }
 
 func TestRefund_ClampsAtCap(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "alice", 5)
 	rem, err := b.Refund(ctx, "alice", 999)
@@ -276,32 +276,32 @@ func TestRefund_ClampsAtCap(t *testing.T) {
 }
 
 func TestRefund_UnknownKeyIsNoop(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	rem, err := b.Refund(context.Background(), "ghost", 50)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), rem)
 }
 
 func TestRefund_RejectsEmptyKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	_, err := b.Refund(context.Background(), "", 5)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsInvalidKey(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	_, err := b.Refund(context.Background(), strings.Repeat("a", budget.MaxKeyLen+1), 5)
 	assert.ErrorIs(t, err, budget.ErrInvalidKey)
 }
 
 func TestRefund_RejectsNegative(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	_, err := b.Refund(context.Background(), "alice", -1)
 	assert.ErrorIs(t, err, budget.ErrInvalidAmount)
 }
 
 func TestLen_TracksDistinctKeys(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 	_, _, _, _ = b.Consume(ctx, "k1", 1)
 	_, _, _, _ = b.Consume(ctx, "k2", 1)
@@ -312,7 +312,7 @@ func TestLen_TracksDistinctKeys(t *testing.T) {
 // TestConsume_NoChargeOnRejection asserts the documented invariant
 // that a rejected charge does not nibble at remaining.
 func TestConsume_NoChargeOnRejection(t *testing.T) {
-	b := memory.Open(10, time.Hour)
+	b := memory.New(10, time.Hour)
 	ctx := context.Background()
 	ok, _, _, _ := b.Consume(ctx, "alice", 6)
 	require.True(t, ok)
@@ -329,7 +329,7 @@ func TestConsume_NoChargeOnRejection(t *testing.T) {
 // at memory.go: a naive `used + amount > cap` wraps for amounts close
 // to math.MaxInt64 and silently admits a charge that should reject.
 func TestConsume_NearMaxInt64DoesNotOverflow(t *testing.T) {
-	b := memory.Open(100, time.Hour)
+	b := memory.New(100, time.Hour)
 	ctx := context.Background()
 
 	ok, _, _, _ := b.Consume(ctx, "alice", 10)
@@ -352,7 +352,7 @@ func TestConsume_NearMaxInt64DoesNotOverflow(t *testing.T) {
 func TestSweeper_RemovesStaleKeys(t *testing.T) {
 	var cur atomic.Int64
 	cur.Store(time.Unix(1_700_000_000, 0).UnixNano())
-	b := memory.Open(100, time.Minute,
+	b := memory.New(100, time.Minute,
 		memory.WithClock(func() time.Time { return time.Unix(0, cur.Load()).UTC() }),
 		memory.WithSweeper(10*time.Millisecond),
 	)
@@ -379,7 +379,7 @@ func TestSweeper_RemovesStaleKeys(t *testing.T) {
 // TestClose_Idempotent ensures a double Close neither panics nor
 // blocks.
 func TestClose_Idempotent(t *testing.T) {
-	b := memory.Open(100, time.Hour, memory.WithSweeper(time.Hour))
+	b := memory.New(100, time.Hour, memory.WithSweeper(time.Hour))
 	require.NoError(t, b.Close())
 	require.NoError(t, b.Close())
 }
@@ -389,7 +389,7 @@ func TestClose_Idempotent(t *testing.T) {
 // fixed fake clock the retry value is fully deterministic.
 func TestConsume_RetryAfterUsesInjectedClock(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0).UTC()
-	b := memory.Open(10, time.Minute, memory.WithClock(func() time.Time { return cur }))
+	b := memory.New(10, time.Minute, memory.WithClock(func() time.Time { return cur }))
 	ctx := context.Background()
 
 	ok, _, _, _ := b.Consume(ctx, "alice", 10)
@@ -413,7 +413,7 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic on nil clock")
 		}
 	}()
-	memory.Open(100, time.Hour, memory.WithClock(nil))
+	memory.New(100, time.Hour, memory.WithClock(nil))
 }
 
 // TestConcurrentSweepAndConsume_PreservesCap stresses the sweep+Consume
@@ -424,7 +424,7 @@ func TestWithClock_PanicsOnNil(t *testing.T) {
 func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 	cur := atomic.Int64{}
 	cur.Store(time.Unix(1_700_000_000, 0).UnixNano())
-	b := memory.Open(100, time.Millisecond,
+	b := memory.New(100, time.Millisecond,
 		memory.WithClock(func() time.Time { return time.Unix(0, cur.Load()).UTC() }),
 		memory.WithSweeper(time.Microsecond),
 	)
@@ -471,7 +471,7 @@ func TestConcurrentSweepAndConsume_PreservesCap(t *testing.T) {
 // matching the Redis-backed implementation. Without this, memory and
 // Redis wirings disagree about what a cancelled caller observes.
 func TestHonorsCancelledContext(t *testing.T) {
-	b := memory.Open(10, time.Minute, memory.WithoutSweeper())
+	b := memory.New(10, time.Minute, memory.WithoutSweeper())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -500,7 +500,7 @@ func TestHonorsCancelledContext(t *testing.T) {
 // want to bound cardinality themselves.
 func TestSweeperDisabled(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	b := memory.Open(100, time.Minute,
+	b := memory.New(100, time.Minute,
 		memory.WithClock(func() time.Time { return cur }),
 		memory.WithoutSweeper(),
 	)
@@ -545,7 +545,7 @@ func TestRace_SweepConsumePeekRefund(t *testing.T) {
 	// Single shared key — maximises contention on the same bucket.
 	const key = "race-stress"
 
-	b := memory.Open(cap, period,
+	b := memory.New(cap, period,
 		memory.WithSweeper(sweepInterval),
 	)
 
@@ -647,7 +647,7 @@ func TestRace_SweepEvictsBetweenLoadAndLock(t *testing.T) {
 		cur = cur.Add(d)
 	}
 
-	b := memory.Open(cap, period,
+	b := memory.New(cap, period,
 		memory.WithClock(now),
 		memory.WithSweeper(time.Millisecond),
 	)

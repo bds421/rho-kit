@@ -117,7 +117,7 @@ func TestConnection_NilWhenAdapterNotRegistered(t *testing.T) {
 // TestModule_WithoutTLS_PropagatesToBackend pins H-004: the app-level
 // WithoutTLS opt-out must reach the backend Connect path. Before the
 // fix, Module accepted amqp:// loopback but Init still rejected the
-// same URL because amqpbackend.WithAllowPlaintext was not appended.
+// same URL because amqpbackend.WithoutTLS was not appended.
 func TestModule_WithoutTLS_PropagatesToBackend(t *testing.T) {
 	m := Module("amqp://localhost:5672", WithoutTLS()).(*messagingModule)
 	assert.True(t, m.allowPlaintext,

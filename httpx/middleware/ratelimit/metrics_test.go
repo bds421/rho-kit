@@ -35,10 +35,10 @@ func TestRateLimitMetrics_Contract(t *testing.T) {
 	assertMetricLabels(t, reg, "http_ratelimit_retry_after_seconds", []string{"kind", "limiter"})
 }
 
-func TestRateLimiterMetrics_RecordIPDecisions(t *testing.T) {
+func TestLimiterMetrics_RecordIPDecisions(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithMetrics(metrics),
 		WithLimiterName("public_api"),
 	)
@@ -56,10 +56,10 @@ func TestRateLimiterMetrics_RecordIPDecisions(t *testing.T) {
 	assertDecision(t, metrics, "public_api", rateLimitKindIP, rateLimitOutcomeInvalidClientIP, 1)
 }
 
-func TestKeyedRateLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
+func TestKeyedLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
-	rl := NewKeyedRateLimiter(1, time.Minute,
+	rl := NewKeyedLimiter(1, time.Minute,
 		WithKeyedMetrics(metrics),
 		WithKeyedLimiterName("api_key"),
 	)
@@ -77,11 +77,11 @@ func TestKeyedRateLimiterMetrics_RecordKeyedDecisions(t *testing.T) {
 	assertDecision(t, metrics, "api_key", rateLimitKindKeyed, rateLimitOutcomeInvalidKey, 1)
 }
 
-func TestRateLimiterMetrics_RecordDegradationOutcomes(t *testing.T) {
+func TestLimiterMetrics_RecordDegradationOutcomes(t *testing.T) {
 	health := &stubHealth{}
 	health.healthy.Store(false)
 	metrics := NewMetrics(WithRegisterer(prometheus.NewRegistry()))
-	rl := NewRateLimiter(1, time.Minute,
+	rl := NewLimiter(1, time.Minute,
 		WithMetrics(metrics),
 		WithLimiterName("login"),
 		WithDegradation(health, passthroughHandler{}),
@@ -101,7 +101,7 @@ func TestRateLimiterMetrics_RecordDegradationOutcomes(t *testing.T) {
 	assertDecision(t, metrics, "login", rateLimitKindIP, rateLimitOutcomeDegradedPassthrough, 1)
 }
 
-func TestRateLimiterMetrics_RejectUnsafeLimiterNames(t *testing.T) {
+func TestLimiterMetrics_RejectUnsafeLimiterNames(t *testing.T) {
 	assertPanic(t, func() { WithLimiterName("bad name") })
 	assertPanic(t, func() { WithKeyedLimiterName("bad\nname") })
 	assertPanic(t, func() { WithMetrics(nil) })
@@ -111,7 +111,7 @@ func TestRateLimiterMetrics_RejectUnsafeLimiterNames(t *testing.T) {
 func TestKeyedActiveKeysGauge_ReflectsShardLength(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
-	rl := NewKeyedRateLimiter(100, time.Minute,
+	rl := NewKeyedLimiter(100, time.Minute,
 		WithKeyedMetrics(metrics),
 		WithKeyedLimiterName("api_key"),
 	)
@@ -146,11 +146,11 @@ func TestKeyedActiveKeysGauge_TracksMultipleLimitersDistinctNames(t *testing.T) 
 	reg := prometheus.NewRegistry()
 	metrics := NewMetrics(WithRegisterer(reg))
 
-	rlA := NewKeyedRateLimiter(100, time.Minute,
+	rlA := NewKeyedLimiter(100, time.Minute,
 		WithKeyedMetrics(metrics),
 		WithKeyedLimiterName("api_key"),
 	)
-	rlB := NewKeyedRateLimiter(100, time.Minute,
+	rlB := NewKeyedLimiter(100, time.Minute,
 		WithKeyedMetrics(metrics),
 		WithKeyedLimiterName("login"),
 	)
@@ -194,7 +194,7 @@ func TestKeyedActiveKeysGauge_IdempotentRegistration(t *testing.T) {
 	}
 
 	// A limiter registered through m1's hooks must also surface in m2's view.
-	rl := NewKeyedRateLimiter(10, time.Minute,
+	rl := NewKeyedLimiter(10, time.Minute,
 		WithKeyedMetrics(m1),
 		WithKeyedLimiterName("shared"),
 	)

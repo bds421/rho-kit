@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-func TestKeyedRateLimiter_Allow(t *testing.T) {
-	rl := NewKeyedRateLimiter(3, time.Minute)
+func TestKeyedLimiter_Allow(t *testing.T) {
+	rl := NewKeyedLimiter(3, time.Minute)
 
 	for i := 0; i < 3; i++ {
 		allowed, _ := rl.Allow("key1")
@@ -29,8 +29,8 @@ func TestKeyedRateLimiter_Allow(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_SeparateKeys(t *testing.T) {
-	rl := NewKeyedRateLimiter(1, time.Minute)
+func TestKeyedLimiter_SeparateKeys(t *testing.T) {
+	rl := NewKeyedLimiter(1, time.Minute)
 
 	allowed1, _ := rl.Allow("key1")
 	if !allowed1 {
@@ -48,8 +48,8 @@ func TestKeyedRateLimiter_SeparateKeys(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_WindowExpiry(t *testing.T) {
-	rl := NewKeyedRateLimiter(1, 10*time.Millisecond)
+func TestKeyedLimiter_WindowExpiry(t *testing.T) {
+	rl := NewKeyedLimiter(1, 10*time.Millisecond)
 
 	allowed, _ := rl.Allow("key1")
 	if !allowed {
@@ -69,8 +69,8 @@ func TestKeyedRateLimiter_WindowExpiry(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_Cleanup(t *testing.T) {
-	rl := NewKeyedRateLimiter(1, 10*time.Millisecond)
+func TestKeyedLimiter_Cleanup(t *testing.T) {
+	rl := NewKeyedLimiter(1, 10*time.Millisecond)
 	rl.Allow("key1")
 	rl.Allow("key2")
 
@@ -114,8 +114,8 @@ func TestValidateKeyRejectsUnsafeKeys(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_AllowKeyRejectsInvalidKeysWithoutStoring(t *testing.T) {
-	rl := NewKeyedRateLimiter(1, time.Minute)
+func TestKeyedLimiter_AllowKeyRejectsInvalidKeysWithoutStoring(t *testing.T) {
+	rl := NewKeyedLimiter(1, time.Minute)
 
 	allowed, retryAfter, err := rl.AllowKey(strings.Repeat("a", MaxKeyBytes+1))
 	if allowed {
@@ -135,8 +135,8 @@ func TestKeyedRateLimiter_AllowKeyRejectsInvalidKeysWithoutStoring(t *testing.T)
 	}
 }
 
-func TestKeyedRateLimiter_AllowFailsClosedOnInvalidKey(t *testing.T) {
-	rl := NewKeyedRateLimiter(1, time.Minute)
+func TestKeyedLimiter_AllowFailsClosedOnInvalidKey(t *testing.T) {
+	rl := NewKeyedLimiter(1, time.Minute)
 
 	allowed, retryAfter := rl.Allow("")
 	if allowed {
@@ -150,16 +150,16 @@ func TestKeyedRateLimiter_AllowFailsClosedOnInvalidKey(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_AllowKeyRejectsUninitializedLimiter(t *testing.T) {
-	var zero KeyedRateLimiter
+func TestKeyedLimiter_AllowKeyRejectsUninitializedLimiter(t *testing.T) {
+	var zero KeyedLimiter
 	_, _, err := zero.AllowKey("key")
 	if !errors.Is(err, ErrInvalidLimiter) {
 		t.Fatalf("AllowKey error = %v, want ErrInvalidLimiter", err)
 	}
 }
 
-func TestKeyedRateLimiter_RunStopsOnCancel(t *testing.T) {
-	rl := NewKeyedRateLimiter(5, 10*time.Millisecond)
+func TestKeyedLimiter_RunStopsOnCancel(t *testing.T) {
+	rl := NewKeyedLimiter(5, 10*time.Millisecond)
 	_, _, err := rl.AllowKey("key")
 	if err != nil {
 		t.Fatalf("AllowKey returned %v", err)
@@ -182,8 +182,8 @@ func TestKeyedRateLimiter_RunStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_RunRejectsNilContext(t *testing.T) {
-	rl := NewKeyedRateLimiter(5, 10*time.Millisecond)
+func TestKeyedLimiter_RunRejectsNilContext(t *testing.T) {
+	rl := NewKeyedLimiter(5, 10*time.Millisecond)
 	var ctx context.Context
 	err := rl.Start(ctx)
 	if err == nil || !strings.Contains(err.Error(), "non-nil context") {
@@ -191,20 +191,20 @@ func TestKeyedRateLimiter_RunRejectsNilContext(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_RunRejectsInvalidLimiter(t *testing.T) {
-	var rl KeyedRateLimiter
+func TestKeyedLimiter_RunRejectsInvalidLimiter(t *testing.T) {
+	var rl KeyedLimiter
 	if err := rl.Start(context.Background()); !errors.Is(err, ErrInvalidLimiter) {
 		t.Fatalf("Run error = %v, want ErrInvalidLimiter", err)
 	}
 }
 
-func TestKeyedRateLimiter_RunRejectsSecondStart(t *testing.T) {
-	rl := NewKeyedRateLimiter(5, time.Hour)
+func TestKeyedLimiter_RunRejectsSecondStart(t *testing.T) {
+	rl := NewKeyedLimiter(5, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
-	waitForKeyedRateLimiterRunStarted(t, rl)
+	waitForKeyedLimiterRunStarted(t, rl)
 
 	err := rl.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already started") {
@@ -217,13 +217,13 @@ func TestKeyedRateLimiter_RunRejectsSecondStart(t *testing.T) {
 	}
 }
 
-func TestKeyedRateLimiter_RunRejectsRestartAfterCancel(t *testing.T) {
-	rl := NewKeyedRateLimiter(5, time.Hour)
+func TestKeyedLimiter_RunRejectsRestartAfterCancel(t *testing.T) {
+	rl := NewKeyedLimiter(5, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- rl.Start(ctx) }()
-	waitForKeyedRateLimiterRunStarted(t, rl)
+	waitForKeyedLimiterRunStarted(t, rl)
 
 	cancel()
 	if err := <-done; err != nil {
@@ -236,7 +236,7 @@ func TestKeyedRateLimiter_RunRejectsRestartAfterCancel(t *testing.T) {
 	}
 }
 
-func waitForKeyedRateLimiterRunStarted(t *testing.T, rl *KeyedRateLimiter) {
+func waitForKeyedLimiterRunStarted(t *testing.T, rl *KeyedLimiter) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -248,11 +248,11 @@ func waitForKeyedRateLimiterRunStarted(t *testing.T, rl *KeyedRateLimiter) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("KeyedRateLimiter.Start did not start")
+	t.Fatal("KeyedLimiter.Start did not start")
 }
 
 func TestKeyedMiddleware(t *testing.T) {
-	rl := NewKeyedRateLimiter(2, time.Minute)
+	rl := NewKeyedLimiter(2, time.Minute)
 
 	handler := KeyedMiddleware(rl, func(r *http.Request) string {
 		return r.Header.Get("X-API-Key")
@@ -292,7 +292,7 @@ func TestKeyedMiddleware(t *testing.T) {
 }
 
 func TestKeyedMiddleware_InvalidKeyReturns400WithoutStoring(t *testing.T) {
-	rl := NewKeyedRateLimiter(2, time.Minute)
+	rl := NewKeyedLimiter(2, time.Minute)
 	called := false
 	handler := KeyedMiddleware(rl, func(r *http.Request) string {
 		return r.Header.Get("X-API-Key")
@@ -332,12 +332,12 @@ func TestKeyedMiddleware_PanicsOnNilInputs(t *testing.T) {
 				t.Fatal("expected panic on nil key func")
 			}
 		}()
-		KeyedMiddleware(NewKeyedRateLimiter(1, time.Minute), nil)
+		KeyedMiddleware(NewKeyedLimiter(1, time.Minute), nil)
 	})
 }
 
 func TestKeyedMiddleware_KeyFuncPanicReturns503(t *testing.T) {
-	rl := NewKeyedRateLimiter(2, time.Minute)
+	rl := NewKeyedLimiter(2, time.Minute)
 	called := false
 	handler := KeyedMiddleware(rl, func(*http.Request) string {
 		panic("key failed")
@@ -367,16 +367,16 @@ func TestWithKeyedClock_PanicsOnNil(t *testing.T) {
 	_ = WithKeyedClock(nil)
 }
 
-func TestNewKeyedRateLimiter_PanicsOnNilOption(t *testing.T) {
+func TestNewKeyedLimiter_PanicsOnNilOption(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	_ = NewKeyedRateLimiter(1, time.Minute, nil)
+	_ = NewKeyedLimiter(1, time.Minute, nil)
 }
 
-func keyedEntryCount(rl *KeyedRateLimiter) int {
+func keyedEntryCount(rl *KeyedLimiter) int {
 	var count int
 	for i := range rl.shards {
 		s := &rl.shards[i]

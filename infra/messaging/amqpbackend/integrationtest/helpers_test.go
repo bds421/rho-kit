@@ -13,7 +13,7 @@ func dialLocalRabbitMQ(t *testing.T, rawURL string, logger *slog.Logger, opts ..
 	t.Helper()
 
 	allOpts := make([]amqpbackend.DialOption, 0, len(opts)+1)
-	allOpts = append(allOpts, amqpbackend.WithAllowPlaintext())
+	allOpts = append(allOpts, amqpbackend.WithoutTLS())
 	allOpts = append(allOpts, opts...)
 
 	return amqpbackend.Connect(rawURL, logger, allOpts...)

@@ -146,7 +146,7 @@ func TestConfigWithFloor_RejectsInsecureSkipVerifyByDefault(t *testing.T) {
 
 func TestConfigWithFloor_AllowInsecureSkipVerifyOptIn(t *testing.T) {
 	cfg := &tls.Config{InsecureSkipVerify: true}
-	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12, AllowInsecureSkipVerify())
+	cloned, err := ConfigWithFloor(cfg, tls.VersionTLS12, WithAllowInsecureSkipVerify())
 	if err != nil {
 		t.Fatalf("ConfigWithFloor with AllowInsecureSkipVerify: %v", err)
 	}

@@ -22,7 +22,7 @@ func TestFromDecider_NilPanics(t *testing.T) {
 }
 
 func TestFromDecider_AllowMapsToTrue(t *testing.T) {
-	m := kitauthz.NewMemory()
+	m := kitauthz.NewMemoryStore()
 	m.Grant("alice", "read", "doc:1")
 	p := httpxauthz.FromDecider(m)
 
@@ -32,7 +32,7 @@ func TestFromDecider_AllowMapsToTrue(t *testing.T) {
 }
 
 func TestFromDecider_DeniedMapsToFalseNilErr(t *testing.T) {
-	m := kitauthz.NewMemory()
+	m := kitauthz.NewMemoryStore()
 	p := httpxauthz.FromDecider(m)
 
 	allowed, err := p.Allowed(context.Background(), "alice", "read", "doc:1")
@@ -41,7 +41,7 @@ func TestFromDecider_DeniedMapsToFalseNilErr(t *testing.T) {
 }
 
 func TestFromDecider_InvalidRequestMapsToDenied(t *testing.T) {
-	m := kitauthz.NewMemory()
+	m := kitauthz.NewMemoryStore()
 	p := httpxauthz.FromDecider(m)
 
 	allowed, err := p.Allowed(context.Background(), "alice", "read", "bad resource")

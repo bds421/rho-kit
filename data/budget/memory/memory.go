@@ -99,7 +99,7 @@ func WithoutSweeper() Option {
 // almost always a bug rather than a recoverable runtime condition.
 // Replaces the v1 New() spelling so the lifecycle obligation is
 // visible at the call site.
-func Open(cap int64, period time.Duration, opts ...Option) *Budget {
+func New(cap int64, period time.Duration, opts ...Option) *Budget {
 	if cap <= 0 {
 		panic("budget/memory: cap must be > 0")
 	}

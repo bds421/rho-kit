@@ -37,14 +37,14 @@ type DegradationHandler interface {
 // and the handler a [redis.DegradationPolicy].
 //
 // When not configured, the rate limiter operates normally without health checks.
-func WithDegradation(health HealthIndicator, handler DegradationHandler) RateLimiterOption {
+func WithDegradation(health HealthIndicator, handler DegradationHandler) LimiterOption {
 	if health == nil {
 		panic("middleware/ratelimit: health indicator must not be nil")
 	}
 	if handler == nil {
 		panic("middleware/ratelimit: degradation handler must not be nil")
 	}
-	return func(rl *RateLimiter) {
+	return func(rl *Limiter) {
 		rl.health = health
 		rl.degradation = handler
 	}
@@ -59,7 +59,7 @@ func WithKeyedDegradation(health HealthIndicator, handler DegradationHandler) Ke
 	if handler == nil {
 		panic("middleware/ratelimit: degradation handler must not be nil")
 	}
-	return func(rl *KeyedRateLimiter) {
+	return func(rl *KeyedLimiter) {
 		rl.health = health
 		rl.degradation = handler
 	}

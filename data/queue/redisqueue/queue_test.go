@@ -194,7 +194,7 @@ func TestQueue_Enqueue_PayloadTooLarge(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	q := NewQueue(client, WithMaxPayloadSize(10))
+	q := NewQueue(client, WithMaxMessageBytes(10))
 	msg, err := NewMessage("test", "this is a payload that will be large enough when serialized")
 	require.NoError(t, err)
 
@@ -391,7 +391,7 @@ func TestHandleMessage_InvalidDecodedMessageDiscardedBeforeHandler(t *testing.T)
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	q := NewQueue(client, WithMaxPayloadSize(16))
+	q := NewQueue(client, WithMaxMessageBytes(16))
 	ctx := context.Background()
 	queueName := "test:queue:invalid-decoded"
 	processingQ := queueName + ":processing:self"
@@ -426,7 +426,7 @@ func TestOptions(t *testing.T) {
 		WithBlockTimeout(10*time.Second),
 		WithMaxRetries(10),
 		WithDeadLetterMaxLen(5000),
-		WithMaxPayloadSize(2<<20),
+		WithMaxMessageBytes(2<<20),
 	)
 
 	assert.Equal(t, 10*time.Second, q.blockTimeout)
@@ -443,7 +443,7 @@ func TestOptions_PanicOnInvalid(t *testing.T) {
 		"WithDeadLetterMaxLen negative": func() {
 			WithDeadLetterMaxLen(-1)
 		},
-		"WithMaxPayloadSize negative": func() { WithMaxPayloadSize(-1) },
+		"WithMaxMessageBytes negative": func() { WithMaxMessageBytes(-1) },
 		"WithHeartbeatTTL zero":       func() { WithHeartbeatTTL(0) },
 		"WithHeartbeatTTL negative":   func() { WithHeartbeatTTL(-time.Second) },
 		"WithHeartbeatInterval zero":  func() { WithHeartbeatInterval(0) },

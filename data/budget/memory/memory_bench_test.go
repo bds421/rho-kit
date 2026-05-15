@@ -17,7 +17,7 @@ import (
 // every request without becoming the dominant latency contributor
 // (L167).
 func BenchmarkBudget_Consume_HotKey(b *testing.B) {
-	bg := memory.Open(int64(b.N+1000), time.Hour, memory.WithoutSweeper())
+	bg := memory.New(int64(b.N+1000), time.Hour, memory.WithoutSweeper())
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -31,7 +31,7 @@ func BenchmarkBudget_Consume_HotKey(b *testing.B) {
 // for memory-budget — a tenant-per-request workload should not hit
 // this shape, but the benchmark exists to bound how bad it gets.
 func BenchmarkBudget_Consume_DistinctKeys(b *testing.B) {
-	bg := memory.Open(int64(b.N+1000), time.Hour, memory.WithoutSweeper())
+	bg := memory.New(int64(b.N+1000), time.Hour, memory.WithoutSweeper())
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -45,7 +45,7 @@ func BenchmarkBudget_Consume_DistinctKeys(b *testing.B) {
 // mutex throughput on a single key. Useful for diagnosing
 // regressions in the loadOrInitBucket retry loop.
 func BenchmarkBudget_Consume_Parallel(b *testing.B) {
-	bg := memory.Open(int64(1<<30), time.Hour, memory.WithoutSweeper())
+	bg := memory.New(int64(1<<30), time.Hour, memory.WithoutSweeper())
 	ctx := context.Background()
 	var n atomic.Int64
 	b.ResetTimer()

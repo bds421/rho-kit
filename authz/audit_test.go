@@ -43,7 +43,7 @@ func newTextBuffer(level slog.Level) (*bytes.Buffer, *slog.Logger) {
 func TestLogged_DenyEmitsInfoExactlyOnce(t *testing.T) {
 	buf, logger := newTextBuffer(slog.LevelDebug)
 	sink := &recordingSink{}
-	mem := authz.NewMemory()
+	mem := authz.NewMemoryStore()
 
 	dec := authz.Logged(mem, authz.WithLogger(logger), authz.WithAuditSink(sink))
 
@@ -82,7 +82,7 @@ func TestLogged_AllowEmitsDebugOnly(t *testing.T) {
 	// At info level the allow path must be silent (default operator stance).
 	infoBuf, infoLogger := newTextBuffer(slog.LevelInfo)
 	sink := &recordingSink{}
-	mem := authz.NewMemory()
+	mem := authz.NewMemoryStore()
 	mem.Grant("alice", "read", "doc:1")
 
 	dec := authz.Logged(mem, authz.WithLogger(infoLogger), authz.WithAuditSink(sink))
@@ -111,7 +111,7 @@ func TestLogged_ClassifiesErrors(t *testing.T) {
 	sink := &recordingSink{}
 
 	// invalid request → reason=invalid_request, outcome=deny
-	mem := authz.NewMemory()
+	mem := authz.NewMemoryStore()
 	dec := authz.Logged(mem, authz.WithLogger(logger), authz.WithAuditSink(sink))
 	err := dec.Allow(context.Background(), "alice", "read", "bad resource")
 	require.Error(t, err)
@@ -148,11 +148,11 @@ func TestLogged_NilInnerReturnsNoDecider(t *testing.T) {
 }
 
 func TestLogged_PanicsWithoutSinkOrLogger(t *testing.T) {
-	require.Panics(t, func() { authz.Logged(authz.NewMemory()) })
+	require.Panics(t, func() { authz.Logged(authz.NewMemoryStore()) })
 }
 
 func TestLogged_PanicsOnNilOption(t *testing.T) {
-	require.Panics(t, func() { authz.Logged(authz.NewMemory(), nil) })
+	require.Panics(t, func() { authz.Logged(authz.NewMemoryStore(), nil) })
 }
 
 func TestWithLogger_PanicsOnNil(t *testing.T) {
@@ -174,7 +174,7 @@ func (f deciderFunc) Allow(ctx context.Context, subject, action, resource string
 // the equivalent compile-time `var _ authz.Decider = ...` form) that the
 // wrapped value still satisfies the Decider interface contract.
 func TestLogged_SatisfiesDecider(t *testing.T) {
-	d := authz.Logged(authz.NewMemory(),
+	d := authz.Logged(authz.NewMemoryStore(),
 		authz.WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))))
 	if _, ok := any(d).(authz.Decider); !ok {
 		t.Fatalf("Logged did not return an authz.Decider, got %T", d)

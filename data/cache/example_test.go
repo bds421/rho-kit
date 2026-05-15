@@ -8,8 +8,8 @@ import (
 	"github.com/bds421/rho-kit/data/v2/cache"
 )
 
-func ExampleOpenMemoryCache() {
-	c, err := cache.OpenMemoryCache()
+func ExampleNewMemoryCache() {
+	c, err := cache.NewMemoryCache()
 	if err != nil {
 		fmt.Println("err:", err)
 		return

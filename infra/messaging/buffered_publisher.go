@@ -199,7 +199,7 @@ func WithUnlimitedBuffer() BufferedPublisherOption {
 // publisher's state file must live. The directory is the only
 // containment boundary for paths passed to [WithStateFile] — a
 // caller-supplied relative path that resolves outside this directory
-// causes [OpenBufferedPublisher] to panic.
+// causes [NewBufferedPublisher] to panic.
 //
 // The path is cleaned at option time so callers see the same
 // containment regardless of trailing slashes or `./` components, but
@@ -283,7 +283,7 @@ func WithLossyStateValidation() BufferedPublisherOption {
 }
 
 // WithEphemeralBuffer opts in to memory-only buffering. By default,
-// [OpenBufferedPublisher] panics when no state file is configured — a
+// [NewBufferedPublisher] panics when no state file is configured — a
 // process restart would silently drop every buffered message, which is
 // exactly the scenario buffering exists to prevent. Set this option only
 // when the surrounding system has its own at-least-once guarantee
@@ -337,7 +337,7 @@ func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int)
 	}
 }
 
-// OpenBufferedPublisher creates a BufferedPublisher that buffers
+// NewBufferedPublisher creates a BufferedPublisher that buffers
 // messages when the broker is unreachable. The name uses Open* (not
 // New*) because the constructor performs file I/O when [WithStateFile]
 // is configured: it reads the previous run's pending messages from
@@ -346,12 +346,12 @@ func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int)
 // Panics if inner or conn is nil — both are dereferenced immediately to wire
 // up publishFn / healthyFn closures, so passing nil here is a programming
 // error. Logger nil is accepted and defaults to slog.Default().
-func OpenBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
+func NewBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
 	if inner == nil {
-		panic("messaging: OpenBufferedPublisher requires a non-nil Publisher")
+		panic("messaging: NewBufferedPublisher requires a non-nil Publisher")
 	}
 	if conn == nil {
-		panic("messaging: OpenBufferedPublisher requires a non-nil Connector")
+		panic("messaging: NewBufferedPublisher requires a non-nil Connector")
 	}
 	if logger == nil {
 		logger = slog.Default()

@@ -301,7 +301,7 @@ func cloneTLSConfigWithFloor(cfg *tls.Config) (*tls.Config, error) {
 	// guardrail.
 	cloneOpts := []tlsclone.Option(nil)
 	if cfg != nil && cfg.InsecureSkipVerify && cfg.VerifyConnection != nil {
-		cloneOpts = append(cloneOpts, tlsclone.AllowInsecureSkipVerify())
+		cloneOpts = append(cloneOpts, tlsclone.WithAllowInsecureSkipVerify())
 	}
 	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, cloneOpts...)
 	if err != nil {

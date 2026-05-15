@@ -35,13 +35,13 @@ import (
 // Resource keys.
 const (
 	// ResourceIPKey is the [app.Infrastructure.Resource] key under
-	// which [IP] publishes its *mwrl.RateLimiter for per-
+	// which [IP] publishes its *mwrl.Limiter for per-
 	// route overrides (tightening /admin while the auto-applied
 	// limiter handles the public mux baseline).
 	ResourceIPKey = "github.com/bds421/rho-kit/app/ratelimit.ip"
 	// ResourceKeyedMapKey is the [app.Infrastructure.Resource] key
 	// under which every [Keyed] cooperatively appends its
-	// limiter. The value is a map[string]*mwrl.KeyedRateLimiter.
+	// limiter. The value is a map[string]*mwrl.KeyedLimiter.
 	ResourceKeyedMapKey = "github.com/bds421/rho-kit/app/ratelimit.keyed"
 )
 
@@ -65,7 +65,7 @@ type ipModule struct {
 	requests int
 	window   time.Duration
 
-	limiter *mwrl.RateLimiter
+	limiter *mwrl.Limiter
 }
 
 func (m *ipModule) Name() string                                  { return "ratelimit-ip" }
@@ -75,7 +75,7 @@ func (m *ipModule) Stop(_ context.Context) error                  { return nil }
 
 func (m *ipModule) Init(_ context.Context, mc app.ModuleContext) error {
 	metrics := mwrl.NewMetrics()
-	m.limiter = mwrl.NewRateLimiter(m.requests, m.window,
+	m.limiter = mwrl.NewLimiter(m.requests, m.window,
 		mwrl.WithMetrics(metrics),
 		mwrl.WithLimiterName("ip"),
 	)
@@ -132,7 +132,7 @@ type keyedModule struct {
 	requests int
 	window   time.Duration
 
-	limiter *mwrl.KeyedRateLimiter
+	limiter *mwrl.KeyedLimiter
 }
 
 func (m *keyedModule) Name() string                                  { return "ratelimit-keyed-" + m.name }
@@ -142,7 +142,7 @@ func (m *keyedModule) Stop(_ context.Context) error                  { return ni
 
 func (m *keyedModule) Init(_ context.Context, mc app.ModuleContext) error {
 	metrics := mwrl.NewMetrics()
-	m.limiter = mwrl.NewKeyedRateLimiter(m.requests, m.window,
+	m.limiter = mwrl.NewKeyedLimiter(m.requests, m.window,
 		mwrl.WithKeyedMetrics(metrics),
 		mwrl.WithKeyedLimiterName(m.name),
 	)
@@ -161,12 +161,12 @@ func (m *keyedModule) Populate(infra *app.Infrastructure) {
 	// sequentially in registration order, so the read/write race
 	// only exists across modules contributing to the same key,
 	// not within a single Populate call.
-	var m2 map[string]*mwrl.KeyedRateLimiter
+	var m2 map[string]*mwrl.KeyedLimiter
 	if existing, ok := infra.Resource(ResourceKeyedMapKey); ok {
-		m2, _ = existing.(map[string]*mwrl.KeyedRateLimiter)
+		m2, _ = existing.(map[string]*mwrl.KeyedLimiter)
 	}
 	if m2 == nil {
-		m2 = make(map[string]*mwrl.KeyedRateLimiter)
+		m2 = make(map[string]*mwrl.KeyedLimiter)
 		infra.SetResource(ResourceKeyedMapKey, m2)
 	}
 	m2[m.name] = m.limiter
@@ -174,23 +174,23 @@ func (m *keyedModule) Populate(infra *app.Infrastructure) {
 
 // IPLimiter returns the per-IP rate limiter published by
 // [IP], or nil if [IP] was not registered.
-func IPLimiter(infra app.Infrastructure) *mwrl.RateLimiter {
+func IPLimiter(infra app.Infrastructure) *mwrl.Limiter {
 	v, ok := infra.Resource(ResourceIPKey)
 	if !ok {
 		return nil
 	}
-	l, _ := v.(*mwrl.RateLimiter)
+	l, _ := v.(*mwrl.Limiter)
 	return l
 }
 
 // KeyedLimiter returns the keyed rate limiter registered under
 // name via [Keyed], or nil if no module registered that name.
-func KeyedLimiter(infra app.Infrastructure, name string) *mwrl.KeyedRateLimiter {
+func KeyedLimiter(infra app.Infrastructure, name string) *mwrl.KeyedLimiter {
 	v, ok := infra.Resource(ResourceKeyedMapKey)
 	if !ok {
 		return nil
 	}
-	m, _ := v.(map[string]*mwrl.KeyedRateLimiter)
+	m, _ := v.(map[string]*mwrl.KeyedLimiter)
 	if m == nil {
 		return nil
 	}

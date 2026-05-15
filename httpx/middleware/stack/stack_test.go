@@ -266,7 +266,7 @@ func TestDefault_WithoutRecoverPropagatesPanic(t *testing.T) {
 		WithoutRequestLogger(),
 		WithoutSecHeaders(),
 		WithoutTimeout(),
-		WithoutRecover(),
+		WithoutRecovery(),
 	)
 
 	defer func() {

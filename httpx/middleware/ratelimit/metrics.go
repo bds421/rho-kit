@@ -34,7 +34,7 @@ type Metrics struct {
 	retryAfter *prometheus.HistogramVec
 
 	// activeKeys is a custom Collector that walks each registered
-	// KeyedRateLimiter's shards on demand at scrape time. A
+	// KeyedLimiter's shards on demand at scrape time. A
 	// misconfigured key extractor that explodes the per-shard LRU
 	// surfaces as `http_ratelimit_keyed_limiter_active_keys{limiter}`
 	// before it pages on memory. Limiters are attached lazily via
@@ -105,7 +105,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 
 // trackKeyedLimiter wires the limiter into the active-keys collector
 // so its per-shard sizes appear in the next scrape. Idempotent.
-func (m *Metrics) trackKeyedLimiter(rl *KeyedRateLimiter) {
+func (m *Metrics) trackKeyedLimiter(rl *KeyedLimiter) {
 	if m == nil || m.activeKeys == nil {
 		return
 	}
@@ -113,7 +113,7 @@ func (m *Metrics) trackKeyedLimiter(rl *KeyedRateLimiter) {
 }
 
 // keyedActiveKeysCollector is a [prometheus.Collector] that walks each
-// registered [KeyedRateLimiter]'s shards on demand and emits a single
+// registered [KeyedLimiter]'s shards on demand and emits a single
 // `keyed_limiter_active_keys{limiter}` sample per scrape. Implementing
 // Collector instead of a GaugeVec avoids polling overhead between
 // scrapes — len(shards[i]) is only computed when Prometheus actually
@@ -122,7 +122,7 @@ type keyedActiveKeysCollector struct {
 	desc *prometheus.Desc
 
 	mu       sync.RWMutex
-	limiters []*KeyedRateLimiter
+	limiters []*KeyedLimiter
 }
 
 // Describe implements [prometheus.Collector].
@@ -136,7 +136,7 @@ func (c *keyedActiveKeysCollector) Describe(ch chan<- *prometheus.Desc) {
 // rising sample value before it pages on memory.
 func (c *keyedActiveKeysCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
-	limiters := append([]*KeyedRateLimiter(nil), c.limiters...)
+	limiters := append([]*KeyedLimiter(nil), c.limiters...)
 	c.mu.RUnlock()
 
 	for _, rl := range limiters {
@@ -161,7 +161,7 @@ func (c *keyedActiveKeysCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func (c *keyedActiveKeysCollector) add(rl *KeyedRateLimiter) {
+func (c *keyedActiveKeysCollector) add(rl *KeyedLimiter) {
 	if rl == nil {
 		return
 	}

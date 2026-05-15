@@ -128,11 +128,11 @@ func WithoutUniqueByID() PublisherOption {
 	return func(p *Publisher) { p.uniqueByID = false }
 }
 
-// WithMaxPayloadBytes sets the maximum kit message payload size accepted by
+// WithMaxMessageBytes sets the maximum kit message payload size accepted by
 // Enqueue. The default is [kitqueue.DefaultMaxPayloadBytes].
-func WithMaxPayloadBytes(maxBytes int) PublisherOption {
+func WithMaxMessageBytes(maxBytes int) PublisherOption {
 	if maxBytes <= 0 {
-		panic("riverqueue: WithMaxPayloadBytes requires maxBytes > 0")
+		panic("riverqueue: WithMaxMessageBytes requires maxBytes > 0")
 	}
 	return func(p *Publisher) { p.maxPayloadBytes = maxBytes }
 }

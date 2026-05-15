@@ -133,7 +133,7 @@ func WithReloadingTLS(cfg *tls.Config) DialOption {
 		panic("amqpbackend: WithReloadingTLS requires VerifyConnection to be set " +
 			"(use netutil.ReloadingClientTLS)")
 	}
-	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.AllowInsecureSkipVerify())
+	cloned, err := tlsclone.ConfigWithFloor(cfg, minimumTLSVersion, tlsclone.WithAllowInsecureSkipVerify())
 	if err != nil {
 		panic("amqpbackend: WithReloadingTLS MaxVersion must allow TLS 1.2 or newer")
 	}
@@ -142,11 +142,11 @@ func WithReloadingTLS(cfg *tls.Config) DialOption {
 	}
 }
 
-// WithAllowPlaintext permits an amqp:// connection without TLS. Use
+// WithoutTLS permits an amqp:// connection without TLS. Use
 // only for local tests or an explicitly reviewed private network. By
 // default, Dial rejects plaintext AMQP because credentials and message
 // payloads cross the broker connection.
-func WithAllowPlaintext() DialOption {
+func WithoutTLS() DialOption {
 	return func(c *Connection) {
 		c.allowPlaintext = true
 	}
@@ -346,7 +346,7 @@ func normalizeDialURL(rawURL string, tlsConfigured, allowPlaintext bool) (string
 		if allowPlaintext {
 			return u.String(), nil
 		}
-		return "", fmt.Errorf("amqp URL must use amqps or WithTLS; use WithAllowPlaintext only for explicit local/test opt-in")
+		return "", fmt.Errorf("amqp URL must use amqps or WithTLS; use WithoutTLS only for explicit local/test opt-in")
 	default:
 		return "", fmt.Errorf("amqp URL scheme must be amqp or amqps")
 	}

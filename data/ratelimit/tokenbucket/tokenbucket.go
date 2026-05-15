@@ -93,14 +93,11 @@ func WithoutSweeper() Option {
 // must be finite and > 0; refillPerSec must be finite, > 0, and high
 // enough that a one-token retry interval fits in time.Duration.
 //
-// The Open* prefix marks this constructor as side-effecting: it spawns
-// a background sweeper goroutine that holds only a weak reference to
-// the limiter, so a forgotten Close does not pin it forever. Pair with
-// [Limiter.Close] in shutdown wiring for deterministic cleanup.
-//
-// Replaces the v1 New() spelling so the lifecycle obligation is
-// visible at the call site.
-func Open(capacity, refillPerSec float64, opts ...Option) *Limiter {
+// New constructs a Limiter and spawns a background sweeper goroutine
+// that holds only a weak reference to the limiter, so a forgotten
+// Close does not pin it forever. Pair with [Limiter.Close] in
+// shutdown wiring for deterministic cleanup.
+func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
 	if !validPositiveFinite(capacity) {
 		panic("tokenbucket: capacity must be finite and > 0")
 	}

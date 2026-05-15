@@ -81,7 +81,7 @@ func newTestBufferedPublisher(publishFn func(ctx context.Context, exchange, rout
 	return newBufferedPublisher(slog.New(slog.NewTextHandler(io.Discard, nil)), allOpts...)
 }
 
-// newBufferedPublisher mirrors OpenBufferedPublisher but without requiring AMQP
+// newBufferedPublisher mirrors NewBufferedPublisher but without requiring AMQP
 // dependencies. It applies options over safe defaults.
 func newBufferedPublisher(logger *slog.Logger, opts ...BufferedPublisherOption) *BufferedPublisher {
 	o := &BufferedPublisher{
@@ -159,7 +159,7 @@ func TestWithMaxSize_PanicDoesNotReflectValue(t *testing.T) {
 }
 
 // fakeConnector / fakePublisher are the minimum implementations needed
-// to exercise OpenBufferedPublisher's nil-dependency guards.
+// to exercise NewBufferedPublisher's nil-dependency guards.
 type fakeConnector struct{ healthy bool }
 
 func (f *fakeConnector) Healthy() bool              { return f.healthy }
@@ -171,46 +171,46 @@ func (noopPublisher) Publish(_ context.Context, _, _ string, _ Message) error {
 	return nil
 }
 
-func TestOpenBufferedPublisher_PanicsOnNilInner(t *testing.T) {
+func TestNewBufferedPublisher_PanicsOnNilInner(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	OpenBufferedPublisher(nil, &fakeConnector{}, slog.Default())
+	NewBufferedPublisher(nil, &fakeConnector{}, slog.Default())
 }
 
-func TestOpenBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
+func TestNewBufferedPublisher_PanicsOnNilConnector(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	OpenBufferedPublisher(noopPublisher{}, nil, slog.Default())
+	NewBufferedPublisher(noopPublisher{}, nil, slog.Default())
 }
 
-func TestOpenBufferedPublisher_PanicsOnNilOption(t *testing.T) {
+func TestNewBufferedPublisher_PanicsOnNilOption(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic, got none")
 		}
 	}()
-	OpenBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default(), nil)
+	NewBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default(), nil)
 }
 
-func TestOpenBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
+func TestNewBufferedPublisher_PanicsWithoutStateFile(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected panic when no state file is configured, got none")
 		}
 	}()
-	OpenBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default())
+	NewBufferedPublisher(noopPublisher{}, &fakeConnector{healthy: true}, slog.Default())
 }
 
-func TestOpenBufferedPublisher_WithStateFileOK(t *testing.T) {
+func TestNewBufferedPublisher_WithStateFileOK(t *testing.T) {
 	dir := t.TempDir()
-	pub := OpenBufferedPublisher(
+	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.Default(),
 		WithStateDirectory(dir),
@@ -221,8 +221,8 @@ func TestOpenBufferedPublisher_WithStateFileOK(t *testing.T) {
 	}
 }
 
-func TestOpenBufferedPublisher_EphemeralOptOut(t *testing.T) {
-	pub := OpenBufferedPublisher(
+func TestNewBufferedPublisher_EphemeralOptOut(t *testing.T) {
+	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.Default(),
 		WithEphemeralBuffer(),
@@ -232,12 +232,12 @@ func TestOpenBufferedPublisher_EphemeralOptOut(t *testing.T) {
 	}
 }
 
-// TestOpenBufferedPublisher_PanicsOnCorruptStateFile pins the v2 round-2 fix:
+// TestNewBufferedPublisher_PanicsOnCorruptStateFile pins the v2 round-2 fix:
 // a corrupt state file silently dropping buffered messages is the exact
 // data-loss scenario buffering exists to prevent. Default behaviour must
 // fail startup so operators see the corruption rather than a silent empty
 // queue.
-func TestOpenBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
+func TestNewBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
 	if err := os.WriteFile(stateFile, []byte(`not valid json`), 0600); err != nil {
@@ -261,7 +261,7 @@ func TestOpenBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 			t.Fatalf("panic reflected state file path: %q", msg)
 		}
 	}()
-	OpenBufferedPublisher(
+	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(dir),
@@ -269,17 +269,17 @@ func TestOpenBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 	)
 }
 
-// TestOpenBufferedPublisher_LossyStateRecoverySwallowsCorruption pins the
+// TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption pins the
 // opt-in escape hatch: when the caller explicitly accepts lossy startup,
 // a corrupt state file is logged and the publisher starts empty.
-func TestOpenBufferedPublisher_LossyStateRecoverySwallowsCorruption(t *testing.T) {
+func TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "buffered.json")
 	if err := os.WriteFile(stateFile, []byte(`not valid json`), 0600); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	pub := OpenBufferedPublisher(
+	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(dir),
@@ -311,7 +311,7 @@ func TestWithStateFile_RejectsAbsolutePath(t *testing.T) {
 			t.Fatalf("panic missing absolute-path reason: %q", msg)
 		}
 	}()
-	OpenBufferedPublisher(
+	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(t.TempDir()),
@@ -336,7 +336,7 @@ func TestWithStateFile_RejectsTraversal(t *testing.T) {
 			t.Fatalf("panic missing escape reason: %q", msg)
 		}
 	}()
-	OpenBufferedPublisher(
+	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(t.TempDir()),
@@ -354,7 +354,7 @@ func TestWithStateFile_RejectsAbsoluteEscape(t *testing.T) {
 			t.Fatal("expected panic for absolute escape WithStateFile path, got none")
 		}
 	}()
-	OpenBufferedPublisher(
+	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(t.TempDir()),
@@ -380,7 +380,7 @@ func TestWithStateFile_RequiresStateDirectory(t *testing.T) {
 			t.Fatalf("panic missing WithStateDirectory reason: %q", msg)
 		}
 	}()
-	OpenBufferedPublisher(
+	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateFile("state.json"),
@@ -391,7 +391,7 @@ func TestWithStateFile_RequiresStateDirectory(t *testing.T) {
 // a base-name resolves under the configured directory.
 func TestWithStateFile_AcceptsCleanRelative(t *testing.T) {
 	dir := t.TempDir()
-	pub := OpenBufferedPublisher(
+	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(dir),
@@ -410,7 +410,7 @@ func TestWithStateFile_AcceptsCleanRelative(t *testing.T) {
 // happy path: nested relative components stay inside the directory.
 func TestWithStateFile_AcceptsNestedRelative(t *testing.T) {
 	dir := t.TempDir()
-	pub := OpenBufferedPublisher(
+	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		WithStateDirectory(dir),

@@ -31,15 +31,15 @@ type keyedShard struct {
 	entries *lru.Cache[string, *keyedRateLimitEntry]
 }
 
-// KeyedRateLimiter implements a sharded fixed-window rate limiter keyed by an
+// KeyedLimiter implements a sharded fixed-window rate limiter keyed by an
 // arbitrary string. Sharding reduces mutex contention under high concurrency,
-// matching the approach used by [RateLimiter]. The type satisfies
+// matching the approach used by [Limiter]. The type satisfies
 // [lifecycle.Component] so callers can register it directly with a
 // lifecycle.Runner.
 //
 // Concurrency: AllowKey is safe for concurrent use. Start must only be
 // called once per instance (guarded by an internal started flag).
-type KeyedRateLimiter struct {
+type KeyedLimiter struct {
 	shards      [numShards]keyedShard
 	limit       int
 	window      time.Duration
@@ -56,8 +56,8 @@ type KeyedRateLimiter struct {
 	doneCh  chan struct{}
 }
 
-// KeyedOption configures a KeyedRateLimiter.
-type KeyedOption func(*KeyedRateLimiter)
+// KeyedOption configures a KeyedLimiter.
+type KeyedOption func(*KeyedLimiter)
 
 // WithKeyedClock sets the time source for the keyed rate limiter.
 // Useful for deterministic testing without time.Sleep. Panics on nil
@@ -67,7 +67,7 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 	if fn == nil {
 		panic("middleware/ratelimit: WithKeyedClock requires a non-nil time source")
 	}
-	return func(rl *KeyedRateLimiter) { rl.now = fn }
+	return func(rl *KeyedLimiter) { rl.now = fn }
 }
 
 // WithKeyedMetrics attaches Prometheus metrics to the keyed rate
@@ -80,7 +80,7 @@ func WithKeyedMetrics(m *Metrics) KeyedOption {
 	if m == nil {
 		panic("middleware/ratelimit: WithKeyedMetrics requires non-nil metrics")
 	}
-	return func(rl *KeyedRateLimiter) {
+	return func(rl *KeyedLimiter) {
 		rl.metrics = m
 		m.trackKeyedLimiter(rl)
 	}
@@ -90,19 +90,19 @@ func WithKeyedMetrics(m *Metrics) KeyedOption {
 // Prometheus metrics. Use static names such as "api_key" or "login".
 func WithKeyedLimiterName(name string) KeyedOption {
 	name = normalizeLimiterName(name)
-	return func(rl *KeyedRateLimiter) { rl.name = name }
+	return func(rl *KeyedLimiter) { rl.name = name }
 }
 
-// NewKeyedRateLimiter creates a rate limiter allowing limit requests per window per key.
+// NewKeyedLimiter creates a rate limiter allowing limit requests per window per key.
 // Panics if limit or window are not positive — these indicate misconfiguration.
-func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedRateLimiter {
+func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedLimiter {
 	if limit <= 0 {
 		panic("middleware/ratelimit: limit must be positive")
 	}
 	if window <= 0 {
 		panic("middleware/ratelimit: window must be positive")
 	}
-	rl := &KeyedRateLimiter{
+	rl := &KeyedLimiter{
 		limit:  limit,
 		window: window,
 		now:    time.Now,
@@ -110,7 +110,7 @@ func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("middleware/ratelimit: NewKeyedRateLimiter option must not be nil")
+			panic("middleware/ratelimit: NewKeyedLimiter option must not be nil")
 		}
 		opt(rl)
 	}
@@ -122,13 +122,13 @@ func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *
 }
 
 // getShard returns the shard for the given key using FNV-1a hashing.
-func (rl *KeyedRateLimiter) getShard(key string) *keyedShard {
+func (rl *KeyedLimiter) getShard(key string) *keyedShard {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return &rl.shards[h.Sum32()%numShards]
 }
 
-func (rl *KeyedRateLimiter) ready() error {
+func (rl *KeyedLimiter) ready() error {
 	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
 		return ErrInvalidLimiter
 	}
@@ -141,9 +141,9 @@ func (rl *KeyedRateLimiter) ready() error {
 }
 
 // Allow checks whether the given key is within its rate limit. Invalid keys
-// fail closed and are not stored. Call [KeyedRateLimiter.AllowKey] when the
+// fail closed and are not stored. Call [KeyedLimiter.AllowKey] when the
 // caller needs to distinguish invalid keys from throttled keys.
-func (rl *KeyedRateLimiter) Allow(key string) (allowed bool, retryAfter int) {
+func (rl *KeyedLimiter) Allow(key string) (allowed bool, retryAfter int) {
 	allowed, retryAfter, err := rl.AllowKey(key)
 	if err != nil {
 		return false, 1
@@ -153,7 +153,7 @@ func (rl *KeyedRateLimiter) Allow(key string) (allowed bool, retryAfter int) {
 
 // AllowKey checks whether the given key is within its rate limit and returns
 // an error for invalid keys or uninitialized limiters.
-func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
+func (rl *KeyedLimiter) AllowKey(key string) (allowed bool, retryAfter int, err error) {
 	if err := rl.ready(); err != nil {
 		rl.observeDecision(rateLimitOutcomeUnavailable)
 		return false, 0, err
@@ -198,7 +198,7 @@ func (rl *KeyedRateLimiter) AllowKey(key string) (allowed bool, retryAfter int, 
 
 // Name returns the limiter's configured name so the type satisfies the
 // [lifecycle.Component]-adjacent naming convention used by the Runner.
-func (rl *KeyedRateLimiter) Name() string {
+func (rl *KeyedLimiter) Name() string {
 	if rl == nil || rl.name == "" {
 		return defaultLimiterName
 	}
@@ -206,21 +206,21 @@ func (rl *KeyedRateLimiter) Name() string {
 }
 
 // Start launches the cleanup goroutine that evicts expired entries and
-// blocks until ctx is cancelled OR [KeyedRateLimiter.Stop] is invoked.
+// blocks until ctx is cancelled OR [KeyedLimiter.Stop] is invoked.
 // Cleanup runs at 2× the rate limit window to allow entries to fully
 // expire before eviction, matching the IP rate limiter's cleanup cadence.
 // Start must only be called once; subsequent calls return an error.
-func (rl *KeyedRateLimiter) Start(ctx context.Context) error {
+func (rl *KeyedLimiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
 	if ctx == nil {
-		return errors.New("ratelimit: KeyedRateLimiter.Start requires a non-nil context")
+		return errors.New("ratelimit: KeyedLimiter.Start requires a non-nil context")
 	}
 	rl.startMu.Lock()
 	if rl.started {
 		rl.startMu.Unlock()
-		return errors.New("ratelimit: KeyedRateLimiter.Start already started")
+		return errors.New("ratelimit: KeyedLimiter.Start already started")
 	}
 	rl.started = true
 	runCtx, cancel := context.WithCancel(ctx)
@@ -254,10 +254,10 @@ func (rl *KeyedRateLimiter) Start(ctx context.Context) error {
 	}
 }
 
-// Stop cancels the cleanup goroutine launched by [KeyedRateLimiter.Start]
+// Stop cancels the cleanup goroutine launched by [KeyedLimiter.Start]
 // and waits for it to exit. Stop is idempotent; calls before Start, after
 // the goroutine has already exited, or after a prior Stop are no-ops.
-func (rl *KeyedRateLimiter) Stop(ctx context.Context) error {
+func (rl *KeyedLimiter) Stop(ctx context.Context) error {
 	if rl == nil {
 		return nil
 	}
@@ -291,7 +291,7 @@ func (rl *KeyedRateLimiter) Stop(ctx context.Context) error {
 
 // cleanup evicts expired entries from all shards. Scans at most
 // maxCleanupPerShard entries per shard to bound allocation.
-func (rl *KeyedRateLimiter) cleanup() {
+func (rl *KeyedLimiter) cleanup() {
 	if rl.ready() != nil {
 		return
 	}
@@ -317,11 +317,11 @@ func (rl *KeyedRateLimiter) cleanup() {
 }
 
 // KeyedMiddleware returns chain-shape middleware that rate-limits requests
-// using the provided KeyedRateLimiter. The keyFunc extracts the rate-limit
+// using the provided KeyedLimiter. The keyFunc extracts the rate-limit
 // key from each request (e.g., user ID, API key, IP address). When
 // degradation is configured via [WithKeyedDegradation], the middleware
 // checks the health indicator before enforcing rate limits.
-func KeyedMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
+func KeyedMiddleware(rl *KeyedLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
 	if rl == nil {
 		panic("middleware/ratelimit: KeyedMiddleware requires a non-nil limiter")
 	}
@@ -367,14 +367,14 @@ func KeyedMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string)
 	}
 }
 
-func (rl *KeyedRateLimiter) observeDecision(outcome string) {
+func (rl *KeyedLimiter) observeDecision(outcome string) {
 	if rl == nil {
 		return
 	}
 	rl.metrics.observeDecision(rl.name, rateLimitKindKeyed, outcome)
 }
 
-func (rl *KeyedRateLimiter) observeRetryAfter(seconds float64) {
+func (rl *KeyedLimiter) observeRetryAfter(seconds float64) {
 	if rl == nil {
 		return
 	}

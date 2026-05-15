@@ -55,7 +55,7 @@ var ErrMaxVersionBelowFloor = errors.New("tlsclone: TLS MaxVersion is below mini
 // [AllowInsecureSkipVerify]. Silent inheritance would let every certificate
 // (including attacker-presented ones) pass verification, defeating the kit's
 // TLS floor.
-var ErrInsecureSkipVerifyNotPermitted = errors.New("tlsclone: InsecureSkipVerify=true requires an explicit AllowInsecureSkipVerify opt-in")
+var ErrInsecureSkipVerifyNotPermitted = errors.New("tlsclone: InsecureSkipVerify=true requires an explicit WithAllowInsecureSkipVerify opt-in")
 
 // Option configures a [ConfigWithFloor] / [ConfigOrEmptyWithFloor] call.
 type Option func(*options)
@@ -64,7 +64,7 @@ type options struct {
 	allowInsecureSkipVerify bool
 }
 
-// AllowInsecureSkipVerify permits the cloned config to keep
+// WithAllowInsecureSkipVerify permits the cloned config to keep
 // `InsecureSkipVerify=true` when the caller config has it set. Without this
 // opt-in, the clone helpers refuse such configs to make the dangerous
 // inheritance explicit at every call site.
@@ -72,7 +72,7 @@ type options struct {
 // kit-verify is the only legitimate user — it probes services with
 // dev-issued certificates and accepts the trust trade-off. New callers
 // must justify the opt-in in code review.
-func AllowInsecureSkipVerify() Option {
+func WithAllowInsecureSkipVerify() Option {
 	return func(o *options) { o.allowInsecureSkipVerify = true }
 }
 

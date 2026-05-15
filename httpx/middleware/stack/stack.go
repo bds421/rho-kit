@@ -264,12 +264,12 @@ func WithoutSecHeaders() Option {
 	return func(cfg *Config) { cfg.EnableSecHeaders = false }
 }
 
-// WithoutRecover disables the panic-recovery middleware. Strongly discouraged
+// WithoutRecovery disables the panic-recovery middleware. Strongly discouraged
 // in production: without it, a handler panic relies on Go's stdlib recovery,
 // which logs to ErrorLog (often unset) with no JSON body, no request_id
 // correlation, no metric. Use only for tests that intentionally observe
 // stdlib's behaviour.
-func WithoutRecover() Option {
+func WithoutRecovery() Option {
 	return func(cfg *Config) { cfg.EnableRecover = false }
 }
 

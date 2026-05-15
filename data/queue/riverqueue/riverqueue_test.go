@@ -34,11 +34,11 @@ func TestNewPublisher_PanicsOnNilOption(t *testing.T) {
 	riverqueue.NewPublisher(new(river.Client[pgx.Tx]), nil)
 }
 
-func TestWithMaxPayloadBytes_PanicsOnNonPositive(t *testing.T) {
+func TestWithMaxMessageBytes_PanicsOnNonPositive(t *testing.T) {
 	for _, n := range []int{0, -1} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			assert.Panics(t, func() {
-				riverqueue.WithMaxPayloadBytes(n)
+				riverqueue.WithMaxMessageBytes(n)
 			})
 		})
 	}
@@ -130,7 +130,7 @@ func TestPublisher_RejectsInvalidMessageBeforeInsert(t *testing.T) {
 }
 
 func TestPublisher_RejectsOversizePayloadBeforeInsert(t *testing.T) {
-	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]), riverqueue.WithMaxPayloadBytes(4))
+	pub := riverqueue.NewPublisher(new(river.Client[pgx.Tx]), riverqueue.WithMaxMessageBytes(4))
 
 	err := pub.Enqueue(context.Background(), "jobs", kitqueue.Message{
 		ID:      "msg-1",

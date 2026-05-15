@@ -20,7 +20,7 @@ func TestNewMemoryCache_RejectsNilOption(t *testing.T) {
 			t.Fatal("expected panic on nil option")
 		}
 	}()
-	_, _ = OpenMemoryCache(nil)
+	_, _ = NewMemoryCache(nil)
 }
 
 func TestCacheHelpers_NilCacheReturnsInvalidCache(t *testing.T) {
@@ -60,7 +60,7 @@ func TestCacheBulkValidationRejectsOversizedBatches(t *testing.T) {
 	assert.ErrorIs(t, ValidateBulkKeys(keys), ErrBulkTooLarge)
 	assert.ErrorIs(t, ValidateBulkItems(items), ErrBulkTooLarge)
 
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
 	ctx := context.Background()
 
@@ -118,7 +118,7 @@ func TestMemoryCache_InvalidReceiverReturnsError(t *testing.T) {
 }
 
 func TestMemoryCache_MGet_MSet_SetNX(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
 	ctx := context.Background()
 
@@ -164,7 +164,7 @@ func TestMemoryCache_MGet_MSet_SetNX(t *testing.T) {
 }
 
 func TestMemoryCache_SetAndGet(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	err := cache.Set(ctx, "key1", []byte("value1"), time.Minute)
@@ -177,7 +177,7 @@ func TestMemoryCache_SetAndGet(t *testing.T) {
 }
 
 func TestMemoryCache_GetMiss(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_, err := cache.Get(ctx, "nonexistent")
@@ -185,7 +185,7 @@ func TestMemoryCache_GetMiss(t *testing.T) {
 }
 
 func TestMemoryCache_Expiration(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	err := cache.Set(ctx, "expiring", []byte("value"), 50*time.Millisecond)
@@ -205,7 +205,7 @@ func TestMemoryCache_Expiration(t *testing.T) {
 }
 
 func TestMemoryCache_ZeroTTL_NoExpiration(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	err := cache.Set(ctx, "persistent", []byte("value"), 0)
@@ -219,7 +219,7 @@ func TestMemoryCache_ZeroTTL_NoExpiration(t *testing.T) {
 }
 
 func TestMemoryCache_Delete(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "key", []byte("value"), time.Minute)
@@ -233,7 +233,7 @@ func TestMemoryCache_Delete(t *testing.T) {
 }
 
 func TestMemoryCache_Delete_NonExistent(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	err := cache.Delete(ctx, "nonexistent")
@@ -241,7 +241,7 @@ func TestMemoryCache_Delete_NonExistent(t *testing.T) {
 }
 
 func TestMemoryCache_Exists(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "key", []byte("value"), time.Minute)
@@ -257,7 +257,7 @@ func TestMemoryCache_Exists(t *testing.T) {
 }
 
 func TestMemoryCache_Exists_Expired(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "key", []byte("value"), 50*time.Millisecond)
@@ -269,7 +269,7 @@ func TestMemoryCache_Exists_Expired(t *testing.T) {
 }
 
 func TestMemoryCache_Overwrite(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "key", []byte("v1"), time.Minute)
@@ -283,7 +283,7 @@ func TestMemoryCache_Overwrite(t *testing.T) {
 }
 
 func TestMemoryCache_MaxSize_Eviction(t *testing.T) {
-	cache := MustOpenMemoryCache(WithMaxSize(3))
+	cache := MustNewMemoryCache(WithMaxSize(3))
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "a", []byte("1"), time.Minute)
@@ -304,7 +304,7 @@ func TestMemoryCache_MaxSize_Eviction(t *testing.T) {
 }
 
 func TestMemoryCache_ExpiredEntryNotReturned(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	require.NoError(t, cache.Set(ctx, "ephemeral", []byte("1"), 10*time.Millisecond))
@@ -324,7 +324,7 @@ func TestMemoryCache_ExpiredEntryNotReturned(t *testing.T) {
 }
 
 func TestMemoryCache_GetReturnsDefensiveCopy(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = cache.Set(ctx, "key", []byte("original"), time.Minute)
@@ -339,7 +339,7 @@ func TestMemoryCache_GetReturnsDefensiveCopy(t *testing.T) {
 }
 
 func TestMemoryCache_SetStoresDefensiveCopy(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	input := []byte("original")
@@ -353,7 +353,7 @@ func TestMemoryCache_SetStoresDefensiveCopy(t *testing.T) {
 }
 
 func TestMemoryCache_CleanupInterval(t *testing.T) {
-	cache := MustOpenMemoryCache(WithCleanupInterval(50 * time.Millisecond))
+	cache := MustNewMemoryCache(WithCleanupInterval(50 * time.Millisecond))
 	defer func() { _ = cache.Close() }()
 	ctx := context.Background()
 
@@ -373,37 +373,37 @@ func TestMemoryCache_ImplementsCacheInterface(t *testing.T) {
 }
 
 func TestMemoryCache_Get_EmptyKey(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	_, err := mc.Get(context.Background(), "")
 	assert.ErrorIs(t, err, ErrKeyEmpty)
 }
 
 func TestMemoryCache_Set_EmptyKey(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	err := mc.Set(context.Background(), "", []byte("v"), time.Minute)
 	assert.ErrorIs(t, err, ErrKeyEmpty)
 }
 
 func TestMemoryCache_Delete_EmptyKey(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	err := mc.Delete(context.Background(), "")
 	assert.ErrorIs(t, err, ErrKeyEmpty)
 }
 
 func TestMemoryCache_Exists_EmptyKey(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	_, err := mc.Exists(context.Background(), "")
 	assert.ErrorIs(t, err, ErrKeyEmpty)
 }
 
 func TestMemoryCache_Get_NullByteKey(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	_, err := mc.Get(context.Background(), "bad\x00key")
 	assert.ErrorIs(t, err, ErrKeyInvalidChars)
 }
 
 func TestMemoryCache_CleanupStopsOnClose(t *testing.T) {
-	mc := MustOpenMemoryCache(WithCleanupInterval(50 * time.Millisecond))
+	mc := MustNewMemoryCache(WithCleanupInterval(50 * time.Millisecond))
 	ctx := context.Background()
 
 	_ = mc.Set(ctx, "key", []byte("value"), 30*time.Millisecond)
@@ -416,7 +416,7 @@ func TestMemoryCache_CleanupStopsOnClose(t *testing.T) {
 }
 
 func TestMemoryCache_Set_NegativeTTL(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	err := mc.Set(context.Background(), "key", []byte("v"), -time.Second)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "TTL must not be negative")
@@ -443,12 +443,12 @@ func TestMemoryCacheOptions_PanicOnInvalidValues(t *testing.T) {
 		})
 	}
 
-	mc := MustOpenMemoryCache(WithMaxSize(5))
+	mc := MustNewMemoryCache(WithMaxSize(5))
 	assert.Equal(t, 5, mc.maxSize)
 }
 
 func TestMemoryCache_Exists_LazyEvictsExpired(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	ctx := context.Background()
 
 	_ = mc.Set(ctx, "expiring", []byte("v"), 30*time.Millisecond)
@@ -462,7 +462,7 @@ func TestMemoryCache_Exists_LazyEvictsExpired(t *testing.T) {
 func TestMemoryCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	cache := MustOpenMemoryCache(WithMaxSize(100))
+	cache := MustNewMemoryCache(WithMaxSize(100))
 	ctx := context.Background()
 
 	const goroutines = 20
@@ -568,7 +568,7 @@ func TestValidateKeyPrefix(t *testing.T) {
 // 64 MiB cap kicked in.
 func TestMemoryCache_DefaultByteCost(t *testing.T) {
 	const maxBytes = int64(64 * 1024)
-	mc, err := OpenMemoryCache(
+	mc, err := NewMemoryCache(
 		WithMaxCost(maxBytes),
 		WithNumCounters(10_000),
 		WithIgnoreInternalCost(true),
@@ -615,7 +615,7 @@ func TestMemoryCache_DefaultByteCost(t *testing.T) {
 // TestMemoryCache_WithEntryCost_EvictsByCount verifies the entry-count
 // opt-out actually counts entries.
 func TestMemoryCache_WithEntryCost_EvictsByCount(t *testing.T) {
-	mc, err := OpenMemoryCache(
+	mc, err := NewMemoryCache(
 		WithEntryCost(),
 		WithMaxCost(3),
 		WithNumCounters(30),
@@ -650,7 +650,7 @@ func TestMemoryCache_WithEntryCost_EvictsByCount(t *testing.T) {
 func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
 	t.Parallel()
 
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
 	ctx := context.Background()
 
@@ -682,7 +682,7 @@ func TestMemoryCache_SetNX_ConcurrentAtomicity(t *testing.T) {
 // is released once the requested TTL elapses, so a subsequent SetNX
 // after expiry can succeed.
 func TestMemoryCache_SetNX_ClaimExpires(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
 	ctx := context.Background()
 
@@ -704,7 +704,7 @@ func TestMemoryCache_SetNX_ClaimExpires(t *testing.T) {
 // swallowed this signal; Set now surfaces ErrAdmissionRejected so
 // callers can react.
 func TestMemoryCache_Set_AdmissionRejectionSurfacesError(t *testing.T) {
-	mc, err := OpenMemoryCache()
+	mc, err := NewMemoryCache()
 	require.NoError(t, err)
 	require.NoError(t, mc.Close())
 
@@ -716,7 +716,7 @@ func TestMemoryCache_Set_AdmissionRejectionSurfacesError(t *testing.T) {
 // rejected write does NOT record an NX claim — otherwise the slot
 // would be locked out for the TTL despite holding no value.
 func TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse(t *testing.T) {
-	mc, err := OpenMemoryCache()
+	mc, err := NewMemoryCache()
 	require.NoError(t, err)
 	require.NoError(t, mc.Close())
 
@@ -727,7 +727,7 @@ func TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse(t *testing.T) {
 	// And no claim must have been recorded — a fresh cache constructed
 	// for the same key must accept it (proving SetNX did not stamp the
 	// rejection-period claim into the shared sync.Map).
-	mc2, err := OpenMemoryCache()
+	mc2, err := NewMemoryCache()
 	require.NoError(t, err)
 	defer func() { _ = mc2.Close() }()
 	ok2, err := mc2.SetNX(context.Background(), "rejected", []byte("v"), time.Minute)
@@ -738,7 +738,7 @@ func TestMemoryCache_SetNX_AdmissionRejectionReturnsFalse(t *testing.T) {
 // TestMemoryCache_SetNX_DeleteClearsClaim verifies that an explicit
 // Delete clears the in-process claim so a follow-up SetNX can succeed.
 func TestMemoryCache_SetNX_DeleteClearsClaim(t *testing.T) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	defer func() { _ = mc.Close() }()
 	ctx := context.Background()
 

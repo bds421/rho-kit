@@ -28,7 +28,7 @@ func TestDial_Success(t *testing.T) {
 func TestDial_InvalidURL(t *testing.T) {
 	logger := slog.Default()
 
-	conn, err := amqpbackend.Connect("amqp://invalid:5672/", logger, amqpbackend.WithAllowPlaintext())
+	conn, err := amqpbackend.Connect("amqp://invalid:5672/", logger, amqpbackend.WithoutTLS())
 	assert.Error(t, err)
 	assert.Nil(t, conn)
 }

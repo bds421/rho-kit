@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkGetOrCompute_Hit(b *testing.B) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	cc, err := NewComputeCache[string](mc, "bench:")
 	if err != nil {
 		b.Fatal(err)
@@ -33,7 +33,7 @@ func BenchmarkGetOrCompute_Hit(b *testing.B) {
 }
 
 func BenchmarkGetOrCompute_Miss(b *testing.B) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	cc, err := NewComputeCache[string](mc, "bench:")
 	if err != nil {
 		b.Fatal(err)
@@ -57,7 +57,7 @@ func BenchmarkGetOrCompute_Miss(b *testing.B) {
 }
 
 func BenchmarkGetOrCompute_Stale(b *testing.B) {
-	mc := MustOpenMemoryCache()
+	mc := MustNewMemoryCache()
 	cc, err := NewComputeCache[string](mc, "bench:",
 		WithStaleTTL(10*time.Minute),
 	)

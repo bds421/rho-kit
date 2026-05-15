@@ -38,14 +38,14 @@ type shard struct {
 // defaultMaxPerShard limits each shard's LRU size to prevent OOM from IP-spray attacks.
 const defaultMaxPerShard = 10_000
 
-// RateLimiter is a sharded fixed-window rate limiter keyed by IP address.
+// Limiter is a sharded fixed-window rate limiter keyed by IP address.
 // Sharding reduces mutex contention under high concurrency. The type
 // satisfies [lifecycle.Component] so callers can register it directly with
 // a lifecycle.Runner.
 //
 // Concurrency: Allow is safe for concurrent use. Start must be invoked
 // from a single goroutine — the lifecycle.Runner provides this contract.
-type RateLimiter struct {
+type Limiter struct {
 	shards         [numShards]shard
 	limit          int
 	window         time.Duration
@@ -64,22 +64,22 @@ type RateLimiter struct {
 	doneCh  chan struct{}
 }
 
-// RateLimiterOption configures optional RateLimiter behaviour.
-type RateLimiterOption func(*RateLimiter)
+// LimiterOption configures optional Limiter behaviour.
+type LimiterOption func(*Limiter)
 
 // WithClock sets a custom time source (useful for testing). Panics on
 // nil to fail fast at construction rather than dereferencing a nil
 // func on the first request through the limiter.
-func WithClock(fn clock.Func) RateLimiterOption {
+func WithClock(fn clock.Func) LimiterOption {
 	if fn == nil {
 		panic("middleware/ratelimit: WithClock requires a non-nil time source")
 	}
-	return func(rl *RateLimiter) { rl.now = fn }
+	return func(rl *Limiter) { rl.now = fn }
 }
 
 // WithTrustedProxies sets the CIDRs from which X-Forwarded-For is trusted.
 // Invalid entries panic so proxy attribution cannot silently degrade at startup.
-func WithTrustedProxies(cidrs []string) RateLimiterOption {
+func WithTrustedProxies(cidrs []string) LimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
 		panic("middleware/ratelimit: invalid trusted proxy")
@@ -87,36 +87,36 @@ func WithTrustedProxies(cidrs []string) RateLimiterOption {
 	if len(trusted) == 0 {
 		trusted = clientip.ParseTrustedProxies(nil)
 	}
-	return func(rl *RateLimiter) {
+	return func(rl *Limiter) {
 		rl.trustedProxies = cloneIPNets(trusted)
 	}
 }
 
 // WithMetrics attaches Prometheus metrics to the IP rate limiter.
-func WithMetrics(m *Metrics) RateLimiterOption {
+func WithMetrics(m *Metrics) LimiterOption {
 	if m == nil {
 		panic("middleware/ratelimit: WithMetrics requires non-nil metrics")
 	}
-	return func(rl *RateLimiter) { rl.metrics = m }
+	return func(rl *Limiter) { rl.metrics = m }
 }
 
 // WithLimiterName sets the low-cardinality limiter label used by Prometheus
 // metrics. Use static names such as "public_api" or "login".
-func WithLimiterName(name string) RateLimiterOption {
+func WithLimiterName(name string) LimiterOption {
 	name = normalizeLimiterName(name)
-	return func(rl *RateLimiter) { rl.name = name }
+	return func(rl *Limiter) { rl.name = name }
 }
 
-// NewRateLimiter creates a rate limiter that allows limit requests per window per IP.
+// NewLimiter creates a rate limiter that allows limit requests per window per IP.
 // Panics if limit or window are not positive — these indicate misconfiguration.
-func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) *RateLimiter {
+func NewLimiter(limit int, window time.Duration, opts ...LimiterOption) *Limiter {
 	if limit <= 0 {
 		panic("middleware/ratelimit: limit must be positive")
 	}
 	if window <= 0 {
 		panic("middleware/ratelimit: window must be positive")
 	}
-	rl := &RateLimiter{
+	rl := &Limiter{
 		limit:       limit,
 		window:      window,
 		now:         time.Now,
@@ -125,7 +125,7 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("middleware/ratelimit: NewRateLimiter option must not be nil")
+			panic("middleware/ratelimit: NewLimiter option must not be nil")
 		}
 		opt(rl)
 	}
@@ -157,7 +157,7 @@ func cloneIPNets(in []*net.IPNet) []*net.IPNet {
 	return out
 }
 
-func (rl *RateLimiter) ready() error {
+func (rl *Limiter) ready() error {
 	if rl == nil || rl.limit <= 0 || rl.window <= 0 || rl.now == nil {
 		return ErrInvalidLimiter
 	}
@@ -170,7 +170,7 @@ func (rl *RateLimiter) ready() error {
 }
 
 // getShard returns the shard for the given IP using FNV-1a hashing.
-func (rl *RateLimiter) getShard(ip string) *shard {
+func (rl *Limiter) getShard(ip string) *shard {
 	h := fnv.New32a()
 	h.Write([]byte(ip))
 	return &rl.shards[h.Sum32()%numShards]
@@ -178,7 +178,7 @@ func (rl *RateLimiter) getShard(ip string) *shard {
 
 // allow checks if the IP is within the rate limit. Returns (allowed, windowRemaining).
 // windowRemaining is only meaningful when allowed is false.
-func (rl *RateLimiter) allow(ip string) (bool, time.Duration) {
+func (rl *Limiter) allow(ip string) (bool, time.Duration) {
 	if rl.ready() != nil {
 		rl.observeDecision(rateLimitOutcomeUnavailable)
 		return false, 0
@@ -238,7 +238,7 @@ const maxCleanupPerShard = 1000
 // snapshot and Peek), but Peek doesn't trigger LRU promotion so the
 // re-check is benign and a freshly-touched entry stays even if it was
 // stale at snapshot time.
-func (rl *RateLimiter) cleanup() {
+func (rl *Limiter) cleanup() {
 	if rl.ready() != nil {
 		return
 	}
@@ -265,7 +265,7 @@ func (rl *RateLimiter) cleanup() {
 
 // Name returns the limiter's configured name so the type satisfies the
 // [lifecycle.Component]-adjacent naming convention used by the Runner.
-func (rl *RateLimiter) Name() string {
+func (rl *Limiter) Name() string {
 	if rl == nil || rl.name == "" {
 		return defaultLimiterName
 	}
@@ -273,21 +273,21 @@ func (rl *RateLimiter) Name() string {
 }
 
 // Start launches the periodic cleanup goroutine and blocks until ctx is
-// cancelled OR [RateLimiter.Stop] is invoked. Cleanup runs at 2× the rate
+// cancelled OR [Limiter.Stop] is invoked. Cleanup runs at 2× the rate
 // limit window to amortize scan cost while ensuring expired entries don't
 // accumulate beyond one extra window. Start must only be called once;
 // subsequent calls return an error.
-func (rl *RateLimiter) Start(ctx context.Context) error {
+func (rl *Limiter) Start(ctx context.Context) error {
 	if err := rl.ready(); err != nil {
 		return err
 	}
 	if ctx == nil {
-		return errors.New("ratelimit: RateLimiter.Start requires a non-nil context")
+		return errors.New("ratelimit: Limiter.Start requires a non-nil context")
 	}
 	rl.startMu.Lock()
 	if rl.started {
 		rl.startMu.Unlock()
-		return errors.New("ratelimit: RateLimiter.Start already started")
+		return errors.New("ratelimit: Limiter.Start already started")
 	}
 	rl.started = true
 	runCtx, cancel := context.WithCancel(ctx)
@@ -321,10 +321,10 @@ func (rl *RateLimiter) Start(ctx context.Context) error {
 	}
 }
 
-// Stop cancels the cleanup goroutine launched by [RateLimiter.Start] and
+// Stop cancels the cleanup goroutine launched by [Limiter.Start] and
 // waits for it to exit. Stop is idempotent; calls before Start, after the
 // goroutine has already exited, or after a prior Stop are no-ops.
-func (rl *RateLimiter) Stop(ctx context.Context) error {
+func (rl *Limiter) Stop(ctx context.Context) error {
 	if rl == nil {
 		return nil
 	}
@@ -364,7 +364,7 @@ func cleanupInterval(window time.Duration) time.Duration {
 }
 
 // clientIP extracts the real client IP using proxy-aware logic.
-func (rl *RateLimiter) clientIP(r *http.Request) string {
+func (rl *Limiter) clientIP(r *http.Request) string {
 	if rl.ready() != nil {
 		return ""
 	}
@@ -373,7 +373,7 @@ func (rl *RateLimiter) clientIP(r *http.Request) string {
 
 // ClientIP extracts the real client IP from the request, using the same
 // proxy-aware logic as the rate limiter middleware.
-func (rl *RateLimiter) ClientIP(r *http.Request) string {
+func (rl *Limiter) ClientIP(r *http.Request) string {
 	return rl.clientIP(r)
 }
 
@@ -381,9 +381,9 @@ func (rl *RateLimiter) ClientIP(r *http.Request) string {
 // exceeding rl's rate limit. When degradation is configured via
 // [WithDegradation], the middleware checks the health indicator before
 // enforcing rate limits.
-func Middleware(rl *RateLimiter) func(http.Handler) http.Handler {
+func Middleware(rl *Limiter) func(http.Handler) http.Handler {
 	if rl == nil {
-		panic("middleware/ratelimit: Middleware requires a non-nil RateLimiter")
+		panic("middleware/ratelimit: Middleware requires a non-nil Limiter")
 	}
 	if err := rl.ready(); err != nil {
 		panic("middleware/ratelimit: Middleware requires an initialized limiter")
@@ -428,14 +428,14 @@ func Middleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	}
 }
 
-func (rl *RateLimiter) observeDecision(outcome string) {
+func (rl *Limiter) observeDecision(outcome string) {
 	if rl == nil {
 		return
 	}
 	rl.metrics.observeDecision(rl.name, rateLimitKindIP, outcome)
 }
 
-func (rl *RateLimiter) observeRetryAfter(seconds float64) {
+func (rl *Limiter) observeRetryAfter(seconds float64) {
 	if rl == nil {
 		return
 	}

@@ -48,7 +48,7 @@ func TestTypedCache_InvalidReceiverReturnsError(t *testing.T) {
 }
 
 func TestTypedCache_SetAndGet(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[testUser](t, cache, "user:")
 	ctx := context.Background()
 
@@ -63,7 +63,7 @@ func TestTypedCache_SetAndGet(t *testing.T) {
 }
 
 func TestTypedCache_GetMiss(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[testUser](t, cache, "user:")
 	ctx := context.Background()
 
@@ -72,7 +72,7 @@ func TestTypedCache_GetMiss(t *testing.T) {
 }
 
 func TestTypedCache_Delete(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[testUser](t, cache, "user:")
 	ctx := context.Background()
 
@@ -88,7 +88,7 @@ func TestTypedCache_Delete(t *testing.T) {
 }
 
 func TestTypedCache_Prefix(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[string](t, cache, "prefix:")
 	ctx := context.Background()
 
@@ -106,7 +106,7 @@ func TestTypedCache_Prefix(t *testing.T) {
 }
 
 func TestTypedCache_Exists(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[testUser](t, cache, "user:")
 	ctx := context.Background()
 
@@ -124,7 +124,7 @@ func TestTypedCache_Exists(t *testing.T) {
 }
 
 func TestTypedCache_InvalidJSON(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	ctx := context.Background()
 
 	// Write invalid JSON directly to the backend.
@@ -138,7 +138,7 @@ func TestTypedCache_InvalidJSON(t *testing.T) {
 }
 
 func TestTypedCache_EmptyPrefix(t *testing.T) {
-	cache := MustOpenMemoryCache()
+	cache := MustNewMemoryCache()
 	typed := newTestTypedCache[string](t, cache, "")
 	ctx := context.Background()
 
@@ -157,19 +157,19 @@ func TestNewTypedCache_NilBackend(t *testing.T) {
 }
 
 func TestNewTypedCache_InvalidPrefix_NullByte(t *testing.T) {
-	_, err := NewTypedCache[string](MustOpenMemoryCache(), "bad\x00prefix")
+	_, err := NewTypedCache[string](MustNewMemoryCache(), "bad\x00prefix")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
 func TestNewTypedCache_InvalidPrefix_InvalidUTF8(t *testing.T) {
-	_, err := NewTypedCache[string](MustOpenMemoryCache(), string([]byte{0xff, 0xfe}))
+	_, err := NewTypedCache[string](MustNewMemoryCache(), string([]byte{0xff, 0xfe}))
 	assert.ErrorIs(t, err, ErrKeyInvalidChars)
 }
 
 func TestNewTypedCache_InvalidPrefix_TooLong(t *testing.T) {
 	longPrefix := strings.Repeat("x", MaxKeyPrefixLen+1)
-	_, err := NewTypedCache[string](MustOpenMemoryCache(), longPrefix)
+	_, err := NewTypedCache[string](MustNewMemoryCache(), longPrefix)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
 	assert.NotContains(t, err.Error(), "512")
@@ -178,14 +178,14 @@ func TestNewTypedCache_InvalidPrefix_TooLong(t *testing.T) {
 
 func TestNewTypedCache_ValidLongPrefix(t *testing.T) {
 	prefix := strings.Repeat("x", MaxKeyPrefixLen)
-	_, err := NewTypedCache[string](MustOpenMemoryCache(), prefix)
+	_, err := NewTypedCache[string](MustNewMemoryCache(), prefix)
 	assert.NoError(t, err)
 }
 
 func TestTypedCache_CombinedKeyTooLong(t *testing.T) {
 	// Prefix of 400 bytes + key of 625 bytes = 1025 > MaxKeyLen (1024).
 	prefix := strings.Repeat("p", 400)
-	tc := newTestTypedCache[string](t, MustOpenMemoryCache(), prefix)
+	tc := newTestTypedCache[string](t, MustNewMemoryCache(), prefix)
 	ctx := context.Background()
 
 	longKey := strings.Repeat("k", 625)
@@ -211,7 +211,7 @@ func TestTypedCache_CombinedKeyTooLong(t *testing.T) {
 }
 
 func TestTypedCache_EmptyKeyRejected(t *testing.T) {
-	tc := newTestTypedCache[string](t, MustOpenMemoryCache(), "pfx:")
+	tc := newTestTypedCache[string](t, MustNewMemoryCache(), "pfx:")
 	ctx := context.Background()
 
 	err := tc.Set(ctx, "", "v", time.Minute)

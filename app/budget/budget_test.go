@@ -17,7 +17,7 @@ import (
 
 func testBudget(t *testing.T) *budgetmem.Budget {
 	t.Helper()
-	b := budgetmem.Open(1000, time.Hour, budgetmem.WithoutSweeper())
+	b := budgetmem.New(1000, time.Hour, budgetmem.WithoutSweeper())
 	t.Cleanup(func() { _ = b.Close() })
 	return b
 }

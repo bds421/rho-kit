@@ -94,7 +94,7 @@ func run(ctx context.Context, addr string) error {
 
 	// In-memory backends keep the example self-contained. Production
 	// wiring swaps these for the postgres / redis backends.
-	bud := budgetmem.Open(1000 /* cap per period */, time.Minute)
+	bud := budgetmem.New(1000 /* cap per period */, time.Minute)
 
 	// Generate an ephemeral 32-byte secret per process start. This means
 	// every restart invalidates the chain, which is fine for the demo
