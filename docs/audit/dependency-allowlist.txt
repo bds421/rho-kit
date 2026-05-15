@@ -35,7 +35,6 @@ github.com/openfga/go-sdk
 github.com/rabbitmq/amqp091-go
 github.com/robfig/cron/v3
 github.com/sony/gobreaker/v2
-go.temporal.io/sdk
 
 # HTTP, schema, identity, and file handling helpers.
 github.com/fsnotify/fsnotify

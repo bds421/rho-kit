@@ -137,15 +137,6 @@ allowed_for_boundary_dep() {
             return 1
             ;;
 
-        go.temporal.io/sdk|github.com/bds421/rho-kit/runtime/temporal/v2)
-            case "$gomod" in
-                runtime/temporal/go.mod|*/integrationtest/go.mod)
-                    return 0
-                    ;;
-            esac
-            return 1
-            ;;
-
         github.com/open-feature/go-sdk)
             case "$gomod" in
                 flags/go.mod|*/integrationtest/go.mod)

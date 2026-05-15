@@ -219,9 +219,9 @@ func WithConnectionMetrics(m *Metrics, broker string) DialOption {
 // With WithLazyConnect(), Connect returns immediately without connecting.
 // The connection is established in the background via the reconnect loop.
 //
-// Naming matches infra/sqldb/pgx.Connect, infra/redis.Connect,
-// natsbackend.Connect, and runtime/temporal.Connect — every kit-level
-// "open a network resource" entry point uses Connect for consistency.
+// Naming matches infra/sqldb/pgx.Connect, infra/redis.Connect, and
+// natsbackend.Connect — every kit-level "open a network resource"
+// entry point uses Connect for consistency.
 func Connect(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connection, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger must not be nil")

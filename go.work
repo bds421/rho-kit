@@ -78,6 +78,5 @@ use (
 	./observability/auditlog/postgres/integrationtest
 	./resilience
 	./runtime
-	./runtime/temporal
 	./security
 )
