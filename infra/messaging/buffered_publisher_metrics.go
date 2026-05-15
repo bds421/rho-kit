@@ -77,7 +77,7 @@ func NewBufferedPublisherMetrics(publisherName string, opts ...MetricsOption) *P
 		panic("messaging: NewBufferedPublisherMetrics requires a non-empty publisher name")
 	}
 	if err := promutil.ValidateStaticLabelValue("publisher name", publisherName); err != nil {
-		panic("messaging: invalid publisher name for Prometheus label")
+		panic("messaging: NewBufferedPublisherMetrics: invalid publisher name for Prometheus label")
 	}
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {

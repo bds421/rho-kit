@@ -37,14 +37,14 @@ func TestKey_Missing(t *testing.T) {
 }
 
 func TestKey_MustGet_Panics(t *testing.T) {
-	assert.PanicsWithValue(t, "contextutil: required key is not present in context; ensure the value was set upstream", func() {
+	assert.PanicsWithValue(t, "contextutil: MustGet: required key is not present in context; ensure the value was set upstream", func() {
 		testStringKey.MustGet(context.Background())
 	})
 }
 
 func TestKey_MustGetPanicDoesNotReflectName(t *testing.T) {
 	key := contextutil.NewKey[string]("secret-token")
-	assert.PanicsWithValue(t, "contextutil: required key is not present in context; ensure the value was set upstream", func() {
+	assert.PanicsWithValue(t, "contextutil: MustGet: required key is not present in context; ensure the value was set upstream", func() {
 		key.MustGet(context.Background())
 	})
 }

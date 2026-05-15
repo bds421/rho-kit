@@ -115,7 +115,7 @@ func WithAllowMissingKey() Option {
 // Panics on misconfiguration (nil budget, amount < 0).
 func Middleware(b budget.Budget, opts ...Option) func(http.Handler) http.Handler {
 	if b == nil {
-		panic("middleware/budget: budget must not be nil")
+		panic("middleware/budget: Middleware: budget must not be nil")
 	}
 	cfg := config{
 		key:    TenantKeyFunc(),
@@ -129,15 +129,15 @@ func Middleware(b budget.Budget, opts ...Option) func(http.Handler) http.Handler
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("middleware/budget: option must not be nil")
+			panic("middleware/budget: Middleware: option must not be nil")
 		}
 		o(&cfg)
 	}
 	if cfg.key == nil {
-		panic("middleware/budget: keyFunc must not be nil")
+		panic("middleware/budget: Middleware: keyFunc must not be nil")
 	}
 	if cfg.amount < 0 {
-		panic("middleware/budget: amount must be >= 0")
+		panic("middleware/budget: Middleware: amount must be >= 0")
 	}
 
 	return func(next http.Handler) http.Handler {

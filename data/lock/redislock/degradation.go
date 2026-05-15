@@ -37,10 +37,10 @@ func NewDegradedLocker(
 	opts ...Option,
 ) *DegradedLocker {
 	if conn == nil {
-		panic("redislock: connection must not be nil")
+		panic("redislock: NewDegradedLocker: connection must not be nil")
 	}
 	if policy == nil {
-		panic("redislock: degradation policy must not be nil")
+		panic("redislock: NewDegradedLocker: degradation policy must not be nil")
 	}
 	return &DegradedLocker{
 		inner:  NewLocker(conn.Client(), opts...),

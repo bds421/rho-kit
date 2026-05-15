@@ -111,7 +111,7 @@ func (i *Infrastructure) SetResource(key string, value any) {
 	i.resources.mu.Lock()
 	defer i.resources.mu.Unlock()
 	if _, exists := i.resources.m[key]; exists {
-		panic("app: duplicate resource key — adapter modules must not double-register")
+		panic("app: SetResource: duplicate resource key — adapter modules must not double-register")
 	}
 	i.resources.m[key] = value
 }

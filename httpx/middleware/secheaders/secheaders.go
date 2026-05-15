@@ -42,7 +42,7 @@ type config struct {
 // Default: [Deny]. Use [SameOrigin] for services that need iframe embedding.
 func WithFrameOption(opt FrameOption) Option {
 	if opt != "" && opt != Deny && opt != SameOrigin {
-		panic("secheaders: invalid X-Frame-Options value")
+		panic("secheaders: WithFrameOption: invalid X-Frame-Options value")
 	}
 	return func(c *config) { c.frameOption = opt }
 }
@@ -103,7 +103,7 @@ func WithTrustedProxiesForProto(proxies []*net.IPNet) Option {
 	cleaned := make([]*net.IPNet, 0, len(proxies))
 	for _, p := range proxies {
 		if p == nil {
-			panic("secheaders: trusted proxy CIDR must not be nil")
+			panic("secheaders: WithTrustedProxiesForProto: trusted proxy CIDR must not be nil")
 		}
 		cleaned = append(cleaned, cloneIPNet(p))
 	}
@@ -260,7 +260,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("secheaders: option must not be nil")
+			panic("secheaders: New: option must not be nil")
 		}
 		opt(&cfg)
 	}

@@ -78,7 +78,7 @@ func New(opts ...Option) *Broker {
 	b := &Broker{sizeLimiter: messaging.DefaultMessageSizeLimiter()}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("membroker: option must not be nil")
+			panic("membroker: New: option must not be nil")
 		}
 		opt(b)
 	}
@@ -148,11 +148,11 @@ func (b *Broker) Subscribe(exchange, routingKey string, handler func(ctx context
 	}
 	if exchange != "*" && exchange != "#" {
 		if err := messaging.ValidateExchangeName(exchange); err != nil {
-			panic("membroker: exchange name is invalid")
+			panic("membroker: Subscribe: exchange name is invalid")
 		}
 	}
 	if err := messaging.ValidateRoutingKey(routingKey); err != nil {
-		panic("membroker: routing key is invalid")
+		panic("membroker: Subscribe: routing key is invalid")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()

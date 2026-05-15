@@ -144,7 +144,7 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("middleware/recover: option must not be nil")
+			panic("middleware/recover: Middleware: option must not be nil")
 		}
 		opt(&cfg)
 	}

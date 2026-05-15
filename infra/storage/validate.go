@@ -148,7 +148,7 @@ func CloneValidators(validators ...Validator) []Validator {
 	out := make([]Validator, len(validators))
 	for i, v := range validators {
 		if v == nil {
-			panic("storage: validator must not be nil")
+			panic("storage: CloneValidators: validator must not be nil")
 		}
 		out[i] = v
 	}

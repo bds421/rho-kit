@@ -131,7 +131,7 @@ func NewStaticKeyStore(keys map[string][]byte, currentID string) (*StaticKeyStor
 func MustNewStaticKeyStore(keys map[string][]byte, currentID string) *StaticKeyStore {
 	s, err := NewStaticKeyStore(keys, currentID)
 	if err != nil {
-		panic("signing: static key store configuration is invalid")
+		panic("signing: MustNewStaticKeyStore: static key store configuration is invalid")
 	}
 	return s
 }

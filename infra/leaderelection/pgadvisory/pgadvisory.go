@@ -162,7 +162,7 @@ func WithCallbackDrainTimeout(d time.Duration) Option {
 // other replica using `db`.
 func New(db *sql.DB, key string, opts ...Option) *Elector {
 	if key == "" {
-		panic("leaderelection/pgadvisory: key must not be empty")
+		panic("leaderelection/pgadvisory: New: key must not be empty")
 	}
 	e := &Elector{
 		locker:        pgalock.New(db),
@@ -174,7 +174,7 @@ func New(db *sql.DB, key string, opts ...Option) *Elector {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("leaderelection/pgadvisory: option must not be nil")
+			panic("leaderelection/pgadvisory: New: option must not be nil")
 		}
 		o(e)
 	}

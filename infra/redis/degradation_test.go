@@ -56,7 +56,7 @@ func TestNewCustomPolicy_PanicsOnEmptyName(t *testing.T) {
 }
 
 func TestNewCustomPolicy_PanicsOnInvalidName(t *testing.T) {
-	assert.PanicsWithValue(t, "redis: invalid custom policy name", func() {
+	assert.PanicsWithValue(t, "redis: NewCustomPolicy: invalid custom policy name", func() {
 		NewCustomPolicy("secret-token bad", func(_ context.Context) error { return nil })
 	})
 }

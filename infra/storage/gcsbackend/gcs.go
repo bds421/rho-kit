@@ -42,7 +42,7 @@ type Option func(*Backend)
 func WithInstance(name string) Option {
 	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
-			panic("gcsbackend: invalid instance name")
+			panic("gcsbackend: WithInstance: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -101,7 +101,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Backend, error) {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("gcsbackend: option must not be nil")
+			panic("gcsbackend: New: option must not be nil")
 		}
 		o(b)
 	}
@@ -125,7 +125,7 @@ func NewWithClient(client *gcsstorage.Client, cfg Config, opts ...Option) *Backe
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("gcsbackend: option must not be nil")
+			panic("gcsbackend: NewWithClient: option must not be nil")
 		}
 		o(b)
 	}

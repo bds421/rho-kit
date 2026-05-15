@@ -100,7 +100,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("middleware/cors: option must not be nil")
+			panic("middleware/cors: New: option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -117,7 +117,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 	mw, err := jcors.NewMiddleware(jcfg)
 	if err != nil {
-		panic("middleware/cors: invalid configuration")
+		panic("middleware/cors: New: invalid configuration")
 	}
 
 	return func(next http.Handler) http.Handler {

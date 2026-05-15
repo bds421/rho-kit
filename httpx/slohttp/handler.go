@@ -54,7 +54,7 @@ func toJSON(s slo.SLOStatus) StatusJSON {
 // Panics if checker is nil (configuration error, caught at startup).
 func Handler(checker *slo.Checker) http.Handler {
 	if checker == nil {
-		panic("slohttp: checker must not be nil")
+		panic("slohttp: Handler: checker must not be nil")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

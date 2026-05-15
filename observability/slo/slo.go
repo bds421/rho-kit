@@ -153,7 +153,7 @@ type Checker struct {
 // at startup.
 func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 	if gatherer == nil {
-		panic("slo: gatherer must not be nil")
+		panic("slo: NewChecker: gatherer must not be nil")
 	}
 
 	seen := make(map[string]struct{}, len(slos))
@@ -162,23 +162,23 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 			panic("slo: SLO name must not be empty")
 		}
 		if _, exists := seen[s.Name]; exists {
-			panic("slo: duplicate SLO name")
+			panic("slo: NewChecker: duplicate SLO name")
 		}
 		switch s.Type {
 		case TypeLatency:
 			if s.Threshold <= 0 {
-				panic("slo: latency SLO Threshold must be > 0 (seconds at the configured percentile)")
+				panic("slo: NewChecker: latency SLO Threshold must be > 0 (seconds at the configured percentile)")
 			}
 			if s.Percentile <= 0 || s.Percentile >= 1 {
-				panic("slo: latency SLO Percentile must lie in (0, 1)")
+				panic("slo: NewChecker: latency SLO Percentile must lie in (0, 1)")
 			}
 		case TypeErrorRate:
 			if s.Threshold < 0 || s.Threshold > 1 {
-				panic("slo: error-rate SLO Threshold must lie in [0, 1]")
+				panic("slo: NewChecker: error-rate SLO Threshold must lie in [0, 1]")
 			}
 		case TypeSuccessRate:
 			if s.Threshold < 0 || s.Threshold > 1 {
-				panic("slo: success-rate SLO Threshold must lie in [0, 1]")
+				panic("slo: NewChecker: success-rate SLO Threshold must lie in [0, 1]")
 			}
 		default:
 			panic("slo: SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")

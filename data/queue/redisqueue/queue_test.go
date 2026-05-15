@@ -619,7 +619,7 @@ func TestProcess_ActiveQueuePanicDoesNotReflectQueueName(t *testing.T) {
 	}()
 
 	assert.PanicsWithValue(t,
-		"redisqueue: queue already has an active Process goroutine",
+		"redisqueue: Process: queue already has an active Process goroutine",
 		func() {
 			q.Process(context.Background(), queueName, func(context.Context, Message) error { return nil })
 		},

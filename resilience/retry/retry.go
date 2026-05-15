@@ -211,12 +211,12 @@ func RetryIfNotPermanent(err error) bool {
 // attempts across stability cycles. Use MaxRetries alone for a firm cap.
 func Do(ctx context.Context, fn func(ctx context.Context) error, opts ...Option) error {
 	if fn == nil {
-		panic("retry: Do requires a non-nil fn")
+		panic("retry: Do: Do requires a non-nil fn")
 	}
 	p := DefaultPolicy()
 	for _, o := range opts {
 		if o == nil {
-			panic("retry: Do option must not be nil")
+			panic("retry: Do: Do option must not be nil")
 		}
 		o(&p)
 	}

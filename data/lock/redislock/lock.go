@@ -165,7 +165,7 @@ func NewLocker(client redis.UniversalClient, opts ...Option) *Locker {
 	o := options{ttl: 30 * time.Second}
 	for _, fn := range opts {
 		if fn == nil {
-			panic("redislock: option must not be nil")
+			panic("redislock: NewLocker: option must not be nil")
 		}
 		fn(&o)
 	}

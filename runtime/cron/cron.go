@@ -94,7 +94,7 @@ func New(logger *slog.Logger, opts ...Option) *Scheduler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("cron: option must not be nil")
+			panic("cron: New: option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -138,7 +138,7 @@ func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 		panic("cron: SetJobTimeout requires d > 0")
 	}
 	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
-		panic("cron: invalid job name")
+		panic("cron: SetJobTimeout: invalid job name")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -156,14 +156,14 @@ func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) erro
 		panic("cron: Scheduler.Add requires a non-empty name")
 	}
 	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
-		panic("cron: invalid job name")
+		panic("cron: Add: invalid job name")
 	}
 	if fn == nil {
 		panic("cron: Scheduler.Add requires a non-nil job function")
 	}
 	wrapped := s.wrapJob(name, fn)
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {
-		panic("cron: invalid schedule for job")
+		panic("cron: Add: invalid schedule for job")
 	}
 	s.mu.RLock()
 	_, hasTimeout := s.jobTimeouts[name]

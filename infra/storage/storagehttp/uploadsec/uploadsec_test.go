@@ -66,7 +66,7 @@ func TestAllowMIMETypes_PanicsOnInvalidAllowlist(t *testing.T) {
 	assert.Panics(t, func() { AllowMIMETypes() })
 	assert.Panics(t, func() { AllowMIMETypes("") })
 	assert.Panics(t, func() { AllowMIMETypes("not-a-mime") })
-	assert.PanicsWithValue(t, "uploadsec: invalid MIME type", func() {
+	assert.PanicsWithValue(t, "uploadsec: AllowMIMETypes: invalid MIME type", func() {
 		AllowMIMETypes("not-a-mime secret-token")
 	})
 }
@@ -80,7 +80,7 @@ func TestAllowMIMETypes_RejectsDisallowed(t *testing.T) {
 }
 
 func TestChain_PanicsOnNilValidator(t *testing.T) {
-	assert.PanicsWithValue(t, "uploadsec: validator must not be nil", func() {
+	assert.PanicsWithValue(t, "uploadsec: Chain: validator must not be nil", func() {
 		Chain(ValidatorFunc(func(_ context.Context, _ io.ReadSeeker, meta Meta) (Meta, error) {
 			return meta, nil
 		}), nil)
@@ -142,7 +142,7 @@ func TestAllowExtensions_PanicsOnInvalidAllowlist(t *testing.T) {
 	assert.Panics(t, func() { AllowExtensions("") })
 	assert.Panics(t, func() { AllowExtensions("png") })
 	assert.Panics(t, func() { AllowExtensions("../png") })
-	assert.PanicsWithValue(t, "uploadsec: invalid extension", func() {
+	assert.PanicsWithValue(t, "uploadsec: AllowExtensions: invalid extension", func() {
 		AllowExtensions("../secret-token")
 	})
 }

@@ -194,10 +194,10 @@ func WithRefundOnTransportError() Option {
 // recovery condition.
 func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) http.RoundTripper {
 	if b == nil {
-		panic("httpx/budget: budget must not be nil")
+		panic("httpx/budget: Wrap: budget must not be nil")
 	}
 	if err := budget.ValidateKey(key); err != nil {
-		panic("httpx/budget: key is invalid")
+		panic("httpx/budget: Wrap: key is invalid")
 	}
 	if base == nil {
 		base = transportdefaults.New(nil, 0, "httpx/budget: Wrap")
@@ -215,7 +215,7 @@ func Wrap(base http.RoundTripper, b budget.Budget, key string, opts ...Option) h
 		o(&cfg)
 	}
 	if cfg.defaultAmount < 0 {
-		panic("httpx/budget: default amount must be >= 0")
+		panic("httpx/budget: Wrap: default amount must be >= 0")
 	}
 	return &transport{base: base, b: b, key: key, cfg: cfg}
 }

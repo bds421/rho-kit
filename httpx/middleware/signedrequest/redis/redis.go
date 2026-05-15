@@ -107,10 +107,10 @@ func WithNonceTimeout(d time.Duration) Option {
 // guard.
 func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *RedisNonceStore {
 	if client == nil {
-		panic("signedrequest/redis: client must not be nil")
+		panic("signedrequest/redis: New: client must not be nil")
 	}
 	if ttl <= 0 {
-		panic("signedrequest/redis: ttl must be > 0")
+		panic("signedrequest/redis: New: ttl must be > 0")
 	}
 	s := &RedisNonceStore{
 		client:      client,
@@ -120,7 +120,7 @@ func New(client goredis.UniversalClient, ttl time.Duration, opts ...Option) *Red
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("signedrequest/redis: option must not be nil")
+			panic("signedrequest/redis: New: option must not be nil")
 		}
 		o(s)
 	}

@@ -245,7 +245,7 @@ func TestMiddleware_RequireBreakerOption(t *testing.T) {
 
 func TestMiddleware_NilOptionPanics(t *testing.T) {
 	require.PanicsWithValue(t,
-		"middleware/circuitbreaker: option must not be nil",
+		"middleware/circuitbreaker: Middleware: option must not be nil",
 		func() { cbmw.Middleware(nil) })
 }
 

@@ -47,7 +47,7 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 // of panicking.
 func NewPoolMetrics(namespace string, opts ...MetricsOption) PoolMetrics {
 	if err := promutil.ValidateMetricNamePart("database metric namespace", namespace); err != nil {
-		panic("sqldb: metric namespace is invalid")
+		panic("sqldb: NewPoolMetrics: metric namespace is invalid")
 	}
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {

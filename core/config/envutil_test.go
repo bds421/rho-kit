@@ -242,7 +242,7 @@ func TestMustGetSecret_BadFileLogRedactsKeyAndError(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	t.Setenv("MUST_SECRET_TOKEN_FILE", filepath.Join(t.TempDir(), "missing-secret-token"))
-	assert.PanicsWithValue(t, "config: secret file is unreadable", func() {
+	assert.PanicsWithValue(t, "config: MustGetSecret: secret file is unreadable", func() {
 		MustGetSecret("MUST_SECRET_TOKEN", "")
 	})
 

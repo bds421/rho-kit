@@ -126,7 +126,7 @@ func WithKeyTTL(d time.Duration) Option {
 // only.
 func WithClock(now clock.Func) Option {
 	if now == nil {
-		panic("ratelimit/redis: clock must not be nil")
+		panic("ratelimit/redis: WithClock: clock must not be nil")
 	}
 	return func(l *Limiter) {
 		l.now = func(_ context.Context) (time.Time, error) { return now(), nil }
@@ -165,17 +165,17 @@ func WithRedisTime() Option {
 // still below Redis/network scheduling resolution.
 func New(client goredis.UniversalClient, period time.Duration, burst int, opts ...Option) *Limiter {
 	if client == nil {
-		panic("ratelimit/redis: client must not be nil")
+		panic("ratelimit/redis: New: client must not be nil")
 	}
 	if period <= 0 {
-		panic("ratelimit/redis: period must be > 0")
+		panic("ratelimit/redis: New: period must be > 0")
 	}
 	if burst < 1 {
-		panic("ratelimit/redis: burst must be >= 1")
+		panic("ratelimit/redis: New: burst must be >= 1")
 	}
 	rate := period / time.Duration(burst)
 	if rate <= 0 {
-		panic("ratelimit/redis: period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
+		panic("ratelimit/redis: New: period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
 	}
 	l := &Limiter{
 		client: client,
@@ -196,7 +196,7 @@ func New(client goredis.UniversalClient, period time.Duration, burst int, opts .
 		o(l)
 	}
 	if l.keyTTL < period {
-		panic("ratelimit/redis: key TTL must be >= period (otherwise Redis can evict mid-window)")
+		panic("ratelimit/redis: New: key TTL must be >= period (otherwise Redis can evict mid-window)")
 	}
 	return l
 }

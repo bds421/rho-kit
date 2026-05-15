@@ -55,7 +55,7 @@ type scopedBulk struct {
 // as a programming error and the wrapper makes that explicit upfront.
 func Wrap(inner cache.Cache) cache.Cache {
 	if inner == nil {
-		panic("cache/tenant: inner cache must not be nil")
+		panic("cache/tenant: Wrap: inner cache must not be nil")
 	}
 	if bulk, ok := inner.(cache.BulkCache); ok {
 		return &scopedBulk{scoped: scoped{inner: inner}, bulk: bulk}

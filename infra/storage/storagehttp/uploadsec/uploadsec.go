@@ -196,7 +196,7 @@ func normalizeScannerError(err error) error {
 func Chain(validators ...Validator) Validator {
 	for _, v := range validators {
 		if v == nil {
-			panic("uploadsec: validator must not be nil")
+			panic("uploadsec: Chain: validator must not be nil")
 		}
 	}
 	return ValidatorFunc(func(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
@@ -457,10 +457,10 @@ func AllowMIMETypes(allowed ...string) *MIMEValidator {
 	for _, m := range allowed {
 		mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(m)))
 		if err != nil || mediaType == "" || !strings.Contains(mediaType, "/") {
-			panic("uploadsec: invalid MIME type")
+			panic("uploadsec: AllowMIMETypes: invalid MIME type")
 		}
 		if mediaType == "image/svg+xml" {
-			panic("uploadsec: image/svg+xml requires AllowSVG with an SVGSanitizer; the default allowlist refuses unsanitised SVG")
+			panic("uploadsec: AllowMIMETypes: image/svg+xml requires AllowSVG with an SVGSanitizer; the default allowlist refuses unsanitised SVG")
 		}
 		allowSet[mediaType] = struct{}{}
 	}
@@ -530,7 +530,7 @@ func AllowExtensions(allowed ...string) Validator {
 	for _, e := range allowed {
 		ext := strings.ToLower(strings.TrimSpace(e))
 		if ext == "" || !strings.HasPrefix(ext, ".") || strings.ContainsAny(ext, `/\`) {
-			panic("uploadsec: invalid extension")
+			panic("uploadsec: AllowExtensions: invalid extension")
 		}
 		allowSet[ext] = struct{}{}
 	}
@@ -584,7 +584,7 @@ const imageHeaderReadLimit = 64 << 10
 // before this validator so meta.ContentType is the sniffed value.
 func MaxImageDimensions(maxWidth, maxHeight int) Validator {
 	if maxWidth <= 0 || maxHeight <= 0 {
-		panic("uploadsec: maxWidth and maxHeight must be positive")
+		panic("uploadsec: MaxImageDimensions: maxWidth and maxHeight must be positive")
 	}
 	return ValidatorFunc(func(_ context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
 		if !strings.HasPrefix(meta.ContentType, "image/") {

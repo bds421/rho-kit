@@ -82,7 +82,7 @@ func WithClock(fn clock.Func) LimiterOption {
 func WithTrustedProxies(cidrs []string) LimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
-		panic("middleware/ratelimit: invalid trusted proxy")
+		panic("middleware/ratelimit: WithTrustedProxies: invalid trusted proxy")
 	}
 	if len(trusted) == 0 {
 		trusted = clientip.ParseTrustedProxies(nil)
@@ -111,10 +111,10 @@ func WithLimiterName(name string) LimiterOption {
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewLimiter(limit int, window time.Duration, opts ...LimiterOption) *Limiter {
 	if limit <= 0 {
-		panic("middleware/ratelimit: limit must be positive")
+		panic("middleware/ratelimit: NewLimiter: limit must be positive")
 	}
 	if window <= 0 {
-		panic("middleware/ratelimit: window must be positive")
+		panic("middleware/ratelimit: NewLimiter: window must be positive")
 	}
 	rl := &Limiter{
 		limit:       limit,

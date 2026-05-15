@@ -39,7 +39,7 @@ type Option func(*Config)
 // zero, and silently ignoring the value masks misconfiguration.
 func WithMaxAttempts(n int) Option {
 	if n < 1 {
-		panic("storage/retry: max attempts must be >= 1")
+		panic("storage/retry: WithMaxAttempts: max attempts must be >= 1")
 	}
 	return func(c *Config) { c.MaxAttempts = n }
 }
@@ -48,7 +48,7 @@ func WithMaxAttempts(n int) Option {
 // Panics if d is zero or negative — a zero delay creates a tight retry loop.
 func WithBaseDelay(d time.Duration) Option {
 	if d <= 0 {
-		panic("storage/retry: base delay must be positive")
+		panic("storage/retry: WithBaseDelay: base delay must be positive")
 	}
 	return func(c *Config) { c.BaseDelay = d }
 }
@@ -57,7 +57,7 @@ func WithBaseDelay(d time.Duration) Option {
 // Panics if d is zero or negative — a zero/negative cap collapses backoff.
 func WithMaxDelay(d time.Duration) Option {
 	if d <= 0 {
-		panic("storage/retry: max delay must be positive")
+		panic("storage/retry: WithMaxDelay: max delay must be positive")
 	}
 	return func(c *Config) { c.MaxDelay = d }
 }
@@ -108,7 +108,7 @@ func (r *RetryStorage) OpaqueStorageDecorator() {}
 // confusing nil-pointer panic on the first storage operation.
 func New(backend storage.Storage, opts ...Option) storage.Storage {
 	if backend == nil {
-		panic("storage/retry: backend must not be nil")
+		panic("storage/retry: New: backend must not be nil")
 	}
 	cfg := Config{
 		MaxAttempts: 3,
@@ -118,7 +118,7 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("storage/retry: option must not be nil")
+			panic("storage/retry: New: option must not be nil")
 		}
 		o(&cfg)
 	}

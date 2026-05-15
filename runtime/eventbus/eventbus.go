@@ -78,7 +78,7 @@ func WithOnError(fn func(ctx context.Context, eventName string, handlerName stri
 func WithWorkerPool(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
-			panic("eventbus: worker pool size must be positive")
+			panic("eventbus: WithWorkerPool: worker pool size must be positive")
 		}
 		if b.poolCfg == nil {
 			b.poolCfg = &poolConfig{}
@@ -93,7 +93,7 @@ func WithWorkerPool(size int) Option {
 func WithWorkerPoolBuffer(size int) Option {
 	return func(b *Bus) {
 		if size <= 0 {
-			panic("eventbus: worker pool buffer size must be positive")
+			panic("eventbus: WithWorkerPoolBuffer: worker pool buffer size must be positive")
 		}
 		if b.poolCfg == nil {
 			b.poolCfg = &poolConfig{}
@@ -155,7 +155,7 @@ func WithAsync() HandlerOption {
 func WithName(name string) HandlerOption {
 	return func(c *handlerConfig) {
 		if err := promutil.ValidateStaticLabelValue("handler name", name); err != nil {
-			panic("eventbus: invalid handler name")
+			panic("eventbus: WithName: invalid handler name")
 		}
 		c.name = name
 	}
@@ -222,7 +222,7 @@ func New(opts ...Option) *Bus {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("eventbus: option must not be nil")
+			panic("eventbus: New: option must not be nil")
 		}
 		opt(b)
 	}

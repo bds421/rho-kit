@@ -79,7 +79,7 @@ func New(db *sql.DB, opts ...Option) *Store {
 		o(s)
 	}
 	if !validTableName.MatchString(s.table) {
-		panic("pgstore: invalid table name")
+		panic("pgstore: New: invalid table name")
 	}
 	return s
 }

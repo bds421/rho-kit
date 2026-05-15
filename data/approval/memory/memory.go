@@ -64,7 +64,7 @@ func New(signer *approval.CursorSigner, opts ...Option) *Store {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("approval/memory: option must not be nil")
+			panic("approval/memory: New: option must not be nil")
 		}
 		o(s)
 	}

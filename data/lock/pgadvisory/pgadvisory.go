@@ -47,7 +47,7 @@ type Locker struct {
 // load.
 func New(db *sql.DB) *Locker {
 	if db == nil {
-		panic("pgadvisory: db must not be nil")
+		panic("pgadvisory: New: db must not be nil")
 	}
 	return &Locker{db: db}
 }

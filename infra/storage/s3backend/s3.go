@@ -70,7 +70,7 @@ type Option func(*Backend)
 func WithInstance(name string) Option {
 	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
-			panic("s3backend: invalid instance name")
+			panic("s3backend: WithInstance: invalid instance name")
 		}
 		b.instance = name
 	}
@@ -161,7 +161,7 @@ func NewContext(ctx context.Context, cfg Config, opts ...Option) (*Backend, erro
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("s3backend: option must not be nil")
+			panic("s3backend: NewContext: option must not be nil")
 		}
 		o(b)
 	}
@@ -178,7 +178,7 @@ func NewWithClient(client Client, presigner Presigner, bucket string, opts ...Op
 		panic("s3backend: NewWithClient requires a non-nil Presigner")
 	}
 	if bucket == "" {
-		panic("s3backend: bucket must not be empty")
+		panic("s3backend: NewWithClient: bucket must not be empty")
 	}
 	b := &Backend{
 		client:    client,
@@ -189,7 +189,7 @@ func NewWithClient(client Client, presigner Presigner, bucket string, opts ...Op
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("s3backend: option must not be nil")
+			panic("s3backend: NewWithClient: option must not be nil")
 		}
 		o(b)
 	}

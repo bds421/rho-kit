@@ -72,10 +72,10 @@ type CustomPolicy struct {
 // Panics if name is empty or contains invalid characters.
 func NewCustomPolicy(name string, fn func(ctx context.Context) error) CustomPolicy {
 	if err := health.ValidateCheckName(name); err != nil {
-		panic("redis: invalid custom policy name")
+		panic("redis: NewCustomPolicy: invalid custom policy name")
 	}
 	if fn == nil {
-		panic("redis: custom policy function must not be nil")
+		panic("redis: NewCustomPolicy: custom policy function must not be nil")
 	}
 	return CustomPolicy{name: name, fn: fn}
 }
@@ -106,7 +106,7 @@ type FeatureCheck struct {
 // Panics if conn is nil, any feature name is invalid, or any feature policy is nil.
 func PerFeatureHealthChecks(conn *Connection, features []FeatureCheck) []health.DependencyCheck {
 	if conn == nil {
-		panic("redis: connection must not be nil")
+		panic("redis: PerFeatureHealthChecks: connection must not be nil")
 	}
 	checks := make([]health.DependencyCheck, len(features))
 	for i, fc := range features {

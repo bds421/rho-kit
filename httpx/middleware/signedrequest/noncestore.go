@@ -81,7 +81,7 @@ func NewMemoryNonceStore(ttl time.Duration, opts ...MemoryOption) *MemoryNonceSt
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("signedrequest: memory nonce store option must not be nil")
+			panic("signedrequest: NewMemoryNonceStore: memory nonce store option must not be nil")
 		}
 		o(m)
 	}

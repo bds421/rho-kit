@@ -67,7 +67,7 @@ func RequirePermission(policy Policy, action string, resource ResourceFunc, subj
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("authz: middleware option must not be nil")
+			panic("authz: RequirePermission: middleware option must not be nil")
 		}
 		o(&cfg)
 	}

@@ -39,8 +39,8 @@ func TestNew_InvalidTableNamePanicDoesNotReflectName(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic must be a stable string, got %T", rec)
 		}
-		if msg != "pgstore: invalid table name" {
-			t.Fatalf("panic = %q, want %q", msg, "pgstore: invalid table name")
+		if msg != "pgstore: New: invalid table name" {
+			t.Fatalf("panic = %q, want %q", msg, "pgstore: New: invalid table name")
 		}
 		if strings.Contains(msg, "secret_token") {
 			t.Fatalf("panic reflected table name: %q", msg)

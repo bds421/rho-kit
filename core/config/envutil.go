@@ -57,7 +57,7 @@ func MustGetSecret(key, fallback string) string {
 	if err != nil {
 		slog.Error("secret file configured but unreadable",
 			redact.String("key", key+"_FILE"), redact.Error(err))
-		panic("config: secret file is unreadable")
+		panic("config: MustGetSecret: secret file is unreadable")
 	}
 	return v
 }

@@ -277,7 +277,7 @@ type BaseModule struct {
 // Panics if name is empty.
 func NewBaseModule(name string) BaseModule {
 	if name == "" {
-		panic("app: module name must not be empty")
+		panic("app: NewBaseModule: module name must not be empty")
 	}
 	return BaseModule{name: name}
 }
@@ -326,7 +326,7 @@ type ModuleContext struct {
 func (mc ModuleContext) Module(name string) Module {
 	m, ok := mc.modules[name]
 	if !ok {
-		panic("app: module not found (check registration order — modules are init'd in registration order)")
+		panic("app: Module: module not found (check registration order — modules are init'd in registration order)")
 	}
 	return m
 }

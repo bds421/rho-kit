@@ -114,16 +114,16 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // elapses.
 func New(name string, interval time.Duration, fn func(ctx context.Context) error, opts ...Option) *Worker {
 	if name == "" {
-		panic("batchworker: name must not be empty")
+		panic("batchworker: New: name must not be empty")
 	}
 	if err := promutil.ValidateStaticLabelValue("worker name", name); err != nil {
-		panic("batchworker: invalid name")
+		panic("batchworker: New: invalid name")
 	}
 	if interval <= 0 {
-		panic("batchworker: interval must be positive")
+		panic("batchworker: New: interval must be positive")
 	}
 	if fn == nil {
-		panic("batchworker: fn must not be nil")
+		panic("batchworker: New: fn must not be nil")
 	}
 
 	cfg := config{
@@ -133,7 +133,7 @@ func New(name string, interval time.Duration, fn func(ctx context.Context) error
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("batchworker: option must not be nil")
+			panic("batchworker: New: option must not be nil")
 		}
 		o(&cfg)
 	}

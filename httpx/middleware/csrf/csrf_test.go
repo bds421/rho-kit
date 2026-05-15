@@ -137,7 +137,7 @@ func TestNew_DevSecretGenerationPanicIsStable(t *testing.T) {
 	tokenRandReader = secretFailingReader{}
 	t.Cleanup(func() { tokenRandReader = prev })
 
-	assert.PanicsWithValue(t, "csrf: failed to generate HMAC secret", func() {
+	assert.PanicsWithValue(t, "csrf: New: failed to generate HMAC secret", func() {
 		New(WithDevSecret())
 	})
 }

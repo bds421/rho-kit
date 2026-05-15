@@ -73,7 +73,7 @@ func Module(opts *goredis.Options, mopts ...Option) app.Module {
 	mc := moduleConfig{}
 	for _, opt := range mopts {
 		if opt == nil {
-			panic("redis: option must not be nil")
+			panic("redis: Module: option must not be nil")
 		}
 		opt(&mc)
 	}
@@ -85,7 +85,7 @@ func Module(opts *goredis.Options, mopts ...Option) app.Module {
 func WithConn(opts ...kitredis.ConnOption) Option {
 	for _, opt := range opts {
 		if opt == nil {
-			panic("redis: connection option must not be nil")
+			panic("redis: WithConn: connection option must not be nil")
 		}
 	}
 	captured := append([]kitredis.ConnOption(nil), opts...)

@@ -485,7 +485,7 @@ func TestWithInstance_PanicsOnInvalidName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.PanicsWithValue(t, "redis: invalid instance name", func() {
+			assert.PanicsWithValue(t, "redis: WithInstance: invalid instance name", func() {
 				// WithInstance returns an option func; the panic occurs
 				// when the option is applied to a Connection.
 				opt := WithInstance(tt.instance)

@@ -33,7 +33,7 @@ type Store struct {
 // at construction beats a deferred nil-deref on the first Insert.
 func New(pool *pgxpool.Pool) *Store {
 	if pool == nil {
-		panic("outbox/postgres: pool must not be nil")
+		panic("outbox/postgres: New: pool must not be nil")
 	}
 	return &Store{pool: pool}
 }

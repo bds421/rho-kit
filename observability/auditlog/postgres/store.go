@@ -55,7 +55,7 @@ type Store struct {
 // failing fast at construction keeps the misconfiguration obvious.
 func New(pool *pgxpool.Pool) *Store {
 	if pool == nil {
-		panic("auditlog/postgres: pool must not be nil")
+		panic("auditlog/postgres: New: pool must not be nil")
 	}
 	return &Store{pool: pool}
 }

@@ -158,14 +158,14 @@ func TestRetryStorage_Exists(t *testing.T) {
 
 func TestRetryStorage_New_NilBackendPanics(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: backend must not be nil", func() {
+	assert.PanicsWithValue(t, "storage/retry: New: backend must not be nil", func() {
 		_ = New(nil)
 	})
 }
 
 func TestRetryStorage_New_NilOptionPanics(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: option must not be nil", func() {
+	assert.PanicsWithValue(t, "storage/retry: New: option must not be nil", func() {
 		_ = New(membackend.New(), nil)
 	})
 }
@@ -192,35 +192,35 @@ func TestRetryStorage_WithShouldRetryNil_PreservesDefault(t *testing.T) {
 
 func TestRetryStorage_New_PanicsOnZeroMaxAttempts(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: max attempts must be >= 1", func() {
+	assert.PanicsWithValue(t, "storage/retry: WithMaxAttempts: max attempts must be >= 1", func() {
 		_ = WithMaxAttempts(0)
 	})
 }
 
 func TestRetryStorage_New_PanicsOnNegativeMaxAttempts(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: max attempts must be >= 1", func() {
+	assert.PanicsWithValue(t, "storage/retry: WithMaxAttempts: max attempts must be >= 1", func() {
 		_ = WithMaxAttempts(-1)
 	})
 }
 
 func TestRetryStorage_New_PanicsOnZeroMaxDelay(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: max delay must be positive", func() {
+	assert.PanicsWithValue(t, "storage/retry: WithMaxDelay: max delay must be positive", func() {
 		_ = WithMaxDelay(0)
 	})
 }
 
 func TestRetryStorage_New_PanicsOnNegativeMaxDelay(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: max delay must be positive", func() {
+	assert.PanicsWithValue(t, "storage/retry: WithMaxDelay: max delay must be positive", func() {
 		_ = WithMaxDelay(-time.Second)
 	})
 }
 
 func TestRetryStorage_New_PanicsOnZeroBaseDelay(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/retry: base delay must be positive", func() {
+	assert.PanicsWithValue(t, "storage/retry: WithBaseDelay: base delay must be positive", func() {
 		_ = WithBaseDelay(0)
 	})
 }

@@ -31,13 +31,13 @@ func TestModule_PanicsOnNilOption(t *testing.T) {
 }
 
 func TestModule_PanicsWhenIssuerPolicyMissing(t *testing.T) {
-	assert.PanicsWithValue(t, "app/jwt: pass WithIssuer(...) or WithoutIssuer() to acknowledge issuer policy", func() {
+	assert.PanicsWithValue(t, "app/jwt: Module: pass WithIssuer(...) or WithoutIssuer() to acknowledge issuer policy", func() {
 		Module(testJWKS, WithAudience("svc"))
 	})
 }
 
 func TestModule_PanicsWhenAudiencePolicyMissing(t *testing.T) {
-	assert.PanicsWithValue(t, "app/jwt: pass WithAudience(...) or WithoutAudience() to acknowledge audience policy (RFC 7519 confused-deputy)", func() {
+	assert.PanicsWithValue(t, "app/jwt: Module: pass WithAudience(...) or WithoutAudience() to acknowledge audience policy (RFC 7519 confused-deputy)", func() {
 		Module(testJWKS, WithIssuer("https://idp"))
 	})
 }

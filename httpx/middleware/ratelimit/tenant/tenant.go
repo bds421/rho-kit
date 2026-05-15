@@ -56,7 +56,7 @@ const scopeValue = "tenant"
 // bypass, almost certainly a wiring bug.
 func New(lim ratelimit.Limiter) func(http.Handler) http.Handler {
 	if lim == nil {
-		panic("ratelimit/tenant: limiter must not be nil")
+		panic("ratelimit/tenant: New: limiter must not be nil")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

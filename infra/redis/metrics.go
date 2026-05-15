@@ -283,7 +283,7 @@ func CollectPoolMetrics(client redis.UniversalClient, instance string) {
 
 func collectPoolMetrics(m *Metrics, client redis.UniversalClient, instance string) {
 	if err := ValidateName(instance, "instance"); err != nil {
-		panic("redis: invalid instance name")
+		panic("redis: StartPoolMetricsCollector: invalid instance name")
 	}
 	if client == nil {
 		return
@@ -328,17 +328,17 @@ func StartPoolMetricsCollector(ctx context.Context, client redis.UniversalClient
 	cfg := poolCollectorConfig{metrics: defaultMetrics()}
 	for _, o := range opts {
 		if o == nil {
-			panic("redis: pool metrics collector option must not be nil")
+			panic("redis: StartPoolMetricsCollector: pool metrics collector option must not be nil")
 		}
 		o(&cfg)
 	}
 
 	// Validate early so panics occur at call site, not asynchronously on first tick.
 	if err := ValidateName(instance, "instance"); err != nil {
-		panic("redis: invalid instance name")
+		panic("redis: StartPoolMetricsCollector: invalid instance name")
 	}
 	if interval <= 0 {
-		panic("redis: pool metrics collector interval must be positive")
+		panic("redis: StartPoolMetricsCollector: pool metrics collector interval must be positive")
 	}
 
 	ticker := time.NewTicker(interval)

@@ -46,15 +46,15 @@ func WithClock(fn clock.Func) Option {
 // forge List cursors and skip pages of pending approvals.
 func New(pool *pgxpool.Pool, signer *approval.CursorSigner, opts ...Option) *Store {
 	if pool == nil {
-		panic("approval/postgres: pool must not be nil")
+		panic("approval/postgres: New: pool must not be nil")
 	}
 	if signer == nil {
-		panic("approval/postgres: cursor signer must not be nil")
+		panic("approval/postgres: New: cursor signer must not be nil")
 	}
 	s := &Store{pool: pool, clock: time.Now, cursorSigner: signer}
 	for _, o := range opts {
 		if o == nil {
-			panic("approval/postgres: option must not be nil")
+			panic("approval/postgres: New: option must not be nil")
 		}
 		o(s)
 	}

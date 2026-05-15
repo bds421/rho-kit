@@ -505,7 +505,7 @@ func NewServer(opts ...ServerOption) *Server {
 	cfg := defaultServerConfig()
 	for _, o := range opts {
 		if o == nil {
-			panic("mcp: server option must not be nil")
+			panic("mcp: NewServer: server option must not be nil")
 		}
 		o(&cfg)
 	}
