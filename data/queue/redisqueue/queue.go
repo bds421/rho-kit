@@ -523,25 +523,11 @@ func WithoutRecovery() Option {
 }
 
 // NewQueue creates a LIST-based queue. Panics if client is nil, options are
-// invalid, or the auto-generated consumer ID cannot be generated. Use
-// [NewQueueE] when the caller wants UUID generation failures returned.
+// invalid, or the auto-generated consumer ID cannot be generated. A
+// consumer-ID generation failure is pathological — it means crypto/rand
+// returned an error, which only happens on a broken OS — so panicking matches
+// the kit-wide convention for invariants the runtime cannot recover from.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
-	q, err := NewQueueE(client, opts...)
-	if err != nil {
-		// Preserve the underlying cause in the panic value so the
-		// operator sees whether the failure was UUID generation, an
-		// option validation, or something else. Wave 68 closed a
-		// hostile-review finding that the prior generic string
-		// discarded the cause.
-		panic(fmt.Sprintf("redisqueue: NewQueue failed: %s", err))
-	}
-	return q
-}
-
-// NewQueueE creates a LIST-based queue and returns UUID generation failures as
-// errors. Configuration errors still panic because they are startup
-// misconfiguration, matching [NewQueue].
-func NewQueueE(client goredis.UniversalClient, opts ...Option) (*Queue, error) {
 	if client == nil {
 		panic("redisqueue: NewQueue requires a non-nil Redis client")
 	}
@@ -567,7 +553,7 @@ func NewQueueE(client goredis.UniversalClient, opts ...Option) (*Queue, error) {
 	if q.consumerID == "" {
 		consumerID, err := newQueueConsumerID()
 		if err != nil {
-			return nil, fmt.Errorf("generate consumer ID: %w", err)
+			panic("redisqueue: NewQueue: generate consumer ID: " + err.Error())
 		}
 		q.consumerID = consumerID.String()
 	}
@@ -587,7 +573,7 @@ func NewQueueE(client goredis.UniversalClient, opts ...Option) (*Queue, error) {
 		panic("redisqueue: heartbeat interval must be at most TTL/2; a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim")
 	}
 
-	return q, nil
+	return q
 }
 
 func (q *Queue) ready() error {

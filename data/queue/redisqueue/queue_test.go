@@ -500,7 +500,7 @@ func TestNewQueue_GeneratesUniqueConsumerID(t *testing.T) {
 		"each Queue must have a unique consumer ID so per-consumer processing lists don't collide")
 }
 
-func TestNewQueueE_ReturnsConsumerIDGenerationError(t *testing.T) {
+func TestNewQueue_PanicsOnConsumerIDGenerationFailure(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -510,10 +510,9 @@ func TestNewQueueE_ReturnsConsumerIDGenerationError(t *testing.T) {
 	}
 	t.Cleanup(func() { newQueueConsumerID = prev })
 
-	q, err := NewQueueE(client)
-	require.Error(t, err)
-	assert.Nil(t, q)
-	assert.Contains(t, err.Error(), "generate consumer ID")
+	assert.PanicsWithValue(t,
+		"redisqueue: NewQueue: generate consumer ID: rng failed",
+		func() { _ = NewQueue(client) })
 }
 
 func TestNewQueue_WithConsumerIDSkipsDefaultIDGeneration(t *testing.T) {
