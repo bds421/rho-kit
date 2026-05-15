@@ -65,7 +65,7 @@ type KeyedOption func(*KeyedRateLimiter)
 // on the first request through the limiter.
 func WithKeyedClock(fn func() time.Time) KeyedOption {
 	if fn == nil {
-		panic("ratelimit: WithKeyedClock requires a non-nil time source")
+		panic("middleware/ratelimit: WithKeyedClock requires a non-nil time source")
 	}
 	return func(rl *KeyedRateLimiter) { rl.now = fn }
 }
@@ -78,7 +78,7 @@ func WithKeyedClock(fn func() time.Time) KeyedOption {
 // on memory.
 func WithKeyedMetrics(m *Metrics) KeyedOption {
 	if m == nil {
-		panic("ratelimit: WithKeyedMetrics requires non-nil metrics")
+		panic("middleware/ratelimit: WithKeyedMetrics requires non-nil metrics")
 	}
 	return func(rl *KeyedRateLimiter) {
 		rl.metrics = m
@@ -97,10 +97,10 @@ func WithKeyedLimiterName(name string) KeyedOption {
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedRateLimiter {
 	if limit <= 0 {
-		panic("ratelimit: limit must be positive")
+		panic("middleware/ratelimit: limit must be positive")
 	}
 	if window <= 0 {
-		panic("ratelimit: window must be positive")
+		panic("middleware/ratelimit: window must be positive")
 	}
 	rl := &KeyedRateLimiter{
 		limit:  limit,
@@ -110,7 +110,7 @@ func NewKeyedRateLimiter(limit int, window time.Duration, opts ...KeyedOption) *
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("ratelimit: NewKeyedRateLimiter option must not be nil")
+			panic("middleware/ratelimit: NewKeyedRateLimiter option must not be nil")
 		}
 		opt(rl)
 	}
@@ -323,10 +323,10 @@ func (rl *KeyedRateLimiter) cleanup() {
 // checks the health indicator before enforcing rate limits.
 func KeyedMiddleware(rl *KeyedRateLimiter, keyFunc func(r *http.Request) string) func(http.Handler) http.Handler {
 	if rl == nil {
-		panic("ratelimit: KeyedMiddleware requires a non-nil limiter")
+		panic("middleware/ratelimit: KeyedMiddleware requires a non-nil limiter")
 	}
 	if keyFunc == nil {
-		panic("ratelimit: KeyedMiddleware requires a non-nil key function")
+		panic("middleware/ratelimit: KeyedMiddleware requires a non-nil key function")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

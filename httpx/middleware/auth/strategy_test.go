@@ -129,7 +129,7 @@ func TestStrategy_PanicInStrategyRecoveredAndReturns401(t *testing.T) {
 
 func TestStrategy_NilAuthenticatorPanics(t *testing.T) {
 	require.PanicsWithValue(t,
-		"middleware: Strategy requires a non-nil Authenticator",
+		"middleware/auth: Strategy requires a non-nil Authenticator",
 		func() { auth.Strategy(nil) })
 }
 

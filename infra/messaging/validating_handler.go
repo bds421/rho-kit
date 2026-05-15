@@ -18,10 +18,10 @@ import (
 //	handler := NewValidatingHandler(registry, NewVersionedHandler(handlers))
 func NewValidatingHandler(registry *InMemorySchemaRegistry, next Handler) Handler {
 	if registry == nil {
-		panic("validating handler: registry must not be nil")
+		panic("messaging: NewValidatingHandler requires a non-nil registry")
 	}
 	if next == nil {
-		panic("validating handler: next handler must not be nil")
+		panic("messaging: NewValidatingHandler requires a non-nil next handler")
 	}
 
 	return func(ctx context.Context, d Delivery) error {

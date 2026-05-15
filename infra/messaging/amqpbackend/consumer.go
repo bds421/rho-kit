@@ -155,7 +155,7 @@ func NewConsumer(conn Connector, publisher DeadLetterPublisher, logger *slog.Log
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("amqp: Consumer option must not be nil")
+			panic("amqpbackend: Consumer option must not be nil")
 		}
 		opt(c)
 	}

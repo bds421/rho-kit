@@ -381,7 +381,7 @@ func OpenBufferedPublisher(inner Publisher, conn Connector, logger *slog.Logger,
 		}
 		resolved, err := resolveStateFilePath(o.stateDir, o.stateFileRel)
 		if err != nil {
-			panic(fmt.Sprintf("messaging: WithStateFile rejected: %v", err))
+			panic("messaging: WithStateFile rejected: " + err.Error())
 		}
 		o.stateFile = resolved
 	}

@@ -489,7 +489,7 @@ func applyPasswordProvider(pcfg *pgxpool.Config, provider func(context.Context) 
 // the IP parse — pgxpool emits them in some DSN forms.
 func requireLoopbackHost(host string) error {
 	if host == "" {
-		return fmt.Errorf("DSN does not specify a host")
+		return fmt.Errorf("pgx: DSN does not specify a host")
 	}
 	low := strings.ToLower(host)
 	if low == "localhost" {
@@ -500,10 +500,10 @@ func requireLoopbackHost(host string) error {
 	stripped := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	ip := net.ParseIP(stripped)
 	if ip == nil {
-		return fmt.Errorf("DSN host is not a loopback address")
+		return fmt.Errorf("pgx: DSN host is not a loopback address")
 	}
 	if !ip.IsLoopback() {
-		return fmt.Errorf("DSN host is not a loopback address")
+		return fmt.Errorf("pgx: DSN host is not a loopback address")
 	}
 	return nil
 }

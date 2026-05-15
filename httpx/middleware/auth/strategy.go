@@ -90,7 +90,7 @@ var ErrInvalidCredentials = errors.New("middleware/auth: invalid credentials")
 // custom verifier without forking the middleware.
 func Strategy(a Authenticator) func(http.Handler) http.Handler {
 	if a == nil {
-		panic("middleware: Strategy requires a non-nil Authenticator")
+		panic("middleware/auth: Strategy requires a non-nil Authenticator")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -95,27 +95,27 @@ func ParseDSN(rawURL string) (Config, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid port") {
-			return Config{}, fmt.Errorf("invalid port in DATABASE_URL")
+			return Config{}, fmt.Errorf("sqldb: invalid port in DATABASE_URL")
 		}
-		return Config{}, fmt.Errorf("DATABASE_URL is invalid")
+		return Config{}, fmt.Errorf("sqldb: DATABASE_URL is invalid")
 	}
 	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
-		return Config{}, fmt.Errorf("DATABASE_URL scheme must be postgres or postgresql")
+		return Config{}, fmt.Errorf("sqldb: DATABASE_URL scheme must be postgres or postgresql")
 	}
 	if u.Host == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL host is required")
+		return Config{}, fmt.Errorf("sqldb: DATABASE_URL host is required")
 	}
 
 	dbName := strings.TrimPrefix(u.Path, "/")
 	if dbName == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL database name is required")
+		return Config{}, fmt.Errorf("sqldb: DATABASE_URL database name is required")
 	}
 
 	port := 5432
 	if u.Port() != "" {
 		port, err = strconv.Atoi(u.Port())
 		if err != nil {
-			return Config{}, fmt.Errorf("invalid port in DATABASE_URL: %w", err)
+			return Config{}, fmt.Errorf("sqldb: invalid port in DATABASE_URL: %w", err)
 		}
 	}
 
@@ -129,7 +129,7 @@ func ParseDSN(rawURL string) (Config, error) {
 	query := u.Query()
 	sslModes := query["sslmode"]
 	if len(sslModes) > 1 {
-		return Config{}, fmt.Errorf("DATABASE_URL sslmode query parameter must not be repeated")
+		return Config{}, fmt.Errorf("sqldb: DATABASE_URL sslmode query parameter must not be repeated")
 	}
 	if len(sslModes) == 1 && sslModes[0] != "" {
 		sslMode := sslModes[0]
@@ -252,19 +252,19 @@ func (f Fields) Validate(envPrefix string) error {
 		return err
 	}
 	if f.Database.Host == "" {
-		return fmt.Errorf("DB_HOST is required")
+		return fmt.Errorf("sqldb: DB_HOST is required")
 	}
 	if err := validateDatabaseHost(f.Database.Host); err != nil {
 		return err
 	}
 	if f.Database.User == "" {
-		return fmt.Errorf("%s_DB_USER is required", envPrefix)
+		return fmt.Errorf("sqldb: %s_DB_USER is required", envPrefix)
 	}
 	if f.Database.Password == "" {
-		return fmt.Errorf("%s_DB_PASSWORD is required", envPrefix)
+		return fmt.Errorf("sqldb: %s_DB_PASSWORD is required", envPrefix)
 	}
 	if f.Database.Name == "" {
-		return fmt.Errorf("%s_DB_NAME is required", envPrefix)
+		return fmt.Errorf("sqldb: %s_DB_NAME is required", envPrefix)
 	}
 	sslMode := f.Database.Option("sslmode", "")
 	if err := validatePostgresSSLMode(sslMode); err != nil {
@@ -274,7 +274,7 @@ func (f Fields) Validate(envPrefix string) error {
 	// silently shipping credentials and queries on the wire.
 	normalized := strings.ToLower(sslMode)
 	if normalized == "" || normalized == "disable" {
-		return fmt.Errorf("%s_DB_SSL_MODE must be set to require/verify-ca/verify-full", envPrefix)
+		return fmt.Errorf("sqldb: %s_DB_SSL_MODE must be set to require/verify-ca/verify-full", envPrefix)
 	}
 	return config.RejectWeakCredential(envPrefix+"_DB_PASSWORD", f.Database.Password)
 }
@@ -287,7 +287,7 @@ func validateDatabaseHost(host string) error {
 	}
 	for _, c := range host {
 		if c == ')' || c == '/' || c == '\'' || c == '\\' || c == '\x00' || c == '@' || c == '\n' || c == '\r' {
-			return fmt.Errorf("DB_HOST contains invalid character")
+			return fmt.Errorf("sqldb: DB_HOST contains invalid character")
 		}
 	}
 	return nil
@@ -306,14 +306,14 @@ func validatePostgresSSLMode(mode string) error {
 		// Operators on a closed network can opt back in at the dial
 		// layer via pgx.Config.AllowSSLModeRequire; the preflight
 		// remains strict so the policy is loud at config-load time.
-		return fmt.Errorf("DB_SSL_MODE=require admits MITM (no server identity verification); use verify-ca or verify-full, or opt in at dial time via pgx.Config.AllowSSLModeRequire on a closed network")
+		return fmt.Errorf("sqldb: DB_SSL_MODE=require admits MITM (no server identity verification); use verify-ca or verify-full, or opt in at dial time via pgx.Config.AllowSSLModeRequire on a closed network")
 	case "disable":
 		// Reported separately by the caller with full context.
 		return nil
 	case "allow", "prefer":
 		// Both modes silently degrade to plaintext on TLS handshake error.
-		return fmt.Errorf("DB_SSL_MODE admits a plaintext fallback on TLS handshake error; use verify-ca or verify-full")
+		return fmt.Errorf("sqldb: DB_SSL_MODE admits a plaintext fallback on TLS handshake error; use verify-ca or verify-full")
 	default:
-		return fmt.Errorf("DB_SSL_MODE must be verify-ca or verify-full")
+		return fmt.Errorf("sqldb: DB_SSL_MODE must be verify-ca or verify-full")
 	}
 }

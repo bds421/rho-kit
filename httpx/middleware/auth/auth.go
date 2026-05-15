@@ -51,7 +51,7 @@ var (
 // Panics if provider is nil to fail fast on misconfiguration.
 func JWT(provider *jwtutil.Provider) func(http.Handler) http.Handler {
 	if provider == nil {
-		panic("middleware: JWT requires a non-nil JWT provider")
+		panic("middleware/auth: JWT requires a non-nil JWT provider")
 	}
 	return func(next http.Handler) http.Handler {
 		return jwtOnlyHandler(provider, next)
@@ -103,7 +103,7 @@ type mtlsIdentityConfig struct {
 // rejects the impersonation; the middleware returns 403.
 func WithS2SImpersonationGuard(fn func(r *http.Request, identity, userID string) error) MTLSIdentityOption {
 	if fn == nil {
-		panic("middleware: WithS2SImpersonationGuard requires a non-nil callback")
+		panic("middleware/auth: WithS2SImpersonationGuard requires a non-nil callback")
 	}
 	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
@@ -126,11 +126,11 @@ func WithAllowedSANs(sans ...string) MTLSIdentityOption {
 		if err != nil {
 			switch {
 			case errors.Is(err, mtlsidentity.ErrInvalidURISAN):
-				panic("middleware: WithAllowedSANs invalid URI SAN")
+				panic("middleware/auth: WithAllowedSANs invalid URI SAN")
 			case errors.Is(err, mtlsidentity.ErrInvalidDNSSAN):
-				panic("middleware: WithAllowedSANs invalid DNS SAN")
+				panic("middleware/auth: WithAllowedSANs invalid DNS SAN")
 			default:
-				panic("middleware: WithAllowedSANs invalid SAN")
+				panic("middleware/auth: WithAllowedSANs invalid SAN")
 			}
 		}
 		if !ok {
@@ -169,7 +169,7 @@ func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 	for _, input := range cns {
 		cn, ok, err := mtlsidentity.NormalizeCN(input)
 		if err != nil {
-			panic("middleware: WithAllowedCNs invalid CN")
+			panic("middleware/auth: WithAllowedCNs invalid CN")
 		}
 		if ok {
 			canonical = append(canonical, cn)
@@ -195,20 +195,20 @@ func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 // [WithS2SImpersonationGuard] must be supplied.
 func RequireS2SAuthWithIdentity(provider *jwtutil.Provider, opts ...MTLSIdentityOption) func(http.Handler) http.Handler {
 	if provider == nil {
-		panic("middleware: RequireS2SAuthWithIdentity requires a non-nil JWT provider")
+		panic("middleware/auth: RequireS2SAuthWithIdentity requires a non-nil JWT provider")
 	}
 	cfg := mtlsIdentityConfig{}
 	for _, o := range opts {
 		if o == nil {
-			panic("middleware: RequireS2SAuthWithIdentity option must not be nil")
+			panic("middleware/auth: RequireS2SAuthWithIdentity option must not be nil")
 		}
 		o(&cfg)
 	}
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
-		panic("middleware: RequireS2SAuthWithIdentity requires at least one non-empty allowed CN or SAN entry")
+		panic("middleware/auth: RequireS2SAuthWithIdentity requires at least one non-empty allowed CN or SAN entry")
 	}
 	if cfg.impersonationGuard == nil {
-		panic("middleware: RequireS2SAuthWithIdentity requires WithS2SImpersonationGuard for mTLS user impersonation")
+		panic("middleware/auth: RequireS2SAuthWithIdentity requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	if len(cfg.allowedCNs) > 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
 		slog.Warn("httpx auth middleware: CN-only mTLS allowlist is legacy; prefer WithAllowedSANs",

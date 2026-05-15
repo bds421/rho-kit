@@ -220,7 +220,7 @@ func (p *Publisher) PublishRaw(ctx context.Context, exchange, routingKey string,
 // bound to receive it. Callers (outbox/buffered publisher) should treat this
 // as a publish failure so the message is retried after topology is fixed,
 // rather than silently lost.
-var ErrUnroutable = errors.New("amqp: message returned by broker (no route to any queue)")
+var ErrUnroutable = errors.New("amqpbackend: message returned by broker (no route to any queue)")
 
 func publishOutcomeForError(err error) string {
 	switch {

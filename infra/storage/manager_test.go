@@ -130,7 +130,7 @@ func TestManager(t *testing.T) {
 	t.Run("panics on nil backend", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.PanicsWithValue(t, "storage.Manager: backend must not be nil", func() {
+		assert.PanicsWithValue(t, "storage: Manager.Register requires a non-nil backend", func() {
 			mgr.Register("test-secret-token", nil)
 		})
 	})
@@ -139,7 +139,7 @@ func TestManager(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
 		mgr.Register("dup-secret-token", newTestBackend(t))
-		assert.PanicsWithValue(t, "storage.Manager: backend already registered", func() {
+		assert.PanicsWithValue(t, "storage: Manager.Register: backend already registered", func() {
 			mgr.Register("dup-secret-token", newTestBackend(t))
 		})
 	})
@@ -147,7 +147,7 @@ func TestManager(t *testing.T) {
 	t.Run("panics on SetDefault with unregistered name", func(t *testing.T) {
 		t.Parallel()
 		mgr := storage.NewManager()
-		assert.PanicsWithValue(t, "storage.Manager: default backend is not registered", func() {
+		assert.PanicsWithValue(t, "storage: Manager.SetDefault: backend not registered", func() {
 			mgr.SetDefault("nonexistent-secret-token")
 		})
 	})

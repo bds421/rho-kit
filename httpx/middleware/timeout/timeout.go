@@ -44,7 +44,7 @@ func WithWebSocketUpgradeBypass() Option {
 // Panics if size <= 0.
 func WithMaxBufferSize(size int) Option {
 	if size <= 0 {
-		panic("timeout: WithMaxBufferSize requires a positive size")
+		panic("middleware/timeout: WithMaxBufferSize requires a positive size")
 	}
 	return func(o *timeoutOptions) { o.maxBuffer = size }
 }
@@ -56,7 +56,7 @@ func WithMaxBufferSize(size int) Option {
 // Panics if d is negative.
 func WithPostTimeoutWait(d time.Duration) Option {
 	if d < 0 {
-		panic("timeout: WithPostTimeoutWait requires d >= 0")
+		panic("middleware/timeout: WithPostTimeoutWait requires d >= 0")
 	}
 	return func(o *timeoutOptions) { o.postTimeoutWait = d }
 }
@@ -81,7 +81,7 @@ func WithHard() Option {
 // Panics if logger is nil — omit the option entirely to opt out.
 func WithLogger(logger *slog.Logger) Option {
 	if logger == nil {
-		panic("timeout: WithLogger requires a non-nil logger")
+		panic("middleware/timeout: WithLogger requires a non-nil logger")
 	}
 	return func(o *timeoutOptions) { o.logger = logger }
 }
@@ -102,12 +102,12 @@ func WithLogger(logger *slog.Logger) Option {
 // database drivers or HTTP clients.
 func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	if d <= 0 {
-		panic("timeout: duration must be positive")
+		panic("middleware/timeout: duration must be positive")
 	}
 	cfg := timeoutOptions{postTimeoutWait: defaultPostTimeoutWait}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("timeout: option must not be nil")
+			panic("middleware/timeout: option must not be nil")
 		}
 		opt(&cfg)
 	}

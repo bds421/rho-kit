@@ -15,7 +15,7 @@ import (
 // production — typically the application has already shut down by the
 // time backends are closed — but the explicit sentinel makes
 // post-shutdown races diagnosable.
-var ErrManagerClosed = errors.New("storage.Manager: already closed")
+var ErrManagerClosed = errors.New("storage: Manager already closed")
 
 // Manager holds named Storage backends, similar to Laravel's Storage::disk().
 // It is safe for concurrent use. [Manager.Close] is idempotent and gates
@@ -52,20 +52,20 @@ func NewManager() *Manager {
 // Returns the Manager for fluent chaining.
 func (m *Manager) Register(name string, backend Storage) *Manager {
 	if name == "" {
-		panic("storage.Manager: name must not be empty")
+		panic("storage: Manager.Register requires a non-empty name")
 	}
 	if backend == nil {
-		panic("storage.Manager: backend must not be nil")
+		panic("storage: Manager.Register requires a non-nil backend")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.closed {
-		panic("storage.Manager: Register after Close")
+		panic("storage: Manager.Register called after Close")
 	}
 	if _, ok := m.backends[name]; ok {
-		panic("storage.Manager: backend already registered")
+		panic("storage: Manager.Register: backend already registered")
 	}
 
 	m.backends[name] = backend
@@ -102,7 +102,7 @@ func (m *Manager) Backend(name string) (Storage, error) {
 func (m *Manager) MustBackend(name string) Storage {
 	b, err := m.Backend(name)
 	if err != nil {
-		panic(fmt.Sprintf("storage.Manager: %s", err))
+		panic("storage: Manager.MustBackend: " + err.Error())
 	}
 	return b
 }
@@ -115,10 +115,10 @@ func (m *Manager) SetDefault(name string) *Manager {
 	defer m.mu.Unlock()
 
 	if m.closed {
-		panic("storage.Manager: SetDefault after Close")
+		panic("storage: Manager.SetDefault called after Close")
 	}
 	if _, ok := m.backends[name]; !ok {
-		panic("storage.Manager: default backend is not registered")
+		panic("storage: Manager.SetDefault: backend not registered")
 	}
 	m.defaultName = name
 	return m
@@ -140,18 +140,18 @@ func (m *Manager) Default() Storage {
 		// Register/Backend/SetDefault closed-Manager behaviour
 		// (panic, since calling Default on a shutdown Manager is a
 		// wiring bug just like Register on a closed Manager).
-		panic("storage.Manager: Default after Close")
+		panic("storage: Manager.Default called after Close")
 	}
 
 	if m.defaultName != "" {
 		s, ok := m.backends[m.defaultName]
 		if !ok {
-			panic("storage.Manager: default backend missing from registry")
+			panic("storage: Manager.Default: default backend missing from registry")
 		}
 		return s
 	}
 	if len(m.order) == 0 {
-		panic("storage.Manager: no backends registered")
+		panic("storage: Manager.Default: no backends registered")
 	}
 	first := m.order[0]
 	s, ok := m.backends[first]
@@ -160,7 +160,7 @@ func (m *Manager) Default() Storage {
 		// map. This previously could happen only via a hypothetical
 		// Unregister; the explicit panic surfaces it loudly so the bug is
 		// caught at Default() time rather than at request time via nil deref.
-		panic("storage.Manager: order references backend absent from map")
+		panic("storage: Manager.Default: order references backend absent from map")
 	}
 	return s
 }

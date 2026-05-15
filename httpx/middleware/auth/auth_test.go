@@ -1475,14 +1475,14 @@ func TestRequireS2SAuthWithIdentity_InvalidIdentityPanicDoesNotEchoValue(t *test
 	}{
 		{
 			name: "uri san",
-			want: "middleware: WithAllowedSANs invalid URI SAN",
+			want: "middleware/auth: WithAllowedSANs invalid URI SAN",
 			fn: func() {
 				RequireS2SAuthWithIdentity(provider, WithAllowedSANs("spiffe://example.org/%zz?token=secret-token"))
 			},
 		},
 		{
 			name: "cn",
-			want: "middleware: WithAllowedCNs invalid CN",
+			want: "middleware/auth: WithAllowedCNs invalid CN",
 			fn: func() {
 				RequireS2SAuthWithIdentity(provider, WithAllowedCNs("svc\nsecret-token"))
 			},

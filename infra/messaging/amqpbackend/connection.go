@@ -239,7 +239,7 @@ func Connect(rawURL string, logger *slog.Logger, opts ...DialOption) (*Connectio
 
 	for _, opt := range opts {
 		if opt == nil {
-			panic("amqp: Dial option must not be nil")
+			panic("amqpbackend: Dial option must not be nil")
 		}
 		opt(c)
 	}
@@ -393,10 +393,10 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 // practice (reconnects take seconds, not milliseconds).
 func (c *Connection) WaitForConnection(ctx context.Context) error {
 	if c == nil || c.closed == nil {
-		return fmt.Errorf("amqp: WaitForConnection: connection is not initialized")
+		return fmt.Errorf("amqpbackend: WaitForConnection: connection is not initialized")
 	}
 	if ctx == nil {
-		return fmt.Errorf("amqp: WaitForConnection: context must not be nil")
+		return fmt.Errorf("amqpbackend: WaitForConnection: context must not be nil")
 	}
 	const poll = 100 * time.Millisecond
 	t := time.NewTicker(poll)
@@ -407,9 +407,9 @@ func (c *Connection) WaitForConnection(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("amqp: WaitForConnection: %w", ctx.Err())
+			return fmt.Errorf("amqpbackend: WaitForConnection: %w", ctx.Err())
 		case <-c.closed:
-			return fmt.Errorf("amqp: WaitForConnection: connection closed")
+			return fmt.Errorf("amqpbackend: WaitForConnection: connection closed")
 		case <-t.C:
 		}
 	}

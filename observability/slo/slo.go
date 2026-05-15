@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -218,7 +219,7 @@ func (c *Checker) gatherFamilies() map[string]*dto.MetricFamily {
 	mfs, err := c.gatherer.Gather()
 	if err != nil {
 		slog.Warn("slo: prometheus gather returned errors; using partial data",
-			"error", err.Error(),
+			redact.Error(err),
 			"families", len(mfs),
 		)
 	}

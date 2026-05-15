@@ -193,12 +193,12 @@ func TestWithAllowedCNsRejectsInvalidEntries(t *testing.T) {
 }
 
 func TestWithAllowedIdentityPanicsDoNotEchoValues(t *testing.T) {
-	assert.PanicsWithValue(t, "interceptor: WithAllowedSANs invalid URI SAN", func() {
+	assert.PanicsWithValue(t, "grpcx/interceptor: WithAllowedSANs invalid URI SAN", func() {
 		buildMTLSIdentityConfig([]MTLSIdentityOption{
 			WithAllowedSANs("spiffe://example.org/%zz?token=secret-token"),
 		})
 	})
-	assert.PanicsWithValue(t, "interceptor: WithAllowedCNs invalid CN", func() {
+	assert.PanicsWithValue(t, "grpcx/interceptor: WithAllowedCNs invalid CN", func() {
 		buildMTLSIdentityConfig([]MTLSIdentityOption{
 			WithAllowedCNs("svc\nsecret-token"),
 		})

@@ -51,7 +51,7 @@ type metricsConfig struct {
 // nil panics.
 func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("idempotency: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("middleware/idempotency: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
@@ -62,7 +62,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("idempotency: NewMetrics option must not be nil")
+			panic("middleware/idempotency: NewMetrics option must not be nil")
 		}
 		opt(&cfg)
 	}
@@ -170,7 +170,7 @@ var identityResponseHeaders = func() map[string]bool {
 // "permanent lock" (Redis SET NX with EX 0) by mistake.
 func WithTTL(d time.Duration) Option {
 	if d <= 0 {
-		panic("idempotency: WithTTL requires a positive duration; zero/negative TTLs create permanent locks in Redis")
+		panic("middleware/idempotency: WithTTL requires a positive duration; zero/negative TTLs create permanent locks in Redis")
 	}
 	return func(c *config) { c.ttl = d }
 }
@@ -180,7 +180,7 @@ func WithTTL(d time.Duration) Option {
 // header name would make every request fail with a confusing missing-header error.
 func WithHeader(name string) Option {
 	if !httpguts.ValidHeaderFieldName(name) {
-		panic("idempotency: WithHeader requires a valid HTTP header field name")
+		panic("middleware/idempotency: WithHeader requires a valid HTTP header field name")
 	}
 	return func(c *config) { c.header = name }
 }
@@ -199,7 +199,7 @@ func WithLogger(l *slog.Logger) Option {
 // WithMetrics enables Prometheus metrics for the middleware.
 func WithMetrics(m *Metrics) Option {
 	if m == nil {
-		panic("idempotency: WithMetrics requires non-nil Metrics")
+		panic("middleware/idempotency: WithMetrics requires non-nil Metrics")
 	}
 	return func(c *config) { c.metrics = m }
 }
@@ -214,13 +214,13 @@ func WithMetrics(m *Metrics) Option {
 // [WithoutRequiredMethods].
 func WithRequiredMethods(methods ...string) Option {
 	if len(methods) == 0 {
-		panic("idempotency: WithRequiredMethods requires at least one method (use WithoutRequiredMethods to disable enforcement explicitly)")
+		panic("middleware/idempotency: WithRequiredMethods requires at least one method (use WithoutRequiredMethods to disable enforcement explicitly)")
 	}
 	canonical := make([]string, 0, len(methods))
 	for _, m := range methods {
 		m = strings.ToUpper(strings.TrimSpace(m))
 		if !httpguts.ValidHeaderFieldName(m) {
-			panic("idempotency: WithRequiredMethods requires valid HTTP method tokens")
+			panic("middleware/idempotency: WithRequiredMethods requires valid HTTP method tokens")
 		}
 		canonical = append(canonical, m)
 	}
@@ -290,7 +290,7 @@ func WithoutBodyFingerprint() Option {
 // timeout fires. Panics on non-positive durations.
 func WithPostHandlerTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("idempotency: WithPostHandlerTimeout requires a positive duration")
+		panic("middleware/idempotency: WithPostHandlerTimeout requires a positive duration")
 	}
 	return func(c *config) { c.postHandlerTimeout = d }
 }
@@ -349,18 +349,18 @@ func defaultConfig() config {
 // needs to replay a header on this list.
 func Middleware(store idem.Store, opts ...Option) func(http.Handler) http.Handler {
 	if store == nil {
-		panic("idempotency: Middleware requires a non-nil Store")
+		panic("middleware/idempotency: Middleware requires a non-nil Store")
 	}
 	cfg := defaultConfig()
 	for _, o := range opts {
 		if o == nil {
-			panic("idempotency: Middleware option must not be nil")
+			panic("middleware/idempotency: Middleware option must not be nil")
 		}
 		o(&cfg)
 	}
 
 	if cfg.userExtractor == nil && !cfg.allowSharedKeys {
-		panic("idempotency: Middleware requires WithUserExtractor (multi-tenant safety) — pass WithAllowSharedKeys to opt out for single-tenant / unauthenticated services")
+		panic("middleware/idempotency: Middleware requires WithUserExtractor (multi-tenant safety) — pass WithAllowSharedKeys to opt out for single-tenant / unauthenticated services")
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -892,7 +892,7 @@ func (s *captureSink) Write(b []byte) (int, error) {
 // multi-tenant systems.
 func WithUserExtractor(fn func(*http.Request) string) Option {
 	if fn == nil {
-		panic("idempotency: WithUserExtractor requires a non-nil extractor")
+		panic("middleware/idempotency: WithUserExtractor requires a non-nil extractor")
 	}
 	return func(c *config) { c.userExtractor = fn }
 }
@@ -929,7 +929,7 @@ func WithSemanticHeaders(names ...string) Option {
 	for _, n := range names {
 		n = strings.TrimSpace(n)
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic("idempotency: WithSemanticHeaders requires a valid HTTP header field name")
+			panic("middleware/idempotency: WithSemanticHeaders requires a valid HTTP header field name")
 		}
 		canonical = append(canonical, http.CanonicalHeaderKey(n))
 	}
@@ -955,7 +955,7 @@ func WithPreserveHeaders(names ...string) Option {
 	for _, n := range names {
 		n = strings.TrimSpace(n)
 		if !httpguts.ValidHeaderFieldName(n) {
-			panic("idempotency: WithPreserveHeaders requires a valid HTTP header field name")
+			panic("middleware/idempotency: WithPreserveHeaders requires a valid HTTP header field name")
 		}
 		canonical = append(canonical, http.CanonicalHeaderKey(n))
 	}

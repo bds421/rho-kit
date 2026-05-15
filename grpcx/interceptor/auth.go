@@ -75,7 +75,7 @@ func WithSkipMethods(methods ...string) AuthOption {
 // Panics if provider is nil to fail fast on misconfiguration.
 func AuthUnary(provider *jwtutil.Provider, opts ...AuthOption) grpc.UnaryServerInterceptor {
 	if provider == nil {
-		panic("interceptor: AuthUnary requires a non-nil JWT provider")
+		panic("grpcx/interceptor: AuthUnary requires a non-nil JWT provider")
 	}
 	cfg := buildAuthConfig(opts)
 	return func(
@@ -98,7 +98,7 @@ func AuthUnary(provider *jwtutil.Provider, opts ...AuthOption) grpc.UnaryServerI
 // AuthStream returns a stream server interceptor that validates JWT tokens.
 func AuthStream(provider *jwtutil.Provider, opts ...AuthOption) grpc.StreamServerInterceptor {
 	if provider == nil {
-		panic("interceptor: AuthStream requires a non-nil JWT provider")
+		panic("grpcx/interceptor: AuthStream requires a non-nil JWT provider")
 	}
 	cfg := buildAuthConfig(opts)
 	return func(
@@ -125,7 +125,7 @@ func buildAuthConfig(opts []AuthOption) authConfig {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("interceptor: auth option must not be nil")
+			panic("grpcx/interceptor: auth option must not be nil")
 		}
 		opt(&cfg)
 	}
@@ -275,7 +275,7 @@ func IsTrustedS2S(ctx context.Context) bool {
 // fail-by-default for everyone, both of which mask the bug.
 func RequirePermissionUnary(perm string) grpc.UnaryServerInterceptor {
 	if perm == "" {
-		panic("interceptor: RequirePermissionUnary requires a non-empty permission")
+		panic("grpcx/interceptor: RequirePermissionUnary requires a non-empty permission")
 	}
 	return func(
 		ctx context.Context,
@@ -294,7 +294,7 @@ func RequirePermissionUnary(perm string) grpc.UnaryServerInterceptor {
 // a permission check. See [RequirePermissionUnary] for semantics.
 func RequirePermissionStream(perm string) grpc.StreamServerInterceptor {
 	if perm == "" {
-		panic("interceptor: RequirePermissionStream requires a non-empty permission")
+		panic("grpcx/interceptor: RequirePermissionStream requires a non-empty permission")
 	}
 	return func(
 		srv any,
@@ -317,7 +317,7 @@ func RequirePermissionStream(perm string) grpc.StreamServerInterceptor {
 // Panics if scope is empty.
 func RequireScopeUnary(scope string) grpc.UnaryServerInterceptor {
 	if scope == "" {
-		panic("interceptor: RequireScopeUnary requires a non-empty scope")
+		panic("grpcx/interceptor: RequireScopeUnary requires a non-empty scope")
 	}
 	return func(
 		ctx context.Context,
@@ -336,7 +336,7 @@ func RequireScopeUnary(scope string) grpc.UnaryServerInterceptor {
 // scope check. See [RequireScopeUnary] for semantics.
 func RequireScopeStream(scope string) grpc.StreamServerInterceptor {
 	if scope == "" {
-		panic("interceptor: RequireScopeStream requires a non-empty scope")
+		panic("grpcx/interceptor: RequireScopeStream requires a non-empty scope")
 	}
 	return func(
 		srv any,
@@ -394,7 +394,7 @@ func WithMTLSSkipMethods(methods ...string) MTLSIdentityOption {
 // the caller.
 func WithS2SImpersonationGuard(fn func(ctx context.Context, identity, userID string) error) MTLSIdentityOption {
 	if fn == nil {
-		panic("interceptor: WithS2SImpersonationGuard requires a non-nil callback")
+		panic("grpcx/interceptor: WithS2SImpersonationGuard requires a non-nil callback")
 	}
 	return func(c *mtlsIdentityConfig) { c.impersonationGuard = fn }
 }
@@ -415,11 +415,11 @@ func WithAllowedSANs(sans ...string) MTLSIdentityOption {
 		if err != nil {
 			switch {
 			case errors.Is(err, mtlsidentity.ErrInvalidURISAN):
-				panic("interceptor: WithAllowedSANs invalid URI SAN")
+				panic("grpcx/interceptor: WithAllowedSANs invalid URI SAN")
 			case errors.Is(err, mtlsidentity.ErrInvalidDNSSAN):
-				panic("interceptor: WithAllowedSANs invalid DNS SAN")
+				panic("grpcx/interceptor: WithAllowedSANs invalid DNS SAN")
 			default:
-				panic("interceptor: WithAllowedSANs invalid SAN")
+				panic("grpcx/interceptor: WithAllowedSANs invalid SAN")
 			}
 		}
 		if !ok {
@@ -462,7 +462,7 @@ func WithAllowedCNs(cns ...string) MTLSIdentityOption {
 	for _, input := range cns {
 		cn, ok, err := mtlsidentity.NormalizeCN(input)
 		if err != nil {
-			panic("interceptor: WithAllowedCNs invalid CN")
+			panic("grpcx/interceptor: WithAllowedCNs invalid CN")
 		}
 		if ok {
 			canonical = append(canonical, cn)
@@ -482,7 +482,7 @@ func buildMTLSIdentityConfig(opts []MTLSIdentityOption) mtlsIdentityConfig {
 	cfg := mtlsIdentityConfig{}
 	for _, o := range opts {
 		if o == nil {
-			panic("interceptor: mTLS identity option must not be nil")
+			panic("grpcx/interceptor: mTLS identity option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -509,14 +509,14 @@ func buildMTLSIdentityConfig(opts []MTLSIdentityOption) mtlsIdentityConfig {
 // An auditor can grep for "MTLSAuthUnary" to find all S2S entry points.
 func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.UnaryServerInterceptor {
 	if provider == nil {
-		panic("interceptor: MTLSAuthUnary requires a non-nil JWT provider")
+		panic("grpcx/interceptor: MTLSAuthUnary requires a non-nil JWT provider")
 	}
 	cfg := buildMTLSIdentityConfig(opts)
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
-		panic("interceptor: MTLSAuthUnary requires at least one allowed SAN or CN")
+		panic("grpcx/interceptor: MTLSAuthUnary requires at least one allowed SAN or CN")
 	}
 	if cfg.impersonationGuard == nil {
-		panic("interceptor: MTLSAuthUnary requires WithS2SImpersonationGuard for mTLS user impersonation")
+		panic("grpcx/interceptor: MTLSAuthUnary requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	warnIfCNOnly("MTLSAuthUnary", cfg)
 	return func(
@@ -540,14 +540,14 @@ func MTLSAuthUnary(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.
 // mTLS+metadata authentication. See [MTLSAuthUnary] for semantics.
 func MTLSAuthStream(provider *jwtutil.Provider, opts ...MTLSIdentityOption) grpc.StreamServerInterceptor {
 	if provider == nil {
-		panic("interceptor: MTLSAuthStream requires a non-nil JWT provider")
+		panic("grpcx/interceptor: MTLSAuthStream requires a non-nil JWT provider")
 	}
 	cfg := buildMTLSIdentityConfig(opts)
 	if len(cfg.allowedCNs) == 0 && len(cfg.allowedSANDNS) == 0 && len(cfg.allowedSANURIs) == 0 {
-		panic("interceptor: MTLSAuthStream requires at least one allowed SAN or CN")
+		panic("grpcx/interceptor: MTLSAuthStream requires at least one allowed SAN or CN")
 	}
 	if cfg.impersonationGuard == nil {
-		panic("interceptor: MTLSAuthStream requires WithS2SImpersonationGuard for mTLS user impersonation")
+		panic("grpcx/interceptor: MTLSAuthStream requires WithS2SImpersonationGuard for mTLS user impersonation")
 	}
 	warnIfCNOnly("MTLSAuthStream", cfg)
 	return func(

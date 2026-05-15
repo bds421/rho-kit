@@ -72,7 +72,7 @@ type RateLimiterOption func(*RateLimiter)
 // func on the first request through the limiter.
 func WithClock(fn clock.Func) RateLimiterOption {
 	if fn == nil {
-		panic("ratelimit: WithClock requires a non-nil time source")
+		panic("middleware/ratelimit: WithClock requires a non-nil time source")
 	}
 	return func(rl *RateLimiter) { rl.now = fn }
 }
@@ -82,7 +82,7 @@ func WithClock(fn clock.Func) RateLimiterOption {
 func WithTrustedProxies(cidrs []string) RateLimiterOption {
 	trusted, err := clientip.ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
-		panic("ratelimit: invalid trusted proxy")
+		panic("middleware/ratelimit: invalid trusted proxy")
 	}
 	if len(trusted) == 0 {
 		trusted = clientip.ParseTrustedProxies(nil)
@@ -95,7 +95,7 @@ func WithTrustedProxies(cidrs []string) RateLimiterOption {
 // WithMetrics attaches Prometheus metrics to the IP rate limiter.
 func WithMetrics(m *Metrics) RateLimiterOption {
 	if m == nil {
-		panic("ratelimit: WithMetrics requires non-nil metrics")
+		panic("middleware/ratelimit: WithMetrics requires non-nil metrics")
 	}
 	return func(rl *RateLimiter) { rl.metrics = m }
 }
@@ -111,10 +111,10 @@ func WithLimiterName(name string) RateLimiterOption {
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) *RateLimiter {
 	if limit <= 0 {
-		panic("ratelimit: limit must be positive")
+		panic("middleware/ratelimit: limit must be positive")
 	}
 	if window <= 0 {
-		panic("ratelimit: window must be positive")
+		panic("middleware/ratelimit: window must be positive")
 	}
 	rl := &RateLimiter{
 		limit:       limit,
@@ -125,7 +125,7 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("ratelimit: NewRateLimiter option must not be nil")
+			panic("middleware/ratelimit: NewRateLimiter option must not be nil")
 		}
 		opt(rl)
 	}
@@ -383,14 +383,14 @@ func (rl *RateLimiter) ClientIP(r *http.Request) string {
 // enforcing rate limits.
 func Middleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	if rl == nil {
-		panic("ratelimit: Middleware requires a non-nil RateLimiter")
+		panic("middleware/ratelimit: Middleware requires a non-nil RateLimiter")
 	}
 	if err := rl.ready(); err != nil {
-		panic("ratelimit: Middleware requires an initialized limiter")
+		panic("middleware/ratelimit: Middleware requires an initialized limiter")
 	}
 	return func(next http.Handler) http.Handler {
 		if next == nil {
-			panic("ratelimit: Middleware requires a non-nil next handler")
+			panic("middleware/ratelimit: Middleware requires a non-nil next handler")
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			skip, handled, outcome := handleDegradation(w, r, rl.health, rl.degradation)

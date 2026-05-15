@@ -40,10 +40,10 @@ const (
 var (
 	// ErrInvalidStore is returned when a method is called on a zero-value
 	// Store or a Store whose cache/prefix has been zeroed out.
-	ErrInvalidStore = errors.New("jwt revocation: store is not initialized")
+	ErrInvalidStore = errors.New("jwtutil/revocation: store is not initialized")
 	// ErrMissingToken is returned by Revoke / IsRevoked when the caller
 	// passes a nil [*jwtutil.Claims].
-	ErrMissingToken = errors.New("jwt revocation: token claims are missing")
+	ErrMissingToken = errors.New("jwtutil/revocation: token claims are missing")
 	// ErrMissingTokenID is returned when a token has no JTI claim. It
 	// aliases [jwtutil.ErrMissingTokenID] so callers can match either
 	// sentinel with errors.Is.
@@ -52,11 +52,11 @@ var (
 	// whose expiration is at or before the configured clock. Writing a
 	// zero or negative TTL would race the cache backend into a no-op
 	// (or worse, a permanent entry on some backends).
-	ErrInvalidExpiry = errors.New("jwt revocation: token expiration must be in the future")
+	ErrInvalidExpiry = errors.New("jwtutil/revocation: token expiration must be in the future")
 	// ErrInvalidKey is returned when the issuer or token ID contains
 	// unsafe runes or when the assembled cache key exceeds the
 	// per-implementation length budget.
-	ErrInvalidKey = errors.New("jwt revocation: key contains invalid data")
+	ErrInvalidKey = errors.New("jwtutil/revocation: key contains invalid data")
 )
 
 // Cache is the minimal backend contract needed by Store. data/cache.Cache
@@ -112,7 +112,7 @@ type Option func(*Store)
 // bounded, valid UTF-8, and free of control characters.
 func WithKeyPrefix(prefix string) Option {
 	if !validPrefix(prefix) {
-		panic("jwt revocation: WithKeyPrefix requires a non-empty safe prefix")
+		panic("jwtutil/revocation: WithKeyPrefix requires a non-empty safe prefix")
 	}
 	return func(s *Store) { s.prefix = prefix }
 }
@@ -120,7 +120,7 @@ func WithKeyPrefix(prefix string) Option {
 // WithClock overrides the time source. Useful for deterministic tests.
 func WithClock(fn clock.Func) Option {
 	if fn == nil {
-		panic("jwt revocation: WithClock requires a non-nil time source")
+		panic("jwtutil/revocation: WithClock requires a non-nil time source")
 	}
 	return func(s *Store) { s.clock = fn }
 }
@@ -134,7 +134,7 @@ func WithClock(fn clock.Func) Option {
 // Panics on nil to fail fast at wiring time.
 func WithLogger(l *slog.Logger) Option {
 	if l == nil {
-		panic("jwt revocation: WithLogger requires a non-nil logger")
+		panic("jwtutil/revocation: WithLogger requires a non-nil logger")
 	}
 	return func(s *Store) { s.logger = l }
 }
@@ -147,7 +147,7 @@ func WithLogger(l *slog.Logger) Option {
 // Panics on nil to fail fast at wiring time.
 func WithAuditSink(sink AuditSink) Option {
 	if sink == nil {
-		panic("jwt revocation: WithAuditSink requires a non-nil sink")
+		panic("jwtutil/revocation: WithAuditSink requires a non-nil sink")
 	}
 	return func(s *Store) { s.audit = sink }
 }
@@ -159,7 +159,7 @@ func WithAuditSink(sink AuditSink) Option {
 // Panics on nil to fail fast at wiring time.
 func WithActorFromContext(fn ActorFromContext) Option {
 	if fn == nil {
-		panic("jwt revocation: WithActorFromContext requires a non-nil function")
+		panic("jwtutil/revocation: WithActorFromContext requires a non-nil function")
 	}
 	return func(s *Store) { s.actorFn = fn }
 }
@@ -177,7 +177,7 @@ func WithVerboseAuditFields() Option {
 // options so misconfiguration fails at startup.
 func New(cache Cache, opts ...Option) *Store {
 	if cache == nil {
-		panic("jwt revocation: cache must not be nil")
+		panic("jwtutil/revocation: cache must not be nil")
 	}
 	s := &Store{
 		cache:  cache,
@@ -186,7 +186,7 @@ func New(cache Cache, opts ...Option) *Store {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("jwt revocation: option must not be nil")
+			panic("jwtutil/revocation: option must not be nil")
 		}
 		opt(s)
 	}

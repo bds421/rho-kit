@@ -53,7 +53,7 @@ type metricsConfig struct {
 // metrics. When unset, [prometheus.DefaultRegisterer] is used.
 func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("ratelimit: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("middleware/ratelimit: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
@@ -65,7 +65,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("ratelimit: NewMetrics option must not be nil")
+			panic("middleware/ratelimit: NewMetrics option must not be nil")
 		}
 		opt(&cfg)
 	}
@@ -194,7 +194,7 @@ func normalizeLimiterName(name string) string {
 		return defaultLimiterName
 	}
 	if err := promutil.ValidateStaticLabelValue("limiter name", name); err != nil {
-		panic("ratelimit: invalid limiter name")
+		panic("middleware/ratelimit: invalid limiter name")
 	}
 	return name
 }

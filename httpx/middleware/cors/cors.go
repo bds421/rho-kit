@@ -64,7 +64,7 @@ func WithExposedHeaders(headers ...string) Option {
 // Must be >= 0.
 func WithMaxAge(seconds int) Option {
 	if seconds < 0 {
-		panic("cors: WithMaxAge requires a non-negative duration")
+		panic("middleware/cors: WithMaxAge requires a non-negative duration")
 	}
 	return func(c *config) { c.maxAge = seconds }
 }
@@ -100,7 +100,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("cors: option must not be nil")
+			panic("middleware/cors: option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -117,7 +117,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 	mw, err := jcors.NewMiddleware(jcfg)
 	if err != nil {
-		panic("cors: invalid configuration")
+		panic("middleware/cors: invalid configuration")
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -143,7 +143,7 @@ func validateConfig(cfg config) {
 		}
 	}
 	if !nonEmptyOrigin {
-		panic("cors: WithAllowedOrigins must be supplied with at least one origin or \"*\"")
+		panic("middleware/cors: WithAllowedOrigins must be supplied with at least one origin or \"*\"")
 	}
 }
 

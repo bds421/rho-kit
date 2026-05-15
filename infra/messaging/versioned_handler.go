@@ -15,14 +15,14 @@ import (
 // Panics if handlers is nil, empty, or contains a nil handler value.
 func NewVersionedHandler(handlers map[SchemaVersion]Handler) Handler {
 	if len(handlers) == 0 {
-		panic("versioned handler requires at least one version handler")
+		panic("messaging: NewVersionedHandler requires at least one version handler")
 	}
 
 	// Copy the map to prevent external mutation and validate entries.
 	dispatch := make(map[SchemaVersion]Handler, len(handlers))
 	for v, h := range handlers {
 		if h == nil {
-			panic("versioned handler: nil handler")
+			panic("messaging: NewVersionedHandler version handler must not be nil")
 		}
 		dispatch[v] = h
 	}

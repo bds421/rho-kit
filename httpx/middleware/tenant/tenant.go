@@ -94,7 +94,7 @@ func ContextExtractor() Extractor {
 // [ContextExtractor].
 func HeaderExtractor(header string) Extractor {
 	if !httpguts.ValidHeaderFieldName(header) {
-		panic("tenant: HeaderExtractor header must be a valid non-empty header name")
+		panic("middleware/tenant: HeaderExtractor header must be a valid non-empty header name")
 	}
 	return func(r *http.Request) (coretenant.ID, error) {
 		v, present, ok := headerutil.SingletonToken(r.Header, header)
@@ -124,7 +124,7 @@ type config struct {
 // WithExtractor overrides the default header extractor.
 func WithExtractor(e Extractor) Option {
 	if e == nil {
-		panic("tenant: WithExtractor requires a non-nil extractor")
+		panic("middleware/tenant: WithExtractor requires a non-nil extractor")
 	}
 	return func(c *config) { c.extractor = e }
 }
@@ -180,12 +180,12 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("tenant: option must not be nil")
+			panic("middleware/tenant: option must not be nil")
 		}
 		o(&cfg)
 	}
 	if cfg.extractor == nil {
-		panic("tenant: extractor must not be nil")
+		panic("middleware/tenant: extractor must not be nil")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

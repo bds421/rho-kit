@@ -56,7 +56,7 @@ type metricsConfig struct {
 // [prometheus.DefaultRegisterer]; passing nil panics.
 func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 	if reg == nil {
-		panic("recover: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+		panic("middleware/recover: WithRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
 	}
 	return func(c *metricsConfig) { c.registerer = reg }
 }
@@ -69,7 +69,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("recover: NewMetrics option must not be nil")
+			panic("middleware/recover: NewMetrics option must not be nil")
 		}
 		opt(&cfg)
 	}
@@ -144,7 +144,7 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("recover: option must not be nil")
+			panic("middleware/recover: option must not be nil")
 		}
 		opt(&cfg)
 	}

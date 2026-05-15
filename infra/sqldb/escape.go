@@ -20,7 +20,7 @@ var safeColumnName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-z
 // inputs and surfaces misconfiguration at boot.
 func ValidateColumn(name string) error {
 	if !safeColumnName.MatchString(name) {
-		return apperror.NewValidation("database: unsafe column name")
+		return apperror.NewValidation("sqldb: unsafe column name")
 	}
 	return nil
 }
@@ -31,7 +31,7 @@ func ValidateColumn(name string) error {
 // the returned error.
 func MustValidateColumn(name string) {
 	if !safeColumnName.MatchString(name) {
-		panic("database: unsafe column name")
+		panic("sqldb: MustValidateColumn: unsafe column name")
 	}
 }
 

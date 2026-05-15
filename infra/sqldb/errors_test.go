@@ -93,7 +93,7 @@ func TestValidateColumn_ErrorDoesNotReflectUnsafeName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if msg := err.Error(); msg != "database: unsafe column name" {
+	if msg := err.Error(); msg != "sqldb: unsafe column name" {
 		t.Fatalf("error = %q, want stable unsafe-column message", msg)
 	}
 	if strings.Contains(err.Error(), "secret-token") {
@@ -139,7 +139,7 @@ func TestMustValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic = %T, want string", rec)
 		}
-		if msg != "database: unsafe column name" {
+		if msg != "sqldb: MustValidateColumn: unsafe column name" {
 			t.Fatalf("panic = %q, want stable unsafe-column message", msg)
 		}
 		if strings.Contains(msg, "secret-token") {

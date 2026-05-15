@@ -45,7 +45,7 @@ func (c Chain) Append(middlewares ...func(http.Handler) http.Handler) Chain {
 // http.DefaultServeMux, which masks initialization bugs.
 func (c Chain) Then(handler http.Handler) http.Handler {
 	if handler == nil {
-		panic("middleware: Chain.Then() requires a non-nil handler")
+		panic("middleware/stack: Chain.Then requires a non-nil handler")
 	}
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		handler = c.middlewares[i](handler)

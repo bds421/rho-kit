@@ -417,8 +417,8 @@ func TestWithTrustedProxies_PanicsOnInvalid(t *testing.T) {
 		if r == nil {
 			t.Fatal("expected panic on invalid trusted proxy")
 		}
-		if r != "ratelimit: invalid trusted proxy" {
-			t.Fatalf("panic = %q, want %q", r, "ratelimit: invalid trusted proxy")
+		if r != "middleware/ratelimit: invalid trusted proxy" {
+			t.Fatalf("panic = %q, want %q", r, "middleware/ratelimit: invalid trusted proxy")
 		}
 	}()
 	_ = WithTrustedProxies([]string{"secret-token", "10.0.0.0/8"})
