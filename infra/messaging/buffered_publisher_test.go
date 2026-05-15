@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -78,7 +77,7 @@ func withStateFileAbsoluteForTest(path string) BufferedPublisherOption {
 // nil dereference can occur.
 func newTestBufferedPublisher(publishFn func(ctx context.Context, exchange, routingKey string, msg Message) error, healthFn func() bool, opts ...BufferedPublisherOption) *BufferedPublisher {
 	allOpts := append([]BufferedPublisherOption{withPublishFn(publishFn), withHealthFn(healthFn)}, opts...)
-	return newBufferedPublisher(slog.New(slog.NewTextHandler(io.Discard, nil)), allOpts...)
+	return newBufferedPublisher(discardLogger(), allOpts...)
 }
 
 // newBufferedPublisher mirrors NewBufferedPublisher but without requiring AMQP
@@ -263,7 +262,7 @@ func TestNewBufferedPublisher_PanicsOnCorruptStateFile(t *testing.T) {
 	}()
 	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(dir),
 		WithStateFile("buffered.json"),
 	)
@@ -281,7 +280,7 @@ func TestNewBufferedPublisher_LossyStateRecoverySwallowsCorruption(t *testing.T)
 
 	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(dir),
 		WithStateFile("buffered.json"),
 		WithLossyStateRecovery(),
@@ -313,7 +312,7 @@ func TestWithStateFile_RejectsAbsolutePath(t *testing.T) {
 	}()
 	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(t.TempDir()),
 		WithStateFile("/etc/passwd"),
 	)
@@ -338,7 +337,7 @@ func TestWithStateFile_RejectsTraversal(t *testing.T) {
 	}()
 	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(t.TempDir()),
 		WithStateFile("../escape.json"),
 	)
@@ -356,7 +355,7 @@ func TestWithStateFile_RejectsAbsoluteEscape(t *testing.T) {
 	}()
 	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(t.TempDir()),
 		WithStateFile("/etc/passwd"),
 	)
@@ -382,7 +381,7 @@ func TestWithStateFile_RequiresStateDirectory(t *testing.T) {
 	}()
 	NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateFile("state.json"),
 	)
 }
@@ -393,7 +392,7 @@ func TestWithStateFile_AcceptsCleanRelative(t *testing.T) {
 	dir := t.TempDir()
 	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(dir),
 		WithStateFile("state.json"),
 	)
@@ -412,7 +411,7 @@ func TestWithStateFile_AcceptsNestedRelative(t *testing.T) {
 	dir := t.TempDir()
 	pub := NewBufferedPublisher(
 		noopPublisher{}, &fakeConnector{healthy: true},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		WithStateDirectory(dir),
 		WithStateFile("sub/state.json"),
 	)
@@ -1101,7 +1100,7 @@ func TestBufferedPublisherDrain_CancelledContext(t *testing.T) {
 }
 
 func TestBufferedPublisherLoad_NoStateFile_Noop(t *testing.T) {
-	pub := newBufferedPublisher(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pub := newBufferedPublisher(discardLogger())
 	err := pub.load()
 	if err != nil {
 		t.Fatalf("expected no error for empty stateFile, got %v", err)
@@ -1110,7 +1109,7 @@ func TestBufferedPublisherLoad_NoStateFile_Noop(t *testing.T) {
 
 func TestBufferedPublisherLoad_MissingFile_ReturnsNilPending(t *testing.T) {
 	pub := newBufferedPublisher(
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		withStateFileAbsoluteForTest(filepath.Join(t.TempDir(), "nonexistent.json")),
 	)
 	err := pub.load()
@@ -1141,7 +1140,7 @@ func TestBufferedPublisherLoad_StrictByDefault_FailsOnInvalidEntry(t *testing.T)
 		t.Fatalf("write state: %v", err)
 	}
 	pub := newBufferedPublisher(
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		withStateFileAbsoluteForTest(stateFile),
 	)
 	if err := pub.load(); err == nil {
@@ -1164,7 +1163,7 @@ func TestBufferedPublisherLoad_LossyStateValidationSkipsInvalidEntries(t *testin
 		t.Fatalf("write state: %v", err)
 	}
 	pub := newBufferedPublisher(
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		withStateFileAbsoluteForTest(stateFile),
 		WithLossyStateValidation(),
 	)
@@ -1184,7 +1183,7 @@ func TestBufferedPublisherLoad_CorruptFile_ReturnsError(t *testing.T) {
 	}
 
 	pub := newBufferedPublisher(
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		withStateFileAbsoluteForTest(stateFile),
 	)
 	err := pub.load()
@@ -1194,7 +1193,7 @@ func TestBufferedPublisherLoad_CorruptFile_ReturnsError(t *testing.T) {
 }
 
 func TestBufferedPublisherSaveLocked_NoStateFile_Noop(t *testing.T) {
-	pub := newBufferedPublisher(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pub := newBufferedPublisher(discardLogger())
 	if err := pub.saveLocked(); err != nil {
 		t.Fatalf("expected nil with empty stateFile, got %v", err)
 	}
@@ -1202,7 +1201,7 @@ func TestBufferedPublisherSaveLocked_NoStateFile_Noop(t *testing.T) {
 
 func TestBufferedPublisherSaveLocked_InvalidPath_LogsError(t *testing.T) {
 	pub := newBufferedPublisher(
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		discardLogger(),
 		withStateFileAbsoluteForTest("/nonexistent-dir/subdir/buffered.json"),
 	)
 	pub.pending = []pendingMessage{{Exchange: "ex", RoutingKey: "rk"}}
