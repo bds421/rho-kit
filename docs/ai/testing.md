@@ -77,7 +77,7 @@ func TestRedisCache(t *testing.T) {
 
     opts, err := redis.ParseURL(url)
     require.NoError(t, err)
-    conn, err := redis.Connect(opts, redis.WithLogger(slog.Default()))
+    conn, err := redis.Connect(opts, redis.Logger(slog.Default()))
     require.NoError(t, err)
     t.Cleanup(func() { _ = conn.Close() })
 

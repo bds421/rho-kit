@@ -34,7 +34,7 @@ opts := &goredis.Options{
 }
 
 conn, err := redis.Connect(opts,
-    redis.WithLogger(logger),
+    redis.Logger(logger),
     redis.WithInstance("cache"),               // Prometheus label
     redis.WithLazyConnect(),                   // non-blocking startup
     redis.WithHealthInterval(5*time.Second),
@@ -313,7 +313,7 @@ opaque labels prevent cleartext leaks, not unbounded series creation.
 func TestRedisCache(t *testing.T) {
     url := redistest.Start(t) // import infra/redis/redistest/v2
     opts, _ := redis.ParseURL(url)
-    conn, _ := redis.Connect(opts, redis.WithLogger(slog.Default()))
+    conn, _ := redis.Connect(opts, redis.Logger(slog.Default()))
     defer conn.Close()
 
     c, _ := rediscache.NewCache(conn.Client(), "test-"+t.Name())

@@ -59,7 +59,7 @@ type Params struct {
 	// app/postgres sub-module so HTTP-only services don't pull in pgx.
 	Postgres bool
 	// Tenant scaffolds the multi-tenant Redis path: Redis config loading,
-	// Builder.With(redis.Module(...)) + WithMultiTenant, and tenant-wrapped
+	// Builder.With(redis.Module(...)) + MultiTenant, and tenant-wrapped
 	// Redis cache and idempotency stores so new services start from the
 	// shared scoped-key encoder instead of hand-rolled prefixes. v2.0.0
 	// moved Redis wiring out of app/v2 into app/redis.

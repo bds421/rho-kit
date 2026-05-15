@@ -4,6 +4,7 @@ go {{.GoVersion}}
 {{if .RhoVersion}}
 require (
 	github.com/bds421/rho-kit/app/v2 {{.RhoVersion}}
+	github.com/bds421/rho-kit/app/ratelimit/v2 {{.RhoVersion}}
 	github.com/bds421/rho-kit/httpx/v2 {{.RhoVersion}}{{if or .Postgres .Tenant}}
 	github.com/bds421/rho-kit/core/v2 {{.RhoVersion}}
 {{- end}}{{if .Tenant}}

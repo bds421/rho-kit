@@ -94,7 +94,7 @@ type Builder struct {
 	// [netutil.ReloadingServerTLS] for the public server, threads
 	// the source into the default HTTP client (via
 	// [netutil.ReloadingClientTLS]), and registers Stop on the
-	// lifecycle Runner. Wire with [Builder.WithReloadingTLS].
+	// lifecycle Runner. Wire with [Builder.ReloadingTLS].
 	tlsReloadOpts    []netutil.FilesCertificateSourceOption
 	tlsReloadActive  bool
 	tlsReloadSignals []os.Signal // when non-empty, RunContext installs a signal→Reload bridge
@@ -153,7 +153,7 @@ type Builder struct {
 
 	// startupTimeout caps how long module initialization may take
 	// (FR-013). Zero means [defaultStartupTimeout]. Override via
-	// [Builder.WithStartupTimeout] for services with genuinely slow
+	// [Builder.StartupTimeout] for services with genuinely slow
 	// boot dependencies (e.g. Postgres warmup, KMS key fetch).
 	startupTimeout time.Duration
 
@@ -180,7 +180,7 @@ func New(name, version string, cfg BaseConfig) *Builder {
 	}
 }
 
-// WithInternalNonLoopback acknowledges that the internal ops port
+// AllowInternalNonLoopback acknowledges that the internal ops port
 // (health, ready, metrics) is intentionally bound to a non-loopback
 // interface (e.g. 0.0.0.0). Without this opt-in, [Builder.Build]
 // rejects any configuration where Internal.Host resolves to "0.0.0.0",
@@ -192,7 +192,7 @@ func New(name, version string, cfg BaseConfig) *Builder {
 // (NetworkPolicy, security group, host-only Docker network) for the
 // internal port. The check is unconditional — there is no KIT_ENV
 // escape hatch.
-func (b *Builder) WithInternalNonLoopback() *Builder {
+func (b *Builder) AllowInternalNonLoopback() *Builder {
 	b.allowInternalNonLoopback = true
 	return b
 }
@@ -212,7 +212,7 @@ func (b *Builder) WithoutTLS() *Builder {
 	return b
 }
 
-// WithOptionalClientCertificates opts the public TLS server out of
+// OptionalClientCertificates opts the public TLS server out of
 // the kit's default of requiring a client certificate from every
 // caller (mTLS). After this call the listener verifies any presented
 // client certificate but does NOT reject anonymous clients
@@ -230,12 +230,12 @@ func (b *Builder) WithoutTLS() *Builder {
 // re-encrypts to the cluster *without* presenting a client certificate. Internal
 // service-to-service listeners should never use this option — the
 // verifier is the kit's only authentication layer for those callers.
-func (b *Builder) WithOptionalClientCertificates() *Builder {
+func (b *Builder) OptionalClientCertificates() *Builder {
 	b.tlsOptionalClientCert = true
 	return b
 }
 
-// WithMultiTenant activates tenant-aware request handling and rejects
+// MultiTenant activates tenant-aware request handling and rejects
 // requests without a tenant with HTTP 400. The public mux gets the
 // tenant middleware (extracts the tenant ID from the request and stores
 // it on ctx); handlers downstream can call [tenant.FromContext] /
@@ -252,70 +252,70 @@ func (b *Builder) WithOptionalClientCertificates() *Builder {
 // Tenant requirement is applied to every method by default (including
 // GET/HEAD/OPTIONS). Health/readiness probes belong on the kit's
 // internal ops port, which is a separate listener and never sees the
-// tenant middleware. Use [Builder.WithAllowMissingTenantOnSafeMethods]
+// tenant middleware. Use [Builder.AllowMissingTenantOnSafeMethods]
 // only when the public mux must serve pre-auth GETs alongside
-// tenant-scoped routes; use [Builder.WithMultiTenantOptional] to
+// tenant-scoped routes; use [Builder.MultiTenantOptional] to
 // extract-but-not-reject for hybrid public/private services.
 //
 // Cache and idempotency wrappers ([data/cache/tenant.Wrap] /
 // [data/idempotency/tenant.Wrap]) are caller-applied — the
 // Builder doesn't own those instances and shouldn't silently
 // rewrite them.
-func (b *Builder) WithMultiTenant(extractor httpxtenant.Extractor) *Builder {
+func (b *Builder) MultiTenant(extractor httpxtenant.Extractor) *Builder {
 	b.tenantSpec = &tenantSpec{extractor: extractor, required: true}
 	return b
 }
 
-// WithMultiTenantOptional activates tenant-aware request handling
+// MultiTenantOptional activates tenant-aware request handling
 // without rejecting requests that don't supply a tenant — the tenant
 // ID is extracted onto ctx when present and absent otherwise. Use this
 // for hybrid services where a subset of routes is genuinely public.
 //
-// Cannot be combined with [Builder.WithTenantBudget]: budget
+// Cannot be combined with [Builder.TenantBudget]: budget
 // enforcement requires a tenant on every charged request.
-func (b *Builder) WithMultiTenantOptional(extractor httpxtenant.Extractor) *Builder {
+func (b *Builder) MultiTenantOptional(extractor httpxtenant.Extractor) *Builder {
 	b.tenantSpec = &tenantSpec{extractor: extractor, required: false}
 	return b
 }
 
-// WithAllowMissingTenantOnSafeMethods opts out of the default
+// AllowMissingTenantOnSafeMethods opts out of the default
 // require-tenant-on-every-method rule for GET/HEAD/OPTIONS. Forwards
-// to [httpxtenant.WithAllowMissingTenantOnSafeMethods].
+// to [httpxtenant.AllowMissingTenantOnSafeMethods].
 //
-// Mutually exclusive with [Builder.WithTenantBudget]: budget
+// Mutually exclusive with [Builder.TenantBudget]: budget
 // enforcement keys on the tenant ID, so every charged route needs a
 // required tenant context before the budget middleware runs.
 // [Builder.Validate] rejects the combination at startup.
-func (b *Builder) WithAllowMissingTenantOnSafeMethods() *Builder {
+func (b *Builder) AllowMissingTenantOnSafeMethods() *Builder {
 	if b.tenantSpec == nil {
-		panic("app: WithAllowMissingTenantOnSafeMethods must be called after WithMultiTenant")
+		panic("app: AllowMissingTenantOnSafeMethods must be called after MultiTenant")
 	}
 	b.tenantSpec.allowMissingTenantOnSafeMethods = true
 	return b
 }
 
-// WithTenantBudget enforces a per-tenant cost budget on every
+// TenantBudget enforces a per-tenant cost budget on every
 // inbound request via [httpx/middleware/budget]. The default key
 // function pulls the tenant ID from ctx (assumes
-// [WithMultiTenant] is also configured with required=true); supply a
+// [MultiTenant] is also configured with required=true); supply a
 // custom one via [httpxbudget.WithKeyFunc] if your scope is different.
 //
 // Panics if `b2` is nil — silent no-budget would defeat the
 // kit's "refuse to misconfigure" stance.
-func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Builder {
+func (b *Builder) TenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Builder {
 	if b2 == nil {
-		panic("app: WithTenantBudget requires a non-nil Budget store")
+		panic("app: TenantBudget requires a non-nil Budget store")
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("app: WithTenantBudget option must not be nil")
+			panic("app: TenantBudget option must not be nil")
 		}
 	}
 	b.budgetSpec = &budgetSpec{store: b2, opts: append([]httpxbudget.Option(nil), opts...)}
 	return b
 }
 
-// WithReloadingTLS enables hot rotation of the TLS material configured
+// ReloadingTLS enables hot rotation of the TLS material configured
 // on [BaseConfig.TLS]. The Builder constructs a
 // [netutil.FilesCertificateSource] from the configured cert/key/CA
 // paths, threads it into the public server via
@@ -333,14 +333,14 @@ func (b *Builder) WithTenantBudget(b2 budget.Budget, opts ...httpxbudget.Option)
 // TLS must be fully configured (CACert + Cert + Key) before calling
 // this; without it the option is wired but Run returns an error from
 // the source constructor.
-func (b *Builder) WithReloadingTLS(opts ...netutil.FilesCertificateSourceOption) *Builder {
+func (b *Builder) ReloadingTLS(opts ...netutil.FilesCertificateSourceOption) *Builder {
 	b.tlsReloadOpts = append([]netutil.FilesCertificateSourceOption(nil), opts...)
 	b.tlsReloadActive = true
 	return b
 }
 
-// WithTLSReloadOnSignal installs a signal→[FilesCertificateSource.Reload]
-// bridge alongside the reloading source built by [Builder.WithReloadingTLS],
+// TLSReloadOnSignal installs a signal→[FilesCertificateSource.Reload]
+// bridge alongside the reloading source built by [Builder.ReloadingTLS],
 // so an external rotator can trigger a hot reload by sending one of
 // `signals` (typically [syscall.SIGHUP]) to the process. Without this
 // option callers still drive reloads either by passing
@@ -362,38 +362,38 @@ func (b *Builder) WithReloadingTLS(opts ...netutil.FilesCertificateSourceOption)
 // configuration error and should fail at construction, not at the
 // first signal delivery.
 //
-// Requires [Builder.WithReloadingTLS]; calling this without it is a
+// Requires [Builder.ReloadingTLS]; calling this without it is a
 // configuration error and Run returns an error from the Builder's
 // startup validation step.
-func (b *Builder) WithTLSReloadOnSignal(signals ...os.Signal) *Builder {
+func (b *Builder) TLSReloadOnSignal(signals ...os.Signal) *Builder {
 	if len(signals) == 0 {
-		panic("app: WithTLSReloadOnSignal requires at least one signal")
+		panic("app: TLSReloadOnSignal requires at least one signal")
 	}
 	for _, s := range signals {
 		if s == nil {
-			panic("app: WithTLSReloadOnSignal signal must not be nil")
+			panic("app: TLSReloadOnSignal signal must not be nil")
 		}
 	}
 	b.tlsReloadSignals = append([]os.Signal(nil), signals...)
 	return b
 }
 
-// WithActionLogger registers an [actionlog.Logger] so handlers can
+// ActionLogger registers an [actionlog.Logger] so handlers can
 // attribute writes to the originating actor + tenant. Exposed via
 // [Infrastructure.ActionLog] — handlers append entries; the kit
 // doesn't auto-instrument routes (verb/resource attribution is
 // app-specific).
 //
 // Panics if `l` is nil.
-func (b *Builder) WithActionLogger(l actionlog.Logger) *Builder {
+func (b *Builder) ActionLogger(l actionlog.Logger) *Builder {
 	if l == nil {
-		panic("app: WithActionLogger requires a non-nil Logger")
+		panic("app: ActionLogger requires a non-nil Logger")
 	}
 	b.alog = l
 	return b
 }
 
-// WithApprovalStore registers an [approval.Store] so handlers can
+// ApprovalStore registers an [approval.Store] so handlers can
 // gate destructive operations behind a pending → approved →
 // executed lifecycle. Exposed via [Infrastructure.ApprovalStore].
 //
@@ -422,15 +422,15 @@ func (b *Builder) WithActionLogger(l actionlog.Logger) *Builder {
 //	)
 //
 // Panics if `s` is nil.
-func (b *Builder) WithApprovalStore(s approval.Store) *Builder {
+func (b *Builder) ApprovalStore(s approval.Store) *Builder {
 	if s == nil {
-		panic("app: WithApprovalStore requires a non-nil Store")
+		panic("app: ApprovalStore requires a non-nil Store")
 	}
 	b.astore = s
 	return b
 }
 
-// WithAuthz registers an [authz.Decider] (the kit's vendor-neutral
+// Authz registers an [authz.Decider] (the kit's vendor-neutral
 // authorization seam — OpenFGA, Cedar, Casbin, or the in-memory
 // adapter for tests). The decider is exposed on
 // [Infrastructure.Authz] so handlers can build per-route policies via
@@ -442,9 +442,9 @@ func (b *Builder) WithApprovalStore(s approval.Store) *Builder {
 // route level, not the mux level.
 //
 // Panics if `d` is nil.
-func (b *Builder) WithAuthz(d kitauthz.Decider) *Builder {
+func (b *Builder) Authz(d kitauthz.Decider) *Builder {
 	if d == nil {
-		panic("app: WithAuthz requires a non-nil Decider")
+		panic("app: Authz requires a non-nil Decider")
 	}
 	b.authz = d
 	return b
@@ -469,34 +469,34 @@ func (b *Builder) WithoutRateLimit() *Builder {
 	return b
 }
 
-// WithStorage registers an object storage backend and optional health checks.
+// Storage registers an object storage backend and optional health checks.
 // The backend is available via infra.Storage in the RouterFunc.
 // Panics if backend is nil — this catches misconfiguration at startup.
-func (b *Builder) WithStorage(backend storage.Storage, checks ...health.DependencyCheck) *Builder {
+func (b *Builder) Storage(backend storage.Storage, checks ...health.DependencyCheck) *Builder {
 	if backend == nil {
 		panic("app: storage backend must not be nil")
 	}
-	validateDependencyChecks(checks, "WithStorage")
+	validateDependencyChecks(checks, "Storage")
 	b.storageBackend = backend
 	b.healthChecks = append(b.healthChecks, checks...)
 	return b
 }
 
-// WithNamedStorage registers a named storage backend. All named backends are
+// NamedStorage registers a named storage backend. All named backends are
 // accessible via infra.StorageManager.Backend(name) in the RouterFunc. The
 // first registered backend becomes the default unless [SetDefault] is called
 // on the manager. Health checks are added to the readiness probe.
 //
-// This can be used alongside [WithStorage] — the unnamed backend is independent
+// This can be used alongside [Storage] — the unnamed backend is independent
 // of the manager.
-func (b *Builder) WithNamedStorage(name string, backend storage.Storage, checks ...health.DependencyCheck) *Builder {
+func (b *Builder) NamedStorage(name string, backend storage.Storage, checks ...health.DependencyCheck) *Builder {
 	if name == "" {
 		panic("app: storage name must not be empty")
 	}
 	if backend == nil {
 		panic("app: storage backend must not be nil")
 	}
-	validateDependencyChecks(checks, "WithNamedStorage")
+	validateDependencyChecks(checks, "NamedStorage")
 	b.storageSpecs = append(b.storageSpecs, storageSpec{
 		name:    name,
 		backend: backend,
@@ -505,16 +505,16 @@ func (b *Builder) WithNamedStorage(name string, backend storage.Storage, checks 
 	return b
 }
 
-// WithAuditLog configures an audit log backed by the given store. The audit
+// AuditLog configures an audit log backed by the given store. The audit
 // logger is available via infra.AuditLog in the RouterFunc. Use it to log
 // domain events or attach the audit middleware to the HTTP handler.
-func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *Builder {
+func (b *Builder) AuditLog(store auditlog.Store, opts ...auditlog.Option) *Builder {
 	if store == nil {
 		panic("app: audit log store must not be nil")
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("app: WithAuditLog option must not be nil")
+			panic("app: AuditLog option must not be nil")
 		}
 	}
 	b.auditStore = store
@@ -522,30 +522,30 @@ func (b *Builder) WithAuditLog(store auditlog.Store, opts ...auditlog.Option) *B
 	return b
 }
 
-// WithEventBusPool overrides the default bounded worker pool size for the
+// EventBusPool overrides the default bounded worker pool size for the
 // in-process event bus. The pool is registered on the lifecycle runner so it
 // starts before handlers can publish async events and drains during shutdown.
 //
 // Panics if size is not positive.
-func (b *Builder) WithEventBusPool(size int) *Builder {
+func (b *Builder) EventBusPool(size int) *Builder {
 	if size <= 0 {
-		panic("app: WithEventBusPool requires a positive pool size")
+		panic("app: EventBusPool requires a positive pool size")
 	}
 	b.eventBusPoolSize = size
 	return b
 }
 
-// WithLogger sets the logger used during infrastructure setup and runtime.
+// Logger sets the logger used during infrastructure setup and runtime.
 // When not set, slog.Default() is used.
-func (b *Builder) WithLogger(l *slog.Logger) *Builder {
+func (b *Builder) Logger(l *slog.Logger) *Builder {
 	b.logger = l
 	return b
 }
 
-// WithServerOption adds an httpx.ServerOption to the public HTTP server.
-func (b *Builder) WithServerOption(opt httpx.ServerOption) *Builder {
+// ServerOption adds an httpx.ServerOption to the public HTTP server.
+func (b *Builder) ServerOption(opt httpx.ServerOption) *Builder {
 	if opt == nil {
-		panic("app: WithServerOption requires a non-nil option")
+		panic("app: ServerOption requires a non-nil option")
 	}
 	b.serverOpts = append(b.serverOpts, opt)
 	return b
@@ -565,25 +565,25 @@ func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
 	return b
 }
 
-// WithCustomReadiness overrides the auto-accumulated health checks with a
+// CustomReadiness overrides the auto-accumulated health checks with a
 // custom readiness handler (e.g. for custom state introspection).
-func (b *Builder) WithCustomReadiness(h http.Handler) *Builder {
+func (b *Builder) CustomReadiness(h http.Handler) *Builder {
 	if h == nil {
-		panic("app: WithCustomReadiness requires a non-nil handler")
+		panic("app: CustomReadiness requires a non-nil handler")
 	}
 	b.customReadiness = h
 	return b
 }
 
-// WithStackOptions appends options forwarded to [stack.Default] when the
+// StackOptions appends options forwarded to [stack.Default] when the
 // Builder wraps the public mux. Examples: [stack.WithQuietPaths],
 // [stack.WithoutTimeout], [stack.WithRecoverMetrics]. The Builder always
-// supplies a logger derived from the slog default; pass [stack.WithLogger]
+// supplies a logger derived from the slog default; pass [stack.Logger]
 // here to override it.
-func (b *Builder) WithStackOptions(opts ...stack.Option) *Builder {
+func (b *Builder) StackOptions(opts ...stack.Option) *Builder {
 	for _, opt := range opts {
 		if opt == nil {
-			panic("app: WithStackOptions option must not be nil")
+			panic("app: StackOptions option must not be nil")
 		}
 	}
 	b.stackOpts = append(b.stackOpts, opts...)
@@ -601,15 +601,15 @@ func (b *Builder) WithoutDefaultStack() *Builder {
 	return b
 }
 
-// WithBackground registers a managed goroutine that starts before the
+// Background registers a managed goroutine that starts before the
 // router. If fn returns a non-nil error, the entire service shuts down.
 //
 // v2.0.0 rename: this method was previously `Builder.Background`. The
 // `With*` prefix matches every other registration method on the Builder
-// (`WithJWT`, `WithStorage`, `WithAuditLog`, `WithIPRateLimit`, ...) so
+// (`WithJWT`, `Storage`, `AuditLog`, `WithIPRateLimit`, ...) so
 // IDE autocomplete on `app.New(...).With` reliably surfaces the
 // background-worker primitive.
-func (b *Builder) WithBackground(name string, fn func(ctx context.Context) error) *Builder {
+func (b *Builder) Background(name string, fn func(ctx context.Context) error) *Builder {
 	validateBackgroundSpec(name, fn)
 	b.earlyBgs = append(b.earlyBgs, bgSpec{name: name, fn: fn})
 	return b
@@ -627,20 +627,20 @@ func (b *Builder) WithBackground(name string, fn func(ctx context.Context) error
 // is the Builder's job — don't manually close DB/Redis here.
 // defaultStartupTimeout caps module initialization time so a hung
 // module cannot block startup forever (FR-013). 60 seconds is a
-// generous default — tighten via [Builder.WithStartupTimeout] for
+// generous default — tighten via [Builder.StartupTimeout] for
 // services with strict cold-start budgets.
 const defaultStartupTimeout = 60 * time.Second
 
-// WithStartupTimeout caps module initialization time. Omit this option to use
+// StartupTimeout caps module initialization time. Omit this option to use
 // [defaultStartupTimeout].
 //
 // FR-013 [MED]: pre-fix module Init ran with context.Background, so
 // a module that hung during initialization (KMS DNS, broker connect)
 // blocked startup forever. The deadline now triggers a typed error
 // from the affected module's Init.
-func (b *Builder) WithStartupTimeout(d time.Duration) *Builder {
+func (b *Builder) StartupTimeout(d time.Duration) *Builder {
 	if d <= 0 {
-		panic("app: WithStartupTimeout requires a positive duration")
+		panic("app: StartupTimeout requires a positive duration")
 	}
 	b.startupTimeout = d
 	return b
@@ -771,7 +771,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// 1. TLS -- server TLS is still needed here for the public server.
 	// Client TLS is now handled by the httpClientModule.
 	//
-	// When WithReloadingTLS was called, swap the static snapshot for a
+	// When ReloadingTLS was called, swap the static snapshot for a
 	// reloading source so the public server, the default outbound HTTP
 	// client, and any consumer that reads infra.TLSCertificateSource
 	// share the same poll loop. The source's Close hook tears down the
@@ -788,7 +788,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			return fmt.Errorf("build reloading TLS source: %w", srcErr)
 		}
 		// Thread the same server TLS options into the reloading path so
-		// WithOptionalClientCertificates / future client-auth opt-outs
+		// OptionalClientCertificates / future client-auth opt-outs
 		// take effect identically whether or not TLS reload is wired —
 		// otherwise enabling reload would silently flip
 		// VerifyClientCertIfGiven back to RequireAndVerifyClientCert.
@@ -826,7 +826,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	runner.Add("eventbus", eventBus)
 
 	// 2.6. TLS reload-on-signal bridge — only registered when the
-	// caller wired WithTLSReloadOnSignal alongside WithReloadingTLS
+	// caller wired TLSReloadOnSignal alongside ReloadingTLS
 	// (Validate enforces the combination). The bridge runs as a
 	// lifecycle component so its goroutine exits cleanly on shutdown
 	// even when the FilesCertificateSource itself is closed later
@@ -1011,7 +1011,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if !b.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
 		// the same logger as infrastructure setup. Pre-fix this hardcoded
-		// slog.Default(), so [Builder.WithLogger] silently failed to take
+		// slog.Default(), so [Builder.Logger] silently failed to take
 		// effect on the public middleware chain.
 		httpHandler = stack.Default(httpHandler, logger, b.stackOpts...)
 	}

@@ -69,17 +69,17 @@ func (stubApproval) MarkExecuted(_ context.Context, _ string) (approval.Request,
 
 func TestWithMultiTenant_RegistersOnBuilder(t *testing.T) {
 	ext := httpxtenant.HeaderExtractor("X-Tenant-Id")
-	b := New("test", "v1", BaseConfig{}).WithMultiTenant(ext)
+	b := New("test", "v1", BaseConfig{}).MultiTenant(ext)
 	require.NotNil(t, b.tenantSpec)
 	assert.True(t, b.tenantSpec.required)
 }
 
 func TestTenantMiddleware_PopulatesContext_DefaultContextExtractor(t *testing.T) {
-	// WithMultiTenant(nil) selects the default extractor, which now
+	// MultiTenant(nil) selects the default extractor, which now
 	// reads from ctx (an upstream auth middleware is expected to have
 	// resolved the tenant). The middleware is a pass-through in that
 	// case — it just enforces the require-tenant rule.
-	b := New("test", "v1", BaseConfig{}).WithMultiTenant(nil)
+	b := New("test", "v1", BaseConfig{}).MultiTenant(nil)
 	mw := b.tenantMiddleware()
 	require.NotNil(t, mw)
 
@@ -105,7 +105,7 @@ func TestTenantMiddleware_PopulatesContext_HeaderExtractorOptIn(t *testing.T) {
 	// Header-trust is an explicit opt-in now. Verify the path still
 	// works when the caller wires it deliberately.
 	b := New("test", "v1", BaseConfig{}).
-		WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"))
+		MultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"))
 	mw := b.tenantMiddleware()
 	require.NotNil(t, mw)
 
@@ -129,11 +129,11 @@ func TestWithTenantBudget_PanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic on nil store")
 		}
 	}()
-	New("test", "v1", BaseConfig{}).WithTenantBudget(nil)
+	New("test", "v1", BaseConfig{}).TenantBudget(nil)
 }
 
 func TestWithTenantBudget_BuildsMiddleware(t *testing.T) {
-	b := New("test", "v1", BaseConfig{}).WithTenantBudget(&stubBudget{})
+	b := New("test", "v1", BaseConfig{}).TenantBudget(&stubBudget{})
 	require.NotNil(t, b.budgetMiddleware())
 	assert.Same(t, b.budgetSpec.store.(*stubBudget), b.budgetSpecStore())
 }
@@ -141,7 +141,7 @@ func TestWithTenantBudget_BuildsMiddleware(t *testing.T) {
 func TestWithTenantBudget_ClonesOptions(t *testing.T) {
 	opts := []httpxbudget.Option{httpxbudget.WithScope("tenant")}
 
-	b := New("test", "v1", BaseConfig{}).WithTenantBudget(&stubBudget{}, opts...)
+	b := New("test", "v1", BaseConfig{}).TenantBudget(&stubBudget{}, opts...)
 	opts[0] = nil
 
 	require.NotNil(t, b.budgetSpec)
@@ -149,39 +149,39 @@ func TestWithTenantBudget_ClonesOptions(t *testing.T) {
 	assert.NotNil(t, b.budgetSpec.opts[0])
 }
 
-// R3-H: WithTenantBudget combined with the safe-method bypass would
+// R3-H: TenantBudget combined with the safe-method bypass would
 // send some charged routes to budget enforcement without a tenant key.
 // Validate must reject the combination at startup.
 func TestWithTenantBudget_RejectsAllowMissingTenantOnSafeMethods(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithMultiTenant(nil).
-		WithAllowMissingTenantOnSafeMethods().
-		WithTenantBudget(&stubBudget{})
+		MultiTenant(nil).
+		AllowMissingTenantOnSafeMethods().
+		TenantBudget(&stubBudget{})
 	err := b.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithAllowMissingTenantOnSafeMethods")
+	assert.Contains(t, err.Error(), "AllowMissingTenantOnSafeMethods")
 }
 
-// R3-H: WithTenantBudget combined with required=false on the tenant
+// R3-H: TenantBudget combined with required=false on the tenant
 // middleware would send some charged routes to budget enforcement
 // without a tenant key. Validate must reject this.
 func TestWithTenantBudget_RejectsRequiredFalse(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithMultiTenantOptional(nil).
-		WithTenantBudget(&stubBudget{})
+		MultiTenantOptional(nil).
+		TenantBudget(&stubBudget{})
 	err := b.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "required=true")
 }
 
-// R3-H: WithTenantBudget + WithMultiTenant(..., required=true) is the
+// R3-H: TenantBudget + MultiTenant(..., required=true) is the
 // canonical, accepted shape. End-to-end exercise: GET without
 // X-Tenant-Id must receive 400 (the tenant middleware rejects it
 // before the budget middleware has to reject a missing key).
 func TestWithTenantBudget_RejectsGETWithoutTenant(t *testing.T) {
 	b := New("test", "v1", BaseConfig{}).
-		WithMultiTenant(nil).
-		WithTenantBudget(&stubBudget{})
+		MultiTenant(nil).
+		TenantBudget(&stubBudget{})
 
 	tenantMW := b.tenantMiddleware()
 	require.NotNil(t, tenantMW)
@@ -206,7 +206,7 @@ func TestWithActionLogger_PanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic on nil logger")
 		}
 	}()
-	New("test", "v1", BaseConfig{}).WithActionLogger(nil)
+	New("test", "v1", BaseConfig{}).ActionLogger(nil)
 }
 
 func TestWithApprovalStore_PanicsOnNil(t *testing.T) {
@@ -215,17 +215,17 @@ func TestWithApprovalStore_PanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic on nil store")
 		}
 	}()
-	New("test", "v1", BaseConfig{}).WithApprovalStore(nil)
+	New("test", "v1", BaseConfig{}).ApprovalStore(nil)
 }
 
 func TestWithActionLogger_RegistersOnBuilder(t *testing.T) {
 	l := stubActionLog{}
-	b := New("test", "v1", BaseConfig{}).WithActionLogger(l)
+	b := New("test", "v1", BaseConfig{}).ActionLogger(l)
 	assert.Equal(t, l, b.actionLogger())
 }
 
 func TestWithApprovalStore_RegistersOnBuilder(t *testing.T) {
 	s := stubApproval{}
-	b := New("test", "v1", BaseConfig{}).WithApprovalStore(s)
+	b := New("test", "v1", BaseConfig{}).ApprovalStore(s)
 	assert.Equal(t, s, b.approvalStore())
 }

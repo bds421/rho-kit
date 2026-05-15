@@ -36,14 +36,14 @@ type moduleConfig struct {
 	publicHealth bool
 }
 
-// WithServerOption appends a [grpcx.ServerOption] to the underlying server
+// ServerOption appends a [grpcx.ServerOption] to the underlying server
 // builder. Server options stack — pass multiple times to configure
 // interceptors, keepalive, message size limits.
 //
 // The variadic slice is defensively copied so callers cannot mutate the
 // captured options after construction (matches the canonical Option
 // shape used elsewhere in the kit — see app/redis.WithConn).
-func WithServerOption(opts ...grpcx.ServerOption) Option {
+func ServerOption(opts ...grpcx.ServerOption) Option {
 	captured := append([]grpcx.ServerOption(nil), opts...)
 	return func(c *moduleConfig) {
 		c.opts = append(c.opts, captured...)

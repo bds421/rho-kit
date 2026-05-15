@@ -11,7 +11,7 @@ import (
 // loopback (127.0.0.0/8 or ::1). Used by the production-safety
 // validator to enforce that the internal ops port (which serves
 // /metrics, /healthz, /ready without authentication) binds only to
-// the loopback interface unless [Builder.WithInternalNonLoopback]
+// the loopback interface unless [Builder.AllowInternalNonLoopback]
 // has been called.
 //
 // FR-010 [HIGH]: pre-2.0 the validator only rejected unspecified
@@ -20,7 +20,7 @@ import (
 // The new contract is: only loopback binds pass the default check;
 // everything else — wildcard, private-network, public IP, or
 // hostname that resolves outside loopback — requires
-// WithInternalNonLoopback.
+// AllowInternalNonLoopback.
 //
 // Empty host counts as loopback because [InternalConfig.Addr]
 // defaults empty to "127.0.0.1" at listen time. Bracket-only IPv6
@@ -66,7 +66,7 @@ func isLoopbackHost(host string) bool {
 // All checks run unconditionally. The kit does not have a development
 // mode — production safety is the only mode. Each tightening can be
 // individually relaxed via an explicit Without*() opt-out (e.g.
-// [Builder.WithoutTLS], [Builder.WithInternalNonLoopback],
+// [Builder.WithoutTLS], [Builder.AllowInternalNonLoopback],
 // [Builder.WithoutJWTIssuer], [Builder.WithoutJWTAudience]). Those
 // opt-outs are deliberate, documented declarations — they are not
 // gated on KIT_ENV.
@@ -83,31 +83,31 @@ func (b *Builder) Validate() error {
 	// app/ratelimit.IPModule / KeyedModule construction (panics on
 	// invalid requests / window / name).
 
-	// WithTLSReloadOnSignal only makes sense alongside the reloading
+	// TLSReloadOnSignal only makes sense alongside the reloading
 	// TLS source — without the source there is nothing to reload.
 	// Reject at construction rather than discover the misconfiguration
 	// at the first signal delivery.
 	if len(b.tlsReloadSignals) > 0 && !b.tlsReloadActive {
-		return fmt.Errorf("WithTLSReloadOnSignal requires WithReloadingTLS")
+		return fmt.Errorf("TLSReloadOnSignal requires ReloadingTLS")
 	}
 
-	// H-4: WithTenantBudget without WithMultiTenant cannot derive the
+	// H-4: TenantBudget without MultiTenant cannot derive the
 	// default tenant key. Keep this as a startup error instead of
 	// letting every request fail later at the budget middleware.
 	if b.budgetSpec != nil && b.tenantSpec == nil {
-		return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) so the default budget key can be derived from the tenant context")
+		return fmt.Errorf("TenantBudget requires MultiTenant(..., required=true) so the default budget key can be derived from the tenant context")
 	}
 
-	// R3-H: WithTenantBudget enforces a per-tenant budget that keys on
+	// R3-H: TenantBudget enforces a per-tenant budget that keys on
 	// the tenant ID. Pin the strict combination at construction so
 	// callers do not discover missing tenant context only after the
 	// request reaches the budget middleware.
 	if b.budgetSpec != nil && b.tenantSpec != nil {
 		if !b.tenantSpec.required {
-			return fmt.Errorf("WithTenantBudget requires WithMultiTenant(..., required=true) because budget enforcement needs a tenant key on every charged request")
+			return fmt.Errorf("TenantBudget requires MultiTenant(..., required=true) because budget enforcement needs a tenant key on every charged request")
 		}
 		if b.tenantSpec.allowMissingTenantOnSafeMethods {
-			return fmt.Errorf("WithTenantBudget is incompatible with WithAllowMissingTenantOnSafeMethods because budget enforcement needs a tenant key on every charged request")
+			return fmt.Errorf("TenantBudget is incompatible with AllowMissingTenantOnSafeMethods because budget enforcement needs a tenant key on every charged request")
 		}
 	}
 
@@ -149,9 +149,9 @@ func (b *Builder) validateProductionSafety() error {
 	// non-loopback IP (10.0.0.5, a hostname that resolves to a
 	// routable interface, etc.) silently passed. Now the default
 	// requires loopback; non-loopback binds — wildcard, private,
-	// public — all need explicit WithInternalNonLoopback.
+	// public — all need explicit AllowInternalNonLoopback.
 	if !isLoopbackHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call WithInternalNonLoopback when network isolation is enforced")
+		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call AllowInternalNonLoopback when network isolation is enforced")
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by

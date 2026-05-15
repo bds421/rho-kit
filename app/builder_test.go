@@ -29,13 +29,13 @@ type runContextValueKey struct{}
 func TestBuilder_FluentChaining(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
 		WithoutRateLimit().
-		WithStorage(membackend.New()).
-		WithNamedStorage("local", membackend.New()).
-		WithEventBusPool(4).
+		Storage(membackend.New()).
+		NamedStorage("local", membackend.New()).
+		EventBusPool(4).
 		WithModule(NewBaseModule("svc-extra")).
-		WithServerOption(WithWriteTimeout(0)).
+		ServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
-		WithBackground("bg", func(_ context.Context) error { return nil }).
+		Background("bg", func(_ context.Context) error { return nil }).
 		OnShutdown(func(_ context.Context) {}).
 		Router(func(infra Infrastructure) http.Handler { return http.NotFoundHandler() })
 
@@ -46,7 +46,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 
 func TestBuilder_WithEventBusPool(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithEventBusPool(4)
+		EventBusPool(4)
 	assert.Equal(t, 4, b.eventBusPoolSize)
 }
 
@@ -56,7 +56,7 @@ func TestBuilder_WithEventBusPoolPanicsOnZero(t *testing.T) {
 			t.Fatal("expected panic for zero pool size")
 		}
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithEventBusPool(0)
+	New("test-svc", "v0.1.0", BaseConfig{}).EventBusPool(0)
 }
 
 func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
@@ -65,13 +65,13 @@ func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
 			t.Fatal("expected panic for negative pool size")
 		}
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithEventBusPool(-1)
+	New("test-svc", "v0.1.0", BaseConfig{}).EventBusPool(-1)
 }
 
 func TestBuilder_WithAuditLogClonesOptions(t *testing.T) {
 	opts := []auditlog.Option{auditlog.WithLogger(slog.Default())}
 
-	b := New("test-svc", "v0.1.0", BaseConfig{}).WithAuditLog(auditlog.NewMemoryStore(), opts...)
+	b := New("test-svc", "v0.1.0", BaseConfig{}).AuditLog(auditlog.NewMemoryStore(), opts...)
 	opts[0] = nil
 
 	require.Len(t, b.auditOpts, 1)
@@ -84,7 +84,7 @@ func TestBuilder_WithAuditLogClonesOptions(t *testing.T) {
 
 func TestBuilder_WithLogger(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithLogger(nil)
+		Logger(nil)
 	if b.logger != nil {
 		t.Fatal("logger should be nil (falls back to slog.Default)")
 	}
@@ -108,7 +108,7 @@ func TestBuilder_WithStoragePanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic for nil storage")
 		}
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithStorage(nil)
+	New("test-svc", "v0.1.0", BaseConfig{}).Storage(nil)
 }
 
 func TestBuilder_WithNamedStoragePanicsOnEmpty(t *testing.T) {
@@ -117,7 +117,7 @@ func TestBuilder_WithNamedStoragePanicsOnEmpty(t *testing.T) {
 			t.Fatal("expected panic for empty storage name")
 		}
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithNamedStorage("", membackend.New())
+	New("test-svc", "v0.1.0", BaseConfig{}).NamedStorage("", membackend.New())
 }
 
 func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
@@ -126,7 +126,7 @@ func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
 			t.Fatal("expected panic for nil named storage")
 		}
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithNamedStorage("s3", nil)
+	New("test-svc", "v0.1.0", BaseConfig{}).NamedStorage("s3", nil)
 }
 
 // Rate-limit Builder-method-shaped tests have moved to
@@ -135,19 +135,19 @@ func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
 
 func TestBuilder_WithServerOptionPanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithServerOption(nil)
+		New("test-svc", "v0.1.0", BaseConfig{}).ServerOption(nil)
 	})
 }
 
 func TestBuilder_WithStackOptionsPanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithStackOptions(nil)
+		New("test-svc", "v0.1.0", BaseConfig{}).StackOptions(nil)
 	})
 }
 
 func TestBuilder_WithCustomReadinessPanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithCustomReadiness(nil)
+		New("test-svc", "v0.1.0", BaseConfig{}).CustomReadiness(nil)
 	})
 }
 
@@ -165,19 +165,19 @@ func TestBuilder_AddHealthCheckPanicsOnInvalidCheck(t *testing.T) {
 func TestBuilder_WithBackgroundPanicsOnInvalidInput(t *testing.T) {
 	assert.Panics(t, func() {
 		New("test-svc", "v0.1.0", BaseConfig{}).
-			WithBackground("", func(_ context.Context) error { return nil })
+			Background("", func(_ context.Context) error { return nil })
 	})
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithBackground("bg", nil)
+		New("test-svc", "v0.1.0", BaseConfig{}).Background("bg", nil)
 	})
 }
 
 func TestBuilder_WithStartupTimeoutPanicsOnInvalidInput(t *testing.T) {
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithStartupTimeout(0)
+		New("test-svc", "v0.1.0", BaseConfig{}).StartupTimeout(0)
 	})
 	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).WithStartupTimeout(-time.Second)
+		New("test-svc", "v0.1.0", BaseConfig{}).StartupTimeout(-time.Second)
 	})
 }
 
@@ -382,7 +382,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		b := New("lifecycle-bg-test", "v0.0.2", cfg).
 			WithoutTLS().
 			WithoutRateLimit().
-			WithBackground("early-bg", func(ctx context.Context) error {
+			Background("early-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()
 				bgStopped.Store(true)
@@ -448,7 +448,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 			WithoutTLS().
 			WithoutRateLimit().
 			WithModule(module).
-			WithBackground("ctx-bg", func(ctx context.Context) error {
+			Background("ctx-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()
 				bgStopped.Store(true)

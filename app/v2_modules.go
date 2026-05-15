@@ -10,7 +10,7 @@ import (
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 )
 
-// tenantSpec captures everything WithMultiTenant configures so the
+// tenantSpec captures everything MultiTenant configures so the
 // public-mux assembly can install the middleware on inbound requests.
 type tenantSpec struct {
 	extractor                       httpxtenant.Extractor
@@ -18,14 +18,14 @@ type tenantSpec struct {
 	allowMissingTenantOnSafeMethods bool
 }
 
-// budgetSpec captures everything WithTenantBudget configures.
+// budgetSpec captures everything TenantBudget configures.
 type budgetSpec struct {
 	store budget.Budget
 	opts  []httpxbudget.Option
 }
 
 // tenantMiddleware returns the tenant-extraction middleware for the
-// public mux when [WithMultiTenant] has been called, else nil.
+// public mux when [MultiTenant] has been called, else nil.
 func (b *Builder) tenantMiddleware() func(http.Handler) http.Handler {
 	if b.tenantSpec == nil {
 		return nil
@@ -44,7 +44,7 @@ func (b *Builder) tenantMiddleware() func(http.Handler) http.Handler {
 }
 
 // budgetMiddleware returns the inbound budget-enforcement middleware
-// for the public mux when [WithTenantBudget] has been called, else
+// for the public mux when [TenantBudget] has been called, else
 // nil.
 func (b *Builder) budgetMiddleware() func(http.Handler) http.Handler {
 	if b.budgetSpec == nil {

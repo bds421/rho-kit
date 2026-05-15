@@ -303,14 +303,14 @@ this ordering and there is no exposed setter that lets the service
 reorder it.
 
 **Audit-trail wiring (Lens F A.3, A.10).** Authorization denials log
-via `authz.Logged` wired with `authz.WithLogger` and/or
+via `authz.Logged` wired with `authz.Logger` and/or
 `authz.WithAuditSink`; the default `app.Builder` pipes a logger
 automatically so Builder-built services capture every `authz.deny`
 without extra wiring. Raw `httpx.Middleware` users must wrap their
 `Decider` themselves. The audit-log HTTP middleware
 (`httpx/middleware/auditlog.Middleware`) is intentionally NOT included
 in `stack.Default` — chain / cursor keys and the store are
-service-specific. Pass `stack.WithAuditLog(logger, ...)` to inject it
+service-specific. Pass `stack.AuditLog(logger, ...)` to inject it
 at the canonical innermost position so each entry captures the
 authenticated actor, the request path, and the final response status.
 
@@ -406,7 +406,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | T-06 | PASETO key in environment variable visible to `ps` / `/proc/<pid>/environ` | A6 | PASETO keys are loaded through `core/secret.String` (and the config loader's `_FILE` suffix mounts them from disk); runtime key material lives in `V4PublicSigner` / `V4PublicVerifier` for the construct's lifetime, so rotation requires a deploy and is caller-must-cooperate by design | caller-must-cooperate | [core/secret/secret.go](../../core/secret/secret.go), [core/config](../../core/config/), [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
 
 **Audit-trail wiring (Lens F A.2).** Revocation operations log via
-`revocation.WithLogger` / `revocation.WithAuditSink`; if neither is wired,
+`revocation.Logger` / `revocation.WithAuditSink`; if neither is wired,
 revocation is unaudited (caller-must-cooperate). The audit record carries
 `{action, actor, resource, issuer, jti, outcome, reason}` — the same shape
 used by `authz` so a single sink decodes events from any source. See
@@ -443,7 +443,7 @@ backends or other expensive operations.
 
 | ID | Threat | Adversary | Mitigation | Mitigation type | Where |
 |---|---|---|---|---|---|
-| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `WithTenantBudget` | caller-must-cooperate | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
+| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `TenantBudget` | caller-must-cooperate | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
 | L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.Required` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | caller-must-cooperate | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
 | L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | kit-enforced | [runtime/concurrency](../../runtime/concurrency/) |
 | L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | caller-must-cooperate | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
@@ -507,7 +507,7 @@ runs unconditionally inside `Build()` — every service the kit builds
 gets the same posture. There is no `KIT_ENV` (or `APP_ENV`) escape
 hatch in any kit code path. Per-feature relaxations are explicit
 opt-outs the operator declares consciously: `WithoutTLS`,
-`WithInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`.
+`AllowInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`.
 
 ### 5.2 Refuse-to-print secrets and memory hygiene
 

@@ -52,7 +52,7 @@ backend, err := s3backend.New(cfg)
 if err != nil { return err }
 
 app.New(...).
-    WithStorage(backend).
+    Storage(backend).
     Router(func(infra app.Infrastructure) http.Handler {
         // infra.Storage is ready
     })
@@ -90,8 +90,8 @@ s3, _ := s3backend.New(s3Cfg)
 local, _ := localbackend.New(localCfg)
 
 app.New(...).
-    WithNamedStorage("s3", s3).
-    WithNamedStorage("local", local).
+    NamedStorage("s3", s3).
+    NamedStorage("local", local).
     Router(func(infra app.Infrastructure) http.Handler {
         // Panics if "s3" is not registered — use when the disk is a startup-time guarantee:
         infra.StorageManager.MustBackend("s3").Put(ctx, key, r, meta)
@@ -119,7 +119,7 @@ hooked := storage.WithHooks(enc, storage.Hooks{
     AfterDelete: func(ctx context.Context, key string) { /* cache purge */ },
 })
 
-app.New(...).WithStorage(hooked)
+app.New(...).Storage(hooked)
 ```
 
 **Order matters**: retry wraps the base (retries I/O), circuit breaker wraps retry (fails fast when backend is down), encryption wraps circuit breaker (encrypt/decrypt happens in the caller).

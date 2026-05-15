@@ -131,25 +131,25 @@ lives in per-adapter sub-modules under `app/` and is registered via
 | `WithJWTAudience(aud)` | Required JWT audience | `WithJWT` |
 | `WithPASETO(provider)` | PASETO token provider | - |
 | `WithSignedRequests(...)` | HMAC signed request verifier | - |
-| `WithMultiTenant(extractor, required)` | Tenant extraction middleware | - |
-| `WithTenantBudget(budget, opts...)` | Tenant request budget middleware | `WithMultiTenant(..., required=true)` |
-| `WithActionLogger(logger)` | Action logger in infrastructure | - |
-| `WithApprovalStore(store)` | Approval store in infrastructure | - |
-| `WithAuthz(decider)` | Authorization decider in infrastructure | - |
+| `MultiTenant(extractor, required)` | Tenant extraction middleware | - |
+| `TenantBudget(budget, opts...)` | Tenant request budget middleware | `MultiTenant(..., required=true)` |
+| `ActionLogger(logger)` | Action logger in infrastructure | - |
+| `ApprovalStore(store)` | Approval store in infrastructure | - |
+| `Authz(decider)` | Authorization decider in infrastructure | - |
 | `WithFeatureFlags(provider)` | Feature flag client in infrastructure | - |
 | `WithIPRateLimit(n, window)` | Per-IP rate limiter | - |
 | `WithKeyedRateLimit(name, n, window)` | Named keyed rate limiter | - |
-| `WithStorage(backend, checks...)` | Single unnamed storage backend | - |
-| `WithNamedStorage(name, backend, checks...)` | Named backend in storage manager | - |
-| `WithAuditLog(store, opts...)` | Audit logger | - |
+| `Storage(backend, checks...)` | Single unnamed storage backend | - |
+| `NamedStorage(name, backend, checks...)` | Named backend in storage manager | - |
+| `AuditLog(store, opts...)` | Audit logger | - |
 | `WithCron(opts...)` | Lifecycle-managed cron scheduler | - |
 | `WithLeaderElection(elector)` | Leader election handle | - |
-| `WithServerOption(opt)` | Custom public server option | - |
-| `WithStackOptions(opts...)` | Extra default-stack options | - |
+| `ServerOption(opt)` | Custom public server option | - |
+| `StackOptions(opts...)` | Extra default-stack options | - |
 | `WithoutDefaultStack()` | Use router handler without `stack.Default` wrapping | - |
 | `AddHealthCheck(check)` | Custom readiness dependency | - |
-| `WithCustomReadiness(handler)` | Override `/ready` handler | - |
-| `WithBackground(name, fn)` | Managed goroutine | - |
+| `CustomReadiness(handler)` | Override `/ready` handler | - |
+| `Background(name, fn)` | Managed goroutine | - |
 | `OnShutdown(fn)` | Shutdown hook before close/drain | - |
 | `WithModule(module)` | Custom lifecycle module | - |
 | `Router(fn)` | HTTP handler builder | required |
@@ -244,7 +244,7 @@ func main() {
         if err != nil { return err }
         defer db.Close()
 
-        redisConn, err := redis.Connect(cfg.RedisOpts, redis.WithLogger(logger))
+        redisConn, err := redis.Connect(cfg.RedisOpts, redis.Logger(logger))
         if err != nil { return err }
         defer redisConn.Close()
 
@@ -311,7 +311,7 @@ app.New("my-svc", version, cfg.BaseConfig).
 auditStore := auditlog.NewMemoryStore()
 
 app.New("my-svc", version, cfg.BaseConfig).
-    WithAuditLog(auditStore).
+    AuditLog(auditStore).
     Router(func(infra app.Infrastructure) http.Handler {
         mux := http.NewServeMux()
         mux.HandleFunc("POST /orders/{id}/delete", func(w http.ResponseWriter, r *http.Request) {

@@ -33,7 +33,7 @@ type InternalConfig struct {
 // process fingerprinting) to anyone on the network. Operators who genuinely
 // need 0.0.0.0 (Docker healthcheck through host networking) must opt in
 // explicitly by setting Host to "0.0.0.0" — and must pair that with
-// [Builder.WithInternalNonLoopback] so the always-on validator accepts
+// [Builder.AllowInternalNonLoopback] so the always-on validator accepts
 // the configuration.
 func (c InternalConfig) Addr() string {
 	host := c.Host

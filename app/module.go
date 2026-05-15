@@ -260,7 +260,7 @@ type ModuleContext struct {
 	Config BaseConfig
 
 	// TLSCertSource is the hot-rotation source threaded in by
-	// [Builder.WithReloadingTLS]. Nil when reloading TLS is not
+	// [Builder.ReloadingTLS]. Nil when reloading TLS is not
 	// configured; modules that build their own *tls.Config (the
 	// default HTTP client, gRPC dial-loops, broker adapters) MUST
 	// prefer this source over [Config.TLS]'s static loaders when
@@ -297,7 +297,7 @@ func (mc ModuleContext) LookupModule(name string) (Module, bool) {
 // builder will apply when constructing the public server's
 // *tls.Config. FR-014 [HIGH]: the default is mTLS
 // (tls.RequireAndVerifyClientCert) so the kit's "TLS env enables
-// global mTLS" convention holds. [Builder.WithOptionalClientCertificates]
+// global mTLS" convention holds. [Builder.OptionalClientCertificates]
 // flips this back to VerifyClientCertIfGiven for services fronted by
 // an external TLS terminator.
 //

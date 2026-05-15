@@ -1,10 +1,10 @@
 // Command agentic-service is a reference rho-kit v2.0.0 service
 // demonstrating the full agentic-AI stack in one local binary:
 //
-//   - Multi-tenant request handling (WithMultiTenant)
-//   - Per-tenant cost budgets (WithTenantBudget)
-//   - Append-only signed action log (WithActionLogger)
-//   - Approval workflow for destructive routes (WithApprovalStore)
+//   - Multi-tenant request handling (MultiTenant)
+//   - Per-tenant cost budgets (TenantBudget)
+//   - Append-only signed action log (ActionLogger)
+//   - Approval workflow for destructive routes (ApprovalStore)
 //   - MCP server exposing typed handlers as tools (httpx/mcp)
 //
 // Run locally:

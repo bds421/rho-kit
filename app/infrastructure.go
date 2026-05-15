@@ -49,7 +49,7 @@ type Infrastructure struct {
 	ServerTLS *tls.Config
 
 	// TLSCertSource is the hot-rotation source supplied by
-	// [Builder.WithReloadingTLS]. Nil when reloading TLS is not
+	// [Builder.ReloadingTLS]. Nil when reloading TLS is not
 	// configured. Services that build their own *tls.Config — broker
 	// adapters, gRPC dial loops, custom HTTP clients — should pass
 	// this through [netutil.ReloadingServerTLS] or
@@ -58,14 +58,14 @@ type Infrastructure struct {
 	// reload poll.
 	TLSCertSource netutil.CertificateSource
 
-	TenantBudget  budget.Budget    // nil if no WithTenantBudget
-	ActionLog     actionlog.Logger // nil if no WithActionLogger
-	ApprovalStore approval.Store   // nil if no WithApprovalStore
-	Authz         kitauthz.Decider // nil if no WithAuthz
+	TenantBudget  budget.Budget    // nil if no TenantBudget
+	ActionLog     actionlog.Logger // nil if no ActionLogger
+	ApprovalStore approval.Store   // nil if no ApprovalStore
+	Authz         kitauthz.Decider // nil if no Authz
 
-	Storage        storage.Storage  // nil if no WithStorage
-	StorageManager *storage.Manager // nil if no WithNamedStorage
-	AuditLog       *auditlog.Logger // nil if no WithAuditLog
+	Storage        storage.Storage  // nil if no Storage
+	StorageManager *storage.Manager // nil if no NamedStorage
+	AuditLog       *auditlog.Logger // nil if no AuditLog
 	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
 
 	HTTPClient *http.Client

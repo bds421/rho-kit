@@ -68,7 +68,7 @@ func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 	err := b.Validate()
 	require.Error(t, err, "exposed internal port must fail validation")
 	assert.Contains(t, err.Error(), "Internal.Host")
-	assert.Contains(t, err.Error(), "WithInternalNonLoopback")
+	assert.Contains(t, err.Error(), "AllowInternalNonLoopback")
 }
 
 func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
@@ -78,10 +78,10 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
-		WithInternalNonLoopback().
+		AllowInternalNonLoopback().
 		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
-		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
+		"AllowInternalNonLoopback must allow Internal.Host=0.0.0.0")
 }
 
 // TestBuilder_Validates_RejectsSpecificNonLoopbackInternal regression-tests
@@ -101,9 +101,9 @@ func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
 			}
 			b := New("svc", "v1", cfg).WithoutRateLimit()
 			err := b.Validate()
-			require.Errorf(t, err, "Internal.Host=%q must be rejected without WithInternalNonLoopback", host)
+			require.Errorf(t, err, "Internal.Host=%q must be rejected without AllowInternalNonLoopback", host)
 			assert.Contains(t, err.Error(), "not loopback")
-			assert.Contains(t, err.Error(), "WithInternalNonLoopback")
+			assert.Contains(t, err.Error(), "AllowInternalNonLoopback")
 			assert.NotContains(t, err.Error(), host)
 			assert.NotContains(t, err.Error(), "secret-token")
 		})
@@ -225,26 +225,26 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 		"WithoutTLS must allow empty TLS config")
 }
 
-// --- H-4: WithTenantBudget requires WithMultiTenant ---
+// --- H-4: TenantBudget requires MultiTenant ---
 
 func TestBudget_RequiresMultiTenant(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutRateLimit().
-		WithTenantBudget(&stubBudget{})
+		TenantBudget(&stubBudget{})
 	err := b.Validate()
-	require.Error(t, err, "WithTenantBudget without WithMultiTenant must fail")
-	assert.Contains(t, err.Error(), "WithMultiTenant")
+	require.Error(t, err, "TenantBudget without MultiTenant must fail")
+	assert.Contains(t, err.Error(), "MultiTenant")
 }
 
 func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
 		WithoutRateLimit().
-		WithMultiTenant(nil).
-		WithTenantBudget(&stubBudget{})
+		MultiTenant(nil).
+		TenantBudget(&stubBudget{})
 	require.NoError(t, b.Validate(),
-		"WithTenantBudget paired with WithMultiTenant must pass validation")
+		"TenantBudget paired with MultiTenant must pass validation")
 }
 
 // JWT audience-pinning rejection moved to app/jwt.Module — see
@@ -278,13 +278,13 @@ func TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven(t *tes
 	cfg.TLS = tlsCfg
 	b := New("svc", "v1", cfg).
 		WithoutRateLimit().
-		WithOptionalClientCertificates()
+		OptionalClientCertificates()
 
 	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, tls.VerifyClientCertIfGiven, got.ClientAuth,
-		"WithOptionalClientCertificates must opt out of mTLS")
+		"OptionalClientCertificates must opt out of mTLS")
 }
 
 // realTLSForTest writes a self-signed CA + leaf certificate to temp

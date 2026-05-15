@@ -45,7 +45,7 @@ func TestModule_Name(t *testing.T) {
 
 func TestModule_ClonesOptions(t *testing.T) {
 	opts := []kitgrpcx.ServerOption{kitgrpcx.WithDefaultDeadline(time.Second)}
-	m := Module(func(_ *googrpc.Server) {}, ":50051", WithServerOption(opts...)).(*grpcModule)
+	m := Module(func(_ *googrpc.Server) {}, ":50051", ServerOption(opts...)).(*grpcModule)
 	opts[0] = nil
 	require.Len(t, m.opts, 1)
 	assert.NotNil(t, m.opts[0])

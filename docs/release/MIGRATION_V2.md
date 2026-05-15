@@ -52,7 +52,7 @@ b := app.New("my-service", version, cfg.BaseConfig).
 // After
 b := app.New("my-service", version, cfg.BaseConfig).
     WithoutTLS().              // only when an external TLS terminator is reviewed
-    WithInternalNonLoopback(). // only behind a reviewed private network boundary
+    AllowInternalNonLoopback(). // only behind a reviewed private network boundary
     WithoutJWTIssuer().        // only for a reviewed legacy issuer migration
     WithoutJWTAudience()       // only for a reviewed legacy audience migration
 ```
@@ -91,10 +91,10 @@ return app.New("billing-api", version, cfg.BaseConfig).
     With(redis.Module(cfg.Redis)).
     WithJWT(cfg.JWKSURL).
     WithJWTAudience("billing-api").
-    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
-    WithTenantBudget(budgetStore).
-    WithActionLogger(actionLogger).
-    WithApprovalStore(approvalStore).
+    MultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
+    TenantBudget(budgetStore).
+    ActionLogger(actionLogger).
+    ApprovalStore(approvalStore).
     WithSignedRequests(keyResolver, nonceStore).
     WithIPRateLimit(60, time.Minute). // affirmative rate-limit declaration is required
     Router(func(infra app.Infrastructure) http.Handler {
@@ -250,7 +250,7 @@ by package.
 |---|---|
 | `app.Module.Close` | Renamed to `app.Module.Stop`. Any service implementing custom modules must rename the method. |
 | `app.Builder.WithRedis` | Production safety enforces TLS on Redis URIs. Opt out per-builder via `WithoutRedisTLS` only on a reviewed private boundary. |
-| `app.Builder.Background` | Renamed to `app.Builder.WithBackground` to match the `With*` registration convention used by every other Builder method (`WithJWT`, `WithStorage`, `WithAuditLog`, ...). Service wiring: replace `b.Background(name, fn)` with `b.WithBackground(name, fn)`. The runtime callback `Infrastructure.Background` (registered late from inside `RouterFunc`) is unchanged. |
+| `app.Builder.Background` | Renamed to `app.Builder.Background` to match the `With*` registration convention used by every other Builder method (`WithJWT`, `Storage`, `AuditLog`, ...). Service wiring: replace `b.Background(name, fn)` with `b.Background(name, fn)`. The runtime callback `Infrastructure.Background` (registered late from inside `RouterFunc`) is unchanged. |
 | `app.Builder` rate-limit gate | `Builder.Run()` now requires an affirmative rate-limit declaration. Chain exactly one of `WithIPRateLimit(n, window)`, `WithKeyedRateLimit(name, n, window)`, or the explicit `WithoutRateLimit()` opt-out. Pre-v2.0.0 a Builder with no rate-limit option silently defaulted to "no limit"; that contradicted the fail-loud contract every other Builder safety control (TLS, JWT issuer / audience, internal-host loopback) already obeys. `kit-doctor` flags the omission pre-build via the `rate-limit-omission` rule for editor integration. |
 
 ### `infra/messaging`

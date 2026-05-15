@@ -87,7 +87,7 @@ func (m *natsModule) Name() string { return "nats" }
 func (m *natsModule) Init(ctx context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger
 
-	// Prefer the Builder's hot-rotation source when WithReloadingTLS was
+	// Prefer the Builder's hot-rotation source when ReloadingTLS was
 	// wired. natsbackend.Config.Clone() detects the reloading-config
 	// shape (InsecureSkipVerify+VerifyConnection) and bypasses the
 	// anti-downgrade guard for that intentional path. Caller-supplied

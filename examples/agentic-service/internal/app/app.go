@@ -9,8 +9,8 @@
 //
 // Production services MUST use app.Builder.WithJWT (paired with
 // WithJWTIssuer + WithJWTAudience) / .WithSignedRequests /
-// .WithMultiTenant / .WithTenantBudget / .WithActionLogger /
-// .WithApprovalStore. The Builder composes the JWT, tenant, budget,
+// .MultiTenant / .TenantBudget / .ActionLogger /
+// .ApprovalStore. The Builder composes the JWT, tenant, budget,
 // and signed-request middleware chain automatically and runs the
 // always-on production-safety validator at startup. The validator
 // unconditionally rejects empty TLS, missing JWT issuer/audience,
@@ -20,13 +20,13 @@
 // operator has compensating controls in place; production deployments
 // must NOT use those opt-outs casually.
 //
-// NOTE on approval middleware: WithApprovalStore stores the
+// NOTE on approval middleware: ApprovalStore stores the
 // [approval.Store] for handler-side consumption only. The Builder
 // does NOT install [httpx/middleware/approval] on the public mux —
 // handlers must wrap the routes that need approval gating themselves
 // (tenant/actor extractors and action/resource derivation are too
 // service-specific to wire automatically). See the approval package
-// docs and Builder.WithApprovalStore docstring for the canonical
+// docs and Builder.ApprovalStore docstring for the canonical
 // per-route pattern.
 //
 // The composition shown here mirrors the canonical v2.0.0 ordering:
@@ -73,11 +73,11 @@ const (
 
 // Run starts the HTTP server with the agentic-service stack.
 //
-// In a real service this would call app.Builder.WithMultiTenant /
-// .WithTenantBudget / .WithActionLogger / .WithApprovalStore and let
+// In a real service this would call app.Builder.MultiTenant /
+// .TenantBudget / .ActionLogger / .ApprovalStore and let
 // the Builder install the JWT / tenant / budget / signed-request
 // middleware on the public mux. Approval middleware must still be
-// wrapped by handlers explicitly (see [Builder.WithApprovalStore]
+// wrapped by handlers explicitly (see [Builder.ApprovalStore]
 // docstring). The example uses a hand-composed mux to keep it
 // dependency-light (no DB, no Redis) while still exercising every
 // primitive.

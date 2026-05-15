@@ -148,7 +148,7 @@ func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 		amqpbackend.WithConnectionMetrics(metrics, "default"),
 	}
 
-	// Prefer the Builder's hot-rotation source when WithReloadingTLS was
+	// Prefer the Builder's hot-rotation source when ReloadingTLS was
 	// wired — that way a SIGHUP/poll-driven cert rotation flows through to
 	// the AMQP client without restart, matching what the public HTTP server
 	// and default outbound HTTP client already do via the same source.

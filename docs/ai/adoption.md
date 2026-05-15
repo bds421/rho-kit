@@ -150,7 +150,7 @@ pointers for the most common downstream wiring:
 | RabbitMQ publisher/consumer | `With(amqp.Module(url))` | `infra.Publisher`, `infra.Consumer` |
 | NATS JetStream | `With(nats.Module(natsbackend.Config))` | `infra.NATS`, `infra.NATSPublisher` |
 | JWT verification (JWKS) | `WithJWT(jwksURL).WithJWTAudience(aud)` | `infra.JWT` |
-| Multi-tenant request scope | `WithMultiTenant(extractor, required)` | (middleware) |
+| Multi-tenant request scope | `MultiTenant(extractor, required)` | (middleware) |
 | In-process rate limit | `WithIPRateLimit(n, window)` | `infra.RateLimiter` |
 | Cron jobs | `WithCron()` | `infra.Cron` |
 | Leader election | `WithLeaderElection(elector)` | `infra.Leader` |
@@ -179,8 +179,8 @@ require explicit opt-in:
 - **OpenTelemetry tracing.** `With(tracing.Module(cfg))` is opt-in;
   without it the Builder runs with no tracer provider and
   `infra.HTTPClient` is the non-tracing client.
-- **Audit logger, approval store, action logger.** `WithAuditLog`,
-  `WithApprovalStore`, `WithActionLogger` are explicit; the kit ships
+- **Audit logger, approval store, action logger.** `AuditLog`,
+  `ApprovalStore`, `ActionLogger` are explicit; the kit ships
   in-memory implementations for tests but production backends
   (Postgres) live in adapter sub-modules.
 - **Migrations.** `WithMigrations(fs)` runs goose migrations from an

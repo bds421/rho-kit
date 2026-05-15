@@ -73,8 +73,8 @@ explicit CORS origins, lifecycle HTTP server fail-fast checks, one-shot
 background component starts, and the removal of development mode (next
 section). Most remaining v2.0.0 surface is additive over v1.x. New
 `app.Builder` methods (`WithPASETO`, `WithLeaderElection`,
-`WithSignedRequests`, `WithMultiTenant`, `WithTenantBudget`,
-`WithActionLogger`, `WithApprovalStore`) don't change existing
+`WithSignedRequests`, `MultiTenant`, `TenantBudget`,
+`ActionLogger`, `ApprovalStore`) don't change existing
 signatures. The v1.x adapter shortcuts `WithPostgres`, `WithRedis`,
 `WithRabbitMQ`, and `WithNATS` are removed; their replacement is
 `Builder.With(<adapter>.Module(cfg))` from the `app/postgres`,
@@ -930,7 +930,7 @@ env vars to weaken safety checks.
 
 `Builder.WithProductionDefaults()` is gone. Its checks (JWT issuer/
 audience pinning, TLS-required, internal-host loopback, postgres sslmode,
-tracing sample-rate cap, `WithTenantBudget` + `WithMultiTenant` pairing)
+tracing sample-rate cap, `TenantBudget` + `MultiTenant` pairing)
 now run unconditionally in `Builder.Build()`. Migration is to delete
 the `WithProductionDefaults()` call from your chain.
 
@@ -943,7 +943,7 @@ identical, only names changed:
 | Old | New |
 |---|---|
 | `WithProductionAllowPlaintext` | `WithoutTLS` |
-| `WithProductionInternalExposed` | `WithInternalNonLoopback` |
+| `WithProductionInternalExposed` | `AllowInternalNonLoopback` |
 | `WithJWTAllowAnyIssuer` | `WithoutJWTIssuer` |
 | `WithJWTAllowAnyAudience` | `WithoutJWTAudience` |
 
@@ -997,7 +997,7 @@ b := app.New("my-service", "v2.0.0", cfg).
 b := app.New("my-service", "v2.0.0", cfg).
     // The validator runs automatically; remove WithProductionDefaults().
     WithoutTLS().                  // was WithProductionAllowPlaintext
-    WithInternalNonLoopback().     // was WithProductionInternalExposed
+    AllowInternalNonLoopback().     // was WithProductionInternalExposed
     WithoutJWTIssuer().            // was WithJWTAllowAnyIssuer
     WithoutJWTAudience().          // was WithJWTAllowAnyAudience
     Run()
@@ -1103,16 +1103,16 @@ b := app.New("my-service", "v2.0.0", cfg).
 
     // Multi-tenant — extracts X-Tenant-Id by default; required on
     // state-changing methods, GET/HEAD/OPTIONS pass through.
-    WithMultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
+    MultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id")).
 
     // Per-tenant cost budgets. Default key = tenant.FromContext.
-    WithTenantBudget(budgetredis.New(redisClient, 1_000_000, time.Hour)).
+    TenantBudget(budgetredis.New(redisClient, 1_000_000, time.Hour)).
 
     // Append-only signed action log
-    WithActionLogger(actionlog.New(actionlogpg.New(db), secrets)).
+    ActionLogger(actionlog.New(actionlogpg.New(db), secrets)).
 
     // Approval workflow for destructive routes
-    WithApprovalStore(approvalpg.New(db)).
+    ApprovalStore(approvalpg.New(db)).
 
     // pgx-native Postgres pool for queries, LISTEN/NOTIFY, and COPY
     // (lazy adapter — pulls pgx in only when this Module is registered)
@@ -1329,7 +1329,7 @@ full mapping table.
      middleware in the public mux.
    - Then add `data/cache/tenant.Wrap(...)` around any cache the
      service constructs.
-   - Then `WithMultiTenant` on the Builder.
+   - Then `MultiTenant` on the Builder.
    - Cost budgets and action log come once tenant ID is reliably
      on ctx.
    - For new services, `kit-new -tenant` emits the Redis cache and

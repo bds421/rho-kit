@@ -43,7 +43,7 @@ Two contracts ship side-by-side:
    updating the mounted files and rolling replicas. This remains the
    default golden path; no change for services that prefer
    rolling-restart semantics.
-2. **Reloading (opt-in)**: `Builder.WithReloadingTLS(opts...)` wires
+2. **Reloading (opt-in)**: `Builder.ReloadingTLS(opts...)` wires
    `netutil.FilesCertificateSource` into the public server (via
    `ReloadingServerTLS`), threads the same source into the default
    outbound HTTP client (via `ReloadingClientTLS`), and registers the
@@ -111,7 +111,7 @@ coverage, race, benchmarks, dashboard validation, publishability, and rehearsal.
 | ID | Severity | Surface | Status | Finding |
 |---|---|---|---|---|
 | OR-001 | HIGH | AMQP and SFTP rotating credential providers | Fixed in this review | Provider callbacks were context-aware but did not have explicit provider-timeout contracts on every startup/reconnect path. |
-| OR-002 | MEDIUM | TLS material | Documented contract | Static load is the default; live in-process reload is opt-in via `Builder.WithReloadingTLS` (threads `FilesCertificateSource` into server, default HTTP client, and `Infrastructure.TLSCertSource` for adapter consumers). Rolling-restart remains supported for services that prefer it. |
+| OR-002 | MEDIUM | TLS material | Documented contract | Static load is the default; live in-process reload is opt-in via `Builder.ReloadingTLS` (threads `FilesCertificateSource` into server, default HTTP client, and `Infrastructure.TLSCertSource` for adapter consumers). Rolling-restart remains supported for services that prefer it. |
 | OR-003 | MEDIUM | Full release evidence | Open release gate | Docker integration and full `make release-candidate` remain final pre-tag gates, not covered by the targeted operational check. |
 
 ## Module Coverage Matrix
