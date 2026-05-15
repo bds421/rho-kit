@@ -14,13 +14,11 @@ import (
 	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
 	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
-	"github.com/bds421/rho-kit/security/v2/jwtutil"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
@@ -61,10 +59,6 @@ type Infrastructure struct {
 	// configs from [Config.TLS], so the whole service shares one
 	// reload poll.
 	TLSCertSource netutil.CertificateSource
-
-	JWT *jwtutil.Provider // nil if no WithJWT
-
-	Leader leaderelection.Elector // nil if no WithLeaderElection
 
 	TenantBudget  budget.Budget    // nil if no WithTenantBudget
 	ActionLog     actionlog.Logger // nil if no WithActionLogger

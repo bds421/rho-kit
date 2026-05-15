@@ -120,19 +120,6 @@ func (b *Builder) buildIntegrationModules() []Module {
 
 	modules = append(modules, newHTTPClientModule(tracingActive))
 
-	if b.jwksURL != "" {
-		modules = append(modules, newJWTModule(jwtModuleConfig{
-			jwksURL:        b.jwksURL,
-			expectedIssuer: b.jwtIssuer,
-			allowAnyIssuer: b.jwtAllowAnyIssuer,
-			audience:       b.jwtAudience,
-		}))
-	}
-
-	if b.leaderElector != nil {
-		modules = append(modules, newLeaderModule(b.leaderElector))
-	}
-
 	return modules
 }
 

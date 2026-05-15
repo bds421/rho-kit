@@ -7,9 +7,12 @@ use (
 	./app/amqp
 	./app/flags
 	./app/grpc
+	./app/jwt
+	./app/leader
 	./app/nats
 	./app/paseto
 	./app/postgres
+	./app/slo
 	./app/redis
 	./app/tracing
 	./authz

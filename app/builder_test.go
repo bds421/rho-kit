@@ -180,8 +180,7 @@ func TestBuilder_ValidateKeyedRateLimiterDoesNotReflectName(t *testing.T) {
 		Server:   ServerConfig{Port: 8080},
 		Internal: InternalConfig{Host: "127.0.0.1", Port: 9090},
 	}).
-		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutTLS()
 	b.keyedLimiters = []keyedLimiterSpec{{
 		name:     "api-secret-token",
 		requests: 0,
@@ -359,7 +358,6 @@ func TestBuilder_Lifecycle(t *testing.T) {
 
 		b := New("lifecycle-test", "v0.0.1", cfg).
 			WithoutTLS().
-			WithoutJWTAudience().
 			WithoutRateLimit().
 			AddHealthCheck(health.DependencyCheck{
 				Name:     "test-dep",
@@ -444,7 +442,6 @@ func TestBuilder_Lifecycle(t *testing.T) {
 
 		b := New("lifecycle-bg-test", "v0.0.2", cfg).
 			WithoutTLS().
-			WithoutJWTAudience().
 			WithoutRateLimit().
 			WithBackground("early-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
@@ -510,7 +507,6 @@ func TestBuilder_Lifecycle(t *testing.T) {
 
 		b := New("lifecycle-context-test", "v0.0.3", cfg).
 			WithoutTLS().
-			WithoutJWTAudience().
 			WithoutRateLimit().
 			WithModule(module).
 			WithBackground("ctx-bg", func(ctx context.Context) error {

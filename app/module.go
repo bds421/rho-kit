@@ -8,7 +8,9 @@ import (
 	"net/http"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/observability/v2/health"
+	"github.com/bds421/rho-kit/observability/v2/slo"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
@@ -171,6 +173,24 @@ type PhasedMiddleware struct {
 // unimplemented.
 type MiddlewareInstaller interface {
 	PublicMiddleware() []PhasedMiddleware
+}
+
+// ElectorProvider is the public capability interface implemented
+// by the leader-election bridge module (app/leader). The Builder's
+// cron block looks up the elector via
+// `mc.Module(leader.ModuleName).(ElectorProvider).Elector()` so
+// cron can gate scheduled work to the leader replica without core
+// app/v2 importing the bridge package.
+type ElectorProvider interface {
+	Elector() leaderelection.Elector
+}
+
+// SLOCheckerProvider is the public capability interface
+// implemented by the SLO bridge module (app/slo). The Builder
+// reads the *slo.Checker via this interface to wire the internal-
+// ops /slo handler without importing app/slo directly.
+type SLOCheckerProvider interface {
+	SLOChecker() *slo.Checker
 }
 
 // BaseModule provides no-op defaults for optional Module methods. Embed it in

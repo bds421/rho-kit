@@ -133,17 +133,10 @@ func (b *Builder) Validate() error {
 // Postgres TLS sslmode, and tracing sample-rate cap. Each is
 // individually relaxable via an explicit Without*() opt-out.
 func (b *Builder) validateProductionSafety() error {
-	// JWT: must specify issuer or explicitly opt out via WithoutJWTIssuer.
-	if b.jwksURL != "" && b.jwtIssuer == "" && !b.jwtAllowAnyIssuer {
-		return fmt.Errorf("WithJWT requires WithJWTIssuer or the explicit WithoutJWTIssuer opt-out")
-	}
-
-	// H-5: JWT audience pinning is the standard confused-deputy mitigation
-	// (RFC 7519 §4.1.3). Without it, a token minted for a sibling service
-	// that trusts the same JWKS is silently accepted.
-	if b.jwksURL != "" && b.jwtAudience == "" && !b.jwtAllowAnyAudience {
-		return fmt.Errorf("WithJWT requires WithJWTAudience or the explicit WithoutJWTAudience opt-out (RFC 7519 confused-deputy mitigation)")
-	}
+	// JWT issuer/audience pinning is enforced at app/jwt.Module
+	// construction (panics when neither WithIssuer/WithoutIssuer nor
+	// WithAudience/WithoutAudience is supplied); no Builder check
+	// is needed anymore.
 
 	// C-2: TLS must be configured. Partial TLSConfig silently falls back
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who

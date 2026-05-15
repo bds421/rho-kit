@@ -18,7 +18,6 @@ var _ slog.LogValuer = BaseConfig{}
 func newTestBuilder() *Builder {
 	return New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 }
 
@@ -137,7 +136,6 @@ func TestValidate_InvalidServerPort(t *testing.T) {
 	cfg.Server.Port = 0
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
@@ -153,7 +151,6 @@ func TestValidate_InvalidInternalPort(t *testing.T) {
 	cfg.Internal.Port = 70000
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
@@ -170,7 +167,6 @@ func TestValidate_ValidPorts(t *testing.T) {
 	cfg.Internal.Port = 65535
 	b := New("test-svc", "v0.1.0", cfg).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("expected no error for valid ports, got: %v", err)
@@ -182,8 +178,7 @@ func TestValidate_ValidPorts(t *testing.T) {
 // actionable error naming all three options.
 func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
-		WithoutJWTAudience()
+		WithoutTLS()
 	err := b.Validate()
 	if err == nil {
 		t.Fatal("expected error when no rate-limit declaration is present")
@@ -200,7 +195,6 @@ func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 func TestValidate_WithIPRateLimitSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithIPRateLimit(100, time.Minute)
 	if err := b.Validate(); err != nil {
 		t.Fatalf("WithIPRateLimit must satisfy the rate-limit gate, got: %v", err)
@@ -212,7 +206,6 @@ func TestValidate_WithIPRateLimitSatisfiesGate(t *testing.T) {
 func TestValidate_WithKeyedRateLimitSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithKeyedRateLimit("api", 10, time.Minute)
 	if err := b.Validate(); err != nil {
 		t.Fatalf("WithKeyedRateLimit must satisfy the rate-limit gate, got: %v", err)
@@ -224,7 +217,6 @@ func TestValidate_WithKeyedRateLimitSatisfiesGate(t *testing.T) {
 func TestValidate_WithoutRateLimitSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("WithoutRateLimit must satisfy the rate-limit gate, got: %v", err)

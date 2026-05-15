@@ -25,12 +25,10 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
-	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
-	"github.com/bds421/rho-kit/observability/v2/slo"
 	kitcron "github.com/bds421/rho-kit/runtime/v2/cron"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
@@ -84,18 +82,6 @@ type Builder struct {
 	cfg     BaseConfig
 	logger  *slog.Logger
 
-	// JWT
-	jwksURL           string
-	jwtIssuer         string
-	jwtAudience       string
-	jwtAllowAnyIssuer bool
-
-	// Leader election (optional). When set, cron jobs gate on
-	// elector.IsLeader() so only the elected replica runs scheduled
-	// work. Other infrastructure (HTTP, consumers) keeps running on
-	// every replica.
-	leaderElector leaderelection.Elector
-
 	// Signed requests (optional). The public mux wraps every route in
 	// the signedrequest middleware when this is set.
 	signedSpec *signedRequestSpec
@@ -134,7 +120,6 @@ type Builder struct {
 	// blanket "trust me" — there is no global "dev mode" toggle.
 	allowInternalNonLoopback bool // C-1: lets Internal.Host == "0.0.0.0" pass.
 	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
-	jwtAllowAnyAudience      bool // H-5: lets WithJWT pass without WithJWTAudience.
 	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
 
 	// Rate limiters
@@ -256,78 +241,6 @@ func (b *Builder) WithoutTLS() *Builder {
 // verifier is the kit's only authentication layer for those callers.
 func (b *Builder) WithOptionalClientCertificates() *Builder {
 	b.tlsOptionalClientCert = true
-	return b
-}
-
-// WithoutJWTAudience opts out of audience enforcement explicitly.
-// Without this opt-in, [Builder.Build] rejects configurations that
-// call [Builder.WithJWT] without also calling [Builder.WithJWTAudience],
-// because absent audience pinning a token minted for a sibling service
-// that trusts the same JWKS is silently valid — the standard JWT
-// confused-deputy mitigation (RFC 7519 §4.1.3).
-//
-// Use this only for genuinely multi-audience deployments. The check
-// is unconditional — there is no KIT_ENV escape hatch.
-func (b *Builder) WithoutJWTAudience() *Builder {
-	b.jwtAllowAnyAudience = true
-	return b
-}
-
-// WithJWT configures a JWKS provider for JWT verification.
-// Panics if jwksURL is empty — use environment variables to conditionally skip.
-//
-// IMPORTANT: pair with [Builder.WithJWTIssuer] and [Builder.WithJWTAudience].
-// [Builder.Build] always rejects a configuration where jwksURL is set but
-// neither WithJWTIssuer nor [Builder.WithoutJWTIssuer] (and likewise for
-// audience) has been called — silently disabling issuer/audience enforcement
-// was a known foot-gun in earlier versions and is now an explicit declaration.
-func (b *Builder) WithJWT(jwksURL string) *Builder {
-	if jwksURL == "" {
-		panic("app: WithJWT requires a non-empty JWKS URL")
-	}
-	b.jwksURL = jwksURL
-	return b
-}
-
-// WithJWTIssuer sets the expected `iss` claim. Tokens with a different
-// issuer (or no issuer) are rejected at verification time.
-//
-// Mutually exclusive with [Builder.WithoutJWTIssuer]; the last call wins.
-func (b *Builder) WithJWTIssuer(iss string) *Builder {
-	if iss == "" {
-		panic("app: WithJWTIssuer requires a non-empty issuer (use WithoutJWTIssuer to opt out)")
-	}
-	b.jwtIssuer = iss
-	b.jwtAllowAnyIssuer = false
-	return b
-}
-
-// WithJWTAudience sets the expected `aud` claim. Tokens whose audience
-// does not match are rejected.
-//
-// Empty input panics — call [Builder.WithoutJWTAudience] explicitly to
-// opt out of audience enforcement instead. Earlier versions silently
-// accepted "" and degraded to the same "any audience" behavior, which
-// hid mis-templated env vars (`WithJWTAudience(os.Getenv("AUD"))` with
-// AUD unset) under the same code path as a deliberate opt-out.
-func (b *Builder) WithJWTAudience(aud string) *Builder {
-	if aud == "" {
-		panic("app: WithJWTAudience requires a non-empty audience (use WithoutJWTAudience to opt out)")
-	}
-	b.jwtAudience = aud
-	b.jwtAllowAnyAudience = false
-	return b
-}
-
-// WithoutJWTIssuer opts out of issuer enforcement explicitly. Use only
-// for first-party tokens issued by a trusted internal service where the
-// JWKS endpoint is itself authenticated. Required to satisfy
-// [Builder.Build]'s always-on guardrail when [Builder.WithJWTIssuer] is
-// not used. The check is unconditional — there is no KIT_ENV escape
-// hatch.
-func (b *Builder) WithoutJWTIssuer() *Builder {
-	b.jwtAllowAnyIssuer = true
-	b.jwtIssuer = ""
 	return b
 }
 
@@ -730,25 +643,6 @@ func (b *Builder) WithCron(opts ...kitcron.Option) *Builder {
 	return b
 }
 
-// WithLeaderElection registers an [leaderelection.Elector] that runs
-// continuously under the lifecycle runner. The elector's IsLeader()
-// is consulted automatically by the cron scheduler: jobs skip when
-// the replica is not the leader. Other replicas keep their HTTP
-// servers and consumers running normally.
-//
-// The elector is reachable via Infrastructure.Leader for advanced
-// callers (custom worker loops, leader-only routes).
-//
-// Panics if elector is nil — pass an explicit elector or don't call
-// this method.
-func (b *Builder) WithLeaderElection(e leaderelection.Elector) *Builder {
-	if e == nil {
-		panic("app: WithLeaderElection requires a non-nil Elector")
-	}
-	b.leaderElector = e
-	return b
-}
-
 // WithEventBusPool overrides the default bounded worker pool size for the
 // in-process event bus. The pool is registered on the lifecycle runner so it
 // starts before handlers can publish async events and drains during shutdown.
@@ -920,13 +814,6 @@ func (b *Builder) WithModule(m Module) *Builder {
 	}
 	b.modules = append(b.modules, m)
 	return b
-}
-
-// WithSLO enables SLO monitoring with the given definitions. Creates a checker
-// backed by prometheus.DefaultGatherer, registers a non-critical health check,
-// and wires a /slo JSON endpoint on the internal ops server.
-func (b *Builder) WithSLO(slos ...slo.SLO) *Builder {
-	return b.WithModule(newSLOModule(slos...))
 }
 
 // Router sets the function that builds the HTTP handler from infrastructure.
@@ -1116,12 +1003,18 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		auditLogger = auditlog.New(b.auditStore, b.auditOpts...)
 	}
 
-	// 6. Cron scheduler
+	// 6. Cron scheduler. If a leader-election module is registered,
+	// its Elector gates cron execution to the leader replica. The
+	// lookup uses the [ElectorProvider] capability so app/v2 does
+	// not import app/leader.
 	var cronScheduler *kitcron.Scheduler
 	if b.cronEnabled {
 		opts := append([]kitcron.Option(nil), b.cronOpts...)
-		if b.leaderElector != nil {
-			opts = append(opts, kitcron.WithLeaderGate(b.leaderElector.IsLeader))
+		for _, m := range allModules {
+			if ep, ok := m.(ElectorProvider); ok {
+				opts = append(opts, kitcron.WithLeaderGate(ep.Elector().IsLeader))
+				break
+			}
 		}
 		cronScheduler = kitcron.New(logger, opts...)
 		runner.Add("cron-scheduler", cronScheduler)
@@ -1325,9 +1218,11 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 	var internalOpts []healthhttp.InternalHandlerOption
 	for _, m := range allModules {
-		if sm, ok := m.(*sloModule); ok && sm.Checker() != nil {
-			internalOpts = append(internalOpts, healthhttp.WithSLOHandler(slohttp.Handler(sm.Checker())))
-			break
+		if sp, ok := m.(SLOCheckerProvider); ok {
+			if checker := sp.SLOChecker(); checker != nil {
+				internalOpts = append(internalOpts, healthhttp.WithSLOHandler(slohttp.Handler(checker)))
+				break
+			}
 		}
 	}
 	serverErrorLogOpt := serverErrorLogOption(logger)

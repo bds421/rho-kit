@@ -77,7 +77,6 @@ replace github.com/bds421/rho-kit/authz/v2 => ../../authz
 
 replace github.com/bds421/rho-kit/core/v2 => ../../core
 
-
 replace github.com/bds421/rho-kit/data/v2 => ../../data
 
 replace github.com/bds421/rho-kit/grpcx/v2 => ../../grpcx

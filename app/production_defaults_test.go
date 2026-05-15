@@ -26,35 +26,12 @@ import (
 func newSafeBuilder() *Builder {
 	return New("test", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 }
 
 func TestBuilder_Validates_NoOpWithoutJWT(t *testing.T) {
 	// A service that doesn't enable JWT must still pass validation.
 	require.NoError(t, newSafeBuilder().Validate())
-}
-
-func TestBuilder_Validates_RejectsJWTWithoutIssuer(t *testing.T) {
-	b := newSafeBuilder().
-		WithJWT("https://example.com/.well-known/jwks.json")
-	err := b.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithJWTIssuer")
-}
-
-func TestBuilder_Validates_AcceptsJWTWithIssuer(t *testing.T) {
-	b := newSafeBuilder().
-		WithJWT("https://example.com/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com")
-	require.NoError(t, b.Validate())
-}
-
-func TestBuilder_Validates_AcceptsJWTWithoutJWTIssuer(t *testing.T) {
-	b := newSafeBuilder().
-		WithJWT("https://example.com/.well-known/jwks.json").
-		WithoutJWTIssuer()
-	require.NoError(t, b.Validate())
 }
 
 // Tracing validation moved into app/tracing.Module: SampleRate>0.1 and
@@ -87,7 +64,6 @@ func TestBuilder_Validates_RejectsExposedInternal(t *testing.T) {
 		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	err := b.Validate()
 	require.Error(t, err, "exposed internal port must fail validation")
@@ -103,7 +79,6 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 	}
 	b := New("svc", "v1", cfg).
 		WithInternalNonLoopback().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"WithInternalNonLoopback must allow Internal.Host=0.0.0.0")
@@ -124,7 +99,7 @@ func TestBuilder_Validates_RejectsSpecificNonLoopbackInternal(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
+			b := New("svc", "v1", cfg).WithoutRateLimit()
 			err := b.Validate()
 			require.Errorf(t, err, "Internal.Host=%q must be rejected without WithInternalNonLoopback", host)
 			assert.Contains(t, err.Error(), "not loopback")
@@ -143,7 +118,7 @@ func TestBuilder_Validates_AcceptsLoopbackVariants(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
+			b := New("svc", "v1", cfg).WithoutRateLimit()
 			err := b.Validate()
 			require.NoErrorf(t, err, "Internal.Host=%q is loopback and must pass", host)
 		})
@@ -163,7 +138,7 @@ func TestBuilder_Validates_RejectsIPv6Wildcard(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
+			b := New("svc", "v1", cfg).WithoutRateLimit()
 			err := b.Validate()
 			require.Error(t, err, "IPv6 wildcard %q must fail validation", host)
 			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
@@ -223,7 +198,7 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 				Internal: InternalConfig{Host: host, Port: 9090},
 				TLS:      validTLSForTest(t),
 			}
-			b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
+			b := New("svc", "v1", cfg).WithoutRateLimit()
 			err := b.Validate()
 			require.Error(t, err, "IPv4 zero form %q must fail validation", host)
 			assert.Contains(t, err.Error(), "exposes unauthenticated /metrics")
@@ -235,7 +210,6 @@ func TestBuilder_Validates_RejectsIPv4ZeroForms(t *testing.T) {
 
 func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 	b := New("svc", "v1", validBaseConfig()).
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	err := b.Validate()
 	require.Error(t, err, "validator must reject empty TLS config")
@@ -246,7 +220,6 @@ func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 	b := New("svc", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"WithoutTLS must allow empty TLS config")
@@ -257,7 +230,6 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 func TestBudget_RequiresMultiTenant(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		WithTenantBudget(&stubBudget{})
 	err := b.Validate()
@@ -268,7 +240,6 @@ func TestBudget_RequiresMultiTenant(t *testing.T) {
 func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		WithMultiTenant(nil).
 		WithTenantBudget(&stubBudget{})
@@ -276,43 +247,8 @@ func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 		"WithTenantBudget paired with WithMultiTenant must pass validation")
 }
 
-// --- H-5: validator requires WithJWTAudience ---
-
-func TestBuilder_Validates_RequiresJWTAudience(t *testing.T) {
-	cfg := validBaseConfig()
-	cfg.TLS = validTLSForTest(t)
-	b := New("svc", "v1", cfg).
-		WithoutRateLimit().
-		WithJWT("https://example.com/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com")
-	err := b.Validate()
-	require.Error(t, err, "validator must require WithJWTAudience to mitigate confused-deputy")
-	assert.Contains(t, err.Error(), "WithJWTAudience")
-}
-
-func TestBuilder_Validates_AcceptsJWTAudience(t *testing.T) {
-	cfg := validBaseConfig()
-	cfg.TLS = validTLSForTest(t)
-	b := New("svc", "v1", cfg).
-		WithoutRateLimit().
-		WithJWT("https://example.com/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com").
-		WithJWTAudience("svc")
-	require.NoError(t, b.Validate(),
-		"WithJWTAudience must satisfy the audience check")
-}
-
-func TestBuilder_Validates_AcceptsWithoutJWTAudience(t *testing.T) {
-	cfg := validBaseConfig()
-	cfg.TLS = validTLSForTest(t)
-	b := New("svc", "v1", cfg).
-		WithoutRateLimit().
-		WithJWT("https://example.com/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com").
-		WithoutJWTAudience()
-	require.NoError(t, b.Validate(),
-		"WithoutJWTAudience must satisfy the audience check")
-}
+// JWT audience-pinning rejection moved to app/jwt.Module — see
+// jwt_test.go in that package. The Builder.Validate check is gone.
 
 // --- FR-014: Builder TLS defaults to mTLS ---
 
@@ -325,7 +261,7 @@ func TestBuilder_PublicTLSDefaultsToMutualAuth(t *testing.T) {
 	tlsCfg := realTLSForTest(t)
 	cfg := validBaseConfig()
 	cfg.TLS = tlsCfg
-	b := New("svc", "v1", cfg).WithoutJWTAudience().WithoutRateLimit()
+	b := New("svc", "v1", cfg).WithoutRateLimit()
 
 	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
 	require.NoError(t, err)
@@ -341,7 +277,6 @@ func TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven(t *tes
 	cfg := validBaseConfig()
 	cfg.TLS = tlsCfg
 	b := New("svc", "v1", cfg).
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		WithOptionalClientCertificates()
 

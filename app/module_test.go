@@ -373,7 +373,6 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 
 	b := New("fail-test", "v0.0.1", cfg).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		WithModule(mod1).
 		WithModule(mod2).
@@ -411,7 +410,6 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 	// shutdown without needing SIGINT.
 	b := New("populate-test", "v0.0.1", cfg).
 		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		WithModule(mod).
 		Router(func(infra Infrastructure) http.Handler {
