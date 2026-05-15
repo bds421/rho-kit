@@ -384,13 +384,12 @@ func TestStore_AuditActorFallbackUnknown(t *testing.T) {
 	}
 }
 
-func TestWithLogger_PanicsOnNil(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on nil logger")
-		}
-	}()
-	_ = WithLogger(nil)
+func TestWithLogger_NormalisesNilToSlogDefault(t *testing.T) {
+	s := &Store{}
+	WithLogger(nil)(s)
+	if s.logger == nil {
+		t.Fatal("expected nil logger to be normalised to slog.Default()")
+	}
 }
 
 func TestWithAuditSink_PanicsOnNil(t *testing.T) {

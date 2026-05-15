@@ -131,12 +131,16 @@ func WithClock(fn clock.Func) Option {
 // wired both receive the same event — slog is intended for operator-visible
 // triage and AuditSink for tamper-evident retention.
 //
-// Panics on nil to fail fast at wiring time.
+// A nil logger is normalised to [slog.Default] so the store never holds a nil
+// logger; this matches the kit-wide convention for WithLogger options.
 func WithLogger(l *slog.Logger) Option {
-	if l == nil {
-		panic("jwtutil/revocation: WithLogger requires a non-nil logger")
+	return func(s *Store) {
+		if l == nil {
+			s.logger = slog.Default()
+			return
+		}
+		s.logger = l
 	}
-	return func(s *Store) { s.logger = l }
 }
 
 // WithAuditSink wires an [AuditSink] that receives an [AuditEvent] for every
