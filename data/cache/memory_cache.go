@@ -111,10 +111,12 @@ func WithBufferItems(n int64) MemoryCacheOption {
 	}
 }
 
-// WithMetrics enables or disables cache metrics (enabled by default).
-func WithMetrics(enabled bool) MemoryCacheOption {
+// WithoutMetrics disables cache metrics. Metrics are enabled by default;
+// this option mirrors the kit-wide WithFoo / WithoutFoo pairing and avoids
+// shadowing the WithMetrics(*Metrics) signature used everywhere else.
+func WithoutMetrics() MemoryCacheOption {
 	return func(mc *MemoryCache) {
-		mc.metricsEnabled = enabled
+		mc.metricsEnabled = false
 	}
 }
 
