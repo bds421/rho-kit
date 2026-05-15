@@ -69,18 +69,6 @@ type SigningProvider struct {
 // SigningProviderOption configures a [SigningProvider].
 type SigningProviderOption func(*SigningProvider)
 
-// WithSigningFetchTimeout caps each PrivateKeySource invocation
-// independently of the refresh interval. Defaults to
-// [defaultFetchTimeout] (10s). A slow secret manager that always
-// approaches this bound is a deployment-level concern; the
-// SigningProvider does not retry within a tick.
-func WithSigningFetchTimeout(d time.Duration) SigningProviderOption {
-	if d <= 0 {
-		panic("paseto: WithSigningFetchTimeout requires a positive duration")
-	}
-	return func(p *SigningProvider) { p.fetchTimeout = d }
-}
-
 // WithSigningMaxStale bounds how long Sign continues to use the
 // previously-loaded key after refresh failures. Once exceeded, Sign
 // fails closed with [ErrKeySetUnavailable] instead of trusting stale

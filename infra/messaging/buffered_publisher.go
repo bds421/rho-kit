@@ -326,17 +326,6 @@ func WithoutMaxMessageBytes() BufferedPublisherOption {
 	}
 }
 
-// WithBufferedRouteMaxMessageBytes overrides the message-size limit for one
-// exact exchange+routing-key pair. routingKey may be empty for fanout-style
-// routes. The prefix is retained because callers commonly pair this with
-// the package-level [SizeLimiter] route helpers and the name makes the
-// scope of the override clear.
-func WithBufferedRouteMaxMessageBytes(exchange, routingKey string, maxBytes int) BufferedPublisherOption {
-	return func(o *BufferedPublisher) {
-		o.sizeLimiter = o.sizeLimiter.WithRouteMaxBytes(exchange, routingKey, maxBytes)
-	}
-}
-
 // NewBufferedPublisher creates a BufferedPublisher that buffers
 // messages when the broker is unreachable. The name uses Open* (not
 // New*) because the constructor performs file I/O when [WithStateFile]
