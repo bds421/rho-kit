@@ -208,12 +208,51 @@ func (ks *KeySet) Verify(tokenString string, now time.Time) (*Claims, error) {
 	return verifyToken(ks.set, tokenString, now, ks.ExpectedIssuer, ks.ExpectedAudience)
 }
 
+// verifyTimingFloor is the minimum wall-clock duration verifyToken
+// holds before returning. A valid ES256 token verify takes ~50 µs on
+// modern hardware; rejecting fast (wrong kid, malformed token) used to
+// return in ~4 µs, which creates a kid-existence / token-shape side
+// channel: a hostile probe can distinguish "no matching key" from
+// "key matched, signature failed" purely by timing. The floor closes
+// the gap by sleeping any fast-path return until verifyTimingFloor
+// has elapsed.
+//
+// The floor only adds latency to paths that beat it (rejections). A
+// real verify exceeds the floor naturally. Tests can shrink the floor
+// via the verifyTimingFloorOverride package var (test-only seam) to
+// keep benchmark wall-clock honest.
+const verifyTimingFloor = 50 * time.Microsecond
+
+// verifyTimingFloorOverride is a test-only seam. Zero means "use
+// verifyTimingFloor"; production callers never assign to it.
+var verifyTimingFloorOverride time.Duration
+
+func currentVerifyFloor() time.Duration {
+	if d := verifyTimingFloorOverride; d > 0 {
+		return d
+	}
+	return verifyTimingFloor
+}
+
 // verifyToken is the lower-level verification primitive. It does not read
 // any mutable policy state — issuer and audience are passed in by the
 // caller. Provider.Verify calls this with its own stored policy so two
 // providers can share one *KeySet without racing on or overwriting each
 // other's iss/aud fields (R4 fix).
+//
+// Wall-clock floor: every return from this function is held until at
+// least verifyTimingFloor (default 50 µs) has elapsed since entry. This
+// removes the kid-existence side channel described above
+// verifyTimingFloor.
 func verifyToken(set jwk.Set, tokenString string, now time.Time, expectedIssuer, expectedAudience string) (*Claims, error) {
+	start := time.Now()
+	defer func() {
+		floor := currentVerifyFloor()
+		elapsed := time.Since(start)
+		if elapsed < floor {
+			time.Sleep(floor - elapsed)
+		}
+	}()
 	if set == nil || set.Len() == 0 {
 		return nil, ErrInvalidKeySet
 	}

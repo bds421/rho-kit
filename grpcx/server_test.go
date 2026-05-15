@@ -2,6 +2,8 @@ package grpcx_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
+	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -329,6 +332,101 @@ func TestNewServer_RawOptionsDoNotOverrideHardenedDefaults(t *testing.T) {
 	require.Error(t, err, "request larger than kit default must be rejected even when raw option attempts to widen")
 	require.Equal(t, codes.ResourceExhausted, status.Code(err),
 		"hardened default must produce ResourceExhausted; raw override should NOT win")
+}
+
+// TestNewServer_ReflectionDisabledByDefault locks the security default:
+// kit-built servers must NOT expose the reflection service unless the
+// caller opts in via WithReflection. Reflection leaks every registered
+// proto descriptor, so the default-off posture protects services that
+// forget to think about it.
+func TestNewServer_ReflectionDisabledByDefault(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	srv := grpcx.NewServer()
+	healthpb.RegisterHealthServer(srv, &okHealth{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := reflectionpb.NewServerReflectionClient(conn)
+	stream, err := client.ServerReflectionInfo(context.Background())
+	require.NoError(t, err)
+	// Send may itself return io.EOF when the server has already
+	// rejected the stream — in which case the status comes from Recv
+	// or from CloseSend. Either way, the test must see Unimplemented,
+	// never a successful descriptor response.
+	if sendErr := stream.Send(&reflectionpb.ServerReflectionRequest{
+		MessageRequest: &reflectionpb.ServerReflectionRequest_ListServices{ListServices: ""},
+	}); sendErr != nil && !errors.Is(sendErr, io.EOF) {
+		require.Equal(t, codes.Unimplemented, status.Code(sendErr),
+			"unregistered reflection service must surface Unimplemented; got %v", sendErr)
+		return
+	}
+	resp, err := stream.Recv()
+	require.Nil(t, resp, "reflection must NOT return a descriptor response when WithReflection is unset")
+	require.Error(t, err, "reflection must NOT respond when WithReflection is not set")
+	if errors.Is(err, io.EOF) {
+		// Stream closed without a server message — exercise CloseSend
+		// to surface the final status from the trailers.
+		closeErr := stream.CloseSend()
+		if closeErr != nil && !errors.Is(closeErr, io.EOF) {
+			require.Equal(t, codes.Unimplemented, status.Code(closeErr),
+				"closing the unregistered reflection stream must surface Unimplemented; got %v", closeErr)
+			return
+		}
+		// EOF with no recoverable status means the server treated the
+		// stream as terminated without dispatching to a reflection
+		// handler — which is the security property we wanted.
+		return
+	}
+	require.Equal(t, codes.Unimplemented, status.Code(err),
+		"unregistered reflection service must surface Unimplemented; got %v", err)
+}
+
+// TestNewServer_WithReflection verifies opt-in registration: when the
+// caller passes WithReflection, the reflection service answers and
+// includes the caller-registered services in its ListServices response.
+func TestNewServer_WithReflection(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	srv := grpcx.NewServer(grpcx.WithReflection())
+	healthpb.RegisterHealthServer(srv, &okHealth{})
+
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := reflectionpb.NewServerReflectionClient(conn)
+	stream, err := client.ServerReflectionInfo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&reflectionpb.ServerReflectionRequest{
+		MessageRequest: &reflectionpb.ServerReflectionRequest_ListServices{ListServices: ""},
+	}))
+	resp, err := stream.Recv()
+	require.NoError(t, err, "reflection must respond when WithReflection is set")
+
+	list := resp.GetListServicesResponse()
+	require.NotNil(t, list, "expected ListServicesResponse, got %T", resp.GetMessageResponse())
+
+	var saw bool
+	for _, svc := range list.GetService() {
+		if svc.GetName() == "grpc.health.v1.Health" {
+			saw = true
+			break
+		}
+	}
+	assert.True(t, saw, "reflection must enumerate caller-registered services; got %v", list.GetService())
 }
 
 type okHealth struct {

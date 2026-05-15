@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/reflection"
 
 	"github.com/bds421/rho-kit/grpcx/v2/interceptor"
 )
@@ -31,6 +32,7 @@ type serverConfig struct {
 	loggingLogger        *slog.Logger
 	disableMetrics       bool
 	metricsRegisterer    prometheus.Registerer
+	enableReflection     bool
 }
 
 // DefaultRPCDeadline is the per-RPC deadline applied automatically by
@@ -177,6 +179,21 @@ func WithGRPCServerOptions(opts ...grpc.ServerOption) ServerOption {
 // only for tests that intentionally observe panic propagation.
 func WithoutRecovery() ServerOption {
 	return func(c *serverConfig) { c.disableRecovery = true }
+}
+
+// WithReflection registers the gRPC server reflection service
+// (google.golang.org/grpc/reflection) on the returned server. Off by
+// default because reflection exposes the full schema of registered
+// services — useful for grpcurl / Postman in dev and staging, but a
+// fingerprinting surface in production.
+//
+// Production deployments that need reflection (e.g. internal admin
+// tooling) should pair this with an inbound auth interceptor that
+// blocks unauthenticated callers from reaching the reflection methods.
+// The reflection service is registered AFTER the caller's services so
+// it inherits whatever interceptor chain the server is configured with.
+func WithReflection() ServerOption {
+	return func(c *serverConfig) { c.enableReflection = true }
 }
 
 // WithRecoveryLogger overrides the logger passed to the recovery
@@ -361,5 +378,9 @@ func NewServer(opts ...ServerOption) *grpc.Server {
 		grpc.KeepaliveEnforcementPolicy(ep),
 	)
 
-	return grpc.NewServer(grpcOpts...)
+	srv := grpc.NewServer(grpcOpts...)
+	if cfg.enableReflection {
+		reflection.Register(srv)
+	}
+	return srv
 }

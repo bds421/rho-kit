@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2244,3 +2245,47 @@ func forgeHS256Token(t *testing.T, kid string, hmacSecret []byte, claims map[str
 }
 
 func nilContextForTest() context.Context { return nil }
+
+// TestVerify_TimingFloorClosesKidExistenceSideChannel proves the
+// kid-existence side channel is closed: a wrong-kid rejection must
+// take at least verifyTimingFloor, removing the previous ~4 µs vs
+// ~56 µs gap a hostile probe could use to enumerate valid kids.
+//
+// We compare the median of a small sample so a single slow GC pause
+// doesn't dominate. The floor is enforced via a sleep so the wall-
+// clock measurement is the right primitive.
+func TestVerify_TimingFloorClosesKidExistenceSideChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing test under -short")
+	}
+	key := testKey(t)
+	ks, parseErr := ParseKeySet(testJWKS(t, key, "kid-1"))
+	if parseErr != nil {
+		t.Fatalf("ParseKeySet: %v", parseErr)
+	}
+
+	now := time.Now()
+	// Token signed with a kid the JWKS does not recognise.
+	tokenWrongKid := signJWT(t, key, "kid-unknown", map[string]any{
+		"sub": "u",
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+
+	const samples = 9
+	durations := make([]time.Duration, samples)
+	for i := 0; i < samples; i++ {
+		start := time.Now()
+		_, _ = ks.Verify(tokenWrongKid, now)
+		durations[i] = time.Since(start)
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	median := durations[samples/2]
+
+	// The floor is 50 µs. Allow some slack for sleep wakeup
+	// granularity — we require the median wrong-kid rejection to
+	// take at least 30 µs, which is comfortably above the pre-floor
+	// 4 µs measurement and well below the 50 µs nominal floor.
+	if median < 30*time.Microsecond {
+		t.Fatalf("wrong-kid rejection median (%s) must be ≥ 30µs; the timing floor closes the kid-existence side channel", median)
+	}
+}
