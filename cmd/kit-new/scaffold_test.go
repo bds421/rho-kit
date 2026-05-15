@@ -309,6 +309,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/redis",
 		"app/signedrequest",
 		"app/slo",
+		"app/storage",
 		"app/tracing",
 		"authz",
 		"core",

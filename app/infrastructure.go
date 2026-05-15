@@ -13,7 +13,6 @@ import (
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
-	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
@@ -63,10 +62,8 @@ type Infrastructure struct {
 	ApprovalStore approval.Store   // nil if no ApprovalStore
 	Authz         kitauthz.Decider // nil if no Authz
 
-	Storage        storage.Storage  // nil if no Storage
-	StorageManager *storage.Manager // nil if no NamedStorage
-	AuditLog       *auditlog.Logger // nil if no AuditLog
-	EventBus       *eventbus.Bus      // always non-nil; in-process domain event dispatch
+	AuditLog *auditlog.Logger // nil if no AuditLog
+	EventBus *eventbus.Bus    // always non-nil; in-process domain event dispatch
 
 	HTTPClient *http.Client
 	Config     BaseConfig

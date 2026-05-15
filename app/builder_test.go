@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/infra/v2/storage/membackend"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
@@ -29,8 +28,6 @@ type runContextValueKey struct{}
 func TestBuilder_FluentChaining(t *testing.T) {
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
 		WithoutRateLimit().
-		Storage(membackend.New()).
-		NamedStorage("local", membackend.New()).
 		EventBusPool(4).
 		With(NewBaseModule("svc-extra")).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
@@ -101,32 +98,8 @@ func TestBuilder_ServerErrorLogOptionUsesConfiguredLogger(t *testing.T) {
 	assert.Contains(t, out.String(), "public server probe")
 }
 
-func TestBuilder_WithStoragePanicsOnNil(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil storage")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).Storage(nil)
-}
-
-func TestBuilder_WithNamedStoragePanicsOnEmpty(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for empty storage name")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).NamedStorage("", membackend.New())
-}
-
-func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil named storage")
-		}
-	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).NamedStorage("s3", nil)
-}
+// Storage / NamedStorage panic-on-nil tests moved to app/storage —
+// the functional options now own the construction-time contract.
 
 // Rate-limit Builder-method-shaped tests have moved to
 // app/ratelimit (IPModule / KeyedModule own the parameter checks

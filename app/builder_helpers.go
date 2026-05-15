@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
-	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
@@ -62,11 +61,6 @@ func runShutdownHooks(parent context.Context, hooks []func(context.Context), log
 			}
 		}(i, fn)
 	}
-}
-
-type storageSpec struct {
-	name    string
-	backend storage.Storage
 }
 
 type bgSpec struct {
@@ -156,15 +150,3 @@ type TracingProvider interface {
 	TracingActive() bool
 }
 
-// buildStorageManager creates a Manager from the named storage specs.
-// Returns nil if no specs were registered.
-func buildStorageManager(specs []storageSpec) *storage.Manager {
-	if len(specs) == 0 {
-		return nil
-	}
-	mgr := storage.NewManager()
-	for _, s := range specs {
-		mgr.Register(s.name, s.backend)
-	}
-	return mgr
-}

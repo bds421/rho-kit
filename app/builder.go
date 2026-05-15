@@ -23,7 +23,6 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
-	"github.com/bds421/rho-kit/infra/v2/storage"
 	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
@@ -102,10 +101,6 @@ type Builder struct {
 	// so Builder.Validate can refuse silent un-throttled
 	// deployments.
 	allowNoRateLimit bool
-
-	// Storage
-	storageBackend storage.Storage
-	storageSpecs   []storageSpec
 
 	// Audit log
 	auditStore auditlog.Store
@@ -326,42 +321,6 @@ func (b *Builder) Authz(d kitauthz.Decider) *Builder {
 // has the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
-	return b
-}
-
-// Storage registers an object storage backend and optional health checks.
-// The backend is available via infra.Storage in the RouterFunc.
-// Panics if backend is nil — this catches misconfiguration at startup.
-func (b *Builder) Storage(backend storage.Storage, checks ...health.DependencyCheck) *Builder {
-	if backend == nil {
-		panic("app: storage backend must not be nil")
-	}
-	validateDependencyChecks(checks, "Storage")
-	b.storageBackend = backend
-	b.healthChecks = append(b.healthChecks, checks...)
-	return b
-}
-
-// NamedStorage registers a named storage backend. All named backends are
-// accessible via infra.StorageManager.Backend(name) in the RouterFunc. The
-// first registered backend becomes the default unless [SetDefault] is called
-// on the manager. Health checks are added to the readiness probe.
-//
-// This can be used alongside [Storage] — the unnamed backend is independent
-// of the manager.
-func (b *Builder) NamedStorage(name string, backend storage.Storage, checks ...health.DependencyCheck) *Builder {
-	if name == "" {
-		panic("app: storage name must not be empty")
-	}
-	if backend == nil {
-		panic("app: storage backend must not be nil")
-	}
-	validateDependencyChecks(checks, "NamedStorage")
-	b.storageSpecs = append(b.storageSpecs, storageSpec{
-		name:    name,
-		backend: backend,
-	})
-	b.healthChecks = append(b.healthChecks, checks...)
 	return b
 }
 
@@ -745,21 +704,18 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	var lateBgs []bgSpec
 	var lateBgsMu sync.Mutex
 	var lateBgsFrozen bool
-	storageMgr := buildStorageManager(b.storageSpecs)
 
 	infra := Infrastructure{
-		Logger:         logger,
-		ServerTLS:      serverTLS,
-		TLSCertSource:  tlsSource,
-		Storage:        b.storageBackend,
-		StorageManager: storageMgr,
-		AuditLog:       auditLogger,
-		EventBus:       eventBus,
-		TenantBudget:   b.budgetSpecStore(),
-		ActionLog:      b.actionLogger(),
-		ApprovalStore:  b.approvalStore(),
-		Authz:          b.authz,
-		Config:         b.cfg,
+		Logger:        logger,
+		ServerTLS:     serverTLS,
+		TLSCertSource: tlsSource,
+		AuditLog:      auditLogger,
+		EventBus:      eventBus,
+		TenantBudget:  b.budgetSpecStore(),
+		ActionLog:     b.actionLogger(),
+		ApprovalStore: b.approvalStore(),
+		Authz:         b.authz,
+		Config:        b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			validateBackgroundSpec(name, fn)
 			lateBgsMu.Lock()
