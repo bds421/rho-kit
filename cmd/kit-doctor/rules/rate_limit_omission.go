@@ -13,11 +13,12 @@ import (
 // rate limiting joined that contract in v2.0.0 (Lens F A.5) so a service
 // must affirmatively choose one of:
 //
-//   - [Builder.WithIPRateLimit]
-//   - [Builder.WithKeyedRateLimit]
-//   - [Builder.WithoutRateLimit]
+//   - register `ratelimit.IP(...)`   via `Builder.With(...)`
+//   - register `ratelimit.Keyed(...)` via `Builder.With(...)`
+//   - call `Builder.WithoutRateLimit()` to acknowledge the un-throttled
+//     posture
 //
-// The Builder will panic at Build time if none of these appear in the
+// The Builder will refuse to Build / Run if none of these appear in the
 // chain. kit-doctor flags the same shape statically so editor
 // integrations and CI catch the omission before the binary is started.
 //
@@ -46,13 +47,18 @@ var rateLimitOmissionImports = []string{
 	"github.com/bds421/rho-kit/app/v2",
 }
 
-// rateLimitSatisfyingMethods names every Builder method that satisfies
-// the rate-limit gate. Any one of these in the chain suppresses the
-// finding.
-var rateLimitSatisfyingMethods = []string{
-	"WithIPRateLimit",
-	"WithKeyedRateLimit",
-	"WithoutRateLimit",
+// rateLimitBridgeImports lists the import paths whose `IP` and `Keyed`
+// constructors satisfy the rate-limit gate when passed to
+// `Builder.With(...)`.
+var rateLimitBridgeImports = []string{
+	"github.com/bds421/rho-kit/app/ratelimit/v2",
+}
+
+// rateLimitBridgeConstructors names the functions in the ratelimit
+// bridge package whose registration satisfies the gate.
+var rateLimitBridgeConstructors = map[string]struct{}{
+	"IP":    {},
+	"Keyed": {},
 }
 
 func (r rateLimitOmissionRule) Run(fset *token.FileSet, file *ast.File) []Finding {
@@ -62,14 +68,20 @@ func (r rateLimitOmissionRule) Run(fset *token.FileSet, file *ast.File) []Findin
 	if strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go") {
 		return nil
 	}
-	aliases := map[string]struct{}{}
+	appAliases := map[string]struct{}{}
 	for _, imp := range rateLimitOmissionImports {
 		for name := range importAliasesFor(file, imp) {
-			aliases[name] = struct{}{}
+			appAliases[name] = struct{}{}
 		}
 	}
-	if len(aliases) == 0 {
+	if len(appAliases) == 0 {
 		return nil
+	}
+	rlAliases := map[string]struct{}{}
+	for _, imp := range rateLimitBridgeImports {
+		for name := range importAliasesFor(file, imp) {
+			rlAliases[name] = struct{}{}
+		}
 	}
 	var findings []Finding
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -87,10 +99,13 @@ func (r rateLimitOmissionRule) Run(fset *token.FileSet, file *ast.File) []Findin
 		if len(call.Args) != 0 {
 			return true
 		}
-		if !chainOriginatesFromBuilderNew(call, aliases) {
+		if !chainOriginatesFromBuilderNew(call, appAliases) {
 			return true
 		}
-		if chainHas(call, rateLimitSatisfyingMethods...) {
+		if chainHas(call, "WithoutRateLimit") {
+			return true
+		}
+		if chainRegistersRateLimitModule(call, rlAliases) {
 			return true
 		}
 		// Report at the `.Run()` selector line rather than the
@@ -113,7 +128,7 @@ func (r rateLimitOmissionRule) Run(fset *token.FileSet, file *ast.File) []Findin
 			File:     pos.Filename,
 			Line:     pos.Line,
 			Message:  "app.Builder.Run() without an explicit rate-limit declaration",
-			Suggestion: "chain .WithIPRateLimit(n, window) or .WithKeyedRateLimit(name, n, window); " +
+			Suggestion: "chain .With(ratelimit.IP(n, window)) or .With(ratelimit.Keyed(name, n, window)); " +
 				"use .WithoutRateLimit() only for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker). " +
 				"Suppress with `// kit-doctor:allow rate-limit-omission` only when the omission is reviewed.",
 		})
@@ -151,5 +166,52 @@ func chainOriginatesFromBuilderNew(call *ast.CallExpr, aliases map[string]struct
 			}
 		}
 		cur = next
+	}
+}
+
+// chainRegistersRateLimitModule reports whether any `.With(...)` call
+// in the fluent chain rooted at call passes an argument that is a
+// direct call to `<ratelimit>.IP(...)` or `<ratelimit>.Keyed(...)`,
+// where `<ratelimit>` is a registered import alias for the
+// app/ratelimit bridge. When the alias set is empty (no import) the
+// scan short-circuits to false — the file cannot register a rate-
+// limit module without importing the bridge.
+func chainRegistersRateLimitModule(call *ast.CallExpr, rlAliases map[string]struct{}) bool {
+	if len(rlAliases) == 0 {
+		return false
+	}
+	cur := ast.Expr(call)
+	for {
+		c, ok := cur.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := c.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		if sel.Sel.Name == "With" {
+			for _, arg := range c.Args {
+				inner, ok := arg.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				innerSel, ok := inner.Fun.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				if _, named := rateLimitBridgeConstructors[innerSel.Sel.Name]; !named {
+					continue
+				}
+				ident, ok := innerSel.X.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if isPackageAlias(ident, rlAliases) {
+					return true
+				}
+			}
+		}
+		cur = sel.X
 	}
 }

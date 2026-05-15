@@ -29,8 +29,10 @@ func TestScan_FlagsJWTWithoutClaims(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
+import "github.com/bds421/rho-kit/app/jwt/v2"
+
 func wire() {
-	b.WithJWT("https://issuer/.well-known/jwks.json")
+	_ = jwt.Module("https://issuer/.well-known/jwks.json")
 }
 `)
 	findings, err := scan(dir, rules.Registered())
@@ -45,8 +47,10 @@ func TestScan_DotRootScansCurrentDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
+import "github.com/bds421/rho-kit/app/jwt/v2"
+
 func wire() {
-	b.WithJWT("https://issuer/.well-known/jwks.json")
+	_ = jwt.Module("https://issuer/.well-known/jwks.json")
 }
 `)
 	t.Chdir(dir)
@@ -63,8 +67,10 @@ func TestScan_SkipsSymlinkedGoFiles(t *testing.T) {
 	target := filepath.Join(outside, "outside.go")
 	require.NoError(t, os.WriteFile(target, []byte(`package svc
 
+import "github.com/bds421/rho-kit/app/jwt/v2"
+
 func wire() {
-	b.WithJWT("https://issuer/.well-known/jwks.json")
+	_ = jwt.Module("https://issuer/.well-known/jwks.json")
 }
 `), 0o600))
 	if err := os.Symlink(target, filepath.Join(dir, "linked.go")); err != nil {
@@ -83,12 +89,15 @@ func TestScan_FlagsOnlyBuilderMissingClaims(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
-func wire() {
-	a.WithJWT("https://issuer/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com").
-		WithJWTAudience("svc-a")
+import "github.com/bds421/rho-kit/app/jwt/v2"
 
-	b.WithJWT("https://issuer/.well-known/jwks.json")
+func wire() {
+	_ = jwt.Module("https://issuer/.well-known/jwks.json",
+		jwt.WithIssuer("https://issuer.example.com"),
+		jwt.WithAudience("svc-a"),
+	)
+
+	_ = jwt.Module("https://issuer/.well-known/jwks.json")
 }
 `)
 	findings, err := scan(dir, rules.Registered())
@@ -103,8 +112,8 @@ func wire() {
 	require.Len(t, jwtFindings, 2,
 		"expected exactly two findings (issuer + audience) for the unconfigured builder, got %+v", findings)
 	for _, f := range jwtFindings {
-		assert.Equal(t, 8, f.Line,
-			"finding must point at the second builder, not the configured one")
+		assert.Equal(t, 11, f.Line,
+			"finding must point at the second jwt.Module call, not the configured one")
 	}
 }
 
@@ -112,10 +121,13 @@ func TestScan_AcceptsJWTWithIssuerAndAudience(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
+import "github.com/bds421/rho-kit/app/jwt/v2"
+
 func wire() {
-	b.WithJWT("https://issuer/.well-known/jwks.json").
-		WithJWTIssuer("https://issuer.example.com").
-		WithJWTAudience("svc")
+	_ = jwt.Module("https://issuer/.well-known/jwks.json",
+		jwt.WithIssuer("https://issuer.example.com"),
+		jwt.WithAudience("svc"),
+	)
 }
 `)
 	findings, err := scan(dir, rules.Registered())
@@ -1022,8 +1034,6 @@ import "github.com/bds421/rho-kit/app/v2"
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
 		Run()
 }
 `)
@@ -1049,8 +1059,6 @@ import kitapp "github.com/bds421/rho-kit/app/v2"
 
 func wire() {
 	_ = kitapp.New("svc", "v1", kitapp.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
 		Run()
 }
 `)
@@ -1060,9 +1068,9 @@ func wire() {
 		"aliased app import must still trigger rule, got %+v", findings)
 }
 
-// TestScan_AcceptsRateLimitWithIPRateLimit verifies WithIPRateLimit
-// suppresses the rule — the canonical declaration shape.
-func TestScan_AcceptsRateLimitWithIPRateLimit(t *testing.T) {
+// TestScan_AcceptsRateLimitIP verifies registering ratelimit.IP via
+// Builder.With suppresses the rule — the canonical declaration shape.
+func TestScan_AcceptsRateLimitIP(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
@@ -1070,25 +1078,24 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/app/ratelimit/v2"
 )
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
-		WithIPRateLimit(100, time.Minute).
+		With(ratelimit.IP(100, time.Minute)).
 		Run()
 }
 `)
 	findings, err := scan(dir, rules.Registered())
 	require.NoError(t, err)
 	assert.False(t, hasRule(findings, "rate-limit-omission"),
-		"WithIPRateLimit must satisfy the rule, got %+v", findings)
+		"ratelimit.IP must satisfy the rule, got %+v", findings)
 }
 
-// TestScan_AcceptsRateLimitWithKeyedRateLimit verifies a keyed limiter
-// alone is sufficient declaration.
-func TestScan_AcceptsRateLimitWithKeyedRateLimit(t *testing.T) {
+// TestScan_AcceptsRateLimitKeyed verifies a keyed limiter alone is
+// sufficient declaration.
+func TestScan_AcceptsRateLimitKeyed(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "wire.go", `package svc
 
@@ -1096,20 +1103,19 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/app/v2"
+	"github.com/bds421/rho-kit/app/ratelimit/v2"
 )
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
-		WithKeyedRateLimit("api", 10, time.Minute).
+		With(ratelimit.Keyed("api", 10, time.Minute)).
 		Run()
 }
 `)
 	findings, err := scan(dir, rules.Registered())
 	require.NoError(t, err)
 	assert.False(t, hasRule(findings, "rate-limit-omission"),
-		"WithKeyedRateLimit must satisfy the rule, got %+v", findings)
+		"ratelimit.Keyed must satisfy the rule, got %+v", findings)
 }
 
 // TestScan_AcceptsRateLimitWithoutRateLimit verifies the explicit
@@ -1122,8 +1128,6 @@ import "github.com/bds421/rho-kit/app/v2"
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
 		WithoutRateLimit().
 		Run()
 }
@@ -1144,8 +1148,6 @@ import "github.com/bds421/rho-kit/app/v2"
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
 		Run()
 }
 `)
@@ -1165,8 +1167,6 @@ import "github.com/bds421/rho-kit/app/v2"
 
 func wire() {
 	_ = app.New("svc", "v1", app.BaseConfig{}).
-		WithoutTLS().
-		WithoutJWTAudience().
 		Run() // kit-doctor:allow rate-limit-omission reason="upstream gateway enforces rate limits"
 }
 `)
