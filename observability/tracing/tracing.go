@@ -96,6 +96,26 @@ type Config struct {
 	// MaxExportBatchSize caps how many spans are exported per batch.
 	// Default 512.
 	MaxExportBatchSize int
+
+	// TenantSampleRates maps a tenant ID to an override sample rate
+	// in [0, 1]. Requests whose context carries a tenant ID in this
+	// map sample at the override rate instead of [SampleRate].
+	//
+	// Distributed-trace consistency is preserved: the override only
+	// affects *root* sampling decisions on this service. If an
+	// upstream already sampled the trace, this service still
+	// samples it regardless of the tenant override (and vice
+	// versa) — otherwise downstream traces would be silently
+	// truncated mid-graph.
+	//
+	// Common uses:
+	//   - 1.0 for a small set of high-priority tenants while the
+	//     default stays at 0.05.
+	//   - 0.0 for a noisy synthetic-traffic tenant that swamps the
+	//     collector.
+	//
+	// Validate rejects entries outside [0, 1] or with empty IDs.
+	TenantSampleRates map[string]float64
 }
 
 // LogValue implements slog.LogValuer to prevent accidental logging of
@@ -116,6 +136,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("batch_timeout", c.BatchTimeout),
 		slog.Int("max_queue_size", c.MaxQueueSize),
 		slog.Int("max_export_batch_size", c.MaxExportBatchSize),
+		slog.Int("tenant_sample_overrides", len(c.TenantSampleRates)),
 	)
 }
 
@@ -167,6 +188,14 @@ func (c Config) Validate() error {
 	for k, v := range c.Headers {
 		if err := validateHeader(k, v); err != nil {
 			return err
+		}
+	}
+	for id, rate := range c.TenantSampleRates {
+		if id == "" {
+			return errors.New("tracing: TenantSampleRates contains empty tenant ID")
+		}
+		if rate < 0 || rate > 1 {
+			return fmt.Errorf("tracing: TenantSampleRates[%q] must be between 0 and 1 (got %.4f)", id, rate)
 		}
 	}
 	return nil
@@ -269,6 +298,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, errors.New("tracing: Init requires a non-nil context")
 	}
 	cfg.Headers = cloneStringMap(cfg.Headers)
+	cfg.TenantSampleRates = cloneFloat64Map(cfg.TenantSampleRates)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -325,7 +355,12 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		return initNoop(cfg.EnableBaggage)
 	}
 
-	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))
+	sampler, err := newTenantSampler(cfg.SampleRate, cfg.TenantSampleRates)
+	if err != nil {
+		// Validate already rejected bad rates; this is defence in
+		// depth in case the validator drifts from the sampler.
+		return nil, err
+	}
 
 	batchTimeout := cfg.BatchTimeout
 	if batchTimeout <= 0 {
@@ -359,6 +394,17 @@ func cloneStringMap(values map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneFloat64Map(values map[string]float64) map[string]float64 {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]float64, len(values))
 	for k, v := range values {
 		out[k] = v
 	}
