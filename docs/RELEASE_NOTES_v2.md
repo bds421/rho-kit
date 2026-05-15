@@ -48,8 +48,7 @@ retention cleanup (closes GAP-09), cross-backend message-size limits
 with route overrides (closes GAP-07), direct dependency source
 allowlist CI (closes GAP-10), heavy optional SDK boundary CI, and the
 `examples/agentic-service` reference binary that wires the entire v2
-stack in one file. The release branch also ships raw benchmark baselines
-under `docs/release/benchmarks/v2.0.0/` for `kit-bench-gate`.
+stack in one file.
 
 Release-candidate artifacts are maintained under `docs/release/`: the
 module-level public API freeze, the operational migration guide, and the
@@ -1227,10 +1226,9 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - The v2.0.0 Prometheus contract freeze covers the dashboarded families above,
   including direct NATS JetStream and Redis Streams messaging metrics.
 
-### Benchmark baselines
-- `make bench-baseline` captures raw `go test -run=^$ -bench=. -benchmem -count=5 ./...` outputs for every current benchmarked workspace module.
-- The checked-in `docs/release/benchmarks/v2.0.0/` files are historical/preliminary until refreshed from the final clean release-candidate commit; do not use the 2026-05-12 set as canonical `kit-bench-gate -baseline` input for the v2.0.0 tag.
-- The preliminary baseline set covers `core`, `crypto`, `data`, `httpx`, `resilience`, and `runtime`, including tenant-context, envelope-encryption, in-memory rate-limit, and middleware-chain hot paths added before the API freeze. Rerun `make bench-baseline` before publishing the release notes.
+### Benchmarks
+- `make bench` runs the kit's benchmark suite (jwtutil verify, gcra, tokenbucket, encrypt, envelope, signing, tenant, compute cache, memory cache, stack chain, circuitbreaker, budget memory). `make bench-baseline` is available as an operator helper that captures raw `go test -bench` output for a local snapshot.
+- The kit does NOT ship a checked-in `kit-bench-gate` baseline. Benchmark numbers are hardware-specific and would flag spurious regressions on every CI runner that doesn't match the capture hardware; `kit-bench-gate` is a downstream tool consumers run on their own clusters, not a release-time CI gate.
 
 ### gRPC hardening
 - `grpcx.WithDefaultDeadline(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)

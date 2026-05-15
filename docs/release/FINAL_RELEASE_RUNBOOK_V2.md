@@ -17,7 +17,6 @@ run during preparation.
 - Public API freeze: [API_FREEZE_V2.md](API_FREEZE_V2.md)
 - Migration guide: [MIGRATION_V2.md](MIGRATION_V2.md)
 - RC evidence checklist: [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md)
-- Benchmark baselines: [benchmarks/v2.0.0/MANIFEST.md](benchmarks/v2.0.0/MANIFEST.md)
 - Tagging plan: [TAGGING_PLAN_V2.md](TAGGING_PLAN_V2.md)
 - GitHub release notes body: [../RELEASE_NOTES_v2.md](../RELEASE_NOTES_v2.md)
 
@@ -158,7 +157,6 @@ GOCACHE=/private/tmp/rho-kit-gocache go run ./cmd/kit-doctor -format=json -stric
 make vulncheck
 make test-race
 make bench
-make bench-baseline
 make test-integration
 RELEASE_MODE=all make release-plan
 ```
@@ -185,8 +183,6 @@ Expected output summary:
 - `make vulncheck`: `No vulnerabilities found.` for every module.
 - `make test`, `make lint`, `make test-race`, `make bench`, and
   `make test-integration`: no `FAIL`; integration tests require Docker.
-- `make bench-baseline`: refreshes `docs/release/benchmarks/v2.0.0/` on the
-  release-candidate machine.
 - `RELEASE_MODE=all make release-plan`: prints the dependency levels used for
   the release loop.
 

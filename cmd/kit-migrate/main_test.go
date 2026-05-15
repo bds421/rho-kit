@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -258,4 +259,72 @@ func contains(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestPublish_AuditlogAndOutboxRoundTrip guards L200: kit-migrate
+// must produce on-disk migration files byte-for-byte identical to
+// the embedded migrations.FS for the auditlog and outbox kit
+// components (added in waves 60/61). Without this test, a future
+// change to the embed.FS shape (e.g. a renamed file or a stray
+// editor backup checked in) could silently change what services
+// receive when they run `kit-migrate publish --to=./migrations`.
+//
+// The matching embedded migrations are exercised end-to-end against
+// a real Postgres in
+// observability/auditlog/postgres/integrationtest and
+// infra/outbox/postgres/integrationtest. This test proves the kit-
+// migrate publish path produces the SAME files the integration
+// tests apply, so the transitive guarantee is "kit-migrate output
+// works against real Postgres" without re-spinning a container.
+func TestPublish_AuditlogAndOutboxRoundTrip(t *testing.T) {
+	for _, component := range []string{"auditlog", "outbox"} {
+		t.Run(component, func(t *testing.T) {
+			dir := t.TempDir()
+			code, _, stderr := runCommand("publish", "--to="+dir, component)
+			if code != 0 {
+				t.Fatalf("publish %s code=%d, stderr=%q", component, code, stderr)
+			}
+
+			// Compare every published file byte-for-byte against the
+			// embedded migrations FS.
+			fsys := registry[component]
+			err := fs.WalkDir(fsys, "migrations", func(path string, d fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if d.IsDir() {
+					return nil
+				}
+				want, readErr := fs.ReadFile(fsys, path)
+				if readErr != nil {
+					return readErr
+				}
+				// Embedded path is "migrations/<file>"; published path
+				// is "<dir>/<file>" (no migrations/ prefix — kit-migrate
+				// flattens).
+				rel := filepath.Base(path)
+				got, readErr := os.ReadFile(filepath.Join(dir, rel))
+				if readErr != nil {
+					t.Fatalf("read published %s: %v", rel, readErr)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("published %s differs from embedded migrations/%s; kit-migrate publish must be a byte-for-byte copy", rel, rel)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("walk embedded FS: %v", err)
+			}
+
+			// Also verify the published directory contains at least one
+			// migration file (catches an empty-publish regression).
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("read published dir: %v", err)
+			}
+			if len(entries) == 0 {
+				t.Fatalf("publish %s produced an empty target directory", component)
+			}
+		})
+	}
 }

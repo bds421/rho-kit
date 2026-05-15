@@ -162,3 +162,142 @@ func TestIntegration_RiverPublisher_RejectsEmptyQueue(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "queue name must not be empty")
 }
+
+// TestIntegration_RiverPublisher_DedupesBySharedID guards L050: the
+// kit configures river.UniqueOpts{ByArgs, ByQueue} for messages with
+// non-empty ID, so two Enqueue calls carrying the same ID against
+// the same queue must produce exactly one delivered job (River
+// silently rejects the duplicate Insert). Verifies the FR-059
+// dedupe-by-args claim against a real River+Postgres rather than
+// asserting on the option struct alone.
+func TestIntegration_RiverPublisher_DedupesBySharedID(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	migrateRiver(t, pool)
+
+	var delivered atomic.Int32
+	handler := func(_ context.Context, _ kitqueue.Message) error {
+		delivered.Add(1)
+		return nil
+	}
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, riverqueue.NewEnvelopeWorker(handler))
+
+	const queueName = "kit-dedupe"
+	client, err := river.NewClient(riverqueue.DriverFromPool(pool), &river.Config{
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Queues:  map[string]river.QueueConfig{queueName: {MaxWorkers: 2}},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+
+	completed, cancelSub := client.Subscribe(river.EventKindJobCompleted)
+	defer cancelSub()
+
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() {
+		shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShutdown()
+		_ = client.Stop(shutdown)
+	})
+
+	pub := riverqueue.NewPublisher(client)
+	want := kitqueue.Message{
+		ID:      "dedupe-msg-1",
+		Type:    "user.created",
+		Payload: json.RawMessage(`{"id":42}`),
+	}
+
+	// Enqueue the same ID three times — River must persist exactly one.
+	require.NoError(t, pub.Enqueue(ctx, queueName, want))
+	require.NoError(t, pub.Enqueue(ctx, queueName, want))
+	require.NoError(t, pub.Enqueue(ctx, queueName, want))
+
+	// Wait for the first completion, then hold to confirm no follow-ups arrive.
+	select {
+	case <-completed:
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for River to complete the first enqueued job")
+	}
+
+	// Brief grace window: if River was about to deliver a duplicate it
+	// would have fired by now (in-memory subscribe is instant once the
+	// job moves to completed).
+	select {
+	case <-completed:
+		t.Fatalf("second job delivered — dedupe-by-args failed")
+	case <-time.After(2 * time.Second):
+	}
+
+	assert.Equal(t, int32(1), delivered.Load(),
+		"three Enqueue calls with the same ID must produce exactly one delivery; got %d", delivered.Load())
+}
+
+// TestIntegration_RiverPublisher_DistinctIDsAllDelivered is the
+// inverse check: with three different IDs (or empty IDs that bypass
+// the dedupe path) we must see all three deliveries. Guards against
+// a regression that over-dedupes.
+func TestIntegration_RiverPublisher_DistinctIDsAllDelivered(t *testing.T) {
+	dsn := startPostgres(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	migrateRiver(t, pool)
+
+	var delivered atomic.Int32
+	handler := func(_ context.Context, _ kitqueue.Message) error {
+		delivered.Add(1)
+		return nil
+	}
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, riverqueue.NewEnvelopeWorker(handler))
+
+	const queueName = "kit-distinct"
+	client, err := river.NewClient(riverqueue.DriverFromPool(pool), &river.Config{
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Queues:  map[string]river.QueueConfig{queueName: {MaxWorkers: 2}},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+
+	completed, cancelSub := client.Subscribe(river.EventKindJobCompleted)
+	defer cancelSub()
+
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() {
+		shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelShutdown()
+		_ = client.Stop(shutdown)
+	})
+
+	pub := riverqueue.NewPublisher(client)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, pub.Enqueue(ctx, queueName, kitqueue.Message{
+			ID:      "distinct-" + strconv.Itoa(i),
+			Type:    "user.created",
+			Payload: json.RawMessage(`{}`),
+		}))
+	}
+
+	// Wait for all three completions.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-completed:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("timed out waiting for delivery %d/3", i+1)
+		}
+	}
+	assert.Equal(t, int32(3), delivered.Load())
+}
