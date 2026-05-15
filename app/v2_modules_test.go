@@ -200,32 +200,7 @@ func TestWithTenantBudget_RejectsGETWithoutTenant(t *testing.T) {
 		"GET without tenant must be rejected — guarantees the tenant budget cannot be bypassed on safe methods")
 }
 
-func TestWithActionLogger_PanicsOnNil(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on nil logger")
-		}
-	}()
-	New("test", "v1", BaseConfig{}).ActionLogger(nil)
-}
-
-func TestWithApprovalStore_PanicsOnNil(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on nil store")
-		}
-	}()
-	New("test", "v1", BaseConfig{}).ApprovalStore(nil)
-}
-
-func TestWithActionLogger_RegistersOnBuilder(t *testing.T) {
-	l := stubActionLog{}
-	b := New("test", "v1", BaseConfig{}).ActionLogger(l)
-	assert.Equal(t, l, b.actionLogger())
-}
-
-func TestWithApprovalStore_RegistersOnBuilder(t *testing.T) {
-	s := stubApproval{}
-	b := New("test", "v1", BaseConfig{}).ApprovalStore(s)
-	assert.Equal(t, s, b.approvalStore())
-}
+// ActionLogger / ApprovalStore panic-on-nil and registration tests
+// moved to app/actionlog and app/approval — the bridge Module
+// constructors own the nil-check contract now and publish via the
+// resource map.

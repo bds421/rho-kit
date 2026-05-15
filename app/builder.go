@@ -12,10 +12,7 @@ import (
 	"sync"
 	"time"
 
-	kitauthz "github.com/bds421/rho-kit/authz/v2"
 	"github.com/bds421/rho-kit/core/v2/redact"
-	"github.com/bds421/rho-kit/data/v2/actionlog"
-	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
@@ -83,16 +80,6 @@ type Builder struct {
 	// Per-tenant cost budgets (optional). The public mux charges every
 	// request against the tenant's bucket when set.
 	budgetSpec *budgetSpec
-
-	// Append-only action log (optional). Exposed via Infrastructure.
-	alog actionlog.Logger
-
-	// Approval store (optional). Exposed via Infrastructure.
-	astore approval.Store
-
-	// Authorization decider (optional). Exposed via Infrastructure
-	// for handler-level RequirePermission wiring.
-	authz kitauthz.Decider
 
 	// Rate-limit declaration opt-out. The actual IP/keyed
 	// limiters live in app/ratelimit bridge modules; this field
@@ -225,78 +212,6 @@ func (b *Builder) TenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Bu
 		}
 	}
 	b.budgetSpec = &budgetSpec{store: b2, opts: append([]httpxbudget.Option(nil), opts...)}
-	return b
-}
-
-// ActionLogger registers an [actionlog.Logger] so handlers can
-// attribute writes to the originating actor + tenant. Exposed via
-// [Infrastructure.ActionLog] — handlers append entries; the kit
-// doesn't auto-instrument routes (verb/resource attribution is
-// app-specific).
-//
-// Panics if `l` is nil.
-func (b *Builder) ActionLogger(l actionlog.Logger) *Builder {
-	if l == nil {
-		panic("app: ActionLogger requires a non-nil Logger")
-	}
-	b.alog = l
-	return b
-}
-
-// ApprovalStore registers an [approval.Store] so handlers can
-// gate destructive operations behind a pending → approved →
-// executed lifecycle. Exposed via [Infrastructure.ApprovalStore].
-//
-// IMPORTANT: this option ONLY stores the [approval.Store] for
-// handlers to consume. The Builder does NOT install the
-// [httpx/middleware/approval] middleware on the public mux —
-// handlers (or the RouterFunc) must wrap the routes that need
-// approval gating themselves. The lifecycle attribution
-// (tenant/actor extractors, action/resource derivation, panic
-// recovery) is too service-specific to wire automatically.
-//
-// Typical handler wiring (note the import is the middleware package,
-// not data/approval):
-//
-//	import approvalmw "github.com/bds421/rho-kit/httpx/v2/middleware/approval"
-//
-//	mux.Handle("DELETE /v1/users/{id}",
-//	    approvalmw.Middleware(infra.ApprovalStore,
-//	        approvalmw.WithActorExtractor(func(r *http.Request) (string, bool) {
-//	            id, ok := auth.UserID(r.Context())
-//	            return id, ok
-//	        }),
-//	        // Tenant defaults to coretenant.FromContext; opt into header
-//	        // trust explicitly via approvalmw.WithTenantFromHeader.
-//	    )(http.HandlerFunc(deleteUser)),
-//	)
-//
-// Panics if `s` is nil.
-func (b *Builder) ApprovalStore(s approval.Store) *Builder {
-	if s == nil {
-		panic("app: ApprovalStore requires a non-nil Store")
-	}
-	b.astore = s
-	return b
-}
-
-// Authz registers an [authz.Decider] (the kit's vendor-neutral
-// authorization seam — OpenFGA, Cedar, Casbin, or the in-memory
-// adapter for tests). The decider is exposed on
-// [Infrastructure.Authz] so handlers can build per-route policies via
-// [httpx/authz.FromDecider] and [httpx/authz.RequirePermission].
-//
-// The Builder does NOT auto-apply authz to the public mux because
-// authorization needs per-route subject + resource extractors that
-// depend on the route's parameter shape. The middleware lives at the
-// route level, not the mux level.
-//
-// Panics if `d` is nil.
-func (b *Builder) Authz(d kitauthz.Decider) *Builder {
-	if d == nil {
-		panic("app: Authz requires a non-nil Decider")
-	}
-	b.authz = d
 	return b
 }
 
@@ -685,11 +600,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		ServerTLS:     serverTLS,
 		TLSCertSource: tlsSource,
 		EventBus:      eventBus,
-		TenantBudget:  b.budgetSpecStore(),
-		ActionLog:     b.actionLogger(),
-		ApprovalStore: b.approvalStore(),
-		Authz:         b.authz,
-		Config:        b.cfg,
+		TenantBudget: b.budgetSpecStore(),
+		Config:       b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			validateBackgroundSpec(name, fn)
 			lateBgsMu.Lock()

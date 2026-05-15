@@ -8,9 +8,6 @@ import (
 	"sync"
 	"time"
 
-	kitauthz "github.com/bds421/rho-kit/authz/v2"
-	"github.com/bds421/rho-kit/data/v2/actionlog"
-	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
@@ -56,10 +53,7 @@ type Infrastructure struct {
 	// reload poll.
 	TLSCertSource netutil.CertificateSource
 
-	TenantBudget  budget.Budget    // nil if no TenantBudget
-	ActionLog     actionlog.Logger // nil if no ActionLogger
-	ApprovalStore approval.Store   // nil if no ApprovalStore
-	Authz         kitauthz.Decider // nil if no Authz
+	TenantBudget budget.Budget // nil if no TenantBudget
 
 	EventBus *eventbus.Bus // always non-nil; in-process domain event dispatch
 

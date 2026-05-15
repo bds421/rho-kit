@@ -3,8 +3,6 @@ package app
 import (
 	"net/http"
 
-	"github.com/bds421/rho-kit/data/v2/actionlog"
-	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
 	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
@@ -52,12 +50,6 @@ func (b *Builder) budgetMiddleware() func(http.Handler) http.Handler {
 	}
 	return httpxbudget.Middleware(b.budgetSpec.store, b.budgetSpec.opts...)
 }
-
-// actionLogger returns the registered logger or nil.
-func (b *Builder) actionLogger() actionlog.Logger { return b.alog }
-
-// approvalStore returns the registered store or nil.
-func (b *Builder) approvalStore() approval.Store { return b.astore }
 
 // budgetSpecStore returns the registered budget store or nil. The
 // helper exists so Infrastructure population stays a single-line

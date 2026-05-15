@@ -4,8 +4,11 @@ toolchain go1.26.2
 
 use (
 	./app
+	./app/actionlog
 	./app/amqp
+	./app/approval
 	./app/auditlog
+	./app/authz
 	./app/cron
 	./app/flags
 	./app/grpc
