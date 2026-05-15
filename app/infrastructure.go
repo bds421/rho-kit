@@ -13,7 +13,6 @@ import (
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
-	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/httpx/v2"
 	mwrl "github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
@@ -73,7 +72,6 @@ type Infrastructure struct {
 	ActionLog     actionlog.Logger // nil if no WithActionLogger
 	ApprovalStore approval.Store   // nil if no WithApprovalStore
 	Authz         kitauthz.Decider // nil if no WithAuthz
-	Flags         *kitflags.Client // nil if no WithFeatureFlags
 
 	RateLimiter   *mwrl.RateLimiter                 // nil if no WithIPRateLimit
 	KeyedLimiters map[string]*mwrl.KeyedRateLimiter // populated by WithKeyedRateLimit

@@ -158,6 +158,7 @@ func TestInitModules_OrderAndCleanup(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m1, m2},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -226,6 +227,7 @@ func TestInitModules_FailureClosesInitialized(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m1, m2, m3},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -260,6 +262,7 @@ func TestInitModules_DependencyLookup(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m1, m2},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -283,6 +286,7 @@ func TestInitModules_CloseErrorIsLogged(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -301,6 +305,7 @@ func TestInitModules_NilSlice(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		nil,
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -318,6 +323,7 @@ func TestInitModules_EmptySlice(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -469,6 +475,7 @@ func TestModule_LifecycleCloseOrder(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{mod1, mod2},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -511,6 +518,7 @@ func TestCloseModules_PanicRecovery(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m2, m1},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -544,6 +552,7 @@ func TestInitModules_InitPanicCleansUp(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m1, m2},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -585,6 +594,7 @@ func TestInitModules_PopulateOrder(t *testing.T) {
 	cleanup, err := initModules(
 		context.Background(),
 		[]Module{m1, m2, m3},
+		"test-service",
 		logger,
 		runner,
 		BaseConfig{},
@@ -646,6 +656,6 @@ func TestInitModules_DuplicateNamePanics(t *testing.T) {
 	m2 := &stubModule{name: "dup-secret-token"}
 
 	assert.PanicsWithValue(t, "app: duplicate module name (builtin + user modules must have unique names)", func() {
-		_, _ = initModules(context.Background(), []Module{m1, m2}, logger, nil, BaseConfig{}, nil)
+		_, _ = initModules(context.Background(), []Module{m1, m2}, "test-service", logger, nil, BaseConfig{}, nil)
 	})
 }

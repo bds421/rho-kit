@@ -5,6 +5,7 @@ toolchain go1.26.2
 use (
 	./app
 	./app/amqp
+	./app/flags
 	./app/grpc
 	./app/nats
 	./app/postgres

@@ -149,6 +149,13 @@ func (b BaseModule) HealthChecks() []health.DependencyCheck        { return nil 
 
 // ModuleContext provides the shared context available to modules during Init.
 type ModuleContext struct {
+	// ServiceName is the Builder name (the string passed to [New]).
+	// Modules that need a stable service identifier — for telemetry
+	// domains, lifecycle log scopes, or vendor-SDK client names —
+	// read it from here instead of duplicating it at Module
+	// construction time.
+	ServiceName string
+
 	// Logger is the service-level logger. Modules should create child loggers
 	// via Logger.With("module", name) for scoped output.
 	Logger *slog.Logger
@@ -206,6 +213,7 @@ func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
 func initModules(
 	ctx context.Context,
 	modules []Module,
+	serviceName string,
 	logger *slog.Logger,
 	runner *lifecycle.Runner,
 	cfg BaseConfig,
@@ -227,6 +235,7 @@ func initModules(
 	moduleMap := make(map[string]Module, len(modules))
 
 	mc := ModuleContext{
+		ServiceName:   serviceName,
 		Logger:        logger,
 		Runner:        runner,
 		Config:        cfg,

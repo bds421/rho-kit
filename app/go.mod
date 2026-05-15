@@ -7,7 +7,6 @@ require (
 	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/bds421/rho-kit/data/v2 v2.0.0
-	github.com/bds421/rho-kit/flags/v2 v2.0.0
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
@@ -47,7 +46,6 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.1.1 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/open-feature/go-sdk v1.17.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
@@ -61,7 +59,6 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
-	go.uber.org/mock v0.6.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
@@ -79,8 +76,6 @@ replace github.com/bds421/rho-kit/core/v2 => ../core
 replace github.com/bds421/rho-kit/crypto/v2 => ../crypto
 
 replace github.com/bds421/rho-kit/data/v2 => ../data
-
-replace github.com/bds421/rho-kit/flags/v2 => ../flags
 
 replace github.com/bds421/rho-kit/httpx/v2 => ../httpx
 

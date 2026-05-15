@@ -18,7 +18,6 @@ import (
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
-	kitflags "github.com/bds421/rho-kit/flags/v2"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
 	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
@@ -133,12 +132,6 @@ type Builder struct {
 	// Authorization decider (optional). Exposed via Infrastructure
 	// for handler-level RequirePermission wiring.
 	authz kitauthz.Decider
-
-	// Feature-flag provider (optional). The Builder constructs a
-	// flags.Client around it at Run time and exposes the client on
-	// Infrastructure.Flags so handlers can call infra.Flags.Bool /
-	// .String / .Int / .Float without per-handler SDK setup.
-	flagsProvider kitflags.Provider
 
 	// Production-safety opt-outs. Each one is a deliberate, documented
 	// escape hatch from a specific always-on tightening. The validator
@@ -617,25 +610,6 @@ func (b *Builder) WithAuthz(d kitauthz.Decider) *Builder {
 		panic("app: WithAuthz requires a non-nil Decider")
 	}
 	b.authz = d
-	return b
-}
-
-// WithFeatureFlags registers an OpenFeature-compatible provider
-// (LaunchDarkly, flagd, GrowthBook, or the kit's in-memory adapter
-// for tests). The Builder wraps it in a [flags.Client] at Run time
-// and exposes the client on [Infrastructure.Flags] so handlers can
-// gate on feature flags without per-handler SDK setup.
-//
-// The client auto-populates evaluation context from
-// [tenant.FromContext] and [contextutil.CorrelationID], so per-tenant
-// flag rollouts work without extra boilerplate at every flag check.
-//
-// Panics if `p` is nil.
-func (b *Builder) WithFeatureFlags(p kitflags.Provider) *Builder {
-	if p == nil {
-		panic("app: WithFeatureFlags requires a non-nil Provider")
-	}
-	b.flagsProvider = p
 	return b
 }
 
@@ -1213,6 +1187,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		moduleCleanup, moduleErr := initModules(
 			initCtx,
 			allModules,
+			b.name,
 			logger,
 			runner,
 			b.cfg,
@@ -1264,7 +1239,6 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		ActionLog:      b.actionLogger(),
 		ApprovalStore:  b.approvalStore(),
 		Authz:          b.authz,
-		Flags:          b.flagsClient(),
 		Config:         b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			validateBackgroundSpec(name, fn)
