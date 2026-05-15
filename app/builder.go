@@ -1252,21 +1252,21 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	} else {
 		httpHandler = http.NotFoundHandler()
 	}
-	// Compose the inbound middleware chain from the inside out:
+	// Compose the inbound middleware chain. Bridge modules in app/*
+	// declare which phase they target via [MiddlewareInstaller]; the
+	// kit's hardcoded ordering (budget → tenant → auth →
+	// signedrequest → ratelimit → stack) lives in the [MiddlewarePhase]
+	// constants, not here. This block stays the canonical assembly
+	// point so adapters cannot independently inject middleware in
+	// arbitrary positions — the Builder remains the single owner of
+	// chain order.
 	//
-	//   1. budget — charges per-tenant; furthest from the network
-	//      so rejections still see tenant ctx populated.
-	//   2. tenant — extracts tenant ID into ctx for budget + handler.
-	//   3. signedrequest — applied next; unsigned requests get rejected
-	//      before tenant or budget work runs.
-	//   4. ratelimit (per-IP) — cheap reject hostile clients before
-	//      the signedrequest crypto verification runs. Auto-applied
-	//      iff WithIPRateLimit was configured.
-	//   5. stack.Default — outermost; recover, security headers, metrics,
-	//      request ID, correlation ID, tracing, logging, timeout, request
-	//      logger. This means panics anywhere downstream still convert to
-	//      500 + structured log, and every request lands with a bounded
-	//      ctx, observability headers, and a scoped logger.
+	// Direct Builder-owned middleware (budget, tenant, signedrequest,
+	// ratelimit) is retained alongside the module-contributed chain
+	// during the migration. As each subsystem moves into app/* (waves
+	// 88+), its Builder-owned hook drops out and only the module
+	// contribution remains.
+	httpHandler = applyPhasedMiddleware(httpHandler, allModules)
 	if mw := b.budgetMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
 	}

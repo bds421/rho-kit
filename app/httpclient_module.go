@@ -11,6 +11,18 @@ import (
 	"github.com/bds421/rho-kit/security/v2/netutil"
 )
 
+// HTTPClientProvider is the public capability interface published
+// by the built-in httpclient module. Bridge modules in app/* that
+// need the kit-configured *http.Client at Init time (e.g., app/jwt
+// uses it to fetch the JWKS document) look it up via
+// `mc.Module("httpclient").(HTTPClientProvider).Client()`.
+//
+// The kit's httpclient module is initialised before every other
+// adapter module, so the lookup always succeeds at Init time.
+type HTTPClientProvider interface {
+	Client() *http.Client
+}
+
 // httpClientModule implements the Module interface for creating an HTTP client.
 // It reads the tracing state from a registered [TracingProvider] (when present)
 // to decide whether to create a tracing-instrumented or plain HTTP client.

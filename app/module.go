@@ -111,6 +111,68 @@ type RunnerAttacher interface {
 	AttachToRunner(runner *lifecycle.Runner)
 }
 
+// MiddlewarePhase is the position of a [PhasedMiddleware] in the
+// public mux's inbound chain. Higher phases run earlier (closer to
+// the network); lower phases run closer to the handler.
+//
+// The kit assigns stable numeric IDs so:
+//   - Multiple modules can target the same phase (rare, but
+//     deterministic via registration order within a phase).
+//   - Future modules can slot in between existing phases without
+//     renumbering every consumer (use phase values like 35 to land
+//     between 30 and 40).
+//
+// Bridge modules in app/* declare their phase via
+// [PhasedMiddleware.Phase] in [MiddlewareInstaller.PublicMiddleware].
+type MiddlewarePhase int
+
+const (
+	// PhaseBudget runs furthest from the network so per-tenant
+	// rejections still see a fully-populated tenant context.
+	PhaseBudget MiddlewarePhase = 10
+	// PhaseTenant extracts the tenant ID into the request context
+	// before budget enforcement runs.
+	PhaseTenant MiddlewarePhase = 20
+	// PhaseAuth verifies JWT / PASETO / API-key credentials and
+	// stamps the user identity onto the context.
+	PhaseAuth MiddlewarePhase = 30
+	// PhaseSignedRequest rejects unsigned or malformed requests
+	// before any of the deeper crypto / context work runs.
+	PhaseSignedRequest MiddlewarePhase = 40
+	// PhaseRateLimit cheap-rejects hostile clients before the
+	// signed-request crypto verification runs.
+	PhaseRateLimit MiddlewarePhase = 50
+	// PhaseStack is reserved for the kit's default stack
+	// (correlation ID, recover, security headers, request logger,
+	// timeout, …). Modules SHOULD NOT use this phase.
+	PhaseStack MiddlewarePhase = 60
+)
+
+// PhasedMiddleware pairs a middleware function with the phase at
+// which it should run. Returned by [MiddlewareInstaller.PublicMiddleware].
+type PhasedMiddleware struct {
+	Phase MiddlewarePhase
+	Func  func(http.Handler) http.Handler
+}
+
+// MiddlewareInstaller is the optional capability for modules that
+// contribute middleware to the public mux. The Builder collects
+// every PhasedMiddleware from every module implementing this
+// interface, sorts them by phase descending (outermost first), and
+// threads them around the user handler in stable order — services
+// don't need to know which middleware runs before which.
+//
+// Multiple modules contributing to the same phase are applied in
+// module registration order, with later-registered modules wrapping
+// the earlier ones at the same phase (matching the inside-out
+// composition the rest of the kit uses).
+//
+// Modules that do not install middleware leave this interface
+// unimplemented.
+type MiddlewareInstaller interface {
+	PublicMiddleware() []PhasedMiddleware
+}
+
 // BaseModule provides no-op defaults for optional Module methods. Embed it in
 // custom module structs to avoid implementing methods you don't need:
 //
