@@ -300,6 +300,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/approval",
 		"app/auditlog",
 		"app/authz",
+		"app/budget",
 		"app/cron",
 		"app/flags",
 		"app/grpc",
@@ -314,6 +315,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/signedrequest",
 		"app/slo",
 		"app/storage",
+		"app/tenant",
 		"app/tracing",
 		"authz",
 		"core",
@@ -459,7 +461,7 @@ func TestScaffold_TenantFlag_WiresTenantWrappers(t *testing.T) {
 	wire := string(wireBody)
 	assert.Contains(t, wire, "kitredis.LoadFields()",
 		"tenant scaffold must load Redis settings through the kit")
-	assert.Contains(t, wire, "MultiTenant(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"))",
+	assert.Contains(t, wire, "kittenant.Module(httpxtenant.HeaderExtractor(\"X-Tenant-Id\"))",
 		"tenant scaffold must enable strict tenant extraction")
 	assert.Contains(t, wire, "tenantcache.Wrap(baseCache)",
 		"tenant scaffold must wrap Redis cache with the tenant-scoped cache")

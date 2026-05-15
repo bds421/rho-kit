@@ -13,12 +13,9 @@ import (
 	"time"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
-	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/httpx/v2/healthhttp"
-	httpxbudget "github.com/bds421/rho-kit/httpx/v2/middleware/budget"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
-	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
@@ -72,14 +69,6 @@ type Builder struct {
 	version string
 	cfg     BaseConfig
 	logger  *slog.Logger
-
-	// Multi-tenant request handling (optional). Activates the tenant
-	// middleware so handlers can read tenant.FromContext.
-	tenantSpec *tenantSpec
-
-	// Per-tenant cost budgets (optional). The public mux charges every
-	// request against the tenant's bucket when set.
-	budgetSpec *budgetSpec
 
 	// Rate-limit declaration opt-out. The actual IP/keyed
 	// limiters live in app/ratelimit bridge modules; this field
@@ -135,85 +124,9 @@ func New(name, version string, cfg BaseConfig) *Builder {
 	}
 }
 
-// MultiTenant activates tenant-aware request handling and rejects
-// requests without a tenant with HTTP 400. The public mux gets the
-// tenant middleware (extracts the tenant ID from the request and stores
-// it on ctx); handlers downstream can call [tenant.FromContext] /
-// [tenant.Required] without each route reinventing the extractor.
-//
-// `extractor` defaults to [httpxtenant.ContextExtractor] when nil,
-// which reads the tenant already attached to ctx by an upstream
-// authentication middleware (PASETO/JWT verifier, mTLS subject
-// mapper, signed-request validator). Pass [httpxtenant.HeaderExtractor]
-// to trust an inbound X-Tenant-Id header, or a custom one to read
-// from a JWT claim, mTLS certificate, or whatever your auth
-// boundary surfaces.
-//
-// Tenant requirement is applied to every method by default (including
-// GET/HEAD/OPTIONS). Health/readiness probes belong on the kit's
-// internal ops port, which is a separate listener and never sees the
-// tenant middleware. Use [Builder.AllowMissingTenantOnSafeMethods]
-// only when the public mux must serve pre-auth GETs alongside
-// tenant-scoped routes; use [Builder.MultiTenantOptional] to
-// extract-but-not-reject for hybrid public/private services.
-//
-// Cache and idempotency wrappers ([data/cache/tenant.Wrap] /
-// [data/idempotency/tenant.Wrap]) are caller-applied — the
-// Builder doesn't own those instances and shouldn't silently
-// rewrite them.
-func (b *Builder) MultiTenant(extractor httpxtenant.Extractor) *Builder {
-	b.tenantSpec = &tenantSpec{extractor: extractor, required: true}
-	return b
-}
-
-// MultiTenantOptional activates tenant-aware request handling
-// without rejecting requests that don't supply a tenant — the tenant
-// ID is extracted onto ctx when present and absent otherwise. Use this
-// for hybrid services where a subset of routes is genuinely public.
-//
-// Cannot be combined with [Builder.TenantBudget]: budget
-// enforcement requires a tenant on every charged request.
-func (b *Builder) MultiTenantOptional(extractor httpxtenant.Extractor) *Builder {
-	b.tenantSpec = &tenantSpec{extractor: extractor, required: false}
-	return b
-}
-
-// AllowMissingTenantOnSafeMethods opts out of the default
-// require-tenant-on-every-method rule for GET/HEAD/OPTIONS. Forwards
-// to [httpxtenant.AllowMissingTenantOnSafeMethods].
-//
-// Mutually exclusive with [Builder.TenantBudget]: budget
-// enforcement keys on the tenant ID, so every charged route needs a
-// required tenant context before the budget middleware runs.
-// [Builder.Validate] rejects the combination at startup.
-func (b *Builder) AllowMissingTenantOnSafeMethods() *Builder {
-	if b.tenantSpec == nil {
-		panic("app: AllowMissingTenantOnSafeMethods must be called after MultiTenant")
-	}
-	b.tenantSpec.allowMissingTenantOnSafeMethods = true
-	return b
-}
-
-// TenantBudget enforces a per-tenant cost budget on every
-// inbound request via [httpx/middleware/budget]. The default key
-// function pulls the tenant ID from ctx (assumes
-// [MultiTenant] is also configured with required=true); supply a
-// custom one via [httpxbudget.WithKeyFunc] if your scope is different.
-//
-// Panics if `b2` is nil — silent no-budget would defeat the
-// kit's "refuse to misconfigure" stance.
-func (b *Builder) TenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Builder {
-	if b2 == nil {
-		panic("app: TenantBudget requires a non-nil Budget store")
-	}
-	for _, opt := range opts {
-		if opt == nil {
-			panic("app: TenantBudget option must not be nil")
-		}
-	}
-	b.budgetSpec = &budgetSpec{store: b2, opts: append([]httpxbudget.Option(nil), opts...)}
-	return b
-}
+// (MultiTenant, MultiTenantOptional, AllowMissingTenantOnSafeMethods,
+// TenantBudget have moved to bridge modules — see app/tenant.Module
+// and app/budget.Module respectively.)
 
 // WithoutRateLimit acknowledges that the public HTTP server will run
 // without any kit-managed rate limiter. The actual IP / keyed
@@ -600,8 +513,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		ServerTLS:     serverTLS,
 		TLSCertSource: tlsSource,
 		EventBus:      eventBus,
-		TenantBudget: b.budgetSpecStore(),
-		Config:       b.cfg,
+		Config:        b.cfg,
 		Background: func(name string, fn func(ctx context.Context) error) {
 			validateBackgroundSpec(name, fn)
 			lateBgsMu.Lock()
@@ -653,17 +565,10 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// inject middleware in arbitrary positions — the Builder
 	// remains the single owner of chain order.
 	//
-	// budget + tenant remain Builder-owned for now (their wiring
-	// is bundled with multi-tenant / per-tenant cost surfaces that
-	// are still configured on the Builder); they will move to
-	// bridge modules in a follow-up wave.
+	// Tenant + budget are now MiddlewareInstaller modules; their
+	// PhaseTenant / PhaseBudget contributions flow through
+	// applyPhasedMiddleware alongside every other bridge.
 	httpHandler = applyPhasedMiddleware(httpHandler, allModules)
-	if mw := b.budgetMiddleware(); mw != nil {
-		httpHandler = mw(httpHandler)
-	}
-	if mw := b.tenantMiddleware(); mw != nil {
-		httpHandler = mw(httpHandler)
-	}
 	if !httpCfg.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
 		// the same logger as infrastructure setup. Pre-fix this hardcoded

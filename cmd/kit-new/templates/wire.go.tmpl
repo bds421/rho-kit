@@ -17,6 +17,7 @@ import (
 	kitratelimit "github.com/bds421/rho-kit/app/ratelimit/v2"
 {{- if .Tenant}}
 	kitredisadapter "github.com/bds421/rho-kit/app/redis/v2"
+	kittenant "github.com/bds421/rho-kit/app/tenant/v2"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	rediscache "github.com/bds421/rho-kit/data/cache/rediscache/v2"
 	redisstore "github.com/bds421/rho-kit/data/idempotency/redisstore/v2"
@@ -177,7 +178,7 @@ func Run(_ *slog.Logger) error {
 
 	b = b.
 		With(kitredisadapter.Module(redisOpts)).
-		MultiTenant(httpxtenant.HeaderExtractor("X-Tenant-Id"))
+		With(kittenant.Module(httpxtenant.HeaderExtractor("X-Tenant-Id")))
 {{- end}}
 
 	return b.

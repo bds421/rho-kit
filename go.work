@@ -9,6 +9,7 @@ use (
 	./app/approval
 	./app/auditlog
 	./app/authz
+	./app/budget
 	./app/cron
 	./app/flags
 	./app/grpc
@@ -23,6 +24,7 @@ use (
 	./app/signedrequest
 	./app/slo
 	./app/storage
+	./app/tenant
 	./app/tracing
 	./authz
 	./authz/openfga

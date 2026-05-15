@@ -97,8 +97,8 @@ func (m *cronModule) HealthChecks() []health.DependencyCheck { return nil }
 // app/leader. The lookup is optional — services that don't
 // register a leader module run cron unguarded.
 func lookupElector(mc app.ModuleContext) (electorLike, bool) {
-	m, ok := mc.LookupModule("leader-election")
-	if !ok {
+	m := mc.LookupModule("leader-election")
+	if m == nil {
 		return nil, false
 	}
 	ep, ok := m.(app.ElectorProvider)

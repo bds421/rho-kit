@@ -225,27 +225,9 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 		"WithoutTLS must allow empty TLS config")
 }
 
-// --- H-4: TenantBudget requires MultiTenant ---
-
-func TestBudget_RequiresMultiTenant(t *testing.T) {
-	b := New("test", "v1", validBaseConfig()).
-		With(allowPlaintextOnly()).
-		WithoutRateLimit().
-		TenantBudget(&stubBudget{})
-	err := b.Validate()
-	require.Error(t, err, "TenantBudget without MultiTenant must fail")
-	assert.Contains(t, err.Error(), "MultiTenant")
-}
-
-func TestBudget_WithMultiTenant_Passes(t *testing.T) {
-	b := New("test", "v1", validBaseConfig()).
-		With(allowPlaintextOnly()).
-		WithoutRateLimit().
-		MultiTenant(nil).
-		TenantBudget(&stubBudget{})
-	require.NoError(t, b.Validate(),
-		"TenantBudget paired with MultiTenant must pass validation")
-}
+// H-4 / R3-H Tenant+Budget cross-validation tests moved to
+// app/budget — the Module's Init now owns the contract via the
+// TenantPolicyProvider capability and ModuleContext.LookupModule.
 
 // JWT audience-pinning rejection moved to app/jwt.Module — see
 // jwt_test.go in that package. The Builder.Validate check is gone.

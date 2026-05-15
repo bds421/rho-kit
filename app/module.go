@@ -196,6 +196,21 @@ type SLOCheckerProvider interface {
 	SLOChecker() *slo.Checker
 }
 
+// TenantPolicyProvider is the public capability interface
+// implemented by the tenant bridge module (app/tenant). The
+// budget bridge (app/budget) looks up the tenant module at Init
+// time and reads the policy via this interface to verify the
+// "TenantBudget requires Required tenant" invariant without
+// importing app/tenant directly.
+type TenantPolicyProvider interface {
+	// TenantRequired reports whether tenant is required on every
+	// request (the default) vs. optionally extracted.
+	TenantRequired() bool
+	// TenantAllowsMissingOnSafeMethods reports whether the
+	// Required policy is relaxed for GET/HEAD/OPTIONS.
+	TenantAllowsMissingOnSafeMethods() bool
+}
+
 // RateLimitDeclarer is implemented by modules that count as a
 // rate-limit declaration for the always-on Builder validator.
 // Each module that installs ANY kind of rate limiting (IP-wide,
@@ -316,14 +331,22 @@ func (mc ModuleContext) Module(name string) Module {
 	return m
 }
 
-// LookupModule returns a previously initialized module by name or
-// (nil, false) if absent. Use this from modules that depend on
-// another module *optionally* — e.g., app/cron gates jobs on
-// app/leader if present but runs unguarded otherwise. The panicking
-// [ModuleContext.Module] is the right call for hard deps.
-func (mc ModuleContext) LookupModule(name string) (Module, bool) {
-	m, ok := mc.modules[name]
-	return m, ok
+// LookupModule returns a registered module by name or nil if no
+// module with that name is registered. The returned module may
+// not yet have Init'd (the moduleMap is pre-populated at startup
+// with all registered modules so cross-module config lookups work
+// regardless of init order). Modules that need *runtime* state of
+// a peer (e.g., resources published by the peer's Init) must read
+// from [Infrastructure.Resource] inside the RouterFunc instead.
+//
+// Use this from modules that depend on another module *optionally*
+// — e.g., app/cron gates jobs on app/leader if present but runs
+// unguarded otherwise — or to read a peer's configuration at Init
+// time (e.g., app/budget reading app/tenant's TenantRequired()).
+// The panicking [ModuleContext.Module] is the right call for hard
+// deps where absence is a programmer error.
+func (mc ModuleContext) LookupModule(name string) Module {
+	return mc.modules[name]
 }
 
 // serverTLSOptions returns the netutil.ServerTLSOption set the
@@ -370,6 +393,15 @@ func initModules(
 
 	initialized := make([]Module, 0, len(modules))
 	moduleMap := make(map[string]Module, len(modules))
+	// Pre-populate moduleMap with all registered modules so cross-
+	// module lookups via [ModuleContext.LookupModule] work regardless
+	// of init order. A module's struct fields (its config) are
+	// finalized at registration time, so peers can read configuration
+	// (e.g., budget reading tenant's TenantRequired()) before either
+	// has Init'd.
+	for _, m := range modules {
+		moduleMap[m.Name()] = m
+	}
 
 	mc := ModuleContext{
 		ServiceName:   serviceName,
@@ -388,7 +420,6 @@ func initModules(
 			return nil, fmt.Errorf("module init failed: %w", err)
 		}
 		initialized = append(initialized, m)
-		moduleMap[m.Name()] = m
 	}
 
 	cleanup := func(ctx context.Context) {

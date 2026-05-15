@@ -94,25 +94,10 @@ func (b *Builder) Validate() error {
 		return fmt.Errorf("TLSReloadOnSignal requires ReloadingTLS")
 	}
 
-	// H-4: TenantBudget without MultiTenant cannot derive the
-	// default tenant key. Keep this as a startup error instead of
-	// letting every request fail later at the budget middleware.
-	if b.budgetSpec != nil && b.tenantSpec == nil {
-		return fmt.Errorf("TenantBudget requires MultiTenant(..., required=true) so the default budget key can be derived from the tenant context")
-	}
-
-	// R3-H: TenantBudget enforces a per-tenant budget that keys on
-	// the tenant ID. Pin the strict combination at construction so
-	// callers do not discover missing tenant context only after the
-	// request reaches the budget middleware.
-	if b.budgetSpec != nil && b.tenantSpec != nil {
-		if !b.tenantSpec.required {
-			return fmt.Errorf("TenantBudget requires MultiTenant(..., required=true) because budget enforcement needs a tenant key on every charged request")
-		}
-		if b.tenantSpec.allowMissingTenantOnSafeMethods {
-			return fmt.Errorf("TenantBudget is incompatible with AllowMissingTenantOnSafeMethods because budget enforcement needs a tenant key on every charged request")
-		}
-	}
+	// H-4 / R3-H: TenantBudget-vs-MultiTenant cross-checks moved to
+	// app/budget.Module.Init (it looks up the registered tenant
+	// module via ModuleContext.LookupModule and reads policy via
+	// the TenantPolicyProvider capability).
 
 	return b.validateProductionSafety()
 }

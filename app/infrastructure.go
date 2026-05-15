@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bds421/rho-kit/data/v2/budget"
 	"github.com/bds421/rho-kit/httpx/v2"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
@@ -52,8 +51,6 @@ type Infrastructure struct {
 	// configs from [Config.TLS], so the whole service shares one
 	// reload poll.
 	TLSCertSource netutil.CertificateSource
-
-	TenantBudget budget.Budget // nil if no TenantBudget
 
 	EventBus *eventbus.Bus // always non-nil; in-process domain event dispatch
 
