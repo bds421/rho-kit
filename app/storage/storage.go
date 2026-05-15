@@ -6,8 +6,8 @@
 //
 //	app.New(name, ver, cfg).
 //	    With(storage.Module(s3Backend,
-//	        storage.Named("uploads", uploadsBackend),
-//	        storage.Named("archive", archiveBackend),
+//	        storage.WithNamed("uploads", uploadsBackend),
+//	        storage.WithNamed("archive", archiveBackend),
 //	        storage.WithHealthCheck(s3HealthCheck),
 //	    )).
 //	    Router(routerFn).
@@ -59,18 +59,18 @@ type namedSpec struct {
 	backend storage.Storage
 }
 
-// Named adds a named backend to the storage manager. Multiple Named
-// options stack; the first registered backend is the default in the
-// manager unless [storage.Manager.SetDefault] is called inside the
-// router.
+// WithNamed adds a named backend to the storage manager. Multiple
+// WithNamed options stack; the first registered backend is the
+// default in the manager unless [storage.Manager.SetDefault] is
+// called inside the router.
 //
 // Panics if name is empty or backend is nil.
-func Named(name string, backend storage.Storage) Option {
+func WithNamed(name string, backend storage.Storage) Option {
 	if name == "" {
-		panic("app/storage: Named requires a non-empty name")
+		panic("app/storage: WithNamed requires a non-empty name")
 	}
 	if backend == nil {
-		panic("app/storage: Named requires a non-nil backend")
+		panic("app/storage: WithNamed requires a non-nil backend")
 	}
 	return func(c *config) {
 		c.named = append(c.named, namedSpec{name: name, backend: backend})
@@ -109,6 +109,12 @@ func Module(backend storage.Storage, opts ...Option) app.Module {
 		}
 		opt(&cfg)
 	}
+	// Defensive clone — caller-held option closures append to
+	// cfg.named / cfg.checks via the variadic; once Module returns
+	// the module owns the slices and callers must not mutate them
+	// through aliasing.
+	cfg.named = append([]namedSpec(nil), cfg.named...)
+	cfg.checks = append([]health.DependencyCheck(nil), cfg.checks...)
 	return &storageModule{backend: backend, cfg: cfg}
 }
 

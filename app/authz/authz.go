@@ -41,7 +41,7 @@ const ResourceDeciderKey = "github.com/bds421/rho-kit/app/authz.decider"
 // Panics if decider is nil.
 func Module(decider kitauthz.Decider) app.Module {
 	if decider == nil {
-		panic("app/authz: Module requires a non-nil Decider")
+		panic("app/authz: Module requires a non-nil decider")
 	}
 	return &authzModule{decider: decider}
 }
