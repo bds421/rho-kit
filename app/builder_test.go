@@ -33,7 +33,6 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		NamedStorage("local", membackend.New()).
 		EventBusPool(4).
 		WithModule(NewBaseModule("svc-extra")).
-		ServerOption(WithWriteTimeout(0)).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).
 		OnShutdown(func(_ context.Context) {}).
@@ -133,23 +132,9 @@ func TestBuilder_WithNamedStoragePanicsOnNil(t *testing.T) {
 // app/ratelimit (IPModule / KeyedModule own the parameter checks
 // and dedupe contract now).
 
-func TestBuilder_WithServerOptionPanicsOnNil(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).ServerOption(nil)
-	})
-}
-
-func TestBuilder_WithStackOptionsPanicsOnNil(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).StackOptions(nil)
-	})
-}
-
-func TestBuilder_WithCustomReadinessPanicsOnNil(t *testing.T) {
-	assert.Panics(t, func() {
-		New("test-svc", "v0.1.0", BaseConfig{}).CustomReadiness(nil)
-	})
-}
+// ServerOption / StackOptions / CustomReadiness nil-panic tests moved
+// to app/http — the functional options now own the construction-time
+// contract.
 
 func TestBuilder_AddHealthCheckPanicsOnInvalidCheck(t *testing.T) {
 	assert.Panics(t, func() {
@@ -296,7 +281,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		var routerCalled atomic.Bool
 
 		b := New("lifecycle-test", "v0.0.1", cfg).
-			WithoutTLS().
+			With(allowPlaintextOnly()).
 			WithoutRateLimit().
 			AddHealthCheck(health.DependencyCheck{
 				Name:     "test-dep",
@@ -380,7 +365,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		var lateBgStarted atomic.Bool
 
 		b := New("lifecycle-bg-test", "v0.0.2", cfg).
-			WithoutTLS().
+			With(allowPlaintextOnly()).
 			WithoutRateLimit().
 			Background("early-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
@@ -445,7 +430,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		}
 
 		b := New("lifecycle-context-test", "v0.0.3", cfg).
-			WithoutTLS().
+			With(allowPlaintextOnly()).
 			WithoutRateLimit().
 			WithModule(module).
 			Background("ctx-bg", func(ctx context.Context) error {

@@ -32,14 +32,13 @@ type resolvedHTTPConfig struct {
 
 // resolveHTTPConfig walks the module list looking for the first
 // [HTTPConfigProvider] and returns its resolved configuration.
+// Falls back to the zero value (kit defaults: TLS required, default
+// stack on, internal ops loopback-only) when no HTTPConfigProvider
+// module is registered.
 //
-// Falls back to the Builder's directly-set fields (the legacy
-// Builder.* methods deprecated by wave 94) when no
-// HTTPConfigProvider module is registered. This lets services
-// keep using b.WithoutTLS / b.ReloadingTLS / etc. through the
-// migration window — the new app/http.Module path becomes the
-// canonical surface once consumers move over.
-func resolveHTTPConfig(modules []Module, b *Builder) resolvedHTTPConfig {
+// Services that need to override these defaults register
+// app/http.Module(opts...) on the Builder.
+func resolveHTTPConfig(modules []Module) resolvedHTTPConfig {
 	for _, m := range modules {
 		p, ok := m.(HTTPConfigProvider)
 		if !ok {
@@ -59,19 +58,5 @@ func resolveHTTPConfig(modules []Module, b *Builder) resolvedHTTPConfig {
 			customReadiness:          p.CustomReadiness(),
 		}
 	}
-	if b == nil {
-		return resolvedHTTPConfig{}
-	}
-	return resolvedHTTPConfig{
-		allowPlaintext:           b.allowPlaintext,
-		optionalClientCerts:      b.tlsOptionalClientCert,
-		allowInternalNonLoopback: b.allowInternalNonLoopback,
-		reloadingTLSActive:       b.tlsReloadActive,
-		reloadingTLSOpts:         b.tlsReloadOpts,
-		tlsReloadSignals:         b.tlsReloadSignals,
-		disableDefaultStack:      b.disableDefaultStack,
-		stackOpts:                b.stackOpts,
-		serverOpts:               b.serverOpts,
-		customReadiness:          b.customReadiness,
-	}
+	return resolvedHTTPConfig{}
 }

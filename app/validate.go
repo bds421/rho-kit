@@ -89,7 +89,7 @@ func (b *Builder) Validate() error {
 	// at the first signal delivery.
 	// Resolve early so TLS-reload coherence checks read the same
 	// config as Run.
-	tlsHTTPCfg := resolveHTTPConfig(b.modules, b)
+	tlsHTTPCfg := resolveHTTPConfig(b.modules)
 	if len(tlsHTTPCfg.tlsReloadSignals) > 0 && !tlsHTTPCfg.reloadingTLSActive {
 		return fmt.Errorf("TLSReloadOnSignal requires ReloadingTLS")
 	}
@@ -131,7 +131,7 @@ func (b *Builder) validateProductionSafety() error {
 	// [HTTPConfigProvider] module (typically app/http.Module), fall
 	// back to the legacy Builder.* fields during the migration
 	// window.
-	httpCfg := resolveHTTPConfig(b.modules, b)
+	httpCfg := resolveHTTPConfig(b.modules)
 
 	// C-2: TLS must be configured. Partial TLSConfig silently falls back
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who

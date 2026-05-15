@@ -14,10 +14,3 @@ func hasModule(modules []Module, name string) bool {
 	return false
 }
 
-func moduleNames(modules []Module) []string {
-	out := make([]string, len(modules))
-	for i, m := range modules {
-		out[i] = m.Name()
-	}
-	return out
-}

@@ -337,7 +337,8 @@ func (mc ModuleContext) LookupModule(name string) (Module, bool) {
 // Exposed (lowercase) for the unit test that pins the contract; not
 // part of the public Builder surface.
 func (b *Builder) serverTLSOptions() []netutil.ServerTLSOption {
-	if b.tlsOptionalClientCert {
+	cfg := resolveHTTPConfig(b.modules)
+	if cfg.optionalClientCerts {
 		return []netutil.ServerTLSOption{netutil.WithOptionalClientCert()}
 	}
 	return nil

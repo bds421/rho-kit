@@ -16,7 +16,7 @@ var _ slog.LogValuer = BaseConfig{}
 // they care about.
 func newTestBuilder() *Builder {
 	return New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 }
 
@@ -80,7 +80,7 @@ func TestValidate_InvalidServerPort(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Server.Port = 0
 	b := New("test-svc", "v0.1.0", cfg).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
@@ -95,7 +95,7 @@ func TestValidate_InvalidInternalPort(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.Internal.Port = 70000
 	b := New("test-svc", "v0.1.0", cfg).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 	err := b.Validate()
 	if err == nil {
@@ -111,7 +111,7 @@ func TestValidate_ValidPorts(t *testing.T) {
 	cfg.Server.Port = 1
 	cfg.Internal.Port = 65535
 	b := New("test-svc", "v0.1.0", cfg).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("expected no error for valid ports, got: %v", err)
@@ -123,7 +123,7 @@ func TestValidate_ValidPorts(t *testing.T) {
 // actionable error naming all three options.
 func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS()
+		With(allowPlaintextOnly())
 	err := b.Validate()
 	if err == nil {
 		t.Fatal("expected error when no rate-limit declaration is present")
@@ -148,7 +148,7 @@ func (fakeRateLimitDeclarer) DeclaresRateLimit() {}
 // app/ratelimit.KeyedModule) get their own tests in that package.
 func TestValidate_RateLimitDeclarerSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithModule(fakeRateLimitDeclarer{BaseModule: NewBaseModule("fake-rl")})
 	if err := b.Validate(); err != nil {
 		t.Fatalf("RateLimitDeclarer module must satisfy the rate-limit gate, got: %v", err)
@@ -159,7 +159,7 @@ func TestValidate_RateLimitDeclarerSatisfiesGate(t *testing.T) {
 // opt-out is honored for traffic-bounded services.
 func TestValidate_WithoutRateLimitSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("WithoutRateLimit must satisfy the rate-limit gate, got: %v", err)

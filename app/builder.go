@@ -89,30 +89,12 @@ type Builder struct {
 	// Append-only action log (optional). Exposed via Infrastructure.
 	alog actionlog.Logger
 
-	// Reloading TLS source: when non-nil, the Builder builds a
-	// FilesCertificateSource from b.cfg.TLS at Run time, uses
-	// [netutil.ReloadingServerTLS] for the public server, threads
-	// the source into the default HTTP client (via
-	// [netutil.ReloadingClientTLS]), and registers Stop on the
-	// lifecycle Runner. Wire with [Builder.ReloadingTLS].
-	tlsReloadOpts    []netutil.FilesCertificateSourceOption
-	tlsReloadActive  bool
-	tlsReloadSignals []os.Signal // when non-empty, RunContext installs a signal→Reload bridge
-
 	// Approval store (optional). Exposed via Infrastructure.
 	astore approval.Store
 
 	// Authorization decider (optional). Exposed via Infrastructure
 	// for handler-level RequirePermission wiring.
 	authz kitauthz.Decider
-
-	// Production-safety opt-outs. Each one is a deliberate, documented
-	// escape hatch from a specific always-on tightening. The validator
-	// requires an explicit per-relaxation acknowledgement rather than a
-	// blanket "trust me" — there is no global "dev mode" toggle.
-	allowInternalNonLoopback bool // C-1: lets Internal.Host == "0.0.0.0" pass.
-	allowPlaintext           bool // C-2: lets TLS-disabled deployments pass.
-	tlsOptionalClientCert    bool // FR-014: lets gateway-fronted services accept clients without certs.
 
 	// Rate-limit declaration opt-out. The actual IP/keyed
 	// limiters live in app/ratelimit bridge modules; this field
@@ -132,17 +114,13 @@ type Builder struct {
 	// EventBus worker pool
 	eventBusPoolSize int
 
-	// Cron
-
-	// Server options
-	serverOpts []httpx.ServerOption
-
-	// Public-mux default stack
-	disableDefaultStack bool
-	stackOpts           []stack.Option
-
 	// Health checks
-	healthChecks    []health.DependencyCheck
+	healthChecks []health.DependencyCheck
+
+	// customReadiness is set only by [Infrastructure.SetCustomReadiness]
+	// at runtime (inside the RouterFunc). The startup-time override
+	// lives on app/http.Module's CustomReadiness option. Keep the
+	// field unexported so consumers don't reach for it directly.
 	customReadiness http.Handler
 
 	// Background goroutines registered before Run
@@ -178,61 +156,6 @@ func New(name, version string, cfg BaseConfig) *Builder {
 		version: version,
 		cfg:     cfg,
 	}
-}
-
-// AllowInternalNonLoopback acknowledges that the internal ops port
-// (health, ready, metrics) is intentionally bound to a non-loopback
-// interface (e.g. 0.0.0.0). Without this opt-in, [Builder.Build]
-// rejects any configuration where Internal.Host resolves to "0.0.0.0",
-// because /metrics is unauthenticated and exposing it on a routable
-// interface leaks Prometheus labels (route patterns, tenant IDs, process
-// fingerprinting) to anyone on the network.
-//
-// Use this only when the operator has confirmed network isolation
-// (NetworkPolicy, security group, host-only Docker network) for the
-// internal port. The check is unconditional — there is no KIT_ENV
-// escape hatch.
-func (b *Builder) AllowInternalNonLoopback() *Builder {
-	b.allowInternalNonLoopback = true
-	return b
-}
-
-// WithoutTLS acknowledges that the public HTTP server will run without
-// TLS. Without this opt-in, [Builder.Build] rejects any configuration
-// where [netutil.TLSConfig.Enabled] is false, because partial TLS
-// configuration (one missing env var) silently downgrades to plaintext
-// HTTP.
-//
-// Use this only for services explicitly fronted by an external TLS
-// terminator (identity proxy, load balancer, ingress controller) that
-// re-encrypts to the cluster. The check is unconditional — there is no KIT_ENV
-// escape hatch.
-func (b *Builder) WithoutTLS() *Builder {
-	b.allowPlaintext = true
-	return b
-}
-
-// OptionalClientCertificates opts the public TLS server out of
-// the kit's default of requiring a client certificate from every
-// caller (mTLS). After this call the listener verifies any presented
-// client certificate but does NOT reject anonymous clients
-// (tls.VerifyClientCertIfGiven).
-//
-// Audit FR-014 [HIGH]: pre-fix the Builder constructed every TLS
-// listener with VerifyClientCertIfGiven by default, contradicting
-// the kit's documented "TLS env enables global mTLS" convention.
-// Now mTLS is enforced unless the operator explicitly downgrades —
-// a deliberate, documented escape hatch matching the [WithoutTLS]
-// shape.
-//
-// Use this only for services genuinely fronted by an external TLS
-// terminator (identity proxy, load balancer, ingress controller) that
-// re-encrypts to the cluster *without* presenting a client certificate. Internal
-// service-to-service listeners should never use this option — the
-// verifier is the kit's only authentication layer for those callers.
-func (b *Builder) OptionalClientCertificates() *Builder {
-	b.tlsOptionalClientCert = true
-	return b
 }
 
 // MultiTenant activates tenant-aware request handling and rejects
@@ -312,69 +235,6 @@ func (b *Builder) TenantBudget(b2 budget.Budget, opts ...httpxbudget.Option) *Bu
 		}
 	}
 	b.budgetSpec = &budgetSpec{store: b2, opts: append([]httpxbudget.Option(nil), opts...)}
-	return b
-}
-
-// ReloadingTLS enables hot rotation of the TLS material configured
-// on [BaseConfig.TLS]. The Builder constructs a
-// [netutil.FilesCertificateSource] from the configured cert/key/CA
-// paths, threads it into the public server via
-// [netutil.ReloadingServerTLS], threads it into the default HTTP
-// client via [netutil.ReloadingClientTLS], and registers a Stop hook
-// on the lifecycle Runner so the background poller exits cleanly.
-//
-// Pass [netutil.WithReloadInterval] to enable periodic polling, or
-// drive reloads manually by calling [FilesCertificateSource.Reload]
-// from a SIGHUP handler — the kit does not assume which trigger is
-// in use. Without this option the Builder still loads TLS material
-// at Run time but treats the snapshot as immutable until process
-// restart, matching v1 behaviour.
-//
-// TLS must be fully configured (CACert + Cert + Key) before calling
-// this; without it the option is wired but Run returns an error from
-// the source constructor.
-func (b *Builder) ReloadingTLS(opts ...netutil.FilesCertificateSourceOption) *Builder {
-	b.tlsReloadOpts = append([]netutil.FilesCertificateSourceOption(nil), opts...)
-	b.tlsReloadActive = true
-	return b
-}
-
-// TLSReloadOnSignal installs a signal→[FilesCertificateSource.Reload]
-// bridge alongside the reloading source built by [Builder.ReloadingTLS],
-// so an external rotator can trigger a hot reload by sending one of
-// `signals` (typically [syscall.SIGHUP]) to the process. Without this
-// option callers still drive reloads either by passing
-// [netutil.WithReloadInterval] (background poller) or by calling
-// [FilesCertificateSource.Reload] directly — the kit doesn't assume
-// which trigger is in use, so the signal bridge is opt-in rather than
-// always-on.
-//
-// The bridge is a goroutine registered with the lifecycle Runner. It
-// drains signal deliveries until ctx cancellation, calls Reload for
-// every signal, and logs reload failures via the Builder's slog
-// logger (the snapshot already on the source is kept on failure, so
-// the live TLS config doesn't degrade).
-//
-// Avoid registering [os.Interrupt] or [syscall.SIGTERM] here — the
-// lifecycle Runner already consumes those for orderly shutdown, and
-// piggybacking on them would conflate reload with stop. Panics if
-// `signals` is empty or contains a nil element; this is a
-// configuration error and should fail at construction, not at the
-// first signal delivery.
-//
-// Requires [Builder.ReloadingTLS]; calling this without it is a
-// configuration error and Run returns an error from the Builder's
-// startup validation step.
-func (b *Builder) TLSReloadOnSignal(signals ...os.Signal) *Builder {
-	if len(signals) == 0 {
-		panic("app: TLSReloadOnSignal requires at least one signal")
-	}
-	for _, s := range signals {
-		if s == nil {
-			panic("app: TLSReloadOnSignal signal must not be nil")
-		}
-	}
-	b.tlsReloadSignals = append([]os.Signal(nil), signals...)
 	return b
 }
 
@@ -542,15 +402,6 @@ func (b *Builder) Logger(l *slog.Logger) *Builder {
 	return b
 }
 
-// ServerOption adds an httpx.ServerOption to the public HTTP server.
-func (b *Builder) ServerOption(opt httpx.ServerOption) *Builder {
-	if opt == nil {
-		panic("app: ServerOption requires a non-nil option")
-	}
-	b.serverOpts = append(b.serverOpts, opt)
-	return b
-}
-
 func serverErrorLogOption(logger *slog.Logger) httpx.ServerOption {
 	if logger == nil {
 		logger = slog.Default()
@@ -562,42 +413,6 @@ func serverErrorLogOption(logger *slog.Logger) httpx.ServerOption {
 func (b *Builder) AddHealthCheck(check health.DependencyCheck) *Builder {
 	validateDependencyCheck(check, "AddHealthCheck")
 	b.healthChecks = append(b.healthChecks, check)
-	return b
-}
-
-// CustomReadiness overrides the auto-accumulated health checks with a
-// custom readiness handler (e.g. for custom state introspection).
-func (b *Builder) CustomReadiness(h http.Handler) *Builder {
-	if h == nil {
-		panic("app: CustomReadiness requires a non-nil handler")
-	}
-	b.customReadiness = h
-	return b
-}
-
-// StackOptions appends options forwarded to [stack.Default] when the
-// Builder wraps the public mux. Examples: [stack.WithQuietPaths],
-// [stack.WithoutTimeout], [stack.WithRecoverMetrics]. The Builder always
-// supplies a logger derived from the slog default; pass [stack.Logger]
-// here to override it.
-func (b *Builder) StackOptions(opts ...stack.Option) *Builder {
-	for _, opt := range opts {
-		if opt == nil {
-			panic("app: StackOptions option must not be nil")
-		}
-	}
-	b.stackOpts = append(b.stackOpts, opts...)
-	return b
-}
-
-// WithoutDefaultStack disables the auto-applied public-mux middleware
-// stack (recover, security headers, metrics, request ID, correlation ID,
-// tracing, logging, timeout, request logger). Use only when the service
-// supplies its own equivalent chain — services that omit this without a
-// replacement run without panic recovery, structured logs, or per-request
-// timeouts. Reserved for tests and bespoke transports.
-func (b *Builder) WithoutDefaultStack() *Builder {
-	b.disableDefaultStack = true
 	return b
 }
 
@@ -763,7 +578,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// [HTTPConfigProvider] (typically app/http.Module). Zero value
 	// matches the kit's hardened defaults: TLS required, default
 	// stack on, internal ops loopback-only.
-	httpCfg := resolveHTTPConfig(append(allModules, deferredUserModules...), b)
+	httpCfg := resolveHTTPConfig(append(allModules, deferredUserModules...))
 	allModules = append(allModules, deferredUserModules...)
 
 	// 0.5. EventBus — always initialized (no With* required).
@@ -1051,10 +866,15 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	}
 
+	// Runtime SetCustomReadiness (set inside RouterFunc) wins over
+	// the startup-time override from app/http.Module(http.CustomReadiness(...)).
 	var readiness http.Handler
-	if httpCfg.customReadiness != nil {
+	switch {
+	case b.customReadiness != nil:
+		readiness = b.customReadiness
+	case httpCfg.customReadiness != nil:
 		readiness = httpCfg.customReadiness
-	} else {
+	default:
 		readiness = healthhttp.Handler(healthChecker)
 	}
 	var internalOpts []healthhttp.InternalHandlerOption

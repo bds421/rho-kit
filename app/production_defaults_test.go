@@ -25,7 +25,7 @@ import (
 // tests below; the helper isolates each remaining test to a single concern.
 func newSafeBuilder() *Builder {
 	return New("test", "v1", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 }
 
@@ -78,7 +78,7 @@ func TestWithInternalNonLoopback_AcceptsOptIn(t *testing.T) {
 		TLS:      validTLSForTest(t),
 	}
 	b := New("svc", "v1", cfg).
-		AllowInternalNonLoopback().
+		With(&stubHTTPConfig{BaseModule: NewBaseModule("test-http-nonloopback"), internalNonLoopback: true}).
 		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"AllowInternalNonLoopback must allow Internal.Host=0.0.0.0")
@@ -219,7 +219,7 @@ func TestBuilder_Validates_RequiresTLS(t *testing.T) {
 
 func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 	b := New("svc", "v1", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit()
 	require.NoError(t, b.Validate(),
 		"WithoutTLS must allow empty TLS config")
@@ -229,7 +229,7 @@ func TestWithoutTLS_AcceptsOptIn(t *testing.T) {
 
 func TestBudget_RequiresMultiTenant(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit().
 		TenantBudget(&stubBudget{})
 	err := b.Validate()
@@ -239,7 +239,7 @@ func TestBudget_RequiresMultiTenant(t *testing.T) {
 
 func TestBudget_WithMultiTenant_Passes(t *testing.T) {
 	b := New("test", "v1", validBaseConfig()).
-		WithoutTLS().
+		With(allowPlaintextOnly()).
 		WithoutRateLimit().
 		MultiTenant(nil).
 		TenantBudget(&stubBudget{})
@@ -278,7 +278,10 @@ func TestBuilder_WithOptionalClientCertificates_DowngradesToVerifyIfGiven(t *tes
 	cfg.TLS = tlsCfg
 	b := New("svc", "v1", cfg).
 		WithoutRateLimit().
-		OptionalClientCertificates()
+		With(&stubHTTPConfig{
+			BaseModule:     NewBaseModule("test-http-optional-clientcerts"),
+			optClientCerts: true,
+		})
 
 	got, err := tlsCfg.ServerTLS(b.serverTLSOptions()...)
 	require.NoError(t, err)
