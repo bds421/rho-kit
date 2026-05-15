@@ -60,7 +60,7 @@ func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
 				Name: "http_requests_total",
 				Help: "Total number of HTTP requests.",
 			},
-			[]string{"method", "path", "status"},
+			[]string{"method", "route", "status"},
 		),
 		requestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -68,7 +68,7 @@ func NewHTTPMetrics(opts ...MetricsOption) *HTTPMetrics {
 				Help:    "HTTP request duration in seconds.",
 				Buckets: prometheus.DefBuckets,
 			},
-			[]string{"method", "path"},
+			[]string{"method", "route"},
 		),
 		requestsInFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "http_requests_in_flight",
@@ -115,10 +115,10 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 
 			// Use r.Pattern (Go 1.22+) to get the registered route pattern
 			// instead of r.URL.Path which would cause cardinality explosion.
-			path := routePatternLabel(r.Pattern)
+			route := routePatternLabel(r.Pattern)
 
-			m.requestsTotal.WithLabelValues(method, path, status).Inc()
-			m.requestDuration.WithLabelValues(method, path).Observe(duration)
+			m.requestsTotal.WithLabelValues(method, route, status).Inc()
+			m.requestDuration.WithLabelValues(method, route).Observe(duration)
 
 			if recovered != nil {
 				panic(recovered)
@@ -136,7 +136,7 @@ func routePatternLabel(pattern string) string {
 	if method, rest, ok := strings.Cut(pattern, " "); ok && promutil.HTTPMethodLabel(method) == method && rest != "" {
 		pattern = rest
 	}
-	if err := promutil.ValidateStaticLabelValue("path", pattern); err != nil {
+	if err := promutil.ValidateStaticLabelValue("route", pattern); err != nil {
 		return "invalid"
 	}
 	return pattern

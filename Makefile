@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics
+.PHONY: lint vulncheck test test-race test-integration test-cover bench bench-baseline build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -105,7 +105,7 @@ clean:
 	go clean -cache -testcache
 
 ## ci: Run the full CI pipeline locally (lint + test + build + supply-chain checks)
-ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-dashboards check-dashboard-metrics check-operational-readiness check-api-freeze-coverage lint test-race build
+ci: check-no-binaries check-dependency-allowlist check-dependency-boundaries check-publishable check-dashboards check-dashboard-metrics check-dashboard-labels check-operational-readiness check-api-freeze-coverage lint test-race build
 
 ## kit-doctor: Run strict critical kit-doctor checks against this repository
 kit-doctor:
@@ -160,6 +160,10 @@ check-api-freeze-coverage:
 ## check-dashboard-metrics: Verify every dashboard/rule metric name is emitted by Go code (catches metric-rename drift).
 check-dashboard-metrics:
 	@bash tools/check-dashboard-metrics.sh
+
+## check-dashboard-labels: Verify every dashboard label selector references a label declared by the metric's Go NewXxxVec call.
+check-dashboard-labels:
+	@bash tools/check-dashboard-labels.sh
 
 ## check-release-team: Verify the @bds421/security team and branch protection exist before tagging.
 check-release-team:
