@@ -64,25 +64,25 @@ func (m *stubModule) HealthChecks() []health.DependencyCheck {
 	return m.healthChecks
 }
 
-func TestWithModule_PanicsOnNil(t *testing.T) {
+func TestWith_PanicsOnNil(t *testing.T) {
 	defer func() {
 		r := recover()
 		require.NotNil(t, r, "expected panic for nil module")
 		assert.Contains(t, fmt.Sprint(r), "must not be nil")
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithModule(nil)
+	New("test-svc", "v0.1.0", BaseConfig{}).With(nil)
 }
 
-func TestWithModule_PanicsOnEmptyName(t *testing.T) {
+func TestWith_PanicsOnEmptyName(t *testing.T) {
 	defer func() {
 		r := recover()
 		require.NotNil(t, r, "expected panic for empty module name")
 		assert.Contains(t, fmt.Sprint(r), "must not be empty")
 	}()
-	New("test-svc", "v0.1.0", BaseConfig{}).WithModule(newStubModule(""))
+	New("test-svc", "v0.1.0", BaseConfig{}).With(newStubModule(""))
 }
 
-func TestWithModule_PanicsOnDuplicateName(t *testing.T) {
+func TestWith_PanicsOnDuplicateName(t *testing.T) {
 	defer func() {
 		r := recover()
 		require.NotNil(t, r, "expected panic for duplicate module name")
@@ -90,17 +90,17 @@ func TestWithModule_PanicsOnDuplicateName(t *testing.T) {
 		assert.NotContains(t, fmt.Sprint(r), "secret-token")
 	}()
 	New("test-svc", "v0.1.0", BaseConfig{}).
-		WithModule(newStubModule("mymod-secret-token")).
-		WithModule(newStubModule("mymod-secret-token"))
+		With(newStubModule("mymod-secret-token")).
+		With(newStubModule("mymod-secret-token"))
 }
 
-func TestWithModule_FluentChaining(t *testing.T) {
+func TestWith_FluentChaining(t *testing.T) {
 	m1 := newStubModule("mod-a")
 	m2 := newStubModule("mod-b")
 
 	b := New("test-svc", "v0.1.0", BaseConfig{}).
-		WithModule(m1).
-		WithModule(m2)
+		With(m1).
+		With(m2)
 
 	require.Len(t, b.modules, 2)
 	assert.Equal(t, "mod-a", b.modules[0].Name())
@@ -344,7 +344,7 @@ func TestModuleHealthChecks_AddedToReadiness(t *testing.T) {
 		},
 	}
 
-	b := New("test-svc", "v0.1.0", BaseConfig{}).WithModule(m)
+	b := New("test-svc", "v0.1.0", BaseConfig{}).With(m)
 	// Health checks start empty on builder; they get added during Run().
 	assert.Empty(t, b.healthChecks)
 	assert.Len(t, b.modules, 1)
@@ -374,8 +374,8 @@ func TestModule_InitFailureAbortsRun(t *testing.T) {
 	b := New("fail-test", "v0.0.1", cfg).
 		With(allowPlaintextOnly()).
 		WithoutRateLimit().
-		WithModule(mod1).
-		WithModule(mod2).
+		With(mod1).
+		With(mod2).
 		Router(func(infra Infrastructure) http.Handler {
 			t.Fatal("RouterFunc should not be called when module init fails")
 			return nil
@@ -411,7 +411,7 @@ func TestModule_PopulateCalledBeforeRouter(t *testing.T) {
 	b := New("populate-test", "v0.0.1", cfg).
 		With(allowPlaintextOnly()).
 		WithoutRateLimit().
-		WithModule(mod).
+		With(mod).
 		Router(func(infra Infrastructure) http.Handler {
 			routerSawPopulate.Store(populateCalled.Load())
 			infra.Background("force-exit", func(_ context.Context) error {

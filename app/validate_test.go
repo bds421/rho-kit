@@ -73,7 +73,7 @@ func TestValidate_EmptyBuilder(t *testing.T) {
 
 // Per-module rate-limit parameter validation (requests > 0,
 // window > 0, name non-empty + metric-safe, duplicate dedupe)
-// moved to app/ratelimit.IPModule / KeyedModule constructors —
+// moved to app/ratelimit.IP / Keyed constructors —
 // see their package tests.
 
 func TestValidate_InvalidServerPort(t *testing.T) {
@@ -128,7 +128,7 @@ func TestValidate_NoRateLimitDeclarationRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no rate-limit declaration is present")
 	}
-	for _, want := range []string{"ratelimit.IPModule", "ratelimit.KeyedModule", "WithoutRateLimit"} {
+	for _, want := range []string{"ratelimit.IP", "ratelimit.Keyed", "WithoutRateLimit"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rate-limit error must name %q (got: %v)", want, err)
 		}
@@ -144,12 +144,12 @@ func (fakeRateLimitDeclarer) DeclaresRateLimit() {}
 
 // TestValidate_RateLimitDeclarerSatisfiesGate confirms that any
 // module implementing RateLimitDeclarer satisfies the gate — the
-// real-world implementations (app/ratelimit.IPModule,
-// app/ratelimit.KeyedModule) get their own tests in that package.
+// real-world implementations (app/ratelimit.IP,
+// app/ratelimit.Keyed) get their own tests in that package.
 func TestValidate_RateLimitDeclarerSatisfiesGate(t *testing.T) {
 	b := New("test-svc", "v0.1.0", validBaseConfig()).
 		With(allowPlaintextOnly()).
-		WithModule(fakeRateLimitDeclarer{BaseModule: NewBaseModule("fake-rl")})
+		With(fakeRateLimitDeclarer{BaseModule: NewBaseModule("fake-rl")})
 	if err := b.Validate(); err != nil {
 		t.Fatalf("RateLimitDeclarer module must satisfy the rate-limit gate, got: %v", err)
 	}

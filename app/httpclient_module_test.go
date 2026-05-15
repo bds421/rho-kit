@@ -98,7 +98,7 @@ func (m *initObservingTracing) Init(_ context.Context, _ ModuleContext) error {
 
 func TestBuilder_TracingProviderInitsBeforeHTTPClient(t *testing.T) {
 	tracing := &initObservingTracing{BaseModule: NewBaseModule("tracing-stub")}
-	b := New("test", "v1", BaseConfig{}).WithModule(tracing)
+	b := New("test", "v1", BaseConfig{}).With(tracing)
 
 	hcm := newHTTPClientModule(true) // tracingConfigured=true
 	builtinModules := []Module{hcm}

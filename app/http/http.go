@@ -11,15 +11,15 @@
 //
 //	app.New(name, ver, cfg).
 //	    With(http.Module(
-//	        http.AllowPlaintext(),                  // dev only
-//	        http.OptionalClientCertificates(),      // gateway-fronted
-//	        http.ReloadingTLS(),                    // hot-rotate certs
-//	        http.TLSReloadOnSignal(syscall.SIGHUP), // pair with ReloadingTLS
-//	        http.ServerOption(myOpt),
-//	        http.StackOptions(stackOpt1, stackOpt2),
-//	        http.DisableDefaultStack(),
-//	        http.AllowInternalNonLoopback(),        // bind /metrics publicly
-//	        http.CustomReadiness(myHandler),
+//	        http.WithoutTLS(),                          // dev only
+//	        http.WithOptionalClientCertificates(),      // gateway-fronted
+//	        http.WithReloadingTLS(),                    // hot-rotate certs
+//	        http.WithTLSReloadOnSignal(syscall.SIGHUP), // pair with WithReloadingTLS
+//	        http.WithServerOption(myOpt),
+//	        http.WithStackOptions(stackOpt1, stackOpt2),
+//	        http.WithoutDefaultStack(),
+//	        http.WithInternalNonLoopback(),             // bind /metrics publicly
+//	        http.WithCustomReadiness(myHandler),
 //	    )).
 //	    Router(routerFn).
 //	    Run()
@@ -61,7 +61,7 @@ type config struct {
 	customReadiness http.Handler
 }
 
-// AllowPlaintext acknowledges that the public HTTP server will run
+// WithoutTLS acknowledges that the public HTTP server will run
 // without TLS. Without this opt-in, the Builder rejects services
 // whose TLS configuration is absent — partial TLS configurations
 // silently degrade to plaintext and the always-on validator stops
@@ -70,11 +70,14 @@ type config struct {
 // Use only for services fronted by an external TLS terminator
 // (sidecar proxy, ingress) where TLS is enforced by infrastructure
 // outside the service binary.
-func AllowPlaintext() Option {
+//
+// Mirrors [redis.WithoutTLS] and [amqp.WithoutTLS] — the same
+// concept on a different transport.
+func WithoutTLS() Option {
 	return func(c *config) { c.allowPlaintext = true }
 }
 
-// OptionalClientCertificates opts the public TLS server out of
+// WithOptionalClientCertificates opts the public TLS server out of
 // required-and-verify client auth. The default is
 // [tls.RequireAndVerifyClientCert] (FR-014 [HIGH]); call this
 // option to relax to [tls.VerifyClientCertIfGiven] when an
@@ -82,30 +85,30 @@ func AllowPlaintext() Option {
 //
 // This relaxation is the only path off the kit's "TLS env enables
 // global mTLS" default, deliberate and documented.
-func OptionalClientCertificates() Option {
+func WithOptionalClientCertificates() Option {
 	return func(c *config) { c.optionalClientCerts = true }
 }
 
-// AllowInternalNonLoopback acknowledges that the internal ops
+// WithInternalNonLoopback acknowledges that the internal ops
 // port (which serves /metrics, /healthz, /ready without
 // authentication) will bind to a non-loopback interface.
 //
 // FR-010 [HIGH]: without this opt-in, the validator refuses any
 // internal listener that resolves outside loopback so /metrics
 // cannot be exposed on the network by accident.
-func AllowInternalNonLoopback() Option {
+func WithInternalNonLoopback() Option {
 	return func(c *config) { c.allowInternalNonLoopback = true }
 }
 
-// ReloadingTLS enables hot rotation of the TLS material configured
+// WithReloadingTLS enables hot rotation of the TLS material configured
 // in [BaseConfig.TLS]. The kit polls the certificate / key / CA
 // files for inode changes and rebuilds the TLS config in place,
 // so cert rotation no longer requires a restart.
 //
-// Pair with [TLSReloadOnSignal] to also reload on a signal (the
+// Pair with [WithTLSReloadOnSignal] to also reload on a signal (the
 // poller and signal handler trip the same Reload() entry point so
 // concurrent triggers are safe).
-func ReloadingTLS(opts ...netutil.FilesCertificateSourceOption) Option {
+func WithReloadingTLS(opts ...netutil.FilesCertificateSourceOption) Option {
 	cloned := append([]netutil.FilesCertificateSourceOption(nil), opts...)
 	return func(c *config) {
 		c.reloadingTLSActive = true
@@ -113,72 +116,72 @@ func ReloadingTLS(opts ...netutil.FilesCertificateSourceOption) Option {
 	}
 }
 
-// TLSReloadOnSignal installs a signal handler that calls
+// WithTLSReloadOnSignal installs a signal handler that calls
 // FilesCertificateSource.Reload when any of signals is received.
-// Use alongside [ReloadingTLS]; calling without [ReloadingTLS]
+// Use alongside [WithReloadingTLS]; calling without [WithReloadingTLS]
 // causes [Builder.Validate] to reject the configuration (there is
 // nothing to reload without a reloading source).
 //
 // Panics if signals is empty or contains nil.
-func TLSReloadOnSignal(signals ...os.Signal) Option {
+func WithTLSReloadOnSignal(signals ...os.Signal) Option {
 	if len(signals) == 0 {
-		panic("app/http: TLSReloadOnSignal requires at least one signal")
+		panic("app/http: WithTLSReloadOnSignal requires at least one signal")
 	}
 	for _, s := range signals {
 		if s == nil {
-			panic("app/http: TLSReloadOnSignal signal must not be nil")
+			panic("app/http: WithTLSReloadOnSignal signal must not be nil")
 		}
 	}
 	cloned := append([]os.Signal(nil), signals...)
 	return func(c *config) { c.tlsReloadSignals = cloned }
 }
 
-// DisableDefaultStack opts the public mux out of the kit's
+// WithoutDefaultStack opts the public mux out of the kit's
 // default middleware stack (correlation ID, recover, security
 // headers, request logger, timeout, …). Services that compose
 // their own stack should call this so the kit doesn't double-wrap.
-func DisableDefaultStack() Option {
+func WithoutDefaultStack() Option {
 	return func(c *config) { c.disableDefaultStack = true }
 }
 
-// StackOptions appends options forwarded to [stack.Default] when
-// the default stack is enabled. No-op when [DisableDefaultStack]
+// WithStackOptions appends options forwarded to [stack.Default] when
+// the default stack is enabled. No-op when [WithoutDefaultStack]
 // is also set.
 //
 // Panics if any option is nil.
-func StackOptions(opts ...stack.Option) Option {
+func WithStackOptions(opts ...stack.Option) Option {
 	for _, opt := range opts {
 		if opt == nil {
-			panic("app/http: StackOptions option must not be nil")
+			panic("app/http: WithStackOptions option must not be nil")
 		}
 	}
 	cloned := append([]stack.Option(nil), opts...)
 	return func(c *config) { c.stackOpts = append(c.stackOpts, cloned...) }
 }
 
-// ServerOption appends a [kithttpx.ServerOption] to the public
+// WithServerOption appends a [kithttpx.ServerOption] to the public
 // HTTP server. Useful for overriding read / write / idle timeouts,
 // disabling HTTP/2, etc. The kit's hardened defaults are applied
 // AFTER caller options so security-critical settings cannot be
 // silently relaxed.
 //
 // Panics if opt is nil.
-func ServerOption(opt kithttpx.ServerOption) Option {
+func WithServerOption(opt kithttpx.ServerOption) Option {
 	if opt == nil {
-		panic("app/http: ServerOption requires a non-nil option")
+		panic("app/http: WithServerOption requires a non-nil option")
 	}
 	return func(c *config) { c.serverOpts = append(c.serverOpts, opt) }
 }
 
-// CustomReadiness overrides the auto-generated readiness handler.
+// WithCustomReadiness overrides the auto-generated readiness handler.
 // The default builds a JSON readiness response from every module's
 // HealthChecks() output. Use this when the service needs per-
 // component health introspection (e.g., per-observer scan state).
 //
 // Panics if h is nil.
-func CustomReadiness(h http.Handler) Option {
+func WithCustomReadiness(h http.Handler) Option {
 	if h == nil {
-		panic("app/http: CustomReadiness requires a non-nil handler")
+		panic("app/http: WithCustomReadiness requires a non-nil handler")
 	}
 	return func(c *config) { c.customReadiness = h }
 }

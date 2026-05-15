@@ -34,9 +34,9 @@ import (
 // application code should use [Provider].
 const ResourceProviderKey = "github.com/bds421/rho-kit/app/paseto.provider"
 
-// moduleName is the identifier registered with the Builder and
+// ModuleName is the identifier registered with the Builder and
 // surfaced in module-ordering errors / lifecycle logs.
-const moduleName = "paseto"
+const ModuleName = "paseto"
 
 // Module returns an [app.Module] that wires the supplied PASETO
 // Provider into the kit lifecycle: the background key-refresh
@@ -60,7 +60,7 @@ type pasetoModule struct {
 	provider *kitpaseto.Provider
 }
 
-func (m *pasetoModule) Name() string { return moduleName }
+func (m *pasetoModule) Name() string { return ModuleName }
 
 func (m *pasetoModule) Init(_ context.Context, mc app.ModuleContext) error {
 	// The Provider's refresh loop was started inside OpenProvider.

@@ -135,7 +135,7 @@ type Builder struct {
 	// boot dependencies (e.g. Postgres warmup, KMS key fetch).
 	startupTimeout time.Duration
 
-	// Modules — populated by [Builder.With] / [Builder.WithModule]. Adapter
+	// Modules — populated by [Builder.With]. Adapter
 	// sub-packages (app/postgres, app/redis, app/amqp, app/nats, app/tracing,
 	// app/grpc) all surface as modules registered through this list, plus the
 	// jwt/paseto/httpclient/leader/slo built-ins assembled in
@@ -322,8 +322,8 @@ func (b *Builder) Authz(d kitauthz.Decider) *Builder {
 // an admin tool behind a VPN, or a service whose upstream
 // gateway already applies a stricter limit. The check is
 // unconditional — there is no KIT_ENV escape hatch. Mirrors the
-// [WithoutTLS] shape so every always-on security tightening has
-// the same affirmative declaration shape.
+// [http.WithoutTLS] shape so every always-on security tightening
+// has the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
 	return b
@@ -473,27 +473,22 @@ func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 	return b
 }
 
-// With registers an adapter module returned by a sub-package's Module
-// constructor (e.g., postgres.Module(...), redis.Module(...), amqp.Module(...),
-// nats.Module(...), tracing.Module(...), grpc.Module(...)). It is the v2.0.0
-// successor to the removed builder methods (WithPostgres, WithRedis,
-// WithRabbitMQ, WithNATS, WithTracing, NewGRPCModule) — using sub-package
-// modules keeps app/v2 free of pgx, go-redis, amqp091, nats.go, otelgrpc, and
-// grpc-go imports for services that do not need them.
+// With registers an adapter module returned by a sub-package's
+// Module constructor (e.g., postgres.Module(...), redis.Module(...),
+// amqp.Module(...), nats.Module(...), tracing.Module(...),
+// grpc.Module(...), jwt.Module(...), ratelimit.IP(...), etc.).
+// Using sub-package modules keeps app/v2 free of pgx, go-redis,
+// amqp091, nats.go, otelgrpc, grpc-go, openfeature, and go-paseto
+// imports for services that do not need them.
 //
-// With is an alias for [Builder.WithModule]; both behave identically. Prefer
-// With for the fluent adapter-registration style at the call site.
+// Modules are initialized in registration order, after all built-in
+// infrastructure (JWT, HTTP client, etc.) but before the RouterFunc
+// is called.
+//
+// Panics if module is nil, has an empty name, or has the same name
+// as a module that is already registered. These are startup-time
+// configuration errors.
 func (b *Builder) With(m Module) *Builder {
-	return b.WithModule(m)
-}
-
-// WithModule registers a module for initialization during Run(). Modules are
-// initialized in registration order, after all built-in infrastructure (JWT,
-// HTTP client, etc.) but before the RouterFunc is called.
-//
-// Panics if module is nil or if a module with the same name is already registered.
-// This is a startup-time configuration error.
-func (b *Builder) WithModule(m Module) *Builder {
 	if m == nil {
 		panic("app: module must not be nil")
 	}
@@ -673,8 +668,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 
 	// (Rate limiters are now opt-in bridge modules under
-	// app/ratelimit — see ratelimit.IPModule and
-	// ratelimit.KeyedModule.)
+	// app/ratelimit — see ratelimit.IP and ratelimit.Keyed.)
 
 	// 5. Audit log
 	var auditLogger *auditlog.Logger

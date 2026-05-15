@@ -34,9 +34,9 @@ import (
 // code should use [Client].
 const ResourceClientKey = "github.com/bds421/rho-kit/app/flags.client"
 
-// moduleName is the identifier registered with the Builder and
+// ModuleName is the identifier registered with the Builder and
 // surfaced in module-ordering errors / lifecycle logs.
-const moduleName = "flags"
+const ModuleName = "flags"
 
 // Module returns an [app.Module] that wraps provider in the kit's
 // [kitflags.Client] at Init time and publishes the client on
@@ -61,7 +61,7 @@ type flagsModule struct {
 	client *kitflags.Client
 }
 
-func (m *flagsModule) Name() string { return moduleName }
+func (m *flagsModule) Name() string { return ModuleName }
 
 func (m *flagsModule) Init(_ context.Context, mc app.ModuleContext) error {
 	// kitflags.New returns an error on validation failure (empty

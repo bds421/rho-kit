@@ -19,7 +19,7 @@ import (
 )
 
 // Module is a self-contained unit of infrastructure that can be registered
-// with the Builder via [Builder.With] or [Builder.WithModule]. Modules are
+// with the Builder via [Builder.With]. Modules are
 // initialized in registration order during [Builder.Run], before the
 // RouterFunc is called.
 //
@@ -357,7 +357,7 @@ func initModules(
 	tlsSource netutil.CertificateSource,
 ) (func(context.Context), error) {
 	// Validate name uniqueness across all modules (builtin + user-registered).
-	// WithModule only checks user-registered modules; this catches collisions
+	// Builder.With only checks user-registered modules; this catches collisions
 	// between builtin integration modules and user modules (e.g., a user module
 	// named "database" when a postgres adapter module was also registered).
 	seen := make(map[string]bool, len(modules))

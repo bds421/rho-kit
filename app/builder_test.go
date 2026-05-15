@@ -32,7 +32,7 @@ func TestBuilder_FluentChaining(t *testing.T) {
 		Storage(membackend.New()).
 		NamedStorage("local", membackend.New()).
 		EventBusPool(4).
-		WithModule(NewBaseModule("svc-extra")).
+		With(NewBaseModule("svc-extra")).
 		AddHealthCheck(health.DependencyCheck{Name: "test", Check: func(_ context.Context) string { return "healthy" }}).
 		Background("bg", func(_ context.Context) error { return nil }).
 		OnShutdown(func(_ context.Context) {}).
@@ -202,13 +202,6 @@ func TestBuilder_RunContextReturnsCanceledBeforeStartup(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.False(t, b.ran, "pre-canceled context should not consume the one-shot builder")
-}
-
-func TestBuilder_WithIsAliasForWithModule(t *testing.T) {
-	m := NewBaseModule("alias-mod")
-	b := New("test", "v1", BaseConfig{}).With(m)
-	require.Len(t, b.modules, 1)
-	assert.Equal(t, "alias-mod", b.modules[0].Name())
 }
 
 func TestTestInfrastructure(t *testing.T) {
@@ -432,7 +425,7 @@ func TestBuilder_Lifecycle(t *testing.T) {
 		b := New("lifecycle-context-test", "v0.0.3", cfg).
 			With(allowPlaintextOnly()).
 			WithoutRateLimit().
-			WithModule(module).
+			With(module).
 			Background("ctx-bg", func(ctx context.Context) error {
 				bgStarted.Store(true)
 				<-ctx.Done()

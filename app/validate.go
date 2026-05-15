@@ -80,7 +80,7 @@ func (b *Builder) Validate() error {
 	}
 
 	// Rate-limit per-module argument validation is enforced at
-	// app/ratelimit.IPModule / KeyedModule construction (panics on
+	// app/ratelimit.IP / Keyed construction (panics on
 	// invalid requests / window / name).
 
 	// TLSReloadOnSignal only makes sense alongside the reloading
@@ -150,7 +150,7 @@ func (b *Builder) validateProductionSafety() error {
 	// WithIPRateLimit, WithKeyedRateLimit, or the explicit
 	// WithoutRateLimit opt-out for traffic-bounded services.
 	if !b.hasRateLimitDeclaration() && !b.allowNoRateLimit {
-		return fmt.Errorf("rate limiting must be declared explicitly: register a ratelimit.IPModule / ratelimit.KeyedModule from app/ratelimit, or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
+		return fmt.Errorf("rate limiting must be declared explicitly: register a ratelimit.IP / ratelimit.Keyed from app/ratelimit, or call WithoutRateLimit for services whose traffic is bounded by another control (mTLS peer set, upstream gateway limit, internal cron worker)")
 	}
 
 	// C-1 + FR-010 [HIGH]: the internal ops port exposes /metrics,

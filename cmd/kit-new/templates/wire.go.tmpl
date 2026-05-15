@@ -155,15 +155,15 @@ func Run(_ *slog.Logger) error {
 	}
 {{- end}}
 
-	// ratelimit.IPModule is required by the Builder's always-on
+	// ratelimit.IP is required by the Builder's always-on
 	// rate-limit gate (Lens F A.5): every service must affirmatively
-	// declare a rate-limit policy. Swap to ratelimit.KeyedModule for
+	// declare a rate-limit policy. Swap to ratelimit.Keyed for
 	// API-key throttling, or call WithoutRateLimit when traffic is
 	// bounded by mTLS / an upstream gateway. The baseline below is
 	// intentionally conservative — tune for the expected QPS once
 	// the service ships.
 	b := kitapp.New("{{.ServiceName}}", "", cfg).
-		With(kitratelimit.IPModule(100, time.Minute))
+		With(kitratelimit.IP(100, time.Minute))
 {{- if .Postgres}}
 
 	// Postgres + sqlc + goose is the canonical data path. The pgx pool

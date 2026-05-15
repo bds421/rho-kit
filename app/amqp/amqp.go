@@ -25,6 +25,9 @@ const (
 	ResourceConsumerKey   = "github.com/bds421/rho-kit/app/amqp.consumer"
 )
 
+// ModuleName is the registered Module.Name() value.
+const ModuleName = "amqp"
+
 // Option configures the AMQP [Module] before Builder.Run executes it.
 type Option func(*moduleConfig)
 
@@ -132,7 +135,7 @@ type messagingModule struct {
 	messageSizeLimiter messaging.MessageSizeLimiter
 }
 
-func (m *messagingModule) Name() string { return "rabbitmq" }
+func (m *messagingModule) Name() string { return ModuleName }
 
 func (m *messagingModule) Init(_ context.Context, mc app.ModuleContext) error {
 	m.logger = mc.Logger

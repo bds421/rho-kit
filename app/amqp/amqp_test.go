@@ -27,7 +27,7 @@ func TestWithURLProvider_PanicsOnNil(t *testing.T) {
 
 func TestModule_Name(t *testing.T) {
 	m := Module("amqp://localhost")
-	assert.Equal(t, "rabbitmq", m.Name())
+	assert.Equal(t, "amqp", m.Name())
 }
 
 func TestModule_AllowsLoopbackPlaintext(t *testing.T) {

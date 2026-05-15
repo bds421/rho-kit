@@ -22,7 +22,7 @@ import (
 )
 
 // ModuleName is the registered Module.Name() value.
-const ModuleName = "signedrequest"
+const ModuleName = "signed-request"
 
 // Module returns an [app.Module] that contributes the signed-
 // request middleware to the public mux at
