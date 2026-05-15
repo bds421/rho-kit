@@ -183,7 +183,7 @@ HTTP signing. The legacy `httpx/reqsign` package was removed in v2.0.0.
 Auto-refreshing JWKS provider for asymmetric JWT verification:
 
 ```go
-// Setup (in Builder, WithJWT does this automatically):
+// Setup (in Builder, jwt.Module does this automatically):
 provider := jwtutil.NewProvider(
     cfg.JWKSURL,
     httpx.NewHTTPClient(5*time.Second, nil),
@@ -241,7 +241,7 @@ revocation checker is configured, missing `jti` fails closed.
 **Env vars:**
 | Variable | Default | Notes |
 |---|---|---|
-| `JWKS_URL` | unset | Required by services that call `WithJWT` or construct a `jwtutil.Provider` |
+| `JWKS_URL` | unset | Required by services that register `jwt.Module(jwksURL, ...)` or construct a `jwtutil.Provider` |
 | `JWT_CACHE_TTL_MINUTES` | `5` | Key cache TTL |
 
 ### Testing JWTs

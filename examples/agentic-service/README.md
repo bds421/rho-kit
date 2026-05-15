@@ -5,8 +5,9 @@
 > uses in-memory stores and omits production JWT/signed-request auth,
 > distributed rate limiting, persistent approval storage, and real
 > secret management. Production services use `app.Builder` end-to-end:
-> `app.Builder.WithJWT / .WithSignedRequests / .MultiTenant /
-> .TenantBudget / .ActionLogger / .ApprovalStore` and
+> register the security bridges via `app.Builder.With(jwt.Module(...))`,
+> `.With(signedrequest.Module(...))`, plus `.MultiTenant(...)`,
+> `.TenantBudget(...)`, `.ActionLogger(...)`, `.ApprovalStore(...)` and
 > the per-package docs. The Builder runs an always-on validator at
 > startup that rejects empty TLS, missing JWT issuer/audience,
 > exposed internal-host, weak postgres sslmode, and excessive tracing

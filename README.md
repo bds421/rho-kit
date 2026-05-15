@@ -59,9 +59,11 @@ app.Main("backend", handler.Version, func(logger *slog.Logger) error {
         With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
         With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{ServerName: "cache.internal"}})).
         With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
-        WithJWT(os.Getenv("JWKS_URL")).
-        WithJWTAudience("backend").
-        WithIPRateLimit(100, time.Minute).
+        With(jwt.Module(os.Getenv("JWKS_URL"),
+            jwt.WithIssuer("https://issuer.example.com"),
+            jwt.WithAudience("backend"),
+        )).
+        With(ratelimit.IP(100, time.Minute)).
         Router(func(infra app.Infrastructure) http.Handler {
             return router.New(infra, logger)
         }).
@@ -135,7 +137,7 @@ go get github.com/bds421/rho-kit/httpx/v2
 - `infra/messaging`, `infra/messaging/amqpbackend`, `infra/messaging/redisbackend`, `infra/messaging/natsbackend` – message contracts, buffered delivery, RabbitMQ, Redis Streams, and NATS JetStream adapters.
 - `infra/storage` plus `s3backend`, `azurebackend`, `gcsbackend`, `sftpbackend`, `storagehttp/uploadsec`, `storagehttp/uploadsec/clamav`, `storagetest` – storage interfaces, cloud/SFTP/local backends, upload validation/scanning, and backend compliance tests.
 - `observability/health`, `observability/logging`, `observability/logattr`, `observability/redmetrics`, `observability/runtimemetrics`, `observability/slo`, `observability/pprof`, `observability/tracing` – health, logs, metrics, profiling, SLOs, and tracing.
-- `runtime/lifecycle`, `runtime/concurrency`, `runtime/eventbus`, `runtime/cron`, `runtime/batchworker`, `runtime/temporal` – lifecycle orchestration, worker patterns, eventing, scheduling, and Temporal helpers.
+- `runtime/lifecycle`, `runtime/concurrency`, `runtime/eventbus`, `runtime/cron`, `runtime/batchworker` – lifecycle orchestration, worker patterns, eventing, and scheduling.
 - `resilience/retry`, `resilience/circuitbreaker`, `io/atomicfile`, `io/progress`, `flags` – retries, circuit breakers, safe file writes, progress tracking, and feature flags.
 
 ## Conventions and notes

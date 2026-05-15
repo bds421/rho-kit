@@ -126,33 +126,39 @@ lives in per-adapter sub-modules under `app/` and is registered via
 
 | Method | What it enables | Requires |
 |---|---|---|
-| `With(m)` / `WithModule(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor | - |
-| `WithJWT(jwksURL)` | Background JWKS key cache | - |
-| `WithJWTAudience(aud)` | Required JWT audience | `WithJWT` |
-| `WithPASETO(provider)` | PASETO token provider | - |
-| `WithSignedRequests(...)` | HMAC signed request verifier | - |
+| `With(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor (postgres, redis, amqp, nats, jwt, paseto, flags, cron, leader, slo, ratelimit, signedrequest, http, grpc, tracing, …) | - |
 | `MultiTenant(extractor, required)` | Tenant extraction middleware | - |
 | `TenantBudget(budget, opts...)` | Tenant request budget middleware | `MultiTenant(..., required=true)` |
 | `ActionLogger(logger)` | Action logger in infrastructure | - |
 | `ApprovalStore(store)` | Approval store in infrastructure | - |
 | `Authz(decider)` | Authorization decider in infrastructure | - |
-| `WithFeatureFlags(provider)` | Feature flag client in infrastructure | - |
-| `WithIPRateLimit(n, window)` | Per-IP rate limiter | - |
-| `WithKeyedRateLimit(name, n, window)` | Named keyed rate limiter | - |
 | `Storage(backend, checks...)` | Single unnamed storage backend | - |
 | `NamedStorage(name, backend, checks...)` | Named backend in storage manager | - |
 | `AuditLog(store, opts...)` | Audit logger | - |
-| `WithCron(opts...)` | Lifecycle-managed cron scheduler | - |
-| `WithLeaderElection(elector)` | Leader election handle | - |
-| `ServerOption(opt)` | Custom public server option | - |
-| `StackOptions(opts...)` | Extra default-stack options | - |
-| `WithoutDefaultStack()` | Use router handler without `stack.Default` wrapping | - |
+| `WithoutRateLimit()` | Explicit opt-out of the always-on rate-limit gate | - |
 | `AddHealthCheck(check)` | Custom readiness dependency | - |
-| `CustomReadiness(handler)` | Override `/ready` handler | - |
 | `Background(name, fn)` | Managed goroutine | - |
 | `OnShutdown(fn)` | Shutdown hook before close/drain | - |
-| `WithModule(module)` | Custom lifecycle module | - |
+| `Logger(l)` | Override the kit-built logger | - |
+| `StartupTimeout(d)` | Cap on module Init() time | - |
+| `EventBusPool(n)` | EventBus worker pool size | - |
 | `Router(fn)` | HTTP handler builder | required |
+
+Concept-specific configuration that used to live on the Builder now
+moves through the corresponding bridge module:
+
+| Concept | Wiring |
+|---|---|
+| JWT verification | `With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud)))` |
+| PASETO provider | `With(paseto.Module(provider))` |
+| Signed requests | `With(signedrequest.Module(resolver, store, …))` |
+| Feature flags | `With(flags.Module(provider))` |
+| Per-IP rate limit | `With(ratelimit.IP(n, window))` |
+| Keyed rate limit | `With(ratelimit.Keyed(name, n, window))` |
+| Cron scheduler | `With(cron.Module(opts...))` |
+| Leader election | `With(leader.Module(elector))` |
+| SLO checker | `With(slo.Module(slos...))` |
+| HTTP server config | `With(http.Module(http.WithoutTLS(), http.WithReloadingTLS(), …))` |
 
 ## Infrastructure
 
@@ -164,33 +170,15 @@ type Infrastructure struct {
     ClientTLS *tls.Config
     ServerTLS *tls.Config
 
-    DB            *pgxbackend.Pool
-    Broker        messaging.Connector
-    Publisher     messaging.Publisher
-    Consumer      messaging.Consumer
-    NATS          *natsbackend.Connection
-    NATSPublisher *natsbackend.Publisher
-
-    JWT    *jwtutil.Provider
-    PASETO *paseto.Provider
-
-    Leader        leaderelection.Elector
     TenantBudget  budget.Budget
     ActionLog     actionlog.Logger
     ApprovalStore approval.Store
     Authz         authz.Decider
-    Flags         *flags.Client
-
-    RateLimiter   *ratelimit.RateLimiter
-    KeyedLimiters map[string]*ratelimit.KeyedRateLimiter
-    Redis         *redis.Connection
 
     Storage        storage.Storage
     StorageManager *storage.Manager
-    Cron           *cron.Scheduler
     AuditLog       *auditlog.Logger
     EventBus       *eventbus.Bus
-    GRPCServer     *grpc.Server
 
     HTTPClient *http.Client
     Config     app.BaseConfig
@@ -201,7 +189,13 @@ type Infrastructure struct {
 }
 ```
 
-Nil fields mean the matching `With*()` method was not called. The callback fields are valid only during the synchronous `RouterFunc` call.
+Nil fields mean the matching Builder method was not called. Bridge-
+module resources (Postgres pool, Redis, JWT, PASETO, flags, cron
+scheduler, leader elector, SLO checker, rate limiters, AMQP/NATS
+connections, …) are accessed via per-bridge lookup functions on the
+`Infrastructure` value — e.g., `postgres.Pool(infra)`,
+`jwt.Provider(infra)`, `ratelimit.IPLimiter(infra)`. The callback
+fields are valid only during the synchronous `RouterFunc` call.
 
 ## Lifecycle Order
 
@@ -287,9 +281,9 @@ Workflow for schema changes:
 ```go
 app.New("my-svc", version, cfg.BaseConfig).
     With(postgres.Module(cfg.Postgres)).
-    WithCron().
+    With(cron.Module()).
     Router(func(infra app.Infrastructure) http.Handler {
-        infra.Cron.Add("cleanup", "0 2 * * *", func(ctx context.Context) error {
+        cron.Scheduler(infra).Add("cleanup", "0 2 * * *", func(ctx context.Context) error {
             return cleanupOldRecords(ctx, postgres.Pool(infra).Pool())
         })
         return buildRouter(infra)

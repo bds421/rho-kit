@@ -72,9 +72,11 @@ func main() {
             With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
             With(redis.Module(&goredis.Options{Addr: "rediss://cache.internal:6379", Password: "***"})).
             With(amqp.Module("amqps://broker.internal")).
-            WithJWT("https://issuer.example.com/.well-known/jwks.json").
-            WithJWTAudience("my-service").
-            WithIPRateLimit(100, time.Minute).
+            With(jwt.Module("https://issuer.example.com/.well-known/jwks.json",
+                jwt.WithIssuer("https://issuer.example.com"),
+                jwt.WithAudience("my-service"),
+            )).
+            With(ratelimit.IP(100, time.Minute)).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
                 // Register routes using postgres.Pool(infra), redis.Connection(infra),
@@ -206,8 +208,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Run scheduled tasks (cron) | `runtime/cron` (Scheduler) | [utilities](docs/ai/utilities.md) |
 | Batched background workers | `runtime/batchworker` (Worker) | [utilities](docs/ai/utilities.md) |
 | In-process event bus (domain events) | `runtime/eventbus` (Bus, Publish, Subscribe) | [utilities](docs/ai/utilities.md) |
-| Temporal workflows | `runtime/temporal` | [utilities](docs/ai/utilities.md) |
-| Feature flags / runtime toggles | `flags` (Builder.WithFeatureFlags) | [utilities](docs/ai/utilities.md) |
+| Feature flags / runtime toggles | `flags` (register via `app/flags`) | [utilities](docs/ai/utilities.md) |
 | Atomic file writes | `io/atomicfile` | [utilities](docs/ai/utilities.md) |
 | Progress-reporting readers | `io/progress` | [utilities](docs/ai/utilities.md) |
 | Mask PII for logs/exports (field/value masking) | `crypto/masking` | [security](docs/ai/security.md) |

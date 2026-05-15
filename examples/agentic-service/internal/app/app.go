@@ -7,16 +7,17 @@
 // NEVER be used as a starting point for production wiring — copy the
 // per-primitive recipes from the doc instead.
 //
-// Production services MUST use app.Builder.WithJWT (paired with
-// WithJWTIssuer + WithJWTAudience) / .WithSignedRequests /
-// .MultiTenant / .TenantBudget / .ActionLogger /
-// .ApprovalStore. The Builder composes the JWT, tenant, budget,
-// and signed-request middleware chain automatically and runs the
-// always-on production-safety validator at startup. The validator
-// unconditionally rejects empty TLS, missing JWT issuer/audience,
-// exposed internal-host, weak postgres sslmode, and excessive tracing
-// sample rates. Each tightening has a documented .Without* opt-out
-// (.WithoutTLS, .WithoutJWTIssuer, etc.) for the rare cases where the
+// Production services MUST register the security bridges via
+// app.Builder.With: jwt.Module (paired with jwt.WithIssuer +
+// jwt.WithAudience) / signedrequest.Module / MultiTenant /
+// TenantBudget / ActionLogger / ApprovalStore. The Builder composes
+// the JWT, tenant, budget, and signed-request middleware chain
+// automatically and runs the always-on production-safety validator
+// at startup. The validator unconditionally rejects empty TLS,
+// missing JWT issuer/audience, exposed internal-host, weak postgres
+// sslmode, and excessive tracing sample rates. Each tightening has
+// a documented opt-out (jwt.WithoutIssuer, http.WithoutTLS,
+// http.WithInternalNonLoopback, etc.) for the rare cases where the
 // operator has compensating controls in place; production deployments
 // must NOT use those opt-outs casually.
 //

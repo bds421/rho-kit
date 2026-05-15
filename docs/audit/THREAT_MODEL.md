@@ -731,8 +731,8 @@ The canonical "user submits a payment" flow. Wired via:
 app.New("payments", version, cfg.BaseConfig).
     With(postgres.Module(cfg.Postgres)).
     With(redis.Module(&goredis.Options{Addr: cfg.RedisAddr})).
-	    WithJWT(cfg.JWKSURL).WithJWTIssuer(cfg.Issuer).WithJWTAudience(cfg.Audience).
-	    WithIPRateLimit(100, time.Minute).
+	    With(jwt.Module(cfg.JWKSURL, jwt.WithIssuer(cfg.Issuer), jwt.WithAudience(cfg.Audience))).
+	    With(ratelimit.IP(100, time.Minute)).
 	    Router(func(infra app.Infrastructure) http.Handler {
 	        h := payments.NewHandler(postgres.Pool(infra), redis.Connection(infra), audit)
 	        csrfMW := csrf.New(

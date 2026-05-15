@@ -113,9 +113,11 @@ func main() {
             With(postgres.Module(pgxbackend.Config{DSN: "postgres://localhost/my-service"})).
             With(redis.Module(&goredis.Options{Addr: "cache.internal:6379", Password: "***", TLSConfig: &tls.Config{ServerName: "cache.internal"}})).
             With(amqp.Module("amqps://broker.internal")).
-            WithJWT("https://issuer.example.com/.well-known/jwks.json").
-            WithJWTAudience("my-service").
-            WithIPRateLimit(100, time.Minute).
+            With(jwt.Module("https://issuer.example.com/.well-known/jwks.json",
+                jwt.WithIssuer("https://issuer.example.com"),
+                jwt.WithAudience("my-service"),
+            )).
+            With(ratelimit.IP(100, time.Minute)).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
                 // Register routes using infra.DB, infra.Publisher, etc.
@@ -149,11 +151,11 @@ pointers for the most common downstream wiring:
 | Redis (TLS-required) | `With(redis.Module(*goredis.Options, ...kitredis.ConnOption))` | `infra.Redis` |
 | RabbitMQ publisher/consumer | `With(amqp.Module(url))` | `infra.Publisher`, `infra.Consumer` |
 | NATS JetStream | `With(nats.Module(natsbackend.Config))` | `infra.NATS`, `infra.NATSPublisher` |
-| JWT verification (JWKS) | `WithJWT(jwksURL).WithJWTAudience(aud)` | `infra.JWT` |
+| JWT verification (JWKS) | `With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud)))` | `jwt.Provider(infra)` |
 | Multi-tenant request scope | `MultiTenant(extractor, required)` | (middleware) |
-| In-process rate limit | `WithIPRateLimit(n, window)` | `infra.RateLimiter` |
-| Cron jobs | `WithCron()` | `infra.Cron` |
-| Leader election | `WithLeaderElection(elector)` | `infra.Leader` |
+| In-process rate limit | `With(ratelimit.IP(n, window))` | `ratelimit.IPLimiter(infra)` |
+| Cron jobs | `With(cron.Module())` | `cron.Scheduler(infra)` |
+| Leader election | `With(leader.Module(elector))` | `leader.Elector(infra)` |
 | Typed HTTP handlers | `httpx.JSON[Req,Resp](logger, fn)` etc. | — |
 
 The full list of Builder methods is in

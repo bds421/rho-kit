@@ -43,8 +43,9 @@ outbox table is growing toward bloat.
 1. Open the outbox dashboard. Read off `outbox_pending_count` and
    the publish rate over the last 30 minutes.
 2. If publish rate ≈ 0 and pending > 0: the relay is stuck. Check
-   pod status, logs, and leader-election state (rho-kit's
-   `app.WithLeaderElection` exposes this). Restart the pod if the
+   pod status, logs, and leader-election state (register
+   `app/leader.Module(elector)` and read via `leader.Elector(infra)`).
+   Restart the pod if the
    process is alive but the loop is wedged.
 3. If publish rate > 0 but errors are also > 0: open the broker
    dashboard or `kubectl logs` for the broker. Common signals:

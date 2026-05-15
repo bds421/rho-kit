@@ -24,7 +24,7 @@ Router(func(infra app.Infrastructure) http.Handler {
 
     return stack.Default(mux, infra.Logger,
         stack.WithOuter(csrfMW, csrf.RequireJSONContentType),
-        stack.WithInner(auth.JWT(infra.JWT)),
+        stack.WithInner(auth.JWT(jwt.Provider(infra))),
     )
 })
 ```
@@ -46,7 +46,7 @@ Router(func(infra app.Infrastructure) http.Handler {
 ```go
 stack.Default(mux, logger,
     stack.WithOuter(
-        ratelimit.Middleware(infra.RateLimiter),
+        ratelimit.Middleware(ratelimit.IPLimiter(infra)),
         csrf.New(
             csrf.WithSecrets(cfg.CSRFSecret, cfg.PreviousCSRFSecrets...),
             csrf.WithAllowedOrigins(cfg.PublicOrigin),
@@ -54,7 +54,7 @@ stack.Default(mux, logger,
         csrf.RequireJSONContentType,
     ),
     stack.WithInner(
-        auth.JWT(infra.JWT),
+        auth.JWT(jwt.Provider(infra)),
         auth.RequirePermission("users:read"),
     ),
     stack.WithQuietPaths("/ready", "/health"), // logged at Debug level
@@ -65,10 +65,10 @@ stack.Default(mux, logger,
 
 ```go
 // JWT-only:
-auth.JWT(infra.JWT)
+auth.JWT(jwt.Provider(infra))
 
 // Service-to-service (JWT OR mTLS):
-auth.RequireS2SAuth(infra.JWT, []string{"payment-service", "order-service"},
+auth.RequireS2SAuth(jwt.Provider(infra), []string{"payment-service", "order-service"},
     auth.WithS2SImpersonationGuard(func(r *http.Request, identity, userID string) error {
         return authorizeServiceUser(r.Context(), identity, userID)
     }),
@@ -102,15 +102,17 @@ response headers or propagated to downstream calls.
 ## Rate Limiting Recipes
 
 ```go
-// IP-based (via Builder):
-app.New(...).WithIPRateLimit(100, time.Minute)
-// then: stack.WithOuter(ratelimit.Middleware(infra.RateLimiter))
+// IP-based (via Builder + app/ratelimit bridge):
+app.New(...).With(ratelimit.IP(100, time.Minute))
+// The middleware is auto-applied at PhaseRateLimit — no manual
+// stack.WithOuter needed. Reach for ratelimit.IPLimiter(infra) only
+// when wrapping a specific route with a tighter cap than the baseline.
 
-// Keyed per-user (via Builder):
-app.New(...).WithKeyedRateLimit("api", 10, time.Second)
+// Keyed per-user (via Builder + app/ratelimit bridge):
+app.New(...).With(ratelimit.Keyed("api", 10, time.Second))
 // then in router:
 mux.Handle("/api/", ratelimit.KeyedMiddleware(
-    infra.KeyedLimiters["api"],
+    kitratelimit.KeyedLimiter(infra, "api"),
     func(r *http.Request) string { return auth.UserID(r.Context()) },
 )(apiHandler))
 ```
