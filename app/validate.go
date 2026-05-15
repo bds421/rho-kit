@@ -87,7 +87,10 @@ func (b *Builder) Validate() error {
 	// TLS source — without the source there is nothing to reload.
 	// Reject at construction rather than discover the misconfiguration
 	// at the first signal delivery.
-	if len(b.tlsReloadSignals) > 0 && !b.tlsReloadActive {
+	// Resolve early so TLS-reload coherence checks read the same
+	// config as Run.
+	tlsHTTPCfg := resolveHTTPConfig(b.modules, b)
+	if len(tlsHTTPCfg.tlsReloadSignals) > 0 && !tlsHTTPCfg.reloadingTLSActive {
 		return fmt.Errorf("TLSReloadOnSignal requires ReloadingTLS")
 	}
 
@@ -124,11 +127,18 @@ func (b *Builder) validateProductionSafety() error {
 	// WithAudience/WithoutAudience is supplied); no Builder check
 	// is needed anymore.
 
+	// Resolve the effective HTTP configuration: prefer an
+	// [HTTPConfigProvider] module (typically app/http.Module), fall
+	// back to the legacy Builder.* fields during the migration
+	// window.
+	httpCfg := resolveHTTPConfig(b.modules, b)
+
 	// C-2: TLS must be configured. Partial TLSConfig silently falls back
 	// to plaintext HTTP (see netutil.TLSConfig.Enabled). Operators who
-	// terminate TLS at an external proxy must opt in explicitly.
-	if !b.cfg.TLS.Enabled() && !b.allowPlaintext {
-		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
+	// terminate TLS at an external proxy must opt in explicitly via
+	// http.AllowPlaintext() or b.WithoutTLS().
+	if !b.cfg.TLS.Enabled() && !httpCfg.allowPlaintext {
+		return fmt.Errorf("TLS must be configured (TLS_CA_CERT, TLS_CERT, TLS_KEY) or call http.AllowPlaintext() / WithoutTLS for services fronted by an external TLS terminator — partial configuration silently falls back to plaintext HTTP")
 	}
 
 	// Lens F A.5: a Builder.Run() call that declares no rate limiter at
@@ -150,8 +160,8 @@ func (b *Builder) validateProductionSafety() error {
 	// routable interface, etc.) silently passed. Now the default
 	// requires loopback; non-loopback binds — wildcard, private,
 	// public — all need explicit AllowInternalNonLoopback.
-	if !isLoopbackHost(b.cfg.Internal.Host) && !b.allowInternalNonLoopback {
-		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call AllowInternalNonLoopback when network isolation is enforced")
+	if !isLoopbackHost(b.cfg.Internal.Host) && !httpCfg.allowInternalNonLoopback {
+		return fmt.Errorf("Internal.Host is not loopback — exposes unauthenticated /metrics on a routable interface; bind to 127.0.0.1 / localhost / ::1, or call http.AllowInternalNonLoopback() / AllowInternalNonLoopback when network isolation is enforced")
 	}
 
 	// Postgres TLS validation lives inside the pgx package's Connect — by

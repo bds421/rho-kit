@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	"github.com/bds421/rho-kit/infra/v2/leaderelection"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/observability/v2/slo"
@@ -202,6 +205,36 @@ type SLOCheckerProvider interface {
 // to acknowledge the trade-off.
 type RateLimitDeclarer interface {
 	DeclaresRateLimit()
+}
+
+// HTTPConfigProvider is the public capability published by the
+// app/http bridge module. The Builder reads the public + internal
+// HTTP server configuration through this interface so app/v2
+// does not import app/http directly. Returning each field
+// individually (rather than a single struct of types from
+// app/http) keeps the dep direction clean — every field's type
+// is already a foundation-level type the Builder imports.
+//
+// Defaults when no app/http module is registered:
+//   AllowPlaintext            = false
+//   OptionalClientCerts       = false
+//   AllowInternalNonLoopback  = false
+//   ReloadingTLS              = nil (use static cfg.TLS snapshot)
+//   TLSReloadSignals          = empty
+//   DisableDefaultStack       = false
+//   ServerOptions             = empty
+//   StackOptions              = empty
+//   CustomReadiness           = nil (use auto-built handler)
+type HTTPConfigProvider interface {
+	AllowPlaintext() bool
+	OptionalClientCerts() bool
+	AllowInternalNonLoopback() bool
+	ReloadingTLSOptions() ([]netutil.FilesCertificateSourceOption, bool)
+	TLSReloadSignals() []os.Signal
+	DisableDefaultStack() bool
+	StackOptions() []stack.Option
+	ServerOptions() []httpx.ServerOption
+	CustomReadiness() http.Handler
 }
 
 // BaseModule provides no-op defaults for optional Module methods. Embed it in

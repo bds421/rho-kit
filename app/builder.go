@@ -759,6 +759,11 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		}
 	}
 	allModules = append(allModules, builtinModules...)
+	// Resolve HTTP-server config from the first registered
+	// [HTTPConfigProvider] (typically app/http.Module). Zero value
+	// matches the kit's hardened defaults: TLS required, default
+	// stack on, internal ops loopback-only.
+	httpCfg := resolveHTTPConfig(append(allModules, deferredUserModules...), b)
 	allModules = append(allModules, deferredUserModules...)
 
 	// 0.5. EventBus — always initialized (no With* required).
@@ -782,8 +787,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		tlsReloadSrc *netutil.FilesCertificateSource
 		tlsErr       error
 	)
-	if b.tlsReloadActive {
-		src, srcErr := b.cfg.TLS.Reloading(b.tlsReloadOpts...)
+	if httpCfg.reloadingTLSActive {
+		src, srcErr := b.cfg.TLS.Reloading(httpCfg.reloadingTLSOpts...)
 		if srcErr != nil {
 			return fmt.Errorf("build reloading TLS source: %w", srcErr)
 		}
@@ -831,8 +836,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// lifecycle component so its goroutine exits cleanly on shutdown
 	// even when the FilesCertificateSource itself is closed later
 	// from a shutdown hook.
-	if len(b.tlsReloadSignals) > 0 && tlsReloadSrc != nil {
-		signals := append([]os.Signal(nil), b.tlsReloadSignals...)
+	if len(httpCfg.tlsReloadSignals) > 0 && tlsReloadSrc != nil {
+		signals := append([]os.Signal(nil), httpCfg.tlsReloadSignals...)
 		src := tlsReloadSrc
 		runner.AddFunc("tls-reload-signal", func(ctx context.Context) error {
 			sigCh := make(chan os.Signal, 1)
@@ -1008,12 +1013,12 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	if mw := b.tenantMiddleware(); mw != nil {
 		httpHandler = mw(httpHandler)
 	}
-	if !b.disableDefaultStack {
+	if !httpCfg.disableDefaultStack {
 		// FR-009 [MED]: pass the resolved logger so the request stack uses
 		// the same logger as infrastructure setup. Pre-fix this hardcoded
 		// slog.Default(), so [Builder.Logger] silently failed to take
 		// effect on the public middleware chain.
-		httpHandler = stack.Default(httpHandler, logger, b.stackOpts...)
+		httpHandler = stack.Default(httpHandler, logger, httpCfg.stackOpts...)
 	}
 
 	// Freeze late background registration — any calls after routerFn returns
@@ -1047,8 +1052,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 
 	var readiness http.Handler
-	if b.customReadiness != nil {
-		readiness = b.customReadiness
+	if httpCfg.customReadiness != nil {
+		readiness = httpCfg.customReadiness
 	} else {
 		readiness = healthhttp.Handler(healthChecker)
 	}
@@ -1128,12 +1133,12 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	}
 
 	// 14. Public server — added last so it is stopped first (reverse order).
-	srvOpts := make([]httpx.ServerOption, 0, len(b.serverOpts)+2)
+	srvOpts := make([]httpx.ServerOption, 0, len(httpCfg.serverOpts)+2)
 	srvOpts = append(srvOpts, serverErrorLogOpt)
 	if serverTLS != nil {
 		srvOpts = append(srvOpts, httpx.WithTLSConfig(serverTLS))
 	}
-	srvOpts = append(srvOpts, b.serverOpts...)
+	srvOpts = append(srvOpts, httpCfg.serverOpts...)
 	srv := httpx.NewServer(b.cfg.Server.Addr(), httpHandler, srvOpts...)
 	runner.Add("public-server", lifecycle.HTTPServer(srv))
 

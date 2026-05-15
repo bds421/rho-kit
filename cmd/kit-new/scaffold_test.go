@@ -299,6 +299,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 		"app/cron",
 		"app/flags",
 		"app/grpc",
+		"app/http",
 		"app/jwt",
 		"app/leader",
 		"app/nats",
