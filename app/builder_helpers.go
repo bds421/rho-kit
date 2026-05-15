@@ -129,10 +129,6 @@ func (b *Builder) buildIntegrationModules() []Module {
 		}))
 	}
 
-	if b.pasetoProvider != nil {
-		modules = append(modules, newPasetoModule(b.pasetoProvider))
-	}
-
 	if b.leaderElector != nil {
 		modules = append(modules, newLeaderModule(b.leaderElector))
 	}

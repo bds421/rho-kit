@@ -1,18 +1,18 @@
-module github.com/bds421/rho-kit/app/redis/v2
+module github.com/bds421/rho-kit/app/paseto/v2
 
 go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/app/v2 v2.0.0
-	github.com/bds421/rho-kit/core/v2 v2.0.0
-	github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
+	github.com/bds421/rho-kit/crypto/v2 v2.0.0
 	github.com/bds421/rho-kit/observability/v2 v2.0.0
-	github.com/redis/go-redis/v9 v9.19.0
-	github.com/stretchr/testify v1.11.1
 )
 
 require (
+	aidanwoods.dev/go-paseto v1.6.0 // indirect
+	aidanwoods.dev/go-result v0.3.1 // indirect
 	github.com/bds421/rho-kit/authz/v2 v2.0.0 // indirect
+	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/infra/v2 v2.0.0 // indirect
@@ -23,7 +23,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
@@ -45,7 +44,6 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.1.1 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
@@ -59,7 +57,6 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
-	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
@@ -67,7 +64,6 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/bds421/rho-kit/app/v2 => ../
@@ -76,22 +72,13 @@ replace github.com/bds421/rho-kit/authz/v2 => ../../authz
 
 replace github.com/bds421/rho-kit/core/v2 => ../../core
 
+replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
 
 replace github.com/bds421/rho-kit/data/v2 => ../../data
-
-replace github.com/bds421/rho-kit/grpcx/v2 => ../../grpcx
 
 replace github.com/bds421/rho-kit/httpx/v2 => ../../httpx
 
 replace github.com/bds421/rho-kit/infra/v2 => ../../infra
-
-replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 => ../../infra/messaging/amqpbackend
-
-replace github.com/bds421/rho-kit/infra/messaging/natsbackend/v2 => ../../infra/messaging/natsbackend
-
-replace github.com/bds421/rho-kit/infra/redis/v2 => ../../infra/redis
-
-replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../../infra/sqldb/pgx
 
 replace github.com/bds421/rho-kit/io/v2 => ../../io
 

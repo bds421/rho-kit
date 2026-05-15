@@ -14,7 +14,6 @@ import (
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
 	"github.com/bds421/rho-kit/core/v2/redact"
-	"github.com/bds421/rho-kit/crypto/v2/paseto"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
@@ -90,10 +89,6 @@ type Builder struct {
 	jwtIssuer         string
 	jwtAudience       string
 	jwtAllowAnyIssuer bool
-
-	// PASETO (alternative to JWT). Caller-constructed Provider, so the
-	// kit does not impose a particular key source.
-	pasetoProvider *paseto.Provider
 
 	// Leader election (optional). When set, cron jobs gate on
 	// elector.IsLeader() so only the elected replica runs scheduled
@@ -333,31 +328,6 @@ func (b *Builder) WithJWTAudience(aud string) *Builder {
 func (b *Builder) WithoutJWTIssuer() *Builder {
 	b.jwtAllowAnyIssuer = true
 	b.jwtIssuer = ""
-	return b
-}
-
-// WithPASETO registers a PASETO Provider as the service's token
-// verifier. PASETO is the recommended alternative to JWT for new
-// internal services — its v4 spec eliminates the algorithm-confusion
-// and `alg=none` attack classes by baking exactly one algorithm into
-// each (version, purpose) tuple.
-//
-// The caller constructs the Provider (via [paseto.OpenProvider]) so
-// the kit is unopinionated about key sourcing — services pull from
-// KMS, a JWKS-equivalent endpoint, or a static config file using
-// whatever shape fits their deployment.
-//
-// `WithPASETO` and `WithJWT` are NOT mutually exclusive — a service
-// can verify both simultaneously during a migration. New endpoints
-// pick one explicitly via the auth middleware they install.
-//
-// Panics if `p` is nil — pass an explicitly-constructed Provider or
-// don't call this method.
-func (b *Builder) WithPASETO(p *paseto.Provider) *Builder {
-	if p == nil {
-		panic("app: WithPASETO requires a non-nil Provider")
-	}
-	b.pasetoProvider = p
 	return b
 }
 

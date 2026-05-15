@@ -8,6 +8,7 @@ use (
 	./app/flags
 	./app/grpc
 	./app/nats
+	./app/paseto
 	./app/postgres
 	./app/redis
 	./app/tracing

@@ -13,10 +13,7 @@ require (
 )
 
 require (
-	aidanwoods.dev/go-paseto v1.6.0 // indirect
-	aidanwoods.dev/go-result v0.3.1 // indirect
 	github.com/bds421/rho-kit/authz/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/crypto/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
@@ -79,10 +76,8 @@ replace github.com/bds421/rho-kit/authz/v2 => ../../authz
 
 replace github.com/bds421/rho-kit/core/v2 => ../../core
 
-replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
 
 replace github.com/bds421/rho-kit/data/v2 => ../../data
-
 
 replace github.com/bds421/rho-kit/grpcx/v2 => ../../grpcx
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	kitauthz "github.com/bds421/rho-kit/authz/v2"
-	"github.com/bds421/rho-kit/crypto/v2/paseto"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/data/v2/approval"
 	"github.com/bds421/rho-kit/data/v2/budget"
@@ -63,8 +62,7 @@ type Infrastructure struct {
 	// reload poll.
 	TLSCertSource netutil.CertificateSource
 
-	JWT    *jwtutil.Provider // nil if no WithJWT
-	PASETO *paseto.Provider  // nil if no WithPASETO
+	JWT *jwtutil.Provider // nil if no WithJWT
 
 	Leader leaderelection.Elector // nil if no WithLeaderElection
 
