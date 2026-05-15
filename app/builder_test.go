@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 )
 
@@ -64,15 +63,9 @@ func TestBuilder_WithEventBusPoolPanicsOnNegative(t *testing.T) {
 	New("test-svc", "v0.1.0", BaseConfig{}).EventBusPool(-1)
 }
 
-func TestBuilder_WithAuditLogClonesOptions(t *testing.T) {
-	opts := []auditlog.Option{auditlog.WithLogger(slog.Default())}
-
-	b := New("test-svc", "v0.1.0", BaseConfig{}).AuditLog(auditlog.NewMemoryStore(), opts...)
-	opts[0] = nil
-
-	require.Len(t, b.auditOpts, 1)
-	assert.NotNil(t, b.auditOpts[0])
-}
+// TestBuilder_WithAuditLogClonesOptions was removed when audit log
+// moved to app/auditlog — option cloning is now an app/auditlog.Module
+// concern, covered by its own tests.
 
 // TestBuilder_WithCronClonesOptions was removed when cron moved to
 // app/cron — option cloning is now an app/cron.Module concern,

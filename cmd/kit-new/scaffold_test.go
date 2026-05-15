@@ -296,6 +296,7 @@ func runScaffoldBuildTest(t *testing.T, opts Params) {
 	internal := []string{
 		"app",
 		"app/amqp",
+		"app/auditlog",
 		"app/cron",
 		"app/flags",
 		"app/grpc",

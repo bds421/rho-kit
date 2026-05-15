@@ -23,7 +23,6 @@ import (
 	"github.com/bds421/rho-kit/httpx/v2/middleware/stack"
 	httpxtenant "github.com/bds421/rho-kit/httpx/v2/middleware/tenant"
 	"github.com/bds421/rho-kit/httpx/v2/slohttp"
-	"github.com/bds421/rho-kit/observability/v2/auditlog"
 	"github.com/bds421/rho-kit/observability/v2/health"
 	"github.com/bds421/rho-kit/runtime/v2/eventbus"
 	"github.com/bds421/rho-kit/runtime/v2/lifecycle"
@@ -101,10 +100,6 @@ type Builder struct {
 	// so Builder.Validate can refuse silent un-throttled
 	// deployments.
 	allowNoRateLimit bool
-
-	// Audit log
-	auditStore auditlog.Store
-	auditOpts  []auditlog.Option
 
 	// EventBus worker pool
 	eventBusPoolSize int
@@ -321,23 +316,6 @@ func (b *Builder) Authz(d kitauthz.Decider) *Builder {
 // has the same affirmative declaration shape.
 func (b *Builder) WithoutRateLimit() *Builder {
 	b.allowNoRateLimit = true
-	return b
-}
-
-// AuditLog configures an audit log backed by the given store. The audit
-// logger is available via infra.AuditLog in the RouterFunc. Use it to log
-// domain events or attach the audit middleware to the HTTP handler.
-func (b *Builder) AuditLog(store auditlog.Store, opts ...auditlog.Option) *Builder {
-	if store == nil {
-		panic("app: audit log store must not be nil")
-	}
-	for _, opt := range opts {
-		if opt == nil {
-			panic("app: AuditLog option must not be nil")
-		}
-	}
-	b.auditStore = store
-	b.auditOpts = append([]auditlog.Option(nil), opts...)
 	return b
 }
 
@@ -629,11 +607,8 @@ func (b *Builder) RunContext(ctx context.Context) error {
 	// (Rate limiters are now opt-in bridge modules under
 	// app/ratelimit — see ratelimit.IP and ratelimit.Keyed.)
 
-	// 5. Audit log
-	var auditLogger *auditlog.Logger
-	if b.auditStore != nil {
-		auditLogger = auditlog.New(b.auditStore, b.auditOpts...)
-	}
+	// (Audit log is now an opt-in bridge module under app/auditlog —
+	// see auditlog.Module and auditlog.Logger(infra).)
 
 	// (Cron is now an opt-in bridge module under app/cron, which
 	// reads the optional leader gate via the ElectorProvider
@@ -709,7 +684,6 @@ func (b *Builder) RunContext(ctx context.Context) error {
 		Logger:        logger,
 		ServerTLS:     serverTLS,
 		TLSCertSource: tlsSource,
-		AuditLog:      auditLogger,
 		EventBus:      eventBus,
 		TenantBudget:  b.budgetSpecStore(),
 		ActionLog:     b.actionLogger(),
