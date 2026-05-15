@@ -10,9 +10,9 @@ import (
 // FromDecider adapts a [kitauthz.Decider] (the kit's vendor-neutral
 // authorization seam) into an [httpx/authz.Policy] that
 // [RequirePermission] middleware accepts. The bridge is the recommended
-// integration path: services configure a single Decider via
-// app.Builder.WithAuthz, then per-route middleware uses
-// `authz.RequirePermission(authz.FromDecider(infra.Authz), ...)`.
+// integration path: services register the decider via
+// `app.Builder.With(authz.Module(decider))`, then per-route middleware uses
+// `authz.RequirePermission(authz.FromDecider(appauthz.Decider(infra)), ...)`.
 //
 // The adapter translates the Decider's error-sentinel idiom
 // (kitauthz.ErrDenied) into the Policy's (bool, error) signature:

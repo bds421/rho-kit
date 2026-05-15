@@ -145,17 +145,29 @@ The package decision tree in [AGENTS.md](../../AGENTS.md#package-decision-tree)
 is the canonical "I need to X, what do I import?" reference. Quick
 pointers for the most common downstream wiring:
 
-| Capability | Builder wiring | Infrastructure field |
+| Capability | Builder wiring | Accessor |
 |---|---|---|
-| Postgres pool, readiness | `With(postgres.Module(pgxbackend.Config{DSN:...}))` | `infra.DB` |
-| Redis (TLS-required) | `With(redis.Module(*goredis.Options, ...kitredis.ConnOption))` | `infra.Redis` |
-| RabbitMQ publisher/consumer | `With(amqp.Module(url))` | `infra.Publisher`, `infra.Consumer` |
-| NATS JetStream | `With(nats.Module(natsbackend.Config))` | `infra.NATS`, `infra.NATSPublisher` |
+| Postgres pool, readiness | `With(postgres.Module(pgxbackend.Config{DSN:...}))` | `postgres.Pool(infra)` |
+| Redis (TLS-required) | `With(redis.Module(*goredis.Options, ...kitredis.ConnOption))` | `redis.Connection(infra)` |
+| RabbitMQ publisher/consumer | `With(amqp.Module(url))` | `amqp.Publisher(infra)`, `amqp.Consumer(infra)` |
+| NATS JetStream | `With(nats.Module(natsbackend.Config))` | `nats.Connection(infra)`, `nats.Publisher(infra)` |
 | JWT verification (JWKS) | `With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud)))` | `jwt.Provider(infra)` |
-| Multi-tenant request scope | `MultiTenant(extractor, required)` | (middleware) |
+| PASETO verifier | `With(paseto.Module(provider))` | `paseto.Provider(infra)` |
+| Feature flags | `With(flags.Module(provider))` | `flags.Client(infra)` |
+| Tenant extraction | `With(tenant.Module(extractor))` | _(middleware; read via `coretenant.FromContext`)_ |
+| Per-tenant budget | `With(budget.Module(store))` | `budget.Store(infra)` |
 | In-process rate limit | `With(ratelimit.IP(n, window))` | `ratelimit.IPLimiter(infra)` |
+| Keyed rate limit | `With(ratelimit.Keyed(name, n, window))` | `ratelimit.KeyedLimiter(infra, name)` |
 | Cron jobs | `With(cron.Module())` | `cron.Scheduler(infra)` |
 | Leader election | `With(leader.Module(elector))` | `leader.Elector(infra)` |
+| SLO checker | `With(slo.Module(slos...))` | _(internal /slo handler)_ |
+| Object storage | `With(storage.Module(backend))` | `storage.Backend(infra)`, `storage.Manager(infra)` |
+| Audit logger | `With(auditlog.Module(store))` | `auditlog.Logger(infra)` |
+| Action logger | `With(actionlog.Module(logger))` | `actionlog.Logger(infra)` |
+| Approval store | `With(approval.Module(store))` | `approval.Store(infra)` |
+| Authorization decider | `With(authz.Module(decider))` | `authz.Decider(infra)` |
+| Signed-request middleware | `With(signedrequest.Module(resolver, store))` | _(middleware)_ |
+| HTTP server config | `With(http.Module(http.WithoutTLS(), ...))` | _(consumed by Builder)_ |
 | Typed HTTP handlers | `httpx.JSON[Req,Resp](logger, fn)` etc. | — |
 
 The full list of Builder methods is in
@@ -181,10 +193,11 @@ require explicit opt-in:
 - **OpenTelemetry tracing.** `With(tracing.Module(cfg))` is opt-in;
   without it the Builder runs with no tracer provider and
   `infra.HTTPClient` is the non-tracing client.
-- **Audit logger, approval store, action logger.** `AuditLog`,
-  `ApprovalStore`, `ActionLogger` are explicit; the kit ships
-  in-memory implementations for tests but production backends
-  (Postgres) live in adapter sub-modules.
+- **Audit logger, approval store, action logger.** Register via
+  `With(auditlog.Module(store))`, `With(approval.Module(store))`,
+  `With(actionlog.Module(logger))`. The kit ships in-memory
+  implementations for tests but production backends (Postgres)
+  live in adapter sub-modules.
 - **Migrations.** `WithMigrations(fs)` runs goose migrations from an
   `embed.FS` you supply; the Builder does not generate schemas.
 

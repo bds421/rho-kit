@@ -53,7 +53,7 @@
 // persistence. [Logger.Log] is best-effort and only records append failures via
 // logs, counters, and the optional drop callback.
 //
-//	if err := infra.AuditLog.LogE(ctx, auditlog.Event{
+//	if err := appauditlog.Logger(infra).LogE(ctx, auditlog.Event{
 //	    Actor:    userID,
 //	    Action:   "approve_order",
 //	    Resource: "orders/" + orderID,

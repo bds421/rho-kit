@@ -6,9 +6,10 @@
 > distributed rate limiting, persistent approval storage, and real
 > secret management. Production services use `app.Builder` end-to-end:
 > register the security bridges via `app.Builder.With(jwt.Module(...))`,
-> `.With(signedrequest.Module(...))`, plus `.MultiTenant(...)`,
-> `.TenantBudget(...)`, `.ActionLogger(...)`, `.ApprovalStore(...)` and
-> the per-package docs. The Builder runs an always-on validator at
+> `.With(signedrequest.Module(...))`, `.With(tenant.Module(...))`,
+> `.With(budget.Module(...))`, `.With(actionlog.Module(...))`,
+> `.With(approval.Module(...))` and the per-package docs. The Builder
+> runs an always-on validator at
 > startup that rejects empty TLS, missing JWT issuer/audience,
 > exposed internal-host, weak postgres sslmode, and excessive tracing
 > sample rates.
@@ -85,9 +86,11 @@ curl -i -X POST http://localhost:8080/admin/dangerous-action \
   `data/budget/redis`, `data/actionlog/postgres`,
   `data/approval/postgres`.
 - **app.Builder wiring**: the example uses a hand-composed mux for
-  clarity. Real services use `app.Builder.MultiTenant /
-  .TenantBudget / .ActionLogger / .ApprovalStore` and
-  let the Builder install the middleware chain in the right order.
+  clarity. Real services register the security bridges via
+  `app.Builder.With(tenant.Module(...))`,
+  `.With(budget.Module(...))`, `.With(actionlog.Module(...))`,
+  `.With(approval.Module(...))` and let the Builder install the
+  middleware chain in the right order.
 - **Persistent HMAC key management**: the action-log secret is
   generated per process because the demo has no persistent log. A
   restart creates a new chain. Production must load stable signing

@@ -30,9 +30,11 @@ func main() {
         return app.New("my-service", version, base).
             With(postgres.Module(pgxbackend.Config{DSN: os.Getenv("DATABASE_URL")})).
             With(amqp.Module(os.Getenv("RABBITMQ_URL"))).
-            WithJWT(os.Getenv("JWKS_URL")).
-            WithJWTAudience("my-service").
-            WithIPRateLimit(100, time.Minute).
+            With(jwt.Module(os.Getenv("JWKS_URL"),
+                jwt.WithIssuer("https://issuer.example.com"),
+                jwt.WithAudience("my-service"),
+            )).
+            With(ratelimit.IP(100, time.Minute)).
             Router(func(infra app.Infrastructure) http.Handler {
                 mux := http.NewServeMux()
                 mux.Handle("GET /users", httpx.JSONNoBody[UserListResponse](
@@ -126,15 +128,7 @@ lives in per-adapter sub-modules under `app/` and is registered via
 
 | Method | What it enables | Requires |
 |---|---|---|
-| `With(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor (postgres, redis, amqp, nats, jwt, paseto, flags, cron, leader, slo, ratelimit, signedrequest, http, grpc, tracing, …) | - |
-| `MultiTenant(extractor, required)` | Tenant extraction middleware | - |
-| `TenantBudget(budget, opts...)` | Tenant request budget middleware | `MultiTenant(..., required=true)` |
-| `ActionLogger(logger)` | Action logger in infrastructure | - |
-| `ApprovalStore(store)` | Approval store in infrastructure | - |
-| `Authz(decider)` | Authorization decider in infrastructure | - |
-| `Storage(backend, checks...)` | Single unnamed storage backend | - |
-| `NamedStorage(name, backend, checks...)` | Named backend in storage manager | - |
-| `AuditLog(store, opts...)` | Audit logger | - |
+| `With(m)` | Register an adapter module returned by a sub-package's `Module(...)` constructor (postgres, redis, amqp, nats, jwt, paseto, flags, cron, leader, slo, ratelimit, signedrequest, http, grpc, tracing, storage, auditlog, actionlog, approval, authz, tenant, budget, …) | - |
 | `WithoutRateLimit()` | Explicit opt-out of the always-on rate-limit gate | - |
 | `AddHealthCheck(check)` | Custom readiness dependency | - |
 | `Background(name, fn)` | Managed goroutine | - |
@@ -144,21 +138,28 @@ lives in per-adapter sub-modules under `app/` and is registered via
 | `EventBusPool(n)` | EventBus worker pool size | - |
 | `Router(fn)` | HTTP handler builder | required |
 
-Concept-specific configuration that used to live on the Builder now
-moves through the corresponding bridge module:
+Concept-specific configuration moves through the corresponding bridge
+module — register via `b.With(<bridge>.Module(...))`:
 
-| Concept | Wiring |
-|---|---|
-| JWT verification | `With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud)))` |
-| PASETO provider | `With(paseto.Module(provider))` |
-| Signed requests | `With(signedrequest.Module(resolver, store, …))` |
-| Feature flags | `With(flags.Module(provider))` |
-| Per-IP rate limit | `With(ratelimit.IP(n, window))` |
-| Keyed rate limit | `With(ratelimit.Keyed(name, n, window))` |
-| Cron scheduler | `With(cron.Module(opts...))` |
-| Leader election | `With(leader.Module(elector))` |
-| SLO checker | `With(slo.Module(slos...))` |
-| HTTP server config | `With(http.Module(http.WithoutTLS(), http.WithReloadingTLS(), …))` |
+| Concept | Wiring | Accessor |
+|---|---|---|
+| JWT verification | `With(jwt.Module(jwksURL, jwt.WithIssuer(iss), jwt.WithAudience(aud)))` | `jwt.Provider(infra)` |
+| PASETO provider | `With(paseto.Module(provider))` | `paseto.Provider(infra)` |
+| Signed requests | `With(signedrequest.Module(resolver, store, …))` | _(middleware)_ |
+| Feature flags | `With(flags.Module(provider))` | `flags.Client(infra)` |
+| Per-IP rate limit | `With(ratelimit.IP(n, window))` | `ratelimit.IPLimiter(infra)` |
+| Keyed rate limit | `With(ratelimit.Keyed(name, n, window))` | `ratelimit.KeyedLimiter(infra, name)` |
+| Cron scheduler | `With(cron.Module(opts...))` | `cron.Scheduler(infra)` |
+| Leader election | `With(leader.Module(elector))` | `leader.Elector(infra)` |
+| SLO checker | `With(slo.Module(slos...))` | _(internal /slo handler auto-wires)_ |
+| HTTP server config | `With(http.Module(http.WithoutTLS(), http.WithReloadingTLS(), …))` | _(consumed by Builder)_ |
+| Tenant extraction | `With(tenant.Module(extractor, tenant.WithoutTenantRequired()))` | _(middleware; read via `coretenant.FromContext`)_ |
+| Tenant budget | `With(budget.Module(store, opts...))` | `budget.Store(infra)` |
+| Object storage | `With(storage.Module(backend, storage.WithNamed("uploads", b2)))` | `storage.Backend(infra)`, `storage.Manager(infra)` |
+| Audit logger | `With(auditlog.Module(store, opts...))` | `auditlog.Logger(infra)` |
+| Action logger | `With(actionlog.Module(logger))` | `actionlog.Logger(infra)` |
+| Approval store | `With(approval.Module(store))` | `approval.Store(infra)` |
+| Authorization decider | `With(authz.Module(decider))` | `authz.Decider(infra)` |
 
 ## Infrastructure
 
@@ -166,26 +167,20 @@ Available inside `RouterFunc`:
 
 ```go
 type Infrastructure struct {
-    Logger    *slog.Logger
-    ClientTLS *tls.Config
-    ServerTLS *tls.Config
+    Logger        *slog.Logger
+    ClientTLS     *tls.Config
+    ServerTLS     *tls.Config
+    TLSCertSource netutil.CertificateSource // populated when http.WithReloadingTLS is configured
 
-    TenantBudget  budget.Budget
-    ActionLog     actionlog.Logger
-    ApprovalStore approval.Store
-    Authz         authz.Decider
-
-    Storage        storage.Storage
-    StorageManager *storage.Manager
-    AuditLog       *auditlog.Logger
-    EventBus       *eventbus.Bus
-
+    EventBus   *eventbus.Bus
     HTTPClient *http.Client
     Config     app.BaseConfig
 
     Background(name string, fn func(ctx context.Context) error)
     SetCustomReadiness(h http.Handler)
     AddHealthCheck(check health.DependencyCheck)
+    Resource(key string) (any, bool)
+    SetResource(key string, value any)
 }
 ```
 
@@ -305,11 +300,12 @@ app.New("my-svc", version, cfg.BaseConfig).
 auditStore := auditlog.NewMemoryStore()
 
 app.New("my-svc", version, cfg.BaseConfig).
-    AuditLog(auditStore).
+    With(appauditlog.Module(auditStore)).
     Router(func(infra app.Infrastructure) http.Handler {
+        alog := appauditlog.Logger(infra)
         mux := http.NewServeMux()
         mux.HandleFunc("POST /orders/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
-            if err := infra.AuditLog.LogE(r.Context(), auditlog.Event{
+            if err := alog.LogE(r.Context(), auditlog.Event{
                 Actor:    "user-1",
                 Action:   "delete",
                 Resource: "orders/" + r.PathValue("id"),

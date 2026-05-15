@@ -198,7 +198,7 @@ func Run(_ *slog.Logger) error {
 {{- if .MCP}}
 
 			// Mount the MCP JSON-RPC endpoint. Builder.With(jwt.Module /
-			// .MultiTenant / .TenantBudget add the kit's
+			// tenant.Module / budget.Module) adds the kit's
 			// auth + tenant + budget middleware around the public
 			// mux automatically — nothing extra to do here.
 			mux.Handle("/mcp", newMCPServer().HTTP())

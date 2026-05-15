@@ -74,14 +74,14 @@ const (
 
 // Run starts the HTTP server with the agentic-service stack.
 //
-// In a real service this would call app.Builder.MultiTenant /
-// .TenantBudget / .ActionLogger / .ApprovalStore and let
-// the Builder install the JWT / tenant / budget / signed-request
-// middleware on the public mux. Approval middleware must still be
-// wrapped by handlers explicitly (see [Builder.ApprovalStore]
-// docstring). The example uses a hand-composed mux to keep it
-// dependency-light (no DB, no Redis) while still exercising every
-// primitive.
+// In a real service this would register the security bridges via
+// app.Builder.With: tenant.Module, budget.Module, actionlog.Module,
+// approval.Module — and let the Builder install the JWT / tenant /
+// budget / signed-request middleware on the public mux. Approval
+// middleware must still be wrapped by handlers explicitly (see
+// app/approval package doc). The example uses a hand-composed mux
+// to keep it dependency-light (no DB, no Redis) while still
+// exercising every primitive.
 func Run(ctx context.Context) error {
 	return run(ctx, ":8080")
 }

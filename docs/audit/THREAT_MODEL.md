@@ -310,7 +310,7 @@ without extra wiring. Raw `httpx.Middleware` users must wrap their
 `Decider` themselves. The audit-log HTTP middleware
 (`httpx/middleware/auditlog.Middleware`) is intentionally NOT included
 in `stack.Default` — chain / cursor keys and the store are
-service-specific. Pass `stack.AuditLog(logger, ...)` to inject it
+service-specific. Pass `stack.WithAuditLog(logger, ...)` to inject it
 at the canonical innermost position so each entry captures the
 authenticated actor, the request path, and the final response status.
 
@@ -323,7 +323,7 @@ others (interceptor ordering, streaming exhaustion).
 | ID | Threat | Adversary | Mitigation | Mitigation type | Where |
 |---|---|---|---|---|---|
 | G-01 | Panic in unary/streaming handler kills server | A1 | Recovery interceptor (unary + stream) prepended by `grpcx.NewServer`; `WithoutRecovery` is opt-out, not default | kit-enforced | [grpcx/server.go](../../grpcx/server.go), [grpcx/interceptor](../../grpcx/interceptor/) |
-| G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app.WithJWT`/`WithPASETO`; rejects requests without a valid token | caller-must-cooperate | [app/jwt_module.go](../../app/jwt_module.go), [app/paseto_module.go](../../app/paseto_module.go) |
+| G-02 | Unauthenticated RPC | A1 | Auth interceptor wired by `app/jwt.Module` / `app/paseto.Module`; rejects requests without a valid token | caller-must-cooperate | [app/jwt](../../app/jwt/), [app/paseto](../../app/paseto/) |
 | G-03 | Streaming flood — client opens N streams and never sends | A1 | `grpcx.NewServer` pins `grpc.MaxConcurrentStreams` to 1000 per connection by default (Go gRPC default is `math.MaxUint32`) plus the per-RPC default-deadline interceptor; operators override the cap via `grpcx.WithMaxConcurrentStreams` | kit-enforced | [grpcx/server.go](../../grpcx/server.go) |
 | G-04 | Error message leakage via gRPC status messages | A1 | `grpcx/apperror_status.go` maps `core/apperror` codes to gRPC codes + safe messages — never returns the underlying `error.Error()` | kit-enforced | [grpcx/apperror_status.go](../../grpcx/apperror_status.go) |
 | G-05 | Health probe leaks service liveness to attacker | A1 | Builder serves gRPC Health Checking Protocol on the internal ops listener over h2c; public gRPC health is disabled unless the operator explicitly calls `WithPublicGRPCHealth()` | kit-enforced | [app/builder.go](../../app/builder.go), [app/internal_grpc_health.go](../../app/internal_grpc_health.go) |
@@ -399,7 +399,7 @@ Redis is used for cache (`data/cache/rediscache`), idempotency
 | ID | Threat | Adversary | Mitigation | Mitigation type | Where |
 |---|---|---|---|---|---|
 | T-01 | `alg=none` token accepted | A1 | `jwtutil` uses `github.com/MicahParks/keyfunc` + jwx/jwt; `none` is rejected by the parser | kit-enforced | [security/jwtutil/jwtutil.go](../../security/jwtutil/jwtutil.go) |
-| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `WithJWT` requires `WithJWTIssuer` (pin the expected `iss`) or the explicit opt-out `WithoutJWTIssuer`; the always-on `app.Builder` validator fails `Build()` if neither is set, so a service cannot ship with an unpinned issuer by accident. The audience check has the same shape (`WithJWTAudience` or `WithoutJWTAudience`) | kit-enforced via panic | [app/jwt_module.go](../../app/jwt_module.go), [app/validate.go](../../app/validate.go) |
+| T-02 | JWT issuer not validated → token from different IDP accepted | A1 | `jwt.Module` requires `jwt.WithIssuer` (pin the expected `iss`) or the explicit opt-out `jwt.WithoutIssuer`; `jwt.Module` panics at construction if neither is set, so a service cannot ship with an unpinned issuer by accident. The audience check has the same shape (`jwt.WithAudience` or `jwt.WithoutAudience`) | kit-enforced via panic | [app/jwt](../../app/jwt/), [app/validate.go](../../app/validate.go) |
 | T-03 | JWKS rotation makes valid tokens unverifiable (key cache stale) | A1 (DoS via timing) | `keyfunc` library refreshes JWKS on cache miss; configurable refresh interval | kit-enforced |  |
 | T-04 | JWT replay after logout (no revocation) | A1 | `security/jwtutil/revocation` stores revoked `jti` values until token expiry over any cache-compatible backend; `jwtutil.Provider` can fail closed through `WithRevocationChecker`. | caller-must-cooperate | [security/jwtutil](../../security/jwtutil/), [security/jwtutil/revocation](../../security/jwtutil/revocation/) |
 | T-05 | PASETO key confusion (v3.local vs v3.public) | A1 | `crypto/paseto` exposes purpose-typed handles; you cannot accidentally hand a local key to the public verifier | kit-enforced | [crypto/paseto/paseto.go](../../crypto/paseto/paseto.go) |
@@ -422,7 +422,7 @@ HTTP) where JWT is overkill or impossible.
 | W-01 | Replay of a captured signed request | A1 | Nonce store with TTL; `signedrequest.NonceStore` interface implemented over Redis (`data/idempotency/redisstore`-style) — duplicate nonce rejected | kit-enforced via panic | [httpx/middleware/signedrequest/noncestore.go](../../httpx/middleware/signedrequest/noncestore.go) |
 | W-02 | Header-strip attack — attacker removes signed headers and resigns | A1 | The signature input includes the canonical sorted list of signed-headers; receiver computes the same list and rejects mismatches | kit-enforced | [httpx/middleware/signedrequest/signedrequest.go](../../httpx/middleware/signedrequest/signedrequest.go) |
 | W-03 | Clock-skew bypass of timestamp window | A1 | Configurable max-clock-skew with a default in single-digit minutes; rejection on stale or future-dated requests | kit-enforced |  |
-| W-04 | HMAC key reuse across services | A5 | Convention: per-service keys; `app.WithSignedRequests` accepts a key reference, not a key string | caller-must-cooperate | [app/signedrequest_module.go](../../app/signedrequest_module.go) |
+| W-04 | HMAC key reuse across services | A5 | Convention: per-service keys; `app/signedrequest.Module` accepts a key reference, not a key string | caller-must-cooperate | [app/signedrequest](../../app/signedrequest/) |
 | W-05 | Signing key in source control | A5, A6 | `core/secret.String` wrapping; signing-key access flagged in code review by grepping for `SecretString.Reveal` | caller-must-cooperate |  |
 
 ### 4.9 Idempotency replay defence (`data/idempotency`, `httpx/middleware/idempotency`)
@@ -443,10 +443,10 @@ backends or other expensive operations.
 
 | ID | Threat | Adversary | Mitigation | Mitigation type | Where |
 |---|---|---|---|---|---|
-| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; Builder wires them with `TenantBudget` | caller-must-cooperate | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget_module.go](../../app/budget_module.go) |
+| L-01 | Single tenant exhausts global LLM spend in minutes | A2, A4 | `data/budget`, `data/budget/redis`, `httpx/middleware/budget`, and `httpx/budget` provide per-tenant inbound and outbound spend controls; register via `With(budget.Module(store))` | caller-must-cooperate | [data/budget](../../data/budget/), [httpx/middleware/budget](../../httpx/middleware/budget/), [httpx/budget](../../httpx/budget/), [app/budget](../../app/budget/) |
 | L-02 | Prompt-injection causes the model to call an internal tool with attacker payloads | A4 | Defence-in-depth: `core/tenant.Required` at every storage boundary means tool-call args inherit the *legitimate* tenant context, not the attacker's claim; the kit refuses to let an LLM-emitted token override an authenticated tenant ID. **Service still owns input validation on tool call args.** | caller-must-cooperate | [core/tenant/tenant.go](../../core/tenant/tenant.go) |
 | L-03 | Background job loop runs forever after a partial failure | A1 (poisoned input) | `runtime/concurrency.FanOut` returns first error; `FanOutSettled` always cancels child contexts on parent cancellation | kit-enforced | [runtime/concurrency](../../runtime/concurrency/) |
-| L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; `app.WithLeaderElection` opt-in | caller-must-cooperate | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader_module.go](../../app/leader_module.go) |
+| L-04 | Cron job fires on every replica and the work runs N times | A5 (deployment misconfig) | `runtime/cron` integrates with `infra/leaderelection` so only the leader runs jobs; register `With(leader.Module(elector))` and `With(cron.Module())` so cron auto-gates on the leader | caller-must-cooperate | [runtime/cron](../../runtime/cron/), [infra/leaderelection](../../infra/leaderelection/), [app/leader](../../app/leader/), [app/cron](../../app/cron/) |
 | L-05 | `BufferedPublisher` queue grows unboundedly while broker is down → OOM | A1 (DoS) | `defaultBufferedMaxSize = 10_000`; once exceeded, the publisher returns a `"buffered publisher: buffer full, message dropped"` error rather than evicting silently; state-file path validated | kit-enforced | [infra/messaging/buffered_publisher.go](../../infra/messaging/buffered_publisher.go) |
 
 ### 4.11 Outbox + transactional integrity (`infra/outbox`)
@@ -483,7 +483,7 @@ The kit panics at startup (NOT at first request) when any of the
 following hold:
 
 - `app/postgres.Module(cfg)` without a non-empty pgx DSN in `cfg`.
-- `WithJWT` without `WithJWTIssuer` (or the explicit `WithoutJWTIssuer` opt-out). Audience has the same shape.
+- `jwt.Module(jwksURL, ...)` without `jwt.WithIssuer(...)` (or the explicit `jwt.WithoutIssuer()` opt-out). Audience has the same shape.
 - Postgres `sslmode=disable` outside development.
 - AMQP scheme `amqp://` (cleartext) outside development.
 - `idempotency.WithTTL(0)`.
@@ -506,8 +506,9 @@ The [`app.Builder`](../../app/builder.go) production-safety validator
 runs unconditionally inside `Build()` — every service the kit builds
 gets the same posture. There is no `KIT_ENV` (or `APP_ENV`) escape
 hatch in any kit code path. Per-feature relaxations are explicit
-opt-outs the operator declares consciously: `WithoutTLS`,
-`AllowInternalNonLoopback`, `WithoutJWTIssuer`, `WithoutJWTAudience`.
+opt-outs the operator declares consciously: `http.WithoutTLS`,
+`http.WithInternalNonLoopback`, `jwt.WithoutIssuer`,
+`jwt.WithoutAudience`.
 
 ### 5.2 Refuse-to-print secrets and memory hygiene
 
