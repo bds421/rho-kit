@@ -234,7 +234,8 @@ func clonePayload(payload []byte) []byte {
 type JobState = rivertype.JobState
 
 // DriverFromPool wraps a pgxpool.Pool in River's pgxv5 driver. The
-// kit exposes this so app.Builder.WithRiver wiring stays a one-liner.
+// kit exposes this so bridge-module wiring stays a one-liner — see the
+// app/postgres + app/queue bridges for the canonical setup.
 func DriverFromPool(pool *pgxpool.Pool) *riverpgxv5.Driver {
 	return riverpgxv5.New(pool)
 }

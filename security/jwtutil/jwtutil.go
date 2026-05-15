@@ -500,9 +500,9 @@ func WithRevocationChecker(checker RevocationChecker) ProviderOption {
 // custom predicate at the application layer rather than turning issuer
 // validation off wholesale.
 //
-// At the kit's application layer ([app.Builder]), the always-on validator
-// rejects [app.Builder.WithJWT] without a paired [app.Builder.WithJWTIssuer]
-// or the explicit [app.Builder.WithoutJWTIssuer]; this option lets a
+// The app/jwt bridge module enforces the same pairing at construction:
+// `jwt.Module(jwksURL)` rejects setups without `jwt.WithExpectedIssuer(...)`
+// or an explicit `jwt.WithoutExpectedIssuer()`. This option lets a
 // hand-constructed Provider mirror that explicit opt-out.
 func WithAllowAnyIssuer() ProviderOption {
 	return func(p *Provider) {
@@ -654,9 +654,9 @@ func eqIgnoreCase(a, b string) bool {
 // token from the JWKS authority verifies for any issuer or audience — the
 // classic confused-deputy hazard (RFC 7519 §4.1.3).
 //
-// The kit's [app.Builder] enforces the same pairing at startup via the
-// always-on production-safety validator; standalone callers must opt in
-// explicitly when federation across issuers/audiences is the intended design.
+// The app/jwt bridge module enforces the same pairing at construction;
+// standalone callers must opt in explicitly when federation across
+// issuers/audiences is the intended design.
 func NewProvider(url string, httpClient *http.Client, refresh time.Duration, opts ...ProviderOption) *Provider {
 	httpClient = jwksHTTPClient(httpClient)
 	if refresh <= 0 {

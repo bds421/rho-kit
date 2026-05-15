@@ -2,7 +2,8 @@
 //
 // The Scheduler wraps cron with structured logging, Prometheus metrics, panic
 // recovery, and context-aware shutdown. It implements [lifecycle.Component] so
-// it can be registered with [lifecycle.Runner] or used via [app.Builder.WithCron].
+// it can be registered with [lifecycle.Runner]. Bridge-module callers wire it
+// via the app/cron bridge (`cron.Module(...)`).
 //
 // Jobs receive a context that is cancelled when the scheduler shuts down,
 // allowing graceful cleanup of long-running periodic tasks.

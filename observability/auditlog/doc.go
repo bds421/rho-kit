@@ -64,8 +64,9 @@
 //
 // # Retention
 //
-// Use [RetentionJob] with the cron scheduler to clean up old events:
+// Use [RetentionJob] with the cron scheduler to clean up old events.
+// In a bridge-module app, fetch the scheduler from infra:
 //
-//	infra.Cron.Add("audit-retention", "@daily",
+//	cron.Scheduler(infra).Add("audit-retention", "@daily",
 //	    auditlog.RetentionJob(store, 365*24*time.Hour, logger))
 package auditlog

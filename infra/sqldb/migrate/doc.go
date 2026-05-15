@@ -2,18 +2,17 @@
 // [goose/v3].
 //
 // Migrations are loaded from an [fs.FS] (typically an [embed.FS]) and applied
-// against a [*sql.DB]. Builder users normally call [app.Builder.WithMigrations],
-// which runs migrations through the configured pgx pool during startup.
+// against a [*sql.DB]. Bridge-module users normally pass
+// `postgres.WithMigrations(migrationsFS)` to `postgres.Module(cfg, ...)`, which
+// runs migrations through the configured pgx pool during startup.
 //
-// # Builder Usage
+// # Bridge Usage
 //
 //	//go:embed migrations/*.sql
 //	var migrationsFS embed.FS
 //
 //	app.New("my-svc", "v1.0.0", cfg).
-//	    WithPostgres(dbCfg).
-//	    WithMigrations(migrationsFS).
-//	    Router(routerFn).
+//	    With(postgres.Module(dbCfg, postgres.WithMigrations(migrationsFS))).
 //	    Run()
 //
 // # Standalone Usage
