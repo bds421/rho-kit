@@ -216,7 +216,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 			r.logger.Info("component starting", logattr.Component(nc.name))
 
-			err := nc.component.Start(gCtx)
+			startCtx, span := startComponentSpan(gCtx, "lifecycle.Start", nc.name)
+			err := nc.component.Start(startCtx)
+			recordComponentResult(span, err)
+			span.End()
 
 			// http.ErrServerClosed is expected during shutdown.
 			if errors.Is(err, http.ErrServerClosed) {
@@ -370,7 +373,10 @@ func (r *Runner) stopOne(parent context.Context, nc namedComponent) (retErr erro
 	r.logger.Info("stopping component", slog.String("component", nc.name))
 	stopStart := time.Now()
 
-	if err := nc.component.Stop(parent); err != nil {
+	stopCtx, span := startComponentSpan(parent, "lifecycle.Stop", nc.name)
+	defer span.End()
+	if err := nc.component.Stop(stopCtx); err != nil {
+		recordComponentResult(span, err)
 		r.logger.Error("component stop error",
 			logattr.Component(nc.name),
 			logattr.Error(err),

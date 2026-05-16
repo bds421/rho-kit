@@ -212,12 +212,15 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 	if cb == nil {
 		return fn()
 	}
+	_, span := cb.startSpan(context.Background(), "breaker.Execute")
+	defer span.End()
 	_, err := cb.cb.Execute(func() (any, error) {
 		return nil, fn()
 	})
 	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
-		return ErrCircuitOpen
+		err = ErrCircuitOpen
 	}
+	recordResult(span, err)
 	return err
 }
 
@@ -242,12 +245,15 @@ func (cb *CircuitBreaker) ExecuteCtx(ctx context.Context, fn func(ctx context.Co
 	if cb == nil {
 		return fn(ctx)
 	}
+	_, span := cb.startSpan(ctx, "breaker.ExecuteCtx")
+	defer span.End()
 	_, err := cb.cb.Execute(func() (any, error) {
 		return nil, fn(ctx)
 	})
 	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
-		return ErrCircuitOpen
+		err = ErrCircuitOpen
 	}
+	recordResult(span, err)
 	return err
 }
 

@@ -220,7 +220,11 @@ func Do(ctx context.Context, fn func(ctx context.Context) error, opts ...Option)
 		}
 		o(&p)
 	}
-	return doWithPolicy(ctx, p, fn)
+	ctx, span := startSpan(ctx, "retry.Do", p.MaxRetries)
+	defer span.End()
+	err := doWithPolicy(ctx, p, fn)
+	recordResult(span, err)
+	return err
 }
 
 // DoWith executes fn using a specific base policy (overridden by opts).
@@ -234,7 +238,11 @@ func DoWith(ctx context.Context, base Policy, fn func(ctx context.Context) error
 		}
 		o(&base)
 	}
-	return doWithPolicy(ctx, base, fn)
+	ctx, span := startSpan(ctx, "retry.DoWith", base.MaxRetries)
+	defer span.End()
+	err := doWithPolicy(ctx, base, fn)
+	recordResult(span, err)
+	return err
 }
 
 // Loop runs fn in an infinite restart loop with exponential backoff, logging
