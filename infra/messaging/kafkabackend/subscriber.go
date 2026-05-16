@@ -282,10 +282,14 @@ func (s *Subscriber) Consume(ctx context.Context, b messaging.Binding, handler m
 		return fmt.Errorf("kafkabackend: topic %q is not in the subscriber topic set", b.Exchange)
 	}
 	if b.Retry != nil {
-		s.logger.Warn("kafkabackend: Binding.Retry is not honoured by Kafka; ignoring",
+		// Kafka has no per-message redelivery primitive analogous to
+		// AMQP DLX, so Binding.Retry cannot be honoured. Surface a
+		// single actionable WARN at Consume entry pointing the
+		// operator at the documented workarounds.
+		s.logger.Warn("kafkabackend: Binding.Retry is not honoured by Kafka; set Binding.WithoutRetry=true to suppress this warning or wrap the handler in the kit's resilience/retry package",
 			redact.String("topic", b.Exchange),
-			"max_retries", b.Retry.MaxRetries,
-			"delay", b.Retry.Delay.String(),
+			slog.Int("max_retries", b.Retry.MaxRetries),
+			slog.Duration("delay", b.Retry.Delay),
 		)
 	}
 	reader, err := s.newReader(b.Exchange)
@@ -381,7 +385,7 @@ func (s *Subscriber) dispatch(ctx context.Context, reader *kafka.Reader, km kafk
 			s.logger.Error("kafkabackend: handler panicked — committing offset to skip poison pill",
 				redact.String("topic", km.Topic),
 				redact.Panic(r),
-				"stack", string(debug.Stack()),
+				slog.String("stack", string(debug.Stack())),
 			)
 			s.metrics.observeHandler(km.Topic, s.groupID, kafkaHandlerOutcomePanic, started)
 			s.commitWithOutcome(ctx, reader, km, kafkaConsumeOutcomeHandlerPanic)

@@ -152,8 +152,8 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithMetrics enables Prometheus observability for the callback-drain
-// watchdog. The elector validates the Lease (namespace, name) labels
-// against [promutil.ValidateStaticLabelValue] when this option is set,
+// watchdog. When this option is set, [New] validates the Lease
+// (namespace, name) values against [promutil.ValidateStaticLabelValue]
 // so a misconfigured caller fails fast at construction rather than
 // producing silent metric label injection.
 //
@@ -258,13 +258,13 @@ func New(client kubernetes.Interface, namespace, name, identity string, opts ...
 func validateDurations(e *Elector) {
 	if e.leaseDuration <= e.renewDeadline {
 		panic(fmt.Sprintf(
-			"leaderelection/k8slease: leaseDuration (%s) must be strictly greater than renewDeadline (%s)",
+			"leaderelection/k8slease: New requires WithLeaseDuration (%s) strictly greater than WithRenewDeadline (%s)",
 			e.leaseDuration, e.renewDeadline,
 		))
 	}
 	if e.renewDeadline <= e.retryPeriod {
 		panic(fmt.Sprintf(
-			"leaderelection/k8slease: renewDeadline (%s) must be strictly greater than retryPeriod (%s)",
+			"leaderelection/k8slease: New requires WithRenewDeadline (%s) strictly greater than WithRetryPeriod (%s)",
 			e.renewDeadline, e.retryPeriod,
 		))
 	}
@@ -327,13 +327,13 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 		Name:            fmt.Sprintf("%s/%s", e.namespace, e.name),
 		Callbacks: clientgoleaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
-				onAcquiredStarted.Store(true)
-				e.leader.Store(true)
-				e.logger.Info("leader-election: acquired",
-					redact.String("namespace", e.namespace),
-					redact.String("name", e.name),
-					redact.String("identity", e.identity),
-				)
+				// Set up the panic-recover defer FIRST so any panic
+				// between here and cb.OnAcquired (including a
+				// hypothetical panic inside slog.Info) still funnels
+				// completion onto cbDone. Without this, a panic before
+				// the defer ran would leave OnStoppedLeading's
+				// awaitCallbackDrain blocked until drainTimeout (or
+				// forever).
 				var result callbackResult
 				defer func() {
 					if rec := recover(); rec != nil {
@@ -341,6 +341,13 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 					}
 					cbDone <- result
 				}()
+				onAcquiredStarted.Store(true)
+				e.leader.Store(true)
+				e.logger.Info("leader-election: acquired",
+					redact.String("namespace", e.namespace),
+					redact.String("name", e.name),
+					redact.String("identity", e.identity),
+				)
 				if cb.OnAcquired != nil {
 					cb.OnAcquired(leaderCtx)
 				}
@@ -362,22 +369,8 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 				// OnLost synchronously. awaitCallbackDrain handles warn
 				// ticks, optional drain-timeout, and terminal metrics.
 				drainResult := e.awaitCallbackDrain(cbDone)
-				if err := e.runOnLost(cb); err != nil {
-					lostErrSlot.Store(&err)
-				}
-				if drainResult.panicValue != nil {
-					perr := onAcquiredPanicError(drainResult.panicValue)
-					lostErrSlot.Store(&perr)
-				}
-				if drainResult.timedOut {
-					// Surface the drain timeout as the dominant error
-					// so the orchestrator sees the fatal signal even
-					// if OnLost itself succeeded.
-					perr := ErrCallbackDrainTimeout
-					if existing := lostErrSlot.Load(); existing != nil {
-						joined := errors.Join(*existing, ErrCallbackDrainTimeout)
-						perr = joined
-					}
+				lostErr := e.runOnLost(cb)
+				if perr := joinStoppedLeadingErrors(lostErr, drainResult); perr != nil {
 					lostErrSlot.Store(&perr)
 				}
 			},
@@ -409,8 +402,7 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	// LeaderElector.Run returns. Callers that want continuous
 	// re-election should wrap Run in their own retry loop (the kit's
 	// lifecycle.Runner handles this naturally via its restart policy).
-	runCtx := ctx
-	le.Run(runCtx)
+	le.Run(ctx)
 
 	// At this point LeaderElector.Run has returned: either ctx
 	// cancelled, or leadership was lost and OnStoppedLeading drained.
@@ -419,7 +411,7 @@ func (e *Elector) Run(ctx context.Context, cb leaderelection.Callbacks) error {
 	if errPtr := lostErrSlot.Load(); errPtr != nil {
 		finalErr = *errPtr
 	}
-	if ctxErr := runCtx.Err(); ctxErr != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		if finalErr != nil {
 			return errors.Join(ctxErr, finalErr)
 		}
@@ -537,6 +529,34 @@ func (e *Elector) awaitCallbackDrain(cbDone <-chan callbackResult) callbackResul
 
 func onAcquiredPanicError(rec any) error {
 	return fmt.Errorf("leader-election: OnAcquired panic: %s", redact.PanicValue(rec))
+}
+
+// joinStoppedLeadingErrors collapses the three independently-derivable
+// termination signals captured in OnStoppedLeading — an OnLost callback
+// error, an OnAcquired panic, and a callback-drain timeout — into a
+// single error chain. The caller sees every relevant signal via
+// errors.Is on the returned chain instead of having later signals
+// overwrite earlier ones (which was the wave 127 behaviour). Returns
+// nil when no signal fired.
+func joinStoppedLeadingErrors(lostErr error, drainResult callbackResult) error {
+	var errs []error
+	if lostErr != nil {
+		errs = append(errs, lostErr)
+	}
+	if drainResult.panicValue != nil {
+		errs = append(errs, onAcquiredPanicError(drainResult.panicValue))
+	}
+	if drainResult.timedOut {
+		errs = append(errs, ErrCallbackDrainTimeout)
+	}
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return errors.Join(errs...)
+	}
 }
 
 // Compile-time guard that the Elector satisfies the kit's contract.

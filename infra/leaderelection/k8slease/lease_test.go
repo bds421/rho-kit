@@ -255,6 +255,44 @@ func TestErrCallbackDrainTimeout_Sentinel(t *testing.T) {
 	require.ErrorIs(t, wrapped, ErrCallbackDrainTimeout)
 }
 
+func TestJoinStoppedLeadingErrors_NilWhenNoSignal(t *testing.T) {
+	require.NoError(t, joinStoppedLeadingErrors(nil, callbackResult{}))
+}
+
+func TestJoinStoppedLeadingErrors_OnlyOnLost(t *testing.T) {
+	want := errors.New("onlost boom")
+	got := joinStoppedLeadingErrors(want, callbackResult{})
+	require.ErrorIs(t, got, want, "single signal must round-trip without errors.Join wrapping")
+}
+
+func TestJoinStoppedLeadingErrors_OnLostAndOnAcquiredPanic(t *testing.T) {
+	// OnLost returning an error AND OnAcquired panicking must both
+	// surface — previously the panic overwrote the OnLost error.
+	onLost := errors.New("onlost cleanup boom")
+	got := joinStoppedLeadingErrors(onLost, callbackResult{panicValue: "leader boom"})
+	require.Error(t, got)
+	require.ErrorIs(t, got, onLost, "OnLost error must remain reachable via errors.Is")
+	require.ErrorContains(t, got, "OnAcquired panic")
+}
+
+func TestJoinStoppedLeadingErrors_OnLostAndDrainTimeout(t *testing.T) {
+	onLost := errors.New("onlost cleanup boom")
+	got := joinStoppedLeadingErrors(onLost, callbackResult{timedOut: true})
+	require.ErrorIs(t, got, onLost)
+	require.ErrorIs(t, got, ErrCallbackDrainTimeout)
+}
+
+func TestJoinStoppedLeadingErrors_AllThreeSignals(t *testing.T) {
+	onLost := errors.New("onlost cleanup boom")
+	got := joinStoppedLeadingErrors(onLost, callbackResult{
+		panicValue: "leader boom",
+		timedOut:   true,
+	})
+	require.ErrorIs(t, got, onLost)
+	require.ErrorIs(t, got, ErrCallbackDrainTimeout)
+	require.ErrorContains(t, got, "OnAcquired panic")
+}
+
 func TestIsLeader_DefaultFalse(t *testing.T) {
 	e := New(newFakeClient(), "ns", "name", "id")
 	require.False(t, e.IsLeader())

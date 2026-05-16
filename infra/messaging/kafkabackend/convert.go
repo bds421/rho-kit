@@ -18,7 +18,7 @@ const (
 	headerExchange   = "X-Exchange"
 	headerRoutingKey = "X-Routing-Key"
 	headerMessageID  = "X-Message-Id"
-	headerMessageTyp = "X-Message-Type"
+	headerMessageType = "X-Message-Type"
 )
 
 // maxConsumerDeliveryBytes caps the JSON-decoded record body the
@@ -42,13 +42,23 @@ func toKafkaMessage(exchange, routingKey string, msg messaging.Message) (kafka.M
 	}
 	headers := make([]kafka.Header, 0, len(msg.Headers)+5)
 	for k, v := range msg.Headers {
+		// Skip kit-managed envelope headers — they are emitted below
+		// from the message struct so a caller cannot smuggle a stale
+		// value into the wire format via msg.Headers (Kafka allows
+		// duplicate header keys, and the resulting ambiguity would
+		// otherwise let stringHeader return a value that contradicts
+		// msg.SchemaVersion or msg.ID).
+		switch k {
+		case headerExchange, headerRoutingKey, headerMessageID, headerMessageType, messaging.HeaderSchemaVersion:
+			continue
+		}
 		headers = append(headers, kafka.Header{Key: k, Value: []byte(v)})
 	}
 	headers = append(headers,
 		kafka.Header{Key: headerExchange, Value: []byte(exchange)},
 		kafka.Header{Key: headerRoutingKey, Value: []byte(routingKey)},
 		kafka.Header{Key: headerMessageID, Value: []byte(msg.ID)},
-		kafka.Header{Key: headerMessageTyp, Value: []byte(msg.Type)},
+		kafka.Header{Key: headerMessageType, Value: []byte(msg.Type)},
 	)
 	if msg.SchemaVersion != 0 {
 		headers = append(headers, kafka.Header{
@@ -135,7 +145,7 @@ func splitHeaders(headers []kafka.Header) (map[string]any, map[string]string) {
 		// header map so the kit envelope and round-tripped Message.Headers
 		// stay in sync with the publisher-side input.
 		switch h.Key {
-		case headerExchange, headerRoutingKey, headerMessageID, headerMessageTyp, messaging.HeaderSchemaVersion:
+		case headerExchange, headerRoutingKey, headerMessageID, headerMessageType, messaging.HeaderSchemaVersion:
 			continue
 		}
 		strHeaders[h.Key] = v

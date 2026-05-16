@@ -36,7 +36,7 @@ func TestToKafkaMessage_PopulatesKitHeaders(t *testing.T) {
 	assert.Equal(t, "events", got[headerExchange])
 	assert.Equal(t, "user.created", got[headerRoutingKey])
 	assert.Equal(t, msg.ID, got[headerMessageID])
-	assert.Equal(t, "user.created", got[headerMessageTyp])
+	assert.Equal(t, "user.created", got[headerMessageType])
 	assert.Equal(t, "corr-1", got[messaging.HeaderCorrelationID])
 }
 
@@ -124,6 +124,39 @@ func TestSplitHeaders_BoundedByCount(t *testing.T) {
 	}
 	anyH, _ := splitHeaders(headers)
 	assert.LessOrEqual(t, len(anyH), maxDeliveryHeaders)
+}
+
+func TestToKafkaMessage_DoesNotDuplicateEnvelopeHeaders(t *testing.T) {
+	// A caller that smuggles an envelope-header key through
+	// msg.Headers must not produce two record headers with the same
+	// key — the kit-managed envelope value (set from msg.SchemaVersion,
+	// msg.ID, etc.) is the source of truth and the user-supplied
+	// duplicate is dropped.
+	msg, err := messaging.NewMessage("user.created", map[string]string{"name": "alice"})
+	require.NoError(t, err)
+	msg = msg.WithSchemaVersion(7)
+	smuggled, err := msg.WithHeader(messaging.HeaderSchemaVersion, "999")
+	require.NoError(t, err)
+	smuggled2, err := smuggled.WithHeader(headerMessageID, "spoofed-id")
+	require.NoError(t, err)
+
+	km, err := toKafkaMessage("events", "user.created", smuggled2)
+	require.NoError(t, err)
+
+	schemaCount := 0
+	idCount := 0
+	for _, h := range km.Headers {
+		switch h.Key {
+		case messaging.HeaderSchemaVersion:
+			schemaCount++
+			assert.Equal(t, "7", string(h.Value), "kit-managed schema version must win over user-supplied duplicate")
+		case headerMessageID:
+			idCount++
+			assert.Equal(t, smuggled2.ID, string(h.Value), "kit-managed message ID must win over user-supplied duplicate")
+		}
+	}
+	assert.Equal(t, 1, schemaCount, "exactly one X-Schema-Version header must be emitted")
+	assert.Equal(t, 1, idCount, "exactly one X-Message-Id header must be emitted")
 }
 
 func TestParseSchemaVersion_RejectsNegative(t *testing.T) {
