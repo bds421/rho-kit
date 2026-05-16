@@ -478,6 +478,45 @@ Validation evidence for the current release-prep tree:
   exist, and integration evidence is recorded in
   [RC_CHECKLIST_V2.md](RC_CHECKLIST_V2.md).
 
+## 6.X New v2.0.0 Primitives (Wave 150+)
+
+### Saga compensable workflows (`runtime/saga`)
+
+Wave 150 ships `runtime/saga` — an in-memory orchestrator for
+multi-step workflows where each forward action has a compensation.
+Use when:
+
+- A workflow has more than one external side effect (debit wallet →
+  reserve inventory → send email) and any of them might fail.
+- The compensating action is well-defined (refund the debit, un-
+  reserve inventory) and you want the kit to drive rollback in
+  reverse order rather than re-implementing it per service.
+
+```go
+def := saga.MustDefinition(
+    saga.Step{
+        Name: "debit-wallet",
+        Forward:    debitWallet,
+        Compensate: refundWallet,
+    },
+    saga.Step{
+        Name: "reserve-inventory",
+        Forward:    reserveInventory,
+        Compensate: releaseReservation,
+    },
+)
+if err := saga.Run(ctx, def, &orderState{}); err != nil {
+    // saga.ForwardError + (optional) saga.CompensateError joined.
+}
+```
+
+The package preamble documents the planned redisqueue + outbox + DB
+table wiring that future waves layer on top of `Run` for crash-safe
+sagas. v2.0.0 ships only the in-memory executor and the type
+vocabulary (Step / Definition / Run / ForwardError / CompensateError)
+so downstream services can adopt the API now and inherit the
+persistence wiring when it lands.
+
 ## 7. Re-run The Release Gates In The Service
 
 For each downstream service:
