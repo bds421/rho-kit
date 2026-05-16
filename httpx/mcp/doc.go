@@ -59,7 +59,7 @@
 // context.
 //
 // When no tenant is on the context, behaviour depends on
-// [WithStrictAudit] (default: true):
+// [WithBestEffortAuditOnMissingTenant] opts out (default: strict):
 //   - Strict mode refuses to dispatch the tool and returns
 //     -32603 internal error to the JSON-RPC caller, preserving the
 //     audit invariant that every executed tool produces a signed
@@ -70,7 +70,7 @@
 //
 // By default the audit append runs synchronously between dispatch
 // and response-write so the entry is durable before the caller
-// sees the result. [WithAsyncAudit] flips the append to a
+// sees the result. [WithAsyncAuditDispatch] flips the append to a
 // goroutine for latency-sensitive deployments — see that option's
 // doc comment for the trade-off.
 //

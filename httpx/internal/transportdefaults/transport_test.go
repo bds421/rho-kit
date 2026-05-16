@@ -139,21 +139,18 @@ func TestFallback_ReturnsStdlibShapedTransport(t *testing.T) {
 }
 
 func TestNew_UsesFallbackWhenDefaultTransportReplaced(t *testing.T) {
-	// Swap http.DefaultTransport for an arbitrary RoundTripper so the
-	// type-assertion in New misses and the Fallback path is taken.
-	type rt struct{}
-	prev := http.DefaultTransport
-	http.DefaultTransport = roundTripperFunc(func(_ *http.Request) (*http.Response, error) { return nil, nil })
-	t.Cleanup(func() { http.DefaultTransport = prev })
-
-	tr := New(nil, 0, "test")
+	// Exercise the type-assertion miss branch by handing newFromSource
+	// an arbitrary RoundTripper directly — avoids mutating
+	// http.DefaultTransport, which is racy under `go test -race` if any
+	// concurrent test in another package reads the global.
+	other := roundTripperFunc(func(_ *http.Request) (*http.Response, error) { return nil, nil })
+	tr := newFromSource(other, nil, 0, "test")
 	if tr == nil {
-		t.Fatal("expected New to fall back to a fresh *http.Transport")
+		t.Fatal("expected newFromSource to fall back to a fresh *http.Transport")
 	}
 	if tr.MaxIdleConns != 100 {
 		t.Errorf("MaxIdleConns = %d, want 100 from Fallback", tr.MaxIdleConns)
 	}
-	_ = rt{}
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

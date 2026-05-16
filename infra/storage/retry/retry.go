@@ -123,16 +123,16 @@ func New(backend storage.Storage, opts ...Option) storage.Storage {
 		o(&cfg)
 	}
 	if cfg.ShouldRetry == nil {
-		panic("storage/retry: ShouldRetry must not be nil")
+		panic("storage/retry: New ShouldRetry must not be nil")
 	}
 	if cfg.MaxAttempts < 1 {
-		panic("storage/retry: MaxAttempts must be >= 1")
+		panic("storage/retry: New MaxAttempts must be >= 1")
 	}
 	if cfg.BaseDelay <= 0 {
-		panic("storage/retry: BaseDelay must be positive")
+		panic("storage/retry: New BaseDelay must be positive")
 	}
 	if cfg.MaxDelay <= 0 {
-		panic("storage/retry: MaxDelay must be positive")
+		panic("storage/retry: New MaxDelay must be positive")
 	}
 	r := &RetryStorage{backend: backend, cfg: cfg}
 

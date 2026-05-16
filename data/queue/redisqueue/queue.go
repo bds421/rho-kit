@@ -553,7 +553,7 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	if q.consumerID == "" {
 		consumerID, err := newQueueConsumerID()
 		if err != nil {
-			panic("redisqueue: NewQueue: generate consumer ID: " + err.Error())
+			panic("redisqueue: NewQueue generate consumer ID: " + err.Error())
 		}
 		q.consumerID = consumerID.String()
 	}
@@ -707,7 +707,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 		panic("redisqueue: Process invalid queue name")
 	}
 	if handler == nil {
-		panic("redisqueue: Queue.Process requires a non-nil handler")
+		panic("redisqueue: Process requires a non-nil handler")
 	}
 
 	// Guard against concurrent Process on the same queue name.

@@ -41,7 +41,7 @@ evidence lives in `cmd/kit-new` scaffold tests and `examples/agentic-service`.
 | 7 | gRPC RED, DB pool, Redis, Outbox, AMQP, NATS JetStream, Redis Streams, Rate-limit, Storage overview, S3, GCS, Azure, and SFTP Grafana dashboards + 11 runbooks + `promtool` CI | Operations teams stop rebuilding the same panels per service |
 | 8 | AWS KMS, Azure Key Vault, GCP KMS, and HashiCorp Vault Transit envelope KEK adapters + v2 benchmark baselines | Production encryption and performance gates are concrete before the API freeze |
 
-Plus: `WithDefaultDeadline` for gRPC (closes threat-model GAP-03),
+Plus: `WithDefaultTimeout` for gRPC (closes threat-model GAP-03),
 `httpx.SafeRedirect` (closes GAP-02), JWT revocation checks (closes
 GAP-06), internal-only gRPC health (closes GAP-04), outbox self-managed
 retention cleanup (closes GAP-09), cross-backend message-size limits
@@ -94,7 +94,7 @@ a stopped background service must be started again.
 `security/jwtutil.Provider.Run` now returns `error`; callers that manually
 start a provider should return or log that error from their lifecycle goroutine.
 `app.Builder.WithJWT` already wires this through the lifecycle runner.
-`httpx/middleware/ratelimit.RateLimiter` and `KeyedRateLimiter` expose
+`httpx/middleware/ratelimit.Limiter` and `KeyedLimiter` expose
 `Start(ctx) error` / `Stop(ctx) error` (renamed from `Run`) and satisfy
 `lifecycle.Component`; `app.Builder` wires both methods automatically. Manual
 wiring should call `Start` on a background goroutine and `Stop` during
@@ -812,10 +812,10 @@ request.
 
 ### Redis queue consumer ID generation can return errors
 
-`data/queue/redisqueue.NewQueueE` now returns auto-generated consumer-ID
-failures as errors, and `WithConsumerID` skips auto-generation entirely for
-operators that provide stable consumer identities. `NewQueue` remains
-source-compatible and still panics on construction failures.
+`data/queue/redisqueue.WithConsumerID` skips auto-generation entirely for
+operators that provide stable consumer identities. `NewQueue` panics on
+construction failures (including the pathological case of consumer-ID
+generation failing — see wave 109 for the rationale).
 
 ### Startup panics avoid reflecting configured names
 
@@ -965,7 +965,7 @@ enforce a check. The following call-site checks went unconditional:
   pair `WithExpectedIssuer` or `WithAllowAnyIssuer`).
 - `infra/sqldb/pgx.Connect` — TLS check is unconditional; loopback-only tests
   can pass `Config{AllowPlaintextLoopbackForTests: true}` to opt out.
-- `infra/messaging.OpenBufferedPublisher` — state-file requirement is
+- `infra/messaging.NewBufferedPublisher` — state-file requirement is
   unconditional; the existing `WithEphemeralBuffer()` is the only
   opt-out.
 - `httpx/middleware/csrf.New` — HMAC secret requirement is
@@ -1231,7 +1231,7 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - The kit does NOT ship a checked-in `kit-bench-gate` baseline. Benchmark numbers are hardware-specific and would flag spurious regressions on every CI runner that doesn't match the capture hardware; `kit-bench-gate` is a downstream tool consumers run on their own clusters, not a release-time CI gate.
 
 ### gRPC hardening
-- `grpcx.WithDefaultDeadline(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)
+- `grpcx.WithDefaultTimeout(d)` — per-RPC default deadline; closes threat-model GAP-03 (streaming-RPC exhaustion)
 - `app.Builder` serves gRPC health on the internal ops listener over h2c by default; `WithPublicGRPCHealth()` is the explicit opt-in for public gRPC health; closes threat-model GAP-04
 
 ### HTTP hardening

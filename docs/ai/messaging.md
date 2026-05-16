@@ -176,12 +176,12 @@ redisPub := redisbackend.NewPublisher(streamProducer,
 tests := membroker.New(membroker.WithMaxMessageBytes(512 << 10))
 ```
 
-`messaging.OpenBufferedPublisher` checks the same policy before direct
+`messaging.NewBufferedPublisher` checks the same policy before direct
 publish or buffering, preventing an over-large poison message from being
 persisted and retried forever:
 
 ```go
-buffered := messaging.OpenBufferedPublisher(pub, conn, logger,
+buffered := messaging.NewBufferedPublisher(pub, conn, logger,
     messaging.WithStateFile("/var/data/buffered.json"),
     messaging.WithMaxMessageBytes(512<<10),
 )
@@ -370,7 +370,7 @@ messaging.StartConsumers(ctx, consumer, bindings,
 ## BufferedPublisher (At-Least-Once)
 
 ```go
-pub := messaging.OpenBufferedPublisher(publisher, conn, logger,
+pub := messaging.NewBufferedPublisher(publisher, conn, logger,
     messaging.WithMaxSize(10_000),
     messaging.WithStateFile("/var/data/buffered.json"), // crash-safe persistence
 )

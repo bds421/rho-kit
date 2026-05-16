@@ -2,6 +2,7 @@ package promutil
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,11 +38,11 @@ func RegisterCollector(reg prometheus.Registerer, c prometheus.Collector) {
 func MustRegisterOrGet[T prometheus.Collector](reg prometheus.Registerer, c T) T {
 	registered, err := Register(reg, c)
 	if err != nil {
-		panic("promutil: MustRegisterOrGet metric registration failed")
+		panic("promutil: MustRegisterOrGet metric registration failed: " + err.Error())
 	}
 	typed, ok := registered.(T)
 	if !ok {
-		panic("promutil: MustRegisterOrGet registered collector type mismatch")
+		panic(fmt.Sprintf("promutil: MustRegisterOrGet registered collector type mismatch: want %T, got %T", c, registered))
 	}
 	return typed
 }

@@ -182,7 +182,7 @@ LIST-based FIFO with `BLMOVE` for crash-safe delivery:
 // imported as: import queue "github.com/bds421/rho-kit/data/queue/redisqueue/v2"
 q := queue.NewQueue(conn.Client(),
     queue.WithMaxRetries(5),
-    queue.WithMaxPayloadSize(1<<20),
+    queue.WithMaxMessageBytes(1<<20),
     queue.WithDeadLetterQueue("tasks:dead"),
 )
 
@@ -209,7 +209,7 @@ queue.StartProcessors(ctx, q,
 )
 ```
 
-Use `queue.NewQueueE` when startup code needs UUID/consumer-ID generation
+Use `queue.NewQueue` when startup code needs UUID/consumer-ID generation
 failures returned as errors instead of panics. Passing `queue.WithConsumerID`
 uses the supplied stable ID and skips auto-generation.
 
@@ -224,7 +224,7 @@ Queue names are validated as Redis keys and metric labels. `Enqueue` and
 `EnqueueBatch` reject invalid message metadata before writing to Redis: IDs must
 use the queue-safe token format, message types must be present and free of
 whitespace/control bytes, and payloads are capped at 1 MiB by default via
-`WithMaxPayloadSize`. Decoded processing-list entries are validated before
+`WithMaxMessageBytes`. Decoded processing-list entries are validated before
 handler dispatch; malformed or non-portable stored entries are discarded instead
 of being handed to application code.
 `EnqueueBatch` rejects batches above `queue.MaxBatchMessages` before building

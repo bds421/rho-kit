@@ -174,7 +174,7 @@ func TestRetryStorage_New_NilShouldRetryPanics(t *testing.T) {
 	t.Parallel()
 	backend := membackend.New()
 	clear := func(c *Config) { c.ShouldRetry = nil }
-	assert.PanicsWithValue(t, "storage/retry: ShouldRetry must not be nil", func() {
+	assert.PanicsWithValue(t, "storage/retry: New ShouldRetry must not be nil", func() {
 		_ = New(backend, clear)
 	})
 }

@@ -255,7 +255,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 - **Never** introduce a direct external Go dependency without updating `docs/audit/dependency-allowlist.txt` and passing `make check-dependency-allowlist`.
 - **Never** store `SSRFSafeTransport` long-term — the resolved IP may go stale. Create a new transport per request.
 - Always pair `Locker.Acquire` with `handle.Release` (or use `Locker.WithLock` to defer release). Re-Acquiring the same key returns a fresh handle; failing to release leaks the lock until TTL.
-- **Never** pass zero/negative values to `NewRateLimiter`, `NewKeyedRateLimiter`, `Timeout`, or `MaxBodySize` — they panic on misconfiguration.
+- **Never** pass zero/negative values to `NewLimiter`, `NewKeyedLimiter`, `Timeout`, or `MaxBodySize` — they panic on misconfiguration.
 
 ## Keeping Docs in Sync
 

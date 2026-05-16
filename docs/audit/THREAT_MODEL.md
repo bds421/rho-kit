@@ -273,7 +273,7 @@ with optional `outer` (CSRF, content-type pinning) and `inner`
 (auth, rate-limiting, idempotency) wedges. Every middleware below is
 positioned in the chain by `stack.Default`; the kit defaults to a
 panic-catching `recover` middleware in every constructed stack.
-[`stack.WithoutRecover()`](../../httpx/middleware/stack/stack.go) is
+[`stack.WithoutRecovery()`](../../httpx/middleware/stack/stack.go) is
 the only way to remove it and requires an explicit acknowledgement in
 the service author's wiring — it is documented as strongly discouraged
 and is not reachable via a default option.
@@ -499,7 +499,7 @@ following hold:
   cluster).
 - `MemoryCache` configured via `WithMaxSize` / `WithMaxCost` with a
   zero or negative value (the option panics at construction).
-- Negative or zero values to `NewRateLimiter`, `NewKeyedRateLimiter`,
+- Negative or zero values to `NewLimiter`, `NewKeyedLimiter`,
   `Timeout`, `MaxBodySize`.
 
 The [`app.Builder`](../../app/builder.go) production-safety validator

@@ -149,12 +149,34 @@ func (n *nullResponseWriter) Header() http.Header         { return n.header }
 func (n *nullResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (n *nullResponseWriter) WriteHeader(int)             {}
 
+// supportedProtocolVersion is the MCP wire protocol revision this
+// Server implements. Returned verbatim from `initialize` unless the
+// client requested a version we also recognise — see [handleInitialize]
+// for the down-negotiation policy.
+const supportedProtocolVersion = "2024-11-05"
+
+// supportedProtocolVersions lists every MCP revision this Server
+// understands. The first entry is the preferred version. When the
+// client requests a version in this list we echo it; otherwise we
+// respond with the preferred version and let the client decide whether
+// to proceed (per MCP spec §2.1).
+var supportedProtocolVersions = []string{
+	"2024-11-05",
+}
+
 // dispatch routes a JSON-RPC method to the appropriate handler.
 // Recognised methods:
 //   - "initialize" → server capabilities.
 //   - "tools/list" → tool catalog.
 //   - "tools/call" → invoke a registered tool by name carried in
 //     params.
+//   - "ping" → JSON-RPC keepalive; returns an empty object per MCP
+//     spec. Clients that send a ping during long-running tool calls
+//     will receive an immediate response.
+//   - "notifications/initialized" → consumed silently. The MCP spec
+//     defines this as a fire-and-forget notification a client emits
+//     after a successful `initialize`; the Server has no state to
+//     update but must not error on it.
 //   - "<tool-name>" → shorthand: invoke the named tool directly,
 //     params are the tool input.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCRequest) {
@@ -165,6 +187,17 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCReq
 		s.handleToolsList(w, req)
 	case "tools/call":
 		s.handleToolsCall(w, r, req)
+	case "ping":
+		writeJSONRPCResult(w, req.ID, map[string]any{})
+	case "notifications/initialized":
+		// MCP spec §3.2: the client sends this after a successful
+		// initialize handshake. Servers MUST NOT respond (notification
+		// semantics) and have no state to update for this minimal
+		// implementation — accept silently. The notification path in
+		// HTTP() already swapped in nullResponseWriter when id was
+		// absent, so a respectful client that included an id by mistake
+		// still gets a no-op success.
+		writeJSONRPCResult(w, req.ID, map[string]any{})
 	default:
 		entry, ok := s.lookup(req.Method)
 		if !ok {
@@ -176,11 +209,45 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCReq
 	}
 }
 
-// handleInitialize returns server capabilities. Minimal MCP
-// implementation: tools, no prompts/resources.
+// initializeParams is the params shape for the MCP `initialize`
+// request. The Server reads protocolVersion to drive the negotiation
+// policy in [handleInitialize]; clientInfo and capabilities are
+// accepted but currently ignored (the Server's capability surface
+// doesn't depend on what the client advertises).
+type initializeParams struct {
+	ProtocolVersion string         `json:"protocolVersion,omitempty"`
+	ClientInfo      map[string]any `json:"clientInfo,omitempty"`
+	Capabilities    map[string]any `json:"capabilities,omitempty"`
+}
+
+// handleInitialize negotiates the protocol version and returns server
+// capabilities. Negotiation rules (MCP spec §2.1):
+//
+//   - If the client's protocolVersion is one of the Server's
+//     [supportedProtocolVersions], echo it so both sides agree.
+//   - Otherwise respond with the Server's preferred version
+//     ([supportedProtocolVersion]). The client may then decide to
+//     proceed on the older version or refuse.
+//
+// Reading params is best-effort: malformed params do not fail the
+// initialize call because some clients send {} during transport setup
+// before reading the spec carefully. Defaulting to the preferred
+// version preserves interop with those clients.
 func (s *Server) handleInitialize(w http.ResponseWriter, req jsonRPCRequest) {
+	negotiated := supportedProtocolVersion
+	if len(req.Params) > 0 {
+		var p initializeParams
+		if err := json.Unmarshal(req.Params, &p); err == nil && p.ProtocolVersion != "" {
+			for _, v := range supportedProtocolVersions {
+				if v == p.ProtocolVersion {
+					negotiated = v
+					break
+				}
+			}
+		}
+	}
 	result := map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": negotiated,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},
@@ -241,7 +308,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req jso
 // attributable. In strict mode (default) this means tenant
 // resolution must succeed before dispatch; the call returns a
 // -32603 internal error to the caller and no tool side effects
-// occur otherwise. See [WithStrictAudit] for the loose alternative.
+// occur otherwise. See [WithBestEffortAuditOnMissingTenant] for the loose alternative.
 //
 // Audit ordering: in strict + sync mode, recordActionLog runs BEFORE
 // the response is written and a non-nil append error fails the
@@ -371,19 +438,40 @@ func buildDispatch[In any, Out any](h Handler[In, Out]) dispatchFunc {
 	}
 }
 
-// writeMCPToolResult emits a tools/call response in the MCP-standard
-// shape: `{content: [{type: "json", data: ...}]}`. The tool's raw
-// JSON output becomes the `data` field. Generic MCP clients expect
-// this envelope so they can render mixed content (text/json/image)
-// uniformly.
+// writeMCPToolResult emits a tools/call response in the MCP-spec shape:
+//
+//	{
+//	  "content":          [{"type": "text", "text": "<json-encoded out>"}],
+//	  "isError":          false,
+//	  "structuredContent": <raw out>
+//	}
+//
+// The 2024-11-05 MCP spec defines only `text`, `image`, `audio`, and
+// `resource` content types. Earlier kit revisions emitted
+// `{type: "json", data: ...}` — a kit-only extension that strict MCP
+// clients rejected because `"json"` is not in the spec's content-type
+// union. The fix stringifies the JSON into a `text` content item AND
+// surfaces the structured form on the (forward-compatible)
+// `structuredContent` field that the 2025-03-26 spec adopted — so
+// clients on both spec revisions can read the tool output without
+// re-parsing the text.
+//
+// `isError` distinguishes a successful return from an application-level
+// failure in a way the spec defines. Per MCP §6.4, transport errors
+// surface via JSON-RPC `error` while tool-level errors should set
+// `isError: true` on the content envelope. The kit currently routes all
+// handler errors through JSON-RPC `error` (see [mapErrorToRPC]) and
+// reaches this writer only on success — hence `isError: false`.
 func writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, raw json.RawMessage) {
 	wrapped := map[string]any{
 		"content": []map[string]any{
 			{
-				"type": "json",
-				"data": json.RawMessage(raw),
+				"type": "text",
+				"text": string(raw),
 			},
 		},
+		"isError":           false,
+		"structuredContent": json.RawMessage(raw),
 	}
 	writeJSONRPCResult(w, id, wrapped)
 }

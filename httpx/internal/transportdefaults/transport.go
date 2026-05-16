@@ -23,8 +23,16 @@ const MinimumTLSVersion = tls.VersionTLS12
 // stdlib-style transport when another package replaced http.DefaultTransport
 // with an arbitrary RoundTripper.
 func New(tlsConfig *tls.Config, idleConnTimeout time.Duration, label string) *http.Transport {
+	return newFromSource(http.DefaultTransport, tlsConfig, idleConnTimeout, label)
+}
+
+// newFromSource is the testable form of [New]: it takes the source
+// transport explicitly so unit tests can drive the type-assertion
+// branches without mutating http.DefaultTransport (which is racy under
+// `go test -race` if any other goroutine reads the global).
+func newFromSource(src http.RoundTripper, tlsConfig *tls.Config, idleConnTimeout time.Duration, label string) *http.Transport {
 	var transport *http.Transport
-	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+	if tr, ok := src.(*http.Transport); ok {
 		transport = tr.Clone()
 	} else {
 		transport = Fallback()
@@ -50,9 +58,9 @@ func CloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion)
 	if err != nil {
 		if errors.Is(err, tlsclone.ErrInsecureSkipVerifyNotPermitted) {
-			panic("transportdefaults: TLS InsecureSkipVerify=true is not permitted — see tlsclone.WithAllowInsecureSkipVerify for the explicit opt-in")
+			panic("transportdefaults: CloneTLSConfigWithFloor TLS InsecureSkipVerify=true is not permitted — see tlsclone.WithAllowInsecureSkipVerify for the explicit opt-in")
 		}
-		panic("transportdefaults: TLS MaxVersion must allow TLS 1.2 or newer")
+		panic("transportdefaults: CloneTLSConfigWithFloor TLS MaxVersion must allow TLS 1.2 or newer")
 	}
 	return cloned
 }

@@ -153,13 +153,13 @@ func (s *Scheduler) SetJobTimeout(name string, d time.Duration) {
 // the schedule fires.
 func (s *Scheduler) Add(name, schedule string, fn func(ctx context.Context) error) {
 	if name == "" {
-		panic("cron: Scheduler.Add requires a non-empty name")
+		panic("cron: Add requires a non-empty name")
 	}
 	if err := promutil.ValidateStaticLabelValue("job name", name); err != nil {
 		panic("cron: Add invalid job name")
 	}
 	if fn == nil {
-		panic("cron: Scheduler.Add requires a non-nil job function")
+		panic("cron: Add requires a non-nil job function")
 	}
 	wrapped := s.wrapJob(name, fn)
 	if _, err := s.cron.AddFunc(schedule, wrapped); err != nil {

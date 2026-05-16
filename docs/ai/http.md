@@ -120,7 +120,7 @@ mux.Handle("/api/", ratelimit.KeyedMiddleware(
 Both return `429` with `Retry-After` header.
 
 Builder-managed rate limiters register their cleanup loops automatically. When
-constructing `ratelimit.NewRateLimiter` or `NewKeyedRateLimiter` manually, run
+constructing `ratelimit.NewLimiter` or `NewKeyedLimiter` manually, run
 exactly one cleanup loop per limiter and propagate its error. The limiter
 satisfies `lifecycle.Component` (`Start(ctx) error` / `Stop(ctx) error`):
 
@@ -143,12 +143,12 @@ and retry-after histograms:
 ```go
 metrics := ratelimit.NewMetrics(ratelimit.WithRegisterer(prometheus.DefaultRegisterer))
 
-limiter := ratelimit.NewRateLimiter(100, time.Minute,
+limiter := ratelimit.NewLimiter(100, time.Minute,
     ratelimit.WithMetrics(metrics),
     ratelimit.WithLimiterName("public_api"),
 )
 
-keyed := ratelimit.NewKeyedRateLimiter(10, time.Second,
+keyed := ratelimit.NewKeyedLimiter(10, time.Second,
     ratelimit.WithKeyedMetrics(metrics),
     ratelimit.WithKeyedLimiterName("api_key"),
 )

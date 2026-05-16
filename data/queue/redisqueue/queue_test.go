@@ -511,7 +511,7 @@ func TestNewQueue_PanicsOnConsumerIDGenerationFailure(t *testing.T) {
 	t.Cleanup(func() { newQueueConsumerID = prev })
 
 	assert.PanicsWithValue(t,
-		"redisqueue: NewQueue: generate consumer ID: rng failed",
+		"redisqueue: NewQueue generate consumer ID: rng failed",
 		func() { _ = NewQueue(client) })
 }
 
@@ -585,7 +585,7 @@ func TestProcess_PanicsOnNilHandler(t *testing.T) {
 
 	q := NewQueue(client)
 	assert.PanicsWithValue(t,
-		"redisqueue: Queue.Process requires a non-nil handler",
+		"redisqueue: Process requires a non-nil handler",
 		func() {
 			q.Process(context.TODO(), "test:queue", nil)
 		},

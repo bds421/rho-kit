@@ -29,7 +29,7 @@ func defaultTenantExtractor(ctx context.Context) (string, bool) {
 // dispatches. The audit invariant is: if an action logger is
 // configured, every EXECUTED tool call produces a signed entry.
 //
-// Strict mode (default, see [WithStrictAudit]) enforces the
+// Strict mode (default; opt out via [WithBestEffortAuditOnMissingTenant]) enforces the
 // invariant by refusing to execute the tool when the tenant cannot
 // be resolved — the JSON-RPC caller sees -32603 internal error and
 // no tool side effects occur. The signed-store contract rejects
@@ -37,7 +37,7 @@ func defaultTenantExtractor(ctx context.Context) (string, bool) {
 // transport layer so the failure surface stays at the boundary
 // rather than mid-tool.
 //
-// Loose mode ([WithStrictAudit(false)]) preserves the legacy
+// Loose mode ([WithBestEffortAuditOnMissingTenant]) preserves the legacy
 // behaviour: log a warn-level message, skip the audit entry, run
 // the tool anyway. The caller has explicitly accepted the audit gap.
 //
@@ -103,7 +103,7 @@ func (s *Server) auditPrecheck(ctx context.Context, r *http.Request, tool string
 //
 // When no [actionlog.Logger] is configured, this is a no-op.
 //
-// When no tenant is on context AND we got here, [WithStrictAudit]
+// When no tenant is on context AND we got here, [WithBestEffortAuditOnMissingTenant]
 // must be false (loose mode); the entry is skipped (rather than
 // written with an empty TenantID, which the signed-store contract
 // rejects). Strict mode would have refused dispatch in

@@ -105,8 +105,9 @@ func TestServer_RoundTrip_Echo(t *testing.T) {
 }
 
 func TestServer_RoundTrip_ToolsCall(t *testing.T) {
-	// tools/call returns the MCP-standard envelope:
-	// {result: {content: [{type: "json", data: <tool output>}]}}.
+	// tools/call returns the MCP-spec envelope:
+	// {result: {content: [{type:"text", text:"<json>"}], isError:false,
+	//          structuredContent: <raw output>}}.
 	s := newTestServer(t)
 	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}},"id":2}`
 	resp := doRPC(t, s.HTTP(), body)
@@ -116,9 +117,10 @@ func TestServer_RoundTrip_ToolsCall(t *testing.T) {
 	require.True(t, ok, "tools/call result must carry an MCP content array, got %v", result)
 	require.Len(t, content, 1)
 	first := content[0].(map[string]any)
-	assert.Equal(t, "json", first["type"])
-	data := first["data"].(map[string]any)
-	assert.Equal(t, "hi", data["echoed"])
+	assert.Equal(t, "text", first["type"])
+	assert.Contains(t, first["text"], `"echoed":"hi"`)
+	structured := result["structuredContent"].(map[string]any)
+	assert.Equal(t, "hi", structured["echoed"])
 }
 
 func TestServer_ToolsList_Sorted(t *testing.T) {
@@ -1364,7 +1366,12 @@ func TestServer_AsyncAudit_StopRace_NoLostJobs(t *testing.T) {
 
 func TestServer_ToolsCall_ReturnsMCPContentShape(t *testing.T) {
 	// MCP-spec compliant: tools/call result must be
-	// {content: [{type: "json", data: ...}]}.
+	// {content: [{type:"text", text:"<json>"}], isError:false,
+	//  structuredContent: <raw>}.
+	// The 2024-11-05 spec defines content types text/image/audio/resource;
+	// "json" is not in the union and was a kit-only extension before this
+	// release. structuredContent is the 2025-03-26-forward-compatible
+	// surface for clients that want the raw JSON without re-parsing text.
 	s := newTestServer(t)
 	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"world"}},"id":1}`
 	resp := doRPC(t, s.HTTP(), body)
@@ -1374,9 +1381,14 @@ func TestServer_ToolsCall_ReturnsMCPContentShape(t *testing.T) {
 	require.True(t, ok, "tools/call must wrap the tool output in a content array")
 	require.Len(t, content, 1)
 	first := content[0].(map[string]any)
-	assert.Equal(t, "json", first["type"])
-	data := first["data"].(map[string]any)
-	assert.Equal(t, "world", data["echoed"])
+	assert.Equal(t, "text", first["type"])
+	assert.Contains(t, first["text"], `"echoed":"world"`,
+		"text content must carry the JSON-encoded tool output")
+	assert.Equal(t, false, result["isError"],
+		"successful tool call must surface isError=false")
+	structured, ok := result["structuredContent"].(map[string]any)
+	require.True(t, ok, "tools/call must surface structuredContent for spec-2025-03-26 clients")
+	assert.Equal(t, "world", structured["echoed"])
 }
 
 func TestServer_ShorthandCall_ReturnsRawResult(t *testing.T) {

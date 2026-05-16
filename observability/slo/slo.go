@@ -159,7 +159,7 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 	seen := make(map[string]struct{}, len(slos))
 	for _, s := range slos {
 		if s.Name == "" {
-			panic("slo: SLO name must not be empty")
+			panic("slo: NewChecker SLO name must not be empty")
 		}
 		if _, exists := seen[s.Name]; exists {
 			panic("slo: NewChecker duplicate SLO name")
@@ -181,10 +181,10 @@ func NewChecker(gatherer prometheus.Gatherer, slos ...SLO) *Checker {
 				panic("slo: NewChecker success-rate SLO Threshold must lie in [0, 1]")
 			}
 		default:
-			panic("slo: SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")
+			panic("slo: NewChecker SLO Type must be one of TypeLatency, TypeErrorRate, TypeSuccessRate")
 		}
 		if s.Window < 0 {
-			panic("slo: SLO Window must not be negative")
+			panic("slo: NewChecker SLO Window must not be negative")
 		}
 		seen[s.Name] = struct{}{}
 	}

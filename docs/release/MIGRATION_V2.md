@@ -347,8 +347,8 @@ Validation evidence for the current release-prep tree:
   `resilience/retry` exist as functions in their owning modules.
 - `security/jwtutil.Provider.Run` and
   `infra/messaging.BufferedPublisher.Run` return `error`.
-- `httpx/middleware/ratelimit.RateLimiter` and
-  `httpx/middleware/ratelimit.KeyedRateLimiter` expose `Start(ctx) error` /
+- `httpx/middleware/ratelimit.Limiter` and
+  `httpx/middleware/ratelimit.KeyedLimiter` expose `Start(ctx) error` /
   `Stop(ctx) error` (renamed from `Run`) and satisfy `lifecycle.Component`.
 - `infra/redis.HealthCheck` and `infra/redis.NonCriticalHealthCheck` both
   exist, and integration evidence is recorded in

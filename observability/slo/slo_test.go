@@ -57,7 +57,7 @@ func TestNewChecker_PanicsOnNilGatherer(t *testing.T) {
 }
 
 func TestNewChecker_PanicsOnEmptyName(t *testing.T) {
-	assert.PanicsWithValue(t, "slo: SLO name must not be empty", func() {
+	assert.PanicsWithValue(t, "slo: NewChecker SLO name must not be empty", func() {
 		NewChecker(prometheus.NewRegistry(), SLO{Type: TypeErrorRate, Threshold: 0.01})
 	})
 }

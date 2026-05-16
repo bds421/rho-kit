@@ -21,7 +21,7 @@ Postgres-backed data adapters live in split modules so services only import what
 `data/queue/riverqueue` is the durable-job adapter for services that already
 run Postgres. It validates queue names with `queue.ValidateName` and enforces a
 1 MiB payload cap by default before inserting a River job; use
-`riverqueue.WithMaxPayloadBytes` to tune the cap, or
+`riverqueue.WithMaxMessageBytes` to tune the cap, or
 `riverqueue.WithoutMaxPayloadBytes` only when another boundary already applies
 a stricter limit. `riverqueue.NewEnvelopeWorker` validates stored envelopes
 again before dispatch; use `riverqueue.WithWorkerMaxPayloadBytes` only when the

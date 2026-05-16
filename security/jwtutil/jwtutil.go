@@ -501,9 +501,9 @@ func WithRevocationChecker(checker RevocationChecker) ProviderOption {
 // validation off wholesale.
 //
 // The app/jwt bridge module enforces the same pairing at construction:
-// `jwt.Module(jwksURL)` rejects setups without `jwt.WithExpectedIssuer(...)`
-// or an explicit `jwt.WithoutExpectedIssuer()`. This option lets a
-// hand-constructed Provider mirror that explicit opt-out.
+// `jwt.Module(jwksURL)` rejects setups without `jwt.WithIssuer(...)` or
+// an explicit `jwt.WithoutIssuer()`. This option lets a hand-constructed
+// Provider mirror that explicit opt-out.
 func WithAllowAnyIssuer() ProviderOption {
 	return func(p *Provider) {
 		p.allowAnyIssuer = true
