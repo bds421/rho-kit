@@ -54,7 +54,7 @@ Otherwise the kit should wrap and add value at the integration seam.
 | `runtime/cron` | `robfig/cron/v3` | Scheduler lifecycle + metrics + panic recovery. |
 | `core/validate` | `go-playground/validator` | apperror conversion + JSON tag binding. |
 | `core/config/watcher` | `fsnotify` | Watchable wrapper for hot reload. |
-| `security/jwtutil` | `lestrrat-go/jwx/v3` | JWKS lifecycle + revocation + timing-floor + metrics. |
+| `security/jwtutil` | `lestrrat-go/jwx/v3` | JWKS lifecycle + revocation + timing-floor + metrics + rotating SigningProvider mirroring `crypto/paseto.SigningProvider`. |
 | `authz/openfga` | `openfga/go-sdk` | Thin Decider adapter. |
 | `data/lock/pgadvisory` | `jackc/pgx/v5` | Advisory-lock wrapper. |
 | `observability/tracing` | OpenTelemetry SDK | OTel wiring with sane defaults. |

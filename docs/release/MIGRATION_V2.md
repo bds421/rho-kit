@@ -595,6 +595,85 @@ and the host is non-loopback. This mirrors the existing Redis transport-
 safety check. Use `amqps://` for production brokers, or opt out for
 local-dev fixtures with `amqp.WithoutTLS()`.
 
+### New: jwtutil.SigningProvider
+
+`security/jwtutil` was historically verify-only — services consumed
+tokens minted by external IdPs and the kit's mandate stopped at
+JWKS-backed verification. v2.0 keeps that posture by default (the
+`Verifier` / `Provider` surface is unchanged) and adds
+`jwtutil.SigningProvider` so services that need to issue short-lived
+JWTs can do so without rolling a parallel issuance path against the
+same `lestrrat-go/jwx/v3` dependency the verifier already pulls in.
+
+Mirrors `crypto/paseto.SigningProvider` for lifecycle parity:
+
+- Construct via `jwtutil.NewSigningProvider(ctx, rotator, opts...)`.
+- `rotator` is a `KeyRotator func(ctx) (crypto.PrivateKey, error)` —
+  invoked once synchronously at startup and again on every
+  `WithSigningRotationInterval` tick.
+- `Sign(claims)` / `SignContext(ctx, claims)` emit a signed JWT using
+  the current epoch's key.
+- `Close()` terminates the refresh goroutine and drops the cached key
+  reference.
+
+Required options (mirrors the verify-side `NewProvider` guardrails):
+
+- `WithSigningRotationInterval(d)`.
+- Either `WithSigningExpectedIssuer(s)` or
+  `WithSigningAllowAnyIssuer()`.
+- Either `WithSigningExpectedAudience(s)` or
+  `WithSigningAllowAnyAudience()`.
+
+Optional knobs:
+
+- `WithSigningMethod(jwa.SignatureAlgorithm)` — default `ES256`.
+  Symmetric `HS*` algorithms and `none` are rejected.
+- `WithSigningDefaultLifetime(d)` — exp default when
+  `Claims.ExpiresAt` is zero.
+- `WithSigningMaxStale(d)` / `WithoutSigningMaxStaleLimit()` — bound
+  how long Sign keeps using the previous key after rotator failures.
+- `WithSigningFetchTimeout(d)` — per-refresh deadline.
+- `WithOnSigningRefreshError(fn)` — wire a metric/alert; refresh
+  failures stay silent otherwise.
+- `WithIssuedJTIRecorder(rec)` — forward every issued jti to a
+  caller-owned ledger so a verifier-side revocation store can later
+  mark the jti revoked. The recorder is consulted AFTER signing and
+  BEFORE Sign returns; a recorder error fails the Sign call.
+
+Behavioural notes (deviations from `crypto/paseto.SigningProvider` are
+called out where the JWT spec or jwx's API forces a different shape):
+
+- **Key rotation.** SigningProvider holds a single in-memory key
+  reference and swaps it atomically on each successful rotation. The
+  previous key is released to the GC — there is no grace window on
+  the issuance side. The verifier-side JWKS is the grace-window
+  owner; pick a rotation interval substantially shorter than the
+  verifier-side overlap window. (Same as paseto.)
+- **jti tracking.** Sign mints a 128-bit random jti per token unless
+  `Claims.ID` is set. Optional `WithIssuedJTIRecorder` lets the
+  caller register issued jtis in their own ledger — the kit's
+  `security/jwtutil/revocation.Store` does NOT track issued jtis
+  itself; wire a custom `IssuedJTIRecorder` if you need that
+  mapping. (paseto leaves jti tracking to the application.)
+- **Audience.** A single audience is pinned at construction; the
+  verifier-side confused-deputy guardrail (RFC 7519 §4.1.3) is
+  mirrored on the issuance side. Multi-audience tokens require
+  multiple SigningProvider instances — Sign rejects caller-provided
+  audience overrides to keep the posture auditable. (Same as
+  paseto.)
+- **Kid.** Each rotated signing key is tagged with its RFC 7638
+  thumbprint as the `kid` header so verifier-side JWKS lookups work
+  by construction. paseto carries no kid because v4.public verifies
+  by trying every public key — JWT-side multi-key JWKS need the kid
+  hint. Operators that pin a custom kid can stamp it on the
+  `crypto.PrivateKey` before returning it from the rotator… or
+  publish a JWKS that lists the thumbprint kid; either pairing
+  works.
+- **Algorithm.** `ES256` default mirrors the kit's verify-side
+  default. `RS256`/`PS256`/`PS384`/`PS512` and `EdDSA` are supported
+  for adopters wiring against JWKS-backed IdPs that publish those
+  algorithms.
+
 ## 9. Things Not Migrated In v2.0.0
 
 The following remain out of scope for v2.0.0 and should not block adoption:
