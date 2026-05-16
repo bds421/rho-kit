@@ -1,5 +1,5 @@
 // Package mcp exposes typed kit handlers as Model Context Protocol
-// (MCP) tools over a JSON-RPC 2.0 endpoint.
+// (MCP) tools over a Streamable HTTP endpoint.
 //
 // # Why this exists
 //
@@ -10,33 +10,41 @@
 // re-implemented validation, no per-tool action log).
 //
 // This package projects the kit's typed handler shape onto the MCP
-// wire format. The [Server] is just an [http.Handler] — wrap it with
-// the same middleware stack you already use for the REST mux
-// (auth, tenant, idempotency, rate limit, audit) and the security
-// model agrees with the rest of the service.
+// wire format. The transport is owned by the official Go SDK
+// ([github.com/modelcontextprotocol/go-sdk/mcp]); the kit's value-add
+// is the [Register] typed registration generic, the strict tenant +
+// actor audit invariant, the destructive-tool gate, and the
+// action-log integration.
 //
-// # JSON-RPC surface
+// # Wire format
 //
-// The [Server] implements three JSON-RPC methods of the MCP protocol:
+// The [Server.HTTP] handler is the SDK's Streamable HTTP transport
+// configured for stateless + JSON-response mode. Each request is a
+// JSON-RPC envelope (a single object) carrying one of the standard
+// MCP methods (`initialize`, `tools/list`, `tools/call`, `ping`,
+// etc.). Clients MUST send:
 //
-//   - "initialize" — returns server capabilities (tools only).
-//   - "tools/list" — returns the registered tool catalog.
-//   - "tools/call" — dispatches to a registered handler.
+//   - `Content-Type: application/json` on POST,
+//   - `Accept: application/json, text/event-stream` on every request
+//     (the SDK rejects requests that lack either media type with
+//     400 Bad Request).
 //
-// Method names without a slash (e.g. "echo") are treated as a direct
-// tool invocation — equivalent to "tools/call" with the name carried
-// in the method field. This shorthand makes the endpoint usable from
-// minimal JSON-RPC clients that don't understand the MCP envelope.
+// JSON-RPC notifications, batch requests, and the legacy kit
+// "shorthand" invocation (`method: "<tool-name>"`) are no longer
+// supported — clients must use `tools/call`.
 //
 // # Schema generation
 //
-// Tool input/output schemas are generated from the Go types via
-// reflection, honouring `json:"..."` tags for field names and
-// `validate:"..."` tags for the `required` array. See [GenerateSchema]
-// for the exhaustive type-mapping table.
+// Tool input/output schemas are generated from the Go types via the
+// kit's [core/v2/validate] package, which reads
+// `jsonschema:"..."` and `validate:"..."` struct tags. The result is
+// a JSON-Schema 2020-12 document; the SDK validates inputs against
+// it before invoking the kit's wrapper, and the kit then runs
+// [validate.Struct] for go-playground-style field-level validation
+// on top.
 //
 // Cycle detection is performed at registration time, not at request
-// time — a self-referential input struct produces an explicit error
+// time — a self-referential input struct produces [ErrCyclicSchema]
 // from [Register] rather than a runtime stack overflow.
 //
 // # Action-log integration
@@ -58,12 +66,22 @@
 // to read the verified user id from the auth-middleware-populated
 // context.
 //
+// The SDK's [sdkmcp.CallToolRequest] does not expose the full
+// [*http.Request]. The kit's wrapper synthesises a minimal
+// [*http.Request] whose [http.Request.Header] is the inbound HTTP
+// header set and whose [http.Request.Context] is the request
+// context. Custom actor extractors that depended on other fields
+// (URL, RemoteAddr, ...) need to be reshaped to read Header /
+// Context.
+//
 // When no tenant is on the context, behaviour depends on
-// [WithBestEffortAuditOnMissingTenant] opts out (default: strict):
-//   - Strict mode refuses to dispatch the tool and returns
-//     -32603 internal error to the JSON-RPC caller, preserving the
-//     audit invariant that every executed tool produces a signed
-//     entry.
+// [WithBestEffortAuditOnMissingTenant]:
+//
+//   - Strict mode (default) refuses to dispatch the tool. The SDK
+//     surfaces the refusal as a [sdkmcp.CallToolResult] with
+//     `isError: true` and a generic "internal error" content item,
+//     preserving the audit invariant that every executed tool
+//     produces a signed entry.
 //   - Loose mode logs a warn-level message, skips the audit entry,
 //     and runs the tool — preserved for operators who explicitly
 //     accept the audit gap.
@@ -71,18 +89,40 @@
 // By default the audit append runs synchronously between dispatch
 // and response-write so the entry is durable before the caller
 // sees the result. [WithAsyncAuditDispatch] flips the append to a
-// goroutine for latency-sensitive deployments — see that option's
-// doc comment for the trade-off.
+// goroutine for latency-sensitive deployments.
+//
+// # Destructive-tool gate
+//
+// Tools registered with [WithDestructive] fail with
+// [ErrDestructiveGateRequired] at call time unless the Server has
+// either a [WithDestructiveGate] gate function or an explicit
+// [WithoutDestructiveGate] acknowledgement. Destructive tools also
+// advertise themselves via:
+//
+//   - The SDK's [sdkmcp.ToolAnnotations.DestructiveHint] (the
+//     spec-defined hint), and
+//   - The kit's `x-destructive: true` vendor extension on the input
+//     schema (preserved for kit-aware clients that pre-date the
+//     annotation).
+//
+// # Error surface
+//
+// Application-level handler errors (validation failures, gate
+// refusals, internal errors) are returned as
+// [sdkmcp.CallToolResult] objects with `isError: true` and a
+// caller-safe message in the content envelope. This matches the
+// MCP spec recommendation that tool-execution errors propagate to
+// the model rather than being surfaced as JSON-RPC protocol
+// errors. Sensitive infrastructure details (database errors,
+// internal hostnames, file paths) are scrubbed from the message and
+// logged server-side instead.
 //
 // # What is NOT done here
 //
 //   - Auth, rate-limit, idempotency, CSRF: delegated to the
 //     surrounding middleware chain. The Server itself has no opinion.
 //   - Streaming tools / partial results: deferred. The current
-//     transport returns one response per request. A future revision
-//     may add Server-Sent Events for long-running tools.
-//   - JSON-RPC batch requests (an array of calls in a single payload):
-//     deferred. Single-request semantics keep the action-log entry
-//     per-call rather than per-batch, which is what forensics
-//     actually wants.
+//     transport returns one response per request.
+//   - JSON-RPC batch requests: deferred. Single-request semantics
+//     keep the action-log entry per-call rather than per-batch.
 package mcp

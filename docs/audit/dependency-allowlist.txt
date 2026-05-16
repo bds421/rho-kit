@@ -11,7 +11,7 @@
 
 # Core crypto / token / validation primitives.
 aidanwoods.dev/go-paseto
-github.com/go-playground/validator/v10
+github.com/google/jsonschema-go
 github.com/lestrrat-go/jwx/v3
 github.com/tink-crypto/tink-go/v2
 golang.org/x/crypto
@@ -19,7 +19,9 @@ golang.org/x/crypto
 # Data, cache, SQL, migration, and queue backends.
 github.com/alicebob/miniredis/v2
 github.com/dgraph-io/ristretto/v2
+github.com/go-redsync/redsync/v4
 github.com/hashicorp/golang-lru/v2
+github.com/hibiken/asynq
 github.com/jackc/pgx/v5
 github.com/pressly/goose/v3
 github.com/redis/go-redis/v9
@@ -46,6 +48,7 @@ github.com/pkg/sftp
 github.com/santhosh-tekuri/jsonschema/v6
 golang.org/x/net
 golang.org/x/sync
+golang.org/x/time
 google.golang.org/grpc
 google.golang.org/protobuf
 

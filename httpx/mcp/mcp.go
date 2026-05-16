@@ -1,14 +1,29 @@
+// Package mcp exposes typed kit handlers as Model Context Protocol
+// (MCP) tools, wrapping the modelcontextprotocol/go-sdk transport.
+//
+// Wave 121 retired the kit's hand-rolled JSON-RPC implementation in
+// favour of the official Go SDK
+// ([github.com/modelcontextprotocol/go-sdk/mcp]). The wire format is
+// now SDK-canonical Streamable HTTP; clients must send
+// `Accept: application/json, text/event-stream` and
+// `Content-Type: application/json` per the MCP spec.
+//
+// The kit's value-add — typed [Register] generic, server-side
+// destructive-tool gate, strict tenant/actor audit invariants and the
+// action-log integration — is preserved as a thin wrapper around the
+// SDK's `AddTool` + `NewStreamableHTTPHandler` primitives.
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
-	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,10 +31,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/net/http/httpguts"
+
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/core/v2/redact"
+	"github.com/bds421/rho-kit/core/v2/validate"
 	"github.com/bds421/rho-kit/data/v2/actionlog"
 	"github.com/bds421/rho-kit/httpx/v2/internal/headerutil"
-	"golang.org/x/net/http/httpguts"
 )
 
 // AnonymousActor is the actor id recorded when no authenticated identity
@@ -52,46 +71,54 @@ const MaxReasonLength = 1024
 // up front instead of letting a call fail after the tool has run.
 const MaxToolNameLen = actionlog.MaxActionLen - len("mcp.")
 
-var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
-
 // ErrDestructiveGateRequired is returned to the caller when a tool
 // marked [WithDestructive] is invoked on a Server that has neither
 // a [DestructiveGate] wired via [WithDestructiveGate] nor an
-// explicit [WithoutDestructiveGate] acknowledgement. The kit refuses
-// rather than silently letting the call through, because a tool
-// catalog advertising `x-destructive: true` is the wrong place to
-// learn at runtime that nothing actually gates the call.
+// explicit [WithoutDestructiveGate] acknowledgement.
 var ErrDestructiveGateRequired = errors.New("mcp: destructive tool requires a server-side gate (configure WithDestructiveGate, or acknowledge via WithoutDestructiveGate)")
 
+// ErrCyclicSchema is returned by [Register] when the In/Out type
+// contains a cycle (a struct that recursively references its own
+// type). The kit walks the type via the [validate] package's
+// jsonschema-go-backed inference; cyclic types cannot be expressed as
+// JSON-Schema and would otherwise produce a non-terminating tool
+// catalog.
+var ErrCyclicSchema = errors.New("mcp: schema generation: cyclic type reference")
+
+// ErrUnsupportedType is returned by [Register] when a Go type has no
+// JSON-Schema mapping (e.g. channels, function types, non-string map
+// keys).
+var ErrUnsupportedType = errors.New("mcp: schema generation: unsupported type")
+
 // Tool describes one MCP tool. Every handler registered via
-// [Register] becomes one Tool. The fields are the public surface of
-// the MCP `tools/list` response — clients read them to render the
-// tool catalog and validate inputs.
+// [Register] becomes one Tool. The fields are the kit-visible surface
+// of the SDK's [sdkmcp.Tool]; the underlying SDK value is constructed
+// at registration time and lives inside the SDK server.
 type Tool struct {
 	// Name uniquely identifies the tool. Convention: dotted lowercase
-	// scope (e.g. "user.delete"). Names are ASCII identifiers matching
-	// [A-Za-z0-9][A-Za-z0-9._/-]* and are capped at MaxToolNameLen bytes.
+	// scope (e.g. "user.delete"). Names are ASCII identifiers and
+	// capped at MaxToolNameLen bytes.
 	Name string `json:"name"`
 
 	// Description is human-readable. Default: derived from the input
 	// type's name; override via [WithToolDescription].
 	Description string `json:"description,omitempty"`
 
-	// InputSchema is a JSON-Schema describing the tool's input
-	// struct. Auto-generated from the Go type via [GenerateSchema];
-	// override via [WithInputSchema].
+	// InputSchema is the JSON-Schema describing the tool's input. The
+	// SDK infers it from the In type's `jsonschema:"..."` tags unless
+	// overridden via [WithInputSchema].
 	InputSchema json.RawMessage `json:"inputSchema"`
 
 	// OutputSchema describes the tool's response. Optional in MCP;
-	// some clients use it for typed deserialisation. Auto-generated
-	// from the Go type unless overridden via [WithOutputSchema].
+	// some clients use it for typed deserialisation. The SDK infers
+	// it from the Out type unless overridden via [WithOutputSchema].
 	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 // Handler is the kit-canonical typed handler shape for MCP tools.
 // The In type is the input struct; Out is the response. Both must
 // marshal/unmarshal cleanly via encoding/json. Validation tags from
-// [core/validate] are honoured by the [Server] before the handler
+// [core/v2/validate] are honoured by the [Server] before the handler
 // runs.
 type Handler[In any, Out any] func(ctx context.Context, in In) (Out, error)
 
@@ -112,24 +139,24 @@ func WithToolDescription(s string) ToolOption {
 	return func(c *toolConfig) { c.description = s }
 }
 
-// WithInputSchema overrides the auto-generated input JSON-Schema.
-// Use sparingly — drift between the schema and the Go struct
-// produces validation failures that look like bugs. The override
-// must be a valid JSON object.
+// WithInputSchema overrides the SDK-inferred input JSON-Schema. The
+// override must be a valid JSON object with `"type": "object"` (an
+// MCP spec requirement enforced by the SDK).
 func WithInputSchema(schema json.RawMessage) ToolOption {
 	return func(c *toolConfig) { c.inputSchema = schema }
 }
 
-// WithOutputSchema overrides the auto-generated output JSON-Schema.
-// The override must be a valid JSON object.
+// WithOutputSchema overrides the SDK-inferred output JSON-Schema. The
+// override must be a valid JSON object with `"type": "object"`.
 func WithOutputSchema(schema json.RawMessage) ToolOption {
 	return func(c *toolConfig) { c.outputSchema = schema }
 }
 
 // WithDestructive marks the tool as destructive. The Server records
-// this in the tool catalog and emits a `x-destructive: true`
-// JSON-Schema vendor-extension so clients can prompt for
-// confirmation.
+// this in the tool catalog as an SDK `ToolAnnotations.DestructiveHint`
+// AND a kit `x-destructive: true` vendor extension on the input
+// schema (preserving the pre-SDK on-wire contract for kit-aware
+// clients).
 //
 // Destructive tools fail with [ErrDestructiveGateRequired] at call
 // time unless one of these is configured:
@@ -139,13 +166,7 @@ func WithOutputSchema(schema json.RawMessage) ToolOption {
 //     hook) that runs before dispatch and can refuse the call.
 //   - [WithoutDestructiveGate] — explicit "I am running destructive
 //     tools without server-side enforcement; clients prompt only"
-//     acknowledgement. Use only for services that gate destructive
-//     calls in their inbound HTTP middleware chain and need the
-//     destructive marker for schema vendor-extensions.
-//
-// The no-arg shape replaces v1's positional bool: previously the
-// option silently accepted `WithDestructive(false)`, which made
-// it easy to disable safety in a copy-paste edit.
+//     acknowledgement.
 func WithDestructive() ToolOption {
 	return func(c *toolConfig) { c.destructive = true }
 }
@@ -154,20 +175,19 @@ func WithDestructive() ToolOption {
 type ServerOption func(*serverConfig)
 
 type serverConfig struct {
-	logger                       *slog.Logger
-	actionLogger                 actionlog.Logger
-	actorExtractor               func(*http.Request) string
-	allowAnonymousActor          bool
-	tenantExtractor              func(ctx context.Context) (string, bool)
-	maxRequestBytes              int64
-	strictAudit                  bool
-	strictAuditTimeout           time.Duration
-	asyncAudit                   bool
-	asyncAuditWorkers            int
-	asyncAuditQueue              int
-	asyncAuditTimeout            time.Duration
-	destructiveGate              DestructiveGate
-	destructiveGateAcknowledged  bool
+	logger                      *slog.Logger
+	actionLogger                actionlog.Logger
+	actorExtractor              func(*http.Request) string
+	allowAnonymousActor         bool
+	tenantExtractor             func(ctx context.Context) (string, bool)
+	strictAudit                 bool
+	strictAuditTimeout          time.Duration
+	asyncAudit                  bool
+	asyncAuditWorkers           int
+	asyncAuditQueue             int
+	asyncAuditTimeout           time.Duration
+	destructiveGate             DestructiveGate
+	destructiveGateAcknowledged bool
 }
 
 // DestructiveGate authorizes a destructive-tool invocation. The
@@ -183,15 +203,7 @@ type serverConfig struct {
 type DestructiveGate func(ctx context.Context, toolName string, payload []byte) error
 
 // WithDestructiveGate wires a server-side gate for tools registered
-// with [WithDestructive]. Typical wiring forwards the call to
-// [data/approval] or a custom authorization service that records the
-// pending action and waits for human confirmation.
-//
-// The gate is the production-grade enforcement point: it runs in
-// every code path that dispatches a destructive tool, regardless of
-// which inbound middleware fronts the Server. Without a gate AND
-// without [WithoutDestructiveGate], every destructive tool call
-// returns [ErrDestructiveGateRequired].
+// with [WithDestructive].
 func WithDestructiveGate(fn DestructiveGate) ServerOption {
 	if fn == nil {
 		panic("mcp: WithDestructiveGate function must not be nil")
@@ -200,15 +212,8 @@ func WithDestructiveGate(fn DestructiveGate) ServerOption {
 }
 
 // WithoutDestructiveGate is the explicit "I gate destructive calls
-// somewhere else in my stack and just want the schema vendor
-// extension" acknowledgement. The Server stops refusing destructive
-// tool calls when this is set; the destructive flag remains in the
-// tool catalog and the JSON-Schema vendor extension.
-//
-// Use only for services that wrap the Server with their own
-// approval / authorization middleware. The long, explicit name is
-// deliberate — accidentally typing it triggers a "do I actually
-// have an external gate?" review.
+// somewhere else in my stack and just want the metadata annotation"
+// acknowledgement.
 func WithoutDestructiveGate() ServerOption {
 	return func(c *serverConfig) { c.destructiveGateAcknowledged = true }
 }
@@ -225,12 +230,6 @@ func WithLogger(l *slog.Logger) ServerOption {
 // WithActionLogger wires an [actionlog.Logger]. When set, the Server
 // appends one entry per tool call (Outcome=success on a clean
 // return, Outcome=failure on any error).
-//
-// Without an action logger the Server still serves tools — the
-// audit trail simply moves to whatever transport-layer logging the
-// caller already runs. Production deployments are strongly
-// encouraged to wire this so "what did the agent do this hour
-// against tenant X" is a SQL query.
 func WithActionLogger(l actionlog.Logger) ServerOption {
 	if l == nil {
 		panic("mcp: WithActionLogger logger must not be nil")
@@ -241,18 +240,14 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 // WithActorExtractor sets the function that resolves an actor id
 // from a request. The default returns [AnonymousActor], but strict
 // audit mode rejects that default when an action logger is configured
-// unless [WithAllowAnonymousActor] is also supplied. The Server does
-// NOT trust any header by default, since headers can be spoofed by
-// any caller able to reach the JSON-RPC endpoint.
+// unless [WithAllowAnonymousActor] is also supplied.
 //
-// Services that put actor on context via auth middleware should pass
-// [WithActorFromContext]. Services that genuinely want to trust a
-// header (and have a reverse proxy stamping it) can pass
-// [WithActorFromHeader] — read its doc first.
-//
-// An empty or action-log-invalid return value is rejected in strict
-// audit mode before dispatch, preserving the invariant that every
-// executed audited tool call is attributable.
+// The SDK's [sdkmcp.CallToolRequest] does not expose the full
+// [*http.Request]; the kit synthesises a minimal request whose
+// [http.Request.Header] is the inbound HTTP header and whose
+// [http.Request.Context] is the request context. Custom extractors
+// that depend on other fields of [http.Request] need to be reshaped
+// to read Header / Context instead.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorExtractor function must not be nil")
@@ -269,24 +264,15 @@ func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 }
 
 // WithAllowAnonymousActor permits the default [AnonymousActor] value
-// when an action logger is configured. This is an explicit opt-out
-// from actor attribution, intended for local demos or transport
-// layers that authenticate a single shared machine identity outside
-// the request context. Production services should prefer
-// [WithActorFromContext].
+// when an action logger is configured.
 func WithAllowAnonymousActor() ServerOption {
 	return func(c *serverConfig) { c.allowAnonymousActor = true }
 }
 
-// WithActorFromContext returns a ServerOption that reads the actor id
-// from the request context using fn — typically a wrapper around
-// [auth.UserID] from httpx/middleware/auth. This is the recommended
-// way to wire actor identity: the auth middleware has already
-// verified the caller's credentials and a context value cannot be
-// forged by a remote client.
-//
-// fn must not be nil. An empty or action-log-invalid return is
-// rejected in strict audit mode when an action logger is configured.
+// WithActorFromContext reads the actor id from the request context
+// using fn — typically a wrapper around [auth.UserID] from
+// httpx/middleware/auth. The function receives the context from the
+// inbound HTTP request.
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
 		panic("mcp: WithActorFromContext function must not be nil")
@@ -296,24 +282,13 @@ func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	})
 }
 
-// WithActorFromHeader returns a ServerOption that reads the actor id
-// from the named request header.
+// WithActorFromHeader reads the actor id from the named request
+// header.
 //
 // SECURITY WARNING: any caller able to reach this service can set the
-// header to an arbitrary value. Use this only when ALL of the
-// following are true:
-//
-//  1. the service is exclusively reachable via a reverse proxy
-//     (identity proxy, ingress, mesh sidecar) that you control;
-//  2. that proxy strips the header from inbound requests and
-//     re-stamps it from a verified identity (mTLS CN, verified JWT
-//     subject) before forwarding;
-//  3. the proxy's own connection to this service is mutually
-//     authenticated (mTLS, sidecar-only network).
-//
-// In every other case prefer [WithActorFromContext]. An empty, blank,
-// duplicated, or action-log-invalid header is rejected in strict
-// audit mode when an action logger is configured.
+// header. Use only when a reverse proxy strips and re-stamps the
+// header from a verified identity. Prefer [WithActorFromContext]
+// otherwise.
 func WithActorFromHeader(header string) ServerOption {
 	if !httpguts.ValidHeaderFieldName(header) {
 		panic("mcp: WithActorFromHeader header must be a valid non-empty header name")
@@ -328,9 +303,7 @@ func WithActorFromHeader(header string) ServerOption {
 }
 
 // WithTenantExtractor sets the function that resolves a tenant id
-// from a context. The default uses [tenant.FromContext]. Override
-// only when the kit's tenant package is not the source of truth for
-// your service.
+// from a context.
 func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOption {
 	if fn == nil {
 		panic("mcp: WithTenantExtractor function must not be nil")
@@ -338,22 +311,9 @@ func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOpti
 	return func(c *serverConfig) { c.tenantExtractor = fn }
 }
 
-// WithMaxRequestBytes caps the request body the Server will read.
-// Default: 1 MiB. A JSON-RPC client that sends a malformed gigabyte
-// of garbage shouldn't be able to OOM the process. Panics on
-// non-positive values.
-func WithMaxRequestBytes(n int64) ServerOption {
-	if n <= 0 {
-		panic("mcp: WithMaxRequestBytes requires a positive value")
-	}
-	return func(c *serverConfig) { c.maxRequestBytes = n }
-}
-
-// WithStrictAuditTimeout caps how long a synchronous strict-mode audit
-// append may run before its bounded context deadline trips. A hung
-// audit store would otherwise pin the tool-call goroutine indefinitely
-// after the tool's side effects already happened. Default: 5s. Must be
-// > 0. Has no effect in async mode (see [WithAsyncAuditTimeout]).
+// WithStrictAuditTimeout caps how long a synchronous strict-mode
+// audit append may run before its bounded context deadline trips.
+// Default: 5s.
 func WithStrictAuditTimeout(d time.Duration) ServerOption {
 	if d <= 0 {
 		panic("mcp: WithStrictAuditTimeout requires a positive value")
@@ -363,51 +323,12 @@ func WithStrictAuditTimeout(d time.Duration) ServerOption {
 
 // WithBestEffortAuditOnMissingTenant opts out of the default
 // fail-closed audit gate so that tool calls dispatched on a request
-// with no tenant context will still execute. Default Server behaviour
-// (no option) is the fail-closed path: a JSON-RPC caller without
-// tenant context receives a -32603 internal error and the tool does
-// NOT execute, preserving the audit invariant that "every executed
-// tool call produced a signed entry."
-//
-// Passing this option restores the legacy behaviour: the Server logs
-// a warn-level message, skips the audit entry, and runs the tool
-// anyway. Use only when operators have explicitly accepted the audit
-// gap (e.g. a dev environment without tenant middleware). In
-// production this opens a fail-open path where a tool executed
-// against an unscoped request leaves no signed evidence.
-//
-// Replaces the v1 WithStrictAudit(bool) form so the security-relevant
-// opt-out is a typed named intent rather than a one-token bool flip.
-//
-// Has no effect when no action logger is configured (audit is
-// already opt-in there).
+// with no tenant context will still execute.
 func WithBestEffortAuditOnMissingTenant() ServerOption {
 	return func(c *serverConfig) { c.strictAudit = false }
 }
 
 // WithAsyncAuditDispatch enables best-effort async audit append.
-// Default Server behaviour (no option) runs the action-log append
-// synchronously between dispatch and response-write — a slow audit
-// store extends MCP latency, but a crash between the two cannot lose
-// the entry.
-//
-// This option hands appends to a bounded worker pool that performs
-// the append using context.WithoutCancel of the request context plus
-// a per-task timeout (see [WithAsyncAuditTimeout]). The pool is sized
-// by [WithAsyncAuditWorkers]. When the queue saturates, the oldest-
-// fitting append is recorded as DROPPED via a counter surfaced
-// through [Server.AsyncAuditDropped] and the request still returns
-// success — async mode is best-effort by definition.
-//
-// Use async mode when MCP latency dominates over single-request
-// durability — e.g. high-RPS read-only tools where the client
-// retries on its own and a missed entry is acceptable. Pair with
-// [Server.Stop] so workers drain on graceful shutdown.
-//
-// Replaces the v1 WithAsyncAudit(bool) form so the durability-vs-
-// latency trade-off is a typed named intent.
-//
-// Has no effect when no action logger is configured.
 func WithAsyncAuditDispatch() ServerOption {
 	return func(c *serverConfig) { c.asyncAudit = true }
 }
@@ -422,9 +343,7 @@ func WithAsyncAuditWorkers(n int) ServerOption {
 }
 
 // WithAsyncAuditQueue sets the bounded queue depth for async audit
-// appends. When the queue is full, new appends are dropped (counter
-// increment) rather than spawning unbounded goroutines. Default: 256.
-// Must be > 0.
+// appends. Default: 256. Must be > 0.
 func WithAsyncAuditQueue(n int) ServerOption {
 	if n <= 0 {
 		panic("mcp: WithAsyncAuditQueue requires a positive value")
@@ -432,9 +351,8 @@ func WithAsyncAuditQueue(n int) ServerOption {
 	return func(c *serverConfig) { c.asyncAuditQueue = n }
 }
 
-// WithAsyncAuditTimeout caps how long a single async audit append may
-// run before its context deadline trips. Default: 5s. Prevents a hung
-// audit store from pinning workers indefinitely. Must be > 0.
+// WithAsyncAuditTimeout caps how long a single async audit append
+// may run before its context deadline trips. Default: 5s.
 func WithAsyncAuditTimeout(d time.Duration) ServerOption {
 	if d <= 0 {
 		panic("mcp: WithAsyncAuditTimeout requires a positive value")
@@ -442,35 +360,24 @@ func WithAsyncAuditTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.asyncAuditTimeout = d }
 }
 
-// Server collects registered tools and serves the JSON-RPC surface.
-// Reuses the kit's HTTP middleware stack — auth, tenant,
-// idempotency, rate limit, audit — applied externally to the
-// JSON-RPC endpoint.
+// Server collects registered tools and serves the MCP Streamable HTTP
+// surface via the modelcontextprotocol/go-sdk.
 //
 // Construct via [NewServer]. Register tools with [Register]. Mount
 // the [Server.HTTP] handler on the same mux as the REST API.
 //
-// Safe for concurrent use — the tool registry is RWMutex-guarded;
+// Safe for concurrent use — the tool catalog cache is RWMutex-guarded;
 // async audit workers join an internal WaitGroup on Shutdown.
 type Server struct {
 	cfg serverConfig
 
-	mu    sync.RWMutex
-	tools map[string]*toolEntry
+	sdk *sdkmcp.Server
 
-	// auditQueue is a bounded channel that workers drain. Senders
-	// never close it; only Stop closes auditDone to signal that no
-	// new appends will be enqueued. Workers exit when the channel
-	// drains and auditDone is closed.
-	//
-	// Race-safety: enqueue and Stop are mutually exclusive on
-	// auditStopMu. Enqueue takes the read lock, re-checks
-	// auditStopped, and sends to auditQueue while still holding the
-	// read lock. Stop takes the write lock, flips auditStopped, and
-	// closes auditDone before releasing — so any send that observes
-	// auditStopped == false has serialized before Stop's close, and
-	// the send to a still-open auditQueue cannot collide with a
-	// concurrent shutdown.
+	mu       sync.RWMutex
+	tools    []Tool
+	toolMeta map[string]*toolMeta
+
+	// auditQueue is a bounded channel that workers drain.
 	auditQueue   chan auditJob
 	auditDone    chan struct{}
 	auditStopMu  sync.RWMutex
@@ -479,26 +386,20 @@ type Server struct {
 	auditDropped atomic.Int64
 }
 
+// toolMeta records kit-side per-tool state needed during dispatch.
+// The SDK owns the canonical [sdkmcp.Tool] (input schema, output
+// schema, handler); the kit only needs to remember whether the tool
+// is destructive for gate enforcement.
+type toolMeta struct {
+	destructive bool
+}
+
 type auditJob struct {
 	ctx      context.Context
 	entry    actionlog.Entry
 	tool     string
 	tenantID string
 }
-
-// toolEntry is the internal registration record for a Tool. The
-// dispatch closure boxes the typed Handler so the Server doesn't
-// need to track In/Out generic parameters at runtime.
-type toolEntry struct {
-	tool        Tool
-	dispatch    dispatchFunc
-	destructive bool
-}
-
-// dispatchFunc is the type-erased dispatch shape. It accepts the raw
-// JSON params bytes, decodes them, validates, calls the handler, and
-// returns the encoded response.
-type dispatchFunc func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error)
 
 // NewServer creates a Server with the given options.
 func NewServer(opts ...ServerOption) *Server {
@@ -509,7 +410,18 @@ func NewServer(opts ...ServerOption) *Server {
 		}
 		o(&cfg)
 	}
-	s := &Server{cfg: cfg, tools: make(map[string]*toolEntry)}
+	impl := &sdkmcp.Implementation{
+		Name:    "rho-kit/mcp",
+		Version: "v0.1.0",
+	}
+	sdkOpts := &sdkmcp.ServerOptions{
+		Logger: cfg.logger,
+	}
+	s := &Server{
+		cfg:      cfg,
+		sdk:      sdkmcp.NewServer(impl, sdkOpts),
+		toolMeta: make(map[string]*toolMeta),
+	}
 	if cfg.asyncAudit {
 		s.startAuditWorkers()
 	}
@@ -519,17 +431,11 @@ func NewServer(opts ...ServerOption) *Server {
 func defaultServerConfig() serverConfig {
 	return serverConfig{
 		logger: slog.Default(),
-		// Default actor extractor must NOT trust any header — any
-		// caller can set X-Actor-Id and forge the audit trail. Strict
-		// audited calls reject this anonymous default unless the
-		// caller explicitly opts in with WithAllowAnonymousActor.
-		// Wire WithActorFromContext (or WithActorFromHeader for
-		// reverse-proxy-stamped headers) to record real actor ids.
+		// Default actor extractor must NOT trust any header.
 		actorExtractor: func(_ *http.Request) string {
 			return AnonymousActor
 		},
 		tenantExtractor:    defaultTenantExtractor,
-		maxRequestBytes:    1 << 20,
 		strictAudit:        true,
 		strictAuditTimeout: 5 * time.Second,
 		asyncAudit:         false,
@@ -540,8 +446,7 @@ func defaultServerConfig() serverConfig {
 }
 
 // startAuditWorkers spins up a bounded worker pool for async audit
-// appends. Workers drain remaining entries after [Server.Stop] closes
-// auditDone, then exit.
+// appends.
 func (s *Server) startAuditWorkers() {
 	s.auditQueue = make(chan auditJob, s.cfg.asyncAuditQueue)
 	s.auditDone = make(chan struct{})
@@ -558,7 +463,6 @@ func (s *Server) auditWorker() {
 		case job := <-s.auditQueue:
 			s.runAuditJob(job)
 		case <-s.auditDone:
-			// Drain remaining queued jobs after Stop signal.
 			for {
 				select {
 				case job := <-s.auditQueue:
@@ -600,14 +504,7 @@ func asyncAuditContext(ctx context.Context, timeout time.Duration) (context.Cont
 }
 
 // Stop drains in-flight async audit appends and shuts down the worker
-// pool. Safe to call multiple times. No-op when async audit is not in
-// use. Returns when ctx expires or the workers have drained, whichever
-// comes first; remaining queued jobs after ctx expires are abandoned.
-//
-// Race-safety: Stop takes auditStopMu.Lock so it cannot run concurrently
-// with any [Server.enqueueAuditJob] critical section. Once Stop returns
-// from the locked block, every subsequent enqueue observes
-// auditStopped == true and drops without touching auditQueue.
+// pool. Safe to call multiple times.
 func (s *Server) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("mcp: Server.Stop requires a non-nil context")
@@ -637,89 +534,62 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // AsyncAuditDropped returns the cumulative number of async audit
-// appends that were dropped because the bounded queue was saturated
-// when the request handler tried to enqueue. Surfaces as a counter
-// for operators to alert on saturation.
+// appends that were dropped because the bounded queue was saturated.
 func (s *Server) AsyncAuditDropped() int64 {
 	return s.auditDropped.Load()
 }
 
+// HTTP returns the http.Handler that speaks MCP Streamable HTTP.
+//
+// The handler is the SDK's
+// [sdkmcp.NewStreamableHTTPHandler] in stateless + JSON-response mode:
+// every POST is treated as an independent JSON-RPC envelope and the
+// reply is `application/json` rather than `text/event-stream`. This
+// keeps the kit's prior "stateless, one-call-per-request" contract.
+//
+// Clients MUST send `Accept: application/json, text/event-stream` and
+// `Content-Type: application/json`. The SDK rejects requests that omit
+// either with `400 Bad Request` / `415 Unsupported Media Type`.
+func (s *Server) HTTP() http.Handler {
+	return sdkmcp.NewStreamableHTTPHandler(
+		func(*http.Request) *sdkmcp.Server { return s.sdk },
+		&sdkmcp.StreamableHTTPOptions{
+			Stateless:    true,
+			JSONResponse: true,
+			Logger:       s.cfg.logger,
+		},
+	)
+}
+
 // Tools returns a copy of the registered tool catalog, sorted by
-// name for deterministic ordering. Used by `tools/list`. The
-// returned slice is safe to mutate.
+// name. The returned slice is safe to mutate.
 func (s *Server) Tools() []Tool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Tool, 0, len(s.tools))
-	for _, e := range s.tools {
-		tool := e.tool
-		tool.InputSchema = append(json.RawMessage(nil), tool.InputSchema...)
-		tool.OutputSchema = append(json.RawMessage(nil), tool.OutputSchema...)
+	for _, t := range s.tools {
+		tool := t
+		tool.InputSchema = append(json.RawMessage(nil), t.InputSchema...)
+		tool.OutputSchema = append(json.RawMessage(nil), t.OutputSchema...)
 		out = append(out, tool)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// register installs a [toolEntry] under the given name. Returns an
-// error on a duplicate name or invalid tool name.
-func (s *Server) register(name string, entry *toolEntry) error {
-	if name == "" {
-		return errors.New("mcp: Register: tool name must not be empty")
-	}
-	if err := validateToolName(name); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, dup := s.tools[name]; dup {
-		return fmt.Errorf("mcp: Register: tool already registered")
-	}
-	s.tools[name] = entry
-	return nil
-}
-
-// lookup returns the dispatch entry for the named tool.
-func (s *Server) lookup(name string) (*toolEntry, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.tools[name]
-	return e, ok
-}
-
-// validateToolName accepts a conservative ASCII identifier grammar.
-// JSON-RPC method names with whitespace/control bytes round-trip
-// poorly through clients, and names that actionlog would reject must
-// fail at registration rather than after a handler side effect.
-func validateToolName(name string) error {
-	switch {
-	case len(name) > MaxToolNameLen:
-		return fmt.Errorf("mcp: Register: invalid tool name (max %d bytes)", MaxToolNameLen)
-	case !utf8.ValidString(name):
-		return fmt.Errorf("mcp: Register: invalid tool name (must be valid UTF-8)")
-	case !toolNamePattern.MatchString(name):
-		return fmt.Errorf("mcp: Register: invalid tool name (must match %s)", toolNamePattern.String())
-	default:
-		return nil
-	}
-}
-
-// Register adds a [Handler] as an MCP tool with the given name. The
-// input/output schemas are auto-generated from the In/Out types via
-// reflection unless overridden by [WithInputSchema] /
-// [WithOutputSchema].
+// Register adds a [Handler] as an MCP tool with the given name.
 //
-// Registration is idempotent only across distinct names — calling
-// Register twice with the same name returns an error rather than
-// silently replacing the previous handler. A double registration
-// almost always means a typo or a duplicate wire-up; surfacing it
-// at startup is cheaper than chasing a phantom dispatch in prod.
+// Schema generation: the kit derives the input/output JSON-Schema via
+// [validate.SchemaFor], which reads `jsonschema:"..."` and
+// `validate:"..."` struct tags. The marshalled schema becomes the
+// `inputSchema`/`outputSchema` on the SDK [sdkmcp.Tool]. Using the
+// kit's generator (rather than the SDK's built-in jsonschema-go
+// inference) keeps the catalog consistent with what [validate.Struct]
+// will enforce after decode.
 //
 // Register returns an error when:
-//   - the input or output type contains a cycle (self-reference)
-//     that would produce a non-terminating schema;
-//   - the input or output type cannot be reflected into a schema
-//     (e.g. unsupported type kinds);
+//   - the input or output type contains a cycle (self-reference);
+//   - the input or output type cannot be reflected into a schema;
 //   - the name is empty, too long, or outside the supported tool-name grammar;
 //   - the name has already been registered.
 func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts ...ToolOption) error {
@@ -738,37 +608,19 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		o(&cfg)
 	}
 
-	var inZero In
-	var outZero Out
-
-	inSchema := cfg.inputSchema
-	if len(inSchema) == 0 {
-		schema, err := GenerateSchema(reflect.TypeOf(inZero))
-		if err != nil {
-			return fmt.Errorf("mcp: Register: input schema: %w", err)
-		}
-		inSchema = schema
-	} else {
-		schema, err := validateSchemaOverride("input", inSchema)
-		if err != nil {
-			return fmt.Errorf("mcp: Register: %w", err)
-		}
-		inSchema = schema
+	if err := validateToolName(name); err != nil {
+		return err
 	}
 
-	outSchema := cfg.outputSchema
-	if len(outSchema) == 0 {
-		schema, err := GenerateSchema(reflect.TypeOf(outZero))
-		if err != nil {
-			return fmt.Errorf("mcp: Register: output schema: %w", err)
-		}
-		outSchema = schema
-	} else {
-		schema, err := validateSchemaOverride("output", outSchema)
-		if err != nil {
-			return fmt.Errorf("mcp: Register: %w", err)
-		}
-		outSchema = schema
+	var inZero In
+
+	inSchema, err := resolveInputSchema[In](cfg.inputSchema)
+	if err != nil {
+		return fmt.Errorf("mcp: Register: input schema: %w", err)
+	}
+	outSchema, err := resolveOutputSchema[Out](cfg.outputSchema)
+	if err != nil {
+		return fmt.Errorf("mcp: Register: output schema: %w", err)
 	}
 
 	desc := cfg.description
@@ -779,8 +631,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	if cfg.destructive {
 		// Vendor-extension: clients that understand the kit's MCP
 		// dialect see `x-destructive: true` and can prompt for
-		// confirmation. The flag is metadata; the kit's
-		// httpx/middleware/approval is the actual gate.
+		// confirmation. The kit-side gate is the actual enforcement.
 		schema, err := withVendorExtension(inSchema, "x-destructive", true)
 		if err != nil {
 			return fmt.Errorf("mcp: Register: annotate input schema: %w", err)
@@ -788,15 +639,112 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 		inSchema = schema
 	}
 
-	tool := Tool{
+	// Reserve the registration slot first so concurrent
+	// Register(same-name) races are caught before the SDK side-effect.
+	s.mu.Lock()
+	if _, dup := s.toolMeta[name]; dup {
+		s.mu.Unlock()
+		return fmt.Errorf("mcp: Register: tool already registered")
+	}
+	s.toolMeta[name] = &toolMeta{destructive: cfg.destructive}
+	s.tools = append(s.tools, Tool{
 		Name:         name,
 		Description:  desc,
 		InputSchema:  inSchema,
 		OutputSchema: outSchema,
+	})
+	s.mu.Unlock()
+
+	// Use the SDK's low-level Server.AddTool with a kit-owned
+	// ToolHandler. We avoid sdkmcp.AddTool[In, Out] because that
+	// generic helper unmarshals arguments with internaljson and
+	// surfaces the raw decode error string back to the caller —
+	// breaking the kit's "do not leak caller-controlled bytes" invariant
+	// (security review L-4 / decode-failure tests). Owning decode here
+	// lets us rewrite the error to a stable "invalid arguments" message
+	// while logging the verbose form server-side.
+	sdkTool := &sdkmcp.Tool{
+		Name:        name,
+		Description: desc,
+		InputSchema: inSchema,
+	}
+	if len(outSchema) > 0 {
+		sdkTool.OutputSchema = outSchema
+	}
+	if cfg.destructive {
+		destHint := true
+		sdkTool.Annotations = &sdkmcp.ToolAnnotations{
+			DestructiveHint: &destHint,
+		}
 	}
 
-	dispatch := buildDispatch[In, Out](h)
-	return s.register(name, &toolEntry{tool: tool, dispatch: dispatch, destructive: cfg.destructive})
+	s.sdk.AddTool(sdkTool, wrapToolHandler[In, Out](s, name, h, cfg.destructive))
+	return nil
+}
+
+// resolveInputSchema returns the JSON-Schema bytes to set on the SDK
+// Tool's InputSchema. When the caller supplied an override we validate
+// that it's a JSON object and reuse it; otherwise we generate from In
+// via the kit's validate package.
+func resolveInputSchema[In any](override json.RawMessage) (json.RawMessage, error) {
+	if len(override) > 0 {
+		return validateSchemaOverride("input", override)
+	}
+	schema, err := validate.SchemaFor[In]()
+	if err != nil {
+		return nil, mapSchemaError(err)
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	return raw, nil
+}
+
+func resolveOutputSchema[Out any](override json.RawMessage) (json.RawMessage, error) {
+	if len(override) > 0 {
+		return validateSchemaOverride("output", override)
+	}
+	schema, err := validate.SchemaFor[Out]()
+	if err != nil {
+		return nil, mapSchemaError(err)
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	return raw, nil
+}
+
+// mapSchemaError translates the validate package's schema-generation
+// errors back onto the kit's public sentinels so callers can still
+// branch on errors.Is(err, ErrCyclicSchema) / ErrUnsupportedType.
+func mapSchemaError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, validate.ErrCyclicSchema) {
+		return fmt.Errorf("%w: %v", ErrCyclicSchema, sanitiseSchemaErr(err))
+	}
+	if errors.Is(err, validate.ErrUnsupportedType) {
+		return fmt.Errorf("%w: %v", ErrUnsupportedType, sanitiseSchemaErr(err))
+	}
+	return err
+}
+
+// sanitiseSchemaErr strips any reflect.Type names from the validate
+// package's wrapper so the kit's "do not leak caller type names"
+// invariant survives even when the validate package learns to embed
+// type metadata in errors.
+func sanitiseSchemaErr(err error) string {
+	switch {
+	case errors.Is(err, validate.ErrCyclicSchema):
+		return "cyclic type reference"
+	case errors.Is(err, validate.ErrUnsupportedType):
+		return "unsupported type"
+	default:
+		return "schema build failed"
+	}
 }
 
 func validateSchemaOverride(kind string, schema json.RawMessage) (json.RawMessage, error) {
@@ -806,6 +754,9 @@ func validateSchemaOverride(kind string, schema json.RawMessage) (json.RawMessag
 	}
 	if obj == nil {
 		return nil, fmt.Errorf("%s schema must be a JSON object", kind)
+	}
+	if typ, _ := obj["type"].(string); typ != "" && typ != "object" {
+		return nil, fmt.Errorf("%s schema must have type \"object\"", kind)
 	}
 	return append(json.RawMessage(nil), schema...), nil
 }
@@ -825,9 +776,7 @@ func validActionLogTextField(s string, maxLen int, required bool) bool {
 	return true
 }
 
-// defaultDescription derives a description from the input type's
-// name. The result is intentionally bland — callers should override
-// via [WithToolDescription] for anything user-facing.
+// defaultDescription derives a description from the input type's name.
 func defaultDescription(in reflect.Type, name string) string {
 	if in == nil || in.Name() == "" {
 		return "Tool: " + name
@@ -836,9 +785,7 @@ func defaultDescription(in reflect.Type, name string) string {
 }
 
 // withVendorExtension parses an existing schema, sets a top-level
-// extension key, and re-emits it. Vendor extensions outside the
-// JSON-Schema spec are passed through verbatim to clients that
-// understand them.
+// extension key, and re-emits it.
 func withVendorExtension(schema json.RawMessage, key string, value any) (json.RawMessage, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -855,17 +802,11 @@ func withVendorExtension(schema json.RawMessage, key string, value any) (json.Ra
 	return out, nil
 }
 
-// truncateReason caps an error message at MaxReasonLength bytes to
-// keep audit rows compact. UTF-8 boundary safety: we trim at the
-// last valid rune boundary rather than potentially splitting a
-// multi-byte sequence.
+// truncateReason caps an error message at MaxReasonLength bytes.
 func truncateReason(s string) string {
 	if len(s) <= MaxReasonLength {
 		return s
 	}
-	// Walk back from MaxReasonLength via DecodeLastRuneInString until
-	// we land on a valid rune boundary. RuneError with size <= 1 means
-	// the prefix ends mid-multibyte sequence; trim that byte and retry.
 	cut := s[:MaxReasonLength]
 	for len(cut) > 0 {
 		r, size := utf8.DecodeLastRuneInString(cut)
@@ -876,4 +817,208 @@ func truncateReason(s string) string {
 		break
 	}
 	return cut + "..."
+}
+
+// validateToolName accepts the same ASCII identifier grammar as the
+// pre-SDK kit. The SDK already enforces its own (broader) tool-name
+// rule; the kit's stricter rule is preserved so action-log Action
+// values continue to round-trip.
+var toolNameAllowed = func(name string) error {
+	switch {
+	case name == "":
+		return errors.New("mcp: Register: tool name must not be empty")
+	case len(name) > MaxToolNameLen:
+		return fmt.Errorf("mcp: Register: invalid tool name (max %d bytes)", MaxToolNameLen)
+	case !utf8.ValidString(name):
+		return errors.New("mcp: Register: invalid tool name (must be valid UTF-8)")
+	}
+	if !validToolNameRune(rune(name[0])) || name[0] == '.' || name[0] == '-' || name[0] == '_' || name[0] == '/' {
+		return errors.New("mcp: Register: invalid tool name (must start with an alphanumeric)")
+	}
+	for _, r := range name {
+		if !validToolNameRune(r) {
+			return errors.New("mcp: Register: invalid tool name (allowed: alphanumeric, '.', '_', '-', '/')")
+		}
+	}
+	return nil
+}
+
+func validateToolName(name string) error {
+	return toolNameAllowed(name)
+}
+
+func validToolNameRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	case r == '.' || r == '_' || r == '-' || r == '/':
+		return true
+	default:
+		return false
+	}
+}
+
+// wrapToolHandler builds an [sdkmcp.ToolHandler] (the SDK's low-level
+// callback shape) that owns argument decode, validation, the
+// destructive gate, the audit precheck/append, handler dispatch, and
+// caller-safe error mapping.
+//
+// We deliberately bypass the SDK's [sdkmcp.AddTool] generic helper
+// because that helper:
+//
+//  1. Unmarshals arguments using the SDK's internal json package, then
+//     surfaces the raw error message back to the caller — leaking
+//     decoder text (e.g. `"json: cannot unmarshal \"secret\" into ..."`)
+//     to anyone who can call a tool. The kit's transport contract is
+//     "never reflect caller-controlled bytes back in error messages".
+//  2. Skips the kit's [validate.Struct] enforcement, which is a
+//     superset of the JSON-Schema-level checks the SDK performs.
+//
+// wrapToolHandler is a free function rather than a method because Go's
+// 1.x generics do not allow type parameters on methods.
+func wrapToolHandler[In any, Out any](s *Server, name string, h Handler[In, Out], destructive bool) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		header := http.Header{}
+		if req != nil && req.Extra != nil && req.Extra.Header != nil {
+			header = req.Extra.Header
+		}
+		httpReq := (&http.Request{Header: header}).WithContext(ctx)
+
+		if !s.auditPrecheck(ctx, httpReq, name) {
+			return errorResult("internal error"), nil
+		}
+
+		// Decode arguments. The SDK has already validated the JSON
+		// payload against the inputSchema before reaching us; we still
+		// decode strictly (DisallowUnknownFields) so an extra field
+		// surfaces as the kit's stable "invalid request" message
+		// rather than leaking the field name.
+		var rawArgs json.RawMessage
+		if req != nil && req.Params != nil && len(req.Params.Arguments) > 0 {
+			rawArgs = req.Params.Arguments
+		}
+		var in In
+		if len(rawArgs) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(rawArgs))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&in); err != nil {
+				s.logInternalError(ctx, "mcp: argument decode failed", err)
+				return errorResult("invalid arguments"), nil
+			}
+			if tok, err := dec.Token(); err != io.EOF {
+				if err != nil {
+					s.logInternalError(ctx, "mcp: trailing token after arguments", err)
+				} else {
+					s.cfg.logger.Warn("mcp: rejected request with trailing JSON tokens",
+						redact.String("tool", name),
+						redact.String("token_kind", reflect.TypeOf(tok).String()),
+					)
+				}
+				return errorResult("invalid arguments"), nil
+			}
+		}
+
+		// Destructive-gate enforcement.
+		if destructive {
+			gatePayload := rawArgs
+			if len(gatePayload) == 0 {
+				gatePayload = json.RawMessage("{}")
+			}
+			if s.cfg.destructiveGate != nil {
+				if gateErr := s.cfg.destructiveGate(ctx, name, gatePayload); gateErr != nil {
+					_ = s.recordActionLog(ctx, httpReq, name, gateErr)
+					return errorResult("destructive call refused"), nil
+				}
+			} else if !s.cfg.destructiveGateAcknowledged {
+				_ = s.recordActionLog(ctx, httpReq, name, ErrDestructiveGateRequired)
+				return errorResult("destructive tool not configured"), nil
+			}
+		}
+
+		if err := validate.Struct(in); err != nil {
+			_ = s.recordActionLog(ctx, httpReq, name, err)
+			return errorResult(mapErrorForCaller(s, ctx, err)), nil
+		}
+
+		out, callErr := h(ctx, in)
+		if auditErr := s.recordActionLog(ctx, httpReq, name, callErr); auditErr != nil {
+			if s.cfg.strictAudit && !s.cfg.asyncAudit {
+				return errorResult("internal error"), nil
+			}
+		}
+		if callErr != nil {
+			return errorResult(mapErrorForCaller(s, ctx, callErr)), nil
+		}
+
+		outBytes, err := json.Marshal(out)
+		if err != nil {
+			s.logInternalError(ctx, "mcp: marshal tool output", err)
+			return errorResult("internal error"), nil
+		}
+		return &sdkmcp.CallToolResult{
+			Content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: string(outBytes)},
+			},
+			StructuredContent: json.RawMessage(outBytes),
+		}, nil
+	}
+}
+
+// errorResult builds a CallToolResult with IsError=true and the
+// supplied caller-safe message as the sole text-content item. The
+// message MUST NOT contain caller-controlled bytes.
+func errorResult(msg string) *sdkmcp.CallToolResult {
+	return &sdkmcp.CallToolResult{
+		IsError: true,
+		Content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: msg},
+		},
+	}
+}
+
+// mapErrorForCaller converts a handler/validation error into a
+// caller-safe message string. Sensitive infrastructure errors are
+// logged server-side and the caller sees "internal error" only.
+//
+// Validation errors with structured Fields slices (constructed by
+// handler code with the wire surface in mind) are passed through —
+// they carry field names, not free-form text — so the caller learns
+// which argument to correct on the next attempt.
+func mapErrorForCaller(s *Server, ctx context.Context, err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case apperror.IsValidation(err):
+		if ve, ok := apperror.AsValidation(err); ok && len(ve.Fields) > 0 {
+			return ve.Error()
+		}
+		return "invalid request"
+	case apperror.IsNotFound(err):
+		return "resource not found"
+	case apperror.IsAuthRequired(err):
+		return "authentication required"
+	case apperror.IsForbidden(err):
+		return "forbidden"
+	case apperror.IsRateLimit(err):
+		return "rate limit exceeded"
+	case apperror.IsConflict(err):
+		s.logInternalError(ctx, "mcp: tool returned conflict error", err)
+		return "internal error"
+	default:
+		s.logInternalError(ctx, "mcp: tool returned internal error", err)
+		return "internal error"
+	}
+}
+
+// logInternalError records a server-side log entry for an error
+// whose details must not be returned to the caller.
+func (s *Server) logInternalError(ctx context.Context, msg string, err error) {
+	s.cfg.logger.ErrorContext(ctx, msg,
+		redact.Error(err),
+	)
 }

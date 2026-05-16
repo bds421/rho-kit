@@ -14,19 +14,22 @@
 //
 // Then exercise the stack:
 //
-//	# Tool catalog (MCP)
+//	# Tool catalog (MCP). The Accept header is required by the SDK
+//	# Streamable HTTP transport.
 //	curl -s -X POST http://localhost:8080/mcp \
 //	  -H 'Content-Type: application/json' \
+//	  -H 'Accept: application/json, text/event-stream' \
 //	  -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
 //	  -H 'X-Tenant-Id: acme' \
-//	  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' | jq
+//	  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
 //
-//	# Echo tool
+//	# Echo tool (use tools/call; the legacy shorthand was removed)
 //	curl -s -X POST http://localhost:8080/mcp \
 //	  -H 'Content-Type: application/json' \
+//	  -H 'Accept: application/json, text/event-stream' \
 //	  -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
 //	  -H 'X-Tenant-Id: acme' \
-//	  -d '{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":2}' | jq
+//	  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}' | jq
 //
 //	# Read the demo tenant budget
 //	curl -s -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \

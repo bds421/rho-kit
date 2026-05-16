@@ -41,27 +41,36 @@ go run ./cmd/agentic-service
 ## Exercise it
 
 ```bash
-# Tool catalog
+# Tool catalog. The Accept header is REQUIRED by the SDK Streamable
+# HTTP transport (`application/json, text/event-stream`); the
+# JSONResponse=true server setting means the server still returns
+# application/json, but the client must advertise both media types.
 curl -s -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' | jq
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
 
-# Echo tool
+# Echo tool — clients invoke tools via tools/call (the legacy
+# shorthand `method: "<tool-name>"` was removed in v2.0.0).
 curl -s -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
-  -d '{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":2}' | jq
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}' | jq
 
-# Validation failure (missing required field)
+# Validation failure (missing required field). Tool-level errors
+# surface as CallToolResult{isError:true} content, not as JSON-RPC
+# protocol errors.
 curl -s -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
-  -d '{"jsonrpc":"2.0","method":"echo","params":{},"id":3}' | jq
-# → {"error":{"code":-32602,"message":"..."}}
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{}}}' | jq
+# → {"result":{"content":[{"type":"text","text":"invalid request"}],"isError":true}}
 
 # Inspect tenant budget
 curl -s -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \

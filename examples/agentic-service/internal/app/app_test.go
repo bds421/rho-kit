@@ -111,70 +111,111 @@ func TestRequireDemoBearerToken_AllowsValidToken(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+// mcpCallToolBody is the standard SDK-canonical envelope for a
+// tools/call invocation. The example tests use this helper so each
+// call site reflects the actual wire format clients must send.
+func mcpCallToolBody(name string, args any) string {
+	params := map[string]any{"name": name}
+	if args != nil {
+		params["arguments"] = args
+	}
+	buf, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  params,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(buf)
+}
+
 func TestMCPServer_EchoToolRoundtrip(t *testing.T) {
 	srv := newMCPServer(newTestLogger(t))
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	body := mcpCallToolBody("echo", map[string]any{"message": "hi"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
 	mcpHTTPHandler(srv).ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	var resp map[string]any
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			StructuredContent map[string]any `json:"structuredContent"`
+			IsError           bool           `json:"isError"`
+		} `json:"result"`
+		Error any `json:"error"`
+	}
 	require.NoError(t, json.NewDecoder(rec.Result().Body).Decode(&resp))
-	result, ok := resp["result"].(map[string]any)
-	require.True(t, ok, "expected result object, got %v", resp)
-	assert.Equal(t, "hi", result["echoed"])
+	require.Nil(t, resp.Error, "unexpected JSON-RPC error: %v", resp.Error)
+	require.False(t, resp.Result.IsError)
+	require.Equal(t, "hi", resp.Result.StructuredContent["echoed"])
 }
 
 func TestMCPServer_RejectsValidationFailure(t *testing.T) {
 	srv := newMCPServer(newTestLogger(t))
 
-	// Missing required `message` field.
-	req := httptest.NewRequest(http.MethodPost, "/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{},"id":1}`))
+	// Missing required `message` field. The SDK packages
+	// validation failures into CallToolResult{IsError:true},
+	// not JSON-RPC protocol errors.
+	body := mcpCallToolBody("echo", map[string]any{})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("X-Tenant-Id", "acme")
 	rec := httptest.NewRecorder()
 	mcpHTTPHandler(srv).ServeHTTP(rec, req)
 
-	var resp map[string]any
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
 	require.NoError(t, json.NewDecoder(rec.Result().Body).Decode(&resp))
-	errObj, ok := resp["error"].(map[string]any)
-	require.True(t, ok, "expected error object on validation failure, got %v", resp)
-	// JSON-RPC -32602 = Invalid params; the kit maps validation
-	// failures to that code so SDKs can branch cleanly.
-	assert.Equal(t, float64(-32602), errObj["code"])
+	require.True(t, resp.Result.IsError, "validation failure must surface as IsError=true")
 }
 
 // TestStrictAudit_RefusesWhenTenantMissing pins the H-2 audit-fix
 // behaviour at the example layer: with an action logger configured
 // and strict-audit on (the v2.0.0 default), MCP must refuse to
-// dispatch a tool when no tenant resolves to context. The example
-// wires the tenant middleware in non-required mode so the strict-audit
-// gate inside MCP is the chokepoint — uniform -32603 regardless of
-// transport.
+// dispatch a tool when no tenant resolves to context. Wave 121
+// migrated the wire format to the official Go SDK; the refusal now
+// surfaces as a CallToolResult{IsError:true} content envelope instead
+// of a JSON-RPC -32603 error.
 func TestStrictAudit_RefusesWhenTenantMissing(t *testing.T) {
 	srv := newMCPServer(newTestLogger(t))
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp",
-		strings.NewReader(`{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}`))
+	body := mcpCallToolBody("echo", map[string]any{"message": "hi"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	// X-Tenant-Id deliberately omitted.
 	rec := httptest.NewRecorder()
 	mcpHTTPHandler(srv).ServeHTTP(rec, req)
 
-	var resp map[string]any
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
 	require.NoError(t, json.NewDecoder(rec.Result().Body).Decode(&resp))
-	errObj, ok := resp["error"].(map[string]any)
-	require.True(t, ok, "expected error object when tenant is missing, got %v", resp)
-	assert.Equal(t, float64(-32603), errObj["code"],
-		"strict audit must refuse dispatch with -32603 internal error")
-	// Confirm the tool did NOT execute by asserting no echoed result.
-	_, hasResult := resp["result"]
-	assert.False(t, hasResult, "tool must not run when audit precheck fails")
+	require.True(t, resp.Result.IsError,
+		"strict audit must refuse dispatch as a tool error (CallToolResult IsError=true)")
+	require.Len(t, resp.Result.Content, 1)
+	assert.Equal(t, "internal error", resp.Result.Content[0].Text,
+		"strict-audit refusal must surface as a generic 'internal error' message")
 }
 
 // TestDangerousAction_CreatesApprovalRequest exercises the approval

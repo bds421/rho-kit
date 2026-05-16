@@ -215,30 +215,34 @@ sweeper, lifecycle integration, metrics. The `tokenbucket.Limiter`
 public surface (`Allow`, etc.) doesn't change; consumers don't see the
 swap.
 
-**Decision:** **v2.1.0 candidate.** Low-risk migration; deferred only
-because v2.0.0 tagging is the gating constraint.
+**Decision (revised):** **migrate in v2.0.0** — the kit's current
+implementation serialises all per-key `Allow` calls through a single
+`l.mu` mutex, which becomes a real contention bottleneck for
+high-cardinality keysets. `*rate.Limiter` per bucket gives per-key
+locking and fixed-point arithmetic. The kit's weak-pointer sweeper,
+per-key map, validation, and ctx-cancel handling are retained.
 
-### 6. `data/ratelimit/gcra` → `github.com/throttled/throttled/v2` (RE-CATEGORIZED AS MIGRATE)
+### 6. `data/ratelimit/gcra` — KEEP CUSTOM (revised)
 
-**Maintenance verdict:** throttled v2 is **actively maintained**: last
-push April 2026, recent fix titled "Prevent panic on unset rate
-limiter" (PR #115). This is the exemplar of the "well-maintained
-library has fixed bugs you may also have" failure mode — keeping a
-kit-custom GCRA means re-discovering those bugs in production rather
-than getting them for free.
+**Initial recommendation reversed:** `throttled/throttled/v2` is only
+**partially maintained** by current standards (commit cadence is
+sparse outside the audit-cited PR #115, which itself fixes a
+misconfiguration path the kit's `New` already panics at — so the
+"library has fixed bugs you might have" reasoning doesn't actually
+apply). The GCRA tolerance formula also doesn't align with the kit's
+parameter convention: throttled uses `(MaxBurst+1) * period`,
+the kit uses `(burst-1) * (period/burst)`. There's no other
+actively-maintained Go GCRA library that meets the kit's quality bar.
 
-**Current scope:** ~650 LOC. Per-key in-memory GCRA.
+**Current scope:** 248 LOC. Per-key in-memory GCRA. The arithmetic
+core is 8 lines (`Allow` body); the rest is the kit's per-key map +
+weak-pointer sweeper + lifecycle + ctx-cancel handling — material we
+would keep across any migration.
 
-**OSS alternative:** `throttled/throttled/v2` implements GCRA against a
-generic store interface; memory and Redis stores are first-party.
-
-**Migration shape:** replace the kit's GCRA arithmetic with throttled's
-`GCRARateLimiter`. The kit's per-key map + sweeper + metrics + redact
-stay as the wrapper. Public surface (`gcra.Limiter`) doesn't change.
-
-**Decision:** **v2.1.0 candidate** alongside the tokenbucket swap. Both
-follow the same pattern: kit keeps its multi-key + lifecycle layer;
-single-key algorithm core comes from upstream.
+**Decision:** keep custom. Revisit if a new actively-maintained GCRA
+implementation emerges that matches the kit's parameter convention,
+or if a real bug is discovered in the kit's arithmetic that motivates
+the migration.
 
 ### 7. `security/csrf` + `httpx/middleware/csrf` — KEEP CUSTOM (maintenance-of-alternatives concern)
 
@@ -325,26 +329,149 @@ generic-based event-bus lib with bounded async worker pool).
 
 ## Recommended action sequence
 
-1. **Now** (waves 120–123): MCP migration to `modelcontextprotocol/go-sdk`.
-2. **Before v2.0.0 tag** (waves 124–126): PASETO migration to
-   `aidantwoods/go-paseto`. Removes hand-rolled crypto from the v2 API
-   freeze — strongest security-posture argument in the audit.
-3. **Before v2.0.0 tag** if scheduling permits (waves 127–128):
-   `data/lock/redislock` to `go-redsync/redsync` (NOT bsm/redislock —
-   bsm has no real code changes since March 2024). ~half day.
-4. **v2.1.0** — high priority: `data/queue/redisqueue` to
-   `hibiken/asynq`. 13k stars, pushed today, the strongest "the
-   library has already fixed bugs you might have" case in the audit.
-5. **v2.1.0**: `data/ratelimit/gcra` to `throttled/v2` and
-   `data/ratelimit/tokenbucket` internal wrap with
-   `golang.org/x/time/rate`. Both follow the same pattern: kit keeps
-   multi-key + lifecycle + metrics; algorithm core comes from upstream.
-6. **Open / contingent**: `security/csrf` — revisit if/when a
+All migrations land in v2.0.0. The freeze is exactly the window for
+absorbing semantic shifts that would otherwise require a major-version
+bump later. The "deferred to v2.1.0" framing was wrong — corrected.
+
+1. **In flight** (waves 120–123): MCP migration to
+   `modelcontextprotocol/go-sdk`. SDK gaps identified in deep review:
+   schema-tag convention (`jsonschema` vs `validate`), no `*http.Request`
+   in handler (only `RequestExtra.Header`), `callTool` unexported,
+   `StreamableHTTPHandler` requires specific Accept headers. All
+   bridgeable; the migration is wire-breaking and that is acceptable
+   per the v2 contract.
+2. **Already complete**: PASETO migration. `crypto/paseto` wraps
+   `aidanwoods.dev/go-paseto` for all crypto primitives. The audit's
+   "~2300 LOC hand-rolled crypto" figure counted tests + the kit's
+   policy/lifecycle layer; the actual crypto delegates to upstream.
+3. **Waves 127–128**: `data/lock/redislock` to `go-redsync/redsync`.
+   Single-pool mode (`NewPool(client)`); the kit's `Locker` /
+   `WithLock` / `LockerWithValue` API is unchanged. Redsync's Redlock
+   quorum mode is NOT adopted — kit contract stays single-master and
+   `DegradedLocker` remains the outage path. Net delta: drop the kit's
+   `releaseScript`, `extendScript`, `tryAcquire`-with-orphan-probe;
+   route through `redsync.Mutex.LockContext` / `UnlockContext` /
+   `ExtendContext`.
+4. **Waves 129–130**: `data/queue/redisqueue` to `hibiken/asynq`.
+   Asynq's claim model + invisibility-timeout replaces the kit's
+   heartbeat-recovery — that is the intended semantic shift, not a
+   regression. The kit's `Queue` interface stays; consumers see the
+   asynq envelope only through the seam.
+5. **Waves 131**: `data/ratelimit/gcra` to `throttled/v2`. The kit
+   accepts the `(MaxBurst+1) * period` tolerance formula in place of
+   `(burst-1) * (period/burst)`. New constructor signature becomes
+   `New(quota RateQuota, opts...)` to surface throttled's native shape;
+   the old `New(period, burst)` is removed (breaking, intentional).
+   LRU-bounded `MemStore` replaces the time-based sweeper; consumers
+   set a max-key bound at construction.
+6. **Waves 132**: `data/ratelimit/tokenbucket` wraps
+   `golang.org/x/time/rate.Limiter` per key. Public surface (`Allow`,
+   `Close`, `Len`) stays; internal arithmetic swapped to `rate.Reserve`
+   + `Delay`. Sweeper stays for map-size containment because
+   `x/time/rate` is per-instance.
+7. **Open / contingent**: `security/csrf` — revisit if/when a
    maintained OSS Go CSRF library emerges. Gorilla and nosurf both
    fall short of the kit's maintenance bar today.
-7. **Keep custom indefinitely**: everything in the 🔴 list, with the
+8. **Keep custom indefinitely**: everything in the 🔴 list, with the
    caveat that `runtime/eventbus` is on the weakest footing of those
    — flag in its package doc what would trigger a revisit.
+
+## Reversal log
+
+This audit went through two rounds of reversal before settling.
+Recording them so the rationale isn't lost:
+
+- **Initial categorisation:** all migrations should happen in v2.0.0.
+- **Round 1 (wrong, corrected):** deep-read of the actual sources made
+  the migrations look bigger than they were. I argued for v2.1.0
+  deferral on the grounds of "semantic shifts" and "swap cost".
+- **User correction:** "you always defer... no deferring do the change
+  now... we are before 2.0 we can do changes and we should do
+  changes because we can shift semantic meaning and models". v2.0.0
+  IS the window for semantic shifts; deferring them defeats the
+  release's purpose.
+- **Round 2 partial walkback:** I tried to defer tokenbucket and
+  redislock on the grounds that the kit's primitives were small and
+  the upstream value-add was marginal.
+- **User pushback:** "you say we should keep ours ... what is the
+  reasoning behind it, is our logic smarter, better? think about
+  it please". The honest answer turned out to be **no**: the kit's
+  tokenbucket holds **a single mutex for all buckets** (per-key
+  serialisation bottleneck) and uses float arithmetic (drift under
+  heavy +/-); `golang.org/x/time/rate` has per-instance locking and
+  fixed-point Duration arithmetic. The kit's redislock uses
+  fixed-interval retry, which causes synchronised retry spikes under
+  thundering-herd; `go-redsync/redsync` provides backoff-with-jitter.
+  Our orphan-window probe IS a real win over redsync, but redsync's
+  retry-with-jitter handles the same TCP-RST mid-SETNX failure mode
+  probabilistically — the migration explicitly drops the probe.
+- **Final list:** MCP, validate→jsonschema, queue→asynq,
+  tokenbucket→x/time/rate, redislock→redsync. PASETO already done.
+  gcra stays custom (no acceptable upstream — throttled is partially
+  maintained, no other contender).
+
+## Deep review — known semantic shifts in the migrations
+
+The migrations are not drop-in swaps. Each carries a contract change
+that v2.0.0 explicitly absorbs. Listed here so consumers reading
+MIGRATION_V2.md know what's actually changing:
+
+### redislock → go-redsync/redsync (single-pool mode)
+
+- **What stays:** the kit's `Locker` interface, `WithLock`,
+  `LockerWithValue`, `validateLockKey`, `releaseAndJoin`,
+  `detachedReleaseContext`. `DegradedLocker` for Redis-outage fallback
+  remains the kit-specific seam.
+- **What changes:** the Lua scripts (`releaseScript`, `extendScript`)
+  are deleted in favour of redsync's own scripts. The
+  orphan-window probe (SETNX-then-GET on network error) is replaced by
+  redsync's retry-with-jitter on `redis: connection pool exhausted` and
+  similar transient errors.
+- **What does NOT change semantically:** the kit still uses
+  single-master Redis; redsync's `NewPool(client)` constructor and
+  `Mutex.LockContext` paths against a single pool produce SETNX+token
+  equivalent to today's `tryAcquire`. Redlock quorum is NOT adopted —
+  if and when we want quorum, it becomes a separate `redlock`
+  sub-package.
+
+### gcra → throttled/v2
+
+- **Burst window shifts by one emission interval.** Existing callers
+  who pinned to a specific burst tolerance need to set `MaxBurst` to
+  `(old_burst - 2)`, or accept the slightly wider tolerance. Document
+  this in MIGRATION_V2.md.
+- **Eviction model changes from time-based to LRU-bounded.** Callers
+  must now size their limiter via `WithMaxKeys(N)`; previously cold
+  buckets were swept on a timer. For most callers this is invisible.
+- **`gcra.Limiter.WithSweeper` / `WithoutSweeper` removed.** Replaced
+  by `WithMaxKeys`. `WithClock` retained via throttled's
+  `MemStore.SetTimeNow` hook.
+
+### redisqueue → hibiken/asynq
+
+- **Wire envelope changes.** Existing in-flight tasks from a pre-v2.0
+  kit are NOT readable by the v2.0 kit running on asynq. Operators must
+  drain or migrate manually.
+- **Heartbeat-based recovery becomes invisibility-timeout-based.**
+  Stuck-task recovery now waits for the asynq invisibility timeout to
+  elapse rather than the kit's per-task heartbeat check. Effective
+  recovery latency may increase to ~30 s by default; tune via asynq's
+  `Concurrency`/`StrictPriority`/`Retention` config.
+- **Periodic and scheduled tasks become first-class.** Previously
+  separate (`data/queue/scheduled`), now via asynq's `PeriodicTask`.
+- **Per-tenant queue naming preserved.** The kit's tenant-scoped queue
+  name continues to map to `asynq.Queue(name)` on enqueue.
+
+### tokenbucket → golang.org/x/time/rate
+
+- **Public API unchanged.** `Allow(ctx, key)` and `Close` keep the same
+  signatures.
+- **`retryAfter` granularity changes.** Previously a float-arithmetic
+  formula; now `rate.Reservation.Delay()` rounded to a `time.Duration`.
+  Off-by-one-nanosecond differences are expected at the edge of the
+  current refill.
+- **`WithSweeper(interval)` retained.** `x/time/rate.Limiter` is
+  per-instance, so the kit still owns the per-key map and its eviction.
 
 ## Reusing principle the audit re-affirmed
 

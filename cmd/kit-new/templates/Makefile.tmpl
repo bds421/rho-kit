@@ -36,6 +36,7 @@ mcp-smoke:
 	@echo "Calling tools/list against http://localhost:8080/mcp ..."
 	@curl -sS -X POST http://localhost:8080/mcp \
 		-H 'Content-Type: application/json' \
-		-d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+		-H 'Accept: application/json, text/event-stream' \
+		-d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 	@echo
 {{end}}

@@ -213,15 +213,17 @@ In another shell:
 ```bash
 curl -s -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 curl -s -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
-  -d '{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":2}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}'
 
 curl -s -H "Authorization: Bearer $AGENTIC_SERVICE_DEMO_TOKEN" \
   -H 'X-Tenant-Id: acme' \
