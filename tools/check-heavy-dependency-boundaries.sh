@@ -60,7 +60,8 @@ allowed_for_boundary_dep() {
                 infra/redis/go.mod|\
                 infra/redis/redistest/go.mod|\
                 testing/kittest/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -82,7 +83,8 @@ allowed_for_boundary_dep() {
                 infra/sqldb/pgx/go.mod|\
                 observability/auditlog/postgres/go.mod|\
                 testing/kittest/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -92,7 +94,8 @@ allowed_for_boundary_dep() {
         github.com/riverqueue/river|github.com/riverqueue/river/riverdriver/riverpgxv5|github.com/riverqueue/river/rivertype|github.com/bds421/rho-kit/data/queue/riverqueue/v2)
             case "$gomod" in
                 data/queue/riverqueue/go.mod|\
-                data/queue/riverqueue/integrationtest/go.mod)
+                data/queue/riverqueue/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -103,7 +106,9 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 app/amqp/go.mod|\
                 infra/messaging/amqpbackend/go.mod|\
-                infra/messaging/amqpbackend/integrationtest/go.mod)
+                infra/messaging/amqpbackend/integrationtest/go.mod|\
+                testing/integrationtest/go.mod|\
+                testing/kittest/go.mod)
                     return 0
                     ;;
             esac
@@ -114,7 +119,8 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 app/nats/go.mod|\
                 infra/messaging/natsbackend/go.mod|\
-                infra/messaging/natsbackend/integrationtest/go.mod)
+                infra/messaging/natsbackend/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -124,7 +130,8 @@ allowed_for_boundary_dep() {
         github.com/segmentio/kafka-go|github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2)
             case "$gomod" in
                 infra/messaging/kafkabackend/go.mod|\
-                infra/messaging/kafkabackend/integrationtest/go.mod)
+                infra/messaging/kafkabackend/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -133,7 +140,8 @@ allowed_for_boundary_dep() {
 
         github.com/bds421/rho-kit/infra/messaging/redisbackend/v2)
             case "$gomod" in
-                infra/messaging/redisbackend/go.mod|*/integrationtest/go.mod)
+                infra/messaging/redisbackend/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -142,7 +150,8 @@ allowed_for_boundary_dep() {
 
         github.com/openfga/go-sdk|github.com/bds421/rho-kit/authz/openfga/v2)
             case "$gomod" in
-                authz/openfga/go.mod|*/integrationtest/go.mod)
+                authz/openfga/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -151,7 +160,8 @@ allowed_for_boundary_dep() {
 
         github.com/open-feature/go-sdk)
             case "$gomod" in
-                flags/go.mod|*/integrationtest/go.mod)
+                flags/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -162,7 +172,8 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 crypto/envelope/awskms/go.mod|\
                 infra/storage/s3backend/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -173,7 +184,8 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 infra/storage/s3backend/go.mod|\
                 infra/storage/storagetest/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -182,7 +194,8 @@ allowed_for_boundary_dep() {
 
         cloud.google.com/go/kms|github.com/bds421/rho-kit/crypto/envelope/gcpkms/v2)
             case "$gomod" in
-                crypto/envelope/gcpkms/go.mod|*/integrationtest/go.mod)
+                crypto/envelope/gcpkms/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -191,7 +204,8 @@ allowed_for_boundary_dep() {
 
         github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys|github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2)
             case "$gomod" in
-                crypto/envelope/azurekeyvault/go.mod|*/integrationtest/go.mod)
+                crypto/envelope/azurekeyvault/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -200,7 +214,8 @@ allowed_for_boundary_dep() {
 
         github.com/hashicorp/vault/api|github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2)
             case "$gomod" in
-                crypto/envelope/vaulttransit/go.mod|*/integrationtest/go.mod)
+                crypto/envelope/vaulttransit/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -209,7 +224,8 @@ allowed_for_boundary_dep() {
 
         cloud.google.com/go/storage|google.golang.org/api|github.com/bds421/rho-kit/infra/storage/gcsbackend/v2)
             case "$gomod" in
-                infra/storage/gcsbackend/go.mod|*/integrationtest/go.mod)
+                infra/storage/gcsbackend/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -218,7 +234,8 @@ allowed_for_boundary_dep() {
 
         github.com/Azure/azure-sdk-for-go/sdk/storage/azblob|github.com/bds421/rho-kit/infra/storage/azurebackend/v2)
             case "$gomod" in
-                infra/storage/azurebackend/go.mod|*/integrationtest/go.mod)
+                infra/storage/azurebackend/go.mod|*/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -229,7 +246,8 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 infra/storage/sftpbackend/go.mod|\
                 infra/storage/storagetest/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -241,7 +259,9 @@ allowed_for_boundary_dep() {
                 infra/redis/redistest/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/storage/storagetest/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod|\
+                testing/kittest/go.mod)
                     return 0
                     ;;
             esac
@@ -251,7 +271,8 @@ allowed_for_boundary_dep() {
         k8s.io/api|k8s.io/apimachinery|k8s.io/client-go|github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2)
             case "$gomod" in
                 infra/leaderelection/k8slease/go.mod|\
-                */integrationtest/go.mod)
+                */integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac
@@ -261,7 +282,8 @@ allowed_for_boundary_dep() {
         github.com/coder/websocket|github.com/bds421/rho-kit/httpx/websocket/v2)
             case "$gomod" in
                 httpx/websocket/go.mod|\
-                httpx/websocket/integrationtest/go.mod)
+                httpx/websocket/integrationtest/go.mod|\
+                testing/integrationtest/go.mod)
                     return 0
                     ;;
             esac

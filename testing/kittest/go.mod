@@ -7,10 +7,10 @@ module github.com/bds421/rho-kit/testing/kittest/v2
 go 1.26.2
 
 require (
-	github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/sqldb/dbtest/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/storage/storagetest/v2 v2.0.0
+	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0
 )
 
 require (
@@ -91,7 +91,6 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0 // indirect
-	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.42.0 // indirect
 	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
@@ -116,8 +115,6 @@ replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
 replace github.com/bds421/rho-kit/infra/v2 => ../../infra
 
 replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2 => ../../infra/messaging/amqpbackend
-
-replace github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2 => ../../infra/messaging/amqpbackend/integrationtest
 
 replace github.com/bds421/rho-kit/infra/redis/v2 => ../../infra/redis
 

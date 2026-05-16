@@ -68,7 +68,3 @@ replace github.com/bds421/rho-kit/crypto/v2 => ../../crypto
 replace github.com/bds421/rho-kit/security/v2 => ../../security
 
 replace github.com/bds421/rho-kit/infra/sqldb/pgx/v2 => ../../infra/sqldb/pgx
-
-replace github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2 => ../../observability/auditlog/postgres/integrationtest
-
-replace github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2 => ../../infra/outbox/postgres/integrationtest

@@ -8,7 +8,7 @@
 //   - testing/kittest/redis — re-exports infra/redis/redistest (Redis testcontainer)
 //   - testing/kittest/storage — re-exports infra/storage/storagetest (storage backend
 //     compliance suites, local helper, optional S3/SFTP testcontainers)
-//   - testing/kittest/amqp  — re-exports infra/messaging/amqpbackend/integrationtest/rabbitmqtest
+//   - testing/kittest/amqp  — re-exports integrated rabbitmqtest fixture
 //     (RabbitMQ testcontainer)
 //
 // All re-exports are zero-cost: type aliases preserve identity and method

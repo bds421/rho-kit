@@ -150,36 +150,23 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/cmd/kit-verify/v2` | Tool | Runtime endpoint verification and operator diagnostics. |
 | `github.com/bds421/rho-kit/core/v2` | Runtime | Config, redaction, TLS cloning, validation, typed errors, tenant key safety. |
 | `github.com/bds421/rho-kit/crypto/v2` | Runtime | Signing/encryption key rotation, envelope metadata, secret zeroing, bounded crypto inputs. |
-| `github.com/bds421/rho-kit/crypto/encrypt/integrationtest/v2` | Integration helper | Docker-backed encryption test coverage only. |
 | `github.com/bds421/rho-kit/crypto/envelope/awskms/v2` | Adapter | KMS key confinement, cloud credential providers, timeout propagation. |
 | `github.com/bds421/rho-kit/crypto/envelope/azurekeyvault/v2` | Adapter | Key Vault key confinement, Azure credential providers, timeout propagation. |
 | `github.com/bds421/rho-kit/crypto/envelope/gcpkms/v2` | Adapter | KMS key confinement, GCP credential providers, timeout propagation. |
 | `github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2` | Adapter | Vault Transit key confinement, Vault credential handling, timeout propagation. |
 | `github.com/bds421/rho-kit/data/v2` | Runtime | Memory stores, budgets, cache compute, idempotency, queue contracts, bounded defaults. |
 | `github.com/bds421/rho-kit/data/actionlog/postgres/v2` | Adapter | Durable append-only log migrations, key rotation, verification, cleanup. |
-| `github.com/bds421/rho-kit/data/actionlog/postgres/integrationtest/v2` | Integration helper | Postgres action-log integration coverage only. |
 | `github.com/bds421/rho-kit/data/approval/postgres/v2` | Adapter | Durable approval workflow migrations, replay safety, idempotent state transitions. |
-| `github.com/bds421/rho-kit/data/approval/postgres/integrationtest/v2` | Integration helper | Postgres approval integration coverage only. |
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | Redis script atomicity, retry-after accuracy, tenant key safety, Redis dependency readiness. |
-| `github.com/bds421/rho-kit/data/budget/redis/integrationtest/v2` | Integration helper | Redis budget integration coverage only. |
 | `github.com/bds421/rho-kit/data/cache/rediscache/v2` | Adapter | Redis cache size limits, degraded behavior, Redis credential provider delegation. |
-| `github.com/bds421/rho-kit/data/cache/rediscache/integrationtest/v2` | Integration helper | Redis cache integration coverage only. |
 | `github.com/bds421/rho-kit/data/idempotency/pgstore/v2` | Adapter | Postgres idempotency migrations, lock ownership, replay safety. |
-| `github.com/bds421/rho-kit/data/idempotency/pgstore/integrationtest/v2` | Integration helper | Postgres idempotency integration coverage only. |
 | `github.com/bds421/rho-kit/data/idempotency/redisstore/v2` | Adapter | Redis lock ownership, TTL behavior, retry/cancellation handling. |
-| `github.com/bds421/rho-kit/data/idempotency/redisstore/integrationtest/v2` | Integration helper | Redis idempotency-store integration coverage only. |
 | `github.com/bds421/rho-kit/data/lock/pgadvisory/v2` | Adapter | Session health detection, lock release, split-brain prevention. |
-| `github.com/bds421/rho-kit/data/lock/pgadvisory/integrationtest/v2` | Integration helper | Postgres advisory-lock integration coverage only. |
 | `github.com/bds421/rho-kit/data/lock/redislock/v2` | Adapter | Lease extension, release ownership, Redis outage behavior. |
-| `github.com/bds421/rho-kit/data/lock/redislock/integrationtest/v2` | Integration helper | Redis distributed-lock integration coverage only. |
 | `github.com/bds421/rho-kit/data/queue/redisqueue/v2` | Adapter | Heartbeats, reaper behavior, processing-list ownership, retry/DLX semantics. |
-| `github.com/bds421/rho-kit/data/queue/redisqueue/integrationtest/v2` | Integration helper | Redis queue integration coverage only. |
 | `github.com/bds421/rho-kit/data/queue/riverqueue/v2` | Adapter | Postgres-backed queue lifecycle, migrations, shutdown behavior. |
-| `github.com/bds421/rho-kit/data/queue/riverqueue/integrationtest/v2` | Integration helper | River/Postgres queue integration coverage only. |
 | `github.com/bds421/rho-kit/data/ratelimit/redis/v2` | Adapter | Redis GCRA atomicity, retry-after precision, Redis outage behavior. |
-| `github.com/bds421/rho-kit/data/ratelimit/redis/integrationtest/v2` | Integration helper | Redis rate-limit integration coverage only. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/v2` | Adapter | Consumer group ownership, pending/dead-letter metrics, Redis outage behavior. |
-| `github.com/bds421/rho-kit/data/stream/redisstream/integrationtest/v2` | Integration helper | Redis stream integration coverage only. |
 | `github.com/bds421/rho-kit/data/tenant/v2` | Runtime | Per-tenant data-isolation primitives: Scope value type, WhereClause SQL helper, tenant-prefixed cache/idempotency keys. |
 | `github.com/bds421/rho-kit/examples/agentic-service/v2` | Example | Golden-path smoke coverage and generated-service operational defaults. |
 | `github.com/bds421/rho-kit/flags/v2` | Runtime | Fallback behavior, config validation, test/local provider boundaries. |
@@ -187,28 +174,19 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/httpx/v2` | Runtime | HTTP server/client timeouts, middleware order, signing, CSRF, metrics, request budgets. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | Redis nonce TTL, cancellation handling, Redis outage behavior. |
 | `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | WebSocket upgrade ergonomics, per-message read limits, idempotent close, handler panic recovery, redacted error surface, metric cardinality bound. |
-| `github.com/bds421/rho-kit/httpx/websocket/integrationtest/v2` | Integration helper | Real-listener WebSocket round-trip coverage only. |
 | `github.com/bds421/rho-kit/infra/v2` | Runtime | Infrastructure interfaces, sentinels, storage/messaging contracts, release-stable errors. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | Lease renew/retry deadlines, identity uniqueness, callback drain, API-server outage behavior. |
-| `github.com/bds421/rho-kit/infra/leaderelection/k8slease/integrationtest/v2` | Integration helper | Fake-clientset leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | Leadership health, callback drain, Postgres session loss behavior. |
-| `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/integrationtest/v2` | Integration helper | Postgres advisory leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | Leadership lease extension, callback drain, Redis outage behavior. |
-| `github.com/bds421/rho-kit/infra/leaderelection/redislock/integrationtest/v2` | Integration helper | Redis leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2` | Adapter | AMQP reconnect, URL provider rotation, provider timeout, metrics, consumer ack/nack semantics. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2` | Adapter | Debug endpoint access control and safe broker diagnostics. |
-| `github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2` | Integration helper | RabbitMQ integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2` | Adapter | Kafka TLS / SASL config, consumer-group rebalance, offset-commit semantics, poison-pill discard, retention-driven replay. |
-| `github.com/bds421/rho-kit/infra/messaging/kafkabackend/integrationtest/v2` | Integration helper | Kafka integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/v2` | Adapter | NATS auth providers, drain, JetStream metrics, stream/consumer setup. |
-| `github.com/bds421/rho-kit/infra/messaging/natsbackend/integrationtest/v2` | Integration helper | NATS integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/redisbackend/v2` | Adapter | Redis Streams direct messaging, size limits, pending/dead-letter behavior. |
-| `github.com/bds421/rho-kit/infra/messaging/redisbackend/integrationtest/v2` | Integration helper | Redis Streams messaging integration coverage only. |
 | `github.com/bds421/rho-kit/infra/redis/v2` | Adapter | Redis credential providers, TLS, health loop, reconnect callback bounds. |
 | `github.com/bds421/rho-kit/infra/redis/redistest/v2` | Integration helper | Redis Testcontainers helper coverage only. |
 | `github.com/bds421/rho-kit/infra/sqldb/dbtest/v2` | Integration helper | Postgres Testcontainers helper coverage only. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/v2` | Adapter | Password provider rotation, pool reset, TLS/sslmode, migrations, COPY helper. |
-| `github.com/bds421/rho-kit/infra/sqldb/pgx/integrationtest/v2` | Integration helper | pgx/Postgres integration coverage only. |
 | `github.com/bds421/rho-kit/infra/storage/azurebackend/v2` | Adapter | Azure credentials, account-key static path, token credential path, storage metrics. |
 | `github.com/bds421/rho-kit/infra/storage/gcsbackend/v2` | Adapter | ADC/client options, storage metrics, operation cancellation. |
 | `github.com/bds421/rho-kit/infra/storage/s3backend/v2` | Adapter | AWS credential providers/default chain, static key validation, storage metrics. |
@@ -216,16 +194,14 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/infra/storage/storagehttp/uploadsec/clamav/v2` | Adapter | Scanner fail-closed behavior, temp-file cleanup, ClamAV outage readiness. |
 | `github.com/bds421/rho-kit/infra/storage/storagetest/v2` | Integration helper | Storage backend compliance coverage only. |
 | `github.com/bds421/rho-kit/infra/outbox/postgres/v2` | Adapter | Postgres outbox Store: transactional Insert via `WithTx`, `FOR UPDATE SKIP LOCKED` claim path, status-guarded `ErrStaleState` transitions, partial-index retention sweeps, stale-recovery for crashed relays. Migrations ship via `cmd/kit-migrate`. |
-| `github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2` | Integration helper | Outbox postgres integration coverage only (tx atomicity, SKIP LOCKED, retention, stale recovery). |
 | `github.com/bds421/rho-kit/io/v2` | Runtime | Atomic file writes, progress accounting, file cleanup behavior. |
 | `github.com/bds421/rho-kit/observability/v2` | Runtime | Health, metrics, dashboards, runbooks, pprof, tracing, audit logs. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | Postgres audit-log Store: tamper-evident chain via `pg_advisory_xact_lock` + tail `FOR UPDATE`, append-order verification through `seq BIGSERIAL`, signed-cursor pagination. Migrations ship via `cmd/kit-migrate`. |
-| `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration helper | Audit-log postgres integration coverage only (chain integrity, tamper / deletion detection, concurrent appends, backfilled-timestamp safety). |
 | `github.com/bds421/rho-kit/resilience/v2` | Runtime | Retry/circuit-breaker defaults, context/error precedence, bounded retries. |
 | `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior; saga compensable-workflow primitive (roll-forward + reverse-order best-effort rollback). |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |
 | `github.com/bds421/rho-kit/security/v2` | Runtime | JWT refresh, CSRF rotation, mTLS identity, SSRF guard, ASVS catalog. |
-| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration helper | Umbrella module that will host the kit's consolidated Docker-backed integration tests (Wave 154 scaffold; per-package suites move in over follow-up commits). |
+| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration helper | Consolidated Docker-backed integration suites for all kit primitives (crypto, data, infra, observability). Replaces the 24 per-module `*/integrationtest/v2` submodules merged in Wave 154. |
 | `github.com/bds421/rho-kit/testing/kittest/v2` | Integration helper | Re-export umbrella over dbtest/redistest/storagetest/rabbitmqtest; no runtime surface. |
 
 ## Check Command

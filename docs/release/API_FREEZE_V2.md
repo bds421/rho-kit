@@ -80,31 +80,24 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/v2` | Keep | No rename/remove | Infrastructure contracts: messaging, Redis, SQL DB, storage, outbox, leader election. |
 | `github.com/bds421/rho-kit/data/idempotency/pgstore/v2` | Adapter | No rename/remove | Postgres idempotency store; owns its migration surface. |
 | `github.com/bds421/rho-kit/data/idempotency/redisstore/v2` | Adapter | No rename/remove | Redis idempotency store. |
-| `github.com/bds421/rho-kit/data/idempotency/redisstore/integrationtest/v2` | Integration helper | No rename/remove | Redis idempotency-store integration coverage only. |
 | `github.com/bds421/rho-kit/data/cache/rediscache/v2` | Adapter | No rename/remove | Redis cache backend with bulk limits and degraded-mode wrapper. |
 | `github.com/bds421/rho-kit/data/budget/redis/v2` | Adapter | No rename/remove | Redis-backed tenant budget ledger. |
-| `github.com/bds421/rho-kit/data/budget/redis/integrationtest/v2` | Integration helper | No rename/remove | Redis budget integration coverage only. |
 | `github.com/bds421/rho-kit/data/actionlog/postgres/v2` | Adapter | No rename/remove | Postgres signed action-log store and migrations. |
 | `github.com/bds421/rho-kit/data/approval/postgres/v2` | Adapter | No rename/remove | Postgres approval workflow store and migrations. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | No rename/remove | Postgres tamper-evident audit-log Store (AppendChained / RangeChain / Query / LastHMAC) and migrations. |
 | `github.com/bds421/rho-kit/infra/outbox/postgres/v2` | Adapter | No rename/remove | Postgres transactional-outbox Store (Inserter, Claimer, Outcomer, Janitor, Observer) with `WithTx`/`RequireTx` ctx helpers and migrations. |
 | `github.com/bds421/rho-kit/data/lock/pgadvisory/v2` | Adapter | No rename/remove | Postgres advisory-lock implementation. |
 | `github.com/bds421/rho-kit/data/lock/redislock/v2` | Adapter | No rename/remove | Redis lock implementation. |
-| `github.com/bds421/rho-kit/data/lock/redislock/integrationtest/v2` | Integration helper | No rename/remove | Redis distributed-lock integration coverage only. |
 | `github.com/bds421/rho-kit/data/queue/redisqueue/v2` | Adapter | No rename/remove | Redis list-backed queue. |
 | `github.com/bds421/rho-kit/data/queue/riverqueue/v2` | Adapter | No rename/remove | River/Postgres queue adapter. |
 | `github.com/bds421/rho-kit/data/ratelimit/redis/v2` | Adapter | No rename/remove | Redis GCRA distributed rate limiter. |
-| `github.com/bds421/rho-kit/data/ratelimit/redis/integrationtest/v2` | Integration helper | No rename/remove | Redis rate-limit integration coverage only. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/v2` | Adapter | No rename/remove | Redis Streams producer/consumer. |
 | `github.com/bds421/rho-kit/infra/redis/v2` | Adapter | No rename/remove | Redis connection/config/health helpers. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/v2` | Adapter | No rename/remove | pgx pool, migrations, COPY helper. |
 | `github.com/bds421/rho-kit/infra/sqldb/dbtest/v2` | Integration test helper | No rename/remove | Docker-backed Postgres test helper, not production runtime. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | No rename/remove | Leader election using Kubernetes coordination.k8s.io/v1 Lease objects via k8s.io/client-go. |
-| `github.com/bds421/rho-kit/infra/leaderelection/k8slease/integrationtest/v2` | Integration test helper | No rename/remove | Fake-clientset-backed k8slease integration tests. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | No rename/remove | Leader election using Postgres advisory locks. |
-| `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/integrationtest/v2` | Integration helper | No rename/remove | Postgres advisory leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | No rename/remove | Leader election using Redis locks. |
-| `github.com/bds421/rho-kit/infra/leaderelection/redislock/integrationtest/v2` | Integration helper | No rename/remove | Redis leader-election integration coverage only. |
 
 ## Messaging, Storage, And Optional SDK Adapters
 
@@ -113,10 +106,8 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2` | Adapter | No rename/remove | RabbitMQ/AMQP publisher and consumer. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2` | Adapter | No rename/remove | Guarded AMQP debug HTTP helpers. |
 | `github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2` | Adapter | No rename/remove | Apache Kafka publisher / subscriber via segmentio/kafka-go. |
-| `github.com/bds421/rho-kit/infra/messaging/kafkabackend/integrationtest/v2` | Integration test helper | No rename/remove | Testcontainers Kafka integration tests. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/v2` | Adapter | No rename/remove | NATS JetStream backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/messaging/redisbackend/v2` | Adapter | No rename/remove | Messaging bridge over Redis streams. |
-| `github.com/bds421/rho-kit/infra/messaging/redisbackend/integrationtest/v2` | Integration helper | No rename/remove | Redis Streams messaging integration coverage only. |
 | `github.com/bds421/rho-kit/infra/storage/azurebackend/v2` | Adapter | No rename/remove | Azure Blob storage backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/storage/gcsbackend/v2` | Adapter | No rename/remove | Google Cloud Storage backend, dependency isolated here. |
 | `github.com/bds421/rho-kit/infra/storage/s3backend/v2` | Adapter | No rename/remove | S3-compatible storage backend, dependency isolated here. |
@@ -136,24 +127,9 @@ freezes `redis_stream_messages_produced_total`,
 
 | Module | Decision | Rename/remove decision | Freeze notes |
 |---|---|---|---|
-| `github.com/bds421/rho-kit/crypto/encrypt/integrationtest/v2` | Integration test helper | No rename/remove | Docker-backed crypto/encrypt integration tests. |
-| `github.com/bds421/rho-kit/data/actionlog/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres action-log integration tests. |
-| `github.com/bds421/rho-kit/data/approval/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres approval integration tests. |
-| `github.com/bds421/rho-kit/data/cache/rediscache/integrationtest/v2` | Integration test helper | No rename/remove | Redis cache integration tests. |
-| `github.com/bds421/rho-kit/data/idempotency/pgstore/integrationtest/v2` | Integration test helper | No rename/remove | Postgres idempotency integration tests. |
-| `github.com/bds421/rho-kit/data/lock/pgadvisory/integrationtest/v2` | Integration test helper | No rename/remove | Postgres advisory-lock integration tests. |
-| `github.com/bds421/rho-kit/data/queue/redisqueue/integrationtest/v2` | Integration test helper | No rename/remove | Redis queue integration tests. |
-| `github.com/bds421/rho-kit/data/queue/riverqueue/integrationtest/v2` | Integration test helper | No rename/remove | River/Postgres queue integration tests. |
-| `github.com/bds421/rho-kit/data/stream/redisstream/integrationtest/v2` | Integration test helper | No rename/remove | Redis stream integration tests. |
 | `github.com/bds421/rho-kit/data/tenant/v2` | Keep | No rename/remove | Per-tenant data-isolation primitives: Scope, WhereClause, Key. Wave 148. |
-| `github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2` | Integration test helper | No rename/remove | RabbitMQ integration tests and `rabbitmqtest` helper. |
-| `github.com/bds421/rho-kit/infra/messaging/natsbackend/integrationtest/v2` | Integration test helper | No rename/remove | NATS integration tests. |
-| `github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres outbox integration tests (tx atomicity, SKIP LOCKED, stale recovery, retention). |
 | `github.com/bds421/rho-kit/infra/redis/redistest/v2` | Integration test helper | No rename/remove | Redis Testcontainers helper. |
-| `github.com/bds421/rho-kit/infra/sqldb/pgx/integrationtest/v2` | Integration test helper | No rename/remove | pgx/Postgres integration tests. |
-| `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres audit-log integration tests (chain integrity, tamper detection, concurrent appends). |
-| `github.com/bds421/rho-kit/httpx/websocket/integrationtest/v2` | Integration test helper | No rename/remove | Real-listener WebSocket round-trip coverage for the kit adapter. |
-| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration test helper | No rename/remove | Umbrella module for the kit's consolidated Docker-backed integration tests (Wave 154 scaffold; tests move in over follow-up commits). |
+| `github.com/bds421/rho-kit/testing/integrationtest/v2` | Integration test helper | No rename/remove | Consolidated Docker-backed integration tests for all kit primitives. Subpackages map one-to-one to the previously per-module `*/integrationtest/v2` submodules merged in Wave 154. |
 | `github.com/bds421/rho-kit/testing/kittest/v2` | Integration test helper | No rename/remove | Re-export umbrella over `dbtest`, `redistest`, `storagetest`, and `rabbitmqtest`. Aliases only; direct imports still work. |
 
 ## Commands And Examples
