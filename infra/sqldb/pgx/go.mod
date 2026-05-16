@@ -3,10 +3,13 @@ module github.com/bds421/rho-kit/infra/sqldb/pgx/v2
 go 1.26.2
 
 require (
+	github.com/bds421/rho-kit/core/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 )
+
+replace github.com/bds421/rho-kit/core/v2 => ../../../core
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

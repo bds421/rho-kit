@@ -37,6 +37,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Config bundles the pgxpool tuning knobs the kit wants to be opinionated
@@ -153,7 +155,7 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 
 	pcfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("pgx: parse DSN: %w", err)
+		return nil, redact.WrapError("pgx: parse DSN", err)
 	}
 
 	if cfg.AllowPlaintextLoopbackForTests {
@@ -173,7 +175,7 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 		}
 		for _, h := range hosts {
 			if err := requireLoopbackHost(h); err != nil {
-				return nil, fmt.Errorf("pgx: AllowPlaintextLoopbackForTests is set but DSN host is not loopback: %w", err)
+				return nil, redact.WrapError("pgx: AllowPlaintextLoopbackForTests is set but DSN host is not loopback", err)
 			}
 		}
 	} else {
@@ -186,7 +188,7 @@ func Connect(ctx context.Context, cfg Config) (*Pool, error) {
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {
-		return nil, fmt.Errorf("pgx: connect: %w", err)
+		return nil, redact.WrapError("pgx: connect", err)
 	}
 	return &Pool{pool: pool, dsn: cfg.DSN}, nil
 }
@@ -361,13 +363,13 @@ func (p *Pool) Listen(ctx context.Context, channels ...string) (<-chan Notificat
 
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("pgx: acquire LISTEN connection: %w", err)
+		return nil, nil, redact.WrapError("pgx: acquire LISTEN connection", err)
 	}
 
 	for _, ch := range channels {
 		if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{ch}.Sanitize()); err != nil {
 			conn.Release()
-			return nil, nil, fmt.Errorf("pgx: LISTEN failed: %w", err)
+			return nil, nil, redact.WrapError("pgx: LISTEN failed", err)
 		}
 	}
 
@@ -467,7 +469,7 @@ func applyPasswordProvider(pcfg *pgxpool.Config, provider func(context.Context) 
 		}
 		password, err := provider(ctx)
 		if err != nil {
-			return fmt.Errorf("pgx: password provider: %w", err)
+			return redact.WrapError("pgx: password provider", err)
 		}
 		if password == "" {
 			return errors.New("pgx: password provider returned an empty password")
