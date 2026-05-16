@@ -26,44 +26,14 @@ README points at.
 | **webhook-receiver**   | Implemented    | `signedrequest`, `idempotency` middleware, typed handler |
 | **background-worker**  | Implemented    | `messaging.TypedSubscription`, `resilience/{retry,circuitbreaker}` |
 | **api-gateway**        | Implemented    | `httpx/middleware/ratelimit`, stubbed JWT auth, `resilience/{retry,circuitbreaker}` for downstream fan-out |
-| realtime-broadcast     | Recipe below   | `realtime/centrifuge`, `security/jwtutil`, `httpx/websocket` |
+| **realtime-broadcast** | Implemented    | `realtime/centrifuge`, `security/jwtutil`, `httpx` |
 | saga-coordinator       | Recipe below   | `runtime/saga`, `infra/outbox`, `data/idempotency`, `data/lock` |
 
-The first four ship as compileable modules in this directory.
-The last two are documented as composition recipes — each
-shows the exact import set, the wiring order, and the rationale
-— so a coding agent can stand the pattern up against a fresh
-service skeleton.
-
-## Recipe: realtime-broadcast
-
-Browser-facing real-time with channels, presence, and history.
-
-```go
-import (
-    "github.com/bds421/rho-kit/realtime/v2/centrifuge"
-    "github.com/bds421/rho-kit/security/v2/jwtutil"
-)
-
-verifier, _ := jwtutil.NewProvider( /* jwks_url, issuer, audience */ )
-node, err := centrifuge.NewNode(
-    centrifuge.WithJWTAuth(verifier),
-    centrifuge.WithChannelClassifier(func(channel string) string {
-        // Return "user" / "room" / "system" — kit projects through
-        // promutil.OpaqueLabelValue as a cardinality safety net.
-        return classifyChannel(channel)
-    }),
-    centrifuge.WithMetricsRegisterer(reg),
-)
-// Compose with lifecycle.Runner so Stop is invoked on shutdown.
-```
-
-`kit-doctor` flags `centrifuge.NewNode` without `WithJWTAuth`
-(`centrifuge-missing-jwt-auth`, CRITICAL). The class label is
-projected through `promutil.OpaqueLabelValue` so a misbehaving
-classifier cannot inflate Prometheus cardinality. Dashboards
-under `observability/dashboards/grafana/centrifuge.json`. Runbook
-at `docs/ai/runbooks/centrifuge.md`.
+The first five ship as compileable modules in this directory.
+The last one is documented as a composition recipe — it shows
+the exact import set, the wiring order, and the rationale — so
+a coding agent can stand the pattern up against a fresh service
+skeleton.
 
 ## Recipe: saga-coordinator
 

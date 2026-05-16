@@ -171,6 +171,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/examples/agentic-service/v2` | Example | Golden-path smoke coverage and generated-service operational defaults. |
 | `github.com/bds421/rho-kit/examples/api-gateway/v2` | Example | Canonical public-facing service composition: ratelimit.Middleware → JWT auth → downstream fan-out with circuitbreaker + retry. Stubbed bearer/downstream; production wires app.Builder with jwt.Module + ratelimit.IP. |
 | `github.com/bds421/rho-kit/examples/background-worker/v2` | Example | Canonical TypedSubscription + circuitbreaker + retry composition; in-process fakeConsumer for smoke testing. Production wiring swaps in an amqp/kafka/nats/redis backend Consumer. |
+| `github.com/bds421/rho-kit/examples/realtime-broadcast/v2` | Example | Canonical browser-facing realtime composition: centrifuge.NewNode + WithJWTAuth + WithChannelClassifier. Self-signs against an in-process ECDSA keypair for the smoke test; production loads JWKS from a real issuer. |
 | `github.com/bds421/rho-kit/examples/webhook-receiver/v2` | Example | Canonical signedrequest → idempotency → typed handler composition with HMAC verification, replay protection, and cached-response idempotency. In-memory stores; production swaps in Redis/Postgres equivalents. |
 | `github.com/bds421/rho-kit/flags/v2` | Runtime | Fallback behavior, config validation, test/local provider boundaries. |
 | `github.com/bds421/rho-kit/grpcx/v2` | Runtime | gRPC server defaults, health, interceptors, deadlines, mTLS identity. |
