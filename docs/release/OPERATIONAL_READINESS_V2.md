@@ -180,6 +180,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/data/ratelimit/redis/integrationtest/v2` | Integration helper | Redis rate-limit integration coverage only. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/v2` | Adapter | Consumer group ownership, pending/dead-letter metrics, Redis outage behavior. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/integrationtest/v2` | Integration helper | Redis stream integration coverage only. |
+| `github.com/bds421/rho-kit/data/tenant/v2` | Runtime | Per-tenant data-isolation primitives: Scope value type, WhereClause SQL helper, tenant-prefixed cache/idempotency keys. |
 | `github.com/bds421/rho-kit/examples/agentic-service/v2` | Example | Golden-path smoke coverage and generated-service operational defaults. |
 | `github.com/bds421/rho-kit/flags/v2` | Runtime | Fallback behavior, config validation, test/local provider boundaries. |
 | `github.com/bds421/rho-kit/grpcx/v2` | Runtime | gRPC server defaults, health, interceptors, deadlines, mTLS identity. |

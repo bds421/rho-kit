@@ -145,6 +145,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/data/queue/redisqueue/integrationtest/v2` | Integration test helper | No rename/remove | Redis queue integration tests. |
 | `github.com/bds421/rho-kit/data/queue/riverqueue/integrationtest/v2` | Integration test helper | No rename/remove | River/Postgres queue integration tests. |
 | `github.com/bds421/rho-kit/data/stream/redisstream/integrationtest/v2` | Integration test helper | No rename/remove | Redis stream integration tests. |
+| `github.com/bds421/rho-kit/data/tenant/v2` | Keep | No rename/remove | Per-tenant data-isolation primitives: Scope, WhereClause, Key. Wave 148. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2` | Integration test helper | No rename/remove | RabbitMQ integration tests and `rabbitmqtest` helper. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/integrationtest/v2` | Integration test helper | No rename/remove | NATS integration tests. |
 | `github.com/bds421/rho-kit/infra/outbox/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres outbox integration tests (tx atomicity, SKIP LOCKED, stale recovery, retention). |

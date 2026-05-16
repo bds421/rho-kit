@@ -65,6 +65,7 @@ use (
 	./data/ratelimit/redis/integrationtest
 	./data/stream/redisstream
 	./data/stream/redisstream/integrationtest
+	./data/tenant
 	./examples/agentic-service
 	./flags
 	./grpcx
