@@ -65,7 +65,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/grpcx/v2` | Keep | No rename/remove | gRPC server defaults, interceptors, RED metrics, auth, health, deadlines. |
 | `github.com/bds421/rho-kit/security/v2` | Keep | No rename/remove | JWT, CSRF, mTLS/SSRF helpers, ASVS metadata, revocation, mTLS identity. |
 | `github.com/bds421/rho-kit/crypto/v2` | Keep | No rename/remove | Encryption, envelope, PASETO, password hashing, signing. |
-| `github.com/bds421/rho-kit/runtime/v2` | Keep | No rename/remove | Lifecycle, concurrency, batchworker, cron, eventbus. |
+| `github.com/bds421/rho-kit/runtime/v2` | Keep | No rename/remove | Lifecycle, concurrency, batchworker, cron, eventbus, saga (compensable workflow primitive). |
 | `github.com/bds421/rho-kit/resilience/v2` | Keep | No rename/remove | Retry and circuit breaker primitives. |
 | `github.com/bds421/rho-kit/observability/v2` | Keep | No rename/remove | Health, log attributes, logging, pprof, Prometheus utilities, RED metrics, runtime metrics, SLO, tracing. |
 | `github.com/bds421/rho-kit/io/v2` | Keep | No rename/remove | Atomic file and progress helpers. |

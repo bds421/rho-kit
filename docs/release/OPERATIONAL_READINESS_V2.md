@@ -222,7 +222,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/v2` | Adapter | Postgres audit-log Store: tamper-evident chain via `pg_advisory_xact_lock` + tail `FOR UPDATE`, append-order verification through `seq BIGSERIAL`, signed-cursor pagination. Migrations ship via `cmd/kit-migrate`. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration helper | Audit-log postgres integration coverage only (chain integrity, tamper / deletion detection, concurrent appends, backfilled-timestamp safety). |
 | `github.com/bds421/rho-kit/resilience/v2` | Runtime | Retry/circuit-breaker defaults, context/error precedence, bounded retries. |
-| `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior. |
+| `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior; saga compensable-workflow primitive (roll-forward + reverse-order best-effort rollback). |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |
 | `github.com/bds421/rho-kit/security/v2` | Runtime | JWT refresh, CSRF rotation, mTLS identity, SSRF guard, ASVS catalog. |
 | `github.com/bds421/rho-kit/testing/kittest/v2` | Integration helper | Re-export umbrella over dbtest/redistest/storagetest/rabbitmqtest; no runtime surface. |
