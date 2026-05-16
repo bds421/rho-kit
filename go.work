@@ -109,5 +109,6 @@ use (
 	./resilience
 	./runtime
 	./security
+	./testing/integrationtest
 	./testing/kittest
 )
