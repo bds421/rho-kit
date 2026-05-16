@@ -14,12 +14,27 @@ const (
 	directionOut = "out"
 )
 
+// Ping result labels for the heartbeat metric.
+const (
+	pingResultOK      = "ok"
+	pingResultTimeout = "timeout"
+)
+
+// Rejection reasons for the upgrade-rejected metric. Kept as a
+// bounded enum so the Prometheus label set never grows with
+// caller-controlled values.
+const (
+	rejectReasonMaxConnections = "max_connections"
+)
+
 // Metrics holds the Prometheus collectors for the WebSocket adapter.
 type Metrics struct {
-	active        prometheus.Gauge
-	messages      *prometheus.CounterVec
-	messageBytes  *prometheus.HistogramVec
-	closes        *prometheus.CounterVec
+	active       prometheus.Gauge
+	messages     *prometheus.CounterVec
+	messageBytes *prometheus.HistogramVec
+	closes       *prometheus.CounterVec
+	pings        *prometheus.CounterVec
+	rejected     *prometheus.CounterVec
 }
 
 // MetricsOption configures [NewMetrics].
@@ -80,12 +95,26 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			Name:      "close_total",
 			Help:      "Total WebSocket close handshakes by normalised close code.",
 		}, []string{"code"}),
+		pings: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "httpx",
+			Subsystem: "websocket",
+			Name:      "pings_total",
+			Help:      "Heartbeat pings exchanged with peers by result (ok=pong received within deadline, timeout=deadline expired and connection was closed).",
+		}, []string{"result"}),
+		rejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "httpx",
+			Subsystem: "websocket",
+			Name:      "rejected_total",
+			Help:      "Upgrade requests rejected by the handler before reaching the WebSocket protocol, labelled by a bounded reason enum.",
+		}, []string{"reason"}),
 	}
 
 	m.active = promutil.MustRegisterOrGet(reg, m.active)
 	m.messages = promutil.MustRegisterOrGet(reg, m.messages)
 	m.messageBytes = promutil.MustRegisterOrGet(reg, m.messageBytes)
 	m.closes = promutil.MustRegisterOrGet(reg, m.closes)
+	m.pings = promutil.MustRegisterOrGet(reg, m.pings)
+	m.rejected = promutil.MustRegisterOrGet(reg, m.rejected)
 	return m
 }
 
@@ -110,6 +139,20 @@ func (m *Metrics) observeMessage(direction string, size int) {
 	}
 	m.messages.WithLabelValues(direction).Inc()
 	m.messageBytes.WithLabelValues(direction).Observe(float64(size))
+}
+
+func (m *Metrics) observePing(result string) {
+	if m == nil {
+		return
+	}
+	m.pings.WithLabelValues(result).Inc()
+}
+
+func (m *Metrics) observeRejected(reason string) {
+	if m == nil {
+		return
+	}
+	m.rejected.WithLabelValues(reason).Inc()
 }
 
 // closeCodeLabel normalises a WebSocket close code into a bounded

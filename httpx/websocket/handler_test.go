@@ -225,6 +225,203 @@ func TestHandle_PanicsOnNilMetricsReg(t *testing.T) {
 	})
 }
 
+// TestHandle_Compression_Variants verifies both compression modes
+// successfully negotiate a working WebSocket. Detailed permessage-
+// deflate negotiation semantics belong in the upstream
+// coder/websocket tests; here we are asserting only that the kit
+// option plumbs through without breaking the upgrade.
+func TestHandle_Compression_Variants(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  websocket.Option
+	}{
+		{"no-context-takeover", websocket.WithCompression()},
+		{"context-takeover", websocket.WithCompressionContextTakeover()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			done := make(chan struct{}, 1)
+
+			handler := websocket.Handle(
+				websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+					_, _, err := c.ReadMessage()
+					done <- struct{}{}
+					return err
+				}),
+				tc.opt,
+				websocket.WithMetrics(reg),
+			)
+
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+			require.NoError(t, err)
+			defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+			// A repetitive payload — compression's strong case — must
+			// still round-trip end-to-end.
+			require.NoError(t, conn.Write(ctx, coderws.MessageText,
+				[]byte(strings.Repeat("kit", 1024))))
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("handler did not read the message")
+			}
+		})
+	}
+}
+
+// TestHandle_AnyOriginUnsafe_AcceptsCrossOrigin verifies that the
+// unsafe-opt-in disables coder/websocket's same-origin enforcement.
+// Without the option a request with a foreign Origin header would be
+// rejected at upgrade.
+func TestHandle_AnyOriginUnsafe_AcceptsCrossOrigin(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	done := make(chan struct{}, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, _ *websocket.Conn) error {
+			done <- struct{}{}
+			return nil
+		}),
+		websocket.WithAnyOriginUnsafe(),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"),
+		&coderws.DialOptions{
+			HTTPHeader: http.Header{"Origin": []string{"https://attacker.example"}},
+		})
+	require.NoError(t, err, "WithAnyOriginUnsafe must accept a foreign Origin")
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not invoked")
+	}
+}
+
+// TestHandle_DefaultRejectsCrossOrigin verifies the safe default: a
+// foreign Origin must be rejected at upgrade without an explicit
+// opt-in.
+func TestHandle_DefaultRejectsCrossOrigin(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, _ *websocket.Conn) error {
+			return nil
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"),
+		&coderws.DialOptions{
+			HTTPHeader: http.Header{"Origin": []string{"https://attacker.example"}},
+		})
+	require.Error(t, err, "default same-origin policy must reject foreign Origin")
+}
+
+// TestHandle_MaxConnections_Rejects503 asserts the end-to-end
+// capacity-rejection path: when a configured cap is reached the next
+// upgrade is answered with 503 + Retry-After before any WebSocket
+// allocation, the rejected counter is bumped, and capacity is
+// returned when an existing conn closes.
+func TestHandle_MaxConnections_Rejects503(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+			entered <- struct{}{}
+			<-release
+			_ = c.Close(websocket.StatusNormalClosure, "test done")
+			return nil
+		}),
+		websocket.WithMaxConnections(1),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First connection takes the only slot.
+	conn1, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn1.Close(coderws.StatusNormalClosure, "") }()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start for the first connection")
+	}
+
+	// Second connection must be rejected at the HTTP layer with 503.
+	// We use a plain HTTP GET (not a real Dial) so we can inspect the
+	// raw response — Dial would surface this as an opaque error.
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, "1", resp.Header.Get("Retry-After"))
+
+	// Counter must be bumped with the bounded reason label.
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var rejected float64
+	for _, f := range families {
+		if f.GetName() != "httpx_websocket_rejected_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "reason" && lp.GetValue() == "max_connections" {
+					rejected = m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	assert.Equal(t, float64(1), rejected,
+		"rejected_total{reason=max_connections} must be 1 after the over-cap upgrade")
+
+	// Release the first conn, then verify capacity is freed.
+	close(release)
+	_ = conn1.Close(coderws.StatusNormalClosure, "freeing slot")
+
+	// Poll briefly for slot release — the defer in the handler runs
+	// after the goroutine returns, which races the next Dial.
+	require.Eventually(t, func() bool {
+		c, _, derr := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+		if derr != nil {
+			return false
+		}
+		_ = c.Close(coderws.StatusNormalClosure, "")
+		return true
+	}, 2*time.Second, 20*time.Millisecond, "slot was never released")
+}
+
 // Sanity check that the Handle return type composes naturally with
 // stdlib http middleware (in particular, that it remains a
 // http.HandlerFunc rather than a wrapper type).

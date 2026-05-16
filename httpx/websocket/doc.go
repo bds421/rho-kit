@@ -22,6 +22,15 @@
 //     already in the mix. Front a per-connection consumer with an
 //     SSE/HTTP endpoint instead of multiplexing on a single WebSocket.
 //
+// # Origin policy
+//
+// The default rejects all cross-origin upgrade handshakes — only
+// browsers whose `Origin` matches the request `Host` are accepted.
+// Use [WithOriginPatterns] to allow specific cross-origin browsers
+// (preferred), or [WithAnyOriginUnsafe] to accept any origin (only
+// safe when every handler independently authenticates the connecting
+// principal; the "Unsafe" suffix is deliberately grep-able).
+//
 // # Composition with httpx middleware
 //
 // [Handle] returns a stdlib [http.HandlerFunc], so it composes with
@@ -54,6 +63,15 @@
 //     closes labelled with normalised close codes. Unknown codes are
 //     projected via [promutil.OpaqueLabelValue] so per-tenant or
 //     attacker-controlled close codes cannot blow up cardinality.
+//   - `httpx_websocket_pings_total{result}` — Counter of heartbeat
+//     pings by result (`ok` = pong received within deadline,
+//     `timeout` = deadline expired and the connection was closed).
+//     Emitted only when [WithPingInterval] is configured.
+//   - `httpx_websocket_rejected_total{reason}` — Counter of upgrade
+//     requests rejected before reaching the WebSocket protocol.
+//     The `reason` label is a bounded enum (currently
+//     `max_connections`) so no caller-controlled value can blow up
+//     cardinality.
 //
 // # Safety
 //
@@ -64,4 +82,31 @@
 //   - Every read/write error wraps the underlying coder/websocket error
 //     with [redact.WrapError] so [errors.Is]/[errors.As] still works
 //     but [error.Error]() never embeds the inner text.
+//   - [WithWriteTimeout] bounds the time a single write may block on a
+//     slow peer. When the deadline expires the underlying connection
+//     is closed because the WebSocket framing protocol cannot resume a
+//     partial frame; this is the kit's "drop the slow consumer" knob
+//     for outbound DoS mitigation.
+//   - [WithPingInterval] enables an idle keepalive heartbeat. RFC 6455
+//     specifies no mandatory heartbeat and browser clients do not
+//     ping, so without this option half-open connections can survive
+//     until the kernel TCP keepalive (often 2 h) reclaims them.
+//   - [WithMaxConnections] caps in-flight connections to bound memory
+//     and file-descriptor pressure. Rejections respond with
+//     `503 Service Unavailable` + `Retry-After: 1` before any
+//     WebSocket-level allocation.
+//
+// # Handshake bounds
+//
+// The kit deliberately does not expose a `WithUpgradeTimeout` option.
+// The upgrade phase (read request headers, write `101 Switching
+// Protocols`) is fully bounded by the surrounding [http.Server]
+// timeouts — when the kit's [httpx.NewServer] is used these are set
+// to `ReadHeaderTimeout: 5s` and `WriteTimeout: 35s` by default.
+// After Accept hijacks the connection, [WithPingInterval] and
+// [WithWriteTimeout] take over.
+//
+// If you wire a raw [http.Server] yourself, set `ReadHeaderTimeout`
+// and `WriteTimeout` explicitly — without them slow-loris-style
+// upgrade abuse is unbounded.
 package websocket

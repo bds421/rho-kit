@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	coderws "github.com/coder/websocket"
 
@@ -62,14 +63,30 @@ const (
 // the underlying coder/websocket Conn (the Reader/Read pair is not
 // safe for concurrent reads).
 type Conn struct {
-	inner   *coderws.Conn
-	ctx     context.Context
-	logger  *slog.Logger
-	metrics *Metrics
+	inner        *coderws.Conn
+	ctx          context.Context
+	logger       *slog.Logger
+	metrics      *Metrics
+	writeTimeout time.Duration
 
 	closeOnce sync.Once
 	closed    atomic.Bool
 	closeCode atomic.Int64 // last close code observed (peer or local), for metrics
+}
+
+// writeCtx returns the context to use for a single outbound write. When
+// a positive write timeout is configured it returns a derived context
+// with that deadline; otherwise it returns the per-connection context
+// and a no-op cancel.
+//
+// The WebSocket framing protocol cannot resume a partially-sent
+// message, so when this context expires coder/websocket closes the
+// connection — see [WithWriteTimeout] for the security rationale.
+func (c *Conn) writeCtx() (context.Context, context.CancelFunc) {
+	if c.writeTimeout <= 0 {
+		return c.ctx, func() {}
+	}
+	return context.WithTimeout(c.ctx, c.writeTimeout)
 }
 
 // Subprotocol returns the subprotocol negotiated during the upgrade,
@@ -104,10 +121,16 @@ func (c *Conn) ReadMessage() (MessageType, []byte, error) {
 
 // WriteMessage writes a single message to the connection.
 //
+// When [WithWriteTimeout] is set the write is bounded by that
+// duration; on deadline expiry coder/websocket closes the connection
+// because a partial frame cannot be resumed.
+//
 // Errors are wrapped with [redact.WrapError]; the inner driver
 // message is never embedded verbatim.
 func (c *Conn) WriteMessage(typ MessageType, payload []byte) error {
-	if err := c.inner.Write(c.ctx, coderws.MessageType(typ), payload); err != nil {
+	ctx, cancel := c.writeCtx()
+	defer cancel()
+	if err := c.inner.Write(ctx, coderws.MessageType(typ), payload); err != nil {
 		c.recordCloseFromError(err)
 		return redact.WrapError("httpx/websocket: write", err)
 	}
@@ -137,16 +160,36 @@ func (c *Conn) ReadJSON(v any) error {
 }
 
 // WriteJSON serialises v as JSON and writes it as a text message.
+//
+// When [WithWriteTimeout] is set the write is bounded by that
+// duration; on deadline expiry coder/websocket closes the connection
+// because a partial frame cannot be resumed.
 func (c *Conn) WriteJSON(v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
 		return redact.WrapError("httpx/websocket: encode json", err)
 	}
-	if err := c.inner.Write(c.ctx, coderws.MessageText, payload); err != nil {
+	ctx, cancel := c.writeCtx()
+	defer cancel()
+	if err := c.inner.Write(ctx, coderws.MessageText, payload); err != nil {
 		c.recordCloseFromError(err)
 		return redact.WrapError("httpx/websocket: write json", err)
 	}
 	c.metrics.observeMessage(directionOut, len(payload))
+	return nil
+}
+
+// Ping sends a WebSocket Ping control frame and blocks until the
+// peer's Pong reply arrives or ctx is cancelled. Useful when an
+// application wants to drive its own heartbeat instead of (or in
+// addition to) [WithPingInterval].
+//
+// Errors are wrapped with [redact.WrapError]; the inner driver text
+// is not embedded verbatim.
+func (c *Conn) Ping(ctx context.Context) error {
+	if err := c.inner.Ping(ctx); err != nil {
+		return redact.WrapError("httpx/websocket: ping", err)
+	}
 	return nil
 }
 

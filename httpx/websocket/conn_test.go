@@ -248,6 +248,103 @@ func TestNewMetrics_PanicsOnNilOption(t *testing.T) {
 	})
 }
 
+func TestWithWriteTimeout_PanicsOnNonPositive(t *testing.T) {
+	assert.Panics(t, func() { websocket.WithWriteTimeout(0) })
+	assert.Panics(t, func() { websocket.WithWriteTimeout(-1 * time.Millisecond) })
+}
+
+// TestConn_WriteTimeout_FiresOnSlowConsumer asserts that a configured
+// WithWriteTimeout deadline trips when the peer never reads from its
+// socket and the kernel send buffer backs up. The handler's
+// WriteMessage must return a redacted error whose underlying chain
+// includes context.DeadlineExceeded.
+func TestConn_WriteTimeout_FiresOnSlowConsumer(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	writeErr := make(chan error, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+			// 8 MiB is comfortably larger than any reasonable
+			// kernel send buffer (typically 64 KiB–4 MiB), so the
+			// write must block once the buffer fills.
+			payload := make([]byte, 8<<20)
+			err := c.WriteMessage(websocket.MessageBinary, payload)
+			writeErr <- err
+			return err
+		}),
+		websocket.WithMetrics(reg),
+		websocket.WithWriteTimeout(100*time.Millisecond),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Dial but never read — this is the "slow consumer" the option
+	// is designed to evict.
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusGoingAway, "") }()
+
+	select {
+	case err := <-writeErr:
+		require.Error(t, err)
+		// The deadline must be observable via errors.Is so callers
+		// (e.g. observability middleware) can distinguish slow-peer
+		// closes from other write failures without parsing strings.
+		assert.True(t, errors.Is(err, context.DeadlineExceeded),
+			"expected context.DeadlineExceeded in chain, got %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("write did not time out within budget — write deadline not enforced")
+	}
+}
+
+// TestConn_WriteTimeout_DefaultsToUnbounded confirms that omitting
+// WithWriteTimeout leaves writes uncapped (the conn-scoped context is
+// the only deadline). The check is necessarily indirect: with a small
+// payload and a responsive client the write completes quickly, which
+// would also happen if a bogus 1ms default were applied — so we time
+// the write with a margin that a 1ms timeout would always trip.
+func TestConn_WriteTimeout_DefaultsToUnbounded(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	done := make(chan error, 1)
+
+	handler := websocket.Handle(
+		websocket.WithHandler(func(_ context.Context, c *websocket.Conn) error {
+			// Sleep longer than any plausible accidental default so
+			// the test fails if a buggy default deadline were tied
+			// to handler entry rather than to the write itself.
+			time.Sleep(50 * time.Millisecond)
+			err := c.WriteMessage(websocket.MessageText, []byte("ok"))
+			done <- err
+			return err
+		}),
+		websocket.WithMetrics(reg),
+	)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(coderws.StatusNormalClosure, "") }()
+
+	_, _, err = conn.Read(ctx)
+	require.NoError(t, err)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not finish")
+	}
+}
+
 // Sanity check that read errors round-trip through redact.WrapError
 // (the inner driver text must not appear in the returned error).
 func TestConn_ReadError_IsRedacted(t *testing.T) {

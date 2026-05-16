@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -26,11 +27,34 @@ type HandlerFunc func(ctx Context, conn *Conn) error
 // Option configures [Handle].
 type Option func(*config)
 
+// compressionMode selects the permessage-deflate behaviour applied at
+// upgrade. The default (zero value) disables compression so each
+// connection starts with a deterministic, bounded memory footprint.
+type compressionMode int
+
+const (
+	// compressionDisabled is the zero value: no permessage-deflate is
+	// negotiated. Named so the switch in [Handle] reads naturally
+	// even though the case is implicit (default branch).
+	_ compressionMode = iota
+	// compressionNoTakeover compresses each message independently —
+	// no inter-message LZ77 state. Bounded per-conn memory.
+	compressionNoTakeover
+	// compressionContextTakeover persists the LZ77 sliding window
+	// between messages for better ratios on similar payloads, at a
+	// cost of ~32 KiB per direction per connection.
+	compressionContextTakeover
+)
+
 type config struct {
 	handler        HandlerFunc
 	subprotocols   []string
-	compression    bool
+	compression    compressionMode
 	maxMessageSize int64
+	maxConnections int64
+	writeTimeout   time.Duration
+	pingInterval   time.Duration
+	pongTimeout    time.Duration
 	logger         *slog.Logger
 	metrics        *Metrics
 	originPatterns []string
@@ -62,12 +86,30 @@ func WithSubprotocols(subprotocols ...string) Option {
 	}
 }
 
-// WithCompression enables permessage-deflate. The coder/websocket
-// default is no compression; opt in only when the deployment has
-// validated that the encrypted payload mix is not vulnerable to
-// CRIME/BREACH-style oracles.
+// WithCompression enables permessage-deflate with bounded per-conn
+// memory: each message is compressed independently and no LZ77 state
+// persists between messages. Suitable as the default whenever
+// compression is wanted.
+//
+// Opt in only when the deployment has validated that the encrypted
+// payload mix is not vulnerable to CRIME/BREACH-style oracles.
+//
+// See [WithCompressionContextTakeover] for the higher-ratio,
+// higher-memory variant.
 func WithCompression() Option {
-	return func(c *config) { c.compression = true }
+	return func(c *config) { c.compression = compressionNoTakeover }
+}
+
+// WithCompressionContextTakeover enables permessage-deflate with
+// context takeover — the LZ77 sliding window persists between
+// messages, yielding better ratios on repetitive payloads at a cost
+// of roughly 32 KiB per direction per connection.
+//
+// Prefer [WithCompression] unless workload measurements show the
+// memory cost is acceptable and the compression-ratio improvement is
+// material. CRIME/BREACH-style oracle considerations apply here too.
+func WithCompressionContextTakeover() Option {
+	return func(c *config) { c.compression = compressionContextTakeover }
 }
 
 // WithMaxMessageBytes overrides the per-message read ceiling.
@@ -79,6 +121,82 @@ func WithMaxMessageBytes(size int64) Option {
 		panic("httpx/websocket: WithMaxMessageBytes requires a positive size")
 	}
 	return func(c *config) { c.maxMessageSize = size }
+}
+
+// WithMaxConnections caps the number of concurrent WebSocket
+// connections served by this handler. When the cap is reached the
+// handler responds to subsequent upgrade requests with
+// `503 Service Unavailable` and a `Retry-After: 1` header, and bumps
+// the `httpx_websocket_rejected_total{reason="max_connections"}`
+// counter. The rejection short-circuits before [coder/websocket]
+// would otherwise complete a hijack and per-conn allocation.
+//
+// Pass zero (the default) to disable the cap. Non-positive values
+// other than zero panic so misconfiguration surfaces at startup.
+//
+// Note: this is a per-process, per-handler cap. Multi-replica
+// deployments should multiply by replica count when sizing peak
+// browser fan-out; horizontal limits belong at the load balancer.
+func WithMaxConnections(n int) Option {
+	if n < 0 {
+		panic("httpx/websocket: WithMaxConnections requires a non-negative value (zero disables)")
+	}
+	return func(c *config) { c.maxConnections = int64(n) }
+}
+
+// WithPingInterval enables an idle-keepalive heartbeat. Once per
+// interval the handler sends a WebSocket Ping control frame; if the
+// peer does not respond with a Pong within [WithPongTimeout] the
+// connection is closed with [StatusPolicyViolation].
+//
+// WebSocket has no mandatory heartbeat — browsers do not ping, and
+// idle TCP sockets survive until the kernel keepalive (often 2 h)
+// kicks in. A server-driven Ping is the only portable way to detect
+// half-open connections and reclaim file descriptors. Typical values
+// are 30 s for browser-facing services and 5–10 s when peers are
+// other backend processes.
+//
+// Pass zero (the default) to disable heartbeats. Non-positive values
+// other than zero panic so misconfiguration surfaces at startup.
+func WithPingInterval(d time.Duration) Option {
+	if d < 0 {
+		panic("httpx/websocket: WithPingInterval requires a non-negative duration (zero disables)")
+	}
+	return func(c *config) { c.pingInterval = d }
+}
+
+// WithPongTimeout bounds how long the heartbeat waits for the peer's
+// Pong reply before declaring the connection dead and closing with
+// [StatusPolicyViolation]. Must be positive when [WithPingInterval]
+// is set; non-positive values panic.
+//
+// When unset the heartbeat uses the ping interval as the pong
+// deadline, which is a safe default for almost all deployments.
+func WithPongTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("httpx/websocket: WithPongTimeout requires a positive duration")
+	}
+	return func(c *config) { c.pongTimeout = d }
+}
+
+// WithWriteTimeout bounds the duration of a single [Conn.WriteMessage]
+// or [Conn.WriteJSON] call. When zero (the default) writes inherit the
+// per-connection context with no per-call deadline.
+//
+// The WebSocket framing protocol cannot resume a partially-sent
+// message, so when the deadline expires the underlying
+// [coder/websocket] driver closes the connection — i.e. this option
+// is a "drop the slow consumer" lever, not a retry-friendly per-write
+// deadline. Set it to a value comfortably larger than your largest
+// expected payload divided by the slowest realistic peer bandwidth
+// (e.g. 5–30 s for human-interactive UIs over 4G).
+//
+// Non-positive values panic so misconfiguration surfaces at startup.
+func WithWriteTimeout(d time.Duration) Option {
+	if d <= 0 {
+		panic("httpx/websocket: WithWriteTimeout requires a positive duration (omit the option for no timeout)")
+	}
+	return func(c *config) { c.writeTimeout = d }
 }
 
 // WithMetrics registers the kit metric set on reg. Pass nil to fall
@@ -114,5 +232,22 @@ func WithLogger(logger *slog.Logger) Option {
 func WithOriginPatterns(patterns ...string) Option {
 	return func(c *config) {
 		c.originPatterns = append([]string(nil), patterns...)
+	}
+}
+
+// WithAnyOriginUnsafe disables the same-origin check on the upgrade
+// handshake — every Origin header is accepted. This is the WebSocket
+// equivalent of `Access-Control-Allow-Origin: *` and exposes the
+// service to cross-site WebSocket hijacking (CSWSH) unless every
+// handler independently authenticates the connecting principal (for
+// example via a session cookie scoped to the WS endpoint, or a
+// short-lived auth token in the first frame).
+//
+// The "Unsafe" suffix is deliberate and survives audit greps: prefer
+// [WithOriginPatterns] with an explicit allow-list whenever the set of
+// browser-side origins is known.
+func WithAnyOriginUnsafe() Option {
+	return func(c *config) {
+		c.originPatterns = []string{"*"}
 	}
 }

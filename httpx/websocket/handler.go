@@ -41,15 +41,33 @@ func Handle(opts ...Option) http.HandlerFunc {
 		Subprotocols:   append([]string(nil), cfg.subprotocols...),
 		OriginPatterns: append([]string(nil), cfg.originPatterns...),
 	}
-	if cfg.compression {
+	switch cfg.compression {
+	case compressionNoTakeover:
+		acceptOpts.CompressionMode = coderws.CompressionNoContextTakeover
+	case compressionContextTakeover:
 		acceptOpts.CompressionMode = coderws.CompressionContextTakeover
 	}
 
 	maxBytes := cfg.maxMessageSize
 	handler := cfg.handler
 	metrics := cfg.metrics
+	writeTimeout := cfg.writeTimeout
+	pingInterval := cfg.pingInterval
+	pongTimeout := cfg.pongTimeout
+	limiter := newConnLimiter(cfg.maxConnections)
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Reject before Accept so a saturated server does not waste
+		// the per-conn allocation just to immediately close. The
+		// limiter is a no-op when no cap is configured.
+		if !limiter.tryAcquire() {
+			metrics.observeRejected(rejectReasonMaxConnections)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "websocket: server at capacity", http.StatusServiceUnavailable)
+			return
+		}
+		defer limiter.release()
+
 		raw, err := coderws.Accept(w, r, acceptOpts)
 		if err != nil {
 			// coder/websocket has already written an HTTP error
@@ -72,12 +90,20 @@ func Handle(opts ...Option) http.HandlerFunc {
 		defer cancel()
 
 		conn := &Conn{
-			inner:   raw,
-			ctx:     ctx,
-			logger:  logger,
-			metrics: metrics,
+			inner:        raw,
+			ctx:          ctx,
+			logger:       logger,
+			metrics:      metrics,
+			writeTimeout: writeTimeout,
 		}
 		metrics.connOpened()
+
+		// Idle keepalive — spawned only when WithPingInterval is set.
+		// Closes the connection if the peer stops responding to pings,
+		// which causes the read loop below to unblock with an error.
+		if pingInterval > 0 {
+			go runHeartbeat(ctx, conn, pingInterval, pongTimeout, logger, metrics)
+		}
 
 		closeCode := coderws.StatusNormalClosure
 		closeReason := ""

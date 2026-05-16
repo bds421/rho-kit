@@ -173,7 +173,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/grpcx/v2` | Runtime | gRPC server defaults, health, interceptors, deadlines, mTLS identity. |
 | `github.com/bds421/rho-kit/httpx/v2` | Runtime | HTTP server/client timeouts, middleware order, signing, CSRF, metrics, request budgets. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | Redis nonce TTL, cancellation handling, Redis outage behavior. |
-| `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | WebSocket upgrade ergonomics, per-message read limits, idempotent close, handler panic recovery, redacted error surface, metric cardinality bound. |
+| `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | WebSocket upgrade ergonomics, per-message read limits, idempotent close, handler panic recovery, redacted error surface, metric cardinality bound, per-write timeout, idle ping/pong heartbeat, concurrent-connection cap with `503` + `Retry-After` rejection, bounded permessage-deflate memory by default, explicit cross-origin opt-in. |
 | `github.com/bds421/rho-kit/infra/v2` | Runtime | Infrastructure interfaces, sentinels, storage/messaging contracts, release-stable errors. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | Lease renew/retry deadlines, identity uniqueness, callback drain, API-server outage behavior. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | Leadership health, callback drain, Postgres session loss behavior. |
