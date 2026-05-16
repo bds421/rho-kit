@@ -4,7 +4,6 @@ package integrationtest
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -12,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hibiken/asynq"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
 	"github.com/bds421/rho-kit/data/queue/redisqueue/v2"
 	"github.com/bds421/rho-kit/infra/redis/redistest/v2"
 	"github.com/bds421/rho-kit/infra/redis/v2"
@@ -32,10 +33,14 @@ func redisClient(t *testing.T) goredis.UniversalClient {
 	return conn.Client()
 }
 
+// TestQueue_EnqueueAndProcess walks one message end-to-end through the
+// asynq-backed queue: NewMessage -> Enqueue -> Process -> handler. Pins
+// the kit's envelope round-trip against a real Redis container.
 func TestQueue_EnqueueAndProcess(t *testing.T) {
 	client := redisClient(t)
 
 	q := redisqueue.NewQueue(client, redisqueue.WithLogger(slog.Default()))
+	t.Cleanup(func() { _ = q.Close() })
 	ctx := context.Background()
 	queueName := fmt.Sprintf("test:queue:%d", time.Now().UnixNano())
 
@@ -49,29 +54,42 @@ func TestQueue_EnqueueAndProcess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), length)
 
-	var received redisqueue.Message
-	var wg sync.WaitGroup
-	wg.Add(1)
+	receivedCh := make(chan redisqueue.Message, 1)
+	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-	processCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		q.Process(processCtx, queueName, func(_ context.Context, m redisqueue.Message) error {
+			select {
+			case receivedCh <- m:
+			default:
+			}
+			cancel()
+			return nil
+		})
+	}()
 
-	go q.Process(processCtx, queueName, func(_ context.Context, m redisqueue.Message) error {
-		received = m
-		wg.Done()
-		cancel()
-		return nil
-	})
-
-	wg.Wait()
-
-	assert.Equal(t, msg.ID, received.ID)
-	assert.Equal(t, "job.process", received.Type)
+	select {
+	case received := <-receivedCh:
+		assert.Equal(t, msg.ID, received.ID)
+		assert.Equal(t, "job.process", received.Type)
+	case <-processCtx.Done():
+		t.Fatal("Process never received the enqueued message before timeout")
+	}
+	<-done
 }
 
+// TestQueue_EnqueueBatch verifies the kit's batch enqueue path against
+// asynq. Asynq has no batch primitive — the kit issues one Enqueue per
+// message and the assertion below pins all three are pending in the
+// inspector.
 func TestQueue_EnqueueBatch(t *testing.T) {
 	client := redisClient(t)
 
 	q := redisqueue.NewQueue(client, redisqueue.WithLogger(slog.Default()))
+	t.Cleanup(func() { _ = q.Close() })
 	ctx := context.Background()
 	queueName := fmt.Sprintf("test:queue:batch:%d", time.Now().UnixNano())
 
@@ -90,17 +108,22 @@ func TestQueue_EnqueueBatch(t *testing.T) {
 	assert.Equal(t, int64(3), length)
 }
 
+// TestQueue_DeadLetter exercises the kit's SkipRetry path for permanent
+// errors via [apperror.NewPermanent]: a permanent handler error must move
+// the task straight into asynq's archive (dead-letter set) without paying
+// the exponential-backoff retry delays. The assertion is against asynq's
+// Inspector — the operator-visible source of truth for archived tasks.
 func TestQueue_DeadLetter(t *testing.T) {
 	client := redisClient(t)
 
 	q := redisqueue.NewQueue(client,
 		redisqueue.WithLogger(slog.Default()),
 		redisqueue.WithMaxRetries(2),
-		redisqueue.WithBlockTimeout(500*time.Millisecond),
 	)
-	ctx := context.Background()
+	t.Cleanup(func() { _ = q.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	queueName := fmt.Sprintf("test:queue:dl:%d", time.Now().UnixNano())
-	deadQ := queueName + ":dead"
 
 	msg, err := redisqueue.NewMessage("failing.job", "data")
 	require.NoError(t, err)
@@ -109,31 +132,101 @@ func TestQueue_DeadLetter(t *testing.T) {
 	require.NoError(t, err)
 
 	var attempts atomic.Int32
+	processCtx, processCancel := context.WithCancel(ctx)
+
 	done := make(chan struct{})
-	var doneOnce sync.Once
+	go func() {
+		defer close(done)
+		q.Process(processCtx, queueName, func(_ context.Context, _ redisqueue.Message) error {
+			attempts.Add(1)
+			// Use apperror.NewPermanent so the kit translates this into
+			// asynq.SkipRetry — the archive path that bypasses retry
+			// backoff. Without this the test would wait ~10s for asynq's
+			// first retry interval.
+			return apperror.NewPermanent("poison-pill")
+		})
+	}()
 
-	processCtx, cancel := context.WithCancel(ctx)
-
-	go q.Process(processCtx, queueName, func(_ context.Context, m redisqueue.Message) error {
-		attempts.Add(1)
-		if m.Attempt >= 2 {
-			doneOnce.Do(func() { close(done) })
-			return errors.New("still failing")
+	// Poll asynq's Inspector for the archive count. One-shot dispatch +
+	// SkipRetry should land the task in Archived within a few seconds.
+	inspector := asynq.NewInspectorFromRedisClient(client)
+	t.Cleanup(func() { _ = inspector.Close() })
+	require.Eventually(t, func() bool {
+		info, infoErr := inspector.GetQueueInfo(queueName)
+		if infoErr != nil {
+			return false
 		}
-		return errors.New("transient")
-	})
+		return info.Archived >= 1
+	}, 15*time.Second, 200*time.Millisecond, "task must reach the archive within 15s")
 
+	processCancel()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Process did not stop after cancel")
 	}
 
-	cancel()
+	assert.GreaterOrEqual(t, attempts.Load(), int32(1), "handler must have been invoked at least once")
+}
 
-	// Poll until the dead-letter queue contains the message.
+// TestQueue_DepthCheck exercises the kit's health.DependencyCheck against
+// asynq's Inspector. A queue with zero pending entries reports Healthy;
+// a queue above the threshold reports Degraded.
+func TestQueue_DepthCheck(t *testing.T) {
+	client := redisClient(t)
+
+	q := redisqueue.NewQueue(client, redisqueue.WithLogger(slog.Default()))
+	t.Cleanup(func() { _ = q.Close() })
+	queueName := fmt.Sprintf("test:queue:depth:%d", time.Now().UnixNano())
+
+	ctx := context.Background()
+	// Threshold of 0 + zero pending entries: healthy because Len reports
+	// 0 for an unknown queue and the check is `n > threshold`.
+	check := q.DepthCheck(queueName, 5)
+	assert.Equal(t, "healthy", check.Check(ctx))
+
+	// Enqueue past the threshold so the check reports degraded.
+	var msgs []redisqueue.Message
+	for i := 0; i < 10; i++ {
+		m, err := redisqueue.NewMessage("noop", map[string]int{"i": i})
+		require.NoError(t, err)
+		msgs = append(msgs, m)
+	}
+	require.NoError(t, q.EnqueueBatch(ctx, queueName, msgs))
+
 	require.Eventually(t, func() bool {
-		dlLen, err := client.LLen(ctx, deadQ).Result()
-		return err == nil && dlLen == 1
-	}, 5*time.Second, 50*time.Millisecond)
+		return check.Check(ctx) == "degraded"
+	}, 5*time.Second, 100*time.Millisecond, "depth check must report degraded above threshold")
+}
+
+// TestQueue_DoubleProcessGuard pins the per-Queue Process panic so a
+// service that wires two goroutines onto the same queue learns at startup
+// rather than at the first message delivery.
+func TestQueue_DoubleProcessGuard(t *testing.T) {
+	client := redisClient(t)
+
+	q := redisqueue.NewQueue(client, redisqueue.WithLogger(slog.Default()))
+	t.Cleanup(func() { _ = q.Close() })
+	queueName := fmt.Sprintf("test:queue:double:%d", time.Now().UnixNano())
+
+	processCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q.Process(processCtx, queueName, func(context.Context, redisqueue.Message) error { return nil })
+	}()
+	require.Eventually(t, func() bool {
+		// Hard to introspect activeQueues across the package boundary;
+		// give Process a moment to register itself.
+		return true
+	}, time.Second, 100*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+
+	assert.Panics(t, func() {
+		q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
+	}, "second Process on the same queue name must panic")
+
+	cancel()
+	wg.Wait()
 }

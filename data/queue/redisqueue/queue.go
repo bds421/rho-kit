@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	kitqueue "github.com/bds421/rho-kit/data/v2/queue"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
@@ -21,12 +25,19 @@ import (
 
 // messageIDPattern bounds Message.ID to a safe character set: ASCII letters,
 // digits, hyphen, and underscore. UUIDs (with hyphens), ULIDs, and hex IDs
-// all fit. The set is deliberately strict so the value is safe as a Lua
-// argument, in log lines, in metric labels, and inside JSON without any
-// escaping concerns. 1..255 bytes; non-empty and bounded.
+// all fit. The set is deliberately strict so the value is safe as an asynq
+// TaskID (which must be unique per queue), in log lines, in metric labels,
+// and inside JSON without escaping concerns. 1..255 bytes; non-empty and
+// bounded.
 var messageIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 var newQueueConsumerID = uuid.NewV7
+
+// envelopeTaskType is the single asynq task type the kit publishes under.
+// Routing happens via Queue (per-tenant queue names) plus the inner
+// envelope's Type field; the kit deliberately keeps asynq's type system
+// minimal so consumers see one stable handler entry point.
+const envelopeTaskType = "rho.envelope"
 
 // validateMessageID enforces messageIDPattern. Returned as an error so
 // callers (Enqueue, EnqueueBatch) can surface the failure without panicking.
@@ -49,29 +60,34 @@ func validateMessage(msg Message, maxPayloadSize int) error {
 }
 
 const (
-	// defaultDeadLetterMaxLen is the approximate maximum number of entries
-	// in a dead-letter queue. 0 would mean no limit.
-	defaultDeadLetterMaxLen int64 = 10000
-
 	// defaultMaxPayloadSize is the default max message size (1 MiB).
 	// Override with WithMaxMessageBytes. Set to 0 to disable the limit.
 	defaultMaxPayloadSize = kitqueue.DefaultMaxPayloadBytes
 
-	// defaultHeartbeatTTL is how long an active consumer's heartbeat key
-	// lives in Redis before expiring. Recovery treats a missing heartbeat as
-	// proof that the owning consumer is dead and its processing list can be
-	// reclaimed safely.
-	defaultHeartbeatTTL = 60 * time.Second
+	// defaultConcurrency is the asynq server concurrency. The kit's pre-v2
+	// LIST-based queue was effectively single-consumer per Process call;
+	// asynq pulls multiple in parallel by default. We keep "1" as the
+	// default so existing handlers do not silently get fan-out, and offer
+	// [WithConcurrency] for opt-in throughput.
+	defaultConcurrency = 1
 
-	// defaultHeartbeatInterval is how often Process refreshes its heartbeat
-	// key. Set to TTL/3 to tolerate transient failures and clock skew.
-	defaultHeartbeatInterval = 20 * time.Second
+	// defaultMaxRetries replaces the kit's v1 default of 5 retries before
+	// dead-lettering (now "archive" in asynq parlance).
+	defaultMaxRetries = 5
 
-	// heartbeatSuffix is the key suffix used by the heartbeat scheme.
-	heartbeatSuffix = "heartbeat"
+	// defaultShutdownTimeout caps how long Process waits for in-flight
+	// handlers when the parent context is cancelled.
+	defaultShutdownTimeout = 30 * time.Second
+
+	// defaultHealthCheckInterval is how often the asynq server pings Redis
+	// to surface degraded backends to the kit's logger.
+	defaultHealthCheckInterval = 30 * time.Second
 )
 
-// Message is a message stored in a Redis LIST-based queue.
+// Message is a kit queue envelope. The pre-v2 wire format (a JSON struct
+// stored on a Redis LIST) is preserved bit-for-bit so handler code that
+// unmarshals from `[]byte` is untouched; the envelope now travels inside
+// an [asynq.Task] payload rather than a raw LIST entry.
 type Message struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
@@ -121,7 +137,6 @@ type Metrics struct {
 	messagesDeadLettered *prometheus.CounterVec
 	processingDuration   *prometheus.HistogramVec
 	messagesRetried      *prometheus.CounterVec
-	ackNotFound          *prometheus.CounterVec
 	processingDepth      *prometheus.GaugeVec
 	queueDepth           *prometheus.GaugeVec
 	dlqDepth             *prometheus.GaugeVec
@@ -189,7 +204,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Namespace: "redis",
 				Subsystem: "queue",
 				Name:      "messages_dead_lettered_total",
-				Help:      "Total messages moved to dead-letter queue.",
+				Help:      "Total messages moved to the asynq archive (dead-letter set).",
 			},
 			[]string{"queue"},
 		),
@@ -212,21 +227,12 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 			},
 			[]string{"queue"},
 		),
-		ackNotFound: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: "redis",
-				Subsystem: "queue",
-				Name:      "ack_not_found_total",
-				Help:      "Total successful handler acks where the processing-list entry was not found. A non-zero value signals processing-list corruption (e.g. concurrent reaping or a malformed entry).",
-			},
-			[]string{"queue"},
-		),
 		processingDepth: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "redis",
 				Subsystem: "queue",
 				Name:      "processing_depth",
-				Help:      "Number of messages currently in the processing queue.",
+				Help:      "Number of messages currently active (claimed by a worker) in the asynq queue.",
 			},
 			[]string{"queue"},
 		),
@@ -235,7 +241,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Namespace: "redis",
 				Subsystem: "queue",
 				Name:      "queue_depth",
-				Help:      "Number of messages waiting in the main queue.",
+				Help:      "Number of messages waiting in the asynq pending state.",
 			},
 			[]string{"queue"},
 		),
@@ -244,7 +250,7 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 				Namespace: "redis",
 				Subsystem: "queue",
 				Name:      "dlq_depth",
-				Help:      "Number of messages currently in the dead-letter queue. Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller.",
+				Help:      "Number of messages currently in the asynq archive (dead-letter). Polled alongside queue_depth so operators can alert on a growing DLQ without standing up a separate poller.",
 			},
 			[]string{"queue"},
 		),
@@ -256,7 +262,6 @@ func NewMetrics(opts ...MetricsOption) *Metrics {
 	m.messagesDeadLettered = promutil.MustRegisterOrGet(reg, m.messagesDeadLettered)
 	m.processingDuration = promutil.MustRegisterOrGet(reg, m.processingDuration)
 	m.messagesRetried = promutil.MustRegisterOrGet(reg, m.messagesRetried)
-	m.ackNotFound = promutil.MustRegisterOrGet(reg, m.ackNotFound)
 	m.processingDepth = promutil.MustRegisterOrGet(reg, m.processingDepth)
 	m.queueDepth = promutil.MustRegisterOrGet(reg, m.queueDepth)
 	m.dlqDepth = promutil.MustRegisterOrGet(reg, m.dlqDepth)
@@ -270,73 +275,58 @@ func queueMetricLabel(queue string) string {
 	return promutil.OpaqueLabelValue("queue", queue)
 }
 
-// Queue provides reliable LIST-based FIFO queuing using BLMOVE.
+// Queue provides a kit-friendly seam over [hibiken/asynq]. Replaces the
+// pre-v2 LIST + heartbeat scheme with asynq's claim model and
+// invisibility-timeout (configurable via [WithInvisibilityTimeout]).
 //
-// Pattern: messages are atomically popped from the main queue and pushed
-// to a per-consumer processing list. On success, the message is removed
-// from the processing list by message-ID (via a Lua script that finds and
-// tombstones the entry — payload-equality LREM has a duplicate-payload
-// race documented in the audit). On failure/crash, messages remaining in
-// THIS consumer's processing list are recovered at next startup.
+// The kit's [Queue] interface is preserved; consumers continue to call
+// [Queue.Enqueue]/[Queue.EnqueueBatch] and [Queue.Process] with the same
+// signatures.
 //
-// Each Queue instance generates a per-process consumer ID (UUID v7) that
-// scopes its processing list. Rolling deploys and horizontal scale-out are
-// safe because a fresh consumer never recovers messages from a sibling
-// consumer's in-flight list — the previous shared "{queue}:processing"
-// design double-processed every in-flight message on every restart.
+// Wire envelope: every enqueue creates an [asynq.Task] of type
+// `rho.envelope` whose payload is the kit's [Message] JSON. Asynq's queue
+// (the per-tenant queue name) becomes the routing key. Stuck-task recovery
+// is governed by asynq's invisibility timeout — a worker that crashes
+// mid-handler has its task re-enqueued after the timeout (default 30s)
+// instead of the kit's per-task heartbeat scheme.
 //
-// Limitation: this consumer-scoped recovery model does NOT reclaim
-// messages from a permanently-dead consumer (e.g. a pod that OOM'd and
-// will not return). Operators with that requirement should run a periodic
-// reaper that inspects abandoned per-consumer lists and re-enqueues their
-// contents to the main queue.
-//
-// Concurrency: Enqueue and Stats are safe for concurrent use. Process
-// is single-goroutine per queue name — calling Process concurrently on
-// the same queue will panic; the single-owner contract prevents
-// duplication amplification during crash recovery.
+// Concurrency: Enqueue and Len are safe for concurrent use. Process is
+// single-call per queue name — calling Process concurrently on the same
+// queue will panic; the active-queue guard prevents double-starting an
+// asynq server against the same queue.
 type Queue struct {
-	client goredis.UniversalClient
-	logger *slog.Logger
+	client    *asynq.Client
+	inspector *asynq.Inspector
+	logger    *slog.Logger
 
-	// processingQueue is the temporary holding queue for in-flight messages.
-	// Defaults to "{queue}:processing:{consumerID}".
-	processingQueue string
-
-	// deadLetterQueue stores messages that exceeded max retries.
-	// Defaults to "{queue}:dead".
-	deadLetterQueue string
-
-	// consumerID uniquely identifies this Queue instance for processing-list
-	// scoping. Generated at construction; visible in logs.
 	consumerID string
 
-	blockTimeout   time.Duration
-	maxRetries     int
-	deadLetterMax  int64 // max entries in dead-letter queue; 0 = no limit
-	maxPayloadSize int   // max message size in bytes; 0 = no limit
-
-	// heartbeatTTL is the lifetime of the per-consumer heartbeat key. Recovery
-	// considers a consumer dead when its heartbeat key has expired.
-	heartbeatTTL time.Duration
-
-	// heartbeatInterval is how often the Process loop refreshes the heartbeat key.
-	heartbeatInterval time.Duration
-
-	// recoveryEnabled toggles startup-and-periodic reclaim of stranded
-	// processing lists from dead consumers. Default true.
-	recoveryEnabled bool
-
-	// reapInitialDelay overrides the default reaper warm-up delay. Used by
-	// tests to avoid waiting the full default. Zero means use the default.
-	reapInitialDelay time.Duration
+	maxRetries        int
+	maxPayloadSize    int
+	concurrency       int
+	invisibilityTO    time.Duration
+	shutdownTimeout   time.Duration
+	healthCheckPeriod time.Duration
+	retentionTTL      time.Duration
 
 	metrics *Metrics
 
-	// activeQueues tracks which queue names have an active Process goroutine
-	// to prevent concurrent processing on the same queue.
+	serverFactory func(cfg asynq.Config) asynqServer
+
 	activeQueuesMu sync.Mutex
 	activeQueues   map[string]bool
+}
+
+// asynqServer is the subset of [*asynq.Server] the kit uses, kept as an
+// interface so tests can swap in a fake server without standing up a full
+// Redis stack. The kit deliberately calls Start (non-blocking) +
+// Shutdown rather than Run — Run blocks on SIGINT/SIGTERM, which is the
+// wrong control plane for a library that owns no main() and must shut
+// down on parent-context cancellation.
+type asynqServer interface {
+	Start(handler asynq.Handler) error
+	Shutdown()
+	Stop()
 }
 
 // Option configures a Queue.
@@ -354,61 +344,15 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithBlockTimeout sets how long BLMOVE blocks waiting for messages.
-// The duration must be positive.
-func WithBlockTimeout(d time.Duration) Option {
-	if d <= 0 {
-		panic("redisqueue: WithBlockTimeout requires a positive duration")
-	}
-	return func(q *Queue) {
-		q.blockTimeout = d
-	}
-}
-
-// WithMaxRetries sets the maximum processing attempts before dead-lettering.
-// Negative values panic. Zero dead-letters on the first handler error.
+// WithMaxRetries sets the maximum processing attempts before the task is
+// archived (asynq's "dead-letter"). Negative values panic. Zero archives
+// on the first handler error.
 func WithMaxRetries(n int) Option {
 	if n < 0 {
 		panic("redisqueue: WithMaxRetries requires n >= 0")
 	}
 	return func(q *Queue) {
 		q.maxRetries = n
-	}
-}
-
-// WithProcessingQueue overrides the default processing queue suffix.
-// The final queue name will be "{queue}:{name}" (default suffix: "processing").
-// Panics if name is invalid.
-func WithProcessingQueue(name string) Option {
-	return func(q *Queue) {
-		if err := redis.ValidateName(name, "processing queue"); err != nil {
-			panic("redisqueue: WithProcessingQueue invalid processing queue name")
-		}
-		q.processingQueue = name
-	}
-}
-
-// WithDeadLetterQueue overrides the default dead-letter queue suffix.
-// The final queue name will be "{queue}:{name}" (default suffix: "dead").
-// Panics if name is invalid.
-func WithDeadLetterQueue(name string) Option {
-	return func(q *Queue) {
-		if err := redis.ValidateName(name, "dead-letter queue"); err != nil {
-			panic("redisqueue: WithDeadLetterQueue invalid dead-letter queue name")
-		}
-		q.deadLetterQueue = name
-	}
-}
-
-// WithDeadLetterMaxLen sets the maximum number of entries in the dead-letter
-// queue. When exceeded, the oldest entries are trimmed. 0 means no limit.
-// Negative values panic. Default is 10000.
-func WithDeadLetterMaxLen(n int64) Option {
-	if n < 0 {
-		panic("redisqueue: WithDeadLetterMaxLen requires n >= 0")
-	}
-	return func(q *Queue) {
-		q.deadLetterMax = n
 	}
 }
 
@@ -425,9 +369,7 @@ func WithMaxMessageBytes(n int) Option {
 }
 
 // WithMetricsRegisterer sets the Prometheus registerer for queue
-// metrics. If not set, prometheus.DefaultRegisterer is used. Replaces
-// the v1 WithRegisterer spelling so it no longer collides with the
-// metrics-level option of the same name.
+// metrics. If not set, prometheus.DefaultRegisterer is used.
 func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 	return func(q *Queue) {
 		if reg == nil {
@@ -438,15 +380,14 @@ func WithMetricsRegisterer(reg prometheus.Registerer) Option {
 	}
 }
 
-// WithConsumerID overrides the auto-generated consumer ID. Useful for
-// deterministic tests and for operators that want to give pods stable
-// identities (e.g. derived from the pod name) so abandoned processing
-// lists can be identified after a permanent crash.
+// WithConsumerID overrides the auto-generated consumer ID. The ID is
+// emitted in log lines and exposed via [Queue.ConsumerID]; it does NOT
+// affect asynq's task-claim semantics (asynq scopes claims by server
+// instance, not by a kit-supplied identifier).
 //
-// FR-060 [MED]: panics on IDs longer than [maxConsumerIDLen] or
-// containing characters outside [A-Za-z0-9_-]. Long IDs inflate every
-// processing-list key; ':' and other delimiters confuse the reaper's
-// suffix-stripping logic.
+// Panics on IDs longer than [maxConsumerIDLen] or containing characters
+// outside [A-Za-z0-9_-]. Long IDs inflate every log line; ':' and other
+// delimiters confuse downstream operators reading logs.
 func WithConsumerID(id string) Option {
 	if id != "" && !validConsumerID(id) {
 		panic("redisqueue: WithConsumerID requires a safe bounded token")
@@ -477,72 +418,85 @@ func validConsumerID(id string) bool {
 	return true
 }
 
-// WithHeartbeatTTL sets the lifetime of the per-consumer heartbeat key
-// used by recovery to detect dead consumers. Default is 60s. The duration
-// must be positive. The configured interval must be at most TTL/2 so a
-// single missed refresh does not immediately expire the key; [NewQueue]
-// panics otherwise.
-func WithHeartbeatTTL(d time.Duration) Option {
+// WithConcurrency sets the per-Process asynq worker pool size. Default is
+// 1, which preserves the pre-v2 single-consumer-per-queue behaviour.
+// Larger values opt in to asynq's parallel dispatch. Must be positive.
+func WithConcurrency(n int) Option {
+	if n <= 0 {
+		panic("redisqueue: WithConcurrency requires n > 0")
+	}
+	return func(q *Queue) {
+		q.concurrency = n
+	}
+}
+
+// WithInvisibilityTimeout sets how long asynq waits before re-enqueueing
+// an in-flight task whose worker has not acknowledged completion. Replaces
+// the pre-v2 heartbeat scheme: a worker that crashes mid-handler leaks its
+// task only for the invisibility timeout. Default matches asynq's
+// upstream default (30s). Must be positive.
+func WithInvisibilityTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("redisqueue: WithHeartbeatTTL requires a positive duration")
+		panic("redisqueue: WithInvisibilityTimeout requires a positive duration")
 	}
 	return func(q *Queue) {
-		q.heartbeatTTL = d
+		q.invisibilityTO = d
 	}
 }
 
-// WithHeartbeatInterval sets how often the Process loop refreshes its
-// heartbeat key. Default is 20s. The duration must be positive. Must be at
-// most TTL/2 (see [WithHeartbeatTTL]); [NewQueue] panics otherwise.
-func WithHeartbeatInterval(d time.Duration) Option {
+// WithShutdownTimeout overrides the asynq server's graceful-shutdown
+// timeout (the grace period an in-flight handler is given to return after
+// the parent context is cancelled). Default is 30s. Must be positive.
+func WithShutdownTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("redisqueue: WithHeartbeatInterval requires a positive duration")
+		panic("redisqueue: WithShutdownTimeout requires a positive duration")
 	}
 	return func(q *Queue) {
-		q.heartbeatInterval = d
+		q.shutdownTimeout = d
 	}
 }
 
-// WithoutRecovery opts out of automatic reclaim of stranded processing
-// lists left behind by dead consumers (detected via missing heartbeat).
-// Default Queue behaviour (no option) runs recovery; jobs claimed by a
-// consumer that crashed before deleting them re-enter the pending list
-// for another worker.
-//
-// Use this option only when an external reaper handles recovery or
-// the deployment guarantees consumers always shut down cleanly. With
-// no recovery configured, a hard consumer crash silently strands
-// jobs.
-//
-// Replaces the v1 WithRecoveryEnabled(bool) form so the durability
-// opt-out is a typed named intent rather than a one-token bool flip.
-func WithoutRecovery() Option {
+// WithRetention sets the asynq retention period for completed tasks. By
+// default, asynq deletes a task as soon as the handler returns nil; the
+// retention TTL keeps the asynq Inspector able to display recent
+// completions for operator triage. Zero (default) disables retention.
+// Must be non-negative.
+func WithRetention(d time.Duration) Option {
+	if d < 0 {
+		panic("redisqueue: WithRetention requires d >= 0")
+	}
 	return func(q *Queue) {
-		q.recoveryEnabled = false
+		q.retentionTTL = d
 	}
 }
 
-// NewQueue creates a LIST-based queue. Panics if client is nil, options are
-// invalid, or the auto-generated consumer ID cannot be generated. A
-// consumer-ID generation failure is pathological — it means crypto/rand
-// returned an error, which only happens on a broken OS — so panicking matches
-// the kit-wide convention for invariants the runtime cannot recover from.
+// NewQueue creates a queue backed by asynq, with the given go-redis client
+// providing the underlying Redis connection.
+//
+// Panics if client is nil, options are invalid, or the auto-generated
+// consumer ID cannot be generated. A consumer-ID generation failure is
+// pathological — it means crypto/rand returned an error, which only happens
+// on a broken OS — so panicking matches the kit-wide convention for
+// invariants the runtime cannot recover from.
 func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	if client == nil {
 		panic("redisqueue: NewQueue requires a non-nil Redis client")
 	}
 	q := &Queue{
-		client:            client,
+		client:            asynq.NewClientFromRedisClient(client),
+		inspector:         asynq.NewInspectorFromRedisClient(client),
 		logger:            slog.Default(),
-		blockTimeout:      5 * time.Second,
-		maxRetries:        5,
-		deadLetterMax:     defaultDeadLetterMaxLen,
+		maxRetries:        defaultMaxRetries,
 		maxPayloadSize:    defaultMaxPayloadSize,
-		heartbeatTTL:      defaultHeartbeatTTL,
-		heartbeatInterval: defaultHeartbeatInterval,
-		recoveryEnabled:   true,
+		concurrency:       defaultConcurrency,
+		invisibilityTO:    0,
+		shutdownTimeout:   defaultShutdownTimeout,
+		healthCheckPeriod: defaultHealthCheckInterval,
 		metrics:           defaultMetrics(),
 		activeQueues:      make(map[string]bool),
+	}
+	q.serverFactory = func(cfg asynq.Config) asynqServer {
+		return asynq.NewServerFromRedisClient(client, cfg)
 	}
 	for _, o := range opts {
 		if o == nil {
@@ -558,37 +512,20 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 		q.consumerID = consumerID.String()
 	}
 
-	// Heartbeat-ratio guard: enforce interval <= TTL/2 so one missed refresh
-	// does not immediately expire the key and let a peer's reaper reclaim
-	// this consumer's in-flight messages mid-handler. interval >= TTL is an
-	// outright bug; interval > TTL/2 is the unsafe edge where a single
-	// transient Redis stall causes false-dead reclaim under normal load.
-	if q.heartbeatTTL <= 0 {
-		panic("redisqueue: NewQueue heartbeat TTL must be positive")
-	}
-	if q.heartbeatInterval <= 0 {
-		panic("redisqueue: NewQueue heartbeat interval must be positive")
-	}
-	if q.heartbeatInterval > q.heartbeatTTL/2 {
-		panic("redisqueue: NewQueue heartbeat interval must be at most TTL/2; a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim")
-	}
-
 	return q
 }
 
 func (q *Queue) ready() error {
 	if q == nil ||
 		q.client == nil ||
+		q.inspector == nil ||
 		q.logger == nil ||
 		q.metrics == nil ||
 		!validConsumerID(q.consumerID) ||
-		q.blockTimeout <= 0 ||
 		q.maxRetries < 0 ||
-		q.deadLetterMax < 0 ||
 		q.maxPayloadSize < 0 ||
-		q.heartbeatTTL <= 0 ||
-		q.heartbeatInterval <= 0 ||
-		q.heartbeatInterval > q.heartbeatTTL/2 ||
+		q.concurrency <= 0 ||
+		q.shutdownTimeout <= 0 ||
 		q.activeQueues == nil {
 		return kitqueue.ErrInvalidQueue
 	}
@@ -596,8 +533,7 @@ func (q *Queue) ready() error {
 }
 
 // ConsumerID returns the unique identifier for this Queue instance. Stable
-// for the lifetime of the Queue; included in processing-list naming so
-// crash recovery scopes itself to this consumer's in-flight messages.
+// for the lifetime of the Queue; emitted in logs to disambiguate workers.
 func (q *Queue) ConsumerID() string {
 	if q == nil {
 		return ""
@@ -605,13 +541,33 @@ func (q *Queue) ConsumerID() string {
 	return q.consumerID
 }
 
-// Enqueue adds a message to the queue (LPUSH — left side).
-// Returns an error if the serialized message exceeds the configured max
-// payload size or if Message.ID is not a safe identifier (see
-// [validateMessageID]). Caller-supplied IDs are constrained because the ack
-// path uses the ID as an exact-match key inside a Lua script; allowing
-// arbitrary bytes (quotes, control chars) leaves the door open for ack
-// misses and processing-list corruption.
+// Close releases the underlying asynq client + inspector. The Redis client
+// supplied to [NewQueue] is NOT closed (asynq's docs require the caller to
+// own its lifecycle). Returns the first non-nil close error.
+func (q *Queue) Close() error {
+	if q == nil {
+		return nil
+	}
+	var firstErr error
+	if q.client != nil {
+		if err := q.client.Close(); err != nil {
+			firstErr = fmt.Errorf("close asynq client: %w", err)
+		}
+	}
+	if q.inspector != nil {
+		if err := q.inspector.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close asynq inspector: %w", err)
+		}
+	}
+	return firstErr
+}
+
+// Enqueue adds a message to the named queue. Returns an error if the
+// serialized message exceeds the configured max payload size or if
+// Message.ID is not a safe identifier (see [validateMessageID]).
+// Caller-supplied IDs are used as asynq's per-queue unique TaskID, which
+// gives FR-059 idempotency by default — a second Enqueue with the same
+// (queue, id) returns [asynq.ErrTaskIDConflict] wrapped in a non-nil error.
 func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if err := q.ready(); err != nil {
 		return err
@@ -629,18 +585,19 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
 		return &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize}
 	}
-	if err := q.client.LPush(ctx, queue, data).Err(); err != nil {
-		return fmt.Errorf("lpush: %w", err)
+	task := asynq.NewTask(envelopeTaskType, data)
+	if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
+		return fmt.Errorf("asynq enqueue: %w", err)
 	}
 	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Inc()
 	return nil
 }
 
-// EnqueueBatch adds multiple messages in a single pipeline.
-//
-// Note: Redis pipelines are not atomic. If the pipeline partially fails,
-// some messages may have been enqueued. Callers should treat a pipeline
-// error as "unknown state" and rely on idempotent handlers for deduplication.
+// EnqueueBatch adds multiple messages by issuing one asynq.Enqueue per
+// message. Asynq has no batch enqueue primitive — calls are sequential to
+// keep partial-failure semantics predictable. On the first error the
+// already-enqueued messages remain in the queue and the call returns the
+// error wrapping the index of the failing message.
 func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) error {
 	if err := q.ready(); err != nil {
 		return err
@@ -654,14 +611,13 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	if len(msgs) > kitqueue.MaxBatchMessages {
 		return kitqueue.ErrBatchTooLarge
 	}
-
 	for i, msg := range msgs {
 		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
 			return fmt.Errorf("message [%d]: %w", i, err)
 		}
 	}
 
-	pipe := q.client.Pipeline()
+	label := queueMetricLabel(queue)
 	for i, msg := range msgs {
 		data, err := json.Marshal(msg)
 		if err != nil {
@@ -670,35 +626,49 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 		if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
 			return fmt.Errorf("message [%d]: %w", i, &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize})
 		}
-		pipe.LPush(ctx, queue, data)
-	}
-
-	cmds, err := pipe.Exec(ctx)
-	if err != nil {
-		// Pipeline errors can be partial — count the commands that succeeded.
-		var succeeded int
-		for _, cmd := range cmds {
-			if cmd.Err() == nil {
-				succeeded++
-			}
+		task := asynq.NewTask(envelopeTaskType, data)
+		if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
+			return fmt.Errorf("asynq enqueue [%d]: %w", i, err)
 		}
-		if succeeded > 0 {
-			q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Add(float64(succeeded))
-		}
-		return fmt.Errorf("pipeline exec: %w", err)
+		q.metrics.messagesEnqueued.WithLabelValues(label).Inc()
 	}
-	q.metrics.messagesEnqueued.WithLabelValues(queueMetricLabel(queue)).Add(float64(len(msgs)))
 	return nil
 }
 
-// Process reads messages from the queue and dispatches to handler.
-// Blocks until ctx is cancelled. Automatically restarts on error.
+// enqueueOpts builds the per-message asynq option set. The TaskID is set
+// to the caller-supplied Message.ID so duplicate enqueues of the same ID
+// to the same queue collapse via asynq's idempotency (FR-059); the
+// per-message Timeout enforces the kit's invisibility-timeout contract
+// (asynq has no per-server knob for this); the per-queue Retention keeps
+// completed tasks visible in the asynq UI when [WithRetention] is
+// configured.
+func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
+	opts := []asynq.Option{
+		asynq.Queue(queue),
+		asynq.TaskID(msgID),
+		asynq.MaxRetry(q.maxRetries),
+	}
+	if q.invisibilityTO > 0 {
+		opts = append(opts, asynq.Timeout(q.invisibilityTO))
+	}
+	if q.retentionTTL > 0 {
+		opts = append(opts, asynq.Retention(q.retentionTTL))
+	}
+	return opts
+}
+
+// Process subscribes to the named queue and dispatches each message to
+// handler. Blocks until ctx is cancelled. Internally starts an
+// [asynq.Server] scoped to this single queue; multiple Process calls (on
+// the same or different queue names) each run independent servers.
 //
-// Important: handlers must be idempotent, as messages may be redelivered
-// after crashes (messages are recovered from the processing queue on restart).
+// Important: handlers must be idempotent. Asynq re-enqueues stuck tasks
+// after the invisibility timeout; a worker that crashed mid-handler may
+// see the same task delivered again to another worker.
 //
-// Panics if queue name is empty or handler is nil (programming errors —
-// fail fast at startup rather than on the first message).
+// Panics if queue name is empty, handler is nil, or another Process call
+// is already active for the same queue name on this Queue instance — fail
+// fast at startup rather than on the first message.
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if err := q.ready(); err != nil {
 		panic("redisqueue: Process queue is invalid")
@@ -709,8 +679,10 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if handler == nil {
 		panic("redisqueue: Process requires a non-nil handler")
 	}
+	if q.serverFactory == nil {
+		panic("redisqueue: Process server factory is not initialised")
+	}
 
-	// Guard against concurrent Process on the same queue name.
 	q.activeQueuesMu.Lock()
 	if q.activeQueues[queue] {
 		q.activeQueuesMu.Unlock()
@@ -724,134 +696,166 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 		q.activeQueuesMu.Unlock()
 	}()
 
-	// Always derive per-queue names to prevent cross-contamination when a
-	// single Queue instance processes multiple queue names. Global overrides
-	// (WithProcessingQueue/WithDeadLetterQueue) replace the suffix only,
-	// keeping the queue name as prefix for consistent key namespacing.
-	//
-	// CRITICAL: the processing list is scoped per-consumer (suffix
-	// :{consumerID}) so a fresh consumer never recovers messages claimed by
-	// a sibling consumer that is still alive. The previous shared
-	// "{queue}:processing" design double-processed every in-flight message
-	// on every rolling-deploy restart.
-	processingSuffix := "processing"
-	if q.processingQueue != "" {
-		processingSuffix = q.processingQueue
+	cfg := q.buildServerConfig(queue, handler)
+	srv := q.serverFactory(cfg)
+
+	depthStop := q.startDepthPoller(ctx, queue)
+	defer depthStop()
+
+	asynqHandler := q.handlerForQueue(queue, handler)
+
+	// Start kicks off the asynq worker pool synchronously and returns
+	// once the pool is ready. We then block on the parent context so the
+	// kit's lifecycle (StartProcessors + waitgroup) keeps working
+	// unchanged: Process returns when ctx is cancelled.
+	if err := srv.Start(asynqHandler); err != nil {
+		q.logger.Error("asynq server failed to start",
+			redact.String("queue", queue),
+			redact.String("consumer_id", q.consumerID),
+			redact.Error(err),
+		)
+		return
 	}
-	processingQ := queue + ":" + processingSuffix + ":" + q.consumerID
-	deadQ := queue + ":dead"
-	if q.deadLetterQueue != "" {
-		deadQ = queue + ":" + q.deadLetterQueue
+	<-ctx.Done()
+	// Shutdown drains in-flight handlers up to ShutdownTimeout. Stop is
+	// a no-op afterwards (asynq's contract is "call Shutdown once"); we
+	// keep it on the interface only because tests need to observe the
+	// teardown signal.
+	srv.Shutdown()
+}
+
+// buildServerConfig translates kit options into [asynq.Config]. The
+// per-queue priority map ties this server to exactly one queue name so
+// concurrent Process calls on the same Queue instance do not race on
+// asynq's internal scheduling.
+//
+// Asynq's "invisibility timeout" is enforced per-task via the
+// [asynq.Timeout] enqueue option (see [enqueueOpts]) rather than via a
+// per-server knob — this method only translates server-scoped concerns.
+func (q *Queue) buildServerConfig(queue string, _ Handler) asynq.Config {
+	return asynq.Config{
+		Concurrency: q.concurrency,
+		Queues: map[string]int{
+			queue: 1,
+		},
+		ShutdownTimeout:     q.shutdownTimeout,
+		HealthCheckFunc:     q.healthCheckFunc(queue),
+		HealthCheckInterval: q.healthCheckPeriod,
+		Logger:              asynqSlogAdapter{logger: q.logger, consumerID: q.consumerID},
+		IsFailure:           func(err error) bool { return err != nil },
+		BaseContext:         func() context.Context { return context.Background() },
+		ErrorHandler:        asynq.ErrorHandlerFunc(q.onTaskError(queue)),
 	}
-	processingPrefix := queue + ":" + processingSuffix + ":"
-	heartbeatKey := queue + ":" + heartbeatSuffix + ":" + q.consumerID
-	heartbeatPrefix := queue + ":" + heartbeatSuffix + ":"
+}
 
-	// Write our heartbeat synchronously before starting recovery so that any
-	// peer running recovery against us sees us as alive. Errors are logged
-	// inside refreshHeartbeat; we keep going either way so a transient
-	// blip on first refresh doesn't block process startup.
-	_ = q.refreshHeartbeat(ctx, heartbeatKey)
+// handlerForQueue returns the asynq.Handler that decodes the kit envelope
+// and dispatches to the kit handler.
+func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
+	label := queueMetricLabel(queue)
+	return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+		data := task.Payload()
+		if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize+queueEnvelopeOverhead {
+			err := fmt.Errorf("payload+envelope exceeds %d bytes", q.maxPayloadSize+queueEnvelopeOverhead)
+			q.logger.Error("discarding oversize queue message",
+				redact.String("queue", queue),
+				redact.Error(err),
+			)
+			q.metrics.messagesFailed.WithLabelValues(label).Inc()
+			return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+		}
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			q.logger.Error("discarding undecodable queue message",
+				redact.String("queue", queue),
+				redact.Error(err),
+			)
+			q.metrics.messagesFailed.WithLabelValues(label).Inc()
+			return fmt.Errorf("%w: unmarshal envelope: %w", asynq.SkipRetry, err)
+		}
+		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
+			q.logger.Error("discarding invalid queue message",
+				redact.String("queue", queue),
+				redact.Error(err),
+			)
+			q.metrics.messagesFailed.WithLabelValues(label).Inc()
+			return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+		}
 
-	bgCtx, bgCancel := context.WithCancel(ctx)
-	defer bgCancel()
+		retryCount, _ := asynq.GetRetryCount(ctx)
+		// asynq's retry count is zero-based for the first attempt. The kit's
+		// pre-v2 Message.Attempt was one-based — preserve that for handler
+		// compatibility.
+		msg.Attempt = retryCount + 1
 
-	// processCtx is what the main Process loop and recovery operations run
-	// under. A permanent heartbeat failure cancels it so the local consumer
-	// stops pulling new work the moment a peer reaper is poised to reclaim
-	// our processing list — preventing duplicate dispatch.
-	processCtx, processCancel := context.WithCancel(ctx)
-	defer processCancel()
+		start := time.Now()
+		err := callHandler(ctx, handler, msg)
+		q.metrics.processingDuration.WithLabelValues(label).Observe(time.Since(start).Seconds())
 
-	bgWG := q.startBackgroundLoops(bgCtx, processCancel, queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
-	defer bgWG.Wait()
-
-	redis.RunWithBackoff(processCtx, q.logger, "queue processor", func(ctx context.Context) error {
-		return q.processOnce(ctx, queue, processingQ, deadQ, handler)
+		if err != nil {
+			q.metrics.messagesFailed.WithLabelValues(label).Inc()
+			if apperror.IsPermanent(err) {
+				// Permanent errors skip retries and route straight to the archive.
+				return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+			}
+			q.metrics.messagesRetried.WithLabelValues(label).Inc()
+			return err
+		}
+		q.metrics.messagesProcessed.WithLabelValues(label).Inc()
+		return nil
 	})
 }
 
-// startBackgroundLoops launches the heartbeat refresh goroutine and (when
-// recovery is enabled) the dead-consumer reaper goroutine. Both stop when
-// ctx is cancelled. The cancelProcess callback is invoked when the
-// heartbeat permanently fails — cancelling the local Process loop avoids
-// double-dispatch when a peer reaper is about to reclaim our list.
-// Returns a WaitGroup so Process can wait for them on shutdown — the
-// heartbeat key is intentionally NOT deleted at shutdown so that any
-// in-flight reclaim by a peer fails closed.
-func (q *Queue) startBackgroundLoops(
-	ctx context.Context,
-	cancelProcess context.CancelFunc,
-	queue, heartbeatKey, heartbeatPrefix, processingPrefix, processingQ, deadQ string,
-	handler Handler,
-) *sync.WaitGroup {
-	wg := &sync.WaitGroup{}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		q.heartbeatLoop(ctx, heartbeatKey, cancelProcess)
-	}()
-
-	if q.recoveryEnabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			q.reaperLoop(ctx, queue, heartbeatPrefix, processingPrefix, processingQ, deadQ, handler)
-		}()
-	}
-
-	return wg
-}
-
-func (q *Queue) processOnce(ctx context.Context, queue, processingQ, deadQ string, handler Handler) error {
-	// First, recover any messages left in the processing queue (crash recovery).
-	if _, err := q.recoverProcessing(ctx, processingQ, queue, deadQ, handler); err != nil {
-		return err
-	}
-
-	// Initial depth snapshot before entering the processing loop.
-	q.updateProcessingDepth(ctx, queue, processingQ, deadQ)
-
-	// recoveryInterval interleaves recovery passes with new-message reads so
-	// a permanent processing-list backlog doesn't head-of-line-block normal
-	// traffic. Every recoveryInterval BLMove iterations we run another
-	// bounded recoverProcessing pass; the per-pass batch (10) and the
-	// interval (10) together amortise an N-entry backlog over N normal
-	// messages. This mirrors the data/stream consumer's claimMinIdle cadence.
-	const recoveryInterval = 10
-	iter := 0
-
-	for {
-		if iter > 0 && iter%recoveryInterval == 0 {
-			if _, err := q.recoverProcessing(ctx, processingQ, queue, deadQ, handler); err != nil {
-				return err
-			}
+// onTaskError is the per-server ErrorHandler. Asynq invokes it AFTER the
+// handler returns an error and AFTER the retry decision is made. We use it
+// to count dead-lettered (archived) tasks and surface log lines with the
+// kit's redact discipline.
+func (q *Queue) onTaskError(queue string) func(ctx context.Context, t *asynq.Task, err error) {
+	label := queueMetricLabel(queue)
+	return func(ctx context.Context, t *asynq.Task, err error) {
+		retried, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
+		taskID, _ := asynq.GetTaskID(ctx)
+		if retried >= maxRetry || errors.Is(err, asynq.SkipRetry) {
+			q.metrics.messagesDeadLettered.WithLabelValues(label).Inc()
+			q.logger.Error("queue message archived after exhausting retries",
+				redact.String("queue", queue),
+				redact.String("task_id", taskID),
+				"retried", retried,
+				"max_retry", maxRetry,
+				redact.Error(err),
+			)
+			return
 		}
-
-		// BLMOVE atomically pops from queue (right) and pushes to processingQ (left).
-		// This ensures messages survive consumer crashes.
-		result, err := q.client.BLMove(ctx, queue, processingQ, "RIGHT", "LEFT", q.blockTimeout).Result()
-		if err != nil {
-			if errors.Is(err, goredis.Nil) {
-				// Timeout with no messages — good time to update the depth gauge.
-				// This throttles the LLen call to at most once per blockTimeout
-				// instead of once per message, reducing Redis round-trips.
-				q.updateProcessingDepth(ctx, queue, processingQ, deadQ)
-				continue
-			}
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("blmove: %w", err)
-		}
-
-		q.handleMessage(ctx, result, processingQ, queue, deadQ, handler)
-		iter++
+		q.logger.Warn("queue handler returned error; asynq will retry",
+			redact.String("queue", queue),
+			redact.String("task_id", taskID),
+			"retried", retried,
+			"max_retry", maxRetry,
+			redact.Error(err),
+		)
 	}
 }
 
-// Len returns the number of messages in the queue.
+// healthCheckFunc is invoked periodically by asynq with the most recent
+// broker-ping error (nil when healthy). We log degraded states so
+// operators see Redis connectivity problems without standing up extra
+// metrics.
+func (q *Queue) healthCheckFunc(queue string) func(error) {
+	return func(err error) {
+		if err == nil {
+			return
+		}
+		q.logger.Warn("asynq broker health check failed",
+			redact.String("queue", queue),
+			redact.String("consumer_id", q.consumerID),
+			redact.Error(err),
+		)
+	}
+}
+
+// Len returns the number of pending (waiting) messages in the named queue
+// using asynq's Inspector. Reports zero (no error) for an unknown queue,
+// matching pre-v2 LLEN-of-missing-key behaviour.
 func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 	if err := q.ready(); err != nil {
 		return 0, err
@@ -859,9 +863,59 @@ func (q *Queue) Len(ctx context.Context, queue string) (int64, error) {
 	if err := redis.ValidateName(queue, "queue"); err != nil {
 		return 0, err
 	}
-	n, err := q.client.LLen(ctx, queue).Result()
-	if err != nil {
-		return 0, fmt.Errorf("llen: %w", err)
+	// asynq.Inspector.GetQueueInfo doesn't accept a context; wrap a
+	// best-effort cancellation check so callers passing a cancelled ctx
+	// don't pay for a Redis round-trip.
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	return n, nil
+	info, err := q.inspector.GetQueueInfo(queue)
+	if err != nil {
+		if isQueueNotFoundError(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("inspect queue: %w", err)
+	}
+	return int64(info.Pending), nil
 }
+
+// isQueueNotFoundError detects asynq's "queue does not exist" condition.
+// asynq's Inspector.GetQueueInfo does NOT wrap the exported
+// [asynq.ErrQueueNotFound] sentinel — it returns its internal `errors.E`
+// type whose string starts with `NOT_FOUND:`. We match on that prefix
+// because there is no public Go API to type-assert it.
+func isQueueNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, asynq.ErrQueueNotFound) {
+		return true
+	}
+	return strings.HasPrefix(err.Error(), "NOT_FOUND:") ||
+		strings.Contains(err.Error(), "NOT_FOUND: queue ")
+}
+
+// asynqSlogAdapter routes asynq's [asynq.Logger] interface into the kit's
+// [slog.Logger] so operators see queue server lifecycle events alongside
+// the rest of the kit's structured logs.
+type asynqSlogAdapter struct {
+	logger     *slog.Logger
+	consumerID string
+}
+
+func (a asynqSlogAdapter) log(level slog.Level, args ...any) {
+	if a.logger == nil {
+		return
+	}
+	msg := fmt.Sprint(args...)
+	a.logger.Log(context.Background(), level, msg, redact.String("consumer_id", a.consumerID))
+}
+
+func (a asynqSlogAdapter) Debug(args ...any) { a.log(slog.LevelDebug, args...) }
+func (a asynqSlogAdapter) Info(args ...any)  { a.log(slog.LevelInfo, args...) }
+func (a asynqSlogAdapter) Warn(args ...any)  { a.log(slog.LevelWarn, args...) }
+func (a asynqSlogAdapter) Error(args ...any) { a.log(slog.LevelError, args...) }
+func (a asynqSlogAdapter) Fatal(args ...any) { a.log(slog.LevelError, args...) }
+
+// _ asserts the slog adapter implements asynq.Logger.
+var _ asynq.Logger = asynqSlogAdapter{}
