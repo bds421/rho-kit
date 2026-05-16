@@ -60,6 +60,7 @@ use (
 	./httpx/middleware/signedrequest/redis
 	./httpx/websocket
 	./infra
+	./infra/leaderelection/etcd
 	./infra/leaderelection/k8slease
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/redislock

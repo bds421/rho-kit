@@ -84,6 +84,9 @@ k8s.io/api
 k8s.io/apimachinery
 k8s.io/client-go
 
+# etcd-native leader election (infra/leaderelection/etcd only).
+go.etcd.io/etcd/client/v3
+
 # Test infrastructure.
 github.com/stretchr/testify
 github.com/testcontainers/testcontainers-go

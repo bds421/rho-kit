@@ -95,6 +95,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/redis/v2` | Adapter | No rename/remove | Redis connection/config/health helpers. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/v2` | Adapter | No rename/remove | pgx pool, migrations, COPY helper. |
 | `github.com/bds421/rho-kit/infra/sqldb/dbtest/v2` | Integration test helper | No rename/remove | Docker-backed Postgres test helper, not production runtime. |
+| `github.com/bds421/rho-kit/infra/leaderelection/etcd/v2` | Adapter | No rename/remove | Leader election using etcd lease + concurrency.Election via go.etcd.io/etcd/client/v3. For bare-metal / VM deployments that already run etcd. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | No rename/remove | Leader election using Kubernetes coordination.k8s.io/v1 Lease objects via k8s.io/client-go. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | No rename/remove | Leader election using Postgres advisory locks. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | No rename/remove | Leader election using Redis locks. |

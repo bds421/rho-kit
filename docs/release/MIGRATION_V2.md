@@ -366,6 +366,16 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike pgadvisory / redislock which loop the acquire path, client-go's `LeaderElector` already owns the acquire / renew / retry loop and is one-shot. `Run` delegates to it and returns once leadership ends (either ctx cancel or the Lease was taken by a peer). Callers that want continuous re-election should wrap `Run` in `lifecycle.Runner` (its restart policy handles this naturally). `ReleaseOnCancel` is enabled so an orderly shutdown hands the Lease back to peers immediately rather than forcing them to wait out the full lease duration. |
 | Metrics | `leaderelection_callback_drain_seconds{namespace,name,state}` and `leaderelection_callback_drain_warn_total{namespace,name}` — the Lease coordinates (namespace, name) replace `key` because they match the operator's mental model for Kubernetes objects. |
 
+### `infra/leaderelection/etcd` (new)
+
+| Area | Migration |
+|---|---|
+| New adapter | `infra/leaderelection/etcd` (wave 160) implements `leaderelection.Elector` on top of `go.etcd.io/etcd/client/v3/concurrency`. Recommended for bare-metal / VM deployments that already run etcd for service-discovery or configuration; pairs naturally with services where `kubectl` is not available but `etcdctl` is. |
+| Construction | `etcd.New(client *clientv3.Client, electionKey, identity string, opts ...Option)`. Election key MUST begin with `/`, must not exceed 256 bytes, and must not contain control bytes. Identity MUST be unique per replica. Options: `WithLeaseTTLSeconds` (default 15), `WithReacquireBackoff` (default 2 s), `WithLogger`, `WithMetrics`, `WithCallbackDrainWarnInterval`, `WithCallbackDrainTimeout` — same shape as k8slease / pgadvisory / redislock. |
+| Heavy-SDK boundary | This is the only place inside the kit that depends on `go.etcd.io/etcd/client/v3`. Consumers that do not run on etcd never import this package and never pull the dep transitively. `make check-dependency-boundaries` enforces the same isolation that holds for `k8s.io/client-go`, the AMQP/NATS/Kafka backends, and the cloud-storage adapters. |
+| Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
+| Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
+
 ### `data/budget/memory`, `data/ratelimit/gcra`, `data/ratelimit/tokenbucket`
 
 | Area | Migration |
