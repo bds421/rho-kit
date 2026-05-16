@@ -54,6 +54,8 @@ use (
 	./data/stream/redisstream
 	./data/tenant
 	./examples/agentic-service
+	./examples/background-worker
+	./examples/webhook-receiver
 	./flags
 	./grpcx
 	./httpx
