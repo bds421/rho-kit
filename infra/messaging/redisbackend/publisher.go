@@ -2,8 +2,8 @@ package redisbackend
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	stream "github.com/bds421/rho-kit/data/stream/redisstream/v2"
 	"github.com/bds421/rho-kit/infra/v2/messaging"
 )
@@ -98,7 +98,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 		var err error
 		sm, err = sm.WithHeader(headerRoutingKey, routingKey)
 		if err != nil {
-			return fmt.Errorf("redisbackend: attach routing-key header: %w", err)
+			return redact.WrapError("redisbackend: attach routing-key header", err)
 		}
 	}
 	_, err := p.producer.Publish(ctx, exchange, sm)
