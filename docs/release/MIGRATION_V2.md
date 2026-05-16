@@ -809,32 +809,28 @@ Operator notes:
   surface covers PLAIN and SCRAM. Cloud-managed Kafka brokers that
   mandate OAUTHBEARER (Confluent Cloud, AWS MSK with IAM) cannot wire
   through kafkabackend today; tracked as a follow-up wave.
-- **Metrics label cardinality.** Subscriber-side metrics use raw
-  `topic` and `group` labels by default; publisher-side metrics use
-  `WithOpaqueRouteLabels` (default) to map per-route segments into a
-  bounded label space. A consumer-side `WithOpaqueConsumeLabels` toggle
-  is tracked for a future wave so operators with a high cardinality of
-  consumer groups can opt into the bounded shape. Until then, audit
-  the deployment's `(topic, group)` set before scraping.
+- **Metrics label cardinality.** Both publisher-side and consumer-side
+  metrics default to `WithOpaqueRouteLabels` / `WithOpaqueConsumeLabels`
+  in v2 (wave 140), projecting `(topic, group)` and `(topic, routing_key)`
+  through `promutil.OpaqueLabelValue` so per-tenant naming cannot blow
+  up Prometheus cardinality. Deployments with audited static topology
+  can opt out via `WithRawRouteLabels` / `WithRawConsumeLabels`.
 
-## Future: post-2.0.0 messaging metric label cardinality
+## Messaging metric label cardinality (resolved in wave 140)
 
-`infra/messaging/natsbackend` and `infra/messaging/kafkabackend` emit
-consume-side metrics with raw `stream`/`durable` (NATS) and
-`topic`/`group` (Kafka) labels. The kit-wide convention for HTTP
-routes is to project caller-supplied path segments through
-`promutil.OpaqueLabelValue` to bound cardinality. Messaging consume
-labels follow a different shape today — most deployments have static,
-operator-managed stream/group sets (low cardinality by construction),
-so the trade-off has not bitten. A follow-up wave will add the
-`WithOpaqueConsumeLabels` toggle to both backends without forcing the
-cardinality change. AMQP publisher-side metrics already received the
-opaque-labels treatment in wave 36 (commit `b0ae9e1`).
+`infra/messaging/natsbackend` and `infra/messaging/kafkabackend` project
+consume-side `(stream, durable)` (NATS) and `(topic, group)` (Kafka)
+labels through `promutil.OpaqueLabelValue` by default as of wave 140.
+This matches the kit-wide HTTP-route convention and AMQP publisher-side
+labels (wave 36). Deployments with audited static stream/group naming
+can opt out per backend with `WithRawConsumeLabels`.
 
 ## 9. Things Not Migrated In v2.0.0
 
 The following remain out of scope for v2.0.0 and should not block adoption:
 
-- Kubernetes/etcd leader-election adapters.
 - Additional managed-KMS adapters beyond the currently frozen AWS KMS, Azure
   Key Vault, Google Cloud KMS, and HashiCorp Vault Transit adapter modules.
+
+Kubernetes/coordination.k8s.io leader-election shipped in wave 127 (kept).
+etcd leader-election is now in scope and tracked as a v2.0.0 wave.
