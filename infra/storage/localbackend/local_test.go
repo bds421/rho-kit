@@ -506,7 +506,10 @@ func TestLocalBackend_RejectsSymlinkedRoot(t *testing.T) {
 			objects = append(objects, obj)
 		}
 		require.NotEmpty(t, errs)
-		assert.Contains(t, errs[0].Error(), "symlink")
+		// Wave 143 redacts inner driver text — assert the kit-controlled
+		// prefix is present so callers still know the failure originated
+		// in the localbackend's unsafe-root guard.
+		assert.Contains(t, errs[0].Error(), "unsafe root")
 		assert.Empty(t, objects)
 	})
 }

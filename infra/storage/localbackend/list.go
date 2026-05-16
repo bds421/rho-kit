@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/infra/v2/storage"
 )
 
@@ -24,31 +25,31 @@ func (b *Backend) List(ctx context.Context, prefix string, opts storage.ListOpti
 			return
 		}
 		if err := storage.ValidatePrefix(prefix); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("localbackend", err))
 			return
 		}
 		if err := storage.ValidateListOptions(opts); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("localbackend", err))
 			return
 		}
 
 		walkRoot := b.root
 		if err := b.rejectSymlinkPath(walkRoot); err != nil {
-			yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: unsafe root: %w", err))
+			yield(storage.ObjectInfo{}, redact.WrapError("localbackend: unsafe root", err))
 			return
 		}
 		if prefix != "" {
 			var err error
 			walkRoot, err = b.keyPath(strings.TrimSuffix(prefix, "/"))
 			if err != nil {
-				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: %w", err))
+				yield(storage.ObjectInfo{}, redact.WrapError("localbackend", err))
 				return
 			}
 			if err := b.rejectSymlinkPath(walkRoot); err != nil {
 				if os.IsNotExist(err) {
 					return
 				}
-				yield(storage.ObjectInfo{}, fmt.Errorf("localbackend: unsafe prefix: %w", err))
+				yield(storage.ObjectInfo{}, redact.WrapError("localbackend: unsafe prefix", err))
 				return
 			}
 		}
