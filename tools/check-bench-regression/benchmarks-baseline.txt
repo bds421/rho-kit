@@ -1,0 +1,10 @@
+# rho-kit hot-path benchmark baseline (wave 175). One line per benchmark:
+#   <BenchmarkName>  <ns_per_op>  <allocs_per_op>  <bytes_per_op>
+# Re-run with `tools/check-bench-regression.sh -update` after intentional perf changes.
+
+BenchmarkConnLimiter_Parallel 295 0 0
+BenchmarkConnLimiter_TryAcquireRelease 5 0 0
+BenchmarkOpaqueLabelValue 128 4 96
+BenchmarkValidateStaticLabelValue 19 0 0
+BenchmarkWrapError 13 1 32
+BenchmarkWrapError_NilError 0 0 0

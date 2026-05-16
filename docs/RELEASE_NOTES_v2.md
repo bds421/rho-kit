@@ -1424,6 +1424,18 @@ in v2.0.0.
   detailed composition recipes for realtime-broadcast,
   api-gateway, and saga-coordinator that point at the kit packages
   each pattern composes.
+- **Wave 175:** Per-hot-path benchmark regression gate. Six
+  benchmarks cover the kit's most-amplified-cost helpers
+  (`redact.WrapError`, `promutil.OpaqueLabelValue`,
+  `promutil.ValidateStaticLabelValue`,
+  `websocket.connLimiter`); the
+  `tools/check-bench-regression` runner compares to a checked-in
+  baseline (`benchmarks-baseline.txt`) and fails when ns/op
+  exceeds the baseline tolerance (default 25%) or allocs/op
+  doubles. Exposed via `make bench`, `make check-bench-regression`,
+  `make update-bench-baseline`. NOT wired into `make ci` by
+  default — benchmark noise across CI runners is too high; the
+  gate is intended for local pre-PR + dedicated nightly runners.
 
 ## What's deliberately NOT shipped
 

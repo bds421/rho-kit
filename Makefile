@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap check-doc-rot bench check-bench-regression update-bench-baseline
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -161,6 +161,19 @@ check-dashboard-labels:
 ## check-doc-rot: Validate every "wave N" reference in docs/ has a matching commit; flag unanchored "future wave" claims.
 check-doc-rot:
 	@bash tools/check-doc-rot.sh
+
+## bench: Run all kit hot-path benchmarks (used by check-bench-regression).
+bench:
+	@go test -run '^$$' -bench '.' -benchmem -benchtime 1s \
+		./core/redact/... ./observability/promutil/... ./httpx/websocket/...
+
+## check-bench-regression: Compare hot-path benchmarks to the checked-in baseline.
+check-bench-regression:
+	@bash tools/check-bench-regression.sh
+
+## update-bench-baseline: Re-measure and overwrite tools/check-bench-regression/benchmarks-baseline.txt.
+update-bench-baseline:
+	@bash tools/check-bench-regression.sh -update
 
 ## check-release-team: Verify the @bds421/security team and branch protection exist before tagging.
 check-release-team:
