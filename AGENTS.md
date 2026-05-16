@@ -106,6 +106,59 @@ Notes:
 
 For services that outgrow the Builder (custom transports, non-standard shutdown ordering), use `lifecycle.Runner` + `config.Load` directly. See the "Manual Wiring" section in [docs/ai/bootstrap.md](docs/ai/bootstrap.md). New downstream services should also read [docs/ai/adoption.md](docs/ai/adoption.md) for the `go.mod` and common-mistakes checklist.
 
+## Service Pattern Decision Tree
+
+The "Package Decision Tree" below maps a SINGLE requirement
+("I need to validate a JWT") to one package. This section
+maps an entire SERVICE SHAPE to the canonical kit composition,
+so a coding agent starting from "build me a webhook
+receiver" lands on the right 5–10 packages without reading the
+whole catalog.
+
+| Building this kind of service... | Start from | Compose these packages |
+|---|---|---|
+| **Public-facing HTTP/JSON API** (orders, accounts, products) | [examples/api-gateway](examples/api-gateway) | `app.Builder` + `apphttp.Module` + `jwt.Module` + `ratelimit.IP` + `httpx/middleware/idempotency` + `data/idempotency/pgstore` (or `redisstore`) + `resilience/circuitbreaker` + `resilience/retry` for downstreams |
+| **B2B webhook receiver** (Stripe, GitHub, etc. push to us) | [examples/webhook-receiver](examples/webhook-receiver) | `signedrequest.Middleware` + `signedrequest.NewMemoryNonceStore` (or Redis) + `httpx/middleware/idempotency` + `data/idempotency/pgstore` + typed JSON handler + optionally `infra/outbox` for crash-safe downstream dispatch |
+| **Async background worker** (consumes a queue, processes, retries) | [examples/background-worker](examples/background-worker) | `messaging.TypedSubscription[T]` + a backend Consumer (`amqpbackend` / `kafkabackend` / `natsbackend` / `redisbackend`) + `resilience/circuitbreaker` + `resilience/retry` + `runtime/lifecycle.Runner` |
+| **Browser real-time** (live updates, presence, chat) | [examples/realtime-broadcast](examples/realtime-broadcast) | `realtime/centrifuge.NewNode` + `security/jwtutil.Provider` + `centrifuge.WithChannelClassifier` + `lifecycle.Component` wiring + optionally Redis presence backend |
+| **Multi-step transactional workflow** (saga: reserve → charge → ship → compensate on fail) | [examples/saga-coordinator](examples/saga-coordinator) | `runtime/saga.Run` + `data/idempotency.Store` (pgstore in prod) + `data/lock/pgadvisory.AcquireTx` + optionally `infra/outbox` for crash-safe step-event dispatch |
+| **gRPC service** (internal RPC, server-streaming) | manual wiring on `app.Builder` | `app/grpc.Module` + `grpcx/interceptor.MaxConcurrentStreamsServer` + `grpcx/interceptor.StreamIdleTimeout` + `resilience/retry` for downstream clients |
+| **Leader-elected periodic job** (cron-on-one-replica only) | manual wiring | `runtime/cron.Scheduler` + `cron.WithLeaderGate(elector.IsLeader)` + `infra/leaderelection/{pgadvisory \| k8slease \| etcd \| redislock}` |
+| **High-fanout HTTP gateway** (one request fans to N downstreams under a shared SLO) | extend `examples/api-gateway` | Add `resilience/timeoutbudget.New(ctx, totalSLO)` at request entry + `resilience/bulkhead.New(downstream, max)` per downstream + the api-gateway core composition |
+| **Background AI-tooling service** (MCP server, tool dispatch with budget + approval) | [examples/agentic-service](examples/agentic-service) | `httpx/mcp.NewServer` + `data/budget` + `data/approval` + `data/actionlog` + `httpx/middleware/tenant` |
+| **Postgres-backed CRUD with row-level multi-tenancy** | manual wiring | `app/postgres.Module` + `infra/sqldb/pgx` pool + `core/tenant.Scope` + `data/tenant.WhereClause` + `core/validate` |
+
+For every row, the linked example is the canonical starting
+point — it compiles, has a smoke test, and is checked by
+`kit-doctor`. Production wiring substitutes the example's
+in-memory stores for the persistent equivalents documented in
+the example's README.
+
+### Wiring discipline that applies to every shape
+
+These ALWAYS belong in the composition, regardless of which
+row you start from:
+
+- **`app.Builder`** is the canonical bootstrap — every example
+  uses it (the smoke tests bypass it for testability, NOT
+  because Builder is optional). The Builder's startup
+  validator (TLS / JWT issuer-audience / internal-host
+  loopback / sslmode) is the fail-loud guardrail you want.
+- **`observability/logattr`** is the canonical log-field
+  vocabulary — see [docs/LOGGING_CONVENTIONS.md](docs/LOGGING_CONVENTIONS.md)
+  for the field contract and incident-query examples.
+- **`core/redact.WrapError`** wraps every cross-boundary
+  error — never `fmt.Errorf` raw inner errors across an HTTP
+  / gRPC / messaging boundary.
+- **Run `kit-doctor` before merging** — catches the dozen
+  most-common misuses (missing JWT claims, idempotency
+  in-memory in production, missing rate-limit, etc.). The
+  rule list is exhaustive and the suppression markers are
+  documented.
+- **Run `kit-catalog`** at the fleet level when a kit version
+  changes — answers "which services pin which kit modules
+  where" without grep.
+
 ## Package Decision Tree
 
 > **Import paths.** All packages are at `github.com/bds421/rho-kit/<table-path>/v2` (the `/v2` suffix is mandatory per Go module versioning).
