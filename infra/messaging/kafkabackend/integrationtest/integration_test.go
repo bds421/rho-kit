@@ -39,9 +39,58 @@ func createTopic(t *testing.T, brokers []string, topic string) {
 	for name, terr := range resp.Errors {
 		require.NoErrorf(t, terr, "create topic %s", name)
 	}
-	// Brief settle so a fresh topic's metadata propagates to the
-	// publisher/consumer cache.
-	time.Sleep(500 * time.Millisecond)
+	// Poll the metadata endpoint until the new topic is visible to the
+	// broker's discovery layer. This replaces a fixed-duration sleep
+	// (brittle on slow CI) with an observable readiness signal.
+	require.Eventually(t, func() bool {
+		mResp, mErr := client.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{topic}})
+		if mErr != nil {
+			return false
+		}
+		for _, top := range mResp.Topics {
+			if top.Name == topic && top.Error == nil && len(top.Partitions) > 0 {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 100*time.Millisecond, "topic %s did not propagate to broker metadata", topic)
+}
+
+// waitForConsumerGroupAssignment publishes probe messages to `topic`
+// until the subscriber's handler observes one. This signals that the
+// consumer group has finished joining + rebalance and is actively
+// fetching from the assigned partition — a programmatic replacement
+// for the historical "sleep 2s and hope" pattern, which is brittle on
+// slow CI.
+//
+// `probeType` is the Message.Type the test publishes for probes;
+// `gotProbe` is a channel the test handler signals on when a probe
+// delivery arrives. The helper drains and discards the probe so the
+// caller's main assertion path is not polluted.
+func waitForConsumerGroupAssignment(
+	t *testing.T,
+	ctx context.Context,
+	pub *kafkabackend.Publisher,
+	topic, probeType string,
+	gotProbe <-chan struct{},
+) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		msg, err := messaging.NewMessage(probeType, map[string]string{"probe": "1"})
+		if err == nil {
+			_ = pub.Publish(ctx, topic, probeType, msg)
+		}
+		select {
+		case <-gotProbe:
+			return
+		case <-time.After(250 * time.Millisecond):
+			continue
+		case <-ctx.Done():
+			t.Fatalf("ctx cancelled while waiting for consumer-group assignment on %s", topic)
+		}
+	}
+	t.Fatalf("consumer group never observed a probe delivery on %s within 20s", topic)
 }
 
 func startKafka(t *testing.T) []string {
@@ -89,6 +138,8 @@ func TestPublishConsume_RoundTrip(t *testing.T) {
 	defer cancel()
 
 	got := make(chan messaging.Delivery, 8)
+	probe := make(chan struct{}, 1)
+	const probeType = "_probe.assignment"
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -96,13 +147,21 @@ func TestPublishConsume_RoundTrip(t *testing.T) {
 		_ = sub.Consume(ctx, messaging.Binding{
 			BindingSpec: messaging.BindingSpec{Exchange: topic, Queue: group},
 		}, func(_ context.Context, d messaging.Delivery) error {
+			if d.Message.Type == probeType {
+				select {
+				case probe <- struct{}{}:
+				default:
+				}
+				return nil
+			}
 			got <- d
 			return nil
 		})
 	}()
 
-	// Allow consumer-group join + initial offset fetch before publishing.
-	time.Sleep(2 * time.Second)
+	// Wait for the consumer group to actively fetch from the topic
+	// before publishing test traffic. Replaces a fixed-duration sleep.
+	waitForConsumerGroupAssignment(t, ctx, pub, topic, probeType, probe)
 
 	for _, name := range []string{"alice", "bob", "carol"} {
 		msg, err := messaging.NewMessage("user.created", map[string]string{"name": name})
@@ -147,6 +206,8 @@ func TestSubscriber_PermanentErrorAdvancesOffset(t *testing.T) {
 	defer cancel()
 
 	calls := make(chan messaging.Delivery, 4)
+	probe := make(chan struct{}, 1)
+	const probeType = "_probe.permanent"
 	var mu sync.Mutex
 	var attempts int
 	var wg sync.WaitGroup
@@ -156,6 +217,13 @@ func TestSubscriber_PermanentErrorAdvancesOffset(t *testing.T) {
 		_ = sub.Consume(ctx, messaging.Binding{
 			BindingSpec: messaging.BindingSpec{Exchange: topic, Queue: group},
 		}, func(_ context.Context, d messaging.Delivery) error {
+			if d.Message.Type == probeType {
+				select {
+				case probe <- struct{}{}:
+				default:
+				}
+				return nil
+			}
 			mu.Lock()
 			attempts++
 			mu.Unlock()
@@ -167,7 +235,7 @@ func TestSubscriber_PermanentErrorAdvancesOffset(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(2 * time.Second)
+	waitForConsumerGroupAssignment(t, ctx, pub, topic, probeType, probe)
 
 	poison, err := messaging.NewMessage("poison.pill", map[string]string{"k": "v"})
 	require.NoError(t, err)

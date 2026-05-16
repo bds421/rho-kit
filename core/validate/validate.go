@@ -163,6 +163,15 @@ func (v *Validator) Struct(s any) error {
 // float64 depending on the unmarshal path. Functions should accept
 // the broader shape rather than assert a Go type, since santhosh-
 // tekuri may pass either depending on the schema.
+//
+// Convention deviation: most of the kit's option-style helpers panic
+// on programmer error at construction time. RegisterFormat returns
+// error instead because (a) it can be called after a Validator has
+// already served traffic, so a panic here would be a runtime crash
+// rather than a startup crash; (b) existing callers branch on the
+// error to surface "duplicate format" / "validator already frozen"
+// through ops dashboards. See `core/validate/doc.go` and the
+// `validate.RegisterFormat` entry in `docs/release/MIGRATION_V2.md`.
 func (v *Validator) RegisterFormat(name string, fn FormatFunc) error {
 	if name == "" {
 		return errors.New("validate: RegisterFormat name must not be empty")

@@ -25,6 +25,20 @@ import (
 // Consume calls on different bindings is supported but each call
 // constructs a private Reader for the duration of the call (so each
 // binding has its own offset state inside the same group).
+//
+// # Shutdown semantics — at-least-once redelivery
+//
+// When the parent ctx is cancelled, [Subscriber.dispatch] still calls
+// [Reader.CommitMessages] for completed handlers through
+// commitWithOutcome. Because the same ctx is the one that triggered
+// shutdown, kafka-go's commit may surface a "ctx cancelled" error and
+// the offset will not advance on the broker. The next consumer to
+// join the group will re-fetch the same message — this is the
+// intended at-least-once shape. kafkabackend prefers a duplicate
+// delivery on restart over silently advancing an offset on a
+// cancelled commit. Operators relying on exactly-once semantics must
+// layer idempotency at the handler or downstream-store level; the
+// kit's [data/v2/idempotency] package is the canonical hook.
 type Subscriber struct {
 	cfg     Config
 	groupID string

@@ -53,7 +53,12 @@ Otherwise the kit should wrap and add value at the integration seam.
 | `crypto/envelope/azurekeyvault` | Azure Key Vault SDK | Same shape. |
 | `crypto/envelope/vaulttransit` | HashiCorp Vault SDK | Same shape. |
 | `runtime/cron` | `robfig/cron/v3` | Scheduler lifecycle + metrics + panic recovery. |
-| `core/validate` | `go-playground/validator` | apperror conversion + JSON tag binding. |
+| `core/validate` | `google/jsonschema-go` + `santhosh-tekuri/jsonschema/v6` | Wave 124 migration off `go-playground/validator`; apperror conversion, JSON tag binding, and JSON-Schema emission for OpenAPI / MCP descriptors. |
+| `data/queue/redisqueue` | `hibiken/asynq` | Wave 122 migration; kit owns the `Queue` seam, asynq owns claim/recovery/scheduling. |
+| `data/lock/redislock` | `go-redsync/redsync/v4` | Wave 126 migration to single-pool Redlock primitives; kit owns the `Locker`/`Lock` seam and `DegradedLocker`. |
+| `data/ratelimit/tokenbucket` | `golang.org/x/time/rate` | Wave 125 migration; kit owns the per-key map + sweeper + lifecycle. |
+| `httpx/mcp` | `modelcontextprotocol/go-sdk` | Wave 121 migration; kit owns audit/tenant/destructive-gate, SDK owns the Streamable HTTP transport + spec compliance. |
+| `infra/leaderelection/k8slease` | `k8s.io/client-go/tools/leaderelection` | Wave 127; thin adapter over Lease objects. |
 | `core/config/watcher` | `fsnotify` | Watchable wrapper for hot reload. |
 | `security/jwtutil` | `lestrrat-go/jwx/v3` | JWKS lifecycle + revocation + timing-floor + metrics + rotating SigningProvider mirroring `crypto/paseto.SigningProvider`. |
 | `authz/openfga` | `openfga/go-sdk` | Thin Decider adapter. |

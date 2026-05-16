@@ -55,11 +55,12 @@ func TestElector_Run_AcquiresAndShutsDownOnCtxCancel(t *testing.T) {
 
 	go func() {
 		runErr <- e.Run(ctx, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) {
+			OnAcquired: func(cbCtx context.Context) {
 				select {
 				case acquired <- struct{}{}:
 				default:
 				}
+				<-cbCtx.Done()
 			},
 			OnLost: func() { lost.Add(1) },
 		})
@@ -88,6 +89,12 @@ func TestElector_Run_AcquiresAndShutsDownOnCtxCancel(t *testing.T) {
 
 // A second Elector for the same key is blocked while the first holds the lock,
 // then wins once the first goroutine releases.
+//
+// OnAcquired must BLOCK until leadership ends; returning immediately would
+// cause the elector to loop and re-acquire, dropping the lock between
+// iterations and letting e2 sneak in. The callback signature is "run work
+// until ctx is cancelled, then return"; the tests model that by signalling
+// on a one-shot chan, then blocking on cbCtx.Done().
 func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 	client := redisClient(t)
 	key := uniqueKey(t, "competing")
@@ -109,7 +116,13 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 
 	go func() {
 		_ = e1.Run(ctx1, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) { e1Acquired <- struct{}{} },
+			OnAcquired: func(cbCtx context.Context) {
+				select {
+				case e1Acquired <- struct{}{}:
+				default:
+				}
+				<-cbCtx.Done()
+			},
 		})
 	}()
 
@@ -121,7 +134,13 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 
 	go func() {
 		_ = e2.Run(ctx2, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) { e2Acquired <- struct{}{} },
+			OnAcquired: func(cbCtx context.Context) {
+				select {
+				case e2Acquired <- struct{}{}:
+				default:
+				}
+				<-cbCtx.Done()
+			},
 		})
 	}()
 

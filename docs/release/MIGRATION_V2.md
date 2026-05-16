@@ -187,7 +187,8 @@ Three migration touchpoints exist:
 
 | Area | Migration |
 |---|---|
-| `validate:"..."` constraint tag | Still recognised — the kit now owns the grammar rather than the third-party library. Supported keys: `required`, `min`, `max`, `len`, `gte`, `lte`, `gt`, `lt`, `oneof`, `email`, `url`, `uuid`, `ip`, `ipv4`, `ipv6`, `cidr`, `hostname`, `alpha`, `alphanum`, `numeric`, `datetime`, `startswith=…`, `endswith=…`, `contains=…`, `excludesall=…`, `pattern=…`, `format=…`. Unknown keys are ignored; register new vocabulary via `RegisterFormat`. |
+| `validate:"..."` constraint tag | Still recognised — the kit now owns the grammar rather than the third-party library. Supported keys: `required`, `min`, `max`, `len`, `gte`, `lte`, `gt`, `lt`, `oneof`, `email`, `url`, `uuid`, `ip`, `ipv4`, `ipv6`, `cidr`, `hostname`, `alpha`, `alphanum`, `numeric`, `datetime`, `startswith=…`, `endswith=…`, `contains=…`, `excludesall=…`, `pattern=…`, `format=…`. Unknown keys are ignored; register new vocabulary via `RegisterFormat`. The wave-124 commit message claimed the kit "drops the `validate:` tag system entirely" — that wording was misleading: the kit-owned grammar above is still parsed from `validate:` tags. What was actually dropped is the dependency on `go-playground/validator/v10`'s tag interpreter; the kit now compiles the same tag vocabulary into JSON-Schema keywords itself. |
+| `validate.RegisterFormat` | Returns `error` instead of panicking (the rest of the kit's option-style helpers panic on programmer error at construction time). The error return is preserved deliberately: `RegisterFormat` can be invoked after a Validator has already served traffic, so a panic there would be a runtime crash rather than a startup crash; existing callers branch on the error to surface "duplicate format" / "validator already frozen" through ops dashboards. Do not file this as an inconsistency. |
 | `jsonschema:"..."` tag | New optional source for description text (the v1 `desc:"..."` tag is still honoured for backwards compatibility). The kit additionally treats the keyword `required` in the comma-separated list as a marker that the field is required, so `jsonschema:"required,Customer e-mail"` records both the requirement and the description. |
 | `validate.RegisterValidation(tag, validator.Func)` removed | Replaced by `validate.RegisterFormat(name string, fn func(any) error) error`. The function is registered with the underlying santhosh-tekuri compiler as a JSON-Schema `format` validator and dispatches whenever a field's `validate:"<name>"` constraint matches. The closure shape no longer leaks any third-party validator type. |
 | `validate.Func` alias removed | Use `validate.FormatFunc` (`func(any) error`) for the new format hook. |
@@ -268,6 +269,8 @@ third-party openapi dep.
 | `WithSecurity` / `Spec.AddSecurityScheme` / `Spec.SetGlobalSecurity` | Per-operation + document-level security requirements; security schemes follow the OAS 3.1 `securitySchemes` object. |
 | Scope limits | The initial wave deliberately ships a narrow surface: single response per status code per route, no auto-discovered parameters, no per-operation example payloads, no tag-object emission (per-operation `tags` strings only). These are not architectural limits and will extend in later waves without breaking the present API. |
 | Public API stability | `httpx.JSON` / `httpx.Handle` and all sibling helpers retain identical signatures — the OpenAPI integration is additive and opt-in. Services already on the v2 typed handlers can adopt the spec generator by switching `httpx.Handle` for `openapigen.Handle` at registration time. |
+| `Operation.Security` shape (wave 131) | Field is `*[]map[string][]string` (pointer-to-slice) so an explicit `WithSecurity()` with no requirements emits the JSON shape `"security": []` to opt the operation out of the document-level requirement. The pre-wave-131 plain-slice shape collided with Go's `json:",omitempty"` rule: a caller that passed an empty slice silently re-enabled the document-level security on every wire round-trip. Callers constructing `Operation` literally now pass `&[]map[string][]string{}` for the anonymous-override case; the `WithSecurity` helper handles this for them. |
+| Schema-error scrubbing vs `httpx/mcp` (wave 131) | When a registered handler's request type fails schema generation, `openapigen` surfaces the underlying error chain (including `validate.ErrCyclicSchema` / `validate.ErrUnsupportedType` via `errors.Is`); the parallel `httpx/mcp` registration path scrubs the inner type name from the error message. The asymmetry is intentional: `openapigen` errors surface at service-boot time and the caller is the programmer who declared the bad type, so the type name is triage-useful. `httpx/mcp` errors can surface during `tools/list` at runtime where the response goes to a remote MCP client; the kit refuses to echo internal type names in that path. |
 
 ### `httpx/middleware/auth`
 
@@ -350,7 +353,7 @@ wrapper around the SDK's `Server.AddTool` and
 
 | Area | Migration |
 |---|---|
-| `WithCallbackDrainTimeout` | Option removed. `holdLeadership` now blocks until `Callbacks.OnAcquired` returns, so the same process cannot run two overlapping leadership terms. The cancelled `OnAcquired` context is the only signal — your callback MUST observe `ctx.Done()` and return promptly. If you need a hard upper bound, wrap the callback body with your own `context.WithTimeout`. See `TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains` in each adapter. |
+| `WithCallbackDrainTimeout` | **Retained.** Default behaviour (no option) is wait-forever: `holdLeadership` blocks until `Callbacks.OnAcquired` returns, so the same process cannot run two overlapping leadership terms. The cancelled `OnAcquired` context is the only signal — your callback MUST observe `ctx.Done()` and return promptly. Passing a positive duration enables fail-fast shutdown: when the timeout fires the elector records a `drainStateTimeout` metric observation and returns `Run` wrapping `ErrCallbackDrainTimeout`. The orphan goroutine is left to finish (Go has no goroutine kill); the orchestrator MUST treat the timeout as a fatal signal and exit/restart rather than retry in-process. See `TestHoldLeadership_LossDoesNotReturnUntilCallbackDrains` in each adapter for the wait-forever path. |
 | Callback-drain visibility | Both adapters now expose `NewMetrics`, `WithMetrics`, and `WithCallbackDrainWarnInterval` so a stalled `OnAcquired` callback is operator-visible. The watchdog logs a warn and increments `leaderelection_callback_drain_warn_total{key}` every 30 seconds (override via `WithCallbackDrainWarnInterval`), and the terminal drain duration lands in `leaderelection_callback_drain_seconds{state="drained",key=...}` with `state="pending"` snapshots on each warn tick. Buckets: `[1, 5, 10, 30, 60, 120, 300]` seconds. |
 
 ### `infra/leaderelection/k8slease` (new)
@@ -419,6 +422,8 @@ preserved; the LIST+heartbeat machinery underneath is replaced.
 | `removeByID` / `recoverProcessing` / Lua scripts | All removed. The kit no longer ships any Lua; asynq's bundled scripts handle claim/ack/retry. |
 | Metric semantics | `redis_queue_processing_depth` now reports asynq's `Active` count (claimed-by-worker), `redis_queue_queue_depth` reports asynq's `Pending`, `redis_queue_dlq_depth` reports asynq's `Archived`. Label set (`{queue}`) unchanged. `redis_queue_ack_not_found_total` is removed — asynq does not have an analogous failure mode. |
 | `data/queue/redisqueue/integrationtest` | Tests retargeted at asynq semantics (Inspector-based depth assertions, archive-based dead-letter assertions). Operator runbooks that grep on the kit's pre-v2 Redis key names (`<queue>:processing:*`, `<queue>:dead`) must update to asynq's `asynq:{<queue>}:active`, `asynq:{<queue>}:pending`, `asynq:{<queue>}:archived`. |
+| Handler `context.Context` is not the queue shutdown ctx | The asynq server is wired with `BaseContext: func() context.Context { return context.Background() }`. The ctx your handler receives carries asynq's per-task deadline (driven by `WithInvisibilityTimeout`) but does NOT inherit the parent ctx passed to `Process`. This matches asynq's own contract — operators rely on the per-task deadline for "kill stuck handlers" and `Process`'s shutdown is bounded by `WithShutdownTimeout` instead. Long-running handlers that need to observe pre-shutdown cancellation should subscribe to their own cancellation source (e.g. a shared `context.Context` held by the service) rather than relying on the handler argument. |
+| `Process` start-error visibility | If the underlying `asynq.Server.Start` fails (e.g. invalid Redis credentials, broker unreachable at boot), `Process` logs the error via the configured `slog.Logger` and returns silently — there is no error return on the `Process` signature because it is invoked from `StartProcessors` inside a goroutine. Operators MUST monitor the `redisqueue` log stream during service start; a missing `redisqueue: asynq server failed to start` line is the only positive signal. The same shape applies to `redisstream.Consumer.Consume`. |
 
 ### `data/stream/redisstream`
 
@@ -710,6 +715,42 @@ Mapping notes (full detail in the package doc):
 Integration tests live in
 `infra/messaging/kafkabackend/integrationtest` and spin up a Confluent
 Local broker via Testcontainers (`-tags integration`).
+
+Operator notes:
+
+- **At-least-once redelivery on shutdown.** `Subscriber.commitWithOutcome`
+  uses the still-cancelled parent ctx when the subscriber is shutting
+  down. If a handler completes successfully but the parent ctx has
+  already been cancelled by the orchestrator, the commit may fail and
+  the next consumer to join the group will see the same message
+  redelivered. This is the intended at-least-once shape — kafkabackend
+  prefers redelivery over silently advancing the offset on a
+  cancelled commit. Handlers MUST be idempotent.
+- **SASL OAUTHBEARER is not supported.** The current kafka-go SASL
+  surface covers PLAIN and SCRAM. Cloud-managed Kafka brokers that
+  mandate OAUTHBEARER (Confluent Cloud, AWS MSK with IAM) cannot wire
+  through kafkabackend today; tracked as a follow-up wave.
+- **Metrics label cardinality.** Subscriber-side metrics use raw
+  `topic` and `group` labels by default; publisher-side metrics use
+  `WithOpaqueRouteLabels` (default) to map per-route segments into a
+  bounded label space. A consumer-side `WithOpaqueConsumeLabels` toggle
+  is tracked for a future wave so operators with a high cardinality of
+  consumer groups can opt into the bounded shape. Until then, audit
+  the deployment's `(topic, group)` set before scraping.
+
+## Future: post-2.0.0 messaging metric label cardinality
+
+`infra/messaging/natsbackend` and `infra/messaging/kafkabackend` emit
+consume-side metrics with raw `stream`/`durable` (NATS) and
+`topic`/`group` (Kafka) labels. The kit-wide convention for HTTP
+routes is to project caller-supplied path segments through
+`promutil.OpaqueLabelValue` to bound cardinality. Messaging consume
+labels follow a different shape today — most deployments have static,
+operator-managed stream/group sets (low cardinality by construction),
+so the trade-off has not bitten. A follow-up wave will add the
+`WithOpaqueConsumeLabels` toggle to both backends without forcing the
+cardinality change. AMQP publisher-side metrics already received the
+opaque-labels treatment in wave 36 (commit `b0ae9e1`).
 
 ## 9. Things Not Migrated In v2.0.0
 

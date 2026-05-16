@@ -210,23 +210,36 @@ func TestQueue_DoubleProcessGuard(t *testing.T) {
 	queueName := fmt.Sprintf("test:queue:double:%d", time.Now().UnixNano())
 
 	processCtx, cancel := context.WithCancel(context.Background())
+	// Use Len to detect that the first Process has registered with asynq —
+	// Len performs an Inspector.GetQueueInfo call which only succeeds after
+	// the asynq.Server inside Process has booted. This is a more reliable
+	// readiness signal than a sleep, and it removes the race that previously
+	// allowed the test-driver goroutine to win the activeQueues
+	// CompareAndSwap and panic the foreground Process instead.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		q.Process(processCtx, queueName, func(context.Context, redisqueue.Message) error { return nil })
 	}()
-
-	// Poll until Process has registered the active queue: a second
-	// Process on the same name must panic. assert.Panics returns false
-	// when the call does NOT panic, so we retry until the first Process
-	// has registered itself.
+	// Wait for the goroutine's Process to register: poll until Len
+	// succeeds OR a second Process call panics (whichever happens
+	// first). Once we observe the panic, we know the first Process is
+	// holding activeQueues; the assertion below is then deterministic.
 	require.Eventually(t, func() bool {
-		didPanic := assert.Panics(new(testing.T), func() {
+		_, err := q.Len(context.Background(), queueName)
+		return err == nil
+	}, 5*time.Second, 25*time.Millisecond, "first Process never booted its asynq server")
+
+	// A second Process on the same queue MUST panic now that the
+	// first has registered itself in activeQueues. assert.Panics
+	// against a synthetic *testing.T isolates the panic from the
+	// parent test record.
+	require.True(t,
+		assert.Panics(new(testing.T), func() {
 			q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
-		})
-		return didPanic
-	}, 5*time.Second, 50*time.Millisecond, "second Process must panic once the first has registered")
+		}),
+		"second Process on the same queue must panic")
 
 	cancel()
 	wg.Wait()

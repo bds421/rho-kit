@@ -22,6 +22,27 @@
 // scheme/host of a URL, the first few runes of a token). Use redact
 // when even structure is unsafe; use masking when partial visibility
 // is debugging-useful.
+//
+// # Known gap: returned-error wrappers may leak backend text
+//
+// The kit's data-layer packages (`data/cache/rediscache`,
+// `data/lock/redislock`, `data/stream/redisstream`, `data/budget/redis`)
+// wrap backend errors with `fmt.Errorf("...: %w", err)` to preserve
+// `errors.Is` chains. The wrapped chain may include text from the
+// upstream driver — e.g. the lock key inside a Redis "SET key value"
+// command formatting on connection-pool exhaustion. Logs that emit
+// `redact.Error(returnedErr)` are safe (the type is preserved, the
+// message is dropped); callers that propagate `returnedErr.Error()`
+// across a trust boundary or include it in a JSON response body are
+// NOT.
+//
+// A follow-up wave will introduce `redact.WrapError(prefix, err)`
+// that returns a sentinel-aware error whose `Error()` prints
+// `<prefix>: <type-of-inner>` rather than `<prefix>: <inner.Error()>`,
+// and a kit-wide sweep across the data-layer packages above. The
+// shape is not yet introduced because it changes the wrapping
+// vocabulary used by every backend package; the kit prefers one
+// coordinated migration over piecewise drift.
 package redact
 
 import (

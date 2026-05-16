@@ -1,5 +1,57 @@
 // Package validate provides struct validation driven by JSON Schema,
-// with field-level error reporting via [core/apperror.ValidationError].
-// See [validate.go] for the full design notes (wave 124 migration off
-// go-playground/validator onto jsonschema-go + santhosh-tekuri/jsonschema/v6).
+// with field-level error reporting via [core/v2/apperror.ValidationError].
+//
+// Wave 124 migrated the package off `go-playground/validator/v10` onto
+// `github.com/google/jsonschema-go` (in-memory schema model) plus
+// `github.com/santhosh-tekuri/jsonschema/v6` (compilation +
+// validation). Call sites of [Validator.Struct] / package-level
+// [Struct] are source-compatible; the user-visible message text for
+// the common rules (`required`, `email`, `min`, `max`, `oneof`,
+// `uuid`, …) is preserved.
+//
+// # Use this when
+//
+//   - You receive a JSON request body decoded into a Go struct and
+//     need apperror-shaped field errors for the HTTP / MCP / gRPC
+//     transports.
+//   - You want a JSON Schema for an arbitrary kit-typed struct so it
+//     can be published in an OpenAPI document (`httpx/openapigen`) or
+//     an MCP tool descriptor (`httpx/mcp`). Use [SchemaFor] or
+//     [Validator.SchemaForType] — the returned schema is the cached
+//     package instance, so clone before mutating.
+//   - You want to register a custom format-style validator for a
+//     domain vocabulary (e.g. ISO-3166 country codes). Use
+//     [RegisterFormat] during init; see "Convention deviations" below
+//     for why this returns an error rather than panicking.
+//
+// # Convention deviations
+//
+// [RegisterFormat] returns an error instead of panicking on
+// misconfiguration. The rest of the kit's option-style helpers panic
+// on programmer error at construction time. RegisterFormat keeps the
+// error return because (a) it can be called after a Validator has
+// already served traffic — a panic there would be a runtime crash
+// rather than a startup crash; (b) existing callers branch on the
+// error to surface "duplicate format" or "validator already frozen"
+// to ops dashboards. The shape is preserved deliberately; do not file
+// it as an inconsistency.
+//
+// # Schema walker limitations
+//
+// The reflection walker handles the encoding/json shape of struct
+// composition: anonymous embedded structs are flattened into the
+// parent, exported fields of an embedded unexported-named struct are
+// promoted in the schema, and `json:"-"` fields are skipped. The
+// known corner case the walker does NOT reproduce is shadowing — if a
+// parent field and an embedded field share the same JSON name, the
+// schema emits the parent's declaration once and silently drops the
+// embedded sibling. encoding/json picks the shallower field at
+// marshal/unmarshal time, so the runtime behaviour aligns; the schema
+// just doesn't reflect that the embedded path "would have been there"
+// without the shadow. Contrived enough to leave as a known
+// limitation; see [structSchema] in `schema.go` for the implementation.
+//
+// See also: [github.com/bds421/rho-kit/core/v2/apperror] for the
+// kit's error taxonomy and [github.com/bds421/rho-kit/httpx/v2/openapigen]
+// for the OpenAPI 3.1 emitter that consumes [SchemaFor].
 package validate

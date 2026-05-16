@@ -97,12 +97,12 @@ func WithDeprecated() RouteOption {
 func WithParameter(p Parameter) RouteOption {
 	return func(c *routeConfig) error {
 		if p.Name == "" {
-			return errors.New("openapigen: WithParameter: name must not be empty")
+			return errors.New("openapigen: WithParameter requires a non-empty name")
 		}
 		switch p.In {
 		case "query", "header", "path", "cookie":
 		default:
-			return fmt.Errorf("openapigen: WithParameter: invalid `in` value %q (expected query|header|path|cookie)", p.In)
+			return fmt.Errorf("openapigen: WithParameter requires a valid `in` value (got %q, expected query|header|path|cookie)", p.In)
 		}
 		if p.In == "path" && !p.Required {
 			// Per OAS 3.1, path parameters are always required.

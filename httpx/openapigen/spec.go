@@ -87,10 +87,10 @@ type routeState struct {
 // rejected at boot.
 func NewSpec(title, version string) *Spec {
 	if title == "" {
-		panic("openapigen: NewSpec: title must not be empty")
+		panic("openapigen: NewSpec requires a non-empty title")
 	}
 	if version == "" {
-		panic("openapigen: NewSpec: version must not be empty")
+		panic("openapigen: NewSpec requires a non-empty version")
 	}
 	return &Spec{
 		info:   Info{Title: title, Version: version},
@@ -160,7 +160,7 @@ func (s *Spec) AddTag(tag Tag) *Spec {
 // by name via [WithSecurity].
 func (s *Spec) AddSecurityScheme(name string, scheme SecurityScheme) *Spec {
 	if name == "" {
-		panic("openapigen: AddSecurityScheme: name must not be empty")
+		panic("openapigen: AddSecurityScheme requires a non-empty name")
 	}
 	s.mu.Lock()
 	if s.components == nil {

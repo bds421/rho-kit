@@ -50,11 +50,12 @@ func TestElector_AcquiresAndShutsDownOnCtxCancel(t *testing.T) {
 
 	go func() {
 		runErr <- e.Run(ctx, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) {
+			OnAcquired: func(cbCtx context.Context) {
 				select {
 				case acquired <- struct{}{}:
 				default:
 				}
+				<-cbCtx.Done()
 			},
 			OnLost: func() { lost.Add(1) },
 		})
@@ -80,16 +81,25 @@ func TestElector_AcquiresAndShutsDownOnCtxCancel(t *testing.T) {
 	assert.False(t, e.IsLeader())
 }
 
-// A second elector on the same key, against the SAME database, is blocked
-// until the first relinquishes — Postgres advisory locks are session-scoped,
-// so we need two separate *sql.DB connection pools to model two replicas.
+// A second elector on the same key, against the SAME Postgres instance, is
+// blocked until the first relinquishes — Postgres advisory locks are
+// session-scoped, so the two electors compete by holding different
+// connections (sessions) on the same shared *sql.DB pool. The previous
+// design used two newTestDB() pools but `StartPostgres` returns a new
+// Postgres CONTAINER per call, so the electors were operating on disjoint
+// Postgres instances and the cross-replica competition was never modeled.
+//
+// OnAcquired must BLOCK until leadership ends; returning immediately would
+// cause the elector to loop and re-acquire, dropping the advisory lock
+// between iterations and letting e2 sneak in. The callback signature is
+// "run work until ctx is cancelled, then return"; the tests model that by
+// signalling on a one-shot chan, then blocking on cbCtx.Done().
 func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
-	db1 := newTestDB(t)
-	db2 := newTestDB(t)
+	db := newTestDB(t)
 	key := fmt.Sprintf("le-compete-%d", time.Now().UnixNano())
 
-	e1 := pgadvisory.New(db1, key, pgadvisory.WithRetryInterval(100*time.Millisecond))
-	e2 := pgadvisory.New(db2, key, pgadvisory.WithRetryInterval(100*time.Millisecond))
+	e1 := pgadvisory.New(db, key, pgadvisory.WithRetryInterval(100*time.Millisecond))
+	e2 := pgadvisory.New(db, key, pgadvisory.WithRetryInterval(100*time.Millisecond))
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -100,7 +110,13 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 
 	go func() {
 		_ = e1.Run(ctx1, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) { e1Acquired <- struct{}{} },
+			OnAcquired: func(cbCtx context.Context) {
+				select {
+				case e1Acquired <- struct{}{}:
+				default:
+				}
+				<-cbCtx.Done()
+			},
 		})
 	}()
 	select {
@@ -111,7 +127,13 @@ func TestElector_TwoCompetingElectorsOnSameKey(t *testing.T) {
 
 	go func() {
 		_ = e2.Run(ctx2, leaderelection.Callbacks{
-			OnAcquired: func(_ context.Context) { e2Acquired <- struct{}{} },
+			OnAcquired: func(cbCtx context.Context) {
+				select {
+				case e2Acquired <- struct{}{}:
+				default:
+				}
+				<-cbCtx.Done()
+			},
 		})
 	}()
 
