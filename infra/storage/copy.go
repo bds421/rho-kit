@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Copier is an optional extension for backends that support native
@@ -28,10 +30,10 @@ func Copy(ctx context.Context, s Storage, srcKey, dstKey string) error {
 		return fmt.Errorf("storage.Copy: backend is required")
 	}
 	if err := ValidateKey(srcKey); err != nil {
-		return fmt.Errorf("storage.Copy: invalid source key: %w", err)
+		return redact.WrapError("storage.Copy: invalid source key", err)
 	}
 	if err := ValidateKey(dstKey); err != nil {
-		return fmt.Errorf("storage.Copy: invalid destination key: %w", err)
+		return redact.WrapError("storage.Copy: invalid destination key", err)
 	}
 
 	if c, ok := AsCopier(s); ok {
@@ -48,10 +50,10 @@ func Copy(ctx context.Context, s Storage, srcKey, dstKey string) error {
 // exactly-once semantics are required.
 func Move(ctx context.Context, s Storage, srcKey, dstKey string) error {
 	if err := Copy(ctx, s, srcKey, dstKey); err != nil {
-		return fmt.Errorf("storage.Move: %w", err)
+		return redact.WrapError("storage.Move", err)
 	}
 	if err := s.Delete(ctx, srcKey); err != nil {
-		return fmt.Errorf("storage.Move: delete source: %w", err)
+		return redact.WrapError("storage.Move: delete source", err)
 	}
 	return nil
 }
@@ -66,10 +68,10 @@ func CopyAcross(ctx context.Context, src Storage, srcKey string, dst Storage, ds
 		return fmt.Errorf("storage.CopyAcross: destination backend is required")
 	}
 	if err := ValidateKey(srcKey); err != nil {
-		return fmt.Errorf("storage.CopyAcross: invalid source key: %w", err)
+		return redact.WrapError("storage.CopyAcross: invalid source key", err)
 	}
 	if err := ValidateKey(dstKey); err != nil {
-		return fmt.Errorf("storage.CopyAcross: invalid destination key: %w", err)
+		return redact.WrapError("storage.CopyAcross: invalid destination key", err)
 	}
 	return genericCopy(ctx, src, srcKey, dst, dstKey)
 }
@@ -84,7 +86,7 @@ func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, d
 	}
 	rc, meta, err := src.Get(ctx, srcKey)
 	if err != nil {
-		return fmt.Errorf("get source: %w", err)
+		return redact.WrapError("get source", err)
 	}
 	defer func() { _ = rc.Close() }()
 
@@ -98,7 +100,7 @@ func genericCopy(ctx context.Context, src Storage, srcKey string, dst Storage, d
 	putMeta := CloneObjectMeta(meta)
 
 	if err := dst.Put(ctx, dstKey, io.Reader(rc), putMeta); err != nil {
-		return fmt.Errorf("put destination: %w", err)
+		return redact.WrapError("put destination", err)
 	}
 	return nil
 }
