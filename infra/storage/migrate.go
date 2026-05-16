@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // MigrateOptions configures a migration between backends.
@@ -69,7 +71,7 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		return MigrateResult{}, fmt.Errorf("storage.Migrate: destination backend is required")
 	}
 	if err := ValidatePrefix(opts.Prefix); err != nil {
-		return MigrateResult{}, fmt.Errorf("storage.Migrate: %w", err)
+		return MigrateResult{}, redact.WrapError("storage.Migrate", err)
 	}
 
 	// FR-082 [LOW]: use AsLister so decorated backends (encryption,
@@ -87,7 +89,7 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 
 	for info, err := range lister.List(ctx, opts.Prefix, ListOptions{}) {
 		if err != nil {
-			return result, fmt.Errorf("storage.Migrate: list: %w", err)
+			return result, redact.WrapError("storage.Migrate: list", err)
 		}
 
 		select {
@@ -97,7 +99,7 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		}
 
 		if err := ValidateKey(info.Key); err != nil {
-			keyErr := fmt.Errorf("invalid source key: %w", err)
+			keyErr := redact.WrapError("invalid source key", err)
 			result.recordError(info.Key, keyErr)
 			if opts.OnProgress != nil {
 				opts.OnProgress(info.Key, false, keyErr)
@@ -112,7 +114,7 @@ func Migrate(ctx context.Context, src, dst Storage, opts MigrateOptions) (Migrat
 		// Validate the transformed key early to avoid wasting a Get on the
 		// source object when the destination would reject the key anyway.
 		if err := ValidateKey(dstKey); err != nil {
-			keyErr := fmt.Errorf("invalid transformed key: %w", err)
+			keyErr := redact.WrapError("invalid transformed key", err)
 			result.recordError(info.Key, keyErr)
 			if opts.OnProgress != nil {
 				opts.OnProgress(info.Key, false, keyErr)
@@ -188,7 +190,7 @@ func MigrateCount(ctx context.Context, src Storage, prefix string) (int64, error
 		return 0, fmt.Errorf("storage.MigrateCount: source backend is required")
 	}
 	if err := ValidatePrefix(prefix); err != nil {
-		return 0, fmt.Errorf("storage.MigrateCount: %w", err)
+		return 0, redact.WrapError("storage.MigrateCount", err)
 	}
 
 	lister, ok := AsLister(src)
@@ -202,7 +204,7 @@ func MigrateCount(ctx context.Context, src Storage, prefix string) (int64, error
 			return count, err
 		}
 		if err := ValidateKey(info.Key); err != nil {
-			return count, fmt.Errorf("storage.MigrateCount: invalid source key: %w", err)
+			return count, redact.WrapError("storage.MigrateCount: invalid source key", err)
 		}
 		count++
 	}
@@ -212,22 +214,22 @@ func MigrateCount(ctx context.Context, src Storage, prefix string) (int64, error
 // copyObject performs a single object transfer from src to dst.
 func copyObject(ctx context.Context, src Storage, srcKey string, dst Storage, dstKey string) error {
 	if err := ValidateKey(srcKey); err != nil {
-		return fmt.Errorf("invalid source key: %w", err)
+		return redact.WrapError("invalid source key", err)
 	}
 	if err := ValidateKey(dstKey); err != nil {
-		return fmt.Errorf("invalid destination key: %w", err)
+		return redact.WrapError("invalid destination key", err)
 	}
 
 	rc, meta, err := src.Get(ctx, srcKey)
 	if err != nil {
-		return fmt.Errorf("get source: %w", err)
+		return redact.WrapError("get source", err)
 	}
 	defer func() { _ = rc.Close() }()
 
 	putMeta := CloneObjectMeta(meta)
 
 	if err := dst.Put(ctx, dstKey, io.Reader(rc), putMeta); err != nil {
-		return fmt.Errorf("put destination: %w", err)
+		return redact.WrapError("put destination", err)
 	}
 	return nil
 }
