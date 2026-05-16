@@ -216,7 +216,7 @@ func validDemoBearerToken(header string, want []byte) bool {
 
 // EchoIn is the input for the sample MCP tool.
 type EchoIn struct {
-	Message string `json:"message" validate:"required" desc:"Text to echo back."`
+	Message string `json:"message" jsonschema:"required,Text to echo back." desc:"Text to echo back."`
 }
 
 // EchoOut is the response for the sample MCP tool.

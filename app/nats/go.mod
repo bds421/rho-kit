@@ -13,8 +13,6 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
@@ -25,15 +23,11 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-playground/locales v0.14.1 // indirect
-	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect

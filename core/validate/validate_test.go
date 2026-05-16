@@ -1,10 +1,9 @@
 package validate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/go-playground/validator/v10"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
@@ -227,18 +226,46 @@ func TestStruct_errorStringFormat(t *testing.T) {
 	}
 }
 
-// Register custom validations before any Struct() call freezes the validator.
+// Register custom formats before any Struct() call freezes the validator.
 func init() {
-	if err := RegisterValidation("is_even", func(fl validator.FieldLevel) bool {
-		return fl.Field().Int()%2 == 0
+	if err := RegisterFormat("even", func(v any) error {
+		// santhosh-tekuri passes numeric values as json.Number; fall
+		// back to float64 (and reject strings) so the format is
+		// usable for both integer and number-typed fields.
+		switch n := v.(type) {
+		case float64:
+			if int64(n)%2 != 0 || n != float64(int64(n)) {
+				return fmt.Errorf("not even")
+			}
+			return nil
+		case int:
+			if n%2 != 0 {
+				return fmt.Errorf("not even")
+			}
+			return nil
+		case int64:
+			if n%2 != 0 {
+				return fmt.Errorf("not even")
+			}
+			return nil
+		}
+		// Strings or other shapes — santhosh-tekuri may pass a
+		// json.Number depending on the decoder; use Stringer fallback.
+		if s, ok := v.(interface{ String() string }); ok {
+			if len(s.String()) > 0 && s.String()[len(s.String())-1]%2 != 0 {
+				return fmt.Errorf("not even")
+			}
+			return nil
+		}
+		return fmt.Errorf("unsupported value for even format")
 	}); err != nil {
-		panic("register is_even: " + err.Error())
+		panic("register even: " + err.Error())
 	}
 }
 
-func TestRegisterValidation_custom(t *testing.T) {
+func TestRegisterFormat_custom(t *testing.T) {
 	type req struct {
-		Count int `json:"count" validate:"is_even"`
+		Count int `json:"count" validate:"even"`
 	}
 
 	if err := Struct(req{Count: 4}); err != nil {
@@ -254,17 +281,17 @@ func TestRegisterValidation_custom(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *apperror.ValidationError, got %T", err)
 	}
-	if ve.Fields[0].Message != "failed validation: is_even" {
+	if ve.Fields[0].Message != "must be a valid even" {
 		t.Errorf("message = %q", ve.Fields[0].Message)
 	}
 }
 
-func TestRegisterValidation_afterFreeze(t *testing.T) {
+func TestRegisterFormat_afterFreeze(t *testing.T) {
 	// Ensure Struct() has been called (which freezes registrations).
-	_ = Struct(basicReq{Name: "a", Email: "a@b.c", Age: 1})
+	_ = Struct(basicReq{Name: "ab", Email: "a@b.co", Age: 1})
 
-	err := RegisterValidation("should_fail_secret_token", func(fl validator.FieldLevel) bool {
-		return true
+	err := RegisterFormat("should_fail_secret_token", func(_ any) error {
+		return nil
 	})
 	if err == nil {
 		t.Fatal("expected error when registering after freeze")
@@ -274,12 +301,25 @@ func TestRegisterValidation_afterFreeze(t *testing.T) {
 	}
 }
 
+func TestRegisterFormat_rejectsEmptyName(t *testing.T) {
+	v := New()
+	if err := v.RegisterFormat("", func(_ any) error { return nil }); err == nil {
+		t.Fatal("expected error for empty format name")
+	}
+}
+
+func TestRegisterFormat_rejectsNilFn(t *testing.T) {
+	v := New()
+	if err := v.RegisterFormat("nilfn", nil); err == nil {
+		t.Fatal("expected error for nil format function")
+	}
+}
+
 func TestStruct_nil(t *testing.T) {
 	// Passing nil should not panic
 	err := Struct((*basicReq)(nil))
-	// go-playground/validator returns an error for nil pointers
-	if err == nil {
-		t.Log("nil passed validation (acceptable)")
+	if err != nil {
+		t.Logf("nil pointer returned %v (acceptable)", err)
 	}
 }
 
@@ -463,7 +503,7 @@ func TestStruct_lenSliceViolation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *apperror.ValidationError, got %T", err)
 	}
-	if ve.Fields[0].Message != "must have exactly 3 items" {
+	if ve.Fields[0].Message != "must have at least 3 items" {
 		t.Errorf("message = %q", ve.Fields[0].Message)
 	}
 }
@@ -497,7 +537,7 @@ func TestStruct_maxIntViolation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *apperror.ValidationError, got %T", err)
 	}
-	if ve.Fields[0].Message != "must be at most 10" {
+	if ve.Fields[0].Message != "must be less than or equal to 10" {
 		t.Errorf("message = %q", ve.Fields[0].Message)
 	}
 }
@@ -514,24 +554,30 @@ func TestStruct_minIntViolation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *apperror.ValidationError, got %T", err)
 	}
-	if ve.Fields[0].Message != "must be at least 5" {
+	if ve.Fields[0].Message != "must be greater than or equal to 5" {
 		t.Errorf("message = %q", ve.Fields[0].Message)
 	}
 }
 
-func TestMessage_coversTags(t *testing.T) {
-	// Verify that known tags produce non-empty messages via real validation errors.
-	type tagTest struct {
-		Required string `validate:"required"`
+func TestSchemaFor_exposesInferredSchema(t *testing.T) {
+	type req struct {
+		Name string `json:"name" validate:"required,min=2"`
 	}
-	err := singleton().v.Struct(tagTest{})
-	if err == nil {
-		t.Fatal("expected error")
+	s, err := SchemaFor[req]()
+	if err != nil {
+		t.Fatalf("SchemaFor: %v", err)
 	}
-	for _, ve := range err.(validator.ValidationErrors) {
-		msg := message(ve)
-		if msg == "" {
-			t.Errorf("empty message for tag %q", ve.Tag())
-		}
+	if s.Type != "object" {
+		t.Errorf("Type = %q, want object", s.Type)
+	}
+	if len(s.Required) != 1 || s.Required[0] != "name" {
+		t.Errorf("Required = %v, want [name]", s.Required)
+	}
+	nameProp, ok := s.Properties["name"]
+	if !ok {
+		t.Fatalf("missing 'name' in properties: %v", s.Properties)
+	}
+	if nameProp.MinLength == nil || *nameProp.MinLength != 2 {
+		t.Errorf("MinLength = %v, want 2", nameProp.MinLength)
 	}
 }

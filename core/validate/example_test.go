@@ -19,5 +19,5 @@ func ExampleStruct() {
 	fmt.Println(err)
 	// Output:
 	// true
-	// email: must be a valid email address; age: must be at least 18
+	// email: must be a valid email address; age: must be greater than or equal to 18
 }

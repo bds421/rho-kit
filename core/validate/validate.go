@@ -1,78 +1,273 @@
-// Package validate provides struct validation using go-playground/validator,
-// converting validation errors into apperror.ValidationError with field-level
-// details. It uses JSON tag names for field references so error messages match
-// the API contract.
+// Package validate provides struct validation driven by JSON Schema.
+//
+// Wave 124 replaced the previous go-playground/validator backend with a
+// two-library composition:
+//
+//   - github.com/google/jsonschema-go is the in-memory schema model. We
+//     walk struct types ourselves to read the kit's `validate:"..."`
+//     constraint tag (kit-owned now, no longer tied to go-playground)
+//     and emit a jsonschema-go [jsonschema.Schema] populated with the
+//     corresponding JSON-Schema keywords (minLength, maximum, pattern,
+//     format, enum, ...).
+//   - github.com/santhosh-tekuri/jsonschema/v6 compiles the marshalled
+//     schema and runs the actual validation. Typed [kind.*] errors are
+//     mapped back into human-readable messages matching the previous
+//     surface ("must be a valid email address", "must be at least N
+//     characters", ...).
+//
+// Schemas are built once per reflect.Type and cached in a sync.Map so
+// the same handler signature pays the reflection cost only at startup.
+// The cached [jsonschema.Schema] is also exposed via [SchemaFor] and
+// [SchemaForType] for callers that need to publish the schema (MCP
+// tool catalog, future OpenAPI export, served /schema endpoints).
+//
+// Custom validation is registered via [RegisterFormat]: the function
+// receives the decoded JSON value (string, number, bool, map, slice)
+// for fields whose schema sets `"format": "<name>"`, and returns an
+// error if the value is invalid. RegisterFormat replaces the v1
+// RegisterValidation API; the closure signature is decoupled from any
+// third-party library type.
 //
 // asvs: V5.1.3
 package validate
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/go-playground/validator/v10"
+	jsonschemago "github.com/google/jsonschema-go/jsonschema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
 )
 
-// Func is the signature for custom validation tags. This is intentionally
-// a type alias to [validator.Func] from go-playground/validator/v10 — the
-// kit re-exports the third-party function shape verbatim so callers can
-// register existing validator functions (or copy patterns from the
-// validator docs) without a wrapper conversion.
-//
-// API stability: the validator/v10 Func and FieldLevel types are part of
-// the kit's public v2 contract through this alias. A future kit revision
-// that hides the underlying validator package will need a different
-// alias path; for v2 the surface is deliberately the raw third-party
-// shape.
-type Func = validator.Func
+// FormatFunc is the signature for a custom format validator. The
+// argument is the decoded JSON value at the field — typically a string
+// or number; the function is also free to receive maps, slices, or
+// bools when the schema is permissive enough to admit them. A nil
+// return signals "valid"; any other error becomes a validation failure.
+type FormatFunc = func(v any) error
 
-// Validator wraps go-playground/validator with kit conventions: JSON tag
-// field names, apperror.ValidationError conversion, and concurrency-safe
-// custom-tag registration. Construct via [New] for an isolated instance.
+// Validator wraps a private santhosh-tekuri compiler and a per-type
+// schema cache. The validator is safe for concurrent use; format
+// registration is serialised against schema compilation so the first
+// call to [Validator.Struct] freezes the format registry.
 type Validator struct {
-	v      *validator.Validate
-	mu     sync.Mutex // serialises RegisterValidation against Struct
-	frozen atomic.Bool
+	mu      sync.Mutex // serialises RegisterFormat against schema compilation
+	frozen  atomic.Bool
+	schemas sync.Map // reflect.Type -> *compiledSchema
+	formats map[string]*jsonschema.Format
 }
 
-// New constructs an isolated [Validator]. Tests and callers that need
-// independent validators (e.g. conflicting custom tags) should use this
-// rather than the package-level [Struct] / [RegisterValidation].
+// compiledSchema bundles the inferred jsonschema-go schema (for
+// callers that want to publish or introspect) with the compiled
+// santhosh-tekuri schema (used at validation time) and the per-type
+// "required-non-empty" set used to render `is required` for
+// minLength:1 / minItems:1 violations on fields tagged `required`.
+// fieldOrder records the declared property order at every nesting
+// depth so collectFieldErrors can return field errors in a
+// deterministic, struct-declaration order — santhosh-tekuri itself
+// makes no ordering guarantee.
+type compiledSchema struct {
+	inferred         *jsonschemago.Schema
+	compiled         *jsonschema.Schema
+	requiredNonEmpty map[string]struct{} // JSON-pointer paths (dot-joined) of required-non-empty fields
+	fieldOrder       map[string]int      // dotted field path -> declaration index
+}
+
+// New constructs an isolated Validator. Tests and callers that need
+// independent format registries should use this rather than the
+// package-level [Struct] / [RegisterFormat].
 func New() *Validator {
-	inner := validator.New()
-	inner.RegisterTagNameFunc(jsonTagNameFunc)
-	return &Validator{v: inner}
+	return &Validator{
+		formats: make(map[string]*jsonschema.Format),
+	}
 }
 
 // Struct validates s and returns nil on success or an
 // *apperror.ValidationError on failure.
 //
-// A non-struct or nil-pointer input is a programming bug — the underlying
-// validator would return InvalidValidationError, which we wrap as
-// [apperror.NewOperationFailedWithCause] so misuse surfaces as a server
-// error rather than user input being blamed.
-func (V *Validator) Struct(s any) error {
-	V.mu.Lock()
-	V.frozen.CompareAndSwap(false, true)
-	V.mu.Unlock()
-	return wrapValidate(V.v, s)
+// Inputs that cannot be marshalled to JSON, or whose Go type cannot be
+// reflected into a schema, are programming bugs — those surface as
+// [apperror.NewOperationFailedWithCause] so misuse is not blamed on
+// the caller's input.
+func (v *Validator) Struct(s any) error {
+	v.mu.Lock()
+	v.frozen.CompareAndSwap(false, true)
+	v.mu.Unlock()
+
+	if s == nil {
+		return nil
+	}
+	t := reflect.TypeOf(s)
+	rv := reflect.ValueOf(s)
+	for t != nil && t.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil
+		}
+		t = t.Elem()
+		rv = rv.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+
+	cs, err := v.schemaForType(t)
+	if err != nil {
+		return apperror.NewOperationFailedWithCause("validate: schema generation failed (programming error)", err)
+	}
+
+	// Marshal the input to JSON and back so the validator sees the
+	// same shape an HTTP/MCP transport would. Avoids quirks like
+	// channels-on-structs accidentally validating.
+	buf, err := json.Marshal(s)
+	if err != nil {
+		return apperror.NewOperationFailedWithCause("validate: marshal input for validation", err)
+	}
+	var doc any
+	if err := json.Unmarshal(buf, &doc); err != nil {
+		return apperror.NewOperationFailedWithCause("validate: re-decode input for validation", err)
+	}
+
+	verr := cs.compiled.Validate(doc)
+	if verr == nil {
+		return nil
+	}
+	var ve *jsonschema.ValidationError
+	if !errors.As(verr, &ve) {
+		return apperror.NewOperationFailedWithCause("validate: unexpected validator error", verr)
+	}
+	fields := collectFieldErrors(ve, cs.requiredNonEmpty, cs.fieldOrder)
+	if len(fields) == 0 {
+		// Defensive: santhosh-tekuri always returns at least one
+		// leaf error, but if the shape ever changes we surface the
+		// top-level error rather than swallow it.
+		return apperror.NewValidation(ve.Error())
+	}
+	return apperror.NewFieldValidation(fields...)
 }
 
-// RegisterValidation registers a custom tag. Must be called before the
-// first [Validator.Struct] invocation; afterwards it returns an error so
-// concurrent Struct calls cannot race the validator's tag-function map.
-func (V *Validator) RegisterValidation(tag string, fn Func) error {
-	V.mu.Lock()
-	defer V.mu.Unlock()
-	if V.frozen.Load() {
-		return errors.New("validate: RegisterValidation called after Struct(); register custom tags during init")
+// RegisterFormat registers a custom JSON-Schema `format` validator.
+// Use the format name in a field's `validate:"format=<name>"` (or the
+// shorthand `validate:"<name>"` when the rule has no value) constraint
+// to trigger it. RegisterFormat must be called before the first
+// Struct() call freezes the validator; afterwards it returns an error
+// so concurrent Struct calls cannot race the format registry.
+//
+// The format function receives the decoded JSON value verbatim — a
+// string field appears as a Go string, an integer as a json.Number /
+// float64 depending on the unmarshal path. Functions should accept
+// the broader shape rather than assert a Go type, since santhosh-
+// tekuri may pass either depending on the schema.
+func (v *Validator) RegisterFormat(name string, fn FormatFunc) error {
+	if name == "" {
+		return errors.New("validate: RegisterFormat name must not be empty")
 	}
-	return V.v.RegisterValidation(tag, fn)
+	if fn == nil {
+		return errors.New("validate: RegisterFormat function must not be nil")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.frozen.Load() {
+		return errors.New("validate: RegisterFormat called after Struct(); register custom formats during init")
+	}
+	v.formats[name] = &jsonschema.Format{Name: name, Validate: fn}
+	return nil
+}
+
+// SchemaFor returns the inferred jsonschema-go [jsonschema.Schema] for
+// type T. The returned schema is the package's cached instance — do
+// not mutate; clone first if a caller needs a modifiable copy.
+func SchemaFor[T any]() (*jsonschemago.Schema, error) {
+	var zero T
+	t := reflect.TypeOf(zero)
+	return singleton().SchemaForType(t)
+}
+
+// SchemaForType returns the inferred jsonschema-go schema for the
+// supplied reflect.Type. Pointer types are unwrapped before inference,
+// matching the v1 convention that schemas describe the JSON shape and
+// pointer-ness is a Go-side concern.
+func (v *Validator) SchemaForType(t reflect.Type) (*jsonschemago.Schema, error) {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil, errors.New("validate: SchemaForType: nil type")
+	}
+	cs, err := v.schemaForType(t)
+	if err != nil {
+		return nil, err
+	}
+	return cs.inferred, nil
+}
+
+// schemaForType returns the cached *compiledSchema for t, building and
+// compiling it on first use. The cache key is the unwrapped element
+// type — pointer wrappers collapse to a single entry.
+func (v *Validator) schemaForType(t reflect.Type) (*compiledSchema, error) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if cached, ok := v.schemas.Load(t); ok {
+		return cached.(*compiledSchema), nil
+	}
+	bs, err := buildSchema(t)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(bs.schema)
+	if err != nil {
+		return nil, fmt.Errorf("validate: marshal inferred schema: %w", err)
+	}
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("validate: re-decode inferred schema: %w", err)
+	}
+
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	// Built-in formats first, then user-registered (so users can
+	// override a built-in by re-registering the same name).
+	for _, f := range builtinFormats(bs.parametricFormats) {
+		compiler.RegisterFormat(f)
+	}
+	for _, f := range v.snapshotFormats() {
+		compiler.RegisterFormat(f)
+	}
+	const resourceURL = "schema://kit/validate"
+	if err := compiler.AddResource(resourceURL, doc); err != nil {
+		return nil, fmt.Errorf("validate: register schema resource: %w", err)
+	}
+	compiled, err := compiler.Compile(resourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("validate: compile schema: %w", err)
+	}
+	cs := &compiledSchema{
+		inferred:         bs.schema,
+		compiled:         compiled,
+		requiredNonEmpty: bs.requiredNonEmpty,
+		fieldOrder:       bs.fieldOrder,
+	}
+	actual, _ := v.schemas.LoadOrStore(t, cs)
+	return actual.(*compiledSchema), nil
+}
+
+// snapshotFormats returns a stable copy of the registered formats so
+// the compiler call does not hold the validator's mutex.
+func (v *Validator) snapshotFormats() []*jsonschema.Format {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	out := make([]*jsonschema.Format, 0, len(v.formats))
+	for _, f := range v.formats {
+		out = append(out, f)
+	}
+	return out
 }
 
 // --- Package-level singleton (legacy / convenience API) ---
@@ -89,127 +284,15 @@ func singleton() *Validator {
 	return defaultValidator
 }
 
-// Struct validates s using the package-level [Validator]. Equivalent to
-// `New().Struct(s)` for the singleton instance; the first call freezes
-// the singleton's custom-tag registry.
+// Struct validates s using the package-level Validator. The first call
+// freezes the package-level format registry; further [RegisterFormat]
+// calls fail with an error.
 func Struct(s any) error {
 	return singleton().Struct(s)
 }
 
-// RegisterValidation registers a custom validation tag on the package-level
-// validator. Call during init only — see [Validator.RegisterValidation].
-func RegisterValidation(tag string, fn Func) error {
-	return singleton().RegisterValidation(tag, fn)
-}
-
-// --- internals ---
-
-func jsonTagNameFunc(fld reflect.StructField) string {
-	name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
-	if name == "-" || name == "" {
-		return fld.Name
-	}
-	return name
-}
-
-func wrapValidate(v *validator.Validate, s any) error {
-	err := v.Struct(s)
-	if err == nil {
-		return nil
-	}
-
-	var invalid *validator.InvalidValidationError
-	if errors.As(err, &invalid) {
-		return apperror.NewOperationFailedWithCause("validate: invalid input passed to Struct (programming error)", invalid)
-	}
-
-	validationErrors, ok := err.(validator.ValidationErrors)
-	if !ok {
-		return apperror.NewOperationFailedWithCause("validate: validator returned unexpected error", err)
-	}
-
-	fields := make([]apperror.FieldError, 0, len(validationErrors))
-	for _, ve := range validationErrors {
-		fields = append(fields, apperror.FieldError{
-			Field:   fieldPath(ve),
-			Message: message(ve),
-		})
-	}
-	return apperror.NewFieldValidation(fields...)
-}
-
-// fieldPath returns the JSON-tagged field path (e.g. "address.city" for nested structs).
-func fieldPath(fe validator.FieldError) string {
-	ns := fe.Namespace()
-	// Strip the top-level struct name (e.g. "CreateRequest.name" → "name")
-	if idx := strings.IndexByte(ns, '.'); idx >= 0 {
-		return ns[idx+1:]
-	}
-	return fe.Field()
-}
-
-// message converts a validator.FieldError into a human-readable message,
-// matching the project convention of lowercase descriptive messages.
-func message(fe validator.FieldError) string {
-	switch fe.Tag() {
-	case "required":
-		return "is required"
-	case "email":
-		return "must be a valid email address"
-	case "url", "uri":
-		return "must be a valid URL"
-	case "uuid", "uuid4":
-		return "must be a valid UUID"
-	case "min":
-		if fe.Kind() == reflect.String {
-			return "must be at least " + fe.Param() + " characters"
-		}
-		return "must be at least " + fe.Param()
-	case "max":
-		if fe.Kind() == reflect.String {
-			return "must be at most " + fe.Param() + " characters"
-		}
-		return "must be at most " + fe.Param()
-	case "len":
-		if fe.Kind() == reflect.String {
-			return "must be exactly " + fe.Param() + " characters"
-		}
-		return "must have exactly " + fe.Param() + " items"
-	case "gte":
-		return "must be greater than or equal to " + fe.Param()
-	case "lte":
-		return "must be less than or equal to " + fe.Param()
-	case "gt":
-		return "must be greater than " + fe.Param()
-	case "lt":
-		return "must be less than " + fe.Param()
-	case "oneof":
-		return "must be one of: " + fe.Param()
-	case "excludesall":
-		return "contains disallowed characters"
-	case "alphanum":
-		return "must contain only alphanumeric characters"
-	case "alpha":
-		return "must contain only letters"
-	case "numeric":
-		return "must be numeric"
-	case "boolean":
-		return "must be a boolean"
-	case "ip":
-		return "must be a valid IP address"
-	case "cidr":
-		return "must be a valid CIDR notation"
-	case "hostname":
-		return "must be a valid hostname"
-	case "startswith":
-		return "must start with " + fe.Param()
-	case "endswith":
-		return "must end with " + fe.Param()
-	case "contains":
-		return "must contain " + fe.Param()
-	case "datetime":
-		return "must be a valid datetime (" + fe.Param() + ")"
-	default:
-		return "failed validation: " + fe.Tag()
-	}
+// RegisterFormat registers a custom format on the package-level
+// Validator. Call during init only — see [Validator.RegisterFormat].
+func RegisterFormat(name string, fn FormatFunc) error {
+	return singleton().RegisterFormat(name, fn)
 }

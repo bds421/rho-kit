@@ -14,11 +14,8 @@ require (
 )
 
 require (
-	github.com/bds421/rho-kit/authz/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/httpx/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/infra/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/io/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/security/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -28,15 +25,11 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-playground/locales v0.14.1 // indirect
-	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.2 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.2.1 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
@@ -50,6 +43,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
