@@ -696,6 +696,119 @@ func TestRegister_ResponseHeaders_RejectsBadInput(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestRegister_AutoDiscoversPathParameters verifies the wave 162
+// extension: `{name}` segments in the OAS path template emit path
+// parameters automatically with a string schema and Required=true.
+func TestRegister_AutoDiscoversPathParameters(t *testing.T) {
+	spec := openapigen.NewSpec("auto", "v1")
+	err := spec.Register(http.MethodGet, "/users/{id}/orders/{orderID}",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+
+	doc := spec.Document()
+	params := doc.Paths["/users/{id}/orders/{orderID}"].Get.Parameters
+	require.Len(t, params, 2, "expected id + orderID to be auto-emitted")
+
+	byName := map[string]openapigen.Parameter{}
+	for _, p := range params {
+		byName[p.Name] = p
+	}
+	id := byName["id"]
+	require.Equal(t, "path", id.In)
+	assert.True(t, id.Required, "path parameters MUST be required per OAS 3.1")
+	require.NotNil(t, id.Schema)
+	assert.Equal(t, "string", id.Schema.Type)
+
+	orderID := byName["orderID"]
+	require.Equal(t, "path", orderID.In)
+	assert.True(t, orderID.Required)
+}
+
+// TestRegister_AutoDiscovery_DoesNotShadowExplicit verifies that an
+// explicit WithParameter for a path segment takes precedence —
+// callers who want a richer schema, description, or example for an
+// auto-discovered parameter declare it and the duplicate is
+// suppressed.
+func TestRegister_AutoDiscovery_DoesNotShadowExplicit(t *testing.T) {
+	spec := openapigen.NewSpec("override", "v1")
+	uuidSchema := &jsonschema.Schema{Type: "string", Format: "uuid"}
+	err := spec.Register(http.MethodGet, "/users/{id}",
+		openapigen.WithParameter(openapigen.Parameter{
+			Name:        "id",
+			In:          "path",
+			Description: "user identifier (UUID v7)",
+			Required:    true,
+			Schema:      uuidSchema,
+		}),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+
+	params := spec.Document().Paths["/users/{id}"].Get.Parameters
+	require.Len(t, params, 1, "explicit declaration must not be duplicated by auto-discovery")
+	assert.Equal(t, "id", params[0].Name)
+	assert.Equal(t, "user identifier (UUID v7)", params[0].Description)
+	require.NotNil(t, params[0].Schema)
+	assert.Equal(t, "uuid", params[0].Schema.Format, "explicit schema must survive")
+}
+
+// TestRegister_AutoDiscovery_SkipsGoEndOfPathMarker verifies that
+// Go's `{$}` end-of-path marker (net/http 1.22+) is not emitted as a
+// parameter — the segment is a router-only construct with no OAS
+// equivalent.
+func TestRegister_AutoDiscovery_SkipsGoEndOfPathMarker(t *testing.T) {
+	spec := openapigen.NewSpec("eop", "v1")
+	err := spec.Register(http.MethodGet, "/{$}",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, spec.Document().Paths["/{$}"].Get.Parameters)
+}
+
+// TestRegister_AutoDiscovery_HandlesGoWildcardSuffix verifies the
+// Go 1.22 catch-all `{name...}` shape: the `...` is stripped and the
+// parameter is emitted under the base name. The OAS spec has no
+// catch-all equivalent — the kit emits a single string parameter
+// with the name and lets the operator decide how to document it.
+func TestRegister_AutoDiscovery_HandlesGoWildcardSuffix(t *testing.T) {
+	spec := openapigen.NewSpec("wildcard", "v1")
+	err := spec.Register(http.MethodGet, "/static/{path...}",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+
+	params := spec.Document().Paths["/static/{path...}"].Get.Parameters
+	require.Len(t, params, 1)
+	assert.Equal(t, "path", params[0].Name)
+	assert.True(t, params[0].Required)
+}
+
+// TestRegister_WithSkipPathParamDiscovery verifies the opt-out path:
+// callers can suppress auto-discovery entirely when they want every
+// parameter to be code-review visible at registration.
+func TestRegister_WithSkipPathParamDiscovery(t *testing.T) {
+	spec := openapigen.NewSpec("skip", "v1")
+	err := spec.Register(http.MethodGet, "/users/{id}",
+		openapigen.WithSkipPathParamDiscovery(),
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, spec.Document().Paths["/users/{id}"].Get.Parameters,
+		"skip option must suppress auto-discovery")
+}
+
+// TestRegister_AutoDiscovery_NoBracesEmitsNothing covers the no-op
+// case: a literal path without `{name}` segments adds no parameters.
+func TestRegister_AutoDiscovery_NoBracesEmitsNothing(t *testing.T) {
+	spec := openapigen.NewSpec("literal", "v1")
+	err := spec.Register(http.MethodGet, "/health/ready",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, spec.Document().Paths["/health/ready"].Get.Parameters)
+}
+
 // TestRegister_ResponseContent_BadInput verifies the per-option
 // validation guards for the multi-content options.
 func TestRegister_ResponseContent_BadInput(t *testing.T) {

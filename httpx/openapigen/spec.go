@@ -235,7 +235,7 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 	rs.op.Summary = cfg.summary
 	rs.op.Description = cfg.description
 	rs.op.OperationID = cfg.operationID
-	rs.op.Parameters = append([]Parameter(nil), cfg.parameters...)
+	rs.op.Parameters = mergePathParameters(path, cfg.parameters, cfg.skipParamDiscovery)
 	rs.op.Deprecated = cfg.deprecated
 	rs.op.Security = cfg.security
 
@@ -532,4 +532,104 @@ func defaultResponseDescription(status int) string {
 		return t
 	}
 	return "Response for HTTP " + strconv.Itoa(status)
+}
+
+// mergePathParameters auto-discovers path parameters from the OAS
+// path template (`{name}` segments) and merges them with caller-
+// declared parameters. Caller-declared path parameters take
+// precedence: if WithParameter has already declared a richer schema
+// for `id`, the auto-discovered entry is suppressed. Non-path
+// parameters (query, header, cookie) pass through unchanged.
+//
+// The discovery exists because Go's net/http pattern grammar uses
+// the same `{name}` template the OAS spec does — registering
+// `/users/{id}` against the mux and then manually re-declaring `id`
+// as a Parameter is rote work that bloats Register call sites
+// without adding information.
+//
+// Skip semantics: callers that want full control (e.g. their path
+// uses `{name}` for non-OAS purposes) can pass
+// [WithSkipPathParamDiscovery]. The auto-discovery is best-effort —
+// malformed templates produce no auto-parameters rather than an
+// error so adoption is incremental.
+func mergePathParameters(path string, declared []Parameter, skip bool) []Parameter {
+	merged := append([]Parameter(nil), declared...)
+	if skip {
+		return merged
+	}
+	names := extractPathParamNames(path)
+	if len(names) == 0 {
+		return merged
+	}
+	// Build the index of caller-declared path parameter names once
+	// to avoid an O(n*m) scan when many parameters are declared.
+	declaredPath := map[string]struct{}{}
+	for _, p := range declared {
+		if p.In == "path" {
+			declaredPath[p.Name] = struct{}{}
+		}
+	}
+	for _, name := range names {
+		if _, ok := declaredPath[name]; ok {
+			continue
+		}
+		merged = append(merged, Parameter{
+			Name:     name,
+			In:       "path",
+			Required: true,
+			Schema:   defaultStringSchema(),
+		})
+	}
+	return merged
+}
+
+// extractPathParamNames parses an OAS path template for `{name}`
+// segments. Returns names in registration order. Unbalanced braces
+// or names containing special tokens (`.`, `:`, `/`) are skipped.
+//
+// Notable shapes:
+//
+//   - `/users/{id}` → `["id"]`
+//   - `/users/{id}/orders/{orderID}` → `["id", "orderID"]`
+//   - `/{$}` → `[]` (Go 1.22 end-of-path marker, not a parameter)
+//   - `/static/{path...}` → `["path"]` (catch-all stripped; the
+//     trailing `...` is Go's wildcard and is not OAS-spec, but the
+//     parameter name itself is well-defined)
+func extractPathParamNames(path string) []string {
+	var names []string
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		end := strings.IndexByte(path[i+1:], '}')
+		if end < 0 {
+			break
+		}
+		raw := path[i+1 : i+1+end]
+		i += 1 + end
+		// Skip Go's end-of-path marker.
+		if raw == "$" {
+			continue
+		}
+		// Strip Go's catch-all wildcard suffix.
+		raw = strings.TrimSuffix(raw, "...")
+		if raw == "" {
+			continue
+		}
+		// Reject names with characters that would conflict with
+		// path-parameter validation downstream.
+		if strings.ContainsAny(raw, ".:/{}") {
+			continue
+		}
+		names = append(names, raw)
+	}
+	return names
+}
+
+// defaultStringSchema returns a fresh `{"type": "string"}` schema
+// used as the default for auto-discovered path parameters. Each call
+// returns a new pointer so callers that subsequently mutate the
+// schema do not affect other parameters.
+func defaultStringSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string"}
 }

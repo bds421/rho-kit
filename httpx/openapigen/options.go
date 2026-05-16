@@ -27,6 +27,12 @@ type routeConfig struct {
 	deprecated  bool
 	security    *[]map[string][]string
 
+	// skipParamDiscovery suppresses the wave-162 auto-discovery of
+	// path parameters from the OAS template (`{name}` segments). Set
+	// via [WithSkipPathParamDiscovery]; the default is false so most
+	// callers get the ergonomic shape automatically.
+	skipParamDiscovery bool
+
 	// Request body.
 	requestSchema      *jsonschema.Schema
 	requestMediaType   string
@@ -100,10 +106,37 @@ func WithDeprecated() RouteOption {
 	}
 }
 
-// WithParameter appends one parameter to the operation. Path / query /
-// header / cookie parameters all go through this option; the kit does
-// not auto-discover parameters from Go's net/http pattern grammar
-// because that grammar does not expose typed parameter metadata.
+// WithSkipPathParamDiscovery suppresses the auto-discovery of path
+// parameters from the OAS template added in wave 162. By default the
+// Register call extracts `{name}` segments from the path and adds
+// them as required string-typed path parameters; callers that have
+// already declared every path parameter via [WithParameter] (e.g.
+// with richer typing or descriptions) and want to verify their
+// declarations are complete can use this option to opt out.
+//
+// The discovery is also a safe no-op when the caller's
+// [WithParameter] declarations cover every path segment — the merge
+// suppresses any auto-entry that would shadow a declared one. This
+// option is therefore only needed when the caller wants the auto
+// path to be visible at a code-review level rather than functionally
+// disabled.
+func WithSkipPathParamDiscovery() RouteOption {
+	return func(c *routeConfig) error {
+		c.skipParamDiscovery = true
+		return nil
+	}
+}
+
+// WithParameter appends one parameter to the operation. Path /
+// query / header / cookie parameters all go through this option.
+//
+// As of wave 162, path parameters declared in the OAS template
+// (`{name}` segments) are auto-discovered and emitted as required
+// string-typed parameters. Declaring the same name with
+// WithParameter overrides the auto-entry — the explicit declaration
+// wins so callers can attach richer schemas, examples, or
+// descriptions. Use [WithSkipPathParamDiscovery] to disable the
+// auto-discovery entirely.
 func WithParameter(p Parameter) RouteOption {
 	return func(c *routeConfig) error {
 		if p.Name == "" {
