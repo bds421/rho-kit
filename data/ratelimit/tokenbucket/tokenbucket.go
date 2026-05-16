@@ -11,6 +11,12 @@
 //
 // For smoothed (no-burst) behaviour, use data/ratelimit/gcra.
 // For cross-instance limits, use data/ratelimit/redis.
+//
+// The per-key bucket arithmetic delegates to [golang.org/x/time/rate]
+// since wave 125; the kit owns the per-key map, weak.Pointer sweeper,
+// ctx-cancel handling, key validation, and lifecycle. The injected
+// clock from [WithClock] is threaded as the time argument to
+// ReserveN/TokensAt so tests retain deterministic time control.
 package tokenbucket
 
 import (
@@ -19,6 +25,8 @@ import (
 	"sync"
 	"time"
 	"weak"
+
+	"golang.org/x/time/rate"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
 	"github.com/bds421/rho-kit/data/v2/ratelimit"
@@ -39,8 +47,10 @@ const (
 // background sweeper goroutine; disable it with [WithoutSweeper] only
 // when caller cardinality is already bounded.
 //
-// Safe for concurrent use — Allow takes a per-bucket mutex; Close is
-// idempotent and joins the sweeper goroutine.
+// Safe for concurrent use — each key's bucket carries its own mutex
+// (inside the wrapped *rate.Limiter), so contended keys no longer
+// serialise through a single limiter-wide lock; Close is idempotent
+// and joins the sweeper goroutine.
 type Limiter struct {
 	capacity float64
 	refill   float64
@@ -56,14 +66,15 @@ type Limiter struct {
 }
 
 type bucket struct {
-	tokens  float64
-	updated time.Time
+	lim *rate.Limiter
 }
 
 // Option configures a [Limiter].
 type Option func(*Limiter)
 
-// WithClock overrides the time source for tests.
+// WithClock overrides the time source for tests. The clock is threaded
+// as the time argument to [rate.Limiter.ReserveN] / [rate.Limiter.TokensAt],
+// so tests retain deterministic control without relying on time.Now.
 func WithClock(now clock.Func) Option {
 	if now == nil {
 		panic("tokenbucket: WithClock clock must not be nil")
@@ -88,15 +99,21 @@ func WithoutSweeper() Option {
 	return func(l *Limiter) { l.sweepInterval = 0 }
 }
 
-// Open constructs a Limiter where each key has a bucket of `capacity`
+// New constructs a Limiter where each key has a bucket of `capacity`
 // tokens that refills at `refillPerSec` tokens per second. capacity
 // must be finite and > 0; refillPerSec must be finite, > 0, and high
 // enough that a one-token retry interval fits in time.Duration.
 //
-// New constructs a Limiter and spawns a background sweeper goroutine
-// that holds only a weak reference to the limiter, so a forgotten
-// Close does not pin it forever. Pair with [Limiter.Close] in
-// shutdown wiring for deterministic cleanup.
+// Internally each bucket is a [*rate.Limiter] constructed with
+// `rate.NewLimiter(rate.Limit(refillPerSec), int(capacity))`. Since
+// [rate.Limiter] takes an integer burst, fractional capacity is
+// truncated; values in (0, 1) collapse to burst=0 and Allow returns
+// [ratelimit.ErrInvalidLimiter] for that bucket.
+//
+// New spawns a background sweeper goroutine that holds only a weak
+// reference to the limiter, so a forgotten Close does not pin it
+// forever. Pair with [Limiter.Close] in shutdown wiring for
+// deterministic cleanup.
 func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
 	if !validPositiveFinite(capacity) {
 		panic("tokenbucket: New capacity must be finite and > 0")
@@ -197,15 +214,17 @@ func (l *Limiter) sweep() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for k, b := range l.buckets {
-		elapsed := now.Sub(b.updated).Seconds()
-		projected := b.tokens
-		if elapsed > 0 {
-			projected = minf(l.capacity, b.tokens+elapsed*l.refill)
-		}
-		if projected >= l.capacity {
+		if b.lim.TokensAt(now) >= l.capacity {
 			delete(l.buckets, k)
 		}
 	}
+}
+
+// newBucket builds a fresh per-key bucket. Encapsulates the
+// rate.Limiter construction so callers don't accidentally drift on
+// burst rounding or rate.Limit conversion.
+func (l *Limiter) newBucket() *bucket {
+	return &bucket{lim: rate.NewLimiter(rate.Limit(l.refill), int(l.capacity))}
 }
 
 // Allow consumes one token from key's bucket if available. retryAfter
@@ -217,6 +236,11 @@ func (l *Limiter) sweep() {
 // taking the bucket lock, and again after acquiring it, so contended
 // callers cannot silently spend a token after their request has been
 // cancelled.
+//
+// The bucket-map mutex is held only long enough to look up or create
+// the per-key bucket; the actual token accounting happens inside the
+// per-key [*rate.Limiter] (which carries its own mutex), so contended
+// keys no longer serialise through a single limiter-wide lock.
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
 	if err := ctxErr(ctx); err != nil {
 		return false, 0, err
@@ -230,31 +254,34 @@ func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, e
 	now := l.now()
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if err := ctxErr(ctx); err != nil {
+		l.mu.Unlock()
 		return false, 0, err
 	}
-
 	b, ok := l.buckets[key]
 	if !ok {
-		b = &bucket{tokens: l.capacity, updated: now}
+		b = l.newBucket()
 		l.buckets[key] = b
 	}
+	l.mu.Unlock()
 
-	elapsed := now.Sub(b.updated).Seconds()
-	if elapsed > 0 {
-		b.tokens = minf(l.capacity, b.tokens+elapsed*l.refill)
-		b.updated = now
+	r := b.lim.ReserveN(now, 1)
+	if !r.OK() {
+		// n > burst — possible only when int(capacity) == 0, i.e.
+		// capacity was a fractional value in (0, 1). Treat as an
+		// invalid limiter so the caller learns at first use rather
+		// than silently denying every request forever.
+		return false, 0, ratelimit.ErrInvalidLimiter
 	}
-
-	if b.tokens >= 1 {
-		b.tokens -= 1
+	delay := r.DelayFrom(now)
+	if delay == 0 {
 		return true, 0, nil
 	}
-
-	deficit := 1 - b.tokens
-	return false, retryAfter(deficit, l.refill), nil
+	// Bucket is empty: roll back the reservation so a future caller
+	// with a fresher token isn't forced to wait behind ours, and
+	// surface the projected refill time to the caller.
+	r.CancelAt(now)
+	return false, delay, nil
 }
 
 // Len returns the number of tracked keys. Useful in tests.
@@ -267,31 +294,10 @@ func (l *Limiter) Len() int {
 	return len(l.buckets)
 }
 
-func minf(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func validPositiveFinite(v float64) bool {
 	return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
 }
 
 func validRefillPerSec(v float64) bool {
 	return validPositiveFinite(v) && v > minRepresentableRefillPerSec
-}
-
-func retryAfter(deficit, refill float64) time.Duration {
-	waitNanos := deficit / refill * float64(time.Second)
-	if math.IsNaN(waitNanos) {
-		return 0
-	}
-	if math.IsInf(waitNanos, 1) || waitNanos >= float64(maxRetryAfter) {
-		return maxRetryAfter
-	}
-	if waitNanos <= 1 {
-		return time.Nanosecond
-	}
-	return time.Duration(waitNanos)
 }

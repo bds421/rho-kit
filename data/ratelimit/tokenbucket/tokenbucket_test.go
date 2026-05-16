@@ -142,15 +142,36 @@ func TestRetryAfter_AccurateWhenDenied(t *testing.T) {
 	assert.InDelta(t, time.Second, retry, float64(50*time.Millisecond))
 }
 
-func TestRetryAfter_ClampsSubNanosecondWaitToPositive(t *testing.T) {
+// TestRefill_HighRateAllowsImmediateRetry pins the wave 125 semantics:
+// the underlying [golang.org/x/time/rate.Limiter] treats math.MaxFloat64
+// as rate.Inf, so a bucket draining at that refill rate is effectively
+// always allowed. The previous arithmetic returned a 1ns wait at this
+// edge; the new wrapper short-circuits the deny path because there is
+// no meaningful wait to surface.
+func TestRefill_HighRateAllowsImmediateRetry(t *testing.T) {
 	now := time.Now()
 	l := New(1, math.MaxFloat64, WithClock(func() time.Time { return now }))
 	require.True(t, mustAllow(t, l, "k"))
 
 	ok, retry, err := l.Allow(context.Background(), "k")
 	require.NoError(t, err)
-	require.False(t, ok)
-	assert.Equal(t, time.Nanosecond, retry)
+	assert.True(t, ok, "math.MaxFloat64 refill collapses to rate.Inf and must always allow")
+	assert.Zero(t, retry)
+}
+
+// TestNew_FractionalCapacityRejectsAllRequests pins the wave 125
+// behaviour for fractional capacities in (0, 1): rate.NewLimiter takes
+// an integer burst, so int(0.5) == 0 produces a bucket that can never
+// satisfy a 1-token reservation. Allow surfaces
+// [ratelimit.ErrInvalidLimiter] so callers learn at first use.
+func TestNew_FractionalCapacityRejectsAllRequests(t *testing.T) {
+	l := New(0.5, 1)
+	t.Cleanup(func() { _ = l.Close() })
+
+	ok, retry, err := l.Allow(context.Background(), "k")
+	assert.False(t, ok)
+	assert.Zero(t, retry)
+	assert.ErrorIs(t, err, ratelimit.ErrInvalidLimiter)
 }
 
 func mustAllow(t *testing.T, l *Limiter, key string) bool {
