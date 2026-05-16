@@ -376,6 +376,16 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
 | Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
 
+### Per-call OTel spans — data adapters, lifecycle, resilience (new in waves 168–169)
+
+| Area | Migration |
+|---|---|
+| Data-adapter spans | Wave 168 adds per-operation OTel client spans to every kit data adapter that previously had none: `data/cache/rediscache` (Get / Set / Delete / Exists / MGet / MSet / SetNX), `data/idempotency/pgstore` and `data/idempotency/redisstore` (Get / Set / TryLock / Unlock / DeleteExpired), `data/lock/redislock` (Acquire / WithLock / handle.Release / handle.Extend — also picks up the `redlock` sub-package via shared types), and `data/lock/pgadvisory` (Acquire / AcquireTx / sessionLock.Release / sessionLock.Extend). |
+| Lifecycle + resilience spans | Wave 169 adds `lifecycle.Start` / `lifecycle.Stop` spans (one per `runtime/lifecycle/Runner` Component start and stop) carrying `kit.component.name`, plus `retry.Do` / `retry.DoWith` spans (one per retry loop, carrying `kit.retry.max_retries` so per-attempt detail is folded into the parent span rather than spawning one span per attempt) and `breaker.Execute` / `breaker.ExecuteCtx` spans (one per call, carrying `kit.breaker.name`). |
+| Span discipline | Span kind is always `SpanKindClient` for data adapters and `SpanKindInternal` for lifecycle / retry / breaker. Cache misses, `lock.ErrLockLost`, `ErrCircuitOpen`, and `http.ErrServerClosed` are NOT recorded as errors — they are normal control flow that attach as descriptive attributes (`kit.cache.miss`, `kit.lock.lost`, `kit.breaker.tripped`) but leave the span status unset so dashboards filtering on "trace errors" stay accurate. Keys are NEVER attached as attributes; cache / idempotency / lock keys are caller-derived and frequently embed PII. |
+| Implementation pattern | Each instrumented package gets a small `tracing.go` defining `startSpan` and `recordResult`; public methods that need wrapping are split into a tiny tracing shell plus a `doXxx` private method that holds the original logic. This avoids named-return collisions and keeps the per-package additions surgical. |
+| Backwards compat | Purely additive — span emission goes through `otel.Tracer(...)` which is a no-op when no TracerProvider is configured. Existing test suites for every instrumented adapter pass unchanged under `-race`. |
+
 ### Messaging trace propagation — Kafka, NATS, Redis (new in wave 167)
 
 | Area | Migration |

@@ -1300,6 +1300,99 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `storage.Validator` and `storage.ApplyValidators` are context-aware, so upload scanners and custom validator I/O honor request/backend cancellation instead of running on `context.Background()`.
 - `infra/storage/storagehttp/uploadsec/clamav` — ClamAV `clamd` INSTREAM adapter plus a `storage.Validator` bridge for `storagehttp.ParseAndStore`; closes threat-model GAP-08 without adding third-party scanner SDK dependencies
 
+## Post-wave-156 additions (waves 157–169)
+
+After the core v2.0.0 review work, the kit absorbed thirteen more
+waves before the tag — closing every documented-deferred item and
+filling the architectural gaps that had been tagged as "v2.x
+candidates" in earlier drafts of these notes. Everything below is
+in v2.0.0.
+
+### Transport hardening
+- **Wave 157 (BREAKING):** `httpx/websocket` production hardening — `WithWriteTimeout`
+  (slow-consumer DoS protection), `WithPingInterval` + `WithPongTimeout` (idle
+  keepalive heartbeat with `httpx_websocket_pings_total` metric), `WithMaxConnections`
+  (CAS-limiter + 503 + `Retry-After` rejection + `httpx_websocket_rejected_total`),
+  `WithAnyOriginUnsafe` (audit-grep-able opt-out from same-origin), `Conn.Ping(ctx)`.
+  `WithCompression()` default changed from `CompressionContextTakeover` to
+  `CompressionNoContextTakeover` — saves ~32 KiB per direction per connection.
+- **Wave 166:** `grpcx/interceptor` stream resource discipline — `MaxConcurrentStreamsServer`
+  (server-wide cap above gRPC's per-connection limit) + `StreamIdleTimeout`
+  (cancels streams with no SendMsg/RecvMsg activity) + `grpc_server_active_streams`
+  / `grpc_server_streams_rejected_total` / `grpc_server_streams_idle_closed_total`
+  metrics. Mirrors the wave 157 websocket vocabulary.
+
+### Real-time
+- **Wave 164:** `realtime/centrifuge` — new module wrapping `github.com/centrifugal/centrifuge`
+  with `lifecycle.Component`, JWT auth via `jwtutil.Provider`, bounded-cardinality
+  channel-class metrics, and structured log bridging. Fills the gap between
+  `httpx/websocket` (raw transport) and `infra/messaging/*` (backend pub/sub)
+  for browser-facing real-time with channels, presence, and history.
+
+### Leader election
+- **Wave 160:** `infra/leaderelection/etcd` — new module implementing
+  `leaderelection.Elector` on top of etcd lease + `concurrency.Election`.
+  Recommended for bare-metal / VM deployments that already run etcd. The
+  fourth leader-election backend after pgadvisory, redislock, and k8slease.
+
+### Distributed locking
+- **Wave 159:** `data/lock/redislock/redlock` — new sub-package implementing
+  Antirez's Redlock multi-master quorum algorithm via `redsync` multi-pool.
+  Drop-in `lock.Locker` for deployments that need single-instance failure
+  tolerance.
+
+### Messaging primitives
+- **Wave 165:** `messaging.Subscription`, `messaging.TypedSubscription[T]`,
+  `messaging.SubscriptionGroup` — mid-level abstraction wrapping
+  `(Consumer, Binding, Handler)` as a `lifecycle.Component`. Typed variant
+  decodes JSON payloads to `T` and validates via `validate.Struct` before
+  dispatch, mirroring `httpx`'s typed handler contract. Group runs N
+  subscriptions concurrently as one lifecycle row.
+- **Wave 156:** `outbox.MessagingPublisher` — bridge that adapts any
+  `messaging.Publisher` to `outbox.Publisher` so the wave-149 Multiplex
+  dispatcher routes to AMQP / Kafka / NATS / Redis backends without per-
+  backend reinvention.
+- **Wave 158:** `WithOpaqueConsumeLabels` confirmed shipped in wave 140
+  (the migration doc's deferral note was stale).
+
+### Contract / spec generation
+- **Wave 161:** `openapigen` multiple content types per status —
+  `WithResponseContentT[T]` / `WithResponseContent` for additive content
+  registration, `WithResponseHeader` for response-side headers.
+- **Wave 162:** `openapigen` auto-discovers path parameters from the OAS
+  `{name}` template at registration. Explicit `WithParameter` declarations
+  override the auto-entry; `WithSkipPathParamDiscovery` opts out entirely.
+- **Wave 163:** `openapigen` per-operation `externalDocs` link
+  (`WithExternalDocs`), per-(status, mediaType) examples
+  (`WithResponseExample`), request examples (`WithRequestExample`), parameter
+  examples (`WithParameterExample`), and `Tag.ExternalDocs` emission. Closes
+  every scope-limit item the wave 128 introduction flagged as deferred.
+
+### Observability
+- **Wave 167:** Messaging trace propagation — `kafkatracing`, `natstracing`,
+  `redistracing` sub-packages mirror the existing `amqpbackend/amqptracing`
+  helper shape (Carrier over `map[string]string` headers, Inject / Extract
+  for W3C trace context, `StartConsumerSpan` / `StartPublisherSpan` with
+  backend-specific OTel semconv attributes).
+- **Wave 168:** Per-call OTel client spans on every data adapter that
+  previously had none — `data/cache/rediscache`, `data/idempotency/pgstore`,
+  `data/idempotency/redisstore`, `data/lock/redislock` (covers the redlock
+  sub-package via shared types), and `data/lock/pgadvisory`. Keys are
+  never attached as span attributes (PII). Cache misses and lock-lost
+  conditions surface as attributes, not error statuses.
+- **Wave 169:** Per-call OTel spans on `runtime/lifecycle/Runner` (Component
+  start/stop), `resilience/retry` (Do / DoWith), and `resilience/circuitbreaker`
+  (Execute / ExecuteCtx). Span lifetimes are the full operation so per-attempt
+  retry detail is folded into the parent span — tight retry loops do not
+  inflate exporter load. `http.ErrServerClosed` and `ErrCircuitOpen` are
+  normal control flow and do not light up trace-error dashboards.
+
+### Documentation cleanup
+- `MIGRATION_V2.md` §9 ("Things Not Migrated") now lists only one item:
+  KMS adapters beyond the four shipped. The previously-deferred etcd
+  leader-election and messaging consume-labels entries were resolved
+  in waves 160 and 140 respectively.
+
 ## What's deliberately NOT shipped
 
 The kit intentionally does not include these. None are on a roadmap;
@@ -1309,7 +1402,6 @@ file an issue with a concrete use case before assuming we will add them.
 | Item | Why |
 |---|---|
 | KMS adapters beyond AWS KMS, Azure Key Vault, Google Cloud KMS, and HashiCorp Vault Transit | The four shipped adapters cover the production estate the kit was designed for; additional provider SDKs are not in scope. |
-| `etcd` leader-election backend | `go.etcd.io/...` would be a third heavy SDK on top of the pgadvisory / redislock / k8slease set already shipped (see wave 127), without addressing a deployment topology those three don't already cover. Out of scope unless someone files an issue with a concrete deployment that none of the three fit. |
 
 ## Release surface
 
