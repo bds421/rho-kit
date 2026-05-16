@@ -37,11 +37,11 @@ func RegisterCollector(reg prometheus.Registerer, c prometheus.Collector) {
 func MustRegisterOrGet[T prometheus.Collector](reg prometheus.Registerer, c T) T {
 	registered, err := Register(reg, c)
 	if err != nil {
-		panic("promutil: metric registration failed")
+		panic("promutil: MustRegisterOrGet metric registration failed")
 	}
 	typed, ok := registered.(T)
 	if !ok {
-		panic("promutil: registered collector type mismatch")
+		panic("promutil: MustRegisterOrGet registered collector type mismatch")
 	}
 	return typed
 }

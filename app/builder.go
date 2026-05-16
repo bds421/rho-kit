@@ -491,7 +491,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
-				panic("app: Background() must only be called synchronously within RouterFunc")
+				panic("app: RunContext Background() must only be called synchronously within RouterFunc")
 			}
 			lateBgs = append(lateBgs, bgSpec{name: name, fn: fn})
 		},
@@ -502,7 +502,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
-				panic("app: SetCustomReadiness() must only be called synchronously within RouterFunc")
+				panic("app: RunContext SetCustomReadiness() must only be called synchronously within RouterFunc")
 			}
 			b.customReadiness = h
 		},
@@ -511,7 +511,7 @@ func (b *Builder) RunContext(ctx context.Context) error {
 			lateBgsMu.Lock()
 			defer lateBgsMu.Unlock()
 			if lateBgsFrozen {
-				panic("app: AddHealthCheck() must only be called synchronously within RouterFunc")
+				panic("app: RunContext AddHealthCheck() must only be called synchronously within RouterFunc")
 			}
 			b.healthChecks = append(b.healthChecks, check)
 		},

@@ -733,7 +733,7 @@ func Register[In any, Out any](s *Server, name string, h Handler[In, Out], opts 
 	cfg := toolConfig{}
 	for _, o := range opts {
 		if o == nil {
-			panic("mcp: tool option must not be nil")
+			panic("mcp: Register tool option must not be nil")
 		}
 		o(&cfg)
 	}

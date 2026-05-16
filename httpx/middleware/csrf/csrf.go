@@ -381,7 +381,7 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	// with that combination if Secure is missing, so the middleware would
 	// silently fail to set the cookie at all. Catch the misconfig at startup.
 	if cfg.sameSite == http.SameSiteNoneMode && !cfg.secure {
-		panic("csrf: SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
+		panic("csrf: New SameSite=None requires the default Secure cookie — drop WithoutSecureCookieForLocalHTTP() when SameSite=None is set")
 	}
 
 	// Session-bound mode: build the security/csrf Issuer once and route

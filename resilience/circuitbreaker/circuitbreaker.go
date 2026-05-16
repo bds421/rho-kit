@@ -15,7 +15,7 @@ import (
 
 // ErrCircuitOpen is returned when the circuit breaker is open and the call is
 // rejected without attempting the underlying operation.
-var ErrCircuitOpen = errors.New("circuit breaker is open")
+var ErrCircuitOpen = errors.New("circuitbreaker: circuit is open")
 
 // State represents the circuit breaker state.
 type State string

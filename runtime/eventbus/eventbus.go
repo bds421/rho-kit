@@ -281,13 +281,13 @@ func WithUnboundedAsync() Option {
 // time. Panics if handler is nil.
 func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error, opts ...HandlerOption) Subscription {
 	if handler == nil {
-		panic("eventbus: handler must not be nil")
+		panic("eventbus: Subscribe handler must not be nil")
 	}
 
 	cfg := handlerConfig{name: "anonymous"}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("eventbus: handler option must not be nil")
+			panic("eventbus: Subscribe handler option must not be nil")
 		}
 		opt(&cfg)
 	}
@@ -304,7 +304,7 @@ func Subscribe[E Event](b *Bus, handler func(ctx context.Context, event E) error
 	}
 	eventName := probe.EventName()
 	if err := promutil.ValidateStaticLabelValue("event name", eventName); err != nil {
-		panic("eventbus: invalid event name")
+		panic("eventbus: Subscribe invalid event name")
 	}
 
 	id := b.nextID.Add(1)
