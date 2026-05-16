@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // BatchDeleter is an optional interface for backends that support
@@ -29,7 +31,7 @@ func DeleteMany(ctx context.Context, s Storage, keys []string) error {
 		return fmt.Errorf("storage.DeleteMany: backend is required")
 	}
 	if err := validateBatchKeys(keys); err != nil {
-		return fmt.Errorf("storage.DeleteMany: %w", err)
+		return redact.WrapError("storage.DeleteMany", err)
 	}
 
 	if bd, ok := AsBatchDeleter(s); ok {
@@ -44,7 +46,7 @@ func DeleteMany(ctx context.Context, s Storage, keys []string) error {
 	var errs []error
 	for _, key := range keys {
 		if err := s.Delete(ctx, key); err != nil {
-			errs = append(errs, fmt.Errorf("delete object: %w", err))
+			errs = append(errs, redact.WrapError("delete object", err))
 		}
 	}
 	return errors.Join(errs...)
@@ -57,13 +59,13 @@ func CopyMany(ctx context.Context, s Storage, pairs []CopyPair) error {
 		return fmt.Errorf("storage.CopyMany: backend is required")
 	}
 	if err := validateCopyPairs(pairs); err != nil {
-		return fmt.Errorf("storage.CopyMany: %w", err)
+		return redact.WrapError("storage.CopyMany", err)
 	}
 
 	var errs []error
 	for _, p := range pairs {
 		if err := Copy(ctx, s, p.SrcKey, p.DstKey); err != nil {
-			errs = append(errs, fmt.Errorf("copy object: %w", err))
+			errs = append(errs, redact.WrapError("copy object", err))
 		}
 	}
 	return errors.Join(errs...)
@@ -93,10 +95,10 @@ func validateCopyPairs(pairs []CopyPair) error {
 	}
 	for _, p := range pairs {
 		if err := ValidateKey(p.SrcKey); err != nil {
-			return fmt.Errorf("invalid source key: %w", err)
+			return redact.WrapError("invalid source key", err)
 		}
 		if err := ValidateKey(p.DstKey); err != nil {
-			return fmt.Errorf("invalid destination key: %w", err)
+			return redact.WrapError("invalid destination key", err)
 		}
 	}
 	return nil
@@ -106,7 +108,7 @@ func validateCopyPairs(pairs []CopyPair) error {
 func batchError(failures map[string]error) error {
 	var errs []error
 	for _, err := range failures {
-		errs = append(errs, fmt.Errorf("delete object: %w", err))
+		errs = append(errs, redact.WrapError("delete object", err))
 	}
 	return errors.Join(errs...)
 }
