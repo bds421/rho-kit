@@ -1,0 +1,82 @@
+{
+  "title": "rho-kit / gRPC stream limits",
+  "uid": "rhokit-grpc-stream-limits",
+  "tags": ["rho-kit", "grpc", "streaming", "saturation"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(grpc_server_active_streams, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(grpc_server_active_streams{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Active streams (server-wide)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "grpc_server_active_streams{namespace=\"$namespace\", service=\"$service\"}",
+          "legendFormat": "active"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Streams rejected/s by reason (max_concurrent = at server-wide cap)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(grpc_server_streams_rejected_total{namespace=\"$namespace\", service=\"$service\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Idle-timeout closures/s (kit watchdog fired)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(grpc_server_streams_idle_closed_total{namespace=\"$namespace\", service=\"$service\"}[5m])",
+          "legendFormat": "idle closed/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Headroom (cap minus active, when cap is configured)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "description": "Active stream count overlaid with the rejected-total rate so spikes in rejections can be correlated with peak active. Operators chart the configured cap as a horizontal threshold in their own override.",
+      "targets": [
+        {
+          "expr": "grpc_server_active_streams{namespace=\"$namespace\", service=\"$service\"}",
+          "legendFormat": "active"
+        },
+        {
+          "expr": "60 * rate(grpc_server_streams_rejected_total{namespace=\"$namespace\", service=\"$service\"}[5m])",
+          "legendFormat": "rejections/min"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

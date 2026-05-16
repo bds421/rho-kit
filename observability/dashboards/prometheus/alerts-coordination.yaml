@@ -1,0 +1,148 @@
+# Coordination alerts: leader-election callback-drain health,
+# centrifuge realtime auth/connection health, and gRPC streaming
+# saturation. Modules covered:
+#
+#   - infra/leaderelection/etcd     (wave 160)
+#   - realtime/centrifuge           (wave 164)
+#   - grpcx/interceptor/stream_limits (wave 166)
+groups:
+  - name: rho-kit-coordination
+    rules:
+      - alert: RhoKitLeaderCallbackDrainStuck
+        # The OnAcquired callback should drain promptly when leadership
+        # ends — the kit emits a warn tick at 10s and a terminal
+        # `timeout` observation when WithCallbackDrainTimeout fires.
+        # A sustained warn rate means at least one election term ran
+        # significantly longer than expected; this is the leading
+        # indicator before ErrCallbackDrainTimeout surfaces and the
+        # orchestrator must restart the process.
+        expr: |
+          60 * rate(leaderelection_callback_drain_warn_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Leader callback drain emitting warn ticks for {{ $labels.namespace }}/{{ $labels.service }} ({{ $labels.election }})"
+          description: |
+            The OnAcquired callback for election `{{ $labels.election }}`
+            is taking >10s to return after leadership ended. The leader
+            ctx is cancelled at this point — the callback is ignoring
+            ctx or holding a blocking operation. If WithCallbackDrainTimeout
+            is set, ErrCallbackDrainTimeout is imminent and the
+            orchestrator MUST restart the process.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/leader-election.md"
+
+      - alert: RhoKitLeaderCallbackDrainTimeout
+        # Terminal: WithCallbackDrainTimeout fired. The kit returned
+        # ErrCallbackDrainTimeout and the orphan goroutine is still
+        # running. Per the AGENTS.md contract, the orchestrator MUST
+        # restart the process — in-place retry guarantees nothing.
+        expr: |
+          increase(leaderelection_callback_drain_seconds_count{state="timeout"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Leader callback drain TIMED OUT for {{ $labels.namespace }}/{{ $labels.service }} ({{ $labels.election }})"
+          description: |
+            WithCallbackDrainTimeout fired for election
+            `{{ $labels.election }}`. ErrCallbackDrainTimeout was
+            returned; the OnAcquired goroutine is still running and
+            holding resources. Restart the process — `Run` cannot
+            recover in place.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/leader-election.md"
+
+      - alert: RhoKitCentrifugeConnectRejectHigh
+        # Sustained high rejection ratio = either JWT bad/expired
+        # (clock skew, token rotation gone wrong) or operator
+        # policy actively rejecting clients. Not a paging alert by
+        # default — most realtime workloads have a non-zero baseline
+        # of bad tokens — but a 25% sustained ratio is operator-visible.
+        expr: |
+          sum by (namespace, service) (rate(realtime_centrifuge_connects_total{outcome="rejected"}[10m]))
+          /
+          clamp_min(
+            sum by (namespace, service) (rate(realtime_centrifuge_connects_total[10m])),
+            0.0001
+          )
+            > 0.25
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "Centrifuge rejecting >25% of connections for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Centrifuge rejected more than 25% of connection attempts
+            over the last 15 minutes. Likely causes: JWT validation
+            failing (clock skew, key rotation, expired signing key),
+            channel-policy refusal, or a deployment that flipped the
+            allowed-issuer set without rolling clients.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/centrifuge.md"
+
+      - alert: RhoKitCentrifugeConnectErrorRateHigh
+        # `error` (vs `rejected`) means an internal kit/centrifuge
+        # failure during connect — distinct from policy rejection.
+        # Page on a sustained signal.
+        expr: |
+          sum by (namespace, service) (rate(realtime_centrifuge_connects_total{outcome="error"}[5m]))
+            > 0.5
+        for: 10m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "Centrifuge connect errors > 0.5/s for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            Centrifuge is recording `outcome="error"` on connect at
+            >0.5/s sustained. This is an internal failure (not a
+            policy rejection). Check logs for panics in the
+            ChannelClassifier or JWTAuth handler, and check the
+            centrifuge Node lifecycle (was Start successful?).
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/centrifuge.md"
+
+      - alert: RhoKitGRPCStreamCapacityRejecting
+        # Server-wide stream cap from MaxConcurrentStreamsServer is
+        # actively rejecting RPCs. Either the cap is too low for
+        # current load or there's a stream leak (handler returning
+        # without releasing).
+        expr: |
+          rate(grpc_server_streams_rejected_total{reason="max_concurrent"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: page
+          source: rho-kit
+        annotations:
+          summary: "gRPC server-wide stream cap rejecting RPCs for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            MaxConcurrentStreamsServer is returning
+            ResourceExhausted to new streaming RPCs. Either traffic
+            is exceeding the configured cap or a handler is leaking
+            streams (not returning, holding the slot). Inspect
+            grpc_server_active_streams trend over the last hour.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/grpc-stream-limits.md"
+
+      - alert: RhoKitGRPCStreamIdleClosesSpike
+        # Sustained idle-timeout closures indicate clients pausing
+        # without disconnecting (mobile background, dropped LB
+        # affinity). Not paging — informational unless it spikes.
+        expr: |
+          rate(grpc_server_streams_idle_closed_total[10m])
+          /
+          clamp_min(rate(grpc_server_streams_idle_closed_total[10m] offset 1h), 0.0001)
+            > 5
+        for: 15m
+        labels:
+          severity: warn
+          source: rho-kit
+        annotations:
+          summary: "gRPC idle-timeout closures spiked 5x for {{ $labels.namespace }}/{{ $labels.service }}"
+          description: |
+            StreamIdleTimeout is firing >5x as often as the prior
+            hour's baseline. Likely client-side pause behavior or a
+            load-balancer change that's parking streams. Not a
+            handler bug per se, but worth correlating with the
+            client deployment timeline.
+          runbook_url: "https://github.com/bds421/rho-kit/blob/main/docs/ai/runbooks/grpc-stream-limits.md"

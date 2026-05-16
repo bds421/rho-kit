@@ -1,0 +1,91 @@
+{
+  "title": "rho-kit / Realtime centrifuge",
+  "uid": "rhokit-centrifuge",
+  "tags": ["rho-kit", "centrifuge", "realtime"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(realtime_centrifuge_connects_total, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(realtime_centrifuge_connects_total{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "class",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values({__name__=~\"realtime_centrifuge_(subscribes|publishes)_total\", namespace=\"$namespace\", service=\"$service\"}, class)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Connection attempts/s by outcome",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(realtime_centrifuge_connects_total{namespace=\"$namespace\", service=\"$service\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Reject ratio (rejected / total)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(realtime_centrifuge_connects_total{namespace=\"$namespace\", service=\"$service\", outcome=\"rejected\"}[5m])) / clamp_min(sum(rate(realtime_centrifuge_connects_total{namespace=\"$namespace\", service=\"$service\"}[5m])), 0.0001)",
+          "legendFormat": "rejected/total"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Disconnects/s by reason",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(realtime_centrifuge_disconnects_total{namespace=\"$namespace\", service=\"$service\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Subscribes / Publishes by channel class",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (class) (rate(realtime_centrifuge_subscribes_total{namespace=\"$namespace\", service=\"$service\", class=~\"$class\"}[5m]))",
+          "legendFormat": "subscribes {{class}}"
+        },
+        {
+          "expr": "sum by (class) (rate(realtime_centrifuge_publishes_total{namespace=\"$namespace\", service=\"$service\", class=~\"$class\"}[5m]))",
+          "legendFormat": "publishes {{class}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

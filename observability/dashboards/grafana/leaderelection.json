@@ -1,0 +1,95 @@
+{
+  "title": "rho-kit / Leader election",
+  "uid": "rhokit-leaderelection",
+  "tags": ["rho-kit", "leaderelection", "coordination"],
+  "schemaVersion": 38,
+  "timezone": "",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(leaderelection_callback_drain_seconds_bucket, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "election",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\"}, election)",
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Callback drain p50 / p95 / p99 (seconds, terminal drained observations)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{election}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{election}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, election) (rate(leaderelection_callback_drain_seconds_bucket{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"drained\"}[5m])))",
+          "legendFormat": "{{election}} p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Drain warn ticks per minute (long-running OnAcquired)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "60 * rate(leaderelection_callback_drain_warn_total{namespace=\"$namespace\", service=\"$service\", election=~\"$election\"}[5m])",
+          "legendFormat": "{{election}} warns/min"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Drain timeouts (terminal — orchestrator must restart process)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (election) (increase(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"timeout\"}[10m]))",
+          "legendFormat": "{{election}} timeouts (10m)"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Pending snapshots (in-flight drains as they tick)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "rate(leaderelection_callback_drain_seconds_count{namespace=\"$namespace\", service=\"$service\", election=~\"$election\", state=\"pending\"}[5m])",
+          "legendFormat": "{{election}} pending obs/s"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

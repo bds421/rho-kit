@@ -45,6 +45,14 @@ grafana/
                          #   p50/p95/p99 processing latency
   ratelimit.json         # HTTP rate limits: decisions, limited ratio,
                          #   Retry-After distribution, degradation
+  leaderelection.json    # OnAcquired callback-drain duration,
+                         #   warn-tick rate, timeout terminal events
+                         #   (covers k8slease/etcd/pgadvisory/redislock)
+  centrifuge.json        # Realtime centrifuge: connect outcomes,
+                         #   reject ratio, disconnects, subscribes /
+                         #   publishes by channel class
+  grpc-stream-limits.json # Server-wide active streams, ResourceExhausted
+                         #   rejections, kit idle-timeout closures
 
 prometheus/
   recording-rules.yaml      # pre-aggregated p50/p95/p99 for HTTP, gRPC,
@@ -57,6 +65,9 @@ prometheus/
   alerts-messaging.yaml     # outbox error rate, no-progress, relay p99,
                             #   AMQP, NATS, and Redis Stream alerts
   alerts-ratelimit.yaml     # rate-limit spikes, degradation, unavailable
+  alerts-coordination.yaml  # leader-election drain, centrifuge auth /
+                            #   connect-error rates, gRPC stream cap
+                            #   rejecting + idle-close spikes
   slo-templates.yaml        # multi-window multi-burn-rate SLO rules
 ```
 
@@ -173,6 +184,14 @@ travel with the alerts:
   `RhoKitRedisStreamDeadLetters`, `RhoKitRedisStreamPendingHigh`
 - `ratelimit.md` — `RhoKitRateLimitSpike`,
   `RhoKitRateLimitDegraded`, `RhoKitRateLimitUnavailable`
+- `leader-election.md` — `RhoKitLeaderCallbackDrainStuck`,
+  `RhoKitLeaderCallbackDrainTimeout`
+- `centrifuge.md` — `RhoKitCentrifugeConnectRejectHigh`,
+  `RhoKitCentrifugeConnectErrorRateHigh`
+- `grpc-stream-limits.md` — `RhoKitGRPCStreamCapacityRejecting`,
+  `RhoKitGRPCStreamIdleClosesSpike`
+- `tracing.md` — OTel tracing reference for kit-emitted spans
+  (waves 167–169); not alert-driven, used when investigating
 
 ## Local validation
 
@@ -201,7 +220,8 @@ canonical validator and will run on PRs.
 This pack covers HTTP RED, gRPC RED, Go runtime, service overview,
 DB pool, Redis, Storage (S3/GCS/Azure/SFTP overview and provider
 dashboards), Outbox, direct AMQP messaging, direct NATS JetStream messaging,
-direct Redis Streams messaging, and HTTP rate-limit dashboards plus the matching
-alerts
-(availability, latency, saturation, messaging, rate-limit, SLO
-multi-burn-rate).
+direct Redis Streams messaging, HTTP rate-limit, leader election (all
+adapters), realtime centrifuge, and gRPC stream-limit dashboards
+plus the matching alerts
+(availability, latency, saturation, messaging, rate-limit,
+coordination, SLO multi-burn-rate).
