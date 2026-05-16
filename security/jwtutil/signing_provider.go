@@ -403,23 +403,28 @@ func NewSigningProvider(ctx context.Context, rotator KeyRotator, opts ...Signing
 	return p, nil
 }
 
-// validateSigningAlg rejects HS* symmetric algorithms and the
-// no-signature "none" placeholder. HS* would couple every verifier to
-// the issuer's secret (alg-confusion vector); "none" disables
-// authentication outright.
+// validateSigningAlg rejects symmetric algorithms and the no-signature
+// "none" placeholder. Symmetric algorithms (HS256 and any custom alg
+// registered with [jwa.WithIsSymmetric]) would couple every verifier
+// to the issuer's secret (alg-confusion vector); "none" disables
+// authentication outright. We consult [jwa.SignatureAlgorithm.IsSymmetric]
+// rather than hardcoding the HS* name list so a future custom symmetric
+// algorithm registered via [jwa.RegisterSignatureAlgorithm] is still
+// rejected.
 func validateSigningAlg(alg jwa.SignatureAlgorithm) error {
 	name := alg.String()
 	if name == "" {
 		return errors.New("jwtutil: signing algorithm must not be empty")
 	}
-	switch name {
-	case "none":
+	if name == "none" {
 		return errors.New("jwtutil: signing algorithm \"none\" is not permitted")
-	case "HS256", "HS384", "HS512":
-		return errors.New("jwtutil: HMAC (HS*) signing algorithms are not permitted; use an asymmetric algorithm (ES*, RS*, PS*, EdDSA)")
 	}
-	if _, ok := jwa.LookupSignatureAlgorithm(name); !ok {
+	registered, ok := jwa.LookupSignatureAlgorithm(name)
+	if !ok {
 		return fmt.Errorf("jwtutil: unknown signing algorithm %q", name)
+	}
+	if registered.IsSymmetric() {
+		return fmt.Errorf("jwtutil: symmetric signing algorithm %q is not permitted; use an asymmetric algorithm (ES*, RS*, PS*, EdDSA)", name)
 	}
 	return nil
 }
@@ -467,6 +472,13 @@ func (p *SigningProvider) SignContext(ctx context.Context, claims Claims) (strin
 	}
 	keyPtr := p.current.Load()
 	if keyPtr == nil {
+		// Re-check the closed flag: Close stores closed=true before it
+		// nils current, so a Sign that races Close should report
+		// ErrSigningProviderClosed rather than ErrSigningKeyUnavailable.
+		// Go's atomic Load establishes the happens-before edge we need.
+		if p.closed.Load() {
+			return "", ErrSigningProviderClosed
+		}
 		return "", ErrSigningKeyUnavailable
 	}
 	if p.maxStale > 0 {
@@ -646,18 +658,26 @@ func (p *SigningProvider) refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("jwtutil: import signing key: %w", err)
 	}
+	// Reject symmetric (oct) key material at the rotator boundary so a
+	// caller that mistakenly passes a []byte (which jwk.Import wraps as
+	// a symmetric key) cannot land here. The constructor already
+	// rejects symmetric algorithms; this second guard closes the
+	// matching alg-confusion vector on the key side.
+	if _, isSymmetric := key.(jwk.SymmetricKey); isSymmetric {
+		return errors.New("jwtutil: KeyRotator returned a symmetric key; SigningProvider requires an asymmetric private key")
+	}
 	if err := key.Set(jwk.AlgorithmKey, p.alg); err != nil {
 		return fmt.Errorf("jwtutil: tag signing key algorithm: %w", err)
 	}
-	// Tag the key with an RFC 7638 thumbprint as its kid unless the
-	// rotator has already assigned one. The verifier-side JWKS lookup
+	// Tag the imported key with an RFC 7638 thumbprint as its kid. The
+	// rotator returns a stdlib [crypto.PrivateKey], which carries no kid
+	// of its own, so AssignKeyID always writes here — but it is guarded
+	// with hasKID for forward compatibility in case the rotator interface
+	// ever returns a pre-populated jwk.Key. The verifier-side JWKS lookup
 	// pivots on kid, and a kit-shipped JWKS endpoint (or a manually
-	// published rotation pair) computes the same thumbprint over the
-	// public key — so issuer-side thumbprint kids and verifier-side
-	// JWKS kids agree by construction. Operators who pin a custom kid
-	// can populate it on the jwk.Key the rotator returns; AssignKeyID
-	// only writes when the field is empty so a caller-provided kid is
-	// preserved.
+	// published rotation pair) computes the same RFC 7638 thumbprint over
+	// the public key — so issuer-side thumbprint kids and verifier-side
+	// JWKS kids agree by construction.
 	if _, hasKID := key.KeyID(); !hasKID {
 		if err := jwk.AssignKeyID(key); err != nil {
 			return fmt.Errorf("jwtutil: assign signing key kid: %w", err)

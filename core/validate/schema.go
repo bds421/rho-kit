@@ -175,10 +175,13 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
 		// Embedded (anonymous, no json tag) flattens into parent.
+		// encoding/json promotes exported fields of an embedded
+		// unexported-named struct as well (the struct field itself can
+		// have an unexported name like `base`, but its `ID` member is
+		// still emitted under the parent), so we check Anonymous BEFORE
+		// the IsExported gate. Skipping unexported anonymous struct
+		// fields here would diverge from json's marshalling shape.
 		if f.Anonymous && f.Tag.Get("json") == "" {
 			ft := f.Type
 			for ft.Kind() == reflect.Pointer {
@@ -199,6 +202,9 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 				order = append(order, name)
 			}
 			required = append(required, emb.Required...)
+			continue
+		}
+		if !f.IsExported() {
 			continue
 		}
 

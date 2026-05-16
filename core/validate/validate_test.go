@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -579,5 +580,215 @@ func TestSchemaFor_exposesInferredSchema(t *testing.T) {
 	}
 	if nameProp.MinLength == nil || *nameProp.MinLength != 2 {
 		t.Errorf("MinLength = %v, want 2", nameProp.MinLength)
+	}
+}
+
+// TestSchema_RejectsCyclicStruct verifies the walker's cycle guard
+// fires when a struct field recursively references its own type via a
+// pointer chain — the kit refuses to emit a schema rather than walking
+// forever at validate time.
+func TestSchema_RejectsCyclicStruct(t *testing.T) {
+	type node struct {
+		Next *node `json:"next"`
+	}
+	_, err := SchemaFor[node]()
+	if err == nil {
+		t.Fatal("expected ErrCyclicSchema for self-referential struct")
+	}
+	if !errors.Is(err, ErrCyclicSchema) {
+		t.Errorf("error = %v, want ErrCyclicSchema wrap", err)
+	}
+}
+
+// TestSchema_RejectsCyclicSliceOfSelf verifies cycle detection works
+// through a slice of the parent type as well (the cache key for slices
+// is distinct from the struct's, so a separate visit guard is needed).
+func TestSchema_RejectsCyclicSliceOfSelf(t *testing.T) {
+	type tree struct {
+		Children []tree `json:"children"`
+	}
+	_, err := SchemaFor[tree]()
+	if err == nil {
+		t.Fatal("expected ErrCyclicSchema for slice-of-self")
+	}
+	if !errors.Is(err, ErrCyclicSchema) {
+		t.Errorf("error = %v, want ErrCyclicSchema wrap", err)
+	}
+}
+
+// TestSchema_RejectsUnsupportedType covers channel / func / complex
+// fields, which have no JSON-Schema equivalent.
+func TestSchema_RejectsUnsupportedType(t *testing.T) {
+	type req struct {
+		Ch chan int `json:"ch"`
+	}
+	_, err := SchemaFor[req]()
+	if err == nil {
+		t.Fatal("expected ErrUnsupportedType for chan field")
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("error = %v, want ErrUnsupportedType wrap", err)
+	}
+}
+
+// TestSchema_NonStringMapKeyRejected ensures map keys must be strings
+// (JSON object keys are always strings).
+func TestSchema_NonStringMapKeyRejected(t *testing.T) {
+	type req struct {
+		M map[int]string `json:"m"`
+	}
+	_, err := SchemaFor[req]()
+	if err == nil {
+		t.Fatal("expected ErrUnsupportedType for non-string map key")
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("error = %v, want ErrUnsupportedType wrap", err)
+	}
+}
+
+// TestStruct_FieldErrorOrder_IsDeterministic verifies field errors come
+// back in struct-declaration order regardless of the underlying
+// validator's iteration order over a map. The walker records every
+// property's declaration index in a fieldOrder map; the error collector
+// sorts on it.
+func TestStruct_FieldErrorOrder_IsDeterministic(t *testing.T) {
+	type req struct {
+		Alpha   string `json:"alpha"   validate:"required"`
+		Bravo   string `json:"bravo"   validate:"required"`
+		Charlie string `json:"charlie" validate:"required"`
+		Delta   string `json:"delta"   validate:"required"`
+		Echo    string `json:"echo"    validate:"required"`
+	}
+	// Repeat to surface any non-determinism that would manifest as map
+	// iteration order flapping between runs of the same process.
+	const iterations = 20
+	for i := 0; i < iterations; i++ {
+		err := Struct(req{})
+		if err == nil {
+			t.Fatalf("iter %d: expected validation error", i)
+		}
+		ve, ok := apperror.AsValidation(err)
+		if !ok {
+			t.Fatalf("iter %d: not a ValidationError: %T", i, err)
+		}
+		got := make([]string, len(ve.Fields))
+		for j, f := range ve.Fields {
+			got[j] = f.Field
+		}
+		want := []string{"alpha", "bravo", "charlie", "delta", "echo"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("iter %d: order = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestJSONSchemaTag_DescriptionWithCommas confirms the kit-extension
+// jsonschema:"required,..." parser strips "required" and re-joins the
+// remaining segments so a description that contains an actual comma
+// survives.
+func TestJSONSchemaTag_DescriptionWithCommas(t *testing.T) {
+	type req struct {
+		Note string `json:"note" jsonschema:"required,First clause, second clause"`
+	}
+	s, err := SchemaFor[req]()
+	if err != nil {
+		t.Fatalf("SchemaFor: %v", err)
+	}
+	if len(s.Required) != 1 || s.Required[0] != "note" {
+		t.Errorf("Required = %v, want [note]", s.Required)
+	}
+	prop, ok := s.Properties["note"]
+	if !ok {
+		t.Fatalf("missing 'note' in properties")
+	}
+	if prop.Description != "First clause, second clause" {
+		t.Errorf("Description = %q, want %q", prop.Description, "First clause, second clause")
+	}
+}
+
+// TestJSONSchemaTag_DescriptionOnlyNoRequired covers the description-only
+// form of the jsonschema tag (without the "required" marker).
+func TestJSONSchemaTag_DescriptionOnlyNoRequired(t *testing.T) {
+	type req struct {
+		Note string `json:"note" jsonschema:"Just a description"`
+	}
+	s, err := SchemaFor[req]()
+	if err != nil {
+		t.Fatalf("SchemaFor: %v", err)
+	}
+	if len(s.Required) != 0 {
+		t.Errorf("Required = %v, want empty", s.Required)
+	}
+	if s.Properties["note"].Description != "Just a description" {
+		t.Errorf("Description = %q", s.Properties["note"].Description)
+	}
+}
+
+// TestStruct_RequiredViaJSONSchemaTag confirms the kit extension
+// jsonschema:"required" alone marks a field required, producing the
+// same "is required" message as validate:"required".
+func TestStruct_RequiredViaJSONSchemaTag(t *testing.T) {
+	type req struct {
+		Title string `json:"title" jsonschema:"required,Document title"`
+	}
+	err := Struct(req{})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	ve, ok := apperror.AsValidation(err)
+	if !ok {
+		t.Fatalf("not a ValidationError: %T", err)
+	}
+	if len(ve.Fields) != 1 || ve.Fields[0].Field != "title" || ve.Fields[0].Message != "is required" {
+		t.Errorf("fields = %v", ve.Fields)
+	}
+}
+
+// TestSchemaFor_StableAcrossCalls verifies the per-type cache returns
+// the same *Schema instance for repeated calls on the same type — both
+// a freshness check on the singleton and a guard against the cache
+// silently rebuilding on every Sign hit.
+func TestSchemaFor_StableAcrossCalls(t *testing.T) {
+	type req struct {
+		X string `json:"x"`
+	}
+	a, err := SchemaFor[req]()
+	if err != nil {
+		t.Fatalf("SchemaFor #1: %v", err)
+	}
+	b, err := SchemaFor[req]()
+	if err != nil {
+		t.Fatalf("SchemaFor #2: %v", err)
+	}
+	if a != b {
+		t.Errorf("SchemaFor returned distinct instances across calls: %p vs %p", a, b)
+	}
+}
+
+// TestStruct_EmbeddedStructFields verifies that embedded struct fields
+// flatten into the parent's required list and field order, mirroring
+// encoding/json's behaviour.
+func TestStruct_EmbeddedStructFields(t *testing.T) {
+	type base struct {
+		ID string `json:"id" validate:"required"`
+	}
+	type req struct {
+		base
+		Name string `json:"name" validate:"required"`
+	}
+	err := Struct(req{})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	ve, ok := apperror.AsValidation(err)
+	if !ok {
+		t.Fatalf("not a ValidationError: %T", err)
+	}
+	got := map[string]string{}
+	for _, f := range ve.Fields {
+		got[f.Field] = f.Message
+	}
+	if got["id"] != "is required" || got["name"] != "is required" {
+		t.Errorf("fields = %v, want id+name required", ve.Fields)
 	}
 }

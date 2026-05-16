@@ -160,14 +160,48 @@ func TestNewSigningProvider_RejectsNilKey(t *testing.T) {
 }
 
 func TestNewSigningProvider_RejectsHMACAlg(t *testing.T) {
+	for _, alg := range []jwa.SignatureAlgorithm{jwa.HS256(), jwa.HS384(), jwa.HS512()} {
+		alg := alg
+		t.Run(alg.String(), func(t *testing.T) {
+			_, err := NewSigningProvider(context.Background(),
+				staticRotator(mustECDSAKey(t)),
+				WithSigningRotationInterval(time.Hour),
+				WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+				WithSigningMethod(alg),
+			)
+			if err == nil || !strings.Contains(err.Error(), "symmetric") {
+				t.Fatalf("expected symmetric rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNewSigningProvider_RejectsNoneAlg(t *testing.T) {
 	_, err := NewSigningProvider(context.Background(),
 		staticRotator(mustECDSAKey(t)),
 		WithSigningRotationInterval(time.Hour),
 		WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
-		WithSigningMethod(jwa.HS256()),
+		WithSigningMethod(jwa.NoSignature()),
 	)
-	if err == nil || !strings.Contains(err.Error(), "HMAC") {
-		t.Fatalf("expected HMAC rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "none") {
+		t.Fatalf("expected \"none\" rejection, got %v", err)
+	}
+}
+
+func TestSigningProvider_RejectsSymmetricKeyMaterial(t *testing.T) {
+	// Rotator returns []byte, which jwk.Import wraps as a symmetric
+	// key. The refresh path must reject that even though the configured
+	// algorithm is asymmetric, so a caller cannot smuggle HMAC key bytes
+	// past the constructor's alg check.
+	rawHMACSecret := []byte("not-a-real-secret-but-32-bytes!!")
+	_, err := NewSigningProvider(context.Background(),
+		func(_ context.Context) (crypto.PrivateKey, error) { return rawHMACSecret, nil },
+		WithSigningRotationInterval(time.Hour),
+		WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+		WithSigningDefaultLifetime(time.Minute),
+	)
+	if err == nil || !strings.Contains(err.Error(), "symmetric") {
+		t.Fatalf("expected symmetric-key rejection, got %v", err)
 	}
 }
 
@@ -463,6 +497,27 @@ func TestSigningProvider_AfterCloseReturnsProviderClosed(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+	if _, err := p.Sign(Claims{Subject: "alice"}); !errors.Is(err, ErrSigningProviderClosed) {
+		t.Fatalf("expected ErrSigningProviderClosed, got %v", err)
+	}
+}
+
+func TestSigningProvider_AfterCloseReportsClosedEvenWhenCurrentNil(t *testing.T) {
+	// Close stores closed=true before it nils current. The Sign path
+	// re-checks the closed flag after observing current==nil so callers
+	// branching on errors.Is(err, ErrSigningProviderClosed) keep seeing
+	// the closed sentinel regardless of which atomic Sign observes first.
+	p, err := NewSigningProvider(context.Background(), staticRotator(mustECDSAKey(t)), WithSigningRotationInterval(time.Hour),
+		WithSigningExpectedIssuer("svc"), WithSigningAllowAnyAudience(),
+		WithSigningDefaultLifetime(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("NewSigningProvider: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// After Close, current is nil. Sign must report ErrSigningProviderClosed.
 	if _, err := p.Sign(Claims{Subject: "alice"}); !errors.Is(err, ErrSigningProviderClosed) {
 		t.Fatalf("expected ErrSigningProviderClosed, got %v", err)
 	}
