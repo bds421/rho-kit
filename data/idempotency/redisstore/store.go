@@ -206,6 +206,14 @@ func decodeLockValue(v string) (token string, fingerprint []byte, ok bool) {
 // post-GET length check still runs to catch the rare TOCTOU window where
 // the value is replaced between STRLEN and GET.
 func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	ctx, span := s.startSpan(ctx, "idempotency.Get")
+	defer span.End()
+	cached, ok, err := s.doGet(ctx, key, fingerprint)
+	recordResult(span, err)
+	return cached, ok, err
+}
+
+func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	if err := s.ready(); err != nil {
 		return nil, false, err
 	}
@@ -273,6 +281,14 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 // [idempotency.ErrInvalidTTL] when ttl <= 0 — Redis SET NX with EX 0 would
 // otherwise create a permanent lock.
 func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	ctx, span := s.startSpan(ctx, "idempotency.TryLock")
+	defer span.End()
+	token, ok, fingerprintMatch, err := s.doTryLock(ctx, key, fingerprint, ttl)
+	recordResult(span, err)
+	return token, ok, fingerprintMatch, err
+}
+
+func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	if err := s.ready(); err != nil {
 		return "", false, false, err
 	}
@@ -357,6 +373,14 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 // requiring that the caller still holds the lock. Returns
 // [idempotency.ErrInvalidTTL] when ttl <= 0.
 func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	ctx, span := s.startSpan(ctx, "idempotency.Set")
+	defer span.End()
+	err := s.doSet(ctx, key, token, resp, ttl)
+	recordResult(span, err)
+	return err
+}
+
+func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -431,6 +455,14 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 // Unlock releases the processing lock under the caller's token. Token
 // mismatch is silently ignored (best-effort cleanup, e.g. on handler panic).
 func (s *Store) Unlock(ctx context.Context, key, token string) error {
+	ctx, span := s.startSpan(ctx, "idempotency.Unlock")
+	defer span.End()
+	err := s.doUnlock(ctx, key, token)
+	recordResult(span, err)
+	return err
+}
+
+func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/bds421/rho-kit/core/v2/redact"
 	sharedcache "github.com/bds421/rho-kit/data/v2/cache"
@@ -162,7 +163,9 @@ func NewCache(client goredis.UniversalClient, name string, opts ...CacheOption) 
 // full response body before the cap runs. A post-GET length check still
 // runs to catch the rare TOCTOU window where the value is replaced between
 // STRLEN and GET.
-func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+func (rc *Cache) Get(ctx context.Context, key string) (val []byte, err error) {
+	ctx, span := rc.startSpan(ctx, "cache.Get")
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return nil, err
 	}
@@ -181,7 +184,7 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 		// STRLEN==0 covers both "missing" and "empty stored value"; both
 		// are safe to forward to GET, which distinguishes them via redis.Nil.
 	}
-	val, err := rc.client.Get(ctx, key).Bytes()
+	val, err = rc.client.Get(ctx, key).Bytes()
 	if errors.Is(err, goredis.Nil) {
 		rc.metrics.misses.WithLabelValues(rc.name).Inc()
 		return nil, sharedcache.ErrCacheMiss
@@ -201,7 +204,9 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Set stores a value in Redis with the given TTL. Zero TTL means no expiration.
 // Returns an error if TTL is negative or the value exceeds the configured maximum size.
-func (rc *Cache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+func (rc *Cache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) (err error) {
+	ctx, span := rc.startSpan(ctx, "cache.Set")
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return err
 	}
@@ -221,7 +226,9 @@ func (rc *Cache) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 }
 
 // Delete removes a key from Redis.
-func (rc *Cache) Delete(ctx context.Context, key string) error {
+func (rc *Cache) Delete(ctx context.Context, key string) (err error) {
+	ctx, span := rc.startSpan(ctx, "cache.Delete")
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return err
 	}
@@ -235,7 +242,9 @@ func (rc *Cache) Delete(ctx context.Context, key string) error {
 }
 
 // Exists checks whether a key exists in Redis.
-func (rc *Cache) Exists(ctx context.Context, key string) (bool, error) {
+func (rc *Cache) Exists(ctx context.Context, key string) (exists bool, err error) {
+	ctx, span := rc.startSpan(ctx, "cache.Exists")
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return false, err
 	}
@@ -263,7 +272,10 @@ func (rc *Cache) Exists(ctx context.Context, key string) (bool, error) {
 // bytes over the wire before discarding oversized ones — defeating
 // the cap's purpose of bounding heap and bandwidth per request.
 // Without a cap configured, MGet stays one round-trip via MGET.
-func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
+func (rc *Cache) MGet(ctx context.Context, keys []string) (out map[string][]byte, err error) {
+	ctx, span := rc.startSpan(ctx, "cache.MGet")
+	span.SetAttributes(attribute.Int("kit.cache.batch_size", len(keys)))
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return nil, err
 	}
@@ -277,11 +289,11 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	// Without a cap configured, MGET in a single round-trip is the
 	// efficient path. Skip the per-key pipeline.
 	if rc.maxValueSize <= 0 {
-		vals, err := rc.client.MGet(ctx, keys...).Result()
-		if err != nil {
-			return nil, redact.WrapError("redis cache mget", err)
+		vals, mgetErr := rc.client.MGet(ctx, keys...).Result()
+		if mgetErr != nil {
+			return nil, redact.WrapError("redis cache mget", mgetErr)
 		}
-		out := make(map[string][]byte, len(keys))
+		out = make(map[string][]byte, len(keys))
 		for i, v := range vals {
 			if v == nil {
 				rc.metrics.misses.WithLabelValues(rc.name).Inc()
@@ -313,7 +325,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	// for under-cap candidates and count clear miss/oversize cases
 	// up front.
 	getKeys := make([]string, 0, len(keys))
-	out := make(map[string][]byte, len(keys))
+	out = make(map[string][]byte, len(keys))
 	for i, k := range keys {
 		sz, slErr := strLens[i].Result()
 		if slErr != nil {
@@ -369,7 +381,10 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 // of keys written. Callers that require all-or-nothing semantics must
 // implement their own MULTI/EXEC or Lua-script path; the BulkCache
 // contract documents the same caveat.
-func (rc *Cache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) error {
+func (rc *Cache) MSet(ctx context.Context, items map[string][]byte, ttl time.Duration) (err error) {
+	ctx, span := rc.startSpan(ctx, "cache.MSet")
+	span.SetAttributes(attribute.Int("kit.cache.batch_size", len(items)))
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return err
 	}
@@ -401,7 +416,9 @@ func (rc *Cache) MSet(ctx context.Context, items map[string][]byte, ttl time.Dur
 // Returns true when the value was stored, false when the key already had
 // a value. Atomic across replicas — use this instead of Exists+Set for
 // cross-process compute-once semantics.
-func (rc *Cache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+func (rc *Cache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (ok bool, err error) {
+	ctx, span := rc.startSpan(ctx, "cache.SetNX")
+	defer func() { recordResult(span, err); span.End() }()
 	if err := rc.ready(); err != nil {
 		return false, err
 	}
@@ -414,7 +431,7 @@ func (rc *Cache) SetNX(ctx context.Context, key string, value []byte, ttl time.D
 	if rc.maxValueSize > 0 && len(value) > rc.maxValueSize {
 		return false, fmt.Errorf("cache setnx: value exceeds maximum size")
 	}
-	ok, err := rc.client.SetNX(ctx, key, value, ttl).Result()
+	ok, err = rc.client.SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
 		return false, redact.WrapError("redis cache setnx", err)
 	}

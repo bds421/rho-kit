@@ -65,6 +65,14 @@ func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, erro
 	if ctx == nil {
 		return nil, false, fmt.Errorf("pgadvisory: Acquire requires a non-nil context")
 	}
+	ctx, span := startSpan(ctx, "lock.Acquire")
+	defer span.End()
+	lk, ok, err := l.doAcquire(ctx, key)
+	recordResult(span, err)
+	return lk, ok, err
+}
+
+func (l *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, error) {
 	conn, err := l.db.Conn(ctx)
 	if err != nil {
 		return nil, false, redact.WrapError("pgadvisory: acquire conn", err)
@@ -96,9 +104,12 @@ func (l *Locker) AcquireTx(ctx context.Context, tx *sql.Tx, key string) (bool, e
 	if tx == nil {
 		return false, fmt.Errorf("pgadvisory: tx must not be nil")
 	}
+	ctx, span := startSpan(ctx, "lock.AcquireTx")
+	defer span.End()
 	id := keyToInt64(key)
 	var got bool
 	if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", id).Scan(&got); err != nil {
+		recordResult(span, err)
 		return false, redact.WrapError("pgadvisory: pg_try_advisory_xact_lock", err)
 	}
 	return got, nil
@@ -118,6 +129,14 @@ type sessionLock struct {
 // returned to the pool either way so a stale lock value doesn't leak
 // connections.
 func (s *sessionLock) Release(ctx context.Context) error {
+	ctx, span := startSpan(ctx, "lock.Release")
+	defer span.End()
+	err := s.doRelease(ctx)
+	recordResult(span, err)
+	return err
+}
+
+func (s *sessionLock) doRelease(ctx context.Context) error {
 	defer func() { _ = s.conn.Close() }()
 	var ok bool
 	if err := s.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", s.id).Scan(&ok); err != nil {
@@ -135,6 +154,14 @@ func (s *sessionLock) Release(ctx context.Context) error {
 // that the session itself is still alive. A failed ping returns
 // (false, err) so the [leaderelection.Elector] can step down.
 func (s *sessionLock) Extend(ctx context.Context) (bool, error) {
+	ctx, span := startSpan(ctx, "lock.Extend")
+	defer span.End()
+	ok, err := s.doExtend(ctx)
+	recordResult(span, err)
+	return ok, err
+}
+
+func (s *sessionLock) doExtend(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, redact.WrapError("pgadvisory: extend ping", err)
 	}

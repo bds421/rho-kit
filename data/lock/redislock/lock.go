@@ -148,6 +148,14 @@ func NewLocker(client goredislib.UniversalClient, opts ...Option) *Locker {
 // ([redsync.ErrFailed], [redsync.ErrTaken], [redsync.ErrNodeTaken]);
 // everything else propagates as a backend error.
 func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, error) {
+	ctx, span := startSpan(ctx, "lock.Acquire")
+	defer span.End()
+	l, ok, err := lc.doAcquire(ctx, key)
+	recordResult(span, err)
+	return l, ok, err
+}
+
+func (lc *Locker) doAcquire(ctx context.Context, key string) (lock.Lock, bool, error) {
 	if err := validateLockKey(key); err != nil {
 		return nil, false, err
 	}
@@ -191,6 +199,8 @@ func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, err
 // released even if fn exhausted a deadline or was cancelled, while preserving
 // context values used by tracing/logging wrappers.
 func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) (retErr error) {
+	ctx, span := startSpan(ctx, "lock.WithLock")
+	defer func() { recordResult(span, retErr); span.End() }()
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
 		return redact.WrapError("lock: acquire failed", err)
@@ -273,6 +283,14 @@ func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func
 //
 // Idempotent: a second Release on the same handle is a no-op.
 func (l *handle) Release(ctx context.Context) error {
+	ctx, span := startSpan(ctx, "lock.Release")
+	defer span.End()
+	err := l.doRelease(ctx)
+	recordResult(span, err)
+	return err
+}
+
+func (l *handle) doRelease(ctx context.Context) error {
 	if l.released {
 		return nil
 	}
@@ -300,6 +318,14 @@ func (l *handle) Release(ctx context.Context) error {
 // the (false, nil) contract for "no longer owned" so callers driving a
 // heartbeat can branch on ok rather than parse error types.
 func (l *handle) Extend(ctx context.Context) (bool, error) {
+	ctx, span := startSpan(ctx, "lock.Extend")
+	defer span.End()
+	ok, err := l.doExtend(ctx)
+	recordResult(span, err)
+	return ok, err
+}
+
+func (l *handle) doExtend(ctx context.Context) (bool, error) {
 	ok, err := l.mutex.ExtendContext(ctx)
 	if ok {
 		return true, nil

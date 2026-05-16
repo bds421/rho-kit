@@ -98,6 +98,14 @@ func New(db *sql.DB, opts ...Option) *Store {
 // and cleared back to NULL by [Store.TryLock] (ON CONFLICT branch),
 // so it is the correct cache-vs-lock signal.
 func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
+	ctx, span := s.startSpan(ctx, "idempotency.Get")
+	defer span.End()
+	cached, ok, err := s.doGet(ctx, key, fingerprint)
+	recordResult(span, err)
+	return cached, ok, err
+}
+
+func (s *Store) doGet(ctx context.Context, key string, fingerprint []byte) (*idempotency.CachedResponse, bool, error) {
 	if err := s.ready(); err != nil {
 		return nil, false, err
 	}
@@ -186,6 +194,14 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 // would otherwise round sub-second values to "0 seconds" and create a
 // row that's already expired before any consumer can read it.
 func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
+	ctx, span := s.startSpan(ctx, "idempotency.Set")
+	defer span.End()
+	err := s.doSet(ctx, key, token, resp, ttl)
+	recordResult(span, err)
+	return err
+}
+
+func (s *Store) doSet(ctx context.Context, key, token string, resp idempotency.CachedResponse, ttl time.Duration) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -234,6 +250,14 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 // fingerprintMismatch=true. Returns [idempotency.ErrInvalidTTL] when
 // ttl <= 0.
 func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
+	ctx, span := s.startSpan(ctx, "idempotency.TryLock")
+	defer span.End()
+	token, ok, fingerprintMatch, err := s.doTryLock(ctx, key, fingerprint, ttl)
+	recordResult(span, err)
+	return token, ok, fingerprintMatch, err
+}
+
+func (s *Store) doTryLock(ctx context.Context, key string, fingerprint []byte, ttl time.Duration) (string, bool, bool, error) {
 	if err := s.ready(); err != nil {
 		return "", false, false, err
 	}
@@ -307,6 +331,14 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 // Unlock could destroy a successfully-cached empty-body response
 // (HTTP 204) on a panic-during-second-request path.
 func (s *Store) Unlock(ctx context.Context, key, token string) error {
+	ctx, span := s.startSpan(ctx, "idempotency.Unlock")
+	defer span.End()
+	err := s.doUnlock(ctx, key, token)
+	recordResult(span, err)
+	return err
+}
+
+func (s *Store) doUnlock(ctx context.Context, key, token string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
@@ -334,6 +366,14 @@ func (s *Store) ready() error {
 // DeleteExpired removes all expired entries. Call this periodically
 // (e.g., via cron) to prevent table bloat.
 func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
+	ctx, span := s.startSpan(ctx, "idempotency.DeleteExpired")
+	defer span.End()
+	n, err := s.doDeleteExpired(ctx)
+	recordResult(span, err)
+	return n, err
+}
+
+func (s *Store) doDeleteExpired(ctx context.Context) (int64, error) {
 	if err := s.ready(); err != nil {
 		return 0, err
 	}
