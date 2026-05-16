@@ -37,6 +37,16 @@ type routeConfig struct {
 	responseDescriptions map[int]string
 	responseSchemas      map[int]*jsonschema.Schema
 	responseTypes        map[int]string
+
+	// Multi-content registrations: status -> mediaType -> schema.
+	// Populated by [WithResponseContent] / [WithResponseContentT]
+	// and merged with the singular [WithResponseType] registration
+	// at Register time. Both shapes can coexist on the same status.
+	responseExtraContent map[int]map[string]*jsonschema.Schema
+
+	// Per-status response headers: status -> header name -> Header.
+	// Populated by [WithResponseHeader].
+	responseHeaders map[int]map[string]Header
 }
 
 // WithTags appends one or more tag names to the operation. Tag names
@@ -260,6 +270,90 @@ func WithResponseStatus(status int, desc string) RouteOption {
 		c.responseDescriptions[status] = desc
 		return nil
 	}
+}
+
+// WithResponseContentT attaches an additional response body schema
+// derived from T at the given status and media type. Unlike
+// [WithResponseType] (which sets ONE schema per status), this option
+// is additive: a single status may carry multiple content
+// representations (e.g. `application/json` AND `application/xml`).
+//
+// Calling with the same (status, mediaType) replaces only that
+// content entry. Mix with [WithResponseType] freely — the singular
+// option contributes one entry, this option contributes additional
+// entries, and both shapes are merged at render time.
+func WithResponseContentT[T any](status int, mediaType string) RouteOption {
+	return func(c *routeConfig) error {
+		if !validHTTPStatus(status) {
+			return fmt.Errorf("openapigen: WithResponseContentT: invalid status %d", status)
+		}
+		if mediaType == "" {
+			return errors.New("openapigen: WithResponseContentT: empty media type")
+		}
+		schema, err := schemaFor[T]()
+		if err != nil {
+			return err
+		}
+		ensureExtraContent(c, status)[mediaType] = schema
+		return nil
+	}
+}
+
+// WithResponseContent is the explicit-schema variant of
+// [WithResponseContentT] for callers whose response shape is not
+// inferrable via [validate.SchemaFor].
+func WithResponseContent(status int, mediaType string, schema *jsonschema.Schema) RouteOption {
+	return func(c *routeConfig) error {
+		if !validHTTPStatus(status) {
+			return fmt.Errorf("openapigen: WithResponseContent: invalid status %d", status)
+		}
+		if mediaType == "" {
+			return errors.New("openapigen: WithResponseContent: empty media type")
+		}
+		if schema == nil {
+			return errors.New("openapigen: WithResponseContent: nil schema")
+		}
+		ensureExtraContent(c, status)[mediaType] = schema
+		return nil
+	}
+}
+
+// WithResponseHeader attaches a header to the response at the given
+// status code. The OAS 3.1 `Response Object` allows arbitrary
+// response headers — typical examples: `X-Rate-Limit-Remaining`,
+// `Location`, `ETag`.
+//
+// Calling with the same (status, name) replaces only that header
+// entry. Headers are emitted in their declared map without
+// alphabetic sorting — operators wanting a stable order should
+// register them in the order they want them serialised.
+func WithResponseHeader(status int, name string, header Header) RouteOption {
+	return func(c *routeConfig) error {
+		if !validHTTPStatus(status) {
+			return fmt.Errorf("openapigen: WithResponseHeader: invalid status %d", status)
+		}
+		if name == "" {
+			return errors.New("openapigen: WithResponseHeader: empty header name")
+		}
+		if c.responseHeaders == nil {
+			c.responseHeaders = map[int]map[string]Header{}
+		}
+		if c.responseHeaders[status] == nil {
+			c.responseHeaders[status] = map[string]Header{}
+		}
+		c.responseHeaders[status][name] = header
+		return nil
+	}
+}
+
+func ensureExtraContent(c *routeConfig, status int) map[string]*jsonschema.Schema {
+	if c.responseExtraContent == nil {
+		c.responseExtraContent = map[int]map[string]*jsonschema.Schema{}
+	}
+	if c.responseExtraContent[status] == nil {
+		c.responseExtraContent[status] = map[string]*jsonschema.Schema{}
+	}
+	return c.responseExtraContent[status]
 }
 
 // WithSecurity sets the per-operation `security` requirement,

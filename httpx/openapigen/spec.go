@@ -249,31 +249,68 @@ func (s *Spec) Register(method, path string, opts ...RouteOption) error {
 		}
 	}
 
-	for status, schema := range cfg.responseSchemas {
-		mediaType := cfg.responseTypes[status]
-		if mediaType == "" {
-			mediaType = DefaultJSONMediaType
-		}
+	// Collect every status that has any registration contributing
+	// to it — singular schema, extra content entries, header
+	// declarations, or just a description. We walk every source so
+	// the merge below sees the union, regardless of registration
+	// order.
+	statusSet := map[int]struct{}{}
+	for status := range cfg.responseSchemas {
+		statusSet[status] = struct{}{}
+	}
+	for status := range cfg.responseExtraContent {
+		statusSet[status] = struct{}{}
+	}
+	for status := range cfg.responseHeaders {
+		statusSet[status] = struct{}{}
+	}
+	for status := range cfg.responseDescriptions {
+		statusSet[status] = struct{}{}
+	}
+
+	for status := range statusSet {
 		desc := cfg.responseDescriptions[status]
 		if desc == "" {
 			desc = defaultResponseDescription(status)
 		}
+
+		var content map[string]MediaType
+		// Singular schema contributes one entry under the configured
+		// media type (default application/json).
+		if schema, ok := cfg.responseSchemas[status]; ok {
+			mediaType := cfg.responseTypes[status]
+			if mediaType == "" {
+				mediaType = DefaultJSONMediaType
+			}
+			content = map[string]MediaType{
+				mediaType: {Schema: schema},
+			}
+		}
+		// Extra-content entries append (and replace any duplicate
+		// media-type entry from the singular shape — last write
+		// wins, mirroring how options compose elsewhere).
+		if extras, ok := cfg.responseExtraContent[status]; ok && len(extras) > 0 {
+			if content == nil {
+				content = make(map[string]MediaType, len(extras))
+			}
+			for mt, schema := range extras {
+				content[mt] = MediaType{Schema: schema}
+			}
+		}
+
+		var headers map[string]Header
+		if hs, ok := cfg.responseHeaders[status]; ok && len(hs) > 0 {
+			headers = make(map[string]Header, len(hs))
+			for name, h := range hs {
+				headers[name] = h
+			}
+		}
+
 		rs.responses[status] = Response{
 			Description: desc,
-			Content: map[string]MediaType{
-				mediaType: {Schema: schema},
-			},
+			Headers:     headers,
+			Content:     content,
 		}
-	}
-	// Also pick up statuses that only have a description (e.g. 204).
-	for status, desc := range cfg.responseDescriptions {
-		if _, ok := rs.responses[status]; ok {
-			continue
-		}
-		if desc == "" {
-			desc = defaultResponseDescription(status)
-		}
-		rs.responses[status] = Response{Description: desc}
 	}
 
 	s.routes[key] = rs

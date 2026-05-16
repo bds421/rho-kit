@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	jsonschema "github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -564,4 +565,155 @@ func TestRegister_RoundTripJSONShape(t *testing.T) {
 	require.NotNil(t, json)
 	schema, _ := json["schema"].(map[string]any)
 	assert.Equal(t, "object", schema["type"])
+}
+
+// TestRegister_MultipleContentTypesPerStatus verifies the wave 161
+// extension: a single status code may carry multiple content
+// representations. The OAS 3.1 Response Object's `content` map is
+// keyed by media type, so this is just expanding the surface area
+// the options layer exposes — the rendered shape stays
+// spec-compliant.
+func TestRegister_MultipleContentTypesPerStatus(t *testing.T) {
+	spec := openapigen.NewSpec("multi", "v1")
+	err := spec.Register(http.MethodGet, "/widgets/{id}",
+		openapigen.WithResponseType[widgetResp](http.StatusOK),
+		openapigen.WithResponseContentT[widgetResp](http.StatusOK, "application/xml"),
+		openapigen.WithResponseContentT[widgetResp](http.StatusOK, "application/vnd.kit+json"),
+	)
+	require.NoError(t, err)
+
+	buf, err := spec.Marshal()
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(buf, &doc))
+
+	paths := doc["paths"].(map[string]any)
+	op := paths["/widgets/{id}"].(map[string]any)["get"].(map[string]any)
+	resp := op["responses"].(map[string]any)["200"].(map[string]any)
+	content := resp["content"].(map[string]any)
+
+	// All three media types must be present with schemas.
+	for _, mt := range []string{"application/json", "application/xml", "application/vnd.kit+json"} {
+		entry, ok := content[mt].(map[string]any)
+		require.True(t, ok, "missing media type %q in response content", mt)
+		assert.NotNil(t, entry["schema"], "media type %q has no schema", mt)
+	}
+}
+
+// TestRegister_MultipleContentTypes_WithoutSingular verifies that
+// callers can use only the new content-type API without the
+// singular WithResponseType — the merge logic must still emit the
+// content map when responseSchemas is empty but responseExtraContent
+// is populated.
+func TestRegister_MultipleContentTypes_WithoutSingular(t *testing.T) {
+	spec := openapigen.NewSpec("multi-only", "v1")
+	err := spec.Register(http.MethodGet, "/items",
+		openapigen.WithResponseContentT[widgetResp](http.StatusOK, "application/json"),
+		openapigen.WithResponseContentT[widgetResp](http.StatusOK, "application/xml"),
+		openapigen.WithResponseDescription(http.StatusOK, "items"),
+	)
+	require.NoError(t, err)
+
+	doc := spec.Document()
+	op := doc.Paths["/items"].Get
+	require.NotNil(t, op)
+	resp := op.Responses["200"]
+	assert.Equal(t, "items", resp.Description)
+	assert.Len(t, resp.Content, 2)
+	_, hasJSON := resp.Content["application/json"]
+	_, hasXML := resp.Content["application/xml"]
+	assert.True(t, hasJSON)
+	assert.True(t, hasXML)
+}
+
+// TestRegister_ResponseContent_ExplicitSchema covers the
+// WithResponseContent (explicit schema) variant for callers whose
+// content does not infer cleanly via reflection.
+func TestRegister_ResponseContent_ExplicitSchema(t *testing.T) {
+	spec := openapigen.NewSpec("explicit", "v1")
+	wantSchema, err := validate.SchemaFor[errorBody]()
+	require.NoError(t, err)
+
+	err = spec.Register(http.MethodPost, "/things",
+		openapigen.WithResponseContent(http.StatusBadRequest, "application/problem+json", wantSchema),
+	)
+	require.NoError(t, err)
+
+	doc := spec.Document()
+	resp := doc.Paths["/things"].Post.Responses["400"]
+	mt, ok := resp.Content["application/problem+json"]
+	require.True(t, ok)
+	require.NotNil(t, mt.Schema)
+}
+
+// TestRegister_ResponseHeaders covers the wave 161 header API:
+// response headers (Location, ETag, rate-limit headers) attach to
+// the response under their own map and survive marshalling.
+func TestRegister_ResponseHeaders(t *testing.T) {
+	spec := openapigen.NewSpec("headers", "v1")
+	stringSchema, err := validate.SchemaFor[string]()
+	require.NoError(t, err)
+
+	err = spec.Register(http.MethodPost, "/orders",
+		openapigen.WithResponseType[widgetResp](http.StatusCreated),
+		openapigen.WithResponseHeader(http.StatusCreated, "Location", openapigen.Header{
+			Description: "URL of the created order",
+			Required:    true,
+			Schema:      stringSchema,
+		}),
+		openapigen.WithResponseHeader(http.StatusCreated, "X-Request-ID", openapigen.Header{
+			Description: "Correlation identifier",
+			Schema:      stringSchema,
+		}),
+	)
+	require.NoError(t, err)
+
+	doc := spec.Document()
+	resp := doc.Paths["/orders"].Post.Responses["201"]
+	require.Len(t, resp.Headers, 2)
+	loc := resp.Headers["Location"]
+	assert.True(t, loc.Required)
+	assert.Equal(t, "URL of the created order", loc.Description)
+	xrid := resp.Headers["X-Request-ID"]
+	assert.False(t, xrid.Required)
+	assert.NotNil(t, xrid.Schema)
+}
+
+// TestRegister_ResponseHeaders_RejectsBadInput verifies the
+// per-option validation guards.
+func TestRegister_ResponseHeaders_RejectsBadInput(t *testing.T) {
+	spec := openapigen.NewSpec("headers-bad", "v1")
+	err := spec.Register(http.MethodGet, "/x",
+		openapigen.WithResponseHeader(99, "Bad-Status", openapigen.Header{}),
+	)
+	require.Error(t, err)
+
+	spec2 := openapigen.NewSpec("headers-bad-2", "v1")
+	err = spec2.Register(http.MethodGet, "/x",
+		openapigen.WithResponseHeader(http.StatusOK, "", openapigen.Header{}),
+	)
+	require.Error(t, err)
+}
+
+// TestRegister_ResponseContent_BadInput verifies the per-option
+// validation guards for the multi-content options.
+func TestRegister_ResponseContent_BadInput(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  openapigen.RouteOption
+	}{
+		{"contentT-bad-status", openapigen.WithResponseContentT[widgetResp](99, "application/json")},
+		{"contentT-empty-media", openapigen.WithResponseContentT[widgetResp](http.StatusOK, "")},
+		{"content-bad-status", openapigen.WithResponseContent(99, "application/json", &jsonschema.Schema{})},
+		{"content-empty-media", openapigen.WithResponseContent(http.StatusOK, "", &jsonschema.Schema{})},
+		{"content-nil-schema", openapigen.WithResponseContent(http.StatusOK, "application/json", nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := openapigen.NewSpec("bad-"+tc.name, "v1")
+			err := spec.Register(http.MethodGet, "/x", tc.opt)
+			require.Error(t, err)
+		})
+	}
 }
