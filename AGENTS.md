@@ -131,6 +131,7 @@ For services that outgrow the Builder (custom transports, non-standard shutdown 
 | Encrypt files at rest | `infra/storage/encryption` | [storage](docs/ai/storage.md) |
 | Scan uploaded files for malware | `infra/storage/storagehttp/uploadsec` + `infra/storage/storagehttp/uploadsec/clamav` | [storage](docs/ai/storage.md) |
 | Publish/consume AMQP messages | `infra/messaging/amqpbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
+| Publish/consume Kafka messages | `infra/messaging/kafkabackend` (Publisher, Subscriber) | [messaging](docs/ai/messaging.md) |
 | Publish/consume Redis Streams | `infra/messaging/redisbackend` (Publisher, Consumer) | [messaging](docs/ai/messaging.md) |
 | Buffered message delivery | `messaging.BufferedPublisher` | [messaging](docs/ai/messaging.md) |
 | Bound message size per route | `messaging.MessageSizeLimiter`, `amqp.WithMessageSizeLimiter` / `nats.WithMessageSizeLimiter` | [messaging](docs/ai/messaging.md) |

@@ -79,10 +79,14 @@ use (
 	./infra/messaging/amqpbackend
 	./infra/messaging/amqpbackend/debughttp
 	./infra/messaging/amqpbackend/integrationtest
+	./infra/messaging/kafkabackend
+	./infra/messaging/kafkabackend/integrationtest
 	./infra/messaging/natsbackend
 	./infra/messaging/natsbackend/integrationtest
 	./infra/messaging/redisbackend
 	./infra/messaging/redisbackend/integrationtest
+	./infra/outbox/postgres
+	./infra/outbox/postgres/integrationtest
 	./infra/redis
 	./infra/redis/redistest
 	./infra/sqldb/dbtest
@@ -94,8 +98,6 @@ use (
 	./infra/storage/sftpbackend
 	./infra/storage/storagehttp/uploadsec/clamav
 	./infra/storage/storagetest
-	./infra/outbox/postgres
-	./infra/outbox/postgres/integrationtest
 	./io
 	./observability
 	./observability/auditlog/postgres

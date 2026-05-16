@@ -36,6 +36,7 @@ github.com/open-feature/go-sdk
 github.com/openfga/go-sdk
 github.com/rabbitmq/amqp091-go
 github.com/robfig/cron/v3
+github.com/segmentio/kafka-go
 github.com/sony/gobreaker/v2
 
 # HTTP, schema, identity, and file handling helpers.
@@ -77,9 +78,15 @@ go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
 go.opentelemetry.io/otel/sdk
 go.opentelemetry.io/otel/trace
 
+# Kubernetes-native leader election (infra/leaderelection/k8slease only).
+k8s.io/api
+k8s.io/apimachinery
+k8s.io/client-go
+
 # Test infrastructure.
 github.com/stretchr/testify
 github.com/testcontainers/testcontainers-go
+github.com/testcontainers/testcontainers-go/modules/kafka
 github.com/testcontainers/testcontainers-go/modules/nats
 github.com/testcontainers/testcontainers-go/modules/postgres
 github.com/testcontainers/testcontainers-go/modules/rabbitmq

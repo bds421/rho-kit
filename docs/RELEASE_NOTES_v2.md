@@ -1256,6 +1256,20 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
 - `infra/messaging/natsbackend.NewMetrics` plus `WithPublisherMetrics` and
   `WithConsumerMetrics` freeze direct NATS JetStream Prometheus contracts for
   publish outcomes, consume outcomes, publish duration, and handler duration.
+- `infra/messaging/kafkabackend` ships as the fourth messaging backend (wave
+  130), wrapping `github.com/segmentio/kafka-go` so services can satisfy the
+  kit's `messaging.Publisher` / `messaging.Consumer` contracts against Apache
+  Kafka. The publisher defaults to Snappy compression and `RequireAll`
+  durability; the subscriber pins one Reader per (group, topic) and commits
+  offsets on `nil` handler returns, holds the offset on errors (forcing
+  redelivery on rebalance/restart), and discards poison pills via
+  `apperror.IsPermanent`. `Binding.Retry` from the shared interface is NOT
+  honoured — Kafka has no native per-message redelivery; wrap handlers in
+  `resilience/retry` or implement a dead-letter topic at the producer level.
+  `NewMetrics` plus `WithPublisherMetrics` / `WithSubscriberMetrics` freeze
+  the direct Kafka Prometheus contracts. The heavy `segmentio/kafka-go`
+  and `testcontainers-go/modules/kafka` deps stay inside the new modules —
+  `make check-dependency-boundaries` enforces the isolation.
 - `data/stream/redisstream.NewProducerMetrics`, `NewConsumerMetrics`,
   `WithProducerRegisterer`, and `WithConsumerRegisterer` freeze direct Redis
   Stream Prometheus contracts for produce, consume, failure, dead-letter,
@@ -1272,6 +1286,14 @@ signedrequest → tenant → budget → recovery → logging → tracing → rou
   lost leadership or parent cancellation. The previous callback drain timeout
   option was removed so a callback that ignores its context stalls the elector
   instead of allowing same-process leader work to overlap on retry.
+- `infra/leaderelection/k8slease` ships as the third leader-election backend
+  (wave 127), wrapping `k8s.io/client-go/tools/leaderelection` so Kubernetes-
+  native deployments can elect leaders against a `coordination.k8s.io/v1` Lease
+  object without a side-car Postgres or Redis. The adapter mirrors the kit's
+  Callbacks contract on top of client-go's `OnStartedLeading` /
+  `OnStoppedLeading` and reuses the same drain watchdog as the pgadvisory /
+  redislock adapters. The heavy `k8s.io/client-go` dep stays inside the new
+  module — `make check-dependency-boundaries` enforces the isolation.
 - Builder module cleanup, tracing shutdown, internal-server shutdown, MCP async
   audit appends, and pgx LISTEN cleanup also use bounded detached contexts for
   after-cancellation cleanup without losing tenant, trace, logger, or other
@@ -1291,8 +1313,7 @@ file an issue with a concrete use case before assuming we will add them.
 | Item | Why |
 |---|---|
 | KMS adapters beyond AWS KMS, Azure Key Vault, Google Cloud KMS, and HashiCorp Vault Transit | The four shipped adapters cover the production estate the kit was designed for; additional provider SDKs are not in scope. |
-| `k8slease` and `etcd` leader-election backends | Bringing in `k8s.io/...` or `go.etcd.io/...` would violate the heavy-SDK boundary policy. Out of scope. |
-| Kafka backend | The kit's messaging contract targets AMQP, NATS JetStream, Redis Streams, and the in-memory broker. Kafka is not in scope. |
+| `etcd` leader-election backend | `go.etcd.io/...` would be a third heavy SDK on top of the pgadvisory / redislock / k8slease set already shipped (see wave 127), without addressing a deployment topology those three don't already cover. Out of scope unless someone files an issue with a concrete deployment that none of the three fit. |
 
 ## Release surface
 

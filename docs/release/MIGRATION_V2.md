@@ -674,11 +674,47 @@ called out where the JWT spec or jwx's API forces a different shape):
   for adopters wiring against JWKS-backed IdPs that publish those
   algorithms.
 
+### New: kafkabackend
+
+`infra/messaging/kafkabackend` adapts Apache Kafka (via
+`github.com/segmentio/kafka-go`) to the kit's `messaging.Publisher` and
+`messaging.Consumer` contracts. It joins `amqpbackend`, `natsbackend`,
+`redisbackend`, and `membroker` as a first-class backend; no Builder
+adapter module is provided yet — services wire `kafkabackend.NewPublisher`
+and `kafkabackend.NewSubscriber` directly.
+
+Mapping notes (full detail in the package doc):
+
+- `exchange` → Kafka topic.
+- `routingKey` → record key (drives partition assignment under the
+  default `kafka.Hash` balancer) and an `X-Routing-Key` record header.
+- `messaging.Message` → JSON-encoded record `Value`.
+- `messaging.Binding.Queue` → must match the subscriber's consumer
+  group when non-empty (mirrors `redisbackend` FR-064).
+- Ack semantics: handler `nil` → `Reader.CommitMessages`. Handler
+  error → offset NOT advanced; redelivered after rebalance/restart.
+  `apperror.IsPermanent` → offset committed (poison-pill discard).
+- Retry / dead-letter (`Binding.Retry`) is NOT honoured — Kafka has no
+  native per-message redelivery. Wrap handlers in
+  `resilience/retry` or implement a dead-letter topic at the producer
+  level. The subscriber logs a WARN when `Binding.Retry` is set so
+  the surprise surfaces at startup.
+- Offset reset: `kafkabackend.WithStartOffset(kafka.FirstOffset)`
+  (default) or `kafka.LastOffset` controls where new consumer groups
+  begin. Existing groups always honour their committed offsets.
+- Defaults: `kafka.Snappy` compression, `kafka.RequireAll` durability,
+  10ms `BatchTimeout`, single-message `BatchSize` (synchronous publish
+  latency). Override with `kafkabackend.WithCompression`,
+  `WithRequiredAcks`, `WithBatchTimeout`, `WithBatchSize`, etc.
+
+Integration tests live in
+`infra/messaging/kafkabackend/integrationtest` and spin up a Confluent
+Local broker via Testcontainers (`-tags integration`).
+
 ## 9. Things Not Migrated In v2.0.0
 
 The following remain out of scope for v2.0.0 and should not block adoption:
 
 - Kubernetes/etcd leader-election adapters.
-- Kafka backend.
 - Additional managed-KMS adapters beyond the currently frozen AWS KMS, Azure
   Key Vault, Google Cloud KMS, and HashiCorp Vault Transit adapter modules.

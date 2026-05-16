@@ -40,6 +40,7 @@ Otherwise the kit should wrap and add value at the integration seam.
 | `data/cache/rediscache` | `redis/go-redis/v9` | Thin wrapper + degradation policy. |
 | `data/queue/riverqueue` | `riverqueue/river` | Thin wrapper + kit envelope. |
 | `infra/messaging/amqpbackend` | `rabbitmq/amqp091-go` | Connection lifecycle + TLS hardening. |
+| `infra/messaging/kafkabackend` | `segmentio/kafka-go` | Adapter from Kafka (Writer/Reader, consumer-group) to kit's messaging interface. |
 | `infra/messaging/natsbackend` | `nats-io/nats.go` (+ JetStream) | Same shape as AMQP. |
 | `infra/sqldb/pgx` | `jackc/pgx/v5` | Connection lifecycle + TLS floor + metrics. |
 | `infra/redis` | `redis/go-redis/v9` | Connection lifecycle + degradation policy + metrics. |

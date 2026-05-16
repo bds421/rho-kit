@@ -1,6 +1,6 @@
 # Messaging — Cross-Service Durable Messaging
 
-Packages: `infra/messaging` (interfaces), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
+Packages: `infra/messaging` (interfaces), `infra/outbox` (transactional outbox), `infra/messaging/amqpbackend` (RabbitMQ), `infra/messaging/natsbackend` (NATS JetStream), `infra/messaging/kafkabackend` (Apache Kafka), `infra/messaging/redisbackend` (Redis Streams), `infra/messaging/membroker` (unit tests)
 
 Snippet status: Go blocks in this recipe are illustrative fragments unless
 explicitly introduced as generated or executable code. Buildable golden-path
@@ -14,6 +14,7 @@ Use `infra/messaging` for **cross-service durable messaging**. The root package 
 |---|---|
 | `amqpbackend` | Complex routing (topic/fanout/headers), DLX retry, publisher confirms, buffered publishing |
 | `natsbackend` | NATS JetStream persistence, pull consumers, high-throughput event streams |
+| `kafkabackend` | Apache Kafka (partitioned log, consumer-group fan-out, retention-driven replay, ordered per-key delivery). Retry / dead-letter topology from `Binding.Retry` is NOT honoured; wrap handlers in `resilience/retry`. |
 | `redisbackend` | Redis Streams pub/sub (lighter weight, no extra broker) |
 | `membroker` | Unit tests (in-memory, synchronous drain) |
 

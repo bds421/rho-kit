@@ -166,11 +166,15 @@ coverage, race, benchmarks, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/httpx/v2` | Runtime | HTTP server/client timeouts, middleware order, signing, CSRF, metrics, request budgets. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | Redis nonce TTL, cancellation handling, Redis outage behavior. |
 | `github.com/bds421/rho-kit/infra/v2` | Runtime | Infrastructure interfaces, sentinels, storage/messaging contracts, release-stable errors. |
+| `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | Lease renew/retry deadlines, identity uniqueness, callback drain, API-server outage behavior. |
+| `github.com/bds421/rho-kit/infra/leaderelection/k8slease/integrationtest/v2` | Integration helper | Fake-clientset leader-election integration coverage only. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | Leadership health, callback drain, Postgres session loss behavior. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | Leadership lease extension, callback drain, Redis outage behavior. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/v2` | Adapter | AMQP reconnect, URL provider rotation, provider timeout, metrics, consumer ack/nack semantics. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/debughttp/v2` | Adapter | Debug endpoint access control and safe broker diagnostics. |
 | `github.com/bds421/rho-kit/infra/messaging/amqpbackend/integrationtest/v2` | Integration helper | RabbitMQ integration coverage only. |
+| `github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2` | Adapter | Kafka TLS / SASL config, consumer-group rebalance, offset-commit semantics, poison-pill discard, retention-driven replay. |
+| `github.com/bds421/rho-kit/infra/messaging/kafkabackend/integrationtest/v2` | Integration helper | Kafka integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/v2` | Adapter | NATS auth providers, drain, JetStream metrics, stream/consumer setup. |
 | `github.com/bds421/rho-kit/infra/messaging/natsbackend/integrationtest/v2` | Integration helper | NATS integration coverage only. |
 | `github.com/bds421/rho-kit/infra/messaging/redisbackend/v2` | Adapter | Redis Streams direct messaging, size limits, pending/dead-letter behavior. |

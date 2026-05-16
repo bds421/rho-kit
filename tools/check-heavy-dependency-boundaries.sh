@@ -119,6 +119,16 @@ allowed_for_boundary_dep() {
             return 1
             ;;
 
+        github.com/segmentio/kafka-go|github.com/bds421/rho-kit/infra/messaging/kafkabackend/v2)
+            case "$gomod" in
+                infra/messaging/kafkabackend/go.mod|\
+                infra/messaging/kafkabackend/integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
         github.com/bds421/rho-kit/infra/messaging/redisbackend/v2)
             case "$gomod" in
                 infra/messaging/redisbackend/go.mod|*/integrationtest/go.mod)
@@ -229,6 +239,16 @@ allowed_for_boundary_dep() {
                 infra/redis/redistest/go.mod|\
                 infra/sqldb/dbtest/go.mod|\
                 infra/storage/storagetest/go.mod|\
+                */integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
+        k8s.io/api|k8s.io/apimachinery|k8s.io/client-go|github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2)
+            case "$gomod" in
+                infra/leaderelection/k8slease/go.mod|\
                 */integrationtest/go.mod)
                     return 0
                     ;;
