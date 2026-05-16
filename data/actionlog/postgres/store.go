@@ -38,10 +38,10 @@ type Store struct {
 // skip pages of action entries.
 func New(pool *pgxpool.Pool, signer *actionlog.CursorSigner) *Store {
 	if pool == nil {
-		panic("actionlog/postgres: New: pool must not be nil")
+		panic("actionlog/postgres: New pool must not be nil")
 	}
 	if signer == nil {
-		panic("actionlog/postgres: New: cursor signer must not be nil")
+		panic("actionlog/postgres: New cursor signer must not be nil")
 	}
 	return &Store{pool: pool, cursorSigner: signer}
 }

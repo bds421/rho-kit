@@ -37,7 +37,7 @@ type StaticKeyProvider struct {
 // encrypt operation.
 func StaticKey(key []byte) KeyProvider {
 	if len(key) != 32 {
-		panic("encryption: StaticKey: key must be 32 bytes")
+		panic("encryption: StaticKey key must be 32 bytes")
 	}
 	keyCopy := make([]byte, 32)
 	copy(keyCopy, key)
@@ -151,10 +151,10 @@ func (e *EncryptedStorage) Close() error {
 // startup error.
 func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Storage {
 	if backend == nil {
-		panic("encryption: New: backend must not be nil")
+		panic("encryption: New backend must not be nil")
 	}
 	if keys == nil {
-		panic("encryption: New: keys provider must not be nil")
+		panic("encryption: New keys provider must not be nil")
 	}
 	e := &EncryptedStorage{
 		backend: backend,
@@ -163,7 +163,7 @@ func New(backend storage.Storage, keys KeyProvider, opts ...Option) storage.Stor
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("encryption: New: option must not be nil")
+			panic("encryption: New option must not be nil")
 		}
 		opt(e)
 	}

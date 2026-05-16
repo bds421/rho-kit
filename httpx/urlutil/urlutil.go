@@ -18,7 +18,7 @@ import (
 func MustJoin(base string, parts ...string) string {
 	u, err := url.Parse(base)
 	if err != nil {
-		panic("urlutil: MustJoin: base URL is invalid")
+		panic("urlutil: MustJoin base URL is invalid")
 	}
 	return AppendPaths(u, parts...).String()
 }
@@ -109,7 +109,7 @@ func Copy(u *url.URL) *url.URL {
 func ParseRequestURIOrPanic(s string) *url.URL {
 	u, err := url.ParseRequestURI(s)
 	if err != nil {
-		panic("urlutil: ParseRequestURIOrPanic: request URI is invalid")
+		panic("urlutil: ParseRequestURIOrPanic request URI is invalid")
 	}
 	return u
 }

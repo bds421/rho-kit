@@ -43,7 +43,7 @@ func WithValidators(validators ...storage.Validator) Option {
 // does not exist. Panics if dir is empty — this catches misconfigured tests.
 func New(dir string, opts ...Option) (*Backend, error) {
 	if dir == "" {
-		panic("localbackend: New: root directory must not be empty")
+		panic("localbackend: New root directory must not be empty")
 	}
 	absRoot, err := filepath.Abs(dir)
 	if err != nil {
@@ -59,7 +59,7 @@ func New(dir string, opts ...Option) (*Backend, error) {
 	b := &Backend{root: realRoot}
 	for _, o := range opts {
 		if o == nil {
-			panic("localbackend: New: option must not be nil")
+			panic("localbackend: New option must not be nil")
 		}
 		o(b)
 	}

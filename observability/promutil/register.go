@@ -22,7 +22,7 @@ import (
 // collector instead of an unregistered local value.
 func RegisterCollector(reg prometheus.Registerer, c prometheus.Collector) {
 	if _, err := Register(reg, c); err != nil {
-		panic("promutil: RegisterCollector: metric registration failed")
+		panic("promutil: RegisterCollector metric registration failed")
 	}
 }
 

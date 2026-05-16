@@ -52,10 +52,10 @@ func NewDegradedCache(
 	opts ...DegradedCacheOption,
 ) *DegradedCache {
 	if primary == nil {
-		panic("rediscache: NewDegradedCache: primary cache must not be nil")
+		panic("rediscache: NewDegradedCache primary cache must not be nil")
 	}
 	if conn == nil {
-		panic("rediscache: NewDegradedCache: connection must not be nil")
+		panic("rediscache: NewDegradedCache connection must not be nil")
 	}
 
 	dc := &DegradedCache{

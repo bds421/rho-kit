@@ -45,7 +45,7 @@ func New(tlsConfig *tls.Config, idleConnTimeout time.Duration, label string) *ht
 // `InsecureSkipVerify=true` panics — the kit refuses to silently inherit a
 // "trust any certificate" toggle into a production transport. Diagnostic
 // tooling that genuinely needs the bypass should call tlsclone directly
-// with the [tlsclone.AllowInsecureSkipVerify] opt-in.
+// with the [tlsclone.WithAllowInsecureSkipVerify] opt-in.
 func CloneTLSConfigWithFloor(cfg *tls.Config, _ string) *tls.Config {
 	cloned, err := tlsclone.ConfigOrEmptyWithFloor(cfg, MinimumTLSVersion)
 	if err != nil {

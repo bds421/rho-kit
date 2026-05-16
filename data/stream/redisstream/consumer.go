@@ -223,7 +223,7 @@ func WithConsumerLogger(l *slog.Logger) ConsumerOption {
 func WithConsumerName(name string) ConsumerOption {
 	return func(c *Consumer) {
 		if err := redis.ValidateName(name, "consumer name"); err != nil {
-			panic("redisstream: WithConsumerName: invalid consumer name")
+			panic("redisstream: WithConsumerName invalid consumer name")
 		}
 		c.consumer = name
 	}
@@ -305,7 +305,7 @@ func WithConsumerMaxPayloadSize(n int) ConsumerOption {
 func WithDeadLetterStream(stream string) ConsumerOption {
 	return func(c *Consumer) {
 		if err := redis.ValidateName(stream, "dead-letter stream"); err != nil {
-			panic("redisstream: WithDeadLetterStream: invalid dead-letter stream name")
+			panic("redisstream: WithDeadLetterStream invalid dead-letter stream name")
 		}
 		c.deadLetterStream = stream
 	}
@@ -415,10 +415,10 @@ func (c *Consumer) ready() error {
 // services.
 func (c *Consumer) Consume(ctx context.Context, stream string, handler Handler) {
 	if err := c.ready(); err != nil {
-		panic("redisstream: Consume: consumer is invalid")
+		panic("redisstream: Consume consumer is invalid")
 	}
 	if err := redis.ValidateName(stream, "stream"); err != nil {
-		panic("redisstream: Consume: invalid stream name")
+		panic("redisstream: Consume invalid stream name")
 	}
 	if handler == nil {
 		panic("redisstream: Consumer.Consume requires a non-nil handler")

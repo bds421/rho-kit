@@ -78,7 +78,7 @@ func WithComputeMetricsRegisterer(m *ComputeMetrics) ComputeOption {
 // WithComputeName sets the Prometheus metric label for this cache instance.
 func WithComputeName(name string) ComputeOption {
 	if err := promutil.ValidateStaticLabelValue("compute cache name", name); err != nil {
-		panic("cache: WithComputeName: invalid compute name")
+		panic("cache: WithComputeName invalid compute name")
 	}
 	return func(cfg *computeConfig) {
 		cfg.name = name

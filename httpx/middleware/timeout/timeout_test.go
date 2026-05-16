@@ -146,8 +146,8 @@ func TestTimeout_ZeroDuration_Panics(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected panic value to be a string, got %T: %v", r, r)
 		}
-		if msg != "middleware/timeout: Timeout: duration must be positive" {
-			t.Errorf("expected panic message %q, got %q", "middleware/timeout: Timeout: duration must be positive", msg)
+		if msg != "middleware/timeout: Timeout duration must be positive" {
+			t.Errorf("expected panic message %q, got %q", "middleware/timeout: Timeout duration must be positive", msg)
 		}
 	}()
 	Timeout(0)

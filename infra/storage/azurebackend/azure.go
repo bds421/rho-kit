@@ -60,7 +60,7 @@ type Option func(*Backend)
 func WithInstance(name string) Option {
 	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
-			panic("azurebackend: WithInstance: invalid instance name")
+			panic("azurebackend: WithInstance invalid instance name")
 		}
 		b.instance = name
 	}
@@ -133,7 +133,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("azurebackend: New: option must not be nil")
+			panic("azurebackend: New option must not be nil")
 		}
 		o(b)
 	}
@@ -174,7 +174,7 @@ func NewWithTokenCredential(cfg Config, cred azcore.TokenCredential, opts ...Opt
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("azurebackend: NewWithTokenCredential: option must not be nil")
+			panic("azurebackend: NewWithTokenCredential option must not be nil")
 		}
 		o(b)
 	}
@@ -187,7 +187,7 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Bac
 		panic("azurebackend: NewWithClient requires a non-nil BlobClient")
 	}
 	if containerName == "" {
-		panic("azurebackend: NewWithClient: containerName must not be empty")
+		panic("azurebackend: NewWithClient containerName must not be empty")
 	}
 	b := &Backend{
 		client:    client,
@@ -197,7 +197,7 @@ func NewWithClient(client BlobClient, containerName string, opts ...Option) *Bac
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("azurebackend: NewWithClient: option must not be nil")
+			panic("azurebackend: NewWithClient option must not be nil")
 		}
 		o(b)
 	}

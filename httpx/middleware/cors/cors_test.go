@@ -293,7 +293,7 @@ func TestCORS_AllowCredentials(t *testing.T) {
 func TestCORS_WildcardWithCredentials_Panics(t *testing.T) {
 	t.Parallel()
 
-	assert.PanicsWithValue(t, "middleware/cors: New: invalid configuration", func() {
+	assert.PanicsWithValue(t, "middleware/cors: New invalid configuration", func() {
 		New(WithAllowedOrigins("*"), WithCredentials())
 	})
 }

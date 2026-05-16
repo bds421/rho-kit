@@ -382,7 +382,7 @@ func WithMaxRetries(n int) Option {
 func WithProcessingQueue(name string) Option {
 	return func(q *Queue) {
 		if err := redis.ValidateName(name, "processing queue"); err != nil {
-			panic("redisqueue: WithProcessingQueue: invalid processing queue name")
+			panic("redisqueue: WithProcessingQueue invalid processing queue name")
 		}
 		q.processingQueue = name
 	}
@@ -394,7 +394,7 @@ func WithProcessingQueue(name string) Option {
 func WithDeadLetterQueue(name string) Option {
 	return func(q *Queue) {
 		if err := redis.ValidateName(name, "dead-letter queue"); err != nil {
-			panic("redisqueue: WithDeadLetterQueue: invalid dead-letter queue name")
+			panic("redisqueue: WithDeadLetterQueue invalid dead-letter queue name")
 		}
 		q.deadLetterQueue = name
 	}
@@ -564,13 +564,13 @@ func NewQueue(client goredis.UniversalClient, opts ...Option) *Queue {
 	// outright bug; interval > TTL/2 is the unsafe edge where a single
 	// transient Redis stall causes false-dead reclaim under normal load.
 	if q.heartbeatTTL <= 0 {
-		panic("redisqueue: NewQueue: heartbeat TTL must be positive")
+		panic("redisqueue: NewQueue heartbeat TTL must be positive")
 	}
 	if q.heartbeatInterval <= 0 {
-		panic("redisqueue: NewQueue: heartbeat interval must be positive")
+		panic("redisqueue: NewQueue heartbeat interval must be positive")
 	}
 	if q.heartbeatInterval > q.heartbeatTTL/2 {
-		panic("redisqueue: NewQueue: heartbeat interval must be at most TTL/2; a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim")
+		panic("redisqueue: NewQueue heartbeat interval must be at most TTL/2; a higher ratio lets a single missed refresh expire the key and trigger false-dead reclaim")
 	}
 
 	return q
@@ -701,10 +701,10 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 // fail fast at startup rather than on the first message).
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if err := q.ready(); err != nil {
-		panic("redisqueue: Process: queue is invalid")
+		panic("redisqueue: Process queue is invalid")
 	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
-		panic("redisqueue: Process: invalid queue name")
+		panic("redisqueue: Process invalid queue name")
 	}
 	if handler == nil {
 		panic("redisqueue: Queue.Process requires a non-nil handler")
@@ -714,7 +714,7 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	q.activeQueuesMu.Lock()
 	if q.activeQueues[queue] {
 		q.activeQueuesMu.Unlock()
-		panic("redisqueue: Process: queue already has an active Process goroutine")
+		panic("redisqueue: Process queue already has an active Process goroutine")
 	}
 	q.activeQueues[queue] = true
 	q.activeQueuesMu.Unlock()

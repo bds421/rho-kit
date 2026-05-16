@@ -147,10 +147,10 @@ func Module(jwksURL string, opts ...Option) app.Module {
 		opt(&cfg)
 	}
 	if cfg.expectedIssuer == "" && !cfg.allowAnyIssuer {
-		panic("app/jwt: Module: pass WithIssuer(...) or WithoutIssuer() to acknowledge issuer policy")
+		panic("app/jwt: Module pass WithIssuer(...) or WithoutIssuer() to acknowledge issuer policy")
 	}
 	if cfg.audience == "" && !cfg.allowAnyAudience {
-		panic("app/jwt: Module: pass WithAudience(...) or WithoutAudience() to acknowledge audience policy (RFC 7519 confused-deputy)")
+		panic("app/jwt: Module pass WithAudience(...) or WithoutAudience() to acknowledge audience policy (RFC 7519 confused-deputy)")
 	}
 	return &jwtModule{jwksURL: jwksURL, cfg: cfg}
 }

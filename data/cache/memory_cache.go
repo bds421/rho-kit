@@ -288,7 +288,7 @@ func (mc *MemoryCache) stopBackgroundSweeper() {
 func MustNewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 	mc, err := NewMemoryCache(opts...)
 	if err != nil {
-		panic("cache: MustNewMemoryCache: memory cache configuration is invalid")
+		panic("cache: MustNewMemoryCache memory cache configuration is invalid")
 	}
 	return mc
 }

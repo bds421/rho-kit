@@ -339,21 +339,21 @@ func TestEncryptedStorage_AAD_BindsToStorageKey(t *testing.T) {
 
 func TestEncryptedStorage_New_PanicsOnNilBackend(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "encryption: New: backend must not be nil", func() {
+	assert.PanicsWithValue(t, "encryption: New backend must not be nil", func() {
 		New(nil, StaticKey(testKey(t)))
 	})
 }
 
 func TestEncryptedStorage_New_PanicsOnNilKeys(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "encryption: New: keys provider must not be nil", func() {
+	assert.PanicsWithValue(t, "encryption: New keys provider must not be nil", func() {
 		New(membackend.New(), nil)
 	})
 }
 
 func TestEncryptedStorage_New_PanicsOnNilOption(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "encryption: New: option must not be nil", func() {
+	assert.PanicsWithValue(t, "encryption: New option must not be nil", func() {
 		New(membackend.New(), StaticKey(testKey(t)), nil)
 	})
 }

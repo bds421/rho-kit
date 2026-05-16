@@ -191,7 +191,7 @@ func NewCircuitBreaker(threshold int, cooldownPeriod time.Duration, opts ...Opti
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("circuitbreaker: NewCircuitBreaker: option must not be nil")
+			panic("circuitbreaker: NewCircuitBreaker option must not be nil")
 		}
 		opt(&settings)
 	}

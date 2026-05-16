@@ -39,10 +39,10 @@ type DegradationHandler interface {
 // When not configured, the rate limiter operates normally without health checks.
 func WithDegradation(health HealthIndicator, handler DegradationHandler) LimiterOption {
 	if health == nil {
-		panic("middleware/ratelimit: WithDegradation: health indicator must not be nil")
+		panic("middleware/ratelimit: WithDegradation health indicator must not be nil")
 	}
 	if handler == nil {
-		panic("middleware/ratelimit: WithDegradation: degradation handler must not be nil")
+		panic("middleware/ratelimit: WithDegradation degradation handler must not be nil")
 	}
 	return func(rl *Limiter) {
 		rl.health = health
@@ -54,10 +54,10 @@ func WithDegradation(health HealthIndicator, handler DegradationHandler) Limiter
 // indicator before enforcing rate limits. Behavior matches [WithDegradation].
 func WithKeyedDegradation(health HealthIndicator, handler DegradationHandler) KeyedOption {
 	if health == nil {
-		panic("middleware/ratelimit: WithKeyedDegradation: health indicator must not be nil")
+		panic("middleware/ratelimit: WithKeyedDegradation health indicator must not be nil")
 	}
 	if handler == nil {
-		panic("middleware/ratelimit: WithKeyedDegradation: degradation handler must not be nil")
+		panic("middleware/ratelimit: WithKeyedDegradation degradation handler must not be nil")
 	}
 	return func(rl *KeyedLimiter) {
 		rl.health = health

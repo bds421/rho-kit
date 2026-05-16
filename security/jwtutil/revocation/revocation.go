@@ -181,7 +181,7 @@ func WithVerboseAuditFields() Option {
 // options so misconfiguration fails at startup.
 func New(cache Cache, opts ...Option) *Store {
 	if cache == nil {
-		panic("jwtutil/revocation: New: cache must not be nil")
+		panic("jwtutil/revocation: New cache must not be nil")
 	}
 	s := &Store{
 		cache:  cache,
@@ -190,7 +190,7 @@ func New(cache Cache, opts ...Option) *Store {
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("jwtutil/revocation: New: option must not be nil")
+			panic("jwtutil/revocation: New option must not be nil")
 		}
 		opt(s)
 	}

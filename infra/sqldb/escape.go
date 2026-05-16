@@ -31,7 +31,7 @@ func ValidateColumn(name string) error {
 // the returned error.
 func MustValidateColumn(name string) {
 	if !safeColumnName.MatchString(name) {
-		panic("sqldb: MustValidateColumn: unsafe column name")
+		panic("sqldb: MustValidateColumn unsafe column name")
 	}
 }
 

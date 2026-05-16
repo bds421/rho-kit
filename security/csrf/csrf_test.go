@@ -268,7 +268,7 @@ func TestOriginAllowlist_PanicsOnInvalidConfiguredOrigin(t *testing.T) {
 }
 
 func TestOriginAllowlist_InvalidConfiguredOriginDoesNotEchoValue(t *testing.T) {
-	assert.PanicsWithValue(t, "csrf: NewOriginAllowlist: invalid origin allowlist entry", func() {
+	assert.PanicsWithValue(t, "csrf: NewOriginAllowlist invalid origin allowlist entry", func() {
 		NewOriginAllowlist("https://app.example.com/%zz?token=secret-token")
 	})
 }

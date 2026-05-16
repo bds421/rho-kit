@@ -139,7 +139,7 @@ func TestMustValidateColumn_PanicDoesNotReflectUnsafeName(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic = %T, want string", rec)
 		}
-		if msg != "sqldb: MustValidateColumn: unsafe column name" {
+		if msg != "sqldb: MustValidateColumn unsafe column name" {
 			t.Fatalf("panic = %q, want stable unsafe-column message", msg)
 		}
 		if strings.Contains(msg, "secret-token") {

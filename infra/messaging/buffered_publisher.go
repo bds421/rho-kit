@@ -319,7 +319,9 @@ func WithMaxMessageBytes(maxBytes int) BufferedPublisherOption {
 }
 
 // WithoutMaxMessageBytes disables the default size limit. Route-specific
-// limits configured with WithBufferedRouteMaxMessageBytes still apply.
+// overrides — supplied via [WithMessageSizeLimiter] using a
+// [MessageSizeLimiter] built with [NewMessageSizeLimiter](default,
+// overrides...) — still apply.
 func WithoutMaxMessageBytes() BufferedPublisherOption {
 	return func(o *BufferedPublisher) {
 		o.sizeLimiter = o.sizeLimiter.WithoutDefaultMaxBytes()

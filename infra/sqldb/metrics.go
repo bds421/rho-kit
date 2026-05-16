@@ -47,7 +47,7 @@ func WithRegisterer(reg prometheus.Registerer) MetricsOption {
 // of panicking.
 func NewPoolMetrics(namespace string, opts ...MetricsOption) PoolMetrics {
 	if err := promutil.ValidateMetricNamePart("database metric namespace", namespace); err != nil {
-		panic("sqldb: NewPoolMetrics: metric namespace is invalid")
+		panic("sqldb: NewPoolMetrics metric namespace is invalid")
 	}
 	cfg := metricsConfig{registerer: prometheus.DefaultRegisterer}
 	for _, opt := range opts {
@@ -122,7 +122,7 @@ func ExportPoolMetrics(ctx context.Context, db *sql.DB, m PoolMetrics, interval 
 		panic("sqldb: ExportPoolMetrics requires a positive interval")
 	}
 	if m.OpenConnections == nil && m.IdleConnections == nil && m.WaitCount == nil {
-		panic("sqldb: ExportPoolMetrics: PoolMetrics has no live collectors (use NewPoolMetrics)")
+		panic("sqldb: ExportPoolMetrics PoolMetrics has no live collectors (use NewPoolMetrics)")
 	}
 	var lastWaitCount int64
 	ticker := time.NewTicker(interval)

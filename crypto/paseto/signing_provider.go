@@ -157,7 +157,7 @@ func OpenSigningProvider(ctx context.Context, src PrivateKeySource, interval tim
 	for _, o := range opts {
 		if o == nil {
 			rootCancel()
-			panic("paseto: OpenSigningProvider: signing provider option must not be nil")
+			panic("paseto: OpenSigningProvider signing provider option must not be nil")
 		}
 		o(p)
 	}

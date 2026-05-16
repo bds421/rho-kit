@@ -90,12 +90,12 @@ func WithRegisterer(reg prometheus.Registerer) Option {
 // disable every guard, almost certainly a wiring bug.
 func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	if allowed == nil {
-		panic("labelguard: New: allowed map must not be nil")
+		panic("labelguard: New allowed map must not be nil")
 	}
 	cfg := config{registerer: prometheus.DefaultRegisterer}
 	for _, o := range opts {
 		if o == nil {
-			panic("labelguard: New: option must not be nil")
+			panic("labelguard: New option must not be nil")
 		}
 		o(&cfg)
 	}
@@ -106,12 +106,12 @@ func New(allowed map[string][]string, opts ...Option) *AllowedLabels {
 	idx := make(map[string]map[string]struct{}, len(allowed))
 	for label, vals := range allowed {
 		if err := promutil.ValidateStaticLabelValue("label name", label); err != nil {
-			panic("labelguard: New: allowlist label is invalid")
+			panic("labelguard: New allowlist label is invalid")
 		}
 		set := make(map[string]struct{}, len(vals))
 		for _, v := range vals {
 			if err := promutil.ValidateStaticLabelValue("allowed value for "+label, v); err != nil {
-				panic("labelguard: New: allowlist value is invalid")
+				panic("labelguard: New allowlist value is invalid")
 			}
 			set[v] = struct{}{}
 		}

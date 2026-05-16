@@ -483,7 +483,7 @@ func TestApplyValidators(t *testing.T) {
 
 	t.Run("CloneValidators panics on nil validator", func(t *testing.T) {
 		t.Parallel()
-		require.PanicsWithValue(t, "storage: CloneValidators: validator must not be nil", func() {
+		require.PanicsWithValue(t, "storage: CloneValidators validator must not be nil", func() {
 			v := func(_ context.Context, r io.Reader, _ *ObjectMeta) (io.Reader, error) { return r, nil }
 			CloneValidators(v, nil)
 		})

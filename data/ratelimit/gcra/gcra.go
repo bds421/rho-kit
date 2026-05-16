@@ -59,7 +59,7 @@ type Option func(*Limiter)
 // WithClock overrides the time source for tests.
 func WithClock(now clock.Func) Option {
 	if now == nil {
-		panic("gcra: WithClock: clock must not be nil")
+		panic("gcra: WithClock clock must not be nil")
 	}
 	return func(l *Limiter) { l.now = now }
 }
@@ -93,14 +93,14 @@ func WithoutSweeper() Option {
 // limiter that admits every event without spacing.
 func New(period time.Duration, burst int, opts ...Option) *Limiter {
 	if period <= 0 {
-		panic("gcra: New: period must be > 0")
+		panic("gcra: New period must be > 0")
 	}
 	if burst < 1 {
-		panic("gcra: New: burst must be >= 1")
+		panic("gcra: New burst must be >= 1")
 	}
 	rate := period / time.Duration(burst)
 	if rate <= 0 {
-		panic("gcra: New: period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
+		panic("gcra: New period/burst rounds to zero (burst exceeds period in nanoseconds); pick a longer period or smaller burst")
 	}
 	l := &Limiter{
 		rate:          rate,
@@ -113,7 +113,7 @@ func New(period time.Duration, burst int, opts ...Option) *Limiter {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("gcra: New: option must not be nil")
+			panic("gcra: New option must not be nil")
 		}
 		o(l)
 	}

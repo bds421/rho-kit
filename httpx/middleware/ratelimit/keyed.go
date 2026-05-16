@@ -97,10 +97,10 @@ func WithKeyedLimiterName(name string) KeyedOption {
 // Panics if limit or window are not positive — these indicate misconfiguration.
 func NewKeyedLimiter(limit int, window time.Duration, opts ...KeyedOption) *KeyedLimiter {
 	if limit <= 0 {
-		panic("middleware/ratelimit: NewKeyedLimiter: limit must be positive")
+		panic("middleware/ratelimit: NewKeyedLimiter limit must be positive")
 	}
 	if window <= 0 {
-		panic("middleware/ratelimit: NewKeyedLimiter: window must be positive")
+		panic("middleware/ratelimit: NewKeyedLimiter window must be positive")
 	}
 	rl := &KeyedLimiter{
 		limit:  limit,

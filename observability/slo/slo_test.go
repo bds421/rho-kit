@@ -51,7 +51,7 @@ func TestNewChecker_CopiesSLOs(t *testing.T) {
 }
 
 func TestNewChecker_PanicsOnNilGatherer(t *testing.T) {
-	assert.PanicsWithValue(t, "slo: NewChecker: gatherer must not be nil", func() {
+	assert.PanicsWithValue(t, "slo: NewChecker gatherer must not be nil", func() {
 		NewChecker(nil, ErrorRateSLO("a", 0.01, time.Hour))
 	})
 }
@@ -63,7 +63,7 @@ func TestNewChecker_PanicsOnEmptyName(t *testing.T) {
 }
 
 func TestNewChecker_PanicsOnDuplicateName(t *testing.T) {
-	assert.PanicsWithValue(t, "slo: NewChecker: duplicate SLO name", func() {
+	assert.PanicsWithValue(t, "slo: NewChecker duplicate SLO name", func() {
 		NewChecker(prometheus.NewRegistry(),
 			ErrorRateSLO("dup", 0.01, time.Hour),
 			ErrorRateSLO("dup", 0.02, time.Hour),
@@ -72,7 +72,7 @@ func TestNewChecker_PanicsOnDuplicateName(t *testing.T) {
 }
 
 func TestNewChecker_DuplicateNamePanicDoesNotReflectName(t *testing.T) {
-	assert.PanicsWithValue(t, "slo: NewChecker: duplicate SLO name", func() {
+	assert.PanicsWithValue(t, "slo: NewChecker duplicate SLO name", func() {
 		NewChecker(prometheus.NewRegistry(),
 			ErrorRateSLO("secret-token", 0.01, time.Hour),
 			ErrorRateSLO("secret-token", 0.02, time.Hour),

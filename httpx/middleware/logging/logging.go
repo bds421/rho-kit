@@ -83,7 +83,7 @@ func LoggerWithOptions(logger *slog.Logger, quietPaths []string, opts []LoggerOp
 	cfg := loggerConfig{clientIPResolver: clientip.ClientIP}
 	for _, o := range opts {
 		if o == nil {
-			panic("logging: LoggerWithOptions: middleware option must not be nil")
+			panic("logging: LoggerWithOptions middleware option must not be nil")
 		}
 		o(&cfg)
 	}

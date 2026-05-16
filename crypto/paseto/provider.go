@@ -162,7 +162,7 @@ func OpenProvider(ctx context.Context, src PublicKeySource, interval time.Durati
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("paseto: OpenProvider: provider option must not be nil")
+			panic("paseto: OpenProvider provider option must not be nil")
 		}
 		o(p)
 	}

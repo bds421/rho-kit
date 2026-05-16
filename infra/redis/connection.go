@@ -105,7 +105,7 @@ func WithHealthInterval(d time.Duration) ConnOption {
 func WithInstance(name string) ConnOption {
 	return func(c *Connection) {
 		if err := ValidateName(name, "instance"); err != nil {
-			panic("redis: WithInstance: invalid instance name")
+			panic("redis: WithInstance invalid instance name")
 		}
 		c.instance = name
 	}

@@ -220,13 +220,13 @@ func TestFromError_WithBaseURLPanicsOnInvalidBase(t *testing.T) {
 }
 
 func TestFromError_WithBaseURLParseErrorDoesNotEchoValue(t *testing.T) {
-	require.PanicsWithValue(t, "problemdetails: WithBaseURL: base URL is invalid", func() {
+	require.PanicsWithValue(t, "problemdetails: WithBaseURL base URL is invalid", func() {
 		_ = FromError(apperror.NewNotFound("user", 1), WithBaseURL("https://errors.example.com/%zz?token=secret-token"))
 	})
 }
 
 func TestFromError_WithBaseURLSchemeErrorDoesNotEchoValue(t *testing.T) {
-	require.PanicsWithValue(t, "problemdetails: WithBaseURL: base URL is invalid", func() {
+	require.PanicsWithValue(t, "problemdetails: WithBaseURL base URL is invalid", func() {
 		_ = FromError(apperror.NewNotFound("user", 1), WithBaseURL("ftp://secret-token.example"))
 	})
 }

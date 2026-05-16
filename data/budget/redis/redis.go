@@ -231,16 +231,16 @@ func WithRedisTime() Option {
 // limited to the largest integer Lua can represent exactly.
 func New(client goredis.UniversalClient, cap int64, period time.Duration, opts ...Option) *Budget {
 	if client == nil {
-		panic("budget/redis: New: client must not be nil")
+		panic("budget/redis: New client must not be nil")
 	}
 	if cap <= 0 {
-		panic("budget/redis: New: cap must be > 0")
+		panic("budget/redis: New cap must be > 0")
 	}
 	if cap > maxLuaExactInteger {
-		panic("budget/redis: New: cap exceeds Redis Lua exact integer range")
+		panic("budget/redis: New cap exceeds Redis Lua exact integer range")
 	}
 	if period <= 0 {
-		panic("budget/redis: New: period must be > 0")
+		panic("budget/redis: New period must be > 0")
 	}
 	b := &Budget{
 		client: client,
@@ -254,12 +254,12 @@ func New(client goredis.UniversalClient, cap int64, period time.Duration, opts .
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("budget/redis: New: option must not be nil")
+			panic("budget/redis: New option must not be nil")
 		}
 		o(b)
 	}
 	if b.keyTTL < period {
-		panic("budget/redis: New: key TTL must be >= period (otherwise Redis can evict mid-window)")
+		panic("budget/redis: New key TTL must be >= period (otherwise Redis can evict mid-window)")
 	}
 	return b
 }

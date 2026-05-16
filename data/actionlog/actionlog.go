@@ -415,18 +415,18 @@ type StaticSecrets struct {
 //     the hash output size to retain its security guarantees).
 func NewStaticSecrets(currentKeyID string, keys map[string][]byte) *StaticSecrets {
 	if currentKeyID == "" {
-		panic("actionlog: NewStaticSecrets: currentKeyID must not be empty (would persist unverifiable entries)")
+		panic("actionlog: NewStaticSecrets currentKeyID must not be empty (would persist unverifiable entries)")
 	}
 	if _, ok := keys[currentKeyID]; !ok {
-		panic("actionlog: NewStaticSecrets: currentKeyID is not in keys map")
+		panic("actionlog: NewStaticSecrets currentKeyID is not in keys map")
 	}
 	dup := make(map[string][]byte, len(keys))
 	for id, k := range keys {
 		if id == "" {
-			panic("actionlog: NewStaticSecrets: empty key id is not allowed")
+			panic("actionlog: NewStaticSecrets empty key id is not allowed")
 		}
 		if len(k) < minSignatureSecretLen {
-			panic("actionlog: NewStaticSecrets: secret must be at least 32 bytes")
+			panic("actionlog: NewStaticSecrets secret must be at least 32 bytes")
 		}
 		buf := make([]byte, len(k))
 		copy(buf, k)
@@ -495,7 +495,7 @@ type LoggerOption func(*signedLogger)
 // the first Append.
 func WithClock(fn clock.Func) LoggerOption {
 	if fn == nil {
-		panic("actionlog: WithClock: fn must not be nil")
+		panic("actionlog: WithClock fn must not be nil")
 	}
 	return func(l *signedLogger) { l.clock = fn }
 }
@@ -504,7 +504,7 @@ func WithClock(fn clock.Func) LoggerOption {
 // Panics on nil — see [WithClock].
 func WithIDFunc(fn func() string) LoggerOption {
 	if fn == nil {
-		panic("actionlog: WithIDFunc: fn must not be nil")
+		panic("actionlog: WithIDFunc fn must not be nil")
 	}
 	return func(l *signedLogger) {
 		l.newID = func() (string, error) {
@@ -517,7 +517,7 @@ func WithIDFunc(fn func() string) LoggerOption {
 // Use this when IDs come from a dependency that can fail. Panics on nil.
 func WithIDFuncE(fn func() (string, error)) LoggerOption {
 	if fn == nil {
-		panic("actionlog: WithIDFuncE: fn must not be nil")
+		panic("actionlog: WithIDFuncE fn must not be nil")
 	}
 	return func(l *signedLogger) { l.newID = fn }
 }
@@ -527,10 +527,10 @@ func WithIDFuncE(fn func() (string, error)) LoggerOption {
 // failure to the first Append call.
 func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 	if store == nil {
-		panic("actionlog: New: store must not be nil")
+		panic("actionlog: New store must not be nil")
 	}
 	if secrets == nil {
-		panic("actionlog: New: secrets must not be nil")
+		panic("actionlog: New secrets must not be nil")
 	}
 	l := &signedLogger{
 		store:   store,
@@ -546,7 +546,7 @@ func New(store Store, secrets SecretSource, opts ...LoggerOption) Logger {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("actionlog: New: option must not be nil")
+			panic("actionlog: New option must not be nil")
 		}
 		o(l)
 	}

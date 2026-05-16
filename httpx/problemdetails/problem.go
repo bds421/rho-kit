@@ -122,7 +122,7 @@ func WithBaseURL(s string) Option {
 	return func(c *config) {
 		base, err := validateBaseURL(s)
 		if err != nil {
-			panic("problemdetails: WithBaseURL: base URL is invalid")
+			panic("problemdetails: WithBaseURL base URL is invalid")
 		}
 		c.baseURL = base
 	}
@@ -160,7 +160,7 @@ func FromError(err error, opts ...Option) Problem {
 	cfg := config{baseURL: ""}
 	for _, o := range opts {
 		if o == nil {
-			panic("problemdetails: FromError: option must not be nil")
+			panic("problemdetails: FromError option must not be nil")
 		}
 		o(&cfg)
 	}

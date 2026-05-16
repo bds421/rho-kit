@@ -89,7 +89,7 @@ func TestCollectPoolMetrics_NilClient(t *testing.T) {
 }
 
 func TestCollectPoolMetrics_PanicsOnInvalidInstanceWithoutReflectingName(t *testing.T) {
-	assert.PanicsWithValue(t, "redis: StartPoolMetricsCollector: invalid instance name", func() {
+	assert.PanicsWithValue(t, "redis: StartPoolMetricsCollector invalid instance name", func() {
 		CollectPoolMetrics(nil, "secret-token\nbad")
 	})
 }
@@ -137,7 +137,7 @@ func TestStartPoolMetricsCollector_PanicsOnNilOption(t *testing.T) {
 }
 
 func TestStartPoolMetricsCollector_PanicsOnInvalidInstanceWithoutReflectingName(t *testing.T) {
-	assert.PanicsWithValue(t, "redis: StartPoolMetricsCollector: invalid instance name", func() {
+	assert.PanicsWithValue(t, "redis: StartPoolMetricsCollector invalid instance name", func() {
 		StartPoolMetricsCollector(context.Background(), nil, "secret-token\nbad", time.Second)
 	})
 }

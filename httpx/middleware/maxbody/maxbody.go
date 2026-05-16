@@ -10,7 +10,7 @@ import "net/http"
 // bodies, which is always a misconfiguration.
 func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 	if maxBytes <= 0 {
-		panic("maxbody: MaxBodySize: maxBytes must be positive")
+		panic("maxbody: MaxBodySize maxBytes must be positive")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

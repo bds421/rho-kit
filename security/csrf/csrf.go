@@ -142,7 +142,7 @@ func NewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) (*I
 func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 	i, err := NewIssuer(secret, opts...)
 	if err != nil {
-		panic("csrf: MustNewIssuer: issuer configuration is invalid")
+		panic("csrf: MustNewIssuer issuer configuration is invalid")
 	}
 	return i
 }
@@ -151,7 +151,7 @@ func MustNewIssuer(secret []byte, opts ...Option) *Issuer {
 func MustNewIssuerWithSecrets(current []byte, previous [][]byte, opts ...Option) *Issuer {
 	i, err := NewIssuerWithSecrets(current, previous, opts...)
 	if err != nil {
-		panic("csrf: MustNewIssuerWithSecrets: issuer configuration is invalid")
+		panic("csrf: MustNewIssuerWithSecrets issuer configuration is invalid")
 	}
 	return i
 }
@@ -328,7 +328,7 @@ func NewOriginAllowlist(origins ...string) *OriginAllowlist {
 	for _, o := range origins {
 		canonical, ok := canonicalOrigin(o, false)
 		if !ok {
-			panic("csrf: NewOriginAllowlist: invalid origin allowlist entry")
+			panic("csrf: NewOriginAllowlist invalid origin allowlist entry")
 		}
 		m[canonical] = struct{}{}
 	}

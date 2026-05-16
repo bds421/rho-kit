@@ -85,7 +85,7 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("cspnonce: Middleware: option must not be nil")
+			panic("cspnonce: Middleware option must not be nil")
 		}
 		o(&cfg)
 	}

@@ -204,7 +204,7 @@ func NewCursorSigner(s []byte) (*CursorSigner, error) {
 func MustNewCursorSigner(secret []byte) *CursorSigner {
 	s, err := NewCursorSigner(secret)
 	if err != nil {
-		panic("pagination: MustNewCursorSigner: cursor signer secret is invalid")
+		panic("pagination: MustNewCursorSigner cursor signer secret is invalid")
 	}
 	return s
 }

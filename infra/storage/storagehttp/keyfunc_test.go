@@ -148,7 +148,7 @@ func TestUUIDKeyFunc(t *testing.T) {
 
 	t.Run("invalid prefix panic does not reflect prefix", func(t *testing.T) {
 		t.Parallel()
-		assert.PanicsWithValue(t, "storagehttp: UUIDKeyFunc: invalid UUIDKeyFunc prefix", func() {
+		assert.PanicsWithValue(t, "storagehttp: UUIDKeyFunc invalid UUIDKeyFunc prefix", func() {
 			UUIDKeyFunc("secret-token/..")
 		})
 	})

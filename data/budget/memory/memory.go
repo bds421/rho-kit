@@ -101,10 +101,10 @@ func WithoutSweeper() Option {
 // visible at the call site.
 func New(cap int64, period time.Duration, opts ...Option) *Budget {
 	if cap <= 0 {
-		panic("budget/memory: New: cap must be > 0")
+		panic("budget/memory: New cap must be > 0")
 	}
 	if period <= 0 {
-		panic("budget/memory: New: period must be > 0")
+		panic("budget/memory: New period must be > 0")
 	}
 	b := &Budget{
 		cap:           cap,
@@ -116,12 +116,12 @@ func New(cap int64, period time.Duration, opts ...Option) *Budget {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("budget/memory: New: option must not be nil")
+			panic("budget/memory: New option must not be nil")
 		}
 		o(b)
 	}
 	if b.now == nil {
-		panic("budget/memory: New: clock must not be nil")
+		panic("budget/memory: New clock must not be nil")
 	}
 	if b.sweepInterval > 0 {
 		// Weak-ref sweeper: a forgotten Close cannot keep the goroutine

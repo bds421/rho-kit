@@ -100,7 +100,7 @@ func Default(handler http.Handler, logger *slog.Logger, opts ...Option) http.Han
 	}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("stack: Default: option must not be nil")
+			panic("stack: Default option must not be nil")
 		}
 		opt(&cfg)
 	}

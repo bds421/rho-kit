@@ -194,7 +194,7 @@ type DestructiveGate func(ctx context.Context, toolName string, payload []byte) 
 // returns [ErrDestructiveGateRequired].
 func WithDestructiveGate(fn DestructiveGate) ServerOption {
 	if fn == nil {
-		panic("mcp: WithDestructiveGate: function must not be nil")
+		panic("mcp: WithDestructiveGate function must not be nil")
 	}
 	return func(c *serverConfig) { c.destructiveGate = fn }
 }
@@ -217,7 +217,7 @@ func WithoutDestructiveGate() ServerOption {
 // Default: [slog.Default].
 func WithLogger(l *slog.Logger) ServerOption {
 	if l == nil {
-		panic("mcp: WithLogger: logger must not be nil")
+		panic("mcp: WithLogger logger must not be nil")
 	}
 	return func(c *serverConfig) { c.logger = l }
 }
@@ -233,7 +233,7 @@ func WithLogger(l *slog.Logger) ServerOption {
 // against tenant X" is a SQL query.
 func WithActionLogger(l actionlog.Logger) ServerOption {
 	if l == nil {
-		panic("mcp: WithActionLogger: logger must not be nil")
+		panic("mcp: WithActionLogger logger must not be nil")
 	}
 	return func(c *serverConfig) { c.actionLogger = l }
 }
@@ -255,7 +255,7 @@ func WithActionLogger(l actionlog.Logger) ServerOption {
 // executed audited tool call is attributable.
 func WithActorExtractor(fn func(*http.Request) string) ServerOption {
 	if fn == nil {
-		panic("mcp: WithActorExtractor: function must not be nil")
+		panic("mcp: WithActorExtractor function must not be nil")
 	}
 	return func(c *serverConfig) {
 		c.actorExtractor = func(r *http.Request) string {
@@ -289,7 +289,7 @@ func WithAllowAnonymousActor() ServerOption {
 // rejected in strict audit mode when an action logger is configured.
 func WithActorFromContext(fn func(context.Context) string) ServerOption {
 	if fn == nil {
-		panic("mcp: WithActorFromContext: function must not be nil")
+		panic("mcp: WithActorFromContext function must not be nil")
 	}
 	return WithActorExtractor(func(r *http.Request) string {
 		return fn(r.Context())
@@ -316,7 +316,7 @@ func WithActorFromContext(fn func(context.Context) string) ServerOption {
 // audit mode when an action logger is configured.
 func WithActorFromHeader(header string) ServerOption {
 	if !httpguts.ValidHeaderFieldName(header) {
-		panic("mcp: WithActorFromHeader: header must be a valid non-empty header name")
+		panic("mcp: WithActorFromHeader header must be a valid non-empty header name")
 	}
 	return WithActorExtractor(func(r *http.Request) string {
 		value, ok := headerutil.SingletonIdentity(r.Header, header)
@@ -333,7 +333,7 @@ func WithActorFromHeader(header string) ServerOption {
 // your service.
 func WithTenantExtractor(fn func(ctx context.Context) (string, bool)) ServerOption {
 	if fn == nil {
-		panic("mcp: WithTenantExtractor: function must not be nil")
+		panic("mcp: WithTenantExtractor function must not be nil")
 	}
 	return func(c *serverConfig) { c.tenantExtractor = fn }
 }
@@ -505,7 +505,7 @@ func NewServer(opts ...ServerOption) *Server {
 	cfg := defaultServerConfig()
 	for _, o := range opts {
 		if o == nil {
-			panic("mcp: NewServer: server option must not be nil")
+			panic("mcp: NewServer server option must not be nil")
 		}
 		o(&cfg)
 	}

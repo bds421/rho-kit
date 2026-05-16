@@ -180,12 +180,12 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("middleware/tenant: New: option must not be nil")
+			panic("middleware/tenant: New option must not be nil")
 		}
 		o(&cfg)
 	}
 	if cfg.extractor == nil {
-		panic("middleware/tenant: New: extractor must not be nil")
+		panic("middleware/tenant: New extractor must not be nil")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

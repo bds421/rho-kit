@@ -81,10 +81,10 @@ type Client struct {
 // provider, empty name).
 func New(name string, p Provider) (*Client, error) {
 	if p == nil {
-		panic("flags: New: provider must not be nil")
+		panic("flags: New provider must not be nil")
 	}
 	if name == "" {
-		panic("flags: New: domain name must not be empty")
+		panic("flags: New domain name must not be empty")
 	}
 	if err := openfeature.SetNamedProviderAndWait(name, p); err != nil {
 		return nil, fmt.Errorf("flags: install provider: %w", err)
@@ -98,7 +98,7 @@ func New(name string, p Provider) (*Client, error) {
 func MustNew(name string, p Provider) *Client {
 	c, err := New(name, p)
 	if err != nil {
-		panic("flags: MustNew: client configuration is invalid")
+		panic("flags: MustNew client configuration is invalid")
 	}
 	return c
 }

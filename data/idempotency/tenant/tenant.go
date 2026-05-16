@@ -55,7 +55,7 @@ type scoped struct {
 // Wrap panics on a nil inner store.
 func Wrap(inner idempotency.Store) idempotency.Store {
 	if inner == nil {
-		panic("idempotency/tenant: Wrap: inner store must not be nil")
+		panic("idempotency/tenant: Wrap inner store must not be nil")
 	}
 	return &scoped{inner: inner}
 }

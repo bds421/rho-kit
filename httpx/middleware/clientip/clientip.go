@@ -132,7 +132,7 @@ func ParseTrustedProxies(cidrs []string) []*net.IPNet {
 	}
 	nets, err := ParseTrustedProxiesStrict(cidrs)
 	if err != nil {
-		panic("clientip: ParseTrustedProxies: trusted proxy configuration is invalid")
+		panic("clientip: ParseTrustedProxies trusted proxy configuration is invalid")
 	}
 	return nets
 }

@@ -60,7 +60,7 @@ type Publisher struct {
 // Enqueue executes" semantics.
 func NewPublisher(client *river.Client[pgx.Tx], opts ...PublisherOption) *Publisher {
 	if client == nil {
-		panic("riverqueue: NewPublisher: client must not be nil")
+		panic("riverqueue: NewPublisher client must not be nil")
 	}
 	p := &Publisher{
 		client:          client,
@@ -69,7 +69,7 @@ func NewPublisher(client *river.Client[pgx.Tx], opts ...PublisherOption) *Publis
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("riverqueue: NewPublisher: publisher option must not be nil")
+			panic("riverqueue: NewPublisher publisher option must not be nil")
 		}
 		o(p)
 	}
@@ -171,7 +171,7 @@ type EnvelopeWorker struct {
 // to the supplied [kitqueue.Handler].
 func NewEnvelopeWorker(handler kitqueue.Handler, opts ...EnvelopeWorkerOption) *EnvelopeWorker {
 	if handler == nil {
-		panic("riverqueue: NewEnvelopeWorker: handler must not be nil")
+		panic("riverqueue: NewEnvelopeWorker handler must not be nil")
 	}
 	w := &EnvelopeWorker{
 		handler:         handler,
@@ -179,7 +179,7 @@ func NewEnvelopeWorker(handler kitqueue.Handler, opts ...EnvelopeWorkerOption) *
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("riverqueue: NewEnvelopeWorker: envelope worker option must not be nil")
+			panic("riverqueue: NewEnvelopeWorker envelope worker option must not be nil")
 		}
 		o(w)
 	}

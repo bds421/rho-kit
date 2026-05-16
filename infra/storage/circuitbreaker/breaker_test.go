@@ -153,14 +153,14 @@ func TestCircuitBreaker_Delete(t *testing.T) {
 
 func TestCircuitBreaker_New_NilBackendPanics(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/circuitbreaker: New: backend must not be nil", func() {
+	assert.PanicsWithValue(t, "storage/circuitbreaker: New backend must not be nil", func() {
 		_ = New(nil)
 	})
 }
 
 func TestCircuitBreaker_New_NilOptionPanics(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/circuitbreaker: New: option must not be nil", func() {
+	assert.PanicsWithValue(t, "storage/circuitbreaker: New option must not be nil", func() {
 		_ = New(membackend.New(), nil)
 	})
 }
@@ -239,21 +239,21 @@ func TestCircuitBreaker_ListValidatesBeforeBackendAndBreakerState(t *testing.T) 
 
 func TestCircuitBreaker_New_PanicsOnZeroResetTimeout(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/circuitbreaker: WithResetTimeout: reset timeout must be positive", func() {
+	assert.PanicsWithValue(t, "storage/circuitbreaker: WithResetTimeout reset timeout must be positive", func() {
 		_ = WithResetTimeout(0)
 	})
 }
 
 func TestCircuitBreaker_New_PanicsOnNegativeResetTimeout(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/circuitbreaker: WithResetTimeout: reset timeout must be positive", func() {
+	assert.PanicsWithValue(t, "storage/circuitbreaker: WithResetTimeout reset timeout must be positive", func() {
 		_ = WithResetTimeout(-time.Second)
 	})
 }
 
 func TestCircuitBreaker_New_PanicsOnZeroThreshold(t *testing.T) {
 	t.Parallel()
-	assert.PanicsWithValue(t, "storage/circuitbreaker: WithThreshold: threshold must be >= 1", func() {
+	assert.PanicsWithValue(t, "storage/circuitbreaker: WithThreshold threshold must be >= 1", func() {
 		_ = WithThreshold(0)
 	})
 }

@@ -66,7 +66,7 @@ type Option func(*Limiter)
 // WithClock overrides the time source for tests.
 func WithClock(now clock.Func) Option {
 	if now == nil {
-		panic("tokenbucket: WithClock: clock must not be nil")
+		panic("tokenbucket: WithClock clock must not be nil")
 	}
 	return func(l *Limiter) { l.now = now }
 }
@@ -99,10 +99,10 @@ func WithoutSweeper() Option {
 // shutdown wiring for deterministic cleanup.
 func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
 	if !validPositiveFinite(capacity) {
-		panic("tokenbucket: New: capacity must be finite and > 0")
+		panic("tokenbucket: New capacity must be finite and > 0")
 	}
 	if !validRefillPerSec(refillPerSec) {
-		panic("tokenbucket: New: refillPerSec must be finite, > 0, and produce a representable retry interval")
+		panic("tokenbucket: New refillPerSec must be finite, > 0, and produce a representable retry interval")
 	}
 	l := &Limiter{
 		capacity:      capacity,
@@ -115,7 +115,7 @@ func New(capacity, refillPerSec float64, opts ...Option) *Limiter {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("tokenbucket: New: option must not be nil")
+			panic("tokenbucket: New option must not be nil")
 		}
 		o(l)
 	}

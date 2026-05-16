@@ -174,10 +174,10 @@ func New(client redis.UniversalClient, key string, opts ...Option) *Elector {
 // the underlying locker's TTL or retry behaviour.
 func NewWithLocker(locker *rlock.Locker, key string, opts ...Option) *Elector {
 	if locker == nil {
-		panic("leaderelection/redislock: NewWithLocker: locker must not be nil")
+		panic("leaderelection/redislock: NewWithLocker locker must not be nil")
 	}
 	if key == "" {
-		panic("leaderelection/redislock: NewWithLocker: key must not be empty")
+		panic("leaderelection/redislock: NewWithLocker key must not be empty")
 	}
 	e := &Elector{
 		locker:        locker,
@@ -189,7 +189,7 @@ func NewWithLocker(locker *rlock.Locker, key string, opts ...Option) *Elector {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("leaderelection/redislock: NewWithLocker: option must not be nil")
+			panic("leaderelection/redislock: NewWithLocker option must not be nil")
 		}
 		o(e)
 	}

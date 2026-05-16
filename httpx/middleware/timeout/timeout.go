@@ -102,12 +102,12 @@ func WithLogger(logger *slog.Logger) Option {
 // database drivers or HTTP clients.
 func Timeout(d time.Duration, opts ...Option) func(http.Handler) http.Handler {
 	if d <= 0 {
-		panic("middleware/timeout: Timeout: duration must be positive")
+		panic("middleware/timeout: Timeout duration must be positive")
 	}
 	cfg := timeoutOptions{postTimeoutWait: defaultPostTimeoutWait}
 	for _, opt := range opts {
 		if opt == nil {
-			panic("middleware/timeout: Timeout: option must not be nil")
+			panic("middleware/timeout: Timeout option must not be nil")
 		}
 		opt(&cfg)
 	}

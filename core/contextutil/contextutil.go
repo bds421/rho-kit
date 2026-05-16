@@ -72,7 +72,7 @@ func (k Key[T]) Get(ctx context.Context) (T, bool) {
 func (k Key[T]) MustGet(ctx context.Context) T {
 	val, ok := k.Get(ctx)
 	if !ok {
-		panic("contextutil: MustGet: required key is not present in context; ensure the value was set upstream")
+		panic("contextutil: MustGet required key is not present in context; ensure the value was set upstream")
 	}
 	return val
 }

@@ -353,7 +353,7 @@ func WithCursorKey(key []byte) Option {
 // without tamper-evidence or with forgeable cursors.
 func New(store Store, opts ...Option) *Logger {
 	if store == nil {
-		panic("auditlog: New: store must not be nil")
+		panic("auditlog: New store must not be nil")
 	}
 	l := &Logger{
 		store:  store,
@@ -361,7 +361,7 @@ func New(store Store, opts ...Option) *Logger {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("auditlog: New: option must not be nil")
+			panic("auditlog: New option must not be nil")
 		}
 		o(l)
 	}

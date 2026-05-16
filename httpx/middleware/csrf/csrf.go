@@ -362,11 +362,11 @@ func New(opts ...Option) func(http.Handler) http.Handler {
 
 	if len(cfg.secrets) == 0 {
 		if !cfg.allowDevSecret {
-			panic("csrf: New: no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
+			panic("csrf: New no HMAC secret configured — call WithSecret (or WithDevSecret to opt into a per-process random fallback for local development); without a shared secret, multi-instance deployments break — each pod generates a different secret and tokens minted by pod A are rejected by pod B")
 		}
 		raw := make([]byte, 32)
 		if _, err := io.ReadFull(tokenRandReader, raw); err != nil {
-			panic("csrf: New: failed to generate HMAC secret")
+			panic("csrf: New failed to generate HMAC secret")
 		}
 		cfg.secrets = []*secret.String{secret.New(raw)}
 		// secret.New copied the bytes; wipe the local stack-allocated

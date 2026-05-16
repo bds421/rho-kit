@@ -914,7 +914,7 @@ func TestNewStaticSecrets_PanicsOnUnknownCurrent(t *testing.T) {
 }
 
 func TestNewStaticSecrets_PanicsOnShortKey(t *testing.T) {
-	assert.PanicsWithValue(t, "actionlog: NewStaticSecrets: secret must be at least 32 bytes", func() {
+	assert.PanicsWithValue(t, "actionlog: NewStaticSecrets secret must be at least 32 bytes", func() {
 		NewStaticSecrets("secret-token", map[string][]byte{"secret-token": []byte("too-short")})
 	})
 }

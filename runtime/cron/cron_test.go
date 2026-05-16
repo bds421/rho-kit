@@ -176,7 +176,7 @@ func TestScheduler_InvalidSchedulePanicDoesNotReflectInputs(t *testing.T) {
 		require.NotNil(t, rec)
 		msg, ok := rec.(string)
 		require.True(t, ok, "panic must be a stable string, got %T", rec)
-		assert.Equal(t, "cron: Add: invalid schedule for job", msg)
+		assert.Equal(t, "cron: Add invalid schedule for job", msg)
 		assert.NotContains(t, msg, "secret-token")
 	}()
 

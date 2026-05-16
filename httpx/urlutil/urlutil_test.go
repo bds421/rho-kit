@@ -51,7 +51,7 @@ func TestMustJoin_panicsOnInvalidBase(t *testing.T) {
 			t.Error("expected panic on invalid base")
 		}
 		got := rec.(string)
-		if got != "urlutil: MustJoin: base URL is invalid" {
+		if got != "urlutil: MustJoin base URL is invalid" {
 			t.Fatalf("panic = %q, want stable invalid-base message", got)
 		}
 		if strings.Contains(got, "secret-token") || strings.Contains(got, "%zz") {
@@ -294,7 +294,7 @@ func TestParseRequestURIOrPanic_panicsOnInvalid(t *testing.T) {
 			t.Error("expected panic on invalid URI")
 		}
 		got := rec.(string)
-		if got != "urlutil: ParseRequestURIOrPanic: request URI is invalid" {
+		if got != "urlutil: ParseRequestURIOrPanic request URI is invalid" {
 			t.Fatalf("panic = %q, want stable invalid-URI message", got)
 		}
 		if strings.Contains(got, "secret-token") || strings.Contains(got, "%zz") {

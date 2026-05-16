@@ -99,7 +99,7 @@ type Option func(*Backend)
 func WithInstance(name string) Option {
 	return func(b *Backend) {
 		if err := storage.ValidateInstanceName(name); err != nil {
-			panic("sftpbackend: WithInstance: invalid instance name")
+			panic("sftpbackend: WithInstance invalid instance name")
 		}
 		b.instance = name
 	}
@@ -163,7 +163,7 @@ func New(cfg Config, opts ...Option) (*Backend, error) {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("sftpbackend: New: option must not be nil")
+			panic("sftpbackend: New option must not be nil")
 		}
 		o(b)
 	}
@@ -199,7 +199,7 @@ func NewWithClient(client Client, cfg Config, opts ...Option) *Backend {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("sftpbackend: NewWithClient: option must not be nil")
+			panic("sftpbackend: NewWithClient option must not be nil")
 		}
 		o(b)
 	}

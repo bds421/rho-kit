@@ -30,7 +30,7 @@ type KeyFunc = func(r *http.Request, filename string, meta storage.ObjectMeta) (
 //	UUIDKeyFunc("")        → "550e8400-e29b-41d4-a716-446655440000.jpg"
 func UUIDKeyFunc(prefix string) KeyFunc {
 	if err := storage.ValidatePrefix(prefix); err != nil {
-		panic("storagehttp: UUIDKeyFunc: invalid UUIDKeyFunc prefix")
+		panic("storagehttp: UUIDKeyFunc invalid UUIDKeyFunc prefix")
 	}
 	prefix = strings.TrimSuffix(prefix, "/")
 

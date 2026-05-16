@@ -52,7 +52,7 @@ type Option func(*Config)
 // threshold, and silently ignoring masks misconfiguration.
 func WithThreshold(n int) Option {
 	if n < 1 {
-		panic("storage/circuitbreaker: WithThreshold: threshold must be >= 1")
+		panic("storage/circuitbreaker: WithThreshold threshold must be >= 1")
 	}
 	return func(c *Config) { c.Threshold = n }
 }
@@ -62,7 +62,7 @@ func WithThreshold(n int) Option {
 // breaker probe immediately and never protect the dependency.
 func WithResetTimeout(d time.Duration) Option {
 	if d <= 0 {
-		panic("storage/circuitbreaker: WithResetTimeout: reset timeout must be positive")
+		panic("storage/circuitbreaker: WithResetTimeout reset timeout must be positive")
 	}
 	return func(c *Config) { c.ResetTimeout = d }
 }
@@ -124,7 +124,7 @@ func (cb *CircuitBreaker) OpaqueStorageDecorator() {}
 // confusing nil-pointer panic on the first storage operation.
 func New(backend storage.Storage, opts ...Option) Stater {
 	if backend == nil {
-		panic("storage/circuitbreaker: New: backend must not be nil")
+		panic("storage/circuitbreaker: New backend must not be nil")
 	}
 	cfg := Config{
 		Threshold:    5,
@@ -137,7 +137,7 @@ func New(backend storage.Storage, opts ...Option) Stater {
 	}
 	for _, o := range opts {
 		if o == nil {
-			panic("storage/circuitbreaker: New: option must not be nil")
+			panic("storage/circuitbreaker: New option must not be nil")
 		}
 		o(&cfg)
 	}

@@ -238,15 +238,15 @@ func (b *Builder) OnShutdown(fn func(context.Context)) *Builder {
 // configuration errors.
 func (b *Builder) With(m Module) *Builder {
 	if m == nil {
-		panic("app: With: module must not be nil")
+		panic("app: With module must not be nil")
 	}
 	name := m.Name()
 	if name == "" {
-		panic("app: With: module name must not be empty")
+		panic("app: With module name must not be empty")
 	}
 	for _, existing := range b.modules {
 		if existing.Name() == name {
-			panic("app: With: duplicate module name")
+			panic("app: With duplicate module name")
 		}
 	}
 	b.modules = append(b.modules, m)
