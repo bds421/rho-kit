@@ -41,6 +41,7 @@ github.com/fsnotify/fsnotify
 github.com/gabriel-vasile/mimetype
 github.com/google/uuid
 github.com/jub0bs/cors
+github.com/modelcontextprotocol/go-sdk
 github.com/pkg/sftp
 github.com/santhosh-tekuri/jsonschema/v6
 golang.org/x/net

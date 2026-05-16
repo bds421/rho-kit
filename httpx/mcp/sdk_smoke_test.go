@@ -8,10 +8,19 @@ package mcp
 // end-to-end; it intentionally exercises no behaviour.
 
 import (
+	"testing"
+
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// sdkSmokeProtocolVersion captures a symbol from the SDK so the import
-// is not optimised out. The value is unused; it exists purely to keep
-// the dependency wired in.
-var sdkSmokeProtocolVersion = sdkmcp.LatestProtocolVersion
+// TestSDKSmokeImport asserts that the modelcontextprotocol/go-sdk
+// module is wired into the build. It instantiates a typed pointer
+// from the SDK so the import is not optimised out and the symbol is
+// reachable. Wave 121 replaces this with real usage of mcp.Server /
+// AddTool / StreamableHTTPHandler.
+func TestSDKSmokeImport(t *testing.T) {
+	var server *sdkmcp.Server
+	if server != nil {
+		t.Fatalf("expected nil zero-value server pointer, got %v", server)
+	}
+}
