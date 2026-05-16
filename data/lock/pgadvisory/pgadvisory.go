@@ -33,6 +33,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/lock"
 )
 
@@ -66,13 +67,13 @@ func (l *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, erro
 	}
 	conn, err := l.db.Conn(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("pgadvisory: acquire conn: %w", err)
+		return nil, false, redact.WrapError("pgadvisory: acquire conn", err)
 	}
 	id := keyToInt64(key)
 	var got bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", id).Scan(&got); err != nil {
 		_ = conn.Close()
-		return nil, false, fmt.Errorf("pgadvisory: pg_try_advisory_lock: %w", err)
+		return nil, false, redact.WrapError("pgadvisory: pg_try_advisory_lock", err)
 	}
 	if !got {
 		_ = conn.Close()
@@ -98,7 +99,7 @@ func (l *Locker) AcquireTx(ctx context.Context, tx *sql.Tx, key string) (bool, e
 	id := keyToInt64(key)
 	var got bool
 	if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", id).Scan(&got); err != nil {
-		return false, fmt.Errorf("pgadvisory: pg_try_advisory_xact_lock: %w", err)
+		return false, redact.WrapError("pgadvisory: pg_try_advisory_xact_lock", err)
 	}
 	return got, nil
 }
@@ -120,7 +121,7 @@ func (s *sessionLock) Release(ctx context.Context) error {
 	defer func() { _ = s.conn.Close() }()
 	var ok bool
 	if err := s.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", s.id).Scan(&ok); err != nil {
-		return fmt.Errorf("pgadvisory: pg_advisory_unlock: %w", err)
+		return redact.WrapError("pgadvisory: pg_advisory_unlock", err)
 	}
 	if !ok {
 		return lock.ErrLockLost
@@ -135,10 +136,10 @@ func (s *sessionLock) Release(ctx context.Context) error {
 // (false, err) so the [leaderelection.Elector] can step down.
 func (s *sessionLock) Extend(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("pgadvisory: extend ping: %w", err)
+		return false, redact.WrapError("pgadvisory: extend ping", err)
 	}
 	if _, err := s.conn.ExecContext(ctx, "SELECT 1"); err != nil {
-		return false, fmt.Errorf("pgadvisory: extend ping: %w", err)
+		return false, redact.WrapError("pgadvisory: extend ping", err)
 	}
 	return true, nil
 }
