@@ -80,6 +80,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Sentinel errors. Validators return these (or values that wrap them)
@@ -202,7 +204,7 @@ func Chain(validators ...Validator) Validator {
 	return ValidatorFunc(func(ctx context.Context, body io.ReadSeeker, meta Meta) (Meta, error) {
 		for _, v := range validators {
 			if _, err := body.Seek(0, io.SeekStart); err != nil {
-				return meta, fmt.Errorf("uploadsec: rewind body: %w", err)
+				return meta, redact.WrapError("uploadsec: rewind body", err)
 			}
 			updated, err := v.Validate(ctx, body, meta)
 			if err != nil {
@@ -314,7 +316,7 @@ func (m *MIMEValidator) Validate(_ context.Context, body io.ReadSeeker, meta Met
 // format.
 func (m *MIMEValidator) checkImageBody(body io.ReadSeeker, mimeType string) error {
 	if _, err := body.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("uploadsec: rewind for image decode: %w", err)
+		return redact.WrapError("uploadsec: rewind for image decode", err)
 	}
 	// Peek the header to bound dimensions before the full decode runs.
 	// image.DecodeConfig allocates only metadata, so a 99999×99999
@@ -344,7 +346,7 @@ func (m *MIMEValidator) checkImageBody(body io.ReadSeeker, mimeType string) erro
 	}
 	// Buffer the body for full decode + trailing-bytes inspection.
 	if _, err := body.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("uploadsec: rewind for image body: %w", err)
+		return redact.WrapError("uploadsec: rewind for image body", err)
 	}
 	return validateImageBody(mimeType, body, m.strictEnd)
 }
@@ -500,15 +502,15 @@ func AllowSVG(sanitizer SVGSanitizer) Validator {
 			return meta, ErrMIMETypeNotAllowed
 		}
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
-			return meta, fmt.Errorf("uploadsec: rewind for SVG sanitise: %w", err)
+			return meta, redact.WrapError("uploadsec: rewind for SVG sanitise", err)
 		}
 		original, err := io.ReadAll(body)
 		if err != nil {
-			return meta, fmt.Errorf("uploadsec: read SVG body: %w", err)
+			return meta, redact.WrapError("uploadsec: read SVG body", err)
 		}
 		sanitised, err := sanitizer.SanitizeSVG(bytes.NewReader(original))
 		if err != nil {
-			return meta, fmt.Errorf("uploadsec: %w", err)
+			return meta, redact.WrapError("uploadsec", err)
 		}
 		if !bytes.Equal(original, sanitised) {
 			return meta, ErrSVGSanitizationModified
