@@ -72,6 +72,8 @@ use (
 	./httpx
 	./httpx/middleware/signedrequest/redis
 	./infra
+	./infra/leaderelection/k8slease
+	./infra/leaderelection/k8slease/integrationtest
 	./infra/leaderelection/pgadvisory
 	./infra/leaderelection/pgadvisory/integrationtest
 	./infra/leaderelection/redislock

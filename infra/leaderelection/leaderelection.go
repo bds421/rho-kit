@@ -8,8 +8,10 @@
 //     Recommended when the service already has a Postgres dependency.
 //   - infra/leaderelection/redislock — wraps redislock with a renew
 //     loop. Use when Postgres is not in the path.
-//   - infra/leaderelection/k8slease (planned) — coordination.k8s.io
-//     Lease object for k8s-native deployments. Track via the v2 backlog.
+//   - infra/leaderelection/k8slease — coordination.k8s.io/v1 Lease
+//     object via k8s.io/client-go for Kubernetes-native deployments.
+//     Recommended when the service already runs on k8s and the
+//     operator wants kubectl-visible leadership state.
 //
 // The contract is: one leadership term calls OnAcquired at a time for
 // backends that provide strong exclusion. When ctx cancels, the
