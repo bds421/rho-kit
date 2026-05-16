@@ -3,8 +3,11 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // Component represents anything with a start/stop lifecycle.
@@ -84,7 +87,7 @@ func NewFuncComponent(fn func(ctx context.Context) error) *FuncComponent {
 	return &FuncComponent{startFn: fn}
 }
 
-func (f *FuncComponent) Start(ctx context.Context) error {
+func (f *FuncComponent) Start(ctx context.Context) (retErr error) {
 	if ctx == nil {
 		return errors.New("lifecycle: FuncComponent.Start requires a non-nil context")
 	}
@@ -106,6 +109,15 @@ func (f *FuncComponent) Start(ctx context.Context) error {
 	f.done = make(chan struct{})
 	f.mu.Unlock()
 	defer func() {
+		// Wave 145: convert a panicking startFn into an error return.
+		// Previously the panic propagated past the Runner and crashed
+		// the whole service; downstream lifecycle siblings never got
+		// their Stop call. The recovered value's concrete type is
+		// preserved via redact.PanicValue so triage can see what
+		// raised without leaking the panic payload.
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("lifecycle: FuncComponent panicked: %s", redact.PanicValue(r))
+		}
 		f.mu.Lock()
 		close(f.done)
 		f.mu.Unlock()

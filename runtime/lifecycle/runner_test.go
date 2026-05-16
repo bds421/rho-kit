@@ -331,6 +331,20 @@ func TestFuncComponent_StopRejectsNilContext(t *testing.T) {
 	assert.Contains(t, err.Error(), "non-nil context")
 }
 
+// Wave 145: a panicking startFn must surface as an error from Start
+// rather than propagating past the Runner. Previously the panic
+// crashed the service; sibling components never got their Stop call.
+func TestFuncComponent_PanicSurfacesAsError(t *testing.T) {
+	fc := NewFuncComponent(func(ctx context.Context) error {
+		panic("startFn boom")
+	})
+	err := fc.Start(context.Background())
+	require.Error(t, err, "panicking startFn must surface as Start error")
+	assert.Contains(t, err.Error(), "panicked")
+	// Payload must NOT leak the panic value verbatim.
+	assert.NotContains(t, err.Error(), "boom")
+}
+
 // orderedComponent records its name to a shared slice when Stop is called,
 // allowing tests to verify shutdown order.
 type orderedComponent struct {
