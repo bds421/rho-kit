@@ -3,8 +3,8 @@ package redislock
 import (
 	"context"
 	"errors"
-	"fmt"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/lock"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 )
@@ -77,7 +77,7 @@ func (dl *DegradedLocker) checkHealth(ctx context.Context) error {
 		return nil
 	}
 	if err := dl.policy.OnUnavailable(ctx); err != nil {
-		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return redact.WrapSentinel(ErrUnavailable, err)
 	}
 	return nil
 }

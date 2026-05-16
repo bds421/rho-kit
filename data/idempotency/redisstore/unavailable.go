@@ -2,13 +2,13 @@ package redisstore
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/apperror"
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrStoreUnavailable is returned by [Store] when the underlying Redis
@@ -108,7 +108,7 @@ func translateUnavailable(err error) error {
 			"idempotency store is temporarily unavailable",
 			err,
 		)
-		return fmt.Errorf("%w: %w", ErrStoreUnavailable, classified)
+		return redact.WrapSentinel(ErrStoreUnavailable, classified)
 	}
 	return err
 }

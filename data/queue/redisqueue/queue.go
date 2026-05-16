@@ -783,7 +783,7 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 				redact.Error(err),
 			)
 			q.metrics.messagesFailed.WithLabelValues(label).Inc()
-			return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+			return redact.WrapSentinel(asynq.SkipRetry, err)
 		}
 		var msg Message
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -792,7 +792,9 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 				redact.Error(err),
 			)
 			q.metrics.messagesFailed.WithLabelValues(label).Inc()
-			return fmt.Errorf("%w: unmarshal envelope: %w", asynq.SkipRetry, err)
+			return redact.WrapSentinel(
+				fmt.Errorf("%w: unmarshal envelope", asynq.SkipRetry), err,
+			)
 		}
 		if err := validateMessage(msg, q.maxPayloadSize); err != nil {
 			q.logger.Error("discarding invalid queue message",
@@ -800,7 +802,7 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 				redact.Error(err),
 			)
 			q.metrics.messagesFailed.WithLabelValues(label).Inc()
-			return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+			return redact.WrapSentinel(asynq.SkipRetry, err)
 		}
 
 		retryCount, _ := asynq.GetRetryCount(ctx)
@@ -817,7 +819,7 @@ func (q *Queue) handlerForQueue(queue string, handler Handler) asynq.Handler {
 			q.metrics.messagesFailed.WithLabelValues(label).Inc()
 			if apperror.IsPermanent(err) {
 				// Permanent errors skip retries and route straight to the archive.
-				return fmt.Errorf("%w: %w", asynq.SkipRetry, err)
+				return redact.WrapSentinel(asynq.SkipRetry, err)
 			}
 			q.metrics.messagesRetried.WithLabelValues(label).Inc()
 			return err

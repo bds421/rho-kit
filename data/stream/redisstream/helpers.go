@@ -264,7 +264,9 @@ func parseMessage(raw goredis.XMessage) (Message, error) {
 	if v, ok := raw.Values["ts"].(string); ok {
 		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
-			return msg, fmt.Errorf("%w: timestamp must be RFC3339Nano: %w", ErrInvalidMessage, err)
+			return msg, redact.WrapSentinel(
+				fmt.Errorf("%w: timestamp must be RFC3339Nano", ErrInvalidMessage), err,
+			)
 		}
 		msg.Timestamp = t
 	} else if _, exists := raw.Values["ts"]; exists {
@@ -282,7 +284,9 @@ func parseMessage(raw goredis.XMessage) (Message, error) {
 		}
 		headers := make(map[string]string)
 		if err := json.Unmarshal([]byte(v), &headers); err != nil {
-			return msg, fmt.Errorf("%w: headers must be a JSON object: %w", ErrInvalidMessage, err)
+			return msg, redact.WrapSentinel(
+				fmt.Errorf("%w: headers must be a JSON object", ErrInvalidMessage), err,
+			)
 		}
 		msg.Headers = headers
 	} else if _, exists := raw.Values["headers"]; exists {

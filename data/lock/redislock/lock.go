@@ -3,7 +3,6 @@ package redislock
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"time"
@@ -180,7 +179,7 @@ func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, err
 	if isContentionError(err) {
 		return nil, false, nil
 	}
-	return nil, false, fmt.Errorf("lock: acquire failed: %w", err)
+	return nil, false, redact.WrapError("lock: acquire failed", err)
 }
 
 // WithLock acquires `key`, runs fn, and releases the lock. The lock is
@@ -194,7 +193,7 @@ func (lc *Locker) Acquire(ctx context.Context, key string) (lock.Lock, bool, err
 func (lc *Locker) WithLock(ctx context.Context, key string, fn func(ctx context.Context) error) (retErr error) {
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
-		return fmt.Errorf("lock: acquire failed: %w", err)
+		return redact.WrapError("lock: acquire failed", err)
 	}
 	if !ok {
 		return errors.New("lock: could not acquire lock")
@@ -252,7 +251,7 @@ type handle struct {
 func LockerWithValue[T any](ctx context.Context, lc *Locker, key string, fn func(context.Context) (T, error)) (value T, retErr error) {
 	l, ok, err := lc.Acquire(ctx, key)
 	if err != nil {
-		return value, fmt.Errorf("lock: acquire failed: %w", err)
+		return value, redact.WrapError("lock: acquire failed", err)
 	}
 	if !ok {
 		return value, errors.New("lock: could not acquire lock")
@@ -289,7 +288,7 @@ func (l *handle) Release(ctx context.Context) error {
 	if err == nil || isLockLostError(err) {
 		return lock.ErrLockLost
 	}
-	return fmt.Errorf("lock: release failed: %w", err)
+	return redact.WrapError("lock: release failed", err)
 }
 
 // Extend resets the lock's TTL to the configured duration, but only if
@@ -308,7 +307,7 @@ func (l *handle) Extend(ctx context.Context) (bool, error) {
 	if err == nil || isLockLostError(err) {
 		return false, nil
 	}
-	return false, fmt.Errorf("lock: extend failed: %w", err)
+	return false, redact.WrapError("lock: extend failed", err)
 }
 
 // tryCount maps the kit's maxAttempts option (0 = single shot) to

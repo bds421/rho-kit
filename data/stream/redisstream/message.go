@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 const (
@@ -84,11 +86,11 @@ func (e *MessageTooLargeError) Unwrap() error { return ErrMessageTooLarge }
 func NewMessage(msgType string, payload any) (Message, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return Message{}, fmt.Errorf("marshal payload: %w", err)
+		return Message{}, redact.WrapError("marshal payload", err)
 	}
 	id, err := uuid.NewV7()
 	if err != nil {
-		return Message{}, fmt.Errorf("generate message ID: %w", err)
+		return Message{}, redact.WrapError("generate message ID", err)
 	}
 	msg := Message{
 		ID:        id.String(),

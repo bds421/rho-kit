@@ -23,26 +23,21 @@
 // when even structure is unsafe; use masking when partial visibility
 // is debugging-useful.
 //
-// # Known gap: returned-error wrappers may leak backend text
+// # Safe error wrapping across trust boundaries
 //
-// The kit's data-layer packages (`data/cache/rediscache`,
-// `data/lock/redislock`, `data/stream/redisstream`, `data/budget/redis`)
-// wrap backend errors with `fmt.Errorf("...: %w", err)` to preserve
-// `errors.Is` chains. The wrapped chain may include text from the
-// upstream driver — e.g. the lock key inside a Redis "SET key value"
-// command formatting on connection-pool exhaustion. Logs that emit
-// `redact.Error(returnedErr)` are safe (the type is preserved, the
-// message is dropped); callers that propagate `returnedErr.Error()`
-// across a trust boundary or include it in a JSON response body are
-// NOT.
+// Standard `fmt.Errorf("prefix: %w", err)` preserves `errors.Is`/`As`
+// chains but renders the inner error's text verbatim via `Error()`.
+// When the wrapped error comes from an external driver or SDK its
+// text may include tenant-controlled keys, internal hostnames, query
+// fragments, or other content unsafe to surface verbatim into HTTP
+// response bodies or untrusted log sinks.
 //
-// A follow-up wave will introduce `redact.WrapError(prefix, err)`
-// that returns a sentinel-aware error whose `Error()` prints
-// `<prefix>: <type-of-inner>` rather than `<prefix>: <inner.Error()>`,
-// and a kit-wide sweep across the data-layer packages above. The
-// shape is not yet introduced because it changes the wrapping
-// vocabulary used by every backend package; the kit prefers one
-// coordinated migration over piecewise drift.
+// Use [WrapError] when wrapping a single backend cause and
+// [WrapSentinel] when joining a kit sentinel with a backend cause.
+// Both preserve unwrap chains so existing `errors.Is(err, sentinel)`
+// call sites keep working, but render `.Error()` as
+// `<prefix>: <redacted error: T>` rather than including the inner
+// text.
 package redact
 
 import (
@@ -148,4 +143,73 @@ func PanicValue(v any) string {
 // Panic returns the standard redacted slog attribute for a recovered panic.
 func Panic(v any) slog.Attr {
 	return slog.String("panic", PanicValue(v))
+}
+
+// WrapError returns an error that joins prefix with err while making
+// Error() safe to render verbatim across trust boundaries.
+//
+// The standard fmt.Errorf("prefix: %w", err) pattern preserves
+// errors.Is/As chains but Error() includes err.Error() — which, when
+// err originates from an external driver or SDK, may contain
+// tenant-controlled keys, internal hostnames, query fragments, or
+// other content unsafe to surface in HTTP response bodies or
+// untrusted logs.
+//
+// WrapError preserves the unwrap chain (errors.Is/As against the
+// returned value still finds err and its ancestors) but renders
+// Error() as `<prefix>: <redacted error: T>` where T is the deepest
+// cause's concrete type. Returns nil when err is nil.
+func WrapError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &wrappedError{prefix: prefix, inner: err}
+}
+
+type wrappedError struct {
+	prefix string
+	inner  error
+}
+
+func (w *wrappedError) Error() string {
+	return w.prefix + ": " + ErrorValue(w.inner)
+}
+
+func (w *wrappedError) Unwrap() error { return w.inner }
+
+// WrapSentinel returns an error that joins sentinel with cause so
+// errors.Is matches either, while Error() prints
+// `<sentinel.Error()>: <redacted error: T>` rather than including
+// cause's text.
+//
+// Use this when callers need to differentiate a known failure mode
+// (the sentinel) and still preserve the underlying driver error for
+// triage on the log path, but cause's Error() is unsafe to
+// propagate verbatim. Equivalent to fmt.Errorf("%w: %w", sentinel,
+// cause) for errors.Is/As purposes but with safe rendering.
+//
+// Returns nil when cause is nil. Panics if sentinel is nil — the
+// caller's intent is to attach a known sentinel, so a nil sentinel
+// is a programmer error rather than a runtime condition to absorb.
+func WrapSentinel(sentinel, cause error) error {
+	if sentinel == nil {
+		panic("redact: WrapSentinel requires a non-nil sentinel")
+	}
+	if cause == nil {
+		return nil
+	}
+	return &sentinelWrappedError{sentinel: sentinel, cause: cause}
+}
+
+type sentinelWrappedError struct {
+	sentinel error
+	cause    error
+}
+
+func (s *sentinelWrappedError) Error() string {
+	return s.sentinel.Error() + ": " + ErrorValue(s.cause)
+}
+
+func (s *sentinelWrappedError) Unwrap() []error {
+	return []error{s.sentinel, s.cause}
 }

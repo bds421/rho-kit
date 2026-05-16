@@ -267,7 +267,7 @@ func (p *Producer) Publish(ctx context.Context, stream string, msg Message) (str
 
 	result, err := p.client.XAdd(ctx, args).Result()
 	if err != nil {
-		return "", fmt.Errorf("xadd: %w", err)
+		return "", redact.WrapError("xadd", err)
 	}
 
 	p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Inc()
@@ -322,7 +322,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("pipeline exec: %w", err)
+		return nil, redact.WrapError("pipeline exec", err)
 	}
 
 	ids := make([]string, len(cmds))
@@ -334,7 +334,7 @@ func (p *Producer) PublishBatch(ctx context.Context, stream string, msgs []Messa
 			if succeeded > 0 {
 				p.metrics.messagesProduced.WithLabelValues(streamMetricLabel(stream)).Add(float64(succeeded))
 			}
-			return nil, fmt.Errorf("xadd result [%d]: %w", i, err)
+			return nil, redact.WrapError(fmt.Sprintf("xadd result [%d]", i), err)
 		}
 		ids[i] = id
 		succeeded++
@@ -372,7 +372,7 @@ func (p *Producer) buildXAddArgs(stream string, msg Message) (*goredis.XAddArgs,
 	if len(msg.Headers) > 0 {
 		headerBytes, err := json.Marshal(msg.Headers)
 		if err != nil {
-			return nil, fmt.Errorf("marshal headers: %w", err)
+			return nil, redact.WrapError("marshal headers", err)
 		}
 		values["headers"] = string(headerBytes)
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	sharedcache "github.com/bds421/rho-kit/data/v2/cache"
 	"github.com/bds421/rho-kit/infra/redis/v2"
 	"github.com/bds421/rho-kit/observability/v2/promutil"
@@ -171,7 +172,7 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if rc.maxValueSize > 0 {
 		sz, err := rc.client.StrLen(ctx, key).Result()
 		if err != nil {
-			return nil, fmt.Errorf("redis cache get strlen: %w", err)
+			return nil, redact.WrapError("redis cache get strlen", err)
 		}
 		if sz > int64(rc.maxValueSize) {
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
@@ -186,7 +187,7 @@ func (rc *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, sharedcache.ErrCacheMiss
 	}
 	if err != nil {
-		return nil, fmt.Errorf("redis cache get: %w", err)
+		return nil, redact.WrapError("redis cache get", err)
 	}
 	// TOCTOU guard: another writer may have replaced the value with a
 	// larger one between STRLEN and GET. The cap check is cheap and
@@ -214,7 +215,7 @@ func (rc *Cache) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 		return fmt.Errorf("cache value exceeds maximum size")
 	}
 	if err := rc.client.Set(ctx, key, value, ttl).Err(); err != nil {
-		return fmt.Errorf("redis cache set: %w", err)
+		return redact.WrapError("redis cache set", err)
 	}
 	return nil
 }
@@ -228,7 +229,7 @@ func (rc *Cache) Delete(ctx context.Context, key string) error {
 		return err
 	}
 	if err := rc.client.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("redis cache delete: %w", err)
+		return redact.WrapError("redis cache delete", err)
 	}
 	return nil
 }
@@ -243,7 +244,7 @@ func (rc *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	n, err := rc.client.Exists(ctx, key).Result()
 	if err != nil {
-		return false, fmt.Errorf("redis cache exists: %w", err)
+		return false, redact.WrapError("redis cache exists", err)
 	}
 	return n > 0, nil
 }
@@ -278,7 +279,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	if rc.maxValueSize <= 0 {
 		vals, err := rc.client.MGet(ctx, keys...).Result()
 		if err != nil {
-			return nil, fmt.Errorf("redis cache mget: %w", err)
+			return nil, redact.WrapError("redis cache mget", err)
 		}
 		out := make(map[string][]byte, len(keys))
 		for i, v := range vals {
@@ -304,7 +305,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 		strLens[i] = pipe.StrLen(ctx, k)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
-		return nil, fmt.Errorf("redis cache mget strlen pipeline: %w", err)
+		return nil, redact.WrapError("redis cache mget strlen pipeline", err)
 	}
 
 	// Decide which keys are under the cap. STRLEN returns 0 for
@@ -316,7 +317,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	for i, k := range keys {
 		sz, slErr := strLens[i].Result()
 		if slErr != nil {
-			return nil, fmt.Errorf("redis cache mget strlen: %w", slErr)
+			return nil, redact.WrapError("redis cache mget strlen", slErr)
 		}
 		if sz > int64(rc.maxValueSize) {
 			rc.metrics.misses.WithLabelValues(rc.name).Inc()
@@ -335,7 +336,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 		gets[i] = pipe.Get(ctx, k)
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, goredis.Nil) {
-		return nil, fmt.Errorf("redis cache mget get pipeline: %w", err)
+		return nil, redact.WrapError("redis cache mget get pipeline", err)
 	}
 	for i, k := range getKeys {
 		val, gErr := gets[i].Bytes()
@@ -344,7 +345,7 @@ func (rc *Cache) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 			continue
 		}
 		if gErr != nil {
-			return nil, fmt.Errorf("redis cache mget get: %w", gErr)
+			return nil, redact.WrapError("redis cache mget get", gErr)
 		}
 		if len(val) > rc.maxValueSize {
 			// TOCTOU: value grew between STRLEN and GET.
@@ -391,7 +392,7 @@ func (rc *Cache) MSet(ctx context.Context, items map[string][]byte, ttl time.Dur
 		pipe.Set(ctx, k, v, ttl)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("redis cache mset: %w", err)
+		return redact.WrapError("redis cache mset", err)
 	}
 	return nil
 }
@@ -415,7 +416,7 @@ func (rc *Cache) SetNX(ctx context.Context, key string, value []byte, ttl time.D
 	}
 	ok, err := rc.client.SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
-		return false, fmt.Errorf("redis cache setnx: %w", err)
+		return false, redact.WrapError("redis cache setnx", err)
 	}
 	return ok, nil
 }

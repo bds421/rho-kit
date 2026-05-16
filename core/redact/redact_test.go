@@ -2,8 +2,10 @@ package redact
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 )
@@ -142,4 +144,102 @@ func TestPanicAttrRedactsPayload(t *testing.T) {
 	if !strings.Contains(out, `"panic"`) {
 		t.Fatalf("panic attr missing key: %q", out)
 	}
+}
+
+func TestWrapError(t *testing.T) {
+	t.Run("nil returns nil", func(t *testing.T) {
+		if got := WrapError("prefix", nil); got != nil {
+			t.Fatalf("WrapError(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("redacts inner Error text", func(t *testing.T) {
+		inner := fmt.Errorf("dial tenant-secret.internal: token=secret")
+		wrapped := WrapError("redis cache get", inner)
+		got := wrapped.Error()
+		for _, forbidden := range []string{"tenant-secret", "token=secret"} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("WrapError leaked %q in %q", forbidden, got)
+			}
+		}
+		if !strings.HasPrefix(got, "redis cache get: ") {
+			t.Fatalf("WrapError dropped prefix: %q", got)
+		}
+		if !strings.Contains(got, "<redacted error:") {
+			t.Fatalf("WrapError missing redacted type marker: %q", got)
+		}
+	})
+
+	t.Run("preserves errors.Is chain", func(t *testing.T) {
+		sentinel := errors.New("kit: sentinel")
+		inner := fmt.Errorf("backend: %w", sentinel)
+		wrapped := WrapError("op", inner)
+		if !errors.Is(wrapped, sentinel) {
+			t.Fatal("WrapError broke errors.Is chain")
+		}
+	})
+
+	t.Run("preserves errors.As chain", func(t *testing.T) {
+		inner := &net.AddrError{Err: "bad addr", Addr: "tenant.internal"}
+		wrapped := WrapError("dial", inner)
+		var target *net.AddrError
+		if !errors.As(wrapped, &target) {
+			t.Fatal("WrapError broke errors.As chain")
+		}
+		if target.Addr != "tenant.internal" {
+			t.Fatalf("As target Addr = %q, want preserved original", target.Addr)
+		}
+		// The wrapped Error() must still not leak that addr.
+		if strings.Contains(wrapped.Error(), "tenant.internal") {
+			t.Fatalf("WrapError leaked Addr through Error(): %q", wrapped.Error())
+		}
+	})
+}
+
+func TestWrapSentinel(t *testing.T) {
+	kitSentinel := errors.New("kit: ErrUnavailable")
+
+	t.Run("nil cause returns nil", func(t *testing.T) {
+		if got := WrapSentinel(kitSentinel, nil); got != nil {
+			t.Fatalf("WrapSentinel(s, nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("nil sentinel panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("WrapSentinel(nil, cause) did not panic")
+			}
+		}()
+		_ = WrapSentinel(nil, errors.New("cause"))
+	})
+
+	t.Run("renders sentinel verbatim and redacts cause", func(t *testing.T) {
+		cause := fmt.Errorf("dial tenant-secret.internal: token=secret")
+		wrapped := WrapSentinel(kitSentinel, cause)
+		got := wrapped.Error()
+		for _, forbidden := range []string{"tenant-secret", "token=secret"} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("WrapSentinel leaked %q in %q", forbidden, got)
+			}
+		}
+		if !strings.HasPrefix(got, "kit: ErrUnavailable: ") {
+			t.Fatalf("WrapSentinel dropped sentinel text: %q", got)
+		}
+		if !strings.Contains(got, "<redacted error:") {
+			t.Fatalf("WrapSentinel missing redacted cause marker: %q", got)
+		}
+	})
+
+	t.Run("errors.Is matches both sentinel and cause chain", func(t *testing.T) {
+		causeSentinel := errors.New("driver: ErrConnRefused")
+		cause := fmt.Errorf("wrap: %w", causeSentinel)
+		wrapped := WrapSentinel(kitSentinel, cause)
+		if !errors.Is(wrapped, kitSentinel) {
+			t.Fatal("WrapSentinel broke errors.Is for sentinel")
+		}
+		if !errors.Is(wrapped, causeSentinel) {
+			t.Fatal("WrapSentinel broke errors.Is for cause chain")
+		}
+	})
 }

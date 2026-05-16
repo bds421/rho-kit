@@ -41,6 +41,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bds421/rho-kit/core/v2/clock"
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/budget"
 )
 
@@ -216,7 +217,7 @@ func WithRedisTime() Option {
 		b.now = func(ctx context.Context) (time.Time, error) {
 			t, err := b.client.Time(ctx).Result()
 			if err != nil {
-				return time.Time{}, fmt.Errorf("budget/redis: TIME: %w", err)
+				return time.Time{}, redact.WrapError("budget/redis: TIME", err)
 			}
 			return t, nil
 		}
@@ -345,7 +346,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 			b.ttlSeconds(),
 		).Int64()
 		if perr != nil {
-			return false, 0, 0, fmt.Errorf("budget/redis: script: %w", perr)
+			return false, 0, 0, redact.WrapError("budget/redis: script", perr)
 		}
 		return false, rem, retry, nil
 	}
@@ -357,7 +358,7 @@ func (b *Budget) Consume(ctx context.Context, key string, amount int64) (bool, i
 		b.ttlSeconds(),
 	).Result()
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("budget/redis: script: %w", err)
+		return false, 0, 0, redact.WrapError("budget/redis: script", err)
 	}
 	pair, ok := res.([]any)
 	if !ok || len(pair) != 2 {
@@ -408,7 +409,7 @@ func (b *Budget) Refund(ctx context.Context, key string, amount int64) (int64, e
 		b.cap,
 	).Result()
 	if err != nil {
-		return 0, fmt.Errorf("budget/redis: script: %w", err)
+		return 0, redact.WrapError("budget/redis: script", err)
 	}
 	rem, _ := res.(int64)
 	return rem, nil
@@ -452,7 +453,7 @@ func (b *Budget) Peek(ctx context.Context, key string) (int64, error) {
 		b.ttlSeconds(),
 	).Result()
 	if err != nil {
-		return 0, fmt.Errorf("budget/redis: script: %w", err)
+		return 0, redact.WrapError("budget/redis: script", err)
 	}
 	rem, _ := res.(int64)
 	return rem, nil
