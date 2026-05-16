@@ -42,18 +42,34 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bds421/rho-kit/httpx/v2"
+	"github.com/bds421/rho-kit/app/v2"
+	apphttp "github.com/bds421/rho-kit/app/http/v2"
 	"github.com/bds421/rho-kit/httpx/v2/middleware/ratelimit"
 	"github.com/bds421/rho-kit/resilience/v2/circuitbreaker"
 	"github.com/bds421/rho-kit/resilience/v2/retry"
 )
 
-const (
-	demoTokenEnv = "API_GATEWAY_DEMO_TOKEN"
-	defaultAddr  = ":8095"
-)
+const demoTokenEnv = "API_GATEWAY_DEMO_TOKEN"
 
-// Run starts the gateway on :8095. Blocks until ctx is cancelled.
+// Run starts the gateway via the kit's app.Builder so the
+// example demonstrates the SAME production wiring shape every
+// real service uses. The Builder's always-on validator
+// (TLS / JWT issuer-audience / internal-host loopback / sslmode)
+// would reject the example's stubbed configuration at startup;
+// we opt out per-policy via the kit's documented `Without*`
+// helpers so the relaxation is auditable line-by-line:
+//
+//   - apphttp.WithoutTLS() — example listens on plain http so
+//     curl doesn't need a cert. Production wires real TLS.
+//   - Builder.WithoutRateLimit() — the example's rate limit is
+//     applied inline by the handler (httpx/middleware/ratelimit
+//     directly) so callers see EXACTLY where it lives. Production
+//     can either keep that pattern OR register
+//     ratelimit.IP(...) through app/ratelimit at the Builder
+//     level; both are valid.
+//
+// kit-doctor will flag each of these in production code,
+// confirming the discipline.
 func Run(ctx context.Context) error {
 	logger := slog.Default()
 	demoToken, err := demoBearerTokenFromEnv()
@@ -62,23 +78,24 @@ func Run(ctx context.Context) error {
 	}
 	gw := newGateway(demoToken, callRealDownstream)
 
-	mux := http.NewServeMux()
-	mux.Handle("GET /api/orders", gw.buildHandler(logger))
-
-	srv := httpx.NewServer(defaultAddr, mux, httpx.WithErrorLog(
-		slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
-	))
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-	logger.Info("api-gateway listening", "addr", defaultAddr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("listen: %w", err)
+	cfg := app.BaseConfig{
+		Server:      app.ServerConfig{Host: "127.0.0.1", Port: 8095},
+		Internal:    app.InternalConfig{Host: "127.0.0.1", Port: 9095},
+		Environment: "example",
+		LogLevel:    "info",
 	}
-	return nil
+	return app.New("api-gateway", "0.0.0-example", cfg).
+		Logger(logger).
+		WithoutRateLimit().
+		// Example listens on plain http for curl/test convenience.
+		// kit-doctor:allow apphttp-without-tls
+		With(apphttp.Module(apphttp.WithoutTLS())).
+		Router(func(_ app.Infrastructure) http.Handler {
+			mux := http.NewServeMux()
+			mux.Handle("GET /api/orders", gw.buildHandler(logger))
+			return mux
+		}).
+		RunContext(ctx)
 }
 
 // gateway groups the example's composition state. In a real

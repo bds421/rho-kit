@@ -1355,6 +1355,57 @@ func wire() {
 		"aliased centrifuge import must still trigger rule, got %+v", findings)
 }
 
+// F2 wave 179: apphttp.WithoutTLS rule.
+
+func TestScan_FlagsApphttpWithoutTLS(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import apphttp "github.com/bds421/rho-kit/app/http/v2"
+
+func wire() {
+	_ = apphttp.Module(apphttp.WithoutTLS())
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.True(t, hasRule(findings, "apphttp-without-tls"),
+		"apphttp.WithoutTLS in production code must flag, got %+v", findings)
+}
+
+func TestScan_ApphttpWithoutTLSSkipsTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire_test.go", `package svc
+
+import apphttp "github.com/bds421/rho-kit/app/http/v2"
+
+func wire() {
+	_ = apphttp.Module(apphttp.WithoutTLS())
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "apphttp-without-tls"),
+		"_test.go must not flag, got %+v", findings)
+}
+
+func TestScan_ApphttpWithoutTLSRespectsInlineSuppression(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "wire.go", `package svc
+
+import apphttp "github.com/bds421/rho-kit/app/http/v2"
+
+func wire() {
+	// kit-doctor:allow apphttp-without-tls
+	_ = apphttp.Module(apphttp.WithoutTLS())
+}
+`)
+	findings, err := scan(dir, rules.Registered())
+	require.NoError(t, err)
+	assert.False(t, hasRule(findings, "apphttp-without-tls"),
+		"inline suppression marker must silence the rule, got %+v", findings)
+}
+
 func hasRule(findings []rules.Finding, name string) bool {
 	for _, f := range findings {
 		if f.Rule == name {

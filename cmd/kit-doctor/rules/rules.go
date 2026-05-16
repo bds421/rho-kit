@@ -89,5 +89,6 @@ func Registered() []Rule {
 		websocketAnyOriginUnsafeRule{},
 		websocketMissingMaxConnectionsRule{},
 		centrifugeMissingJWTAuthRule{},
+		apphttpWithoutTLSRule{},
 	}
 }
