@@ -42,18 +42,18 @@ func StartS3(t *testing.T, bucket string) s3backend.Config {
 			Started:          true,
 		})
 		if err != nil {
-			s3InitErr = fmt.Errorf("start localstack container: %w", err)
+			s3InitErr = fmt.Errorf("start localstack container: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 
 		host, err := container.Host(ctx)
 		if err != nil {
-			s3InitErr = fmt.Errorf("get localstack host: %w", err)
+			s3InitErr = fmt.Errorf("get localstack host: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 		port, err := container.MappedPort(ctx, "4566/tcp")
 		if err != nil {
-			s3InitErr = fmt.Errorf("get localstack port: %w", err)
+			s3InitErr = fmt.Errorf("get localstack port: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 

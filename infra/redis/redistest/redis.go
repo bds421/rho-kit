@@ -35,13 +35,13 @@ func Start(t *testing.T) string {
 
 		container, err := redis.Run(ctx, "redis:7.4-alpine")
 		if err != nil {
-			initErr = fmt.Errorf("start redis container: %w", err)
+			initErr = fmt.Errorf("start redis container: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 
 		url, err := container.ConnectionString(ctx)
 		if err != nil {
-			initErr = fmt.Errorf("get redis connection url: %w", err)
+			initErr = fmt.Errorf("get redis connection url: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 

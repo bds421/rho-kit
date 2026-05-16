@@ -55,23 +55,23 @@ func StartSFTP(t *testing.T) sftpbackend.Config {
 			Started:          true,
 		})
 		if err != nil {
-			sftpInitErr = fmt.Errorf("start sftp container: %w", err)
+			sftpInitErr = fmt.Errorf("start sftp container: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 
 		host, err := container.Host(ctx)
 		if err != nil {
-			sftpInitErr = fmt.Errorf("get sftp host: %w", err)
+			sftpInitErr = fmt.Errorf("get sftp host: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 		port, err := container.MappedPort(ctx, "22/tcp")
 		if err != nil {
-			sftpInitErr = fmt.Errorf("get sftp port: %w", err)
+			sftpInitErr = fmt.Errorf("get sftp port: %w", err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 		portNum, err := strconv.Atoi(port.Port())
 		if err != nil {
-			sftpInitErr = fmt.Errorf("parse sftp port %q: %w", port.Port(), err)
+			sftpInitErr = fmt.Errorf("parse sftp port %q: %w", port.Port(), err) // kit:ok-fmt-errorf-wrap
 			return
 		}
 
@@ -113,7 +113,7 @@ func writeKnownHostsFile(host, port string) (string, error) {
 		Timeout: 10 * time.Second,
 	})
 	if err != nil {
-		return "", fmt.Errorf("capture sftp host key: %w", err)
+		return "", fmt.Errorf("capture sftp host key: %w", err) // kit:ok-fmt-errorf-wrap
 	}
 	_ = client.Close()
 	if hostKey == nil {
@@ -123,7 +123,7 @@ func writeKnownHostsFile(host, port string) (string, error) {
 	path := filepath.Join(os.TempDir(), "rho-kit-sftp-known-hosts-"+port)
 	line := knownhosts.Line([]string{addr}, hostKey) + "\n"
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
-		return "", fmt.Errorf("write sftp known_hosts file: %w", err)
+		return "", fmt.Errorf("write sftp known_hosts file: %w", err) // kit:ok-fmt-errorf-wrap
 	}
 	return path, nil
 }
