@@ -30,6 +30,29 @@ const (
 	CodeStorageFull Code = "STORAGE_FULL"
 )
 
+// AllCodes returns every kit-defined error Code in a stable order.
+// Transport adapters (httpx, grpcx) use this in tests to enforce
+// that their Code→status maps stay exhaustive as new Codes are
+// added here. Wave 144 introduced this single source of truth so
+// adding a new Code surfaces the missing mapping at test time
+// rather than at first runtime hit.
+//
+// Order is alphabetical by constant name for deterministic diffs.
+func AllCodes() []Code {
+	return []Code{
+		CodeAuthRequired,
+		CodeConflict,
+		CodeForbidden,
+		CodeNotFound,
+		CodeOperationFailed,
+		CodePermanent,
+		CodeRateLimit,
+		CodeStorageFull,
+		CodeUnavailable,
+		CodeValidation,
+	}
+}
+
 // FieldError represents a single field-level validation error.
 //
 // Code uses the typed [Code] alphabet so the JSON shape ("NOT_FOUND",

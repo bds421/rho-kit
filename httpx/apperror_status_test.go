@@ -36,3 +36,14 @@ func TestHTTPStatus(t *testing.T) {
 		})
 	}
 }
+
+// Wave 144: exhaustiveness gate — every kit-defined apperror.Code must
+// have an HTTP status mapping. Adding a new Code in core/apperror
+// without updating defaultHTTPStatus now fails this test rather than
+// silently downgrading the response to 500.
+func TestHTTPStatus_AllCodesMapped(t *testing.T) {
+	for _, code := range apperror.AllCodes() {
+		_, found := defaultHTTPStatus[code]
+		assert.True(t, found, "apperror.Code %q has no entry in defaultHTTPStatus — add a mapping", code)
+	}
+}
