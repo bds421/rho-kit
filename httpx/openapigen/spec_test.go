@@ -19,8 +19,8 @@ import (
 )
 
 type createWidgetReq struct {
-	Name  string `json:"name" validate:"required,min=2,max=64"`
-	Price int    `json:"price" validate:"required,min=0"`
+	Name  string `json:"name" jsonschema:"required,min=2,max=64"`
+	Price int    `json:"price" jsonschema:"required,min=0"`
 }
 
 type widgetResp struct {

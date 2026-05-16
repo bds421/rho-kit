@@ -1,32 +1,28 @@
 // Package validate provides struct validation driven by JSON Schema.
 //
-// Wave 124 replaced the previous go-playground/validator backend with a
-// two-library composition:
+// The package wires two upstream libraries together:
 //
 //   - github.com/google/jsonschema-go is the in-memory schema model. We
-//     walk struct types ourselves to read the kit's `validate:"..."`
-//     constraint tag (kit-owned now, no longer tied to go-playground)
-//     and emit a jsonschema-go [jsonschema.Schema] populated with the
-//     corresponding JSON-Schema keywords (minLength, maximum, pattern,
-//     format, enum, ...).
+//     walk struct types ourselves to read the kit's `jsonschema:"..."`
+//     constraint tag and emit a jsonschema-go [jsonschema.Schema]
+//     populated with the corresponding JSON-Schema keywords (minLength,
+//     maximum, pattern, format, enum, ...).
 //   - github.com/santhosh-tekuri/jsonschema/v6 compiles the marshalled
 //     schema and runs the actual validation. Typed [kind.*] errors are
-//     mapped back into human-readable messages matching the previous
-//     surface ("must be a valid email address", "must be at least N
-//     characters", ...).
+//     mapped back into human-readable messages ("must be a valid email
+//     address", "must be at least N characters", ...).
 //
 // Schemas are built once per reflect.Type and cached in a sync.Map so
 // the same handler signature pays the reflection cost only at startup.
 // The cached [jsonschema.Schema] is also exposed via [SchemaFor] and
 // [SchemaForType] for callers that need to publish the schema (MCP
-// tool catalog, future OpenAPI export, served /schema endpoints).
+// tool catalog, OpenAPI export, served /schema endpoints).
 //
 // Custom validation is registered via [RegisterFormat]: the function
 // receives the decoded JSON value (string, number, bool, map, slice)
 // for fields whose schema sets `"format": "<name>"`, and returns an
-// error if the value is invalid. RegisterFormat replaces the v1
-// RegisterValidation API; the closure signature is decoupled from any
-// third-party library type.
+// error if the value is invalid. The closure signature is decoupled
+// from any third-party library type.
 //
 // asvs: V5.1.3
 package validate
@@ -152,11 +148,10 @@ func (v *Validator) Struct(s any) error {
 }
 
 // RegisterFormat registers a custom JSON-Schema `format` validator.
-// Use the format name in a field's `validate:"format=<name>"` (or the
-// shorthand `validate:"<name>"` when the rule has no value) constraint
-// to trigger it. RegisterFormat must be called before the first
-// Struct() call freezes the validator; afterwards it returns an error
-// so concurrent Struct calls cannot race the format registry.
+// Use the format name in a field's `jsonschema:"format=<name>"`
+// constraint to trigger it. RegisterFormat must be called before the
+// first Struct() call freezes the validator; afterwards it returns an
+// error so concurrent Struct calls cannot race the format registry.
 //
 // The format function receives the decoded JSON value verbatim — a
 // string field appears as a Go string, an integer as a json.Number /

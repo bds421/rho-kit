@@ -1,13 +1,18 @@
 // Package validate provides struct validation driven by JSON Schema,
 // with field-level error reporting via [core/v2/apperror.ValidationError].
 //
-// Wave 124 migrated the package off `go-playground/validator/v10` onto
-// `github.com/google/jsonschema-go` (in-memory schema model) plus
-// `github.com/santhosh-tekuri/jsonschema/v6` (compilation +
-// validation). Call sites of [Validator.Struct] / package-level
-// [Struct] are source-compatible; the user-visible message text for
-// the common rules (`required`, `email`, `min`, `max`, `oneof`,
-// `uuid`, …) is preserved.
+// The package wires `github.com/google/jsonschema-go` (in-memory
+// schema model) together with `github.com/santhosh-tekuri/jsonschema/v6`
+// (compilation + validation). Constraints are declared on struct
+// fields via the `jsonschema:"..."` tag — the kit's own grammar
+// recognises the keywords `required`, `min`, `max`, `len`, `gte`,
+// `lte`, `gt`, `lt`, `oneof`, `email`, `url`, `uri`, `uuid`, `ip`,
+// `ipv4`, `ipv6`, `cidr`, `hostname`, `alpha`, `alphanum`, `numeric`,
+// `datetime`, `startswith=…`, `endswith=…`, `contains=…`,
+// `excludesall=…`, `pattern=…`, `format=…`, `unique`. Tokens whose
+// key is not in this set are kept as the property's description, so
+// `jsonschema:"required,Customer e-mail"` records both the
+// requirement and the description.
 //
 // # Use this when
 //

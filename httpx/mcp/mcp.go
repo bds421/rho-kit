@@ -580,12 +580,11 @@ func (s *Server) Tools() []Tool {
 // Register adds a [Handler] as an MCP tool with the given name.
 //
 // Schema generation: the kit derives the input/output JSON-Schema via
-// [validate.SchemaFor], which reads `jsonschema:"..."` and
-// `validate:"..."` struct tags. The marshalled schema becomes the
-// `inputSchema`/`outputSchema` on the SDK [sdkmcp.Tool]. Using the
-// kit's generator (rather than the SDK's built-in jsonschema-go
-// inference) keeps the catalog consistent with what [validate.Struct]
-// will enforce after decode.
+// [validate.SchemaFor], which reads `jsonschema:"..."` struct tags.
+// The marshalled schema becomes the `inputSchema`/`outputSchema` on
+// the SDK [sdkmcp.Tool]. Using the kit's generator (rather than the
+// SDK's built-in jsonschema-go inference) keeps the catalog
+// consistent with what [validate.Struct] will enforce after decode.
 //
 // Register returns an error when:
 //   - the input or output type contains a cycle (self-reference);

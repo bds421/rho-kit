@@ -76,14 +76,14 @@ apperror.ShouldRetry(err) // true for Conflict, RateLimit, Unavailable
 
 ## validate — Struct Validation
 
-Wraps `go-playground/validator`, returns `apperror.ValidationError` with JSON field names:
+Wraps `jsonschema-go` + `santhosh-tekuri/jsonschema`, returns `apperror.ValidationError` with JSON field names. Constraints are declared on `jsonschema:` struct tags:
 
 ```go
 type CreateUserRequest struct {
-    Email string `json:"email" validate:"required,email"`
-    Name  string `json:"name"  validate:"required,min=2,max=100"`
-    Role  string `json:"role"  validate:"required,oneof=admin user viewer"`
-    Age   int    `json:"age"   validate:"gte=0,lte=150"`
+    Email string `json:"email" jsonschema:"required,email"`
+    Name  string `json:"name"  jsonschema:"required,min=2,max=100"`
+    Role  string `json:"role"  jsonschema:"required,oneof=admin user viewer"`
+    Age   int    `json:"age"   jsonschema:"gte=0,lte=150"`
 }
 
 if err := validate.Struct(req); err != nil {

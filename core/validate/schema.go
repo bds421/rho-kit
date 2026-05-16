@@ -79,18 +79,18 @@ type buildCtx struct {
 	fieldOrder       map[string]int
 }
 
-// schemaForReflect is the main recursive walker. validateTag carries
-// the `validate:` tag inherited from the parent field (or "" for
+// schemaForReflect is the main recursive walker. constraintTag carries
+// the `jsonschema:` tag inherited from the parent field (or "" for
 // slice/map element schemas, which inherit no constraints). path is
 // the dotted JSON-pointer path of this node, used to populate
 // requiredNonEmpty.
-func schemaForReflect(ctx *buildCtx, t reflect.Type, validateTag string, path string) (*jsonschemago.Schema, error) {
+func schemaForReflect(ctx *buildCtx, t reflect.Type, constraintTag string, path string) (*jsonschemago.Schema, error) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == timeType {
 		s := &jsonschemago.Schema{Type: "string", Format: "date-time"}
-		applyStringConstraints(ctx, s, validateTag)
+		applyStringConstraints(ctx, s, constraintTag)
 		return s, nil
 	}
 	if t == rawMessageType {
@@ -100,18 +100,18 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, validateTag string, path st
 	switch t.Kind() {
 	case reflect.String:
 		s := &jsonschemago.Schema{Type: "string"}
-		applyStringConstraints(ctx, s, validateTag)
+		applyStringConstraints(ctx, s, constraintTag)
 		return s, nil
 	case reflect.Bool:
 		return &jsonschemago.Schema{Type: "boolean"}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		s := &jsonschemago.Schema{Type: "integer"}
-		applyNumericConstraints(ctx, s, validateTag)
+		applyNumericConstraints(ctx, s, constraintTag)
 		return s, nil
 	case reflect.Float32, reflect.Float64:
 		s := &jsonschemago.Schema{Type: "number"}
-		applyNumericConstraints(ctx, s, validateTag)
+		applyNumericConstraints(ctx, s, constraintTag)
 		return s, nil
 	case reflect.Slice, reflect.Array:
 		if t.Elem().Kind() == reflect.Uint8 {
@@ -128,7 +128,7 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, validateTag string, path st
 			return nil, err
 		}
 		s := &jsonschemago.Schema{Type: "array", Items: items}
-		applyArrayConstraints(s, validateTag)
+		applyArrayConstraints(s, constraintTag)
 		return s, nil
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
@@ -156,7 +156,7 @@ func schemaForReflect(ctx *buildCtx, t reflect.Type, validateTag string, path st
 // structSchema walks a struct type and returns the corresponding
 // JSON-Schema object. Embedded structs flatten into the parent
 // (matching encoding/json). Required fields are derived from the
-// `validate:"required"` tag.
+// `jsonschema:"required"` keyword.
 func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Schema, error) {
 	if ctx.visiting[t] {
 		return nil, fmt.Errorf("%w: recursive struct type", ErrCyclicSchema)
@@ -212,32 +212,32 @@ func structSchema(ctx *buildCtx, t reflect.Type, path string) (*jsonschemago.Sch
 		if skip {
 			continue
 		}
-		validateTag := f.Tag.Get("validate")
 		jsTag := f.Tag.Get("jsonschema")
 		childPath := name
 		if path != "" {
 			childPath = path + "." + name
 		}
-		field, err := schemaForReflect(ctx, f.Type, validateTag, childPath)
+		field, err := schemaForReflect(ctx, f.Type, jsTag, childPath)
 		if err != nil {
 			return nil, err
 		}
 		// Description sources in order: `desc:` tag (kit
-		// convention), `jsonschema:` tag (jsonschema-go convention).
-		// The latter wins when both are present so callers can
-		// migrate from `desc:` to `jsonschema:` field by field.
+		// convention), `jsonschema:` tag's free-form residue (any
+		// token that is not a recognised constraint keyword). The
+		// latter wins when both are present so callers can migrate
+		// from `desc:` to `jsonschema:` field by field.
 		if d := f.Tag.Get("desc"); d != "" {
 			field.Description = d
 		}
 		if d := descriptionFromJSONSchemaTag(jsTag); d != "" {
 			field.Description = d
 		}
-		if isRequired(validateTag) || jsonschemaTagHasRequired(jsTag) {
+		if jsonschemaTagHasRequired(jsTag) {
 			required = append(required, name)
 			// For string/array required fields, also enforce non-
 			// empty. The error renderer maps a minLength / minItems
 			// violation on a path in requiredNonEmpty back to
-			// "is required" so the v1 message survives even when
+			// "is required" so the same wording survives even when
 			// the empty value was rejected by a stricter min rule
 			// (e.g. `required,min=2`).
 			markRequiredNonEmpty(ctx, field, childPath)
@@ -312,26 +312,11 @@ func jsonFieldName(f reflect.StructField) (string, bool, bool) {
 	return name, omitEmpty, false
 }
 
-// isRequired reports whether a `validate:"..."` tag list contains the
-// bare `required` rule. Composite tags like `required,email` count.
-func isRequired(tag string) bool {
-	if tag == "" {
-		return false
-	}
-	for _, rule := range strings.Split(tag, ",") {
-		if strings.TrimSpace(rule) == "required" {
-			return true
-		}
-	}
-	return false
-}
-
 // jsonschemaTagHasRequired reports whether a `jsonschema:"..."` tag
 // declares the field as required via the explicit keyword form
 // (`jsonschema:"required"` or `jsonschema:"required,..."`). This is a
-// kit extension to the jsonschema-go convention so callers can express
-// requirement without resorting to a parallel `validate:"required"`
-// tag.
+// kit extension on top of jsonschema-go's description-only convention,
+// so callers can express requirement directly on the jsonschema tag.
 func jsonschemaTagHasRequired(tag string) bool {
 	if tag == "" {
 		return false
@@ -344,11 +329,50 @@ func jsonschemaTagHasRequired(tag string) bool {
 	return false
 }
 
-// descriptionFromJSONSchemaTag returns the description portion of a
-// `jsonschema:"..."` tag. The "required" keyword (kit extension) is
-// stripped from the tag before the remainder is treated as a free-form
-// description, so `jsonschema:"required,Customer e-mail"` records
-// "Customer e-mail" while still flagging the field as required.
+// constraintKeywords names every `key` (in `key=value` or bare-keyword
+// form) that the kit's tag parser recognises as a JSON-Schema
+// constraint. Tokens whose key is in this set are stripped from the
+// tag before the residue is treated as a free-form description.
+var constraintKeywords = map[string]struct{}{
+	"required":    {},
+	"min":         {},
+	"max":         {},
+	"len":         {},
+	"gte":         {},
+	"lte":         {},
+	"gt":          {},
+	"lt":          {},
+	"oneof":       {},
+	"pattern":     {},
+	"format":      {},
+	"email":       {},
+	"url":         {},
+	"uri":         {},
+	"uuid":        {},
+	"uuid4":       {},
+	"ip":          {},
+	"ipv4":        {},
+	"ipv6":        {},
+	"hostname":    {},
+	"alpha":       {},
+	"alphanum":    {},
+	"numeric":     {},
+	"cidr":        {},
+	"datetime":    {},
+	"startswith":  {},
+	"endswith":    {},
+	"contains":    {},
+	"excludesall": {},
+	"unique":      {},
+}
+
+// descriptionFromJSONSchemaTag returns the free-form description
+// portion of a `jsonschema:"..."` tag. Every comma-separated segment
+// whose `key` matches a known constraint keyword is stripped; the
+// remaining segments are joined back with commas so a description
+// containing a literal comma survives (`jsonschema:"required,One,
+// two"` → "One, two"). This makes the description an opt-in fallback
+// for any token the constraint parser did not consume.
 func descriptionFromJSONSchemaTag(tag string) string {
 	if tag == "" {
 		return ""
@@ -356,7 +380,8 @@ func descriptionFromJSONSchemaTag(tag string) string {
 	parts := strings.Split(tag, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if strings.TrimSpace(p) == "required" {
+		key, _ := splitRule(strings.TrimSpace(p))
+		if _, ok := constraintKeywords[key]; ok {
 			continue
 		}
 		out = append(out, p)
@@ -365,8 +390,8 @@ func descriptionFromJSONSchemaTag(tag string) string {
 	return desc
 }
 
-// applyStringConstraints maps `validate:"..."` rules that apply to a
-// string-typed schema (length, format, pattern). Numeric or
+// applyStringConstraints maps `jsonschema:"..."` rules that apply to
+// a string-typed schema (length, format, pattern). Numeric or
 // array-only rules are silently ignored — applyNumericConstraints /
 // applyArrayConstraints handle those.
 func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
@@ -379,6 +404,10 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 			continue
 		}
 		key, value := splitRule(rule)
+		if _, ok := constraintKeywords[key]; !ok {
+			// Free-form text — handled by descriptionFromJSONSchemaTag.
+			continue
+		}
 		switch key {
 		case "min":
 			if n, ok := atoi(value); ok {
@@ -399,6 +428,9 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 			s.Pattern = value
 		case "format":
 			s.Format = value
+			if isParametricFormatName(value) {
+				ctx.parametric[value] = struct{}{}
+			}
 		case "email", "url", "uri", "uuid", "uuid4", "ip", "ipv4", "ipv6",
 			"hostname", "alpha", "alphanum", "numeric", "cidr", "datetime":
 			s.Format = canonicalFormatName(key)
@@ -410,7 +442,7 @@ func applyStringConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
 	}
 }
 
-// applyNumericConstraints maps `validate:"..."` rules that apply to
+// applyNumericConstraints maps `jsonschema:"..."` rules that apply to
 // integer/number-typed schemas (min/max value, gte/lte, gt/lt,
 // oneof, format).
 func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) {
@@ -423,6 +455,13 @@ func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) 
 			continue
 		}
 		key, value := splitRule(rule)
+		if _, ok := constraintKeywords[key]; !ok {
+			// Free-form text — handled by descriptionFromJSONSchemaTag.
+			// Custom RegisterFormat formats are wired via explicit
+			// `format=<name>` rather than the bare keyword form to keep
+			// the description fallback unambiguous.
+			continue
+		}
 		switch key {
 		case "min", "gte":
 			if f, ok := atof(value); ok {
@@ -444,15 +483,8 @@ func applyNumericConstraints(ctx *buildCtx, s *jsonschemago.Schema, tag string) 
 			s.Enum = parseEnum(s.Type, value)
 		case "format":
 			s.Format = value
-		default:
-			// Bare rule with no '=' — treat as a format name so
-			// RegisterFormat callers can attach numeric validators
-			// (the test suite's `even` predicate, for example).
-			if value == "" && key != "" {
-				s.Format = key
-				if isParametricFormatName(key) {
-					ctx.parametric[key] = struct{}{}
-				}
+			if isParametricFormatName(value) {
+				ctx.parametric[value] = struct{}{}
 			}
 		}
 	}
@@ -481,6 +513,9 @@ func applyArrayConstraints(s *jsonschemago.Schema, tag string) {
 			continue
 		}
 		key, value := splitRule(rule)
+		if _, ok := constraintKeywords[key]; !ok {
+			continue
+		}
 		switch key {
 		case "min":
 			if n, ok := atoi(value); ok {

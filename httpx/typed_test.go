@@ -18,8 +18,8 @@ import (
 )
 
 type createUserReq struct {
-	Name string `json:"name" validate:"required"`
-	Age  int    `json:"age" validate:"gte=0"`
+	Name string `json:"name" jsonschema:"required"`
+	Age  int    `json:"age" jsonschema:"gte=0"`
 }
 
 type userResp struct {

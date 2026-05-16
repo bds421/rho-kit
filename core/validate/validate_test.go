@@ -10,9 +10,9 @@ import (
 )
 
 type basicReq struct {
-	Name  string `json:"name" validate:"required,min=2,max=100"`
-	Email string `json:"email" validate:"required,email"`
-	Age   int    `json:"age" validate:"gte=0,lte=150"`
+	Name  string `json:"name" jsonschema:"required,min=2,max=100"`
+	Email string `json:"email" jsonschema:"required,email"`
+	Age   int    `json:"age" jsonschema:"gte=0,lte=150"`
 }
 
 func TestStruct_valid(t *testing.T) {
@@ -96,13 +96,13 @@ func TestStruct_minMaxViolation(t *testing.T) {
 }
 
 type nestedReq struct {
-	User    string  `json:"user" validate:"required"`
-	Address address `json:"address" validate:"required"`
+	User    string  `json:"user" jsonschema:"required"`
+	Address address `json:"address" jsonschema:"required"`
 }
 
 type address struct {
-	City string `json:"city" validate:"required"`
-	Zip  string `json:"zip" validate:"required,len=5"`
+	City string `json:"city" jsonschema:"required"`
+	Zip  string `json:"zip" jsonschema:"required,len=5"`
 }
 
 func TestStruct_nestedFields(t *testing.T) {
@@ -133,7 +133,7 @@ func TestStruct_nestedFields(t *testing.T) {
 
 func TestStruct_usesJSONTags(t *testing.T) {
 	type req struct {
-		FirstName string `json:"first_name" validate:"required"`
+		FirstName string `json:"first_name" jsonschema:"required"`
 	}
 	err := Struct(req{})
 	if err == nil {
@@ -152,7 +152,7 @@ func TestStruct_usesJSONTags(t *testing.T) {
 
 func TestStruct_oneofValidation(t *testing.T) {
 	type req struct {
-		Role string `json:"role" validate:"required,oneof=admin user viewer"`
+		Role string `json:"role" jsonschema:"required,oneof=admin user viewer"`
 	}
 
 	err := Struct(req{Role: "superadmin"})
@@ -172,7 +172,7 @@ func TestStruct_oneofValidation(t *testing.T) {
 
 func TestStruct_uuidValidation(t *testing.T) {
 	type req struct {
-		ID string `json:"id" validate:"required,uuid"`
+		ID string `json:"id" jsonschema:"required,uuid"`
 	}
 
 	err := Struct(req{ID: "not-a-uuid"})
@@ -192,7 +192,7 @@ func TestStruct_uuidValidation(t *testing.T) {
 
 func TestStruct_urlValidation(t *testing.T) {
 	type req struct {
-		Callback string `json:"callback_url" validate:"required,url"`
+		Callback string `json:"callback_url" jsonschema:"required,url"`
 	}
 
 	if err := Struct(req{Callback: "https://example.com/hook"}); err != nil {
@@ -266,7 +266,7 @@ func init() {
 
 func TestRegisterFormat_custom(t *testing.T) {
 	type req struct {
-		Count int `json:"count" validate:"even"`
+		Count int `json:"count" jsonschema:"format=even"`
 	}
 
 	if err := Struct(req{Count: 4}); err != nil {
@@ -326,7 +326,7 @@ func TestStruct_nil(t *testing.T) {
 
 func TestStruct_sliceField(t *testing.T) {
 	type req struct {
-		Tags []string `json:"tags" validate:"min=1,max=10"`
+		Tags []string `json:"tags" jsonschema:"min=1,max=10"`
 	}
 
 	if err := Struct(req{Tags: []string{"go"}}); err != nil {
@@ -341,7 +341,7 @@ func TestStruct_sliceField(t *testing.T) {
 
 func TestStruct_gteViolation(t *testing.T) {
 	type req struct {
-		Score int `json:"score" validate:"gte=10"`
+		Score int `json:"score" jsonschema:"gte=10"`
 	}
 	err := Struct(req{Score: 5})
 	if err == nil {
@@ -358,7 +358,7 @@ func TestStruct_gteViolation(t *testing.T) {
 
 func TestStruct_gtLtViolation(t *testing.T) {
 	type req struct {
-		Value int `json:"value" validate:"gt=0,lt=100"`
+		Value int `json:"value" jsonschema:"gt=0,lt=100"`
 	}
 	err := Struct(req{Value: 0})
 	if err == nil {
@@ -375,7 +375,7 @@ func TestStruct_gtLtViolation(t *testing.T) {
 
 func TestStruct_alphanumViolation(t *testing.T) {
 	type req struct {
-		Code string `json:"code" validate:"alphanum"`
+		Code string `json:"code" jsonschema:"alphanum"`
 	}
 	err := Struct(req{Code: "abc-123"})
 	if err == nil {
@@ -392,7 +392,7 @@ func TestStruct_alphanumViolation(t *testing.T) {
 
 func TestStruct_containsViolation(t *testing.T) {
 	type req struct {
-		URL string `json:"url" validate:"contains=https"`
+		URL string `json:"url" jsonschema:"contains=https"`
 	}
 	err := Struct(req{URL: "http://example.com"})
 	if err == nil {
@@ -409,7 +409,7 @@ func TestStruct_containsViolation(t *testing.T) {
 
 func TestStruct_ipViolation(t *testing.T) {
 	type req struct {
-		IP string `json:"ip" validate:"ip"`
+		IP string `json:"ip" jsonschema:"ip"`
 	}
 	err := Struct(req{IP: "not-an-ip"})
 	if err == nil {
@@ -426,7 +426,7 @@ func TestStruct_ipViolation(t *testing.T) {
 
 func TestStruct_numericViolation(t *testing.T) {
 	type req struct {
-		Value string `json:"value" validate:"numeric"`
+		Value string `json:"value" jsonschema:"numeric"`
 	}
 	err := Struct(req{Value: "abc"})
 	if err == nil {
@@ -443,7 +443,7 @@ func TestStruct_numericViolation(t *testing.T) {
 
 func TestStruct_startsWithViolation(t *testing.T) {
 	type req struct {
-		Path string `json:"path" validate:"startswith=/api"`
+		Path string `json:"path" jsonschema:"startswith=/api"`
 	}
 	err := Struct(req{Path: "/web/test"})
 	if err == nil {
@@ -460,7 +460,7 @@ func TestStruct_startsWithViolation(t *testing.T) {
 
 func TestStruct_endsWithViolation(t *testing.T) {
 	type req struct {
-		File string `json:"file" validate:"endswith=.json"`
+		File string `json:"file" jsonschema:"endswith=.json"`
 	}
 	err := Struct(req{File: "data.xml"})
 	if err == nil {
@@ -477,7 +477,7 @@ func TestStruct_endsWithViolation(t *testing.T) {
 
 func TestStruct_hostnameViolation(t *testing.T) {
 	type req struct {
-		Host string `json:"host" validate:"hostname"`
+		Host string `json:"host" jsonschema:"hostname"`
 	}
 	err := Struct(req{Host: "invalid host name!"})
 	if err == nil {
@@ -494,7 +494,7 @@ func TestStruct_hostnameViolation(t *testing.T) {
 
 func TestStruct_lenSliceViolation(t *testing.T) {
 	type req struct {
-		Items []string `json:"items" validate:"len=3"`
+		Items []string `json:"items" jsonschema:"len=3"`
 	}
 	err := Struct(req{Items: []string{"a", "b"}})
 	if err == nil {
@@ -511,7 +511,7 @@ func TestStruct_lenSliceViolation(t *testing.T) {
 
 func TestStruct_maxStringViolation(t *testing.T) {
 	type req struct {
-		Name string `json:"name" validate:"max=5"`
+		Name string `json:"name" jsonschema:"max=5"`
 	}
 	err := Struct(req{Name: "toolongname"})
 	if err == nil {
@@ -528,7 +528,7 @@ func TestStruct_maxStringViolation(t *testing.T) {
 
 func TestStruct_maxIntViolation(t *testing.T) {
 	type req struct {
-		Count int `json:"count" validate:"max=10"`
+		Count int `json:"count" jsonschema:"max=10"`
 	}
 	err := Struct(req{Count: 20})
 	if err == nil {
@@ -545,7 +545,7 @@ func TestStruct_maxIntViolation(t *testing.T) {
 
 func TestStruct_minIntViolation(t *testing.T) {
 	type req struct {
-		Count int `json:"count" validate:"min=5"`
+		Count int `json:"count" jsonschema:"min=5"`
 	}
 	err := Struct(req{Count: 2})
 	if err == nil {
@@ -562,7 +562,7 @@ func TestStruct_minIntViolation(t *testing.T) {
 
 func TestSchemaFor_exposesInferredSchema(t *testing.T) {
 	type req struct {
-		Name string `json:"name" validate:"required,min=2"`
+		Name string `json:"name" jsonschema:"required,min=2"`
 	}
 	s, err := SchemaFor[req]()
 	if err != nil {
@@ -653,11 +653,11 @@ func TestSchema_NonStringMapKeyRejected(t *testing.T) {
 // sorts on it.
 func TestStruct_FieldErrorOrder_IsDeterministic(t *testing.T) {
 	type req struct {
-		Alpha   string `json:"alpha"   validate:"required"`
-		Bravo   string `json:"bravo"   validate:"required"`
-		Charlie string `json:"charlie" validate:"required"`
-		Delta   string `json:"delta"   validate:"required"`
-		Echo    string `json:"echo"    validate:"required"`
+		Alpha   string `json:"alpha"   jsonschema:"required"`
+		Bravo   string `json:"bravo"   jsonschema:"required"`
+		Charlie string `json:"charlie" jsonschema:"required"`
+		Delta   string `json:"delta"   jsonschema:"required"`
+		Echo    string `json:"echo"    jsonschema:"required"`
 	}
 	// Repeat to surface any non-determinism that would manifest as map
 	// iteration order flapping between runs of the same process.
@@ -726,7 +726,7 @@ func TestJSONSchemaTag_DescriptionOnlyNoRequired(t *testing.T) {
 
 // TestStruct_RequiredViaJSONSchemaTag confirms the kit extension
 // jsonschema:"required" alone marks a field required, producing the
-// same "is required" message as validate:"required".
+// same "is required" message as a bare required keyword.
 func TestStruct_RequiredViaJSONSchemaTag(t *testing.T) {
 	type req struct {
 		Title string `json:"title" jsonschema:"required,Document title"`
@@ -770,11 +770,11 @@ func TestSchemaFor_StableAcrossCalls(t *testing.T) {
 // encoding/json's behaviour.
 func TestStruct_EmbeddedStructFields(t *testing.T) {
 	type base struct {
-		ID string `json:"id" validate:"required"`
+		ID string `json:"id" jsonschema:"required"`
 	}
 	type req struct {
 		base
-		Name string `json:"name" validate:"required"`
+		Name string `json:"name" jsonschema:"required"`
 	}
 	err := Struct(req{})
 	if err == nil {

@@ -26,7 +26,7 @@ import (
 )
 
 type echoIn struct {
-	Message string `json:"message" validate:"required"`
+	Message string `json:"message" jsonschema:"required"`
 }
 
 type echoOut struct {

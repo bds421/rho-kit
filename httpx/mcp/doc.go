@@ -36,12 +36,11 @@
 // # Schema generation
 //
 // Tool input/output schemas are generated from the Go types via the
-// kit's [core/v2/validate] package, which reads
-// `jsonschema:"..."` and `validate:"..."` struct tags. The result is
-// a JSON-Schema 2020-12 document; the SDK validates inputs against
-// it before invoking the kit's wrapper, and the kit then runs
-// [validate.Struct] for go-playground-style field-level validation
-// on top.
+// kit's [core/v2/validate] package, which reads `jsonschema:"..."`
+// struct tags. The result is a JSON-Schema 2020-12 document; the SDK
+// validates inputs against it before invoking the kit's wrapper, and
+// the kit then runs [validate.Struct] for field-level validation on
+// top.
 //
 // Cycle detection is performed at registration time, not at request
 // time — a self-referential input struct produces [ErrCyclicSchema]

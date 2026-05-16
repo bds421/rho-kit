@@ -22,7 +22,7 @@ import (
 // requiredNonEmpty is the set of dot-joined field paths whose
 // `minLength` / `minItems` violation with a zero `Got` should be
 // rendered as "is required" rather than the generic length message.
-// These are fields tagged `validate:"required"` whose schema also
+// These are fields tagged `jsonschema:"required"` whose schema also
 // constrains non-empty content.
 //
 // fieldOrder maps a dotted field path to its declaration index so

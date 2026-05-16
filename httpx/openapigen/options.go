@@ -115,7 +115,7 @@ func WithParameter(p Parameter) RouteOption {
 
 // WithRequestType attaches the request body schema derived from T.
 // The schema is generated via [validate.SchemaFor] and reflects the
-// `validate:"..."` / `jsonschema:"..."` struct tags.
+// `jsonschema:"..."` struct tags.
 //
 // The body is recorded as required by default — callers that need an
 // optional body must pair this with [WithRequestOptional].

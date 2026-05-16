@@ -8,8 +8,8 @@ import (
 )
 
 type signupRequest struct {
-	Email string `json:"email" validate:"required,email"`
-	Age   int    `json:"age"   validate:"min=18"`
+	Email string `json:"email" jsonschema:"required,email"`
+	Age   int    `json:"age"   jsonschema:"min=18"`
 }
 
 func ExampleStruct() {

@@ -28,7 +28,7 @@ agentic-AI stack composed in one binary:
   operations as `pending` → operator decides → executed.
 - **MCP server** — `httpx/mcp` exposes a typed `echo` tool over
   JSON-RPC; schema is auto-generated from the input struct's
-  `validate:"required"` and `desc:"..."` tags.
+  `jsonschema:"required"` and `desc:"..."` tags.
 
 ## Run
 
