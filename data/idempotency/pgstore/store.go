@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
@@ -122,7 +123,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("pgstore: size probe: %w", err)
+		return nil, false, redact.WrapError("pgstore: size probe", err)
 	}
 	if bodyLen > int64(idempotency.MaxCachedBodyBytes) {
 		return nil, false, fmt.Errorf("pgstore: stored response body exceeds %d bytes", idempotency.MaxCachedBodyBytes)
@@ -144,7 +145,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 			// expired). Treat as miss.
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("pgstore: get: %w", err)
+		return nil, false, redact.WrapError("pgstore: get", err)
 	}
 
 	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
@@ -163,7 +164,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	var headers map[string][]string
 	if len(headersJSON) > 0 {
 		if err := json.Unmarshal(headersJSON, &headers); err != nil {
-			return nil, false, fmt.Errorf("pgstore: unmarshal headers: %w", err)
+			return nil, false, redact.WrapError("pgstore: unmarshal headers", err)
 		}
 	}
 
@@ -173,7 +174,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 		Body:       body,
 	}
 	if err := idempotency.ValidateCachedResponse(resp); err != nil {
-		return nil, false, fmt.Errorf("pgstore: invalid cached response: %w", err)
+		return nil, false, redact.WrapError("pgstore: invalid cached response", err)
 	}
 	return &resp, false, nil
 }
@@ -199,7 +200,7 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 	}
 	headersJSON, err := json.Marshal(resp.Headers)
 	if err != nil {
-		return fmt.Errorf("pgstore: marshal headers: %w", err)
+		return redact.WrapError("pgstore: marshal headers", err)
 	}
 
 	query := fmt.Sprintf(
@@ -215,11 +216,11 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 	result, err := s.db.ExecContext(ctx, query,
 		resp.StatusCode, headersJSON, resp.Body, intervalSeconds(ttl), key, token)
 	if err != nil {
-		return fmt.Errorf("pgstore: set: %w", err)
+		return redact.WrapError("pgstore: set", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("pgstore: set rows affected: %w", err)
+		return redact.WrapError("pgstore: set rows affected", err)
 	}
 	if rows == 0 {
 		return idempotency.ErrLockLost
@@ -263,12 +264,12 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 
 	result, err := s.db.ExecContext(ctx, query, key, token, fingerprint, intervalSeconds(ttl))
 	if err != nil {
-		return "", false, false, fmt.Errorf("pgstore: lock: %w", err)
+		return "", false, false, redact.WrapError("pgstore: lock", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", false, false, fmt.Errorf("pgstore: lock rows affected: %w", err)
+		return "", false, false, redact.WrapError("pgstore: lock rows affected", err)
 	}
 	if rows == 1 {
 		return token, false, true, nil
@@ -288,7 +289,7 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 			// next TryLock will succeed.
 			return "", false, false, nil
 		}
-		return "", false, false, fmt.Errorf("pgstore: inspect: %w", err)
+		return "", false, false, redact.WrapError("pgstore: inspect", err)
 	}
 	if fingerprint != nil && storedFP != nil && !bytes.Equal(storedFP, fingerprint) {
 		return "", true, false, nil
@@ -318,7 +319,7 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 	)
 	_, err := s.db.ExecContext(ctx, query, key, token)
 	if err != nil {
-		return fmt.Errorf("pgstore: unlock: %w", err)
+		return redact.WrapError("pgstore: unlock", err)
 	}
 	return nil
 }
@@ -339,7 +340,7 @@ func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
 	query := fmt.Sprintf(`DELETE FROM %s WHERE expires_at <= now()`, s.table)
 	result, err := s.db.ExecContext(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("pgstore: delete expired: %w", err)
+		return 0, redact.WrapError("pgstore: delete expired", err)
 	}
 	return result.RowsAffected()
 }

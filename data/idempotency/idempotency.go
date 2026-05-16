@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // ErrLockLost indicates the caller no longer holds the processing lock for a
@@ -254,7 +256,7 @@ func isCachedHeaderNameByte(c byte) bool {
 func GenerateToken() (string, error) {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(tokenRandReader, b); err != nil {
-		return "", fmt.Errorf("idempotency: generate lock token: %w", err)
+		return "", redact.WrapError("idempotency: generate lock token", err)
 	}
 	return hex.EncodeToString(b), nil
 }

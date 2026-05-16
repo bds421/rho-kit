@@ -20,9 +20,9 @@ package tenant
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	coretenant "github.com/bds421/rho-kit/core/v2/tenant"
 	"github.com/bds421/rho-kit/data/v2/cache"
 )
@@ -72,7 +72,7 @@ func scopedKey(ctx context.Context, raw string) (string, error) {
 	}
 	id, err := coretenant.Required(ctx)
 	if err != nil {
-		return "", fmt.Errorf("cache/tenant: %w", err)
+		return "", redact.WrapError("cache/tenant", err)
 	}
 	scoped, err := coretenant.KeyFor(id, raw)
 	if err != nil {

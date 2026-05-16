@@ -10,6 +10,8 @@ import (
 	"weak"
 
 	"github.com/dgraph-io/ristretto/v2"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // MemoryCache implements Cache using an in-memory Ristretto cache with TTL support.
@@ -221,7 +223,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 		TtlTickerDurationInSec: ttlSeconds,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("memory cache: init failed: %w", err)
+		return nil, redact.WrapError("memory cache: init failed", err)
 	}
 	mc.cache = cache
 	mc.stopSweeper = make(chan struct{})

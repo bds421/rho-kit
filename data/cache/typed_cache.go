@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/bds421/rho-kit/core/v2/redact"
 )
 
 // TypedCache wraps a Cache to provide type-safe JSON serialization.
@@ -61,7 +63,7 @@ func (tc *TypedCache[T]) Get(ctx context.Context, key string) (T, error) {
 	}
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
-		return zero, fmt.Errorf("cache unmarshal: %w", err)
+		return zero, redact.WrapError("cache unmarshal", err)
 	}
 	return result, nil
 }
@@ -74,7 +76,7 @@ func (tc *TypedCache[T]) Set(ctx context.Context, key string, value T, ttl time.
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("cache marshal: %w", err)
+		return redact.WrapError("cache marshal", err)
 	}
 	return tc.backend.Set(ctx, full, data, ttl)
 }

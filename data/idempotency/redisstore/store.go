@@ -27,6 +27,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/bds421/rho-kit/core/v2/redact"
 	"github.com/bds421/rho-kit/data/v2/idempotency"
 )
 
@@ -217,7 +218,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 		if translated := translateUnavailable(err); translated != err {
 			return nil, false, translated
 		}
-		return nil, false, fmt.Errorf("idempotencystore: get strlen: %w", err)
+		return nil, false, redact.WrapError("idempotencystore: get strlen", err)
 	}
 	if sz == 0 {
 		// Distinguishing "missing" from "empty stored value" is left to
@@ -233,7 +234,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 		if translated := translateUnavailable(err); translated != err {
 			return nil, false, translated
 		}
-		return nil, false, fmt.Errorf("idempotencystore: get: %w", err)
+		return nil, false, redact.WrapError("idempotencystore: get", err)
 	}
 	if len(data) > maxStoredEntryBytes {
 		return nil, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
@@ -251,7 +252,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, false, fmt.Errorf("idempotencystore: unmarshal cached response: %w", err)
+		return nil, false, redact.WrapError("idempotencystore: unmarshal cached response", err)
 	}
 	if env.Marker != respMarker {
 		// Unrecognised payload — treat as miss to avoid silently replaying
@@ -263,7 +264,7 @@ func (s *Store) Get(ctx context.Context, key string, fingerprint []byte) (*idemp
 	}
 	resp := env.Response
 	if err := idempotency.ValidateCachedResponse(resp); err != nil {
-		return nil, false, fmt.Errorf("idempotencystore: invalid cached response: %w", err)
+		return nil, false, redact.WrapError("idempotencystore: invalid cached response", err)
 	}
 	return &resp, false, nil
 }
@@ -292,7 +293,7 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 		if translated := translateUnavailable(err); translated != err {
 			return "", false, false, translated
 		}
-		return "", false, false, fmt.Errorf("idempotencystore: lock: %w", err)
+		return "", false, false, redact.WrapError("idempotencystore: lock", err)
 	}
 	if ok {
 		return token, false, true, nil
@@ -307,7 +308,7 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 		if translated := translateUnavailable(slErr); translated != slErr {
 			return "", false, false, translated
 		}
-		return "", false, false, fmt.Errorf("idempotencystore: inspect strlen: %w", slErr)
+		return "", false, false, redact.WrapError("idempotencystore: inspect strlen", slErr)
 	} else if sz > maxStoredEntryBytes {
 		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
@@ -325,7 +326,7 @@ func (s *Store) TryLock(ctx context.Context, key string, fingerprint []byte, ttl
 		return "", false, false, fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
 	if err != nil {
-		return "", false, false, fmt.Errorf("idempotencystore: inspect: %w", err)
+		return "", false, false, redact.WrapError("idempotencystore: inspect", err)
 	}
 
 	// Existing slot is a lock — compare fingerprints from the lock value.
@@ -377,7 +378,7 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: set strlen: %w", err)
+		return redact.WrapError("idempotencystore: set strlen", err)
 	} else if sz > maxStoredEntryBytes {
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
@@ -389,7 +390,7 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: read lock: %w", err)
+		return redact.WrapError("idempotencystore: read lock", err)
 	}
 	if len(existing) > maxStoredEntryBytes {
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
@@ -406,7 +407,7 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("idempotencystore: marshal cached response: %w", err)
+		return redact.WrapError("idempotencystore: marshal cached response", err)
 	}
 	expectedLockValue := encodeLockValue(token, fp)
 	result, err := setIfLockedScript.Run(ctx, s.client,
@@ -419,7 +420,7 @@ func (s *Store) Set(ctx context.Context, key, token string, resp idempotency.Cac
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: set: %w", err)
+		return redact.WrapError("idempotencystore: set", err)
 	}
 	if result != "OK" {
 		return idempotency.ErrLockLost
@@ -444,7 +445,7 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: unlock strlen: %w", err)
+		return redact.WrapError("idempotencystore: unlock strlen", err)
 	} else if sz > maxStoredEntryBytes {
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
 	}
@@ -456,7 +457,7 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: read lock: %w", err)
+		return redact.WrapError("idempotencystore: read lock", err)
 	}
 	if len(existing) > maxStoredEntryBytes {
 		return fmt.Errorf("idempotencystore: stored entry exceeds %d bytes", maxStoredEntryBytes)
@@ -472,7 +473,7 @@ func (s *Store) Unlock(ctx context.Context, key, token string) error {
 		if translated := translateUnavailable(err); translated != err {
 			return translated
 		}
-		return fmt.Errorf("idempotencystore: unlock: %w", err)
+		return redact.WrapError("idempotencystore: unlock", err)
 	}
 	return nil
 }
