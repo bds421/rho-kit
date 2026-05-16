@@ -1,4 +1,4 @@
-.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels
+.PHONY: lint vulncheck test test-race test-integration test-cover build tidy fmt vet clean help ci release-candidate kit-doctor release-plan release-bin release-bin-all check-dashboards check-publishable check-no-binaries check-dependency-allowlist check-dependency-boundaries check-licenses check-operational-readiness check-api-freeze-coverage check-dashboard-metrics check-dashboard-labels check-fmt-errorf-wrap
 
 GOLANGCI_LINT_VERSION := v2.10.1
 GOVULNCHECK_VERSION  ?= v1.1.4
@@ -131,6 +131,12 @@ check-dependency-allowlist:
 ## check-dependency-boundaries: Keep heavy optional SDKs in adapter/test modules.
 check-dependency-boundaries:
 	@bash tools/check-heavy-dependency-boundaries.sh
+
+## check-fmt-errorf-wrap: Flag fmt.Errorf("...: %w", err) in data/ + infra/ — use redact.WrapError.
+# Not yet a CI gate; the kit-wide sweep is staged as a follow-up wave.
+# Wave 136 swept the cache/lock/stream/budget/idempotency/queue packages.
+check-fmt-errorf-wrap:
+	@bash tools/check-fmt-errorf-wrap.sh
 
 ## check-licenses: Reject transitive deps whose license is outside the SUPPLY_CHAIN.md §8.1 allowlist.
 check-licenses:
