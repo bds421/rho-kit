@@ -176,6 +176,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | WebSocket upgrade ergonomics, per-message read limits, idempotent close, handler panic recovery, redacted error surface, metric cardinality bound, per-write timeout, idle ping/pong heartbeat, concurrent-connection cap with `503` + `Retry-After` rejection, bounded permessage-deflate memory by default, explicit cross-origin opt-in. |
 | `github.com/bds421/rho-kit/infra/v2` | Runtime | Infrastructure interfaces, sentinels, storage/messaging contracts, release-stable errors. |
 | `github.com/bds421/rho-kit/infra/leaderelection/etcd/v2` | Adapter | etcd lease TTL, session keepalive, identity uniqueness, callback drain, etcd quorum-loss behavior, reacquire backoff. |
+| `github.com/bds421/rho-kit/realtime/centrifuge/v2` | Adapter | Node lifecycle (Start/Stop), graceful shutdown, JWT auth verification, channel-class metric label cardinality bound, structured log bridging, double-start rejection. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | Lease renew/retry deadlines, identity uniqueness, callback drain, API-server outage behavior. |
 | `github.com/bds421/rho-kit/infra/leaderelection/pgadvisory/v2` | Adapter | Leadership health, callback drain, Postgres session loss behavior. |
 | `github.com/bds421/rho-kit/infra/leaderelection/redislock/v2` | Adapter | Leadership lease extension, callback drain, Redis outage behavior. |

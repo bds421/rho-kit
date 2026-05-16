@@ -87,6 +87,9 @@ k8s.io/client-go
 # etcd-native leader election (infra/leaderelection/etcd only).
 go.etcd.io/etcd/client/v3
 
+# Real-time framework (realtime/centrifuge only).
+github.com/centrifugal/centrifuge
+
 # Test infrastructure.
 github.com/stretchr/testify
 github.com/testcontainers/testcontainers-go

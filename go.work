@@ -83,6 +83,7 @@ use (
 	./io
 	./observability
 	./observability/auditlog/postgres
+	./realtime/centrifuge
 	./resilience
 	./runtime
 	./security

@@ -376,6 +376,18 @@ wrapper around the SDK's `Server.AddTool` and
 | Run semantics | Unlike k8slease's one-shot `LeaderElector.Run`, the etcd adapter loops internally: it Campaigns, holds the term while the session is healthy, drains `OnAcquired`, runs `OnLost`, and re-Campaigns. `Run` returns only when the caller ctx is cancelled or `WithCallbackDrainTimeout` fires. The session is closed and the election is explicitly Resigned on planned shutdown so peers do not wait out the lease TTL. |
 | Metrics | `leaderelection_callback_drain_seconds{election,state}` and `leaderelection_callback_drain_warn_total{election}` — the `election` label is the operator-configured key prefix, validated via `promutil.ValidateStaticLabelValue` so a misconfigured caller cannot inflate cardinality. |
 
+### `realtime/centrifuge` (new)
+
+| Area | Migration |
+|---|---|
+| New module | `realtime/centrifuge` (wave 164) wraps `github.com/centrifugal/centrifuge` with kit lifecycle, JWT auth via `jwtutil.Provider`, and bounded-cardinality Prometheus metrics. Fills the gap between `httpx/websocket` (raw transport) and `infra/messaging/*` (backend-to-backend pub/sub) for browser-facing real-time with channels, presence, and history. |
+| Construction | `centrifuge.NewNode(opts ...Option) (*Node, error)`. Options: `WithLogger`, `WithJWTAuth(*jwtutil.Provider)`, `WithChannelClassifier(func(string) string)`, `WithRegisterer`, `WithLogLevelDebug` / `WithLogLevelError`. Implements `lifecycle.Component` so it composes with the kit's `lifecycle.Runner` alongside the HTTP server. |
+| Heavy-SDK boundary | This module is the only place inside the kit that depends on `github.com/centrifugal/centrifuge`. Consumers that do not run centrifuge never import this package and never pull the dep transitively. `make check-dependency-boundaries` enforces the same isolation that holds for `k8s.io/client-go`, etcd, AMQP, NATS, and Kafka. |
+| Wire protocol | Centrifuge owns the wire protocol — browser clients MUST use a centrifuge SDK (`centrifuge-js`, mobile equivalents). The kit's role is the server side. For applications that want native browser `WebSocket` use `httpx/websocket` instead. |
+| Channel cardinality | The `realtime_centrifuge_subscribes_total{class}` and `realtime_centrifuge_publishes_total{class}` metrics emit a `class` label produced by an operator-supplied [`ChannelClassifier`] function. The classifier MUST map channels to a small bounded set ("user", "room", "system"). The kit projects the result through `promutil.ValidateStaticLabelValue` as a cardinality safety net; the default classifier maps every channel to "default" so a missing classifier cannot inflate the label set. |
+| Authentication | `WithJWTAuth(*jwtutil.Provider)` installs a centrifuge `OnConnecting` callback that verifies the bearer token and propagates the verified subject as the centrifuge user ID. Per-channel authorization is the caller's responsibility via centrifuge's `OnSubscribe` / `OnPublish` callbacks on `Node.Underlying()`. |
+| Metrics | `realtime_centrifuge_connects_total{outcome}`, `realtime_centrifuge_disconnects_total{reason}`, `realtime_centrifuge_subscribes_total{class}`, `realtime_centrifuge_publishes_total{class}`. The `outcome` and `reason` labels are bounded enums (`accepted`/`rejected`/`error`, `clean`/`stale`). |
+
 ### `data/budget/memory`, `data/ratelimit/gcra`, `data/ratelimit/tokenbucket`
 
 | Area | Migration |
