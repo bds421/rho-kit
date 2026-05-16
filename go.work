@@ -70,6 +70,8 @@ use (
 	./grpcx
 	./httpx
 	./httpx/middleware/signedrequest/redis
+	./httpx/websocket
+	./httpx/websocket/integrationtest
 	./infra
 	./infra/leaderelection/k8slease
 	./infra/leaderelection/k8slease/integrationtest
@@ -106,4 +108,5 @@ use (
 	./resilience
 	./runtime
 	./security
+	./testing/kittest
 )

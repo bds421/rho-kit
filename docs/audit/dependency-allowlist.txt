@@ -40,6 +40,7 @@ github.com/segmentio/kafka-go
 github.com/sony/gobreaker/v2
 
 # HTTP, schema, identity, and file handling helpers.
+github.com/coder/websocket
 github.com/fsnotify/fsnotify
 github.com/gabriel-vasile/mimetype
 github.com/google/uuid

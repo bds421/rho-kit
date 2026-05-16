@@ -59,6 +59,7 @@ allowed_for_boundary_dep() {
                 infra/messaging/redisbackend/go.mod|\
                 infra/redis/go.mod|\
                 infra/redis/redistest/go.mod|\
+                testing/kittest/go.mod|\
                 */integrationtest/go.mod)
                     return 0
                     ;;
@@ -80,6 +81,7 @@ allowed_for_boundary_dep() {
                 infra/sqldb/dbtest/go.mod|\
                 infra/sqldb/pgx/go.mod|\
                 observability/auditlog/postgres/go.mod|\
+                testing/kittest/go.mod|\
                 */integrationtest/go.mod)
                     return 0
                     ;;
@@ -250,6 +252,16 @@ allowed_for_boundary_dep() {
             case "$gomod" in
                 infra/leaderelection/k8slease/go.mod|\
                 */integrationtest/go.mod)
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+
+        github.com/coder/websocket|github.com/bds421/rho-kit/httpx/websocket/v2)
+            case "$gomod" in
+                httpx/websocket/go.mod|\
+                httpx/websocket/integrationtest/go.mod)
                     return 0
                     ;;
             esac

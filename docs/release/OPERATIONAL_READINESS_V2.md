@@ -185,6 +185,8 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/grpcx/v2` | Runtime | gRPC server defaults, health, interceptors, deadlines, mTLS identity. |
 | `github.com/bds421/rho-kit/httpx/v2` | Runtime | HTTP server/client timeouts, middleware order, signing, CSRF, metrics, request budgets. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | Redis nonce TTL, cancellation handling, Redis outage behavior. |
+| `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | WebSocket upgrade ergonomics, per-message read limits, idempotent close, handler panic recovery, redacted error surface, metric cardinality bound. |
+| `github.com/bds421/rho-kit/httpx/websocket/integrationtest/v2` | Integration helper | Real-listener WebSocket round-trip coverage only. |
 | `github.com/bds421/rho-kit/infra/v2` | Runtime | Infrastructure interfaces, sentinels, storage/messaging contracts, release-stable errors. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/v2` | Adapter | Lease renew/retry deadlines, identity uniqueness, callback drain, API-server outage behavior. |
 | `github.com/bds421/rho-kit/infra/leaderelection/k8slease/integrationtest/v2` | Integration helper | Fake-clientset leader-election integration coverage only. |
@@ -222,6 +224,7 @@ coverage, race, dashboard validation, publishability, and rehearsal.
 | `github.com/bds421/rho-kit/runtime/v2` | Runtime | Lifecycle, cron, eventbus, batchworker, fanout, cancellation and drain behavior. |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | Temporal dependency isolation, workflow scaffold, operational dependency caveat. |
 | `github.com/bds421/rho-kit/security/v2` | Runtime | JWT refresh, CSRF rotation, mTLS identity, SSRF guard, ASVS catalog. |
+| `github.com/bds421/rho-kit/testing/kittest/v2` | Integration helper | Re-export umbrella over dbtest/redistest/storagetest/rabbitmqtest; no runtime surface. |
 
 ## Check Command
 

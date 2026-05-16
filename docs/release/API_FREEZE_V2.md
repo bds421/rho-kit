@@ -130,6 +130,7 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/crypto/envelope/vaulttransit/v2` | Adapter | No rename/remove | HashiCorp Vault Transit envelope KEK adapter. |
 | `github.com/bds421/rho-kit/runtime/temporal/v2` | Adapter | No rename/remove | Temporal helpers, dependency isolated here. |
 | `github.com/bds421/rho-kit/httpx/middleware/signedrequest/redis/v2` | Adapter | No rename/remove | Redis nonce store for signed-request middleware. |
+| `github.com/bds421/rho-kit/httpx/websocket/v2` | Adapter | No rename/remove | WebSocket upgrade adapter built on `github.com/coder/websocket`, exposing kit logger/metrics/redact-aware Conn. |
 
 ## Integration Test Modules
 
@@ -150,6 +151,8 @@ freezes `redis_stream_messages_produced_total`,
 | `github.com/bds421/rho-kit/infra/redis/redistest/v2` | Integration test helper | No rename/remove | Redis Testcontainers helper. |
 | `github.com/bds421/rho-kit/infra/sqldb/pgx/integrationtest/v2` | Integration test helper | No rename/remove | pgx/Postgres integration tests. |
 | `github.com/bds421/rho-kit/observability/auditlog/postgres/integrationtest/v2` | Integration test helper | No rename/remove | Postgres audit-log integration tests (chain integrity, tamper detection, concurrent appends). |
+| `github.com/bds421/rho-kit/httpx/websocket/integrationtest/v2` | Integration test helper | No rename/remove | Real-listener WebSocket round-trip coverage for the kit adapter. |
+| `github.com/bds421/rho-kit/testing/kittest/v2` | Integration test helper | No rename/remove | Re-export umbrella over `dbtest`, `redistest`, `storagetest`, and `rabbitmqtest`. Aliases only; direct imports still work. |
 
 ## Commands And Examples
 
