@@ -11,7 +11,9 @@ import (
 // The check is non-critical by default — set DependencyCheck.Critical = true
 // after creation to make queue overflow a readiness failure.
 //
-// The check issues an LLEN command per evaluation, which is O(1) in Redis.
+// Each evaluation calls [Queue.Len], which delegates to asynq's
+// Inspector.GetQueueInfo (a single Lua EVAL round-trip on the queue's
+// pending-state key); cost is comparable to the pre-v2 LLEN poll.
 func (q *Queue) DepthCheck(queueName string, threshold int64) health.DependencyCheck {
 	return health.DependencyCheck{
 		Name: health.OpaqueCheckName("queue-depth", queueName),

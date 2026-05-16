@@ -206,6 +206,41 @@ func TestQueue_Enqueue_PayloadTooLarge(t *testing.T) {
 	assert.ErrorIs(t, err, kitqueue.ErrMessageTooLarge)
 }
 
+// TestQueue_Enqueue_AtPayloadLimitAcceptedDespiteEnvelopeBytes pins the
+// fix for the send/receive envelope-limit asymmetry: a payload exactly
+// at the configured cap must enqueue cleanly, because the handler side
+// applies the same maxPayloadSize+queueEnvelopeOverhead headroom.
+func TestQueue_Enqueue_AtPayloadLimitAcceptedDespiteEnvelopeBytes(t *testing.T) {
+	client := newTestClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	const payloadCap = 64
+	q := NewQueue(client, WithMaxMessageBytes(payloadCap))
+	t.Cleanup(func() { _ = q.Close() })
+
+	// Build a JSON-valid Payload (a JSON string literal whose body
+	// length equals the configured payload cap exactly).
+	inner := strings.Repeat("a", payloadCap-2) // 2 bytes for the enclosing quotes
+	payload := json.RawMessage(`"` + inner + `"`)
+	require.Len(t, payload, payloadCap)
+	msg := Message{
+		ID:        "msg-at-limit",
+		Type:      "test.job",
+		Payload:   payload,
+		Timestamp: time.Now().UTC(),
+		Attempt:   1,
+	}
+	// validateMessage caps msg.Payload at q.maxPayloadSize (inclusive
+	// boundary); the marshaled envelope is many bytes larger but must
+	// stay within maxPayloadSize+queueEnvelopeOverhead, which is the
+	// boundary the kit treats as authoritative.
+	require.NoError(t, q.Enqueue(context.Background(), "test-queue", msg))
+
+	n, err := q.Len(context.Background(), "test-queue")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+}
+
 func TestQueue_Enqueue_RejectsInvalidMessage(t *testing.T) {
 	client := newTestClient(t)
 	t.Cleanup(func() { _ = client.Close() })
@@ -343,15 +378,16 @@ func TestOptions(t *testing.T) {
 
 func TestOptions_PanicOnInvalid(t *testing.T) {
 	for name, fn := range map[string]func(){
-		"WithMaxRetries negative":       func() { WithMaxRetries(-1) },
-		"WithMaxMessageBytes negative":  func() { WithMaxMessageBytes(-1) },
-		"WithConcurrency zero":          func() { WithConcurrency(0) },
-		"WithConcurrency negative":      func() { WithConcurrency(-1) },
-		"WithInvisibilityTimeout zero":  func() { WithInvisibilityTimeout(0) },
-		"WithInvisibilityTimeout neg":   func() { WithInvisibilityTimeout(-time.Second) },
-		"WithShutdownTimeout zero":      func() { WithShutdownTimeout(0) },
-		"WithShutdownTimeout negative":  func() { WithShutdownTimeout(-time.Second) },
-		"WithRetention negative":        func() { WithRetention(-time.Second) },
+		"WithMaxRetries negative":      func() { WithMaxRetries(-1) },
+		"WithMaxMessageBytes negative": func() { WithMaxMessageBytes(-1) },
+		"WithConcurrency zero":         func() { WithConcurrency(0) },
+		"WithConcurrency negative":     func() { WithConcurrency(-1) },
+		"WithInvisibilityTimeout zero": func() { WithInvisibilityTimeout(0) },
+		"WithInvisibilityTimeout neg":  func() { WithInvisibilityTimeout(-time.Second) },
+		"WithShutdownTimeout zero":     func() { WithShutdownTimeout(0) },
+		"WithShutdownTimeout negative": func() { WithShutdownTimeout(-time.Second) },
+		"WithRetention negative":       func() { WithRetention(-time.Second) },
+		"WithMetricsRegisterer nil":    func() { WithMetricsRegisterer(nil) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
@@ -528,8 +564,6 @@ func (f *fakeAsynqServer) Shutdown() {
 		f.shutdown()
 	}
 }
-
-func (f *fakeAsynqServer) Stop() {}
 
 // TestProcess_HandlerDispatchesEnvelope drives a single message through
 // the asynq.HandlerFunc returned by [Queue.handlerForQueue] without

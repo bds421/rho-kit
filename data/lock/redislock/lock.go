@@ -14,8 +14,8 @@
 // resources concurrently. For critical sections that write to databases, use
 // database-level locking (SELECT FOR UPDATE) or implement fencing tokens at
 // the application layer. For Postgres-backed work, see
-// data/lock/pgadvisorylock (proposed) for session-scoped advisory locks
-// that automatically release on connection death.
+// [github.com/bds421/rho-kit/data/lock/pgadvisory/v2] for session-scoped
+// advisory locks that automatically release on connection death.
 //
 // # Usage
 //
@@ -110,7 +110,8 @@ func WithMaxWait(d time.Duration) Option {
 
 // Locker is a long-lived factory for per-key distributed locks. It implements
 // [lock.Locker], so callers depending on the kit-level interface can swap in
-// alternative backends (for example pgadvisorylock).
+// alternative backends (for example
+// [github.com/bds421/rho-kit/data/lock/pgadvisory/v2]).
 //
 // A single Locker is safe for concurrent use; each Acquire produces a fresh
 // Lock handle with its own owner token.

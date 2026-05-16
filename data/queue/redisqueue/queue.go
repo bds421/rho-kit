@@ -326,7 +326,6 @@ type Queue struct {
 type asynqServer interface {
 	Start(handler asynq.Handler) error
 	Shutdown()
-	Stop()
 }
 
 // Option configures a Queue.
@@ -369,13 +368,17 @@ func WithMaxMessageBytes(n int) Option {
 }
 
 // WithMetricsRegisterer sets the Prometheus registerer for queue
-// metrics. If not set, prometheus.DefaultRegisterer is used.
+// metrics. If not set, prometheus.DefaultRegisterer is used. Passing
+// nil panics — omit the option to use the default registerer.
+//
+// Mirrors the panic-on-nil contract of [WithRegisterer] (the metric
+// constructor option) so callers cannot accidentally silence
+// "registerer was unset" wiring bugs at either layer.
 func WithMetricsRegisterer(reg prometheus.Registerer) Option {
+	if reg == nil {
+		panic("redisqueue: WithMetricsRegisterer requires a non-nil registerer (omit the option for DefaultRegisterer)")
+	}
 	return func(q *Queue) {
-		if reg == nil {
-			q.metrics = NewMetrics()
-			return
-		}
 		q.metrics = NewMetrics(WithRegisterer(reg))
 	}
 }
@@ -582,8 +585,12 @@ func (q *Queue) Enqueue(ctx context.Context, queue string, msg Message) error {
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
 	}
-	if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
-		return &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize}
+	// Belt-and-braces cap on the full envelope (validateMessage already
+	// bounded the inner Payload). Use the same headroom the handler side
+	// applies so a max-sized payload is never rejected after marshal
+	// purely because the JSON envelope adds structural bytes.
+	if envelopeLimit := q.envelopeLimit(); envelopeLimit > 0 && len(data) > envelopeLimit {
+		return &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit}
 	}
 	task := asynq.NewTask(envelopeTaskType, data)
 	if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
@@ -618,13 +625,17 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 	}
 
 	label := queueMetricLabel(queue)
+	envelopeLimit := q.envelopeLimit()
 	for i, msg := range msgs {
 		data, err := json.Marshal(msg)
 		if err != nil {
 			return fmt.Errorf("marshal message [%d]: %w", i, err)
 		}
-		if q.maxPayloadSize > 0 && len(data) > q.maxPayloadSize {
-			return fmt.Errorf("message [%d]: %w", i, &kitqueue.MessageTooLargeError{Size: len(data), Limit: q.maxPayloadSize})
+		// Envelope cap matches the handler side (maxPayloadSize +
+		// queueEnvelopeOverhead) so a max-sized payload that survived
+		// validateMessage cannot fail this belt-and-braces check.
+		if envelopeLimit > 0 && len(data) > envelopeLimit {
+			return fmt.Errorf("message [%d]: %w", i, &kitqueue.MessageTooLargeError{Size: len(data), Limit: envelopeLimit})
 		}
 		task := asynq.NewTask(envelopeTaskType, data)
 		if _, err := q.client.EnqueueContext(ctx, task, q.enqueueOpts(queue, msg.ID)...); err != nil {
@@ -633,6 +644,17 @@ func (q *Queue) EnqueueBatch(ctx context.Context, queue string, msgs []Message) 
 		q.metrics.messagesEnqueued.WithLabelValues(label).Inc()
 	}
 	return nil
+}
+
+// envelopeLimit returns the maximum allowed marshaled-envelope size in
+// bytes (Payload + JSON envelope headers). Mirrors the receive-side cap
+// in handlerForQueue so send/receive agree on the boundary. Returns 0
+// when [Queue.maxPayloadSize] is 0 (cap disabled).
+func (q *Queue) envelopeLimit() int {
+	if q == nil || q.maxPayloadSize <= 0 {
+		return 0
+	}
+	return q.maxPayloadSize + queueEnvelopeOverhead
 }
 
 // enqueueOpts builds the per-message asynq option set. The TaskID is set
@@ -671,16 +693,16 @@ func (q *Queue) enqueueOpts(queue, msgID string) []asynq.Option {
 // fast at startup rather than on the first message.
 func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 	if err := q.ready(); err != nil {
-		panic("redisqueue: Process queue is invalid")
+		panic("redisqueue: Process requires an initialised queue")
 	}
 	if err := redis.ValidateName(queue, "queue"); err != nil {
-		panic("redisqueue: Process invalid queue name")
+		panic("redisqueue: Process requires a valid queue name")
 	}
 	if handler == nil {
 		panic("redisqueue: Process requires a non-nil handler")
 	}
 	if q.serverFactory == nil {
-		panic("redisqueue: Process server factory is not initialised")
+		panic("redisqueue: Process requires an initialised server factory")
 	}
 
 	q.activeQueuesMu.Lock()
@@ -717,10 +739,10 @@ func (q *Queue) Process(ctx context.Context, queue string, handler Handler) {
 		return
 	}
 	<-ctx.Done()
-	// Shutdown drains in-flight handlers up to ShutdownTimeout. Stop is
-	// a no-op afterwards (asynq's contract is "call Shutdown once"); we
-	// keep it on the interface only because tests need to observe the
-	// teardown signal.
+	// Shutdown drains in-flight handlers up to ShutdownTimeout. Per
+	// asynq's contract Shutdown is called once and is the only teardown
+	// signal the kit needs (Server.Stop just toggles internal state and
+	// is unused by the wrapper).
 	srv.Shutdown()
 }
 

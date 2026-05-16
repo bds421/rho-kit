@@ -6,6 +6,7 @@ go 1.26.2
 
 require (
 	github.com/bds421/rho-kit/data/lock/redislock/v2 v2.0.0
+	github.com/bds421/rho-kit/data/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/redis/redistest/v2 v2.0.0
 	github.com/bds421/rho-kit/infra/redis/v2 v2.0.0
 	github.com/redis/go-redis/v9 v9.19.0
@@ -17,7 +18,6 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/bds421/rho-kit/core/v2 v2.0.0 // indirect
-	github.com/bds421/rho-kit/data/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/observability/v2 v2.0.0 // indirect
 	github.com/bds421/rho-kit/resilience/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -39,7 +39,10 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/go-redsync/redsync/v4 v4.16.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect

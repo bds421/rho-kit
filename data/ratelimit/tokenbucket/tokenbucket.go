@@ -241,6 +241,14 @@ func (l *Limiter) newBucket() *bucket {
 // the per-key bucket; the actual token accounting happens inside the
 // per-key [*rate.Limiter] (which carries its own mutex), so contended
 // keys no longer serialise through a single limiter-wide lock.
+//
+// Sweeper race: dropping the map lock before [rate.Limiter.ReserveN]
+// lets the background sweeper delete this bucket between the unlock
+// and the reservation. The sweeper only removes buckets at full
+// capacity, so any racing reservation would have been admitted anyway;
+// the user-visible effect is at most one extra admission per
+// sweep-cycle-per-key, far cheaper than the contention removed by
+// finer-grained locking.
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, time.Duration, error) {
 	if err := ctxErr(ctx); err != nil {
 		return false, 0, err

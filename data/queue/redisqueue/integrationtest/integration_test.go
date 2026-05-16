@@ -216,16 +216,17 @@ func TestQueue_DoubleProcessGuard(t *testing.T) {
 		defer wg.Done()
 		q.Process(processCtx, queueName, func(context.Context, redisqueue.Message) error { return nil })
 	}()
-	require.Eventually(t, func() bool {
-		// Hard to introspect activeQueues across the package boundary;
-		// give Process a moment to register itself.
-		return true
-	}, time.Second, 100*time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
 
-	assert.Panics(t, func() {
-		q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
-	}, "second Process on the same queue name must panic")
+	// Poll until Process has registered the active queue: a second
+	// Process on the same name must panic. assert.Panics returns false
+	// when the call does NOT panic, so we retry until the first Process
+	// has registered itself.
+	require.Eventually(t, func() bool {
+		didPanic := assert.Panics(new(testing.T), func() {
+			q.Process(context.Background(), queueName, func(context.Context, redisqueue.Message) error { return nil })
+		})
+		return didPanic
+	}, 5*time.Second, 50*time.Millisecond, "second Process must panic once the first has registered")
 
 	cancel()
 	wg.Wait()
