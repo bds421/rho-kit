@@ -398,7 +398,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 	if cfg.NKeyFile != "" {
 		nkeyOpt, err := nats.NkeyOptionFromSeed(cfg.NKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("natsbackend: load NKey seed: %w", err)
+			return nil, redact.WrapError("natsbackend: load NKey seed", err)
 		}
 		opts = append(opts, nkeyOpt)
 	}
@@ -431,18 +431,18 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("natsbackend: connect: %w", err)
+		return nil, redact.WrapError("natsbackend: connect", err)
 	}
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("natsbackend: connect: %w", err)
+		return nil, redact.WrapError("natsbackend: connect", err)
 	}
 
 	js, err := jetstream.New(nc)
 	if err != nil {
 		nc.Close()
-		return nil, fmt.Errorf("natsbackend: jetstream: %w", err)
+		return nil, redact.WrapError("natsbackend: jetstream", err)
 	}
 	return &Connection{nc: nc, js: js, publishAckWait: cfg.PublishAckWait}, nil
 }
@@ -535,7 +535,7 @@ func (c *Connection) EnsureStream(ctx context.Context, cfg StreamConfig) error {
 	}
 	_, err := c.js.CreateOrUpdateStream(ctx, jcfg)
 	if err != nil {
-		return fmt.Errorf("natsbackend: ensure stream: %w", err)
+		return redact.WrapError("natsbackend: ensure stream", err)
 	}
 	return nil
 }
@@ -693,7 +693,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	body, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("natsbackend: marshal message: %w", err)
+		return redact.WrapError("natsbackend: marshal message", err)
 	}
 	natsMsg := &nats.Msg{
 		Subject: subject,
@@ -716,7 +716,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, ms
 	}
 	_, err = p.conn.js.PublishMsg(pubCtx, natsMsg)
 	if err != nil {
-		return fmt.Errorf("natsbackend: publish: %w", err)
+		return redact.WrapError("natsbackend: publish", err)
 	}
 	outcome = natsPublishOutcomeSuccess
 	return nil
@@ -833,7 +833,7 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 		MaxDeliver:    c.cfg.MaxDeliver,
 	})
 	if err != nil {
-		return fmt.Errorf("natsbackend: ensure consumer: %w", err)
+		return redact.WrapError("natsbackend: ensure consumer", err)
 	}
 
 	var stopped atomic.Bool
@@ -844,7 +844,7 @@ func (c *Consumer) Consume(ctx context.Context, handler messaging.Handler) error
 		c.dispatch(ctx, jm, handler)
 	})
 	if err != nil {
-		return fmt.Errorf("natsbackend: start consume: %w", err)
+		return redact.WrapError("natsbackend: start consume", err)
 	}
 
 	<-ctx.Done()
